@@ -1,142 +1,14 @@
 const std = @import("std");
 const json = std.json;
-const stringify = std.json.Stringify.value;
+const bashTool = @import("tools/bash.zig").bashTool;
+const bashMod = @import("tools/bash.zig");
+const BashInput = @import("tools/models.zig").BashInput;
+const ToolProperty = @import("tools/models.zig").ToolProperty;
+const ToolParameters = @import("tools/models.zig").ToolParameters;
+const AgentToolFunction = @import("tools/models.zig").AgentToolFunction;
+const AgentTool = @import("tools/models.zig").AgentTool;
 
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
-
-pub const Role = enum([]const u8) {
-    system = "system",
-    user = "user",
-    assistant = "assistant",
-    tool = "tool",
-    developer = "developer",
-};
-
-pub const ContentPart = union(enum) {
-    text_content: TextContent,
-    image_url: ImageContent,
-    input_audio: InputAudioContent,
-
-    pub fn text(txt: []const u8) ContentPart {
-        return .{ .text_content = .{ .text = txt } };
-    }
-
-    pub fn image(url: []const u8) ContentPart {
-        return .{ .image_url = .{ .image_url = .{ .url = url, .detail = .auto } } };
-    }
-};
-
-pub const TextContent = struct {
-    text: []const u8,
-    type: []const u8 = "text",
-};
-
-pub const ImageContentDetail = enum([]const u8) {
-    auto = "auto",
-    low = "low",
-    high = "high",
-};
-
-pub const ImageContent = struct {
-    image_url: ImageUrl,
-    type: []const u8 = "image_url",
-};
-
-pub const ImageUrl = struct {
-    url: []const u8,
-    detail: ImageContentDetail = .auto,
-};
-
-pub const InputAudioContent = struct {
-    input_audio: InputAudio,
-    type: []const u8 = "input_audio",
-};
-
-pub const InputAudio = struct {
-    data: []const u8,
-    format: []const u8,
-};
-
-pub const Message = union(enum) {
-    system: SystemMessage,
-    user: UserMessage,
-    assistant: AssistantMessage,
-    tool: ToolMessage,
-    developer: DeveloperMessage,
-
-    pub fn systemMessage(content: []const u8) Message {
-        return .{ .system = .{ .content = content, .role = .system } };
-    }
-
-    pub fn userMessage(content: []const u8) Message {
-        return .{ .user = .{ .content = content, .role = .user } };
-    }
-
-    pub fn userMessageWithImages(content: []const u8, images: []const []const u8) Message {
-        var parts: std.ArrayList(ContentPart) = .empty;
-        parts.append(std.heap.page_allocator, ContentPart.text(content)) catch unreachable;
-        for (images) |img| {
-            parts.append(std.heap.page_allocator, ContentPart.image(img)) catch unreachable;
-        }
-        return .{ .user = .{ .content = parts.items, .role = .user } };
-    }
-
-    pub fn assistantMessage(content: []const u8) Message {
-        return .{ .assistant = .{ .content = content, .role = .assistant } };
-    }
-
-    pub fn toolMessage(tool_call_id: []const u8, content: []const u8) Message {
-        return .{ .tool = .{ .tool_call_id = tool_call_id, .content = content, .role = .tool } };
-    }
-
-    pub fn developerMessage(content: []const u8) Message {
-        return .{ .developer = .{ .content = content, .role = .developer } };
-    }
-};
-
-pub const SystemMessage = struct {
-    content: union {
-        text: []const u8,
-        parts: []ContentPart,
-    },
-    role: Role = .system,
-    name: ?[]const u8 = null,
-
-    pub fn jsonStringify(self: SystemMessage, jws: anytype) !void {
-        var map = std.StringArrayHashMap(json.Value).init(std.heap.page_allocator);
-        defer map.deinit();
-        map.put("role", json.Value{ .string = "system" }) catch unreachable;
-        switch (self.content) {
-            .text => |txt| map.put("content", json.Value{ .string = txt }),
-            .parts => |parts| {
-                var arr = json.Array.init(std.heap.page_allocator);
-                for (parts) |p| {
-                    switch (p) {
-                        .text => |t| {
-                            var part_map = std.StringArrayHashMap(json.Value).init(std.heap.page_allocator);
-                            part_map.put("type", json.Value{ .string = "text" }) catch unreachable;
-                            part_map.put("text", json.Value{ .string = t.text }) catch unreachable;
-                            arr.append(json.Value{ .object = part_map }) catch unreachable;
-                        },
-                        else => {},
-                    }
-                }
-                map.put("content", json.Value{ .array = arr }) catch unreachable;
-            },
-        }
-        if (self.name) |n| map.put("name", json.Value{ .string = n });
-        try jws.write(json.Value{ .object = map });
-    }
-};
-
-pub const UserMessage = struct {
-    content: union {
-        text: []const u8,
-        parts: []ContentPart,
-    },
-    role: Role = .user,
-    name: ?[]const u8 = null,
-};
 
 pub const ToolCall = struct {
     id: []const u8,
@@ -148,172 +20,6 @@ pub const FunctionCall = struct {
     name: []const u8,
     arguments: []const u8,
 };
-
-pub const AssistantMessage = struct {
-    content: ?[]const u8 = null,
-    role: Role = .assistant,
-    name: ?[]const u8 = null,
-    tool_calls: ?[]ToolCall = null,
-    tool_call_id: ?[]const u8 = null,
-};
-
-pub const ToolMessage = struct {
-    tool_call_id: []const u8,
-    content: []const u8,
-    role: Role = .tool,
-    name: ?[]const u8 = null,
-};
-
-pub const DeveloperMessage = struct {
-    content: union {
-        text: []const u8,
-        parts: []ContentPart,
-    },
-    role: Role = .developer,
-    name: ?[]const u8 = null,
-};
-
-pub const FunctionDefinition = struct {
-    name: []const u8,
-    description: []const u8,
-    parameters: json.Value,
-};
-
-pub const Tool = struct {
-    type: []const u8 = "function",
-    function: FunctionDefinition,
-};
-
-pub const ToolChoice = union(enum) {
-    auto,
-    none,
-    required: ToolChoiceRequired,
-};
-
-pub const ToolChoiceRequired = struct {
-    type: []const u8 = "function",
-    function: FunctionName,
-};
-
-pub const FunctionName = struct {
-    name: []const u8,
-};
-
-pub const ResponseFormat = union(enum) {
-    text,
-    json_object: ResponseFormatJsonObject,
-};
-
-pub const ResponseFormatJsonObject = struct {
-    type: []const u8 = "json_object",
-};
-
-pub const ChatCompletionRequest = struct {
-    model: []const u8,
-    messages: []Message,
-    temperature: ?f32 = null,
-    top_p: ?f32 = null,
-    n: ?usize = null,
-    stream: bool = false,
-    stop: ?[]const []const u8 = null,
-    max_tokens: ?usize = null,
-    presence_penalty: ?f32 = null,
-    frequency_penalty: ?f32 = null,
-    logit_bias: ?std.StringArrayHashMap(i64) = null,
-    user: ?[]const u8 = null,
-    tools: ?[]Tool = null,
-    tool_choice: ?ToolChoice = null,
-    response_format: ?ResponseFormat = null,
-    seed: ?i64 = null,
-    store: ?bool = null,
-    metadata: ?std.StringArrayHashMap(json.Value) = null,
-    parallel_tool_calls: bool = true,
-};
-
-pub const ChatCompletionChoice = struct {
-    index: usize,
-    message: ChatCompletionMessage,
-    finish_reason: ?[]const u8,
-};
-
-pub const ChatCompletionMessage = struct {
-    role: Role,
-    content: ?[]const u8,
-    tool_calls: ?[]ToolCall = null,
-    tool_call_id: ?[]const u8 = null,
-};
-
-pub const ChatCompletionUsage = struct {
-    prompt_tokens: usize,
-    completion_tokens: usize,
-    total_tokens: usize,
-};
-
-pub const ChatCompletionResponse = struct {
-    id: []const u8,
-    object: []const u8,
-    created: u64,
-    model: []const u8,
-    choices: []ChatCompletionChoice,
-    usage: ChatCompletionUsage,
-    service_tier: ?[]const u8 = null,
-    system_fingerprint: ?[]const u8 = null,
-};
-
-pub const CallResponse = struct {
-    content: ?[]const u8,
-    tool_calls: ?[]ToolCall,
-};
-
-pub const ToolParameter = struct {
-    name: []const u8,
-    type_hint: []const u8,
-    description: []const u8,
-    default_value: ?[]const u8,
-    required: bool,
-};
-
-pub const ToolProperty = struct {
-    name: []const u8,
-    type: []const u8,
-    description: []const u8,
-};
-
-pub const ToolParameters = struct {
-    type: []const u8,
-    properties: []const ToolProperty,
-    required: []const []const u8,
-};
-
-pub const AgentToolFunction = struct {
-    name: []const u8,
-    description: []const u8,
-    parameters: ToolParameters,
-};
-
-pub const AgentTool = struct {
-    type: []const u8,
-    function: AgentToolFunction,
-};
-
-pub const AgentTools = struct {
-    name: []const u8,
-    description: []const u8,
-    parameters: []ToolParameter,
-    returns: []const u8,
-    required_params: [][]const u8,
-    timeout_ms: u32,
-    is_async: bool,
-    allocator: std.mem.Allocator,
-
-    pub fn toXml(self: AgentTools) ![]const u8 {
-        _ = self;
-        return "";
-    }
-};
-
-// "role": "assistant",
-//     "content": "Hello! How can I assist you today?",
 
 pub const AgentMessage = struct {
     role: []const u8,
@@ -336,6 +42,19 @@ pub const Agent = struct {
     maxTokens: usize = 10000,
     httpClient: std.http.Client,
     allocator: std.mem.Allocator,
+
+    pub const CallResponse = struct {
+        allocator: std.mem.Allocator,
+        content: ?[]const u8,
+        tool_calls: ?[]ToolCall,
+        finish_reason: ?[]const u8,
+
+        pub fn deinit(self: *const CallResponse) void {
+            if (self.content) |c| self.allocator.free(c);
+            if (self.finish_reason) |f| self.allocator.free(f);
+            if (self.tool_calls) |tc| self.allocator.free(tc);
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator) !Agent {
         return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator } };
@@ -477,6 +196,7 @@ pub const Agent = struct {
         const message = first_choice.object.get("message").?;
         const content = message.object.get("content");
         const tool_calls_val = message.object.get("tool_calls");
+        const finish_reason_val = first_choice.object.get("finish_reason");
 
         var tool_calls: ?[]ToolCall = null;
         if (tool_calls_val) |tc| {
@@ -492,9 +212,13 @@ pub const Agent = struct {
             tool_calls = calls;
         }
 
+        const finish_reason = if (finish_reason_val) |fr| try self.allocator.dupe(u8, fr.string) else null;
+
         return .{
-            .content = if (content) |c| c.string else null,
+            .allocator = self.allocator,
+            .content = if (content) |c| try self.allocator.dupe(u8, c.string) else null,
             .tool_calls = tool_calls,
+            .finish_reason = finish_reason,
         };
     }
 
@@ -562,42 +286,3 @@ test "agent call builds correct json with tools" {
     try std.testing.expectEqualSlices(u8, json_body, expectedString);
 }
 
-test "agent call http get response ok" {
-    const allocator = std.testing.allocator;
-    var agent = try Agent.init(allocator);
-    agent.apiKey = "551857def24c42b4a751b60ea76bf37b.19BLI68KYxq3Y5Vg";
-    agent.model = "glm-5";
-    agent.baseUrl = "https://api.z.ai/api/coding/paas/v4";
-    defer agent.deinit();
-
-    const params = AgentCall{
-        .messages = &.{.{ .role = "user", .content = "this is just testing, just response ok" }},
-        .tools = &.{},
-    };
-
-    const response = try agent.call(params);
-
-    std.debug.print("agent call http: response: {s}", .{response.content.?});
-
-    try std.testing.expect(std.ascii.eqlIgnoreCase(response.content.?, "ok"));
-}
-
-test "agent call http get tools" {
-    const allocator = std.testing.allocator;
-    var agent = try Agent.init(allocator);
-    agent.apiKey = "551857def24c42b4a751b60ea76bf37b.19BLI68KYxq3Y5Vg";
-    agent.model = "glm-5";
-    agent.baseUrl = "https://api.z.ai/api/coding/paas/v4";
-    defer agent.deinit();
-
-    const params = AgentCall{
-        .messages = &.{.{ .role = "user", .content = "this is just testing, just response ok" }},
-        .tools = &.{},
-    };
-    _ = params;
-
-    // const response = try agent.call(params);
-    //
-    // std.debug.print("agent call http: response: {s}", .{response.content.?});
-
-}

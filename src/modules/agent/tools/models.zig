@@ -1,0 +1,37 @@
+pub const BashInput = struct {
+    command: []const u8,
+    timeout: ?u32 = 30,
+    cwd: ?[]const u8 = null,
+    max_output: ?usize = 1024 * 1024, // default 1MB
+};
+
+pub const ToolProperty = struct {
+    name: []const u8,
+    type: []const u8,
+    description: []const u8,
+};
+
+pub const ToolParameters = struct {
+    type: []const u8,
+    properties: []const ToolProperty,
+    required: []const []const u8,
+};
+
+pub const AgentToolFunction = struct {
+    name: []const u8,
+    description: []const u8,
+    parameters: ToolParameters,
+};
+
+pub const AgentTool = struct {
+    type: []const u8,
+    function: AgentToolFunction,
+};
+
+pub const BashResult = struct {
+    stdout: []const u8,
+    stderr: []const u8,
+    exit_code: u32,
+};
+
+
