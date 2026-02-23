@@ -87,10 +87,7 @@ pub const AgentCall = struct {
 pub const AgentLogger = *const fn (level: std.log.Level, message: []const u8) void;
 
 pub const HttpOptions = struct {
-    connect_timeout_ms: u32 = 30000,
     read_timeout_ms: u32 = 60000,
-    follow_redirects: bool = true,
-    max_redirects: u32 = 3,
 };
 
 pub const Agent = struct {
@@ -263,6 +260,17 @@ pub const Agent = struct {
             return error.HttpRequestFailed;
         };
         defer req.deinit();
+
+        if (req.connection) |conn| {
+            const stream = conn.stream_reader.getStream();
+            const handle = stream.handle;
+            const timeout = std.posix.timeval{
+                .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
+                .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
+            };
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
+        }
 
         req.sendBodyComplete(@constCast(json_body)) catch |err| {
             self.logMsg(.err, @errorName(err));
