@@ -35,8 +35,10 @@ test "messageIncoming callback can be set" {
     var server = ipc.IpcServer.init(allocator);
 
     server.messageIncoming(struct {
-        fn handler(data: []const u8) void {
+        fn handler(_allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
+            _ = _allocator;
             _ = data;
+            _ = ctx;
         }
     }.handler);
 

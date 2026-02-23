@@ -3,7 +3,7 @@ const c = @cImport({
     @cInclude("sys/un.h");
 });
 
-pub const MessageHandler = *const fn (data: []const u8) void;
+pub const MessageHandler = *const fn (allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void;
 
 pub const IpcServer = struct {
     const Self = @This();
@@ -11,14 +11,16 @@ pub const IpcServer = struct {
     allocator: std.mem.Allocator,
     socket_path: []const u8,
     message_handler: ?MessageHandler = null,
+    ctx: ?*anyopaque = null,
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator, ctx: ?*anyopaque) Self {
         return .{
             .allocator = allocator,
             .socket_path = if (@import("builtin").os.tag == .windows)
                 "\\\\.\\pipe\\agent.sock"
             else
                 "/tmp/agent.sock",
+            .ctx = ctx,
         };
     }
 
@@ -41,7 +43,9 @@ pub const IpcServer = struct {
 
     fn handleMessage(self: *Self, data: []const u8) void {
         if (self.message_handler) |handler| {
-            handler(data);
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            handler(arena.allocator(), data, self.ctx);
         }
     }
 
