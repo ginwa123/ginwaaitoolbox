@@ -4,6 +4,7 @@ const agentMod = @import("modules/agent/agent.zig");
 const ipc = @import("modules/ipc/ipc.zig");
 const agent = @import("modules/agent/agent.zig");
 const ai_workflow = @import("ai_workflow/ask_llm_workflow.zig");
+const ai_workflow_mod = @import("ai_workflow/models.zig");
 const sqlite = @import("modules/databases/sqlite/sqlite.zig");
 
 var g_api_key: []const u8 = "";
@@ -44,10 +45,6 @@ fn loadEnv() !void {
     }
 }
 
-pub const ContextIPCTui = struct {
-    db: *sqlite.SqliteBackend,
-};
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -60,14 +57,14 @@ pub fn main() !void {
     defer dbSqlite.deinit();
     try dbSqlite.init(":memory:");
 
-    const ctxParent = try parentAllocator.create(ContextIPCTui);
-    ctxParent.* = ContextIPCTui{ .db = &dbSqlite };
+    const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
+    ctxParent.* = ai_workflow_mod.ContextIPCTui{ .db = &dbSqlite };
 
     var server = ipc.IpcServer.init(parentAllocator, ctxParent);
 
     server.messageIncoming(struct {
         fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
-            const ctxTui = @as(*ContextIPCTui, @ptrCast(@alignCast(ctx)));
+            const ctxTui = @as(*ai_workflow_mod.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const db = ctxTui.db;
             _ = db;
 
@@ -77,12 +74,21 @@ pub fn main() !void {
             };
 
             if (std.mem.eql(u8, t.command_type, "agent_ask")) {
-                var agenttt = try agent.Agent.init(allocator);
-                defer agenttt.deinit();
-
-                agenttt.apiKey = g_api_key;
-                agenttt.model = g_model;
-                agenttt.baseUrl = g_base_url;
+                const workflowAsk = ai_workflow.AskLLMWorkflow{
+                    .allocator = allocator,
+                    .ctx = ctxTui,
+                    .api_key = g_api_key,
+                    .model = g_model,
+                    .base_url = g_base_url,
+                };
+                workflowAsk.run();
+                // defer workflowAsk.deinit();
+                // var agenttt = try agent.Agent.init(allocator);
+                // defer agenttt.deinit();
+                //
+                // agenttt.apiKey = g_api_key;
+                // agenttt.model = g_model;
+                // agenttt.baseUrl = g_base_url;
             }
 
             std.debug.print("Received: {s}\n", .{data});

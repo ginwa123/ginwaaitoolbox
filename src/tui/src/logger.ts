@@ -1,12 +1,15 @@
+import { writeFileSync, appendFileSync } from "fs";
+
 const LOG_PATH = "/tmp/tui.log";
 
 export function log(message: string): void {
   const timestamp = new Date().toISOString();
   const entry = `[${timestamp}] ${message}\n`;
+  console.log(entry.trim());
   try {
-    Bun.write(LOG_PATH, entry, { append: true });
-  } catch {
-    // Silently fail if logging fails
+    appendFileSync(LOG_PATH, entry);
+  } catch (e) {
+    console.log("LOG ERROR:", e);
   }
 }
 

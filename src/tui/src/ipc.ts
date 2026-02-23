@@ -1,34 +1,35 @@
+import { connect } from "net";
+import { TextEncoder } from "util";
+
 const SOCKET_PATH = "/tmp/agent.sock";
 
 export async function sendIpcMessage(message: object): Promise<string> {
-  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   const data = JSON.stringify(message);
   
   return new Promise((resolve) => {
-    const chunks: Uint8Array[] = [];
+    const chunks: Buffer[] = [];
     
-    const socket = new Bun.Socket({
-      unix: SOCKET_PATH,
-      socket: {
-        data(socket, buffer) {
-          chunks.push(new Uint8Array(buffer));
-        },
-        close() {
-          if (chunks.length > 0) {
-            const result = decoder.decode(Buffer.concat(chunks.map(c => Buffer.from(c))));
-            resolve(result);
-          } else {
-            resolve("");
-          }
-        },
-        error(socket, error) {
-          resolve("");
-        },
-      },
+    const socket = connect(SOCKET_PATH, () => {
+      socket.write(data + "\n", () => {
+        socket.end();
+      });
     });
     
-    socket.write(data).then(() => {
-      socket.end();
+    socket.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+    
+    socket.on("close", () => {
+      if (chunks.length > 0) {
+        resolve(Buffer.concat(chunks).toString());
+      } else {
+        resolve("");
+      }
+    });
+    
+    socket.on("error", () => {
+      resolve("");
     });
   });
 }
