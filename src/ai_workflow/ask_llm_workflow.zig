@@ -1,4 +1,5 @@
 const std = @import("std");
+const json = std.json;
 const agent = @import("../modules/agent/agent.zig");
 const prompt = @import("../modules/agent/prompt.zig");
 const context = @import("models.zig").ContextIPCTui;
@@ -18,6 +19,47 @@ pub const AskLLMWorkflow = struct {
         return AskLLMWorkflow{
             .allocator = allocator,
             .agent = agent.Agent.init(allocator) catch unreachable,
+        };
+    }
+
+    fn sendResponse(self: *AskLLMWorkflow, response: agent.Agent.CallResponse) void {
+        if (self.conn_fd < 0) return;
+
+        var choices = self.allocator.alloc(agent.Choice, 1) catch return;
+        defer self.allocator.free(choices);
+
+        choices[0] = agent.Choice{
+            .index = 0,
+            .message = agent.Message{
+                .role = agent.Role.assistant.toStr(),
+                .content = response.content,
+                .tool_calls = response.tool_calls,
+            },
+            .finish_reason = response.finish_reason,
+        };
+
+        const agentResponse = agent.AgentResponse{
+            .choices = choices,
+        };
+
+        var message_buffer_out = std.io.Writer.Allocating.init(self.allocator);
+        var stringifier = json.Stringify{
+            .writer = &message_buffer_out.writer,
+            .options = .{},
+        };
+
+        stringifier.write(agentResponse) catch {
+            message_buffer_out.deinit();
+            return;
+        };
+
+        const json_slice = message_buffer_out.toOwnedSlice() catch return;
+        defer self.allocator.free(json_slice);
+
+        _ = std.posix.write(self.conn_fd, json_slice) catch |err| {
+            if (err != error.BrokenPipe) {
+                std.debug.print("Send Response error {s}\n", .{@errorName(err)});
+            }
         };
     }
 
@@ -43,7 +85,6 @@ pub const AskLLMWorkflow = struct {
             agenttt.apiKey = self.api_key;
             agenttt.model = self.model;
             agenttt.baseUrl = self.base_url;
-            // agenttt.logger = agent.AgentLogger{ .logMsg = self.logMsg };
 
             const agetntCall = agent.AgentCall{
                 .tools = &.{},
@@ -56,10 +97,7 @@ pub const AskLLMWorkflow = struct {
             };
             defer response.deinit();
 
-            if (response.content) |c| {
-                std.debug.print("Sending message: {s}\n", .{c});
-                _ = self.sendMessage(c);
-            }
+            self.sendResponse(response);
 
             if (response.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
@@ -84,9 +122,18 @@ pub const AskLLMWorkflow = struct {
         }
     }
 
-    pub fn sendMessage(self: *AskLLMWorkflow, msg: []const u8) void {
-        if (self.conn_fd < 0) return;
-        _ = std.posix.write(self.conn_fd, msg) catch {};
+    fn saveMessage(self: *AskLLMWorkflow, response: agent.Agent.CallResponse) !void {
+        if (self.ctx.db == null) {
+            std.debug.print("DB is null", .{});
+        }
+
+        const db = self.ctx.db.*;
+
+        // try db.exec(allocator, "INSERT INTO users (name) VALUES (?)", &.{"Alice"});
+
+        const sql = "INSERT INTO messages (message, message_type, user_id, created_at) VALUES (?, ?, ?, ?)";
+        const sqlArgs = &.{ response.content, agent.MessageType.user.toStr(), self.ctx.user_id, self.ctx.created_at };
+        try db.exec(self.allocator, sql, sqlArgs);
     }
 
     pub fn deinit(self: *AskLLMWorkflow) void {

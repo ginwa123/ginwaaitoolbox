@@ -1,10 +1,79 @@
 import { connect } from "net";
-import { TextEncoder } from "util";
 
 const SOCKET_PATH = "/tmp/agent.sock";
 
+export interface ToolCall {
+  id: string;
+  type: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface Message {
+  role: string;
+  content: string | null;
+  tool_calls: ToolCall[] | null;
+}
+
+export interface Choice {
+  index: number;
+  message: Message;
+  finish_reason: string | null;
+}
+
+export interface AgentResponse {
+  choices: Choice[];
+}
+
+export function parseAgentResponse(raw: string): AgentResponse | null {
+  try {
+    return JSON.parse(raw) as AgentResponse;
+  } catch {
+    return null;
+  }
+}
+
+export function extractContent(response: AgentResponse): string {
+  const choice = response.choices[0];
+  if (!choice?.message?.content) return "";
+  return choice.message.content;
+}
+
+export function extractThought(content: string): string | null {
+  const match = content.match(/<thought>([\s\S]*?)<\/thought>/);
+  return match ? match[1].trim() : null;
+}
+
+export function extractMarkdown(content: string): string | null {
+  const match = content.match(/<markdown>([\s\S]*?)<\/markdown>/);
+  return match ? match[1].trim() : null;
+}
+
+export function extractPlainContent(content: string): string {
+  let plain = content;
+  plain = plain.replace(/<thought>[\s\S]*?<\/thought>/g, "");
+  plain = plain.replace(/<markdown>[\s\S]*?<\/markdown>/g, "");
+  return plain.trim();
+}
+
+export function parseAndFormatContent(content: string): { thought?: string; markdown?: string; plain: string } {
+  const thought = extractThought(content);
+  const markdown = extractMarkdown(content);
+  
+  if (thought || markdown) {
+    return {
+      thought: thought ?? undefined,
+      markdown: markdown ?? undefined,
+      plain: extractPlainContent(content),
+    };
+  }
+  
+  return { plain: content };
+}
+
 export async function sendIpcMessage(message: object): Promise<string> {
-  const encoder = new TextEncoder();
   const data = JSON.stringify(message);
   
   return new Promise((resolve) => {
@@ -12,7 +81,7 @@ export async function sendIpcMessage(message: object): Promise<string> {
     
     const socket = connect(SOCKET_PATH, () => {
       socket.write(data + "\n", () => {
-        socket.end();
+        // Don't end immediately - wait for response
       });
     });
     

@@ -21,6 +21,22 @@ pub const FunctionCall = struct {
     arguments: []const u8,
 };
 
+pub const AgentResponse = struct {
+    choices: []Choice,
+};
+
+pub const Choice = struct {
+    index: usize = 0,
+    message: Message,
+    finish_reason: ?FinishReason = null,
+};
+
+pub const Message = struct {
+    role: []const u8 = "assistant",
+    content: ?[]const u8 = null,
+    tool_calls: ?[]ToolCall = null,
+};
+
 pub const Role = enum {
     /// System message
     system,

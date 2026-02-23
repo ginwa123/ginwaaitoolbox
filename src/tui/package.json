@@ -4,10 +4,13 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun run --watch src/index.tsx"
+    "dev": "bun run --watch src/index.tsx",
+    "format": "biome format --write .",
+    "lint": "biome lint ."
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "biome": "^0.3.3"
   },
   "peerDependencies": {
     "typescript": "^5"
