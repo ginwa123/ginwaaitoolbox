@@ -7,7 +7,7 @@ const testing = std.testing;
 
 test "IpcServer init returns correct socket path on unix" {
     const allocator = std.testing.allocator;
-    const server = ipc.IpcServer.init(allocator);
+    const server = ipc.IpcServer.init(allocator, null);
 
     if (@import("builtin").os.tag == .windows) {
         try testing.expectEqualStrings("\\\\.\\pipe\\agent.sock", server.socket_path);
@@ -18,21 +18,21 @@ test "IpcServer init returns correct socket path on unix" {
 
 test "IpcServer allocator is set correctly" {
     const allocator = std.testing.allocator;
-    const server = ipc.IpcServer.init(allocator);
+    const server = ipc.IpcServer.init(allocator, null);
 
     try testing.expectEqual(allocator, server.allocator);
 }
 
 test "socket path length is reasonable" {
     const allocator = std.testing.allocator;
-    const server = ipc.IpcServer.init(allocator);
+    const server = ipc.IpcServer.init(allocator, null);
 
     try testing.expect(server.socket_path.len > 0);
 }
 
 test "messageIncoming callback can be set" {
     const allocator = std.testing.allocator;
-    var server = ipc.IpcServer.init(allocator);
+    var server = ipc.IpcServer.init(allocator, null);
 
     server.messageIncoming(struct {
         fn handler(_allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {

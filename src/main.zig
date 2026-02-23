@@ -57,7 +57,7 @@ pub fn main() !void {
     try loadEnv();
 
     var dbSqlite: sqlite.SqliteBackend = .{};
-    dbSqlite.deinit();
+    defer dbSqlite.deinit();
     try dbSqlite.init(":memory:");
 
     const ctxParent = try parentAllocator.create(ContextIPCTui);

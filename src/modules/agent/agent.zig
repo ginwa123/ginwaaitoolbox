@@ -21,11 +21,62 @@ pub const FunctionCall = struct {
     arguments: []const u8,
 };
 
+pub const Role = enum {
+    /// System message
+    system,
+    /// User message
+    user,
+    /// Assistant message
+    assistant,
+    /// Tool result message
+    tool,
+
+    pub fn fromStr(s: []const u8) ?Role {
+        if (std.mem.eql(u8, s, "system")) return .system;
+        if (std.mem.eql(u8, s, "user")) return .user;
+        if (std.mem.eql(u8, s, "assistant")) return .assistant;
+        if (std.mem.eql(u8, s, "tool")) return .tool;
+        return null;
+    }
+
+    pub fn toStr(self: Role) []const u8 {
+        return switch (self) {
+            .system => "system",
+            .user => "user",
+            .assistant => "assistant",
+            .tool => "tool",
+        };
+    }
+};
+
 pub const AgentMessage = struct {
-    role: []const u8,
+    role: Role,
     content: ?[]const u8,
     tool_calls: ?[]ToolCall = null,
     tool_call_id: ?[]const u8 = null,
+};
+
+pub const FinishReason = enum {
+    /// Model generated a complete message
+    stop,
+    /// Model hit max tokens limit
+    length,
+    /// Model triggered a tool call
+    tool_calls,
+    /// Content was filtered due to safety policies
+    content_filter,
+    /// No finish reason provided
+    null,
+
+    pub fn fromStr(s: ?[]const u8) ?FinishReason {
+        if (s == null) return .null;
+        const str = s.?;
+        if (std.mem.eql(u8, str, "stop")) return .stop;
+        if (std.mem.eql(u8, str, "length")) return .length;
+        if (std.mem.eql(u8, str, "tool_calls")) return .tool_calls;
+        if (std.mem.eql(u8, str, "content_filter")) return .content_filter;
+        return null;
+    }
 };
 
 pub const AgentCall = struct {
@@ -47,11 +98,10 @@ pub const Agent = struct {
         allocator: std.mem.Allocator,
         content: ?[]const u8,
         tool_calls: ?[]ToolCall,
-        finish_reason: ?[]const u8,
+        finish_reason: ?FinishReason,
 
         pub fn deinit(self: *const CallResponse) void {
             if (self.content) |c| self.allocator.free(c);
-            if (self.finish_reason) |f| self.allocator.free(f);
             if (self.tool_calls) |tc| self.allocator.free(tc);
         }
     };
@@ -60,14 +110,14 @@ pub const Agent = struct {
         return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator } };
     }
 
-    fn buildJsonRequest(self: Agent, params: AgentCall) ![]const u8 {
+    pub fn buildJsonRequest(self: Agent, params: AgentCall) ![]const u8 {
         var messages_arr = std.array_list.Managed(json.Value).init(self.allocator);
 
         var user_msgs: []std.StringArrayHashMap(json.Value) = try self.allocator.alloc(std.StringArrayHashMap(json.Value), params.messages.len);
 
         for (params.messages, 0..) |msg, i| {
             user_msgs[i] = std.StringArrayHashMap(json.Value).init(self.allocator);
-            try user_msgs[i].put("role", .{ .string = msg.role });
+            try user_msgs[i].put("role", .{ .string = msg.role.toStr() });
             if (msg.content) |c| {
                 try user_msgs[i].put("content", .{ .string = c });
             }
@@ -212,7 +262,7 @@ pub const Agent = struct {
             tool_calls = calls;
         }
 
-        const finish_reason = if (finish_reason_val) |fr| try self.allocator.dupe(u8, fr.string) else null;
+        const finish_reason = FinishReason.fromStr(if (finish_reason_val) |fr| fr.string else null);
 
         return .{
             .allocator = self.allocator,
@@ -226,63 +276,3 @@ pub const Agent = struct {
         self.httpClient.deinit();
     }
 };
-
-test "agent call builds correct json with tools" {
-    const allocator = std.testing.allocator;
-    var agent = try Agent.init(allocator);
-    agent.apiKey = "551857def24c42b4a751b60ea76bf37b.19BLI68KYxq3Y5Vg";
-    agent.model = "glm-5";
-    agent.baseUrl = "https://api.z.ai/api/coding/paas/v4";
-    defer agent.deinit();
-
-    const msgSystem = AgentMessage{ .role = "system", .content = "You are a helpful assistant" };
-    const msgUser = AgentMessage{ .role = "user", .content = "Hello world" };
-
-    // define tools
-    const readFileTool = AgentTool{
-        .type = "function",
-        .function = .{
-            .name = "read_file",
-            .description = "Read the contents of a file",
-            .parameters = .{
-                .type = "object",
-                .properties = &.{
-                    .{ .name = "path", .type = "string", .description = "The file path to read" },
-                },
-                .required = &.{"path"},
-            },
-        },
-    };
-
-    const writeFileTool = AgentTool{
-        .type = "function",
-        .function = .{
-            .name = "write_file",
-            .description = "Write content to a file",
-            .parameters = .{
-                .type = "object",
-                .properties = &.{
-                    .{ .name = "path", .type = "string", .description = "The file path to write" },
-                    .{ .name = "content", .type = "string", .description = "The content to write" },
-                },
-                .required = &.{ "path", "content" },
-            },
-        },
-    };
-
-    const params = AgentCall{
-        .messages = &.{ msgSystem, msgUser },
-        .tools = &.{ readFileTool, writeFileTool },
-    };
-
-    const json_body = try agent.buildJsonRequest(params);
-    defer allocator.free(json_body);
-
-    // expected JSON with tools array
-    const expectedString =
-        \\{"model":"glm-5","messages":[{"role":"system","content":"You are a helpful assistant"},{"role":"user","content":"Hello world"}],"temperature":0.6000000238418579,"max_tokens":10000,"tools":[{"type":"function","function":{"name":"read_file","description":"Read the contents of a file","parameters":{"type":"object","properties":{"path":{"type":"string","description":"The file path to read"}},"required":["path"]}}},{"type":"function","function":{"name":"write_file","description":"Write content to a file","parameters":{"type":"object","properties":{"path":{"type":"string","description":"The file path to write"},"content":{"type":"string","description":"The content to write"}},"required":["path","content"]}}}],"tool_choice":"auto"}
-    ;
-
-    try std.testing.expectEqualSlices(u8, json_body, expectedString);
-}
-

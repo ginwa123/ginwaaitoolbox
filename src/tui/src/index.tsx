@@ -2,32 +2,42 @@ import { TextAttributes } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createSignal, onMount } from "solid-js";
 import { sendIpcMessage } from "./ipc";
+import { logStartup, logIpcSend, logIpcReceive, logError } from "./logger";
 
 render(() => {
   const [input, setInput] = createSignal("");
   const [submitted, setSubmitted] = createSignal("");
-  let inputRef: any;
+  const [debug, setDebug] = createSignal("");
 
   onMount(() => {
-    inputRef?.focus();
+    logStartup();
   });
 
-  const handleSubmit = async () => {
+  const handleInput = (value: string) => {
+    setDebug("onInput: " + value);
+    setInput(value);
+  };
+
+  const handleSubmit = () => {
+    setDebug("onSubmit triggered! Input: " + input());
     const msg = input();
-    if (msg.len == 0) return;
+    if (!msg || msg.len == 0) return;
     
     setSubmitted(msg);
     setInput("");
+    setDebug("Sending: " + msg);
+    logIpcSend(msg);
     
-    try {
-      const response = await sendIpcMessage({
-        command_type: "agent_ask",
-        message: msg,
-      });
-      console.log("Response:", response);
-    } catch (err) {
-      console.error("Failed to send message:", err);
-    }
+    sendIpcMessage({
+      command_type: "agent_ask",
+      message: msg,
+    }).then((response) => {
+      setDebug("Response: " + response);
+      logIpcReceive(response);
+    }).catch((err) => {
+      setDebug("Error: " + err);
+      logError("IPC request failed", err);
+    });
   };
 
   return (
@@ -36,19 +46,27 @@ render(() => {
         <ascii_font font="tiny" text="OpenTUI" />
       </box>
       <box flexGrow={1} />
-      <box flexDirection="row" alignItems="center" marginBottom={1} flexGrow={1} width="100%">
-        <text attributes={TextAttributes.DIM}>Enter message: </text>
-        <input
-          ref={inputRef}
-          value={input()}
-          onInput={(e) => setInput(e.target.value)}
-          onSubmit={handleSubmit}
-          placeholder="Type something..."
-          width={50}
-        />
+      <box flexDirection="column" marginBottom={1}>
+        <box flexDirection="row" alignItems="center">
+          <text attributes={TextAttributes.DIM}>Enter message: </text>
+          <textarea
+            value={input()}
+            focused={true}
+            onInput={(e: any) => handleInput(e.target.value)}
+            onSubmit={handleSubmit}
+            placeholder="Type message..."
+            width={50}
+            height={3}
+          />
+        </box>
+        {debug() && (
+          <box marginTop={1}>
+            <text>{debug()}</text>
+          </box>
+        )}
         {submitted() && (
-          <box marginLeft={1}>
-            <text>Submitted: {submitted()}</text>
+          <box marginTop={1}>
+            <text>Sent: {submitted()}</text>
           </box>
         )}
       </box>

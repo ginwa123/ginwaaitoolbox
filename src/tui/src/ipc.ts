@@ -1,9 +1,7 @@
 const SOCKET_PATH = "/tmp/agent.sock";
 
 export async function sendIpcMessage(message: object): Promise<string> {
-  const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  
   const data = JSON.stringify(message);
   
   return new Promise((resolve) => {
@@ -24,12 +22,13 @@ export async function sendIpcMessage(message: object): Promise<string> {
           }
         },
         error(socket, error) {
-          console.error("Socket error:", error);
           resolve("");
         },
       },
     });
     
-    socket.write(data);
+    socket.write(data).then(() => {
+      socket.end();
+    });
   });
 }
