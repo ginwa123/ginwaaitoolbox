@@ -84,6 +84,15 @@ pub const AgentCall = struct {
     messages: []const AgentMessage,
 };
 
+pub const AgentLogger = *const fn (level: std.log.Level, message: []const u8) void;
+
+pub const HttpOptions = struct {
+    connect_timeout_ms: u32 = 30000,
+    read_timeout_ms: u32 = 60000,
+    follow_redirects: bool = true,
+    max_redirects: u32 = 3,
+};
+
 pub const Agent = struct {
     name: []const u8 = "",
     apiKey: []const u8 = "",
@@ -93,6 +102,8 @@ pub const Agent = struct {
     maxTokens: usize = 10000,
     httpClient: std.http.Client,
     allocator: std.mem.Allocator,
+    logger: ?AgentLogger = null,
+    httpOptions: HttpOptions = .{},
 
     pub const CallResponse = struct {
         allocator: std.mem.Allocator,
@@ -108,6 +119,19 @@ pub const Agent = struct {
 
     pub fn init(allocator: std.mem.Allocator) !Agent {
         return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator } };
+    }
+
+    pub fn logMsg(self: Agent, level: std.log.Level, message: []const u8) void {
+        if (self.logger) |logger| {
+            logger(level, message);
+        } else {
+            switch (level) {
+                .err => std.debug.print("[ERROR] {s}\n", .{message}),
+                .warn => std.debug.print("[WARN] {s}\n", .{message}),
+                .info => std.debug.print("[INFO] {s}\n", .{message}),
+                .debug => std.debug.print("[DEBUG] {s}\n", .{message}),
+            }
+        }
     }
 
     pub fn buildJsonRequest(self: Agent, params: AgentCall) ![]const u8 {
@@ -200,46 +224,79 @@ pub const Agent = struct {
         return result;
     }
 
-    pub fn call(self: *Agent, params: AgentCall) !CallResponse {
+    pub const CallError = error{
+        BuildRequestFailed,
+        InvalidUri,
+        AuthFailed,
+        HttpRequestFailed,
+        SendBodyFailed,
+        ReceiveFailed,
+        ParseJsonFailed,
+        ApiError,
+        NoChoices,
+        AllocFailed,
+        WriteFailed,
+        OutOfMemory,
+    };
+
+    pub fn call(self: *Agent, params: AgentCall) CallError!CallResponse {
         const json_body = try self.buildJsonRequest(params);
         defer self.allocator.free(json_body);
 
         const uri_str = try std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" });
         defer self.allocator.free(uri_str);
-        const uri = try std.Uri.parse(uri_str);
+        const uri = std.Uri.parse(uri_str) catch {
+            self.logMsg(.err, "Invalid URI");
+            return error.InvalidUri;
+        };
         const auth_value = try std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey });
         defer self.allocator.free(auth_value);
-        var req = try self.httpClient.request(.POST, uri, .{
+        var req = self.httpClient.request(.POST, uri, .{
             .version = .@"HTTP/1.1",
             .headers = .{
                 .authorization = .{ .override = auth_value },
                 .content_type = .{ .override = "application/json" },
                 .accept_encoding = .{ .override = "identity" },
             },
-        });
+        }) catch |err| {
+            self.logMsg(.err, @errorName(err));
+            return error.HttpRequestFailed;
+        };
         defer req.deinit();
 
-        try req.sendBodyComplete(@constCast(json_body));
+        req.sendBodyComplete(@constCast(json_body)) catch |err| {
+            self.logMsg(.err, @errorName(err));
+            return error.SendBodyFailed;
+        };
         var redirect_buffer: [1024]u8 = undefined;
         var transfer_buffer: [4096]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
+        var response = req.receiveHead(&redirect_buffer) catch |err| {
+            self.logMsg(.err, @errorName(err));
+            return error.ReceiveFailed;
+        };
 
-        const body = try response.reader(transfer_buffer[0..]).allocRemaining(self.allocator, .unlimited);
+        const body = response.reader(transfer_buffer[0..]).allocRemaining(self.allocator, .unlimited) catch |err| {
+            self.logMsg(.err, @errorName(err));
+            return error.ReceiveFailed;
+        };
         defer self.allocator.free(body);
 
         const parsed = json.parseFromSlice(json.Value, self.allocator, body, .{}) catch |err| {
-            std.log.err("Failed to parse JSON response: {s}\nBody: {s}", .{ @errorName(err), body });
-            return err;
+            const msg = std.fmt.allocPrint(self.allocator, "Failed to parse JSON response: {s}\nBody: {s}", .{ @errorName(err), body }) catch "error";
+            self.logMsg(.err, msg);
+            return error.ParseJsonFailed;
         };
         defer parsed.deinit();
 
         const root = parsed.value;
         if (root.object.get("error")) |_| {
-            std.log.err("API error: {s}", .{body});
+            const msg = std.fmt.allocPrint(self.allocator, "API error: {s}", .{body}) catch "error";
+            self.logMsg(.err, msg);
             return error.ApiError;
         }
         const choices = root.object.get("choices") orelse {
-            std.log.err("No choices in response: {s}", .{body});
+            const msg = std.fmt.allocPrint(self.allocator, "No choices in response: {s}", .{body}) catch "error";
+            self.logMsg(.err, msg);
             return error.NoChoices;
         };
         const first_choice = choices.array.items[0];
@@ -250,7 +307,7 @@ pub const Agent = struct {
 
         var tool_calls: ?[]ToolCall = null;
         if (tool_calls_val) |tc| {
-            var calls: []ToolCall = try self.allocator.alloc(ToolCall, tc.array.items.len);
+            var calls = try self.allocator.alloc(ToolCall, tc.array.items.len);
             for (tc.array.items, 0..) |tc_item, i| {
                 const tc_obj = tc_item.object;
                 const id = tc_obj.get("id").?.string;
@@ -264,9 +321,14 @@ pub const Agent = struct {
 
         const finish_reason = FinishReason.fromStr(if (finish_reason_val) |fr| fr.string else null);
 
+        var content_copy: ?[]const u8 = null;
+        if (content) |c| {
+            content_copy = try self.allocator.dupe(u8, c.string);
+        }
+
         return .{
             .allocator = self.allocator,
-            .content = if (content) |c| try self.allocator.dupe(u8, c.string) else null,
+            .content = content_copy,
             .tool_calls = tool_calls,
             .finish_reason = finish_reason,
         };

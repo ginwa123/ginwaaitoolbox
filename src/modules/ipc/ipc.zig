@@ -49,6 +49,20 @@ pub const IpcServer = struct {
         }
     }
 
+    fn handleConnection(self: *Self, conn_fd: std.posix.fd_t) void {
+        defer std.posix.close(conn_fd);
+
+        var buffer: [4096]u8 = undefined;
+        const n = std.posix.read(conn_fd, &buffer) catch {
+            return;
+        };
+
+        if (n == 0) return;
+
+        self.handleMessage(buffer[0..n]);
+        _ = std.posix.write(conn_fd, "ok") catch {};
+    }
+
     fn runUnix(self: *Self) !void {
         const socket_fd = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
         defer std.posix.close(socket_fd);
@@ -73,14 +87,9 @@ pub const IpcServer = struct {
 
         while (true) {
             const conn_fd = try std.posix.accept(socket_fd, null, null, 0);
-            defer std.posix.close(conn_fd);
-
-            var buffer: [1024]u8 = undefined;
-            const n = try std.posix.read(conn_fd, &buffer);
-
-            self.handleMessage(buffer[0..n]);
-
-            _ = try std.posix.write(conn_fd, "ok");
+            _ = std.Thread.spawn(.{}, handleConnection, .{ self, conn_fd }) catch {
+                std.posix.close(conn_fd);
+            };
         }
     }
 

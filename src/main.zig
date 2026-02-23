@@ -20,6 +20,7 @@ test {
 
 pub const IPCMessage = struct {
     command_type: []const u8,
+    message: []const u8,
 };
 
 pub fn parseMessage(comptime T: type, allocator: std.mem.Allocator, data: []const u8) !T {
@@ -58,15 +59,16 @@ pub fn main() !void {
     try dbSqlite.init(":memory:");
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
+    defer parentAllocator.destroy(ctxParent);
     ctxParent.* = ai_workflow_mod.ContextIPCTui{ .db = &dbSqlite };
 
     var server = ipc.IpcServer.init(parentAllocator, ctxParent);
 
     server.messageIncoming(struct {
         fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
+            std.debug.print("message incoming {s}\n", .{data});
+
             const ctxTui = @as(*ai_workflow_mod.ContextIPCTui, @ptrCast(@alignCast(ctx)));
-            const db = ctxTui.db;
-            _ = db;
 
             const t = parseMessage(IPCMessage, allocator, data) catch |err| {
                 std.debug.print("parse error: {}\n", .{err});
@@ -80,6 +82,7 @@ pub fn main() !void {
                     .api_key = g_api_key,
                     .model = g_model,
                     .base_url = g_base_url,
+                    .message = t.message,
                 };
                 workflowAsk.run() catch |err| std.debug.print("workflow error: {}\n", .{err});
                 // defer workflowAsk.deinit();

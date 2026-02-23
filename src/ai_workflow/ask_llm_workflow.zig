@@ -1,10 +1,12 @@
 const std = @import("std");
 const agent = @import("../modules/agent/agent.zig");
+const prompt = @import("../modules/agent/prompt.zig");
 const context = @import("models.zig").ContextIPCTui;
 
 pub const AskLLMWorkflow = struct {
     ctx: *context,
     allocator: std.mem.Allocator,
+    message: []const u8 = "",
 
     api_key: []const u8 = "",
     model: []const u8 = "",
@@ -20,29 +22,36 @@ pub const AskLLMWorkflow = struct {
     pub fn run(self: *AskLLMWorkflow) !void {
         const systemMessage = agent.AgentMessage{
             .role = .system,
-            .content = "You are a helpful assistant.",
+            .content = prompt.AgenticCoding,
         };
 
         const userMessage = agent.AgentMessage{
             .role = .user,
-            .content = "Hello world",
+            .content = self.message,
         };
 
         const messages = &[_]agent.AgentMessage{ systemMessage, userMessage };
 
+        var retryCount: usize = 0;
         while (true) {
+            if (retryCount > 3) return error.TooManyRetries;
             var agenttt = try agent.Agent.init(self.allocator);
             defer agenttt.deinit();
 
             agenttt.apiKey = self.api_key;
             agenttt.model = self.model;
             agenttt.baseUrl = self.base_url;
+            // agenttt.logger = agent.AgentLogger{ .logMsg = self.logMsg };
 
             const agetntCall = agent.AgentCall{
                 .tools = &.{},
                 .messages = messages,
             };
-            const response = try agenttt.call(agetntCall);
+            const response = agenttt.call(agetntCall) catch |err| {
+                retryCount += 1;
+                std.debug.print("Error calling agent: {s}\n", .{@errorName(err)});
+                continue;
+            };
             defer response.deinit();
 
             if (response.finish_reason) |finish_reason| {
@@ -63,6 +72,8 @@ pub const AskLLMWorkflow = struct {
                 std.debug.print("BREAK LLM", .{});
                 break;
             }
+
+            retryCount = 0;
         }
     }
 
