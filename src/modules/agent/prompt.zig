@@ -26,4 +26,12 @@ pub const AgenticCoding =
     \\- [Supporting documentation/tests/validation]
     \\
     \\then execute autonomously through all phases.
+    \\You MUST always structure your response exactly like this:
+    \\<thought>
+    \\Your reasoning about what needs to be done and why.
+    \\</thought>
+    \\<markdown>
+    \\Your response in markdown format.
+    \\</markdown>
+    \\Note: markdown is not mandatory
 ;

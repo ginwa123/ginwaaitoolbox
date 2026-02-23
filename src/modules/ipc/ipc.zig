@@ -3,7 +3,7 @@ const c = @cImport({
     @cInclude("sys/un.h");
 });
 
-pub const MessageHandler = *const fn (allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void;
+pub const MessageHandler = *const fn (allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque, conn_fd: std.posix.fd_t) void;
 
 pub const IpcServer = struct {
     const Self = @This();
@@ -41,11 +41,11 @@ pub const IpcServer = struct {
         }
     }
 
-    fn handleMessage(self: *Self, data: []const u8) void {
+    fn handleMessage(self: *Self, data: []const u8, conn_fd: std.posix.fd_t) void {
         if (self.message_handler) |handler| {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
-            handler(arena.allocator(), data, self.ctx);
+            handler(arena.allocator(), data, self.ctx, conn_fd);
         }
     }
 
@@ -59,8 +59,7 @@ pub const IpcServer = struct {
 
         if (n == 0) return;
 
-        self.handleMessage(buffer[0..n]);
-        _ = std.posix.write(conn_fd, "ok") catch {};
+        self.handleMessage(buffer[0..n], conn_fd);
     }
 
     fn runUnix(self: *Self) !void {
@@ -115,7 +114,7 @@ pub const IpcServer = struct {
             var bytes_read: u32 = undefined;
             try std.os.windows.ReadFile(pipe_fd, &buffer, null, &bytes_read, null);
 
-            self.handleMessage(buffer[0..bytes_read]);
+            self.handleMessage(buffer[0..bytes_read], -1);
 
             var bytes_written: u32 = undefined;
             try std.os.windows.WriteFile(pipe_fd, "ok", null, &bytes_written, null);

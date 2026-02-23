@@ -12,6 +12,8 @@ pub const AskLLMWorkflow = struct {
     model: []const u8 = "",
     base_url: []const u8 = "",
 
+    conn_fd: std.posix.fd_t = -1,
+
     pub fn init(allocator: std.mem.Allocator) AskLLMWorkflow {
         return AskLLMWorkflow{
             .allocator = allocator,
@@ -54,6 +56,11 @@ pub const AskLLMWorkflow = struct {
             };
             defer response.deinit();
 
+            if (response.content) |c| {
+                std.debug.print("Sending message: {s}\n", .{c});
+                _ = self.sendMessage(c);
+            }
+
             if (response.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
                     std.debug.print("FINISH REASON STOP", .{});
@@ -75,6 +82,11 @@ pub const AskLLMWorkflow = struct {
 
             retryCount = 0;
         }
+    }
+
+    pub fn sendMessage(self: *AskLLMWorkflow, msg: []const u8) void {
+        if (self.conn_fd < 0) return;
+        _ = std.posix.write(self.conn_fd, msg) catch {};
     }
 
     pub fn deinit(self: *AskLLMWorkflow) void {

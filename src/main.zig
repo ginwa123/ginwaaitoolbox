@@ -65,7 +65,7 @@ pub fn main() !void {
     var server = ipc.IpcServer.init(parentAllocator, ctxParent);
 
     server.messageIncoming(struct {
-        fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
+        fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque, conn_fd: std.posix.fd_t) void {
             std.debug.print("message incoming {s}\n", .{data});
 
             const ctxTui = @as(*ai_workflow_mod.ContextIPCTui, @ptrCast(@alignCast(ctx)));
@@ -79,6 +79,7 @@ pub fn main() !void {
                 var workflowAsk = ai_workflow.AskLLMWorkflow{
                     .allocator = allocator,
                     .ctx = ctxTui,
+                    .conn_fd = conn_fd,
                     .api_key = g_api_key,
                     .model = g_model,
                     .base_url = g_base_url,
