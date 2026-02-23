@@ -28,7 +28,7 @@ pub const AskLLMWorkflow = struct {
             .content = "Hello world",
         };
 
-        const messages = [_]agent.AgentMessage{ systemMessage, userMessage };
+        const messages = &[_]agent.AgentMessage{ systemMessage, userMessage };
 
         while (true) {
             var agenttt = try agent.Agent.init(self.allocator);

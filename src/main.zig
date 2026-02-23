@@ -74,14 +74,14 @@ pub fn main() !void {
             };
 
             if (std.mem.eql(u8, t.command_type, "agent_ask")) {
-                const workflowAsk = ai_workflow.AskLLMWorkflow{
+                var workflowAsk = ai_workflow.AskLLMWorkflow{
                     .allocator = allocator,
                     .ctx = ctxTui,
                     .api_key = g_api_key,
                     .model = g_model,
                     .base_url = g_base_url,
                 };
-                workflowAsk.run();
+                workflowAsk.run() catch |err| std.debug.print("workflow error: {}\n", .{err});
                 // defer workflowAsk.deinit();
                 // var agenttt = try agent.Agent.init(allocator);
                 // defer agenttt.deinit();
