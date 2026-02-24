@@ -2,6 +2,26 @@ import { connect } from "net";
 
 const SOCKET_PATH = "/tmp/agent.sock";
 
+let currentSessionId: string = generateSessionId();
+
+function generateSessionId(): string {
+  return `session-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+export function getSessionId(): string {
+  return currentSessionId;
+}
+
+export function newSession(): void {
+  currentSessionId = generateSessionId();
+}
+
+export interface IPCMessage {
+  command_type: string;
+  session_id?: string;
+  message: string;
+}
+
 export interface ToolCall {
   id: string;
   type: string;
@@ -73,8 +93,13 @@ export function parseAndFormatContent(content: string): { thought?: string; mark
   return { plain: content };
 }
 
-export async function sendIpcMessage(message: object): Promise<string> {
-  const data = JSON.stringify(message);
+export async function sendIpcMessage(message: IPCMessage): Promise<string> {
+  const fullMessage = {
+    command_type: message.command_type,
+    session_id: message.session_id ?? currentSessionId,
+    message: message.message,
+  };
+  const data = JSON.stringify(fullMessage);
   
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
