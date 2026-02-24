@@ -1,5 +1,27 @@
 const std = @import("std");
 
+// Helper function to create platform-specific executables
+fn createPlatformExe(
+    b: *std.Build,
+    mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+) *std.Build.Step.Compile {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "tree1", .module = mod }},
+        }),
+    });
+    exe.linkSystemLibrary("sqlite3");
+    exe.linkLibC();
+    return exe;
+}
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -159,4 +181,50 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+
+    // Platform-specific build steps
+    // Linux x86_64 - uses host target to find system sqlite3
+    const linux_step = b.step("install:linux", "Build for Linux x86_64");
+    const linux_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .gnu,
+    });
+    const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "tree1-linux-x86_64");
+    // Add common library paths for sqlite3
+    linux_exe.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    linux_exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    const install_linux = b.addInstallArtifact(linux_exe, .{});
+    linux_step.dependOn(&install_linux.step);
+
+    // Windows x86_64 (GNU ABI for MinGW compatibility)
+    const windows_step = b.step("install:windows", "Build for Windows x86_64");
+    const windows_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+        .abi = .gnu,
+    });
+    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "tree1-windows-x86_64.exe");
+    const install_windows = b.addInstallArtifact(windows_exe, .{});
+    windows_step.dependOn(&install_windows.step);
+
+    // macOS x86_64
+    const macos_step = b.step("install:macos", "Build for macOS x86_64");
+    const macos_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .macos,
+    });
+    const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "tree1-macos-x86_64");
+    const install_macos = b.addInstallArtifact(macos_exe, .{});
+    macos_step.dependOn(&install_macos.step);
+
+    // macOS aarch64 (Apple Silicon)
+    const macos_arm_step = b.step("install:macos-arm", "Build for macOS aarch64 (Apple Silicon)");
+    const macos_arm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .macos,
+    });
+    const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "tree1-macos-aarch64");
+    const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
+    macos_arm_step.dependOn(&install_macos_arm.step);
 }

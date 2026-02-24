@@ -93,6 +93,16 @@ pub const FinishReason = enum {
         if (std.mem.eql(u8, str, "content_filter")) return .content_filter;
         return null;
     }
+
+    pub fn toStr(self: FinishReason) []const u8 {
+        return switch (self) {
+            .stop => "stop",
+            .length => "length",
+            .tool_calls => "tool_calls",
+            .content_filter => "content_filter",
+            .null => "null",
+        };
+    }
 };
 
 pub const AgentCall = struct {
@@ -253,8 +263,12 @@ pub const Agent = struct {
     };
 
     pub fn call(self: *Agent, params: AgentCall) CallError!CallResponse {
+        self.logMsg(.info, "Building JSON request...");
         const json_body = try self.buildJsonRequest(params);
+        self.logMsg(.info, "JSON request built, sending...");
         defer self.allocator.free(json_body);
+
+        self.logMsg(.debug, json_body);
 
         const uri_str = try std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" });
         defer self.allocator.free(uri_str);
@@ -304,6 +318,8 @@ pub const Agent = struct {
             return error.ReceiveFailed;
         };
         defer self.allocator.free(body);
+        self.logMsg(.info, "Response received, parsing JSON...");
+        self.logMsg(.debug, "JSON RESPONSE BODY: ");
 
         const parsed = json.parseFromSlice(json.Value, self.allocator, body, .{}) catch |err| {
             const msg = std.fmt.allocPrint(self.allocator, "Failed to parse JSON response: {s}\nBody: {s}", .{ @errorName(err), body }) catch "error";
@@ -328,6 +344,12 @@ pub const Agent = struct {
         const content = message.object.get("content");
         const tool_calls_val = message.object.get("tool_calls");
         const finish_reason_val = first_choice.object.get("finish_reason");
+
+        if (content != null) {
+            self.logMsg(.info, "Response content received");
+        } else if (tool_calls_val != null) {
+            self.logMsg(.info, "Response contains tool_calls");
+        }
 
         var tool_calls: ?[]ToolCall = null;
         if (tool_calls_val) |tc| {

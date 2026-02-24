@@ -1,7 +1,14 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("sys/un.h");
-});
+const builtin = @import("builtin");
+
+// POSIX sockaddr_un - only needed on non-Windows
+const sockaddr_un = if (builtin.os.tag != .windows)
+    extern struct {
+        sun_family: c_ushort,
+        sun_path: [108]u8,
+    }
+else
+    void;
 
 pub const MessageHandler = *const fn (allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque, conn_fd: std.posix.fd_t) void;
 
@@ -69,12 +76,12 @@ pub const IpcServer = struct {
         std.fs.cwd().deleteFile(self.socket_path) catch {};
 
         const path_len = self.socket_path.len;
-        const addr_len = @sizeOf(c.sockaddr_un);
+        const addr_len = @sizeOf(sockaddr_un);
         const bytes = try self.allocator.alloc(u8, addr_len);
         defer self.allocator.free(bytes);
 
-        const addr = @as(*c.sockaddr_un, @ptrCast(@alignCast(bytes.ptr)));
-        addr.* = std.mem.zeroInit(c.sockaddr_un, .{});
+        const addr = @as(*sockaddr_un, @ptrCast(@alignCast(bytes.ptr)));
+        addr.* = std.mem.zeroInit(sockaddr_un, .{});
         addr.sun_family = std.posix.AF.UNIX;
         @memcpy(addr.sun_path[0..path_len], self.socket_path);
         addr.sun_path[path_len] = 0;

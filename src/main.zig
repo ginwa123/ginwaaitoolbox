@@ -6,6 +6,7 @@ const agent = @import("modules/agent/agent.zig");
 const ai_workflow = @import("ai_workflow/ask_llm_workflow.zig");
 const ai_workflow_mod = @import("ai_workflow/models.zig");
 const sqlite = @import("modules/databases/sqlite/sqlite.zig");
+const migrations = @import("modules/databases/sqlite/migrations.zig");
 
 var g_api_key: []const u8 = "";
 var g_model: []const u8 = "";
@@ -13,14 +14,18 @@ var g_base_url: []const u8 = "";
 
 test {
     _ = @import("modules/databases/sqlite/sqlite_test.zig");
+    _ = @import("modules/databases/sqlite/migrations_test.zig");
     _ = @import("modules/agent/tools/bash_test.zig");
     _ = @import("modules/agent/agent_test.zig");
     _ = @import("modules/ipc/ipc_test.zig");
+    _ = @import("ai_workflow/ask_llm_workflow_test.zig");
 }
 
 pub const IPCMessage = struct {
-    command_type: []const u8,
-    message: []const u8,
+    command_type: []const u8 = "",
+
+    session_id: []const u8 = "",
+    message: []const u8 = "",
 };
 
 pub fn parseMessage(comptime T: type, allocator: std.mem.Allocator, data: []const u8) !T {
@@ -58,6 +63,20 @@ pub fn main() !void {
     defer dbSqlite.deinit();
     try dbSqlite.init(":memory:");
 
+    var migrationManager = migrations.MigrationManager.init(parentAllocator, &dbSqlite);
+    defer migrationManager.deinit();
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try migrationManager.runMigrations();
+
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
     defer parentAllocator.destroy(ctxParent);
     ctxParent.* = ai_workflow_mod.ContextIPCTui{ .db = &dbSqlite };
@@ -77,13 +96,14 @@ pub fn main() !void {
 
             if (std.mem.eql(u8, t.command_type, "agent_ask")) {
                 var workflowAsk = ai_workflow.AskLLMWorkflow{
+                    .db = ctxTui.db,
                     .allocator = allocator,
-                    .ctx = ctxTui,
                     .conn_fd = conn_fd,
                     .api_key = g_api_key,
                     .model = g_model,
                     .base_url = g_base_url,
                     .message = t.message,
+                    .session_id = t.session_id,
                 };
                 workflowAsk.run() catch |err| std.debug.print("workflow error: {}\n", .{err});
                 // defer workflowAsk.deinit();
