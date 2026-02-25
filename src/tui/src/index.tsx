@@ -5,17 +5,20 @@ import {
   sendIpcMessage,
   parseAgentResponse,
   parseAndFormatContent,
+  parseToolResult,
   type AgentResponse,
   type ToolCall
 } from "./ipc";
 import { logStartup, logIpcSend, logIpcReceive, logError, log } from "./logger";
 
 interface ChatMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   content: string;
   thought?: string;
   markdown?: string;
   toolCalls?: ToolCall[];
+  toolResult?: string;
+  toolName?: string;
   finishReason?: string;
 }
 
@@ -78,8 +81,27 @@ try {
         logIpcReceive(rawResponse);
         setDebug("Response: " + rawResponse);
 
+        // Check if it's a tool result
+        const toolResult = parseToolResult(rawResponse);
+        if (toolResult) {
+          setMessages((prev) => [...prev, {
+            role: "tool",
+            content: toolResult.result,
+            toolName: toolResult.tool_name,
+          }]);
+          setExpanded((prev) => {
+            const newState = { ...prev };
+            newState[Object.keys(newState).length] = { thought: true, markdown: true };
+            return newState;
+          });
+          setIsLoading(false);
+          return;
+        }
+
         const parsed = parseAgentResponse(rawResponse);
         const assistantMsg: ChatMessage = { role: "assistant", content: "" };
+
+        log("Parsed response: " + (parsed ? "valid" : "null"));
 
         if (parsed && parsed.choices && parsed.choices.length > 0) {
           const choice = parsed.choices[0];
@@ -101,6 +123,7 @@ try {
         }
 
         setMessages((prev) => [...prev, assistantMsg]);
+        log("Added message: role=" + assistantMsg.role + ", content=" + (assistantMsg.content?.slice(0, 50) || "empty"));
         setExpanded((prev) => {
           const newState = { ...prev };
           newState[Object.keys(newState).length] = { thought: true, markdown: true };
@@ -131,12 +154,19 @@ try {
             <For each={messages()}>
               {(msg, idx) => (
                 <box flexDirection="column" marginBottom={1}>
-                  <text attributes={TextAttributes.BOLD} color={msg.role === "user" ? "green" : "blue"}>
-                    {msg.role === "user" ? "You:" : "Assistant:"}
+                  <text attributes={TextAttributes.BOLD} color={msg.role === "user" ? "green" : msg.role === "tool" ? "magenta" : "blue"}>
+                    {msg.role === "user" ? "You:" : msg.role === "tool" ? "Tool Result:" : "Assistant:"}
                   </text>
                   
                   {msg.role === "user" && (
-                    <text>{msg.content}</text>
+                    <text selectable={true}>{msg.content}</text>
+                  )}
+
+                  {msg.role === "tool" && (
+                    <box flexDirection="column" marginLeft={1}>
+                      <text color="cyan" selectable={true}>Tool: {msg.toolName}</text>
+                      <text selectable={true}>{msg.content}</text>
+                    </box>
                   )}
 
                   {msg.role === "assistant" && (
@@ -150,7 +180,7 @@ try {
                             {isExpanded(idx(), "thought") ? "▼ Thought" : "▶ Thought"}
                           </text>
                           {isExpanded(idx(), "thought") && (
-                            <text attributes={TextAttributes.DIM}>{msg.thought}</text>
+                            <text attributes={TextAttributes.DIM} selectable={true}>{msg.thought}</text>
                           )}
                         </box>
                       )}
@@ -163,14 +193,14 @@ try {
                             {isExpanded(idx(), "markdown") ? "▼ Markdown" : "▶ Markdown"}
                           </text>
                           {isExpanded(idx(), "markdown") && (
-                            <text>{msg.markdown}</text>
+                            <text selectable={true}>{msg.markdown}</text>
                           )}
                         </box>
                       )}
 
                       {msg.content && !msg.markdown && (
                         <box flexDirection="column" marginLeft={1}>
-                          <text>{msg.content}</text>
+                          <text selectable={true}>{msg.content}</text>
                         </box>
                       )}
 

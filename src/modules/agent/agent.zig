@@ -70,6 +70,19 @@ pub const AgentMessage = struct {
     content: ?[]const u8,
     tool_calls: ?[]ToolCall = null,
     tool_call_id: ?[]const u8 = null,
+
+    pub fn deinit(self: *const AgentMessage, allocator: std.mem.Allocator) void {
+        if (self.content) |c| allocator.free(c);
+        if (self.tool_call_id) |id| allocator.free(id);
+        if (self.tool_calls) |tc| {
+            for (tc) |*tool_call| {
+                allocator.free(tool_call.id);
+                allocator.free(tool_call.function.name);
+                allocator.free(tool_call.function.arguments);
+            }
+            allocator.free(tc);
+        }
+    }
 };
 
 pub const FinishReason = enum {
@@ -167,6 +180,10 @@ pub const Agent = struct {
             try user_msgs[i].put("role", .{ .string = msg.role.toStr() });
             if (msg.content) |c| {
                 try user_msgs[i].put("content", .{ .string = c });
+            }
+            // Add tool_call_id for tool result messages
+            if (msg.tool_call_id) |id| {
+                try user_msgs[i].put("tool_call_id", .{ .string = id });
             }
             try messages_arr.append(.{ .object = user_msgs[i] });
         }
@@ -319,7 +336,7 @@ pub const Agent = struct {
         };
         defer self.allocator.free(body);
         self.logMsg(.info, "Response received, parsing JSON...");
-        self.logMsg(.debug, "JSON RESPONSE BODY: ");
+        self.logMsg(.debug, body);
 
         const parsed = json.parseFromSlice(json.Value, self.allocator, body, .{}) catch |err| {
             const msg = std.fmt.allocPrint(self.allocator, "Failed to parse JSON response: {s}\nBody: {s}", .{ @errorName(err), body }) catch "error";
@@ -327,6 +344,7 @@ pub const Agent = struct {
             return error.ParseJsonFailed;
         };
         defer parsed.deinit();
+        self.logMsg(.debug, body);
 
         const root = parsed.value;
         if (root.object.get("error")) |_| {

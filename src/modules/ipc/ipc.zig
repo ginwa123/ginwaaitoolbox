@@ -67,6 +67,8 @@ pub const IpcServer = struct {
         if (n == 0) return;
 
         self.handleMessage(buffer[0..n], conn_fd);
+
+        std.posix.shutdown(conn_fd, .send) catch {};
     }
 
     fn runUnix(self: *Self) !void {

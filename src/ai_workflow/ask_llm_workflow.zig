@@ -4,6 +4,8 @@ const agent = @import("../modules/agent/agent.zig");
 const prompt = @import("../modules/agent/prompt.zig");
 const context = @import("models.zig").ContextIPCTui;
 const sqlite = @import("../modules/databases/sqlite/sqlite.zig");
+const bash_tool = @import("../modules/agent/tools/bash.zig");
+const tool_models = @import("../modules/agent/tools/models.zig");
 
 pub const AskLLMHistory = struct {
     id: []const u8,
@@ -48,45 +50,117 @@ pub const AskLLMWorkflow = struct {
         };
     }
 
-    fn sendResponse(self: *AskLLMWorkflow, response: agent.Agent.CallResponse) void {
+    fn escapeXml(self: *AskLLMWorkflow, content: []const u8) ![]u8 {
+        var escaped: std.ArrayList(u8) = .empty;
+        errdefer escaped.deinit(self.allocator);
+
+        var i: usize = 0;
+        while (i < content.len) {
+            if (i + 3 < content.len and content[i] == '&') {
+                if (std.mem.startsWith(u8, content[i..], "&lt;") or
+                    std.mem.startsWith(u8, content[i..], "&gt;") or
+                    std.mem.startsWith(u8, content[i..], "&amp;") or
+                    std.mem.startsWith(u8, content[i..], "&quot;") or
+                    std.mem.startsWith(u8, content[i..], "&apos;"))
+                {
+                    try escaped.appendSlice(self.allocator, content[i .. i + 1]);
+                    i += 1;
+                } else {
+                    try escaped.appendSlice(self.allocator, "&amp;");
+                    i += 1;
+                }
+            } else if (content[i] == '"') {
+                try escaped.appendSlice(self.allocator, "&quot;");
+                i += 1;
+            } else if (content[i] == '\'') {
+                try escaped.appendSlice(self.allocator, "&apos;");
+                i += 1;
+            } else {
+                try escaped.append(self.allocator, content[i]);
+                i += 1;
+            }
+        }
+        return try escaped.toOwnedSlice(self.allocator);
+    }
+
+    pub fn sendResponse(self: *AskLLMWorkflow, response: agent.Agent.CallResponse) void {
         if (self.conn_fd < 0) return;
 
-        var choices = self.allocator.alloc(agent.Choice, 1) catch return;
-        defer self.allocator.free(choices);
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
 
-        choices[0] = agent.Choice{
-            .index = 0,
-            .message = agent.Message{
-                .role = agent.Role.assistant.toStr(),
-                .content = response.content,
-                .tool_calls = response.tool_calls,
-            },
-            .finish_reason = response.finish_reason,
-        };
+        w.writeAll("<response><choices><choice><index>0</index><message><role>assistant</role>") catch return;
 
-        const agentResponse = agent.AgentResponse{
-            .choices = choices,
-        };
+        if (response.content) |content| {
+            const esc = self.escapeXml(content) catch return;
+            defer self.allocator.free(esc);
+            w.writeAll("<content>") catch return;
+            w.writeAll(esc) catch return;
+            w.writeAll("</content>") catch return;
+        }
 
-        var message_buffer_out = std.io.Writer.Allocating.init(self.allocator);
-        var stringifier = json.Stringify{
-            .writer = &message_buffer_out.writer,
-            .options = .{},
-        };
+        if (response.tool_calls) |tc| {
+            w.writeAll("<tool_calls>") catch return;
+            for (tc) |tci| {
+                w.writeAll("<tool_call id=\"") catch return;
+                w.writeAll(tci.id) catch return;
+                w.writeAll("\" type=\"function\"><function><name>") catch return;
+                w.writeAll(tci.function.name) catch return;
+                w.writeAll("</name><arguments>") catch return;
+                w.writeAll(tci.function.arguments) catch return;
+                w.writeAll("</arguments></function></tool_call>") catch return;
+            }
+            w.writeAll("</tool_calls>") catch return;
+        }
 
-        stringifier.write(agentResponse) catch {
-            message_buffer_out.deinit();
-            return;
-        };
+        w.writeAll("</message>") catch return;
 
-        const json_slice = message_buffer_out.toOwnedSlice() catch return;
-        defer self.allocator.free(json_slice);
+        if (response.finish_reason) |fr| {
+            w.writeAll("<finish_reason>") catch return;
+            w.writeAll(fr.toStr()) catch return;
+            w.writeAll("</finish_reason>") catch return;
+        }
 
-        _ = std.posix.write(self.conn_fd, json_slice) catch |err| {
+        w.writeAll("</choice></choices></response>") catch return;
+
+        std.debug.print("SEND RESPONSE XML: {s}\n", .{buf.items});
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
             if (err != error.BrokenPipe) {
                 std.debug.print("Send Response error {s}\n", .{@errorName(err)});
             }
         };
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
+    }
+
+    fn sendToolResult(self: *AskLLMWorkflow, result: []const u8, tool_call_id: []const u8, tool_name: []const u8) void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.writeAll("<tool_result><tool_call_id>") catch return;
+        w.writeAll(tool_call_id) catch return;
+        w.writeAll("</tool_call_id><tool_name>") catch return;
+        w.writeAll(tool_name) catch return;
+        w.writeAll("</tool_name><result>") catch return;
+
+        const esc = self.escapeXml(result) catch return;
+        defer self.allocator.free(esc);
+        w.writeAll(esc) catch return;
+
+        w.writeAll("</result></tool_result>") catch return;
+
+        std.debug.print("SEND TOOL RESULT XML: {s}\n", .{buf.items});
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
+            if (err != error.BrokenPipe) {
+                std.debug.print("Send Tool Result error {s}\n", .{@errorName(err)});
+            }
+        };
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
     pub fn buildMessages(self: *AskLLMWorkflow) ![]agent.AgentMessage {
@@ -120,7 +194,12 @@ pub const AskLLMWorkflow = struct {
     pub fn run(self: *AskLLMWorkflow) !void {
         self.saveMessageAsUser(self.message) catch |err| std.debug.print("saveMessageAsUser error: {s}\n", .{@errorName(err)});
 
-        const messages = try self.buildMessages();
+        // Use ArrayList for dynamic message appending during tool execution
+        var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
+        const initial_messages = try self.buildMessages();
+        try messages_list.appendSlice(self.allocator, initial_messages);
+
+        const tools: []const tool_models.AgentTool = &.{bash_tool.bashTool};
 
         var retryCount: usize = 0;
         while (true) {
@@ -133,8 +212,8 @@ pub const AskLLMWorkflow = struct {
             agenttt.baseUrl = self.base_url;
 
             const agetntCall = agent.AgentCall{
-                .tools = &.{},
-                .messages = messages,
+                .tools = tools,
+                .messages = messages_list.items,
             };
             const response = agenttt.call(agetntCall) catch |err| {
                 retryCount += 1;
@@ -159,8 +238,63 @@ pub const AskLLMWorkflow = struct {
                 } else if (finish_reason == .tool_calls) {
                     self.sendResponse(response);
                     self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
-                    std.debug.print("FINISH REASON TOOL CALLS", .{});
-                    break;
+                    std.debug.print("FINISH REASON TOOL CALLS - executing tools\n", .{});
+
+                    if (response.tool_calls) |tc| {
+                        // Add assistant message with tool_calls to history
+                        var assistant_tool_calls = try self.allocator.alloc(agent.ToolCall, tc.len);
+                        for (tc, 0..) |tool_call, i| {
+                            assistant_tool_calls[i] = .{
+                                .id = try self.allocator.dupe(u8, tool_call.id),
+                                .function = .{
+                                    .name = try self.allocator.dupe(u8, tool_call.function.name),
+                                    .arguments = try self.allocator.dupe(u8, tool_call.function.arguments),
+                                },
+                            };
+                        }
+
+                        const assistant_msg = agent.AgentMessage{
+                            .role = .assistant,
+                            .content = if (response.content) |c| try self.allocator.dupe(u8, c) else null,
+                            .tool_calls = assistant_tool_calls,
+                        };
+                        try messages_list.append(self.allocator, assistant_msg);
+
+                        // Execute each tool call and add tool result messages
+                        for (tc) |tool_call| {
+                            std.debug.print("Executing tool: {s}\n", .{tool_call.function.name});
+
+                            // Parse arguments JSON to BashInput
+                            const parsed = std.json.parseFromSlice(
+                                tool_models.BashInput,
+                                self.allocator,
+                                tool_call.function.arguments,
+                                .{ .allocate = .alloc_always },
+                            ) catch |err| {
+                                std.debug.print("Failed to parse tool arguments: {s}\n", .{@errorName(err)});
+                                continue;
+                            };
+                            defer parsed.deinit();
+
+                            // Execute bash command
+                            const result = bash_tool.executeBash(self.allocator, parsed.value) catch |err| blk: {
+                                std.debug.print("Error executing bash: {s}\n", .{@errorName(err)});
+                                break :blk "Error executing command";
+                            };
+
+                            // Create tool result message
+                            const tool_result_msg = agent.AgentMessage{
+                                .role = .tool,
+                                .content = result,
+                                .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                            };
+                            try messages_list.append(self.allocator, tool_result_msg);
+                            self.saveMessageAsTool(result, tool_call.id) catch |err| std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
+                            self.sendToolResult(result, tool_call.id, tool_call.function.name);
+                            std.debug.print("Tool result added to messages\n", .{});
+                        }
+                    }
+                    continue;
                 } else if (finish_reason == .content_filter) {
                     self.saveMessage(response, "assistant", toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
                     std.debug.print("FINISH REASON CONTENT FILTER", .{});
@@ -204,6 +338,20 @@ pub const AskLLMWorkflow = struct {
 
         const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         const sqlArgs = &.{ id, self.session_id, self.model, createdStr, content, "null", "user", "" };
+        try db.exec(self.allocator, sql, sqlArgs);
+    }
+
+    pub fn saveMessageAsTool(self: *AskLLMWorkflow, content: []const u8, tool_call_id: []const u8) !void {
+        const db = self.db;
+
+        const id = try std.fmt.allocPrint(self.allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
+        defer self.allocator.free(id);
+
+        const createdStr = try std.fmt.allocPrint(self.allocator, "{}", .{std.time.timestamp()});
+        defer self.allocator.free(createdStr);
+
+        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, content, "tool", "tool", tool_call_id };
         try db.exec(self.allocator, sql, sqlArgs);
     }
 
