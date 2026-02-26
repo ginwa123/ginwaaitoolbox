@@ -59,16 +59,16 @@ pub const IpcServer = struct {
     fn handleConnection(self: *Self, conn_fd: std.posix.fd_t) void {
         defer std.posix.close(conn_fd);
 
-        var buffer: [4096]u8 = undefined;
-        const n = std.posix.read(conn_fd, &buffer) catch {
-            return;
-        };
+        while (true) {
+            var buffer: [4096]u8 = undefined;
+            const n = std.posix.read(conn_fd, &buffer) catch {
+                return;
+            };
 
-        if (n == 0) return;
+            if (n == 0) return;
 
-        self.handleMessage(buffer[0..n], conn_fd);
-
-        std.posix.shutdown(conn_fd, .send) catch {};
+            self.handleMessage(buffer[0..n], conn_fd);
+        }
     }
 
     fn runUnix(self: *Self) !void {
