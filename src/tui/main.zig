@@ -35,11 +35,14 @@ fn sendMessage(socket_fd: std.posix.fd_t, session_id: []const u8, message: []con
     _ = try std.posix.write(socket_fd, json_buf.items);
 }
 
-fn readResponse(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator, timeout_ms: u32) ![]u8 {
-    var buffer = std.ArrayList(u8).empty;
-    errdefer buffer.deinit(allocator);
-    var buf: [16384]u8 = undefined;
+fn streamResponse(socket_fd: std.posix.fd_t, timeout_ms: u32) !void {
+    var buffer: [4096]u8 = undefined;
+    var buf_pos: usize = 0;
     const deadline = std.time.milliTimestamp() + timeout_ms;
+    var in_content = false;
+    var content_started = false;
+
+    std.debug.print("{s}▸{s} ", .{ yellow, reset });
 
     while (std.time.milliTimestamp() < deadline) {
         var fds = [_]std.posix.pollfd{.{ .fd = socket_fd, .events = std.posix.POLL.IN, .revents = undefined }};
@@ -47,12 +50,82 @@ fn readResponse(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator, timeout
         const ready = std.posix.poll(&fds, @min(100, @as(i32, @intCast(time_left)))) catch break;
         if (ready == 0) continue;
         if (fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
-        const n = std.posix.read(socket_fd, &buf) catch break;
+
+        const n = std.posix.read(socket_fd, buffer[buf_pos..]) catch break;
         if (n == 0) break;
-        try buffer.appendSlice(allocator, buf[0..n]);
-        if (buffer.items.len > 0 and buffer.items[buffer.items.len - 1] == '\n') break;
+        buf_pos += n;
+
+        // Process buffer and extract content
+        var i: usize = 0;
+        while (i < buf_pos) {
+            if (buffer[i] == '<') {
+                // Check for <content> tag
+                if (i + 8 < buf_pos and std.mem.eql(u8, buffer[i .. i + 8], "<content>")) {
+                    in_content = true;
+                    i += 8;
+                    continue;
+                }
+                // Check for </content> tag
+                if (i + 9 < buf_pos and std.mem.eql(u8, buffer[i .. i + 9], "</content>")) {
+                    in_content = false;
+                    i += 9;
+                    continue;
+                }
+                // Check for </response> - end of stream
+                if (i + 11 < buf_pos and std.mem.eql(u8, buffer[i .. i + 11], "</response>")) {
+                    std.debug.print("\n", .{});
+                    return;
+                }
+            }
+            if (in_content) {
+                std.debug.print("{c}", .{buffer[i]});
+                content_started = true;
+            }
+            i += 1;
+        }
+
+        // Shift remaining to beginning
+        if (i < buf_pos) {
+            @memcpy(buffer[0 .. buf_pos - i], buffer[i..buf_pos]);
+            buf_pos = buf_pos - i;
+        } else {
+            buf_pos = 0;
+        }
     }
-    return try buffer.toOwnedSlice(allocator);
+    std.debug.print("\n", .{});
+}
+
+fn showResponse(response: []const u8) void {
+    var xml = response;
+
+    if (std.mem.startsWith(u8, response, "<response>")) {
+        xml = response[9..];
+        if (std.mem.endsWith(u8, xml, "</response>")) {
+            xml = xml[0 .. xml.len - 11];
+        }
+    }
+
+    const content = extractTag(xml, "content") orelse {
+        std.debug.print("{s}{s}{s}\n", .{ dim, xml, reset });
+        return;
+    };
+
+    std.debug.print("\n{s}┌{s}┐{s}\n", .{ cyan, "─" ** 56, reset });
+
+    if (extractTag(content, "agent")) |n| {
+        const t = trim(n);
+        if (t.len > 0) std.debug.print("{s}│{s} 🤖 {s}Agent:{s} {s}{s}{s}\n", .{ cyan, reset, yellow, reset, bold, t, reset });
+    }
+    if (extractTag(content, "thought")) |t| {
+        const x = trim(t);
+        if (x.len > 0) std.debug.print("{s}│{s} 💭 {s}{s}{s}\n", .{ cyan, reset, dim, x, reset });
+    }
+    if (extractTag(content, "markdown")) |m| {
+        const x = trim(m);
+        if (x.len > 0) std.debug.print("{s}├{s}┤{s}\n{s}│{s}\n{s}\n", .{ cyan, "─" ** 56, reset, cyan, reset, x });
+    }
+
+    std.debug.print("{s}└{s}┘{s}\n\n", .{ cyan, "─" ** 56, reset });
 }
 
 fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
@@ -72,27 +145,6 @@ fn trim(s: []const u8) []const u8 {
     var end = s.len;
     while (end > start and (s[end - 1] == ' ' or s[end - 1] == '\n')) end -= 1;
     return s[start..end];
-}
-
-fn showResponse(response: []const u8) void {
-    const content = extractTag(response, "content") orelse {
-        std.debug.print("{s}{s}{s}\n", .{ dim, response, reset });
-        return;
-    };
-    std.debug.print("\n{s}┌{s}┐{s}\n", .{ cyan, "─" ** 56, reset });
-    if (extractTag(content, "agent")) |n| {
-        const t = trim(n);
-        if (t.len > 0) std.debug.print("{s}│{s} 🤖 {s}Agent:{s} {s}{s}{s}\n", .{ cyan, reset, yellow, reset, bold, t, reset });
-    }
-    if (extractTag(content, "thought")) |t| {
-        const x = trim(t);
-        if (x.len > 0) std.debug.print("{s}│{s} 💭 {s}{s}{s}\n", .{ cyan, reset, dim, x, reset });
-    }
-    if (extractTag(content, "markdown")) |m| {
-        const x = trim(m);
-        if (x.len > 0) std.debug.print("{s}├{s}┤{s}\n{s}│{s}\n{s}\n", .{ cyan, "─" ** 56, reset, cyan, reset, x });
-    }
-    std.debug.print("{s}└{s}┘{s}\n\n", .{ cyan, "─" ** 56, reset });
 }
 
 pub fn main() !void {
@@ -117,12 +169,16 @@ pub fn main() !void {
     while (true) {
         var buf: [1]u8 = undefined;
         const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
+
         if (n == 0) {
             std.Thread.sleep(10000000);
             continue;
         }
+
         const c = buf[0];
+
         if (c == 3) break;
+
         if (c == 127 or c == 8) {
             if (input.items.len > 0) {
                 _ = input.pop();
@@ -130,14 +186,19 @@ pub fn main() !void {
             }
         } else if (c == 13 or c == 10) {
             if (input.items.len > 0) {
-                std.debug.print("\n\n{s}Waiting for response...{s}\n", .{ dim, reset });
+                std.debug.print("\n\n", .{});
                 try sendMessage(socket_fd, session_id, input.items);
-                const response = readResponse(socket_fd, allocator, 60000) catch "";
-                defer allocator.free(response);
-                if (response.len > 0) showResponse(response) else std.debug.print("{s}No response (timeout){s}\n", .{ dim, reset });
+
+                // Stream the response
+                streamResponse(socket_fd, 60000) catch {
+                    std.debug.print("{s}Stream error{s}\n", .{ dim, reset });
+                };
+
                 input.clearRetainingCapacity();
                 std.debug.print("\n{s}>{s} ", .{ bold, reset });
-            } else std.debug.print("\n{s}>{s} ", .{ bold, reset });
+            } else {
+                std.debug.print("\n{s}>{s} ", .{ bold, reset });
+            }
         } else if (c >= 32) {
             try input.append(allocator, c);
             std.debug.print("{c}", .{c});
