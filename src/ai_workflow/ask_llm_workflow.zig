@@ -50,45 +50,6 @@ pub const AskLLMWorkflow = struct {
         };
     }
 
-    fn escapeXml(self: *AskLLMWorkflow, content: []const u8) ![]u8 {
-        var escaped: std.ArrayList(u8) = .empty;
-        errdefer escaped.deinit(self.allocator);
-
-        var i: usize = 0;
-        while (i < content.len) {
-            if (i + 3 < content.len and content[i] == '&') {
-                if (std.mem.startsWith(u8, content[i..], "&lt;") or
-                    std.mem.startsWith(u8, content[i..], "&gt;") or
-                    std.mem.startsWith(u8, content[i..], "&amp;") or
-                    std.mem.startsWith(u8, content[i..], "&quot;") or
-                    std.mem.startsWith(u8, content[i..], "&apos;"))
-                {
-                    try escaped.appendSlice(self.allocator, content[i .. i + 1]);
-                    i += 1;
-                } else {
-                    try escaped.appendSlice(self.allocator, "&amp;");
-                    i += 1;
-                }
-            } else if (content[i] == '"') {
-                try escaped.appendSlice(self.allocator, "&quot;");
-                i += 1;
-            } else if (content[i] == '\'') {
-                try escaped.appendSlice(self.allocator, "&apos;");
-                i += 1;
-            } else if (content[i] == '<') {
-                try escaped.appendSlice(self.allocator, "&lt;");
-                i += 1;
-            } else if (content[i] == '>') {
-                try escaped.appendSlice(self.allocator, "&gt;");
-                i += 1;
-            } else {
-                try escaped.append(self.allocator, content[i]);
-                i += 1;
-            }
-        }
-        return try escaped.toOwnedSlice(self.allocator);
-    }
-
     pub fn sendResponse(self: *AskLLMWorkflow, response: agent.Agent.CallResponse) void {
         if (self.conn_fd < 0) return;
 
@@ -151,9 +112,11 @@ pub const AskLLMWorkflow = struct {
         w.writeAll(tool_name) catch return;
         w.writeAll("</tool_name><result>") catch return;
 
-        const esc = self.escapeXml(result) catch return;
-        defer self.allocator.free(esc);
-        w.writeAll(esc) catch return;
+        w.writeAll(result) catch return;
+
+        // const esc = self.escapeXml(result) catch return;
+        // defer self.allocator.free(esc);
+        // w.writeAll(esc) catch return;
 
         w.writeAll("</result></tool_result>") catch return;
 
