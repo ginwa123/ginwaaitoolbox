@@ -75,6 +75,12 @@ pub const AskLLMWorkflow = struct {
             } else if (content[i] == '\'') {
                 try escaped.appendSlice(self.allocator, "&apos;");
                 i += 1;
+            } else if (content[i] == '<') {
+                try escaped.appendSlice(self.allocator, "&lt;");
+                i += 1;
+            } else if (content[i] == '>') {
+                try escaped.appendSlice(self.allocator, "&gt;");
+                i += 1;
             } else {
                 try escaped.append(self.allocator, content[i]);
                 i += 1;
@@ -93,10 +99,8 @@ pub const AskLLMWorkflow = struct {
         w.writeAll("<response><choices><choice><index>0</index><message><role>assistant</role>") catch return;
 
         if (response.content) |content| {
-            const esc = self.escapeXml(content) catch return;
-            defer self.allocator.free(esc);
             w.writeAll("<content>") catch return;
-            w.writeAll(esc) catch return;
+            w.writeAll(content) catch return;
             w.writeAll("</content>") catch return;
         }
 

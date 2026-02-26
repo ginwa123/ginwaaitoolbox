@@ -123,6 +123,23 @@ pub fn build(b: *std.Build) void {
     // steps (e.g. a Run step, as we will see in a moment).
     const run_step = b.step("run", "Run the app");
 
+    // TUI executable
+    const tui_exe = b.addExecutable(.{
+        .name = "tree1-tui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tui/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    tui_exe.linkLibC();
+    b.installArtifact(tui_exe);
+
+    const tui_step = b.step("run:tui", "Run the TUI");
+    const tui_cmd = b.addRunArtifact(tui_exe);
+    tui_step.dependOn(&tui_cmd.step);
+    tui_cmd.step.dependOn(b.getInstallStep());
+
     // This creates a RunArtifact step in the build graph. A RunArtifact step
     // invokes an executable compiled by Zig. Steps will only be executed by the
     // runner if invoked directly by the user (in the case of top level steps)
