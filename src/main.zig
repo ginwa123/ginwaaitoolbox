@@ -51,7 +51,41 @@ fn loadEnv() !void {
     }
 }
 
+fn killExistingProcess() void {
+    const process_name = "zigginagentic";
+    const self_pid = std.c.getpid();
+
+    var proc_dir = std.fs.openDirAbsolute("/proc", .{
+        .iterate = true,
+    }) catch return;
+    defer proc_dir.close();
+
+    var iterator = proc_dir.iterate();
+    while (true) {
+        const entry = iterator.next() catch break;
+        if (entry == null) break;
+        const entry_name = entry.?.name;
+        const pid_num = std.fmt.parseInt(std.posix.pid_t, entry_name, 10) catch continue;
+        if (pid_num == self_pid) continue;
+
+        var path_buf: [64]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/cmdline", .{pid_num}) catch continue;
+        const cmdline_file = std.fs.openFileAbsolute(path, .{}) catch continue;
+        defer cmdline_file.close();
+
+        const cmdline = cmdline_file.readToEndAlloc(std.heap.page_allocator, 4096) catch continue;
+        defer std.heap.page_allocator.free(cmdline);
+
+        if (std.mem.indexOf(u8, cmdline, process_name) != null) {
+            std.debug.print("Killing existing process {d}\n", .{pid_num});
+            _ = std.c.kill(pid_num, 15);
+        }
+    }
+}
+
 pub fn main() !void {
+    killExistingProcess();
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 

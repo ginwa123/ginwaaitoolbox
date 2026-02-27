@@ -244,4 +244,23 @@ pub fn build(b: *std.Build) void {
     const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "tree1-macos-aarch64");
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
+
+    // Linux x86_64 - Install to system (/usr/local/bin)
+    const linux_system_step = b.step("install:linux:system", "Build for Linux x86_64 and install to system (/usr/local/bin - requires sudo)");
+    const linux_system_exe = createPlatformExe(b, mod, linux_target, optimize, "zigginagentic");
+    linux_system_exe.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    linux_system_exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
+
+    linux_system_step.dependOn(&linux_system_exe.step);
+
+    const install_linux_system = b.addInstallArtifact(linux_system_exe, .{});
+    linux_system_step.dependOn(&install_linux_system.step);
+
+    const copy_to_system = b.addSystemCommand(&.{
+        "cp",
+        "zig-out/bin/zigginagentic",
+        "/usr/local/bin/zigginagentic",
+    });
+    copy_to_system.step.dependOn(&install_linux_system.step);
+    linux_system_step.dependOn(&copy_to_system.step);
 }
