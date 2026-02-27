@@ -106,7 +106,7 @@ pub const AskLLMWorkflow = struct {
         defer buf.deinit(self.allocator);
         var w = buf.writer(self.allocator);
 
-        w.writeAll("<tool_result><tool_call_id>") catch return;
+        w.writeAll("<response><tool_result><tool_call_id>") catch return;
         w.writeAll(tool_call_id) catch return;
         w.writeAll("</tool_call_id><tool_name>") catch return;
         w.writeAll(tool_name) catch return;
@@ -118,7 +118,7 @@ pub const AskLLMWorkflow = struct {
         // defer self.allocator.free(esc);
         // w.writeAll(esc) catch return;
 
-        w.writeAll("</result></tool_result>") catch return;
+        w.writeAll("</result></tool_result></response>") catch return;
 
         std.debug.print("SEND TOOL RESULT XML: {s}\n", .{buf.items});
 

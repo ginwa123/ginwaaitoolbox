@@ -39,7 +39,7 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
     var buf: [4096]u8 = undefined;
-    var in_content = false;
+    // var in_content = false;
 
     std.debug.print("{s}▸{s} ", .{ yellow, reset });
 
@@ -50,19 +50,19 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
         try buffer.appendSlice(allocator, buf[0..n]);
 
         // Check for content tag in full buffer
-        if (!in_content and std.mem.indexOf(u8, buffer.items, "<content>") != null) {
-            in_content = true;
+        for (buf[0..n]) |byte| {
+            std.debug.print("{c}", .{byte});
         }
 
-        if (in_content) {
-            for (buf[0..n]) |byte| {
-                std.debug.print("{c}", .{byte});
+        if (extractTag(buffer.items, "finish_reason")) |fr| {
+            if (std.mem.eql(u8, fr, "stop")) {
+                break;
             }
         }
 
-        if (buffer.items.len >= 11 and std.mem.endsWith(u8, buffer.items, "</response>")) {
-            break;
-        }
+        // if (buffer.items.len >= 11 and std.mem.endsWith(u8, buffer.items, "</response>")) {
+        //     break;
+        // }
     }
     std.debug.print("\n", .{});
     return try buffer.toOwnedSlice(allocator);
@@ -117,8 +117,30 @@ fn showResponse(response: []const u8) void {
         if (x.len > 0) std.debug.print("{s}├{s}┤{s}\n{s}│{s}\n{s}\n", .{ cyan, "─" ** 56, reset, cyan, reset, x });
     }
 
+    if (extractTag(content, "finish_reason")) |fr| {
+        const fr_trimmed = trim(fr);
+        if (fr_trimmed.len > 0) {
+            const fr_display = if (std.mem.eql(u8, fr_trimmed, "stop"))
+                "stop"
+            else if (std.mem.eql(u8, fr_trimmed, "tool_calls"))
+                "tool_calls"
+            else if (std.mem.eql(u8, fr_trimmed, "length"))
+                "length"
+            else if (std.mem.eql(u8, fr_trimmed, "content_filter"))
+                "content_filter"
+            else
+                fr_trimmed;
+            std.debug.print("{s}│{s} ✓ {s}Finish: {s}{s}\n", .{ cyan, reset, green, fr_display, reset });
+        }
+    }
+
     std.debug.print("{s}└{s}┘{s}\n\n", .{ cyan, "─" ** 56, reset });
 }
+
+pub const KEBINDING = enum(u8) {
+    CTRL_C = 3,
+    ENTER = 13,
+};
 
 pub fn main() !void {
     const socket_fd = try connectToSocket();
@@ -150,14 +172,14 @@ pub fn main() !void {
 
         const c = buf[0];
 
-        if (c == 3) break;
+        if (c == @intFromEnum(KEBINDING.CTRL_C)) break;
 
         if (c == 127 or c == 8) {
             if (input.items.len > 0) {
                 _ = input.pop();
                 std.debug.print("\x08 \x08", .{});
             }
-        } else if (c == 13 or c == 10) {
+        } else if (c == 13 or c == 10 or c == @intFromEnum(KEBINDING.ENTER)) {
             if (input.items.len > 0) {
                 std.debug.print("\n\n", .{});
                 try sendMessage(socket_fd, session_id, input.items);
