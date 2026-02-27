@@ -68,18 +68,27 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
     return try buffer.toOwnedSlice(allocator);
 }
 
-fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
+pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
     const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
     defer std.heap.page_allocator.free(start_tag);
     const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
     defer std.heap.page_allocator.free(end_tag);
-    const start = std.mem.indexOf(u8, xml, start_tag) orelse return null;
-    const content_start = start + start_tag.len;
-    const end = std.mem.indexOf(u8, xml[content_start..], end_tag) orelse return null;
-    return xml[content_start .. content_start + end];
+
+    var result: ?[]const u8 = null;
+    var search_start: usize = 0;
+
+    while (true) {
+        const start = std.mem.indexOf(u8, xml[search_start..], start_tag) orelse break;
+        const content_start = search_start + start + start_tag.len;
+        const end = std.mem.indexOf(u8, xml[content_start..], end_tag) orelse break;
+        result = xml[content_start .. content_start + end];
+        search_start = content_start + end;
+    }
+
+    return result;
 }
 
-fn trim(s: []const u8) []const u8 {
+pub fn trim(s: []const u8) []const u8 {
     var start: usize = 0;
     while (start < s.len and (s[start] == ' ' or s[start] == '\n')) start += 1;
     var end = s.len;
