@@ -205,19 +205,33 @@ pub const Agent = struct {
             if (msg.tool_call_id) |id| {
                 try user_msgs[i].put("tool_call_id", .{ .string = id });
             }
+            if (msg.tool_calls) |tcs| {
+                var tc_arr = std.array_list.Managed(json.Value).init(self.allocator);
+                for (tcs) |tc| {
+                    var tc_obj = std.StringArrayHashMap(json.Value).init(self.allocator);
+                    try tc_obj.put("id", .{ .string = tc.id });
+                    try tc_obj.put("type", .{ .string = tc.type });
+                    var func_obj = std.StringArrayHashMap(json.Value).init(self.allocator);
+                    try func_obj.put("name", .{ .string = tc.function.name });
+                    try func_obj.put("arguments", .{ .string = tc.function.arguments });
+                    try tc_obj.put("function", .{ .object = func_obj });
+                    try tc_arr.append(.{ .object = tc_obj });
+                }
+                try user_msgs[i].put("tool_calls", .{ .array = tc_arr });
+            }
             try messages_arr.append(.{ .object = user_msgs[i] });
         }
 
         var root = std.StringArrayHashMap(json.Value).init(self.allocator);
         try root.put("model", .{ .string = self.model });
-        
+
         // Add thinking configuration for Kimi K2.5 models
         if (!self.thinkingEnabled) {
             var thinking = std.StringArrayHashMap(json.Value).init(self.allocator);
             try thinking.put("type", .{ .string = "disabled" });
             try root.put("thinking", .{ .object = thinking });
         }
-        
+
         try root.put("messages", .{ .array = messages_arr });
         const temp = params.temperature orelse self.temperature;
         try root.put("temperature", .{ .float = temp });
