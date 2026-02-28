@@ -23,18 +23,79 @@ test {
 
 pub const IPCMessage = struct {
     command_type: []const u8 = "",
-
     session_id: []const u8 = "",
     message: []const u8 = "",
-
-    // current working directory session
     cwd_session: []const u8 = "",
 };
 
-pub fn parseMessage(comptime T: type, allocator: std.mem.Allocator, data: []const u8) !T {
-    const json = try std.json.parseFromSlice(T, allocator, data, .{});
-    defer json.deinit();
-    return json.value;
+/// Extract content between XML tags
+pub fn extractTag(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
+    const start_tag = std.fmt.allocPrint(allocator, "<{s}>", .{tag}) catch return null;
+    defer allocator.free(start_tag);
+    const end_tag = std.fmt.allocPrint(allocator, "</{s}>", .{tag}) catch return null;
+    defer allocator.free(end_tag);
+
+    const start_idx = std.mem.indexOf(u8, xml, start_tag) orelse return null;
+    const content_start = start_idx + start_tag.len;
+    const end_idx = std.mem.indexOf(u8, xml[content_start..], end_tag) orelse return null;
+    
+    return xml[content_start .. content_start + end_idx];
+}
+
+/// Decode XML entities
+pub fn decodeXmlEntities(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '&') {
+            if (std.mem.startsWith(u8, s[i..], "&amp;")) {
+                try result.append(allocator, '&');
+                i += 5;
+            } else if (std.mem.startsWith(u8, s[i..], "&lt;")) {
+                try result.append(allocator, '<');
+                i += 4;
+            } else if (std.mem.startsWith(u8, s[i..], "&gt;")) {
+                try result.append(allocator, '>');
+                i += 4;
+            } else if (std.mem.startsWith(u8, s[i..], "&quot;")) {
+                try result.append(allocator, '"');
+                i += 6;
+            } else if (std.mem.startsWith(u8, s[i..], "&apos;")) {
+                try result.append(allocator, '\'');
+                i += 6;
+            } else {
+                try result.append(allocator, s[i]);
+                i += 1;
+            }
+        } else {
+            try result.append(allocator, s[i]);
+            i += 1;
+        }
+    }
+    
+    return result.toOwnedSlice(allocator);
+}
+
+/// Parse XML message into IPCMessage struct
+pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !IPCMessage {
+    var msg: IPCMessage = .{};
+    
+    if (extractTag(data, "command_type", allocator)) |val| {
+        msg.command_type = try decodeXmlEntities(allocator, val);
+    }
+    if (extractTag(data, "session_id", allocator)) |val| {
+        msg.session_id = try decodeXmlEntities(allocator, val);
+    }
+    if (extractTag(data, "content", allocator)) |val| {
+        msg.message = try decodeXmlEntities(allocator, val);
+    }
+    if (extractTag(data, "cwd_session", allocator)) |val| {
+        msg.cwd_session = try decodeXmlEntities(allocator, val);
+    }
+    
+    return msg;
 }
 
 fn loadEnv() !void {
@@ -131,7 +192,7 @@ pub fn main() !void {
 
             const ctxTui = @as(*ai_workflow_mod.ContextIPCTui, @ptrCast(@alignCast(ctx)));
 
-            const t = parseMessage(IPCMessage, allocator, data) catch |err| {
+            const t = parseMessage(allocator, data) catch |err| {
                 std.debug.print("parse error: {}\n", .{err});
                 return;
             };
@@ -149,13 +210,6 @@ pub fn main() !void {
                     .cwd = t.cwd_session,
                 };
                 workflowAsk.run();
-                // defer workflowAsk.deinit();
-                // var agenttt = try agent.Agent.init(allocator);
-                // defer agenttt.deinit();
-                //
-                // agenttt.apiKey = g_api_key;
-                // agenttt.model = g_model;
-                // agenttt.baseUrl = g_base_url;
             }
 
             std.debug.print("Received: {s}\n", .{data});

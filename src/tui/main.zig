@@ -87,37 +87,45 @@ fn connectToSocket() !std.posix.fd_t {
     return socket_fd;
 }
 
-fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+/// Escape special characters for XML content
+fn escapeXmlString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     for (s) |c| {
         switch (c) {
-            '"' => try result.appendSlice(allocator, "\\\""),
-            '\\' => try result.appendSlice(allocator, "\\\\"),
-            '\n' => try result.appendSlice(allocator, "\\n"),
-            '\r' => try result.appendSlice(allocator, "\\r"),
-            '\t' => try result.appendSlice(allocator, "\\t"),
+            '&' => try result.appendSlice(allocator, "&amp;"),
+            '<' => try result.appendSlice(allocator, "&lt;"),
+            '>' => try result.appendSlice(allocator, "&gt;"),
+            '"' => try result.appendSlice(allocator, "&quot;"),
+            '\'' => try result.appendSlice(allocator, "&apos;"),
             else => try result.append(allocator, c),
         }
     }
     return result.toOwnedSlice(allocator);
 }
 
+/// Send message in XML format
 fn sendMessage(socket_fd: std.posix.fd_t, session_id: []const u8, message: []const u8) !void {
-    var json_buf = std.ArrayList(u8).empty;
-    defer json_buf.deinit(std.heap.page_allocator);
+    var xml_buf = std.ArrayList(u8).empty;
+    defer xml_buf.deinit(std.heap.page_allocator);
 
     const cwd = std.process.getCwdAlloc(std.heap.page_allocator) catch "";
     defer std.heap.page_allocator.free(cwd);
 
-    const escaped_message = try escapeJsonString(std.heap.page_allocator, message);
+    const escaped_message = try escapeXmlString(std.heap.page_allocator, message);
     defer std.heap.page_allocator.free(escaped_message);
 
-    try json_buf.writer(std.heap.page_allocator).print(
-        "{{\"command_type\":\"agent_ask\",\"session_id\":\"{s}\",\"message\":\"{s}\",\"cwd_session\":\"{s}\"}}",
-        .{ session_id, escaped_message, cwd },
+    const escaped_session_id = try escapeXmlString(std.heap.page_allocator, session_id);
+    defer std.heap.page_allocator.free(escaped_session_id);
+
+    const escaped_cwd = try escapeXmlString(std.heap.page_allocator, cwd);
+    defer std.heap.page_allocator.free(escaped_cwd);
+
+    try xml_buf.writer(std.heap.page_allocator).print(
+        "<message><command_type>agent_ask</command_type><session_id>{s}</session_id><content>{s}</content><cwd_session>{s}</cwd_session></message>",
+        .{ escaped_session_id, escaped_message, escaped_cwd },
     );
-    _ = try std.posix.write(socket_fd, json_buf.items);
+    _ = try std.posix.write(socket_fd, xml_buf.items);
 }
 
 fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator) ![]u8 {
