@@ -139,6 +139,8 @@ pub const AgentLogger = *const fn (level: std.log.Level, message: []const u8) vo
 
 pub const HttpOptions = struct {
     read_timeout_ms: u32 = 60000,
+    /// Buffer size for reading HTTP response body (default 64KB for large API responses)
+    response_buffer_size: usize = 64 * 1024,
 };
 
 pub const Agent = struct {
@@ -367,8 +369,10 @@ pub const Agent = struct {
             self.logMsg(.err, @errorName(err));
             return error.SendBodyFailed;
         };
-        var redirect_buffer: [1024]u8 = undefined;
-        var transfer_buffer: [4096]u8 = undefined;
+        var redirect_buffer: [4096]u8 = undefined;
+        // Use heap-allocated buffer for response body to handle large API responses
+        const transfer_buffer = try self.allocator.alloc(u8, self.httpOptions.response_buffer_size);
+        defer self.allocator.free(transfer_buffer);
         var response = req.receiveHead(&redirect_buffer) catch |err| {
             self.logMsg(.err, @errorName(err));
             return error.ReceiveFailed;

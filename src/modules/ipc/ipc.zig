@@ -59,15 +59,33 @@ pub const IpcServer = struct {
     fn handleConnection(self: *Self, conn_fd: std.posix.fd_t) void {
         defer std.posix.close(conn_fd);
 
+        var message_buffer: std.ArrayList(u8) = .empty;
+        defer message_buffer.deinit(self.allocator);
+
+        var read_buffer: [4096]u8 = undefined;
+
         while (true) {
-            var buffer: [4096]u8 = undefined;
-            const n = std.posix.read(conn_fd, &buffer) catch {
+            const n = std.posix.read(conn_fd, &read_buffer) catch {
                 return;
             };
 
-            if (n == 0) return;
+            if (n == 0) {
+                // Connection closed, process any remaining data
+                if (message_buffer.items.len > 0) {
+                    self.handleMessage(message_buffer.items, conn_fd);
+                }
+                return;
+            }
 
-            self.handleMessage(buffer[0..n], conn_fd);
+            message_buffer.appendSlice(self.allocator, read_buffer[0..n]) catch {
+                return;
+            };
+
+            // Check if we have a complete message (ends with </message>)
+            if (std.mem.endsWith(u8, message_buffer.items, "</message>")) {
+                self.handleMessage(message_buffer.items, conn_fd);
+                message_buffer.clearRetainingCapacity();
+            }
         }
     }
 
@@ -110,8 +128,8 @@ pub const IpcServer = struct {
                 std.os.windows.PIPE_ACCESS_DUPLEX,
                 std.os.windows.PIPE_TYPE_MESSAGE | std.os.windows.PIPE_READMODE_MESSAGE | std.os.windows.PIPE_WAIT,
                 1,
-                1024,
-                1024,
+                65536, // Increased output buffer size
+                65536, // Increased input buffer size
                 0,
                 null,
             );
@@ -119,11 +137,25 @@ pub const IpcServer = struct {
 
             try std.os.windows.ConnectNamedPipe(pipe_fd, null);
 
-            var buffer: [1024]u8 = undefined;
-            var bytes_read: u32 = undefined;
-            try std.os.windows.ReadFile(pipe_fd, &buffer, null, &bytes_read, null);
+            // Use dynamic buffer for Windows as well
+            var message_buffer: std.ArrayList(u8) = .empty;
+            defer message_buffer.deinit(self.allocator);
 
-            self.handleMessage(buffer[0..bytes_read], -1);
+            var read_buffer: [4096]u8 = undefined;
+            while (true) {
+                var bytes_read: u32 = undefined;
+                const result = std.os.windows.ReadFile(pipe_fd, &read_buffer, null, &bytes_read, null);
+                if (result) {
+                    if (bytes_read == 0) break;
+                    message_buffer.appendSlice(self.allocator, read_buffer[0..bytes_read]) catch break;
+                } else |_| {
+                    break;
+                }
+            }
+
+            if (message_buffer.items.len > 0) {
+                self.handleMessage(message_buffer.items, -1);
+            }
 
             var bytes_written: u32 = undefined;
             try std.os.windows.WriteFile(pipe_fd, "ok", null, &bytes_written, null);

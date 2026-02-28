@@ -239,6 +239,7 @@ pub const AskLLMWorkflow = struct {
             const response = agenttt.call(agetntCall) catch |err| {
                 retryCount += 1;
                 std.debug.print("Error calling agent: {s}\n", .{@errorName(err)});
+                self.sendError("Error calling agent", "retry");
                 continue;
             };
             defer response.deinit();
@@ -375,11 +376,11 @@ pub const AskLLMWorkflow = struct {
                     continue;
                 } else if (finish_reason == .content_filter) {
                     std.debug.print("FINISH REASON CONTENT FILTER - content was filtered due to safety policies\n", .{});
-                    
+
                     // Save the filtered response to history
-                    self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| 
+                    self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err|
                         std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
-                    
+
                     // Send error response to client with content_filter finish reason
                     // The response content may be empty or contain partial filtered content
                     if (response.content) |c| {
