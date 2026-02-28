@@ -31,7 +31,7 @@ zig test src/modules/databases/sqlite/sqlite_test.zig
 
 ## Project Architecture
 
-This is an AI agent system with a Zig backend and optional TUI frontend.
+This is a **multi-agent AI system** with a Zig backend and a Zig TUI frontend. The system supports different agent types (GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent) that can route tasks to specialized handlers.
 
 ### Backend (Zig)
 
@@ -40,6 +40,7 @@ The core is an LLM agent that communicates via OpenAI-compatible chat completion
 - **`src/main.zig`**: Entry point - loads env, initializes database, runs migrations, starts IPC server
 - **`src/ai_workflow/ask_llm_workflow.zig`**: Workflow orchestration layer that coordinates agent calls, handles message history persistence
 - **`src/modules/agent/agent.zig`**: `Agent` struct for LLM API calls with tool support
+- **`src/modules/agent/prompt.zig`**: Multi-agent system prompts (GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent)
 - **`src/modules/agent/tools/`**: Tool implementations (bash, change_agent)
 - **`src/modules/ipc/ipc.zig`**: Cross-platform IPC server (Unix sockets on POSIX, named pipes on Windows)
 - **`src/modules/databases/sqlite/`**: SQLite wrapper with `SqliteBackend` struct and migration system
@@ -49,7 +50,11 @@ The core is an LLM agent that communicates via OpenAI-compatible chat completion
 ```
 [TUI/Frontend] → JSON over socket → [IPC Server @ /tmp/agent.sock]
     → [AskLLMWorkflow] → [Agent] → HTTP POST to OpenAI-compatible API
-    → Tool execution (bash) → Response back through chain
+    → Tool execution (bash, change_agent) → Response back through chain
+    
+Multi-Agent Routing:
+    GeneralAgent → routes to ExplorationAgent, PlanningAgent, or ExecutingAgent
+    based on task type (discovery, planning, or implementation)
 ```
 
 ### IPC Protocol
@@ -57,9 +62,10 @@ The core is an LLM agent that communicates via OpenAI-compatible chat completion
 Messages sent to the socket are JSON with this structure:
 ```zig
 const IPCMessage = struct {
-    command_type: []const u8,  // e.g., "agent_ask"
-    session_id: []const u8,
-    message: []const u8,
+    command_type: []const u8 = "",  // e.g., "agent_ask"
+    session_id: []const u8 = "",
+    message: []const u8 = "",
+    cwd_session: []const u8 = "",   // Working directory for the session
 };
 ```
 
@@ -77,7 +83,7 @@ The app reads `src/.env` for:
 The `Agent` struct has configurable HTTP options:
 ```zig
 const HttpOptions = struct {
-    read_timeout_ms: u32 = 60000,  // 60 second default timeout
+    read_timeout_ms: u32 = 300_000,  // 5 minutes default timeout for LLM APIs
 };
 ```
 
@@ -91,7 +97,7 @@ const AgentTool = struct {
 };
 ```
 
-Each tool defines a constant (e.g., `bashTool`) with JSON schema for parameters. Tool execution functions (like `executeBash`) are separate from the schema definition.
+Each tool defines a constant (e.g., `bashTool`, `ChangeAgentTool`) with JSON schema for parameters. Tool execution functions (like `executeBash`) are separate from the schema definition.
 
 ### Database Migrations
 
@@ -101,12 +107,16 @@ Migrations are defined in `migrations.zig` using the `Migration` struct. The `Mi
 
 ### TUI Frontend (`src/tui/`)
 
-Separate TypeScript/Bun project using @opentui with SolidJS:
+A **Zig TUI client** that connects to the IPC server for interactive use:
 ```bash
-cd src/tui && bun install && bun run dev
-bun run format   # Format code with Biome
-bun run lint     # Lint with Biome
+zig build run-tui   # Run the TUI client (connects to /tmp/agent.sock)
 ```
+
+Features:
+- Connects to Unix socket at `/tmp/agent.sock`
+- Raw terminal mode for interactive input
+- Terminal color formatting for output
+- Session-based message handling
 
 ## Module Structure
 
@@ -114,24 +124,36 @@ bun run lint     # Lint with Biome
 src/
 ├── main.zig           # Entry point + test imports
 ├── root.zig           # Library exports
+├── .env               # Environment config (API_KEY, MODEL, BASE_URL)
 ├── ai_workflow/
-│   ├── ask_llm_workflow.zig  # LLM interaction workflow
-│   └── models.zig            # ContextIPCTui struct
+│   ├── ask_llm_workflow.zig      # LLM interaction workflow
+│   ├── ask_llm_workflow_test.zig # Workflow tests
+│   └── models.zig                # ContextIPCTui struct
 └── modules/
     ├── agent/
-    │   ├── agent.zig          # Agent core (HTTP client, JSON building, API calls)
-    │   ├── prompt.zig         # System prompts (AgenticCoding)
+    │   ├── agent.zig              # Agent core (HTTP client, JSON building, API calls)
+    │   ├── agent_test.zig         # Agent tests
+    │   ├── prompt.zig             # Multi-agent system prompts (GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent)
     │   └── tools/
-    │       ├── bash.zig       # Bash tool implementation + bashTool constant
-    │       ├── change_agent.zig
-    │       └── models.zig     # Tool type definitions (AgentTool, BashInput, etc.)
+    │       ├── bash.zig           # Bash tool implementation + bashTool constant
+    │       ├── bash_test.zig      # Bash tool tests
+    │       ├── change_agent.zig   # Change agent tool for multi-agent routing
+    │       ├── change_agent_test.zig  # Change agent tests (placeholder)
+    │       └── models.zig         # Tool type definitions (AgentTool, BashInput, etc.)
     ├── databases/
-    │   ├── database.zig       # Database interface
+    │   ├── database.zig           # Database interface
     │   └── sqlite/
-    │       ├── sqlite.zig     # SqliteBackend implementation
-    │       └── migrations.zig # MigrationManager + migration definitions
+    │       ├── sqlite.zig         # SqliteBackend implementation
+    │       ├── sqlite_test.zig    # SQLite tests
+    │       ├── migrations.zig     # MigrationManager + migration definitions
+    │       └── migrations_test.zig # Migration tests
+    ├── environment/               # Empty placeholder directory
     └── ipc/
-        └── ipc.zig            # Unix socket / Windows named pipe server
+        ├── ipc.zig                # Unix socket / Windows named pipe server
+        └── ipc_test.zig           # IPC tests
+└── tui/
+    ├── main.zig                   # Zig TUI client (terminal interface)
+    └── main_test.zig              # TUI tests
 ```
 
 ## Import Patterns
@@ -150,3 +172,14 @@ Test files import the module they test with relative paths.
 - `ArenaAllocator` used for scoped allocations (e.g., per-message in IPC handler)
 - All structs with owned memory have `deinit()` methods for cleanup
 - Tests use `std.testing.allocator` for leak detection
+
+## Multi-Agent System
+
+The system supports multiple specialized agent types defined in `prompt.zig`:
+
+- **GeneralAgent**: Routes user requests to specialized agents, handles clarification
+- **ExplorationAgent**: Read-only discovery, file listing, codebase search
+- **PlanningAgent**: Solution design, architecture, step-by-step plans
+- **ExecutingAgent**: Implementation, code writing, deliverable production
+
+Agents can delegate to each other via the `change_agent` tool.

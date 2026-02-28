@@ -6,6 +6,7 @@ const context = @import("models.zig").ContextIPCTui;
 const sqlite = @import("../modules/databases/sqlite/sqlite.zig");
 const bash_tool = @import("../modules/agent/tools/bash.zig");
 const tool_models = @import("../modules/agent/tools/models.zig");
+const change_agent_tool = @import("../modules/agent/tools/change_agent.zig");
 
 pub const AskLLMHistory = struct {
     id: []const u8,
@@ -220,7 +221,7 @@ pub const AskLLMWorkflow = struct {
         const initial_messages = try self.buildMessages();
         try messages_list.appendSlice(self.allocator, initial_messages);
 
-        const tools: []const tool_models.AgentTool = &.{bash_tool.bashTool};
+        const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, change_agent_tool.ChangeAgentTool };
 
         var retryCount: usize = 0;
         while (true) {
@@ -343,7 +344,7 @@ pub const AskLLMWorkflow = struct {
                             self.saveMessage(
                                 response,
                                 agent.Role.assistant.toStr(),
-                                assistant_tool_calls,  // Pass actual tool_calls, not marker string
+                                assistant_tool_calls, // Pass actual tool_calls, not marker string
                             ) catch |err| {
                                 std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
                             };
@@ -353,34 +354,84 @@ pub const AskLLMWorkflow = struct {
                         for (tc) |tool_call| {
                             std.debug.print("Executing tool: {s}\n", .{tool_call.function.name});
 
-                            // Parse arguments JSON to BashInput
-                            const parsed = std.json.parseFromSlice(
-                                tool_models.BashInput,
-                                self.allocator,
-                                tool_call.function.arguments,
-                                .{ .allocate = .alloc_always },
-                            ) catch |err| {
-                                std.debug.print("Failed to parse tool arguments: {s}\n", .{@errorName(err)});
-                                continue;
-                            };
-                            defer parsed.deinit();
+                            if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
+                                // Parse as ChangeAgentToolResult, not BashInput
+                                const parsed = try std.json.parseFromSlice(
+                                    change_agent_tool.ChangeAgentToolResult,
+                                    self.allocator,
+                                    tool_call.function.arguments,
+                                    .{},
+                                );
+                                defer parsed.deinit();
 
-                            // Execute bash command
-                            const result = bash_tool.executeBash(self.allocator, parsed.value) catch |err| blk: {
-                                std.debug.print("Error executing bash: {s}\n", .{@errorName(err)});
-                                break :blk "Error executing command";
-                            };
+                                // Remove last message from history
+                                messages_list.items.len -= 1;
 
-                            // Create tool result message
-                            const tool_result_msg = agent.AgentMessage{
-                                .role = .tool,
-                                .content = result,
-                                .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
-                            };
-                            try messages_list.append(self.allocator, tool_result_msg);
-                            self.saveMessageAsTool(result, tool_call.id) catch |err| std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
-                            self.sendToolResult(result, tool_call.id, tool_call.function.name);
-                            std.debug.print("Tool result added to messages\n", .{});
+                                const agent_name = parsed.value.agent;
+                                const agent_message = parsed.value.message;
+
+                                const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_name, "GeneralAgent"))
+                                    prompt.GeneralAgent
+                                else if (std.mem.eql(u8, agent_name, "ExplorationAgent"))
+                                    prompt.ExplorationAgent
+                                else if (std.mem.eql(u8, agent_name, "PlanningAgent"))
+                                    prompt.PlanningAgent
+                                else if (std.mem.eql(u8, agent_name, "ExecutingAgent"))
+                                    prompt.ExecutingAgent
+                                else {
+                                    std.debug.print("change_agent_tool: unknown agent '{s}'\n", .{agent_name});
+                                    continue;
+                                };
+
+                                const msgPrompt = try std.fmt.allocPrint(
+                                    self.allocator,
+                                    "{s}\n\n{s}",
+                                    .{ agent_prompt, agent_message },
+                                );
+
+                                // Zig 0.15: ArrayList is unmanaged, allocator must be passed to append
+                                try messages_list.append(self.allocator, agent.AgentMessage{
+                                    .role = .system,
+                                    .content = msgPrompt,
+                                });
+
+                                self.saveMessageAsTool("<change_agent_tool_result>", tool_call.id) catch |err|
+                                    std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
+                                self.sendToolResult("<change_agent_tool_result>", tool_call.id, tool_call.function.name);
+                                std.debug.print("Switched to agent: {s}\n", .{agent_name});
+                            }
+
+                            if (std.mem.eql(u8, tool_call.function.name, "bash")) {
+
+                                // Parse arguments JSON to BashInput
+                                const parsed = std.json.parseFromSlice(
+                                    tool_models.BashInput,
+                                    self.allocator,
+                                    tool_call.function.arguments,
+                                    .{ .allocate = .alloc_always },
+                                ) catch |err| {
+                                    std.debug.print("Failed to parse tool arguments: {s}\n", .{@errorName(err)});
+                                    continue;
+                                };
+                                defer parsed.deinit();
+
+                                // Execute bash command
+                                const result = bash_tool.executeBash(self.allocator, parsed.value) catch |err| blk: {
+                                    std.debug.print("Error executing bash: {s}\n", .{@errorName(err)});
+                                    break :blk "Error executing command";
+                                };
+
+                                // Create tool result message
+                                const tool_result_msg = agent.AgentMessage{
+                                    .role = .tool,
+                                    .content = result,
+                                    .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                                };
+                                try messages_list.append(self.allocator, tool_result_msg);
+                                self.saveMessageAsTool(result, tool_call.id) catch |err| std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
+                                self.sendToolResult(result, tool_call.id, tool_call.function.name);
+                                std.debug.print("Tool result added to messages\n", .{});
+                            }
                         }
                     }
                     continue;
@@ -525,38 +576,36 @@ pub const AskLLMWorkflow = struct {
 
         if (message.response_content.len > 0 or isToolCalls) {
             var tool_calls: ?[]agent.ToolCall = null;
-            if (finishReason == .tool_calls) {
-                const toolSource = if (message.tools.len > 0) message.tools else message.response_content;
-                const tcParsed = json.parseFromSlice(json.Value, self.allocator, toolSource, .{}) catch null;
-                if (tcParsed) |tcp| {
-                    defer tcp.deinit();
-                    if (tcp.value == .array and tcp.value.array.items.len > 0) {
-                        var calls = try self.allocator.alloc(agent.ToolCall, tcp.value.array.items.len);
-                        for (tcp.value.array.items, 0..) |tc_item, i| {
-                            if (tc_item == .object) {
-                                const id_raw = if (tc_item.object.get("id")) |id_val| id_val.string else "";
-                                const func_obj = if (tc_item.object.get("function")) |f| f.object else null;
-                                const name_raw = if (func_obj) |fo| if (fo.get("name")) |n| n.string else "" else "";
-                                const args_raw = if (func_obj) |fo| if (fo.get("arguments")) |a| a.string else "" else "";
-                                calls[i] = .{
-                                    .id = try self.allocator.dupe(u8, id_raw),
-                                    .function = .{
-                                        .name = try self.allocator.dupe(u8, name_raw),
-                                        .arguments = try self.allocator.dupe(u8, args_raw),
-                                    },
-                                };
-                            } else {
-                                calls[i] = .{
-                                    .id = try self.allocator.dupe(u8, ""),
-                                    .function = .{
-                                        .name = try self.allocator.dupe(u8, ""),
-                                        .arguments = try self.allocator.dupe(u8, ""),
-                                    },
-                                };
-                            }
+            const toolSource = if (message.tools.len > 0) message.tools else message.response_content;
+            const tcParsed = json.parseFromSlice(json.Value, self.allocator, toolSource, .{}) catch null;
+            if (tcParsed) |tcp| {
+                defer tcp.deinit();
+                if (tcp.value == .array and tcp.value.array.items.len > 0) {
+                    var calls = try self.allocator.alloc(agent.ToolCall, tcp.value.array.items.len);
+                    for (tcp.value.array.items, 0..) |tc_item, i| {
+                        if (tc_item == .object) {
+                            const id_raw = if (tc_item.object.get("id")) |id_val| id_val.string else "";
+                            const func_obj = if (tc_item.object.get("function")) |f| f.object else null;
+                            const name_raw = if (func_obj) |fo| if (fo.get("name")) |n| n.string else "" else "";
+                            const args_raw = if (func_obj) |fo| if (fo.get("arguments")) |a| a.string else "" else "";
+                            calls[i] = .{
+                                .id = try self.allocator.dupe(u8, id_raw),
+                                .function = .{
+                                    .name = try self.allocator.dupe(u8, name_raw),
+                                    .arguments = try self.allocator.dupe(u8, args_raw),
+                                },
+                            };
+                        } else {
+                            calls[i] = .{
+                                .id = try self.allocator.dupe(u8, ""),
+                                .function = .{
+                                    .name = try self.allocator.dupe(u8, ""),
+                                    .arguments = try self.allocator.dupe(u8, ""),
+                                },
+                            };
                         }
-                        tool_calls = calls;
                     }
+                    tool_calls = calls;
                 }
             }
 
