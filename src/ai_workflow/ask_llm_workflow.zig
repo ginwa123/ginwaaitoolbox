@@ -390,14 +390,21 @@ pub const AskLLMWorkflow = struct {
                                     std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
                                 self.sendToolResult("<change_agent_tool_result>", tool_call.id, tool_call.function.name);
 
-                                // 2. NOW clear history and replace system prompt
-                                //    Keep only the new system message — fresh context for the new agent
-                                messages_list.clearRetainingCapacity();
-                                try messages_list.append(self.allocator, agent.AgentMessage{
-                                    .role = .system,
-                                    .content = msgPrompt,
-                                    .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
-                                });
+                                // 2. Replace system message only, keep all history
+                                var system_replaced = false;
+                                for (messages_list.items) |*msg| {
+                                    if (msg.role == .system) {
+                                        msg.content = msgPrompt;
+                                        system_replaced = true;
+                                        break;
+                                    }
+                                }
+                                if (!system_replaced) {
+                                    try messages_list.insert(self.allocator, 0, agent.AgentMessage{
+                                        .role = .system,
+                                        .content = msgPrompt,
+                                    });
+                                }
 
                                 std.debug.print("Switched to agent: {s}\n", .{agent_name});
                             }
