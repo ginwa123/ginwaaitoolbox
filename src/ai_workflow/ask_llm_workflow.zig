@@ -104,6 +104,9 @@ pub const AskLLMWorkflow = struct {
             w.writeAll("</finish_reason>") catch return;
         }
 
+        // Add usage information
+        w.print("<usage><prompt_tokens>{}</prompt_tokens><completion_tokens>{}</completion_tokens><total_tokens>{}</total_tokens></usage>", .{ response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total_tokens }) catch return;
+
         w.writeAll("</choice></choices></response>") catch return;
 
         std.debug.print("SEND RESPONSE XML: {s}\n", .{buf.items});

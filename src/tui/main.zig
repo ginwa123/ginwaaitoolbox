@@ -68,6 +68,23 @@ fn connectToSocket() !std.posix.fd_t {
     return socket_fd;
 }
 
+fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    for (s) |c| {
+        switch (c) {
+            '"' => try result.appendSlice(allocator, "\\\""),
+            '\\' => try result.appendSlice(allocator, "\\\\"),
+            '\n' => try result.appendSlice(allocator, "\\n"),
+            '\r' => try result.appendSlice(allocator, "\\r"),
+            '\t' => try result.appendSlice(allocator, "\\t"),
+            else => try result.append(allocator, c),
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
 fn sendMessage(socket_fd: std.posix.fd_t, session_id: []const u8, message: []const u8) !void {
     var json_buf = std.ArrayList(u8).empty;
     defer json_buf.deinit(std.heap.page_allocator);
@@ -75,9 +92,12 @@ fn sendMessage(socket_fd: std.posix.fd_t, session_id: []const u8, message: []con
     const cwd = std.process.getCwdAlloc(std.heap.page_allocator) catch "";
     defer std.heap.page_allocator.free(cwd);
 
+    const escaped_message = try escapeJsonString(std.heap.page_allocator, message);
+    defer std.heap.page_allocator.free(escaped_message);
+
     try json_buf.writer(std.heap.page_allocator).print(
         "{{\"command_type\":\"agent_ask\",\"session_id\":\"{s}\",\"message\":\"{s}\",\"cwd_session\":\"{s}\"}}",
-        .{ session_id, message, cwd },
+        .{ session_id, escaped_message, cwd },
     );
     _ = try std.posix.write(socket_fd, json_buf.items);
 }

@@ -121,6 +121,13 @@ pub const FinishReason = enum {
     }
 };
 
+/// Token usage information from the API
+pub const Usage = struct {
+    prompt_tokens: usize = 0,
+    completion_tokens: usize = 0,
+    total_tokens: usize = 0,
+};
+
 pub const AgentCall = struct {
     tools: []const AgentTool,
     messages: []const AgentMessage,
@@ -152,6 +159,7 @@ pub const Agent = struct {
         tool_calls: ?[]ToolCall,
         finish_reason: ?FinishReason,
         reasoning_content: ?[]const u8 = null,
+        usage: Usage = .{},
 
         pub fn deinit(self: *const CallResponse) void {
             if (self.content) |c| self.allocator.free(c);
@@ -413,12 +421,27 @@ pub const Agent = struct {
             reasoning_content_copy = try self.allocator.dupe(u8, rc.string);
         }
 
+        // Parse usage information
+        var usage: Usage = .{};
+        if (root.object.get("usage")) |usage_val| {
+            if (usage_val.object.get("prompt_tokens")) |pt| {
+                usage.prompt_tokens = @intCast(pt.integer);
+            }
+            if (usage_val.object.get("completion_tokens")) |ct| {
+                usage.completion_tokens = @intCast(ct.integer);
+            }
+            if (usage_val.object.get("total_tokens")) |tt| {
+                usage.total_tokens = @intCast(tt.integer);
+            }
+        }
+
         return .{
             .allocator = self.allocator,
             .content = content_copy,
             .tool_calls = tool_calls,
             .finish_reason = finish_reason,
             .reasoning_content = reasoning_content_copy,
+            .usage = usage,
         };
     }
 
