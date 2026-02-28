@@ -355,7 +355,6 @@ pub const AskLLMWorkflow = struct {
                             std.debug.print("Executing tool: {s}\n", .{tool_call.function.name});
 
                             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
-                                // Parse as ChangeAgentToolResult, not BashInput
                                 const parsed = try std.json.parseFromSlice(
                                     change_agent_tool.ChangeAgentToolResult,
                                     self.allocator,
@@ -363,9 +362,6 @@ pub const AskLLMWorkflow = struct {
                                     .{},
                                 );
                                 defer parsed.deinit();
-
-                                // Remove last message from history
-                                messages_list.items.len -= 1;
 
                                 const agent_name = parsed.value.agent;
                                 const agent_message = parsed.value.message;
@@ -389,15 +385,20 @@ pub const AskLLMWorkflow = struct {
                                     .{ agent_prompt, agent_message },
                                 );
 
-                                // Zig 0.15: ArrayList is unmanaged, allocator must be passed to append
-                                try messages_list.append(self.allocator, agent.AgentMessage{
-                                    .role = .system,
-                                    .content = msgPrompt,
-                                });
-
+                                // 1. Send tool result FIRST (satisfies the API requirement)
                                 self.saveMessageAsTool("<change_agent_tool_result>", tool_call.id) catch |err|
                                     std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
                                 self.sendToolResult("<change_agent_tool_result>", tool_call.id, tool_call.function.name);
+
+                                // 2. NOW clear history and replace system prompt
+                                //    Keep only the new system message — fresh context for the new agent
+                                messages_list.clearRetainingCapacity();
+                                try messages_list.append(self.allocator, agent.AgentMessage{
+                                    .role = .system,
+                                    .content = msgPrompt,
+                                    .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                                });
+
                                 std.debug.print("Switched to agent: {s}\n", .{agent_name});
                             }
 
@@ -571,6 +572,21 @@ pub const AskLLMWorkflow = struct {
     pub fn transformMessageToAgentMessages(self: *AskLLMWorkflow, message: AskLLMHistory) ![]agent.AgentMessage {
         var messages: std.ArrayList(agent.AgentMessage) = .empty;
 
+        const role = agent.Role.fromStr(message.role) orelse .assistant;
+
+        // Handle tool result messages (role == "tool")
+        // For tool messages, the tools column contains the tool_call_id string directly
+        if (role == .tool) {
+            const agentMessage = agent.AgentMessage{
+                .role = .tool,
+                .content = try self.allocator.dupe(u8, message.response_content),
+                .tool_call_id = try self.allocator.dupe(u8, message.tools),
+            };
+            try messages.append(self.allocator, agentMessage);
+            return messages.toOwnedSlice(self.allocator);
+        }
+
+        // Handle assistant/user/system messages
         const finishReason = agent.FinishReason.fromStr(message.finish_reason);
         const isToolCalls = finishReason == .tool_calls;
 
@@ -615,8 +631,6 @@ pub const AskLLMWorkflow = struct {
                 try self.allocator.dupe(u8, message.response_content);
 
             const reasoning_content: ?[]const u8 = if (message.reasoning_content) |rc| try self.allocator.dupe(u8, rc) else null;
-
-            const role = agent.Role.fromStr(message.role) orelse .assistant;
 
             const agentMessage = agent.AgentMessage{
                 .role = role,

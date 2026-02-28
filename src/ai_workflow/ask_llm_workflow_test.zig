@@ -108,6 +108,62 @@ test "transformMessageToAgentMessages with assistant message" {
     try std.testing.expectEqual(agent.Role.assistant, messages[0].role);
 }
 
+test "transformMessageToAgentMessages with tool message" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.session_id = "test-tool-msg";
+    workflow.model = "test-model";
+
+    // Simulate a tool result message (role="tool", tools column contains tool_call_id)
+    const history = ask_llm_workflow.AskLLMHistory{
+        .id = "4",
+        .session_id = "test-tool-msg",
+        .model = "model",
+        .created = "123",
+        .response_content = "bash output here",
+        .finish_reason = "tool",
+        .role = "tool",
+        .tools = "call_abc123", // This is the tool_call_id, not JSON
+    };
+
+    const messages = try workflow.transformMessageToAgentMessages(history);
+    defer {
+        for (messages) |*msg| msg.deinit(allocator);
+        allocator.free(messages);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), messages.len);
+    try std.testing.expectEqual(agent.Role.tool, messages[0].role);
+    try std.testing.expect(messages[0].tool_call_id != null);
+    try std.testing.expectEqualStrings("call_abc123", messages[0].tool_call_id.?);
+    try std.testing.expectEqualStrings("bash output here", messages[0].content.?);
+}
+
 test "transformMessageToAgentMessages with tool_calls message" {
     const allocator = std.testing.allocator;
 
