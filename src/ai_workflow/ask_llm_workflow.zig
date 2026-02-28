@@ -249,10 +249,13 @@ pub const AskLLMWorkflow = struct {
 
             if (response.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    const content = response.content orelse "";
+                    const content = blk: {
+                        const a = response.content orelse "";
+                        const b = response.reasoning_content orelse "";
+                        break :blk try std.mem.concat(self.allocator, u8, &.{ a, b });
+                    };
 
                     const has_unresolved = agenttt.hasUnresolvedIntent(content) catch false;
-
                     if (has_unresolved) {
                         std.debug.print("UNRESOLVED INTENT DETECTED - continuing loop\n", .{});
                         self.sendResponse(response, "");
@@ -269,6 +272,7 @@ pub const AskLLMWorkflow = struct {
 
                     self.sendResponse(response, null);
                     self.saveMessage(response, agent.Role.assistant.toStr(), null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+
                     std.debug.print("FINISH REASON STOP", .{});
                     break;
                 } else if (finish_reason == .length) {
