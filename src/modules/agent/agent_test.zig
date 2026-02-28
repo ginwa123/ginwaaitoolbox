@@ -12,12 +12,48 @@ const Agent = @import("agent.zig").Agent;
 const AgentCall = @import("agent.zig").AgentCall;
 const AgentMessage = @import("agent.zig").AgentMessage;
 
+/// Get environment variable or return default value (caller owns the memory)
+fn getEnvOrDefault(allocator: std.mem.Allocator, key: []const u8, default: []const u8) ![]const u8 {
+    if (std.process.getEnvVarOwned(allocator, key)) |value| {
+        return value;
+    } else |_| {
+        return allocator.dupe(u8, default);
+    }
+}
+
+/// Container for agent config from environment
+const AgentConfig = struct {
+    apiKey: []const u8,
+    model: []const u8,
+    baseUrl: []const u8,
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator) !AgentConfig {
+        return .{
+            .apiKey = try getEnvOrDefault(allocator, "API_KEY", "sk-sp-6704e245f468421e9935e36c923c344f"),
+            .model = try getEnvOrDefault(allocator, "MODEL", "glm-5"),
+            .baseUrl = try getEnvOrDefault(allocator, "BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/v1"),
+            .allocator = allocator,
+        };
+    }
+
+    fn deinit(self: *const AgentConfig) void {
+        self.allocator.free(self.apiKey);
+        self.allocator.free(self.model);
+        self.allocator.free(self.baseUrl);
+    }
+};
+
 test "agent call builds correct json with tools" {
     const allocator = std.testing.allocator;
+    
+    var config = try AgentConfig.init(allocator);
+    defer config.deinit();
+    
     var agent = try Agent.init(allocator);
-    agent.apiKey = "551857def24c42b4a751b60ea76bf37b.19BLI68KYxq3Y5Vg";
-    agent.model = "glm-5";
-    agent.baseUrl = "https://api.z.ai/api/coding/paas/v4";
+    agent.apiKey = config.apiKey;
+    agent.model = config.model;
+    agent.baseUrl = config.baseUrl;
     defer agent.deinit();
 
     const msgSystem = AgentMessage{ .role = .system, .content = "You are a helpful assistant" };
@@ -73,10 +109,14 @@ test "agent call builds correct json with tools" {
 
 test "agent call http get response ok" {
     const allocator = std.testing.allocator;
+    
+    var config = try AgentConfig.init(allocator);
+    defer config.deinit();
+    
     var agent = try Agent.init(allocator);
-    agent.apiKey = "551857def24c42b4a751b60ea76bf37b.19BLI68KYxq3Y5Vg";
-    agent.model = "glm-5";
-    agent.baseUrl = "https://api.z.ai/api/coding/paas/v4";
+    agent.apiKey = config.apiKey;
+    agent.model = config.model;
+    agent.baseUrl = config.baseUrl;
     defer agent.deinit();
 
     const params = AgentCall{
@@ -94,10 +134,14 @@ test "agent call http get response ok" {
 
 test "agent call http get tools" {
     const allocator = std.testing.allocator;
+    
+    var config = try AgentConfig.init(allocator);
+    defer config.deinit();
+    
     var agent = try Agent.init(allocator);
-    agent.apiKey = "551857def24c42b4a751b60ea76bf37b.19BLI68KYxq3Y5Vg";
-    agent.model = "glm-5";
-    agent.baseUrl = "https://api.z.ai/api/coding/paas/v4";
+    agent.apiKey = config.apiKey;
+    agent.model = config.model;
+    agent.baseUrl = config.baseUrl;
     defer agent.deinit();
 
     const msgSystem = AgentMessage{ .role = .system, .content = "You are a helpful assistant" };
