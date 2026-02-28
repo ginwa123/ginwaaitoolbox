@@ -469,8 +469,27 @@ pub const AskLLMWorkflow = struct {
         }
     }
 
+    /// Escape a string for JSON string value
+    pub fn escapeJsonString(self: *AskLLMWorkflow, s: []const u8) ![]u8 {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+
+        for (s) |c| {
+            switch (c) {
+                '"' => try buf.appendSlice(self.allocator, "\\\""),
+                '\\' => try buf.appendSlice(self.allocator, "\\\\"),
+                '\n' => try buf.appendSlice(self.allocator, "\\n"),
+                '\r' => try buf.appendSlice(self.allocator, "\\r"),
+                '\t' => try buf.appendSlice(self.allocator, "\\t"),
+                else => try buf.append(self.allocator, c),
+            }
+        }
+
+        return try buf.toOwnedSlice(self.allocator);
+    }
+
     /// Serialize tool_calls array to JSON string
-    fn serializeToolCalls(self: *AskLLMWorkflow, tool_calls: []agent.ToolCall) ![]u8 {
+    pub fn serializeToolCalls(self: *AskLLMWorkflow, tool_calls: []agent.ToolCall) ![]u8 {
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
 
@@ -479,9 +498,14 @@ pub const AskLLMWorkflow = struct {
 
         for (tool_calls, 0..) |tc, i| {
             if (i > 0) try w.writeAll(",");
+
+            // Escape the arguments string since it contains JSON
+            const escaped_args = try self.escapeJsonString(tc.function.arguments);
+            defer self.allocator.free(escaped_args);
+
             try w.print(
-                \\{{"id":"{s}","function":{{"name":"{s}","arguments":"{s}"}}}}
-            , .{ tc.id, tc.function.name, tc.function.arguments });
+                \\{{"id":"{s}","type":"function","function":{{"name":"{s}","arguments":"{s}"}}}}
+            , .{ tc.id, tc.function.name, escaped_args });
         }
 
         try w.writeAll("]");

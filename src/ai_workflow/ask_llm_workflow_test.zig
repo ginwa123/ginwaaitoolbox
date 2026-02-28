@@ -709,3 +709,202 @@ test "sendResponse with content_filter override" {
 
     workflow.sendResponse(response, "content_filter");
 }
+
+test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.session_id = "test-tool-reconstruction";
+    workflow.model = "test-model";
+
+    // 1. Save user message
+    try workflow.saveMessageAsUser("run ls command");
+
+    // 2. Save assistant message with tool_calls (simulating LLM response that wants to call a tool)
+    var tool_calls = try allocator.alloc(agent.ToolCall, 1);
+    tool_calls[0] = .{
+        .id = "tool-abc123",
+        .function = .{
+            .name = "bash",
+            .arguments = "{\"command\":\"ls\",\"cwd\":\".\",\"timeout\":30}",
+        },
+    };
+
+    const assistant_response = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = null,
+        .tool_calls = tool_calls,
+        .finish_reason = .tool_calls,
+    };
+    try workflow.saveMessage(assistant_response, "assistant", tool_calls);
+
+    // 3. Save tool result message
+    try workflow.saveMessageAsTool("file1.txt\nfile2.txt", "tool-abc123");
+
+    // 4. Now reconstruct messages using buildMessages
+    workflow.message = "continue";
+    const messages = try workflow.buildMessages();
+    defer {
+        for (messages) |*m| m.deinit(allocator);
+        allocator.free(messages);
+    }
+
+    // 5. Verify the structure: system -> user -> assistant(tool_calls) -> tool(tool_call_id)
+    try std.testing.expectEqual(@as(usize, 4), messages.len);
+
+    // System message
+    try std.testing.expectEqual(agent.Role.system, messages[0].role);
+
+    // User message
+    try std.testing.expectEqual(agent.Role.user, messages[1].role);
+    try std.testing.expectEqualStrings("run ls command", messages[1].content.?);
+
+    // Assistant message with tool_calls
+    try std.testing.expectEqual(agent.Role.assistant, messages[2].role);
+    try std.testing.expect(messages[2].tool_calls != null);
+    try std.testing.expectEqual(@as(usize, 1), messages[2].tool_calls.?.len);
+    try std.testing.expectEqualStrings("tool-abc123", messages[2].tool_calls.?[0].id);
+    try std.testing.expectEqualStrings("bash", messages[2].tool_calls.?[0].function.name);
+    try std.testing.expectEqualStrings("{\"command\":\"ls\",\"cwd\":\".\",\"timeout\":30}", messages[2].tool_calls.?[0].function.arguments);
+
+    // Tool result message with tool_call_id
+    try std.testing.expectEqual(agent.Role.tool, messages[3].role);
+    try std.testing.expect(messages[3].tool_call_id != null);
+    try std.testing.expectEqualStrings("tool-abc123", messages[3].tool_call_id.?);
+    try std.testing.expectEqualStrings("file1.txt\nfile2.txt", messages[3].content.?);
+
+    // Cleanup
+    allocator.free(tool_calls);
+}
+
+test "serializeToolCalls escapes JSON arguments correctly" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    // Create tool_calls with JSON arguments that need escaping
+    var tool_calls = try allocator.alloc(agent.ToolCall, 1);
+    tool_calls[0] = .{
+        .id = "call-xyz789",
+        .function = .{
+            .name = "bash",
+            .arguments = "{\"command\":\"echo \\\"hello world\\\"\",\"cwd\":\"/home/user\"}",
+        },
+    };
+
+    // Serialize
+    const serialized = try workflow.serializeToolCalls(tool_calls);
+    defer allocator.free(serialized);
+
+    // Verify it's valid JSON
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, serialized, .{});
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value == .array);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.array.items.len);
+
+    const tc_obj = parsed.value.array.items[0];
+    try std.testing.expect(tc_obj == .object);
+    try std.testing.expectEqualStrings("call-xyz789", tc_obj.object.get("id").?.string);
+    try std.testing.expectEqualStrings("function", tc_obj.object.get("type").?.string);
+
+    const func = tc_obj.object.get("function").?.object;
+    try std.testing.expectEqualStrings("bash", func.get("name").?.string);
+    // The arguments should be preserved correctly (escaped and unescaped properly)
+    try std.testing.expectEqualStrings("{\"command\":\"echo \\\"hello world\\\"\",\"cwd\":\"/home/user\"}", func.get("arguments").?.string);
+
+    allocator.free(tool_calls);
+}
+
+test "escapeJsonString handles special characters" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    // Test escaping of special characters
+    const test_cases = .{
+        .{ "hello\"world", "hello\\\"world" },
+        .{ "line1\nline2", "line1\\nline2" },
+        .{ "tab\there", "tab\\there" },
+        .{ "back\\slash", "back\\\\slash" },
+        .{ "{\"key\":\"value\"}", "{\\\"key\\\":\\\"value\\\"}" },
+    };
+
+    inline for (test_cases) |tc| {
+        const escaped = try workflow.escapeJsonString(tc[0]);
+        defer allocator.free(escaped);
+        try std.testing.expectEqualStrings(tc[1], escaped);
+    }
+}
