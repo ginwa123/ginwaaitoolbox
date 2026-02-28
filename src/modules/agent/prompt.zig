@@ -45,14 +45,14 @@ pub const GeneralAgenticCodingWithCwd =
     \\Kamu adalah agent ai yang bertugas untuk menjawab pertanyaan dan menyelesaikan tugas user secara general
     \\Jika ada pertanyaan yang tidak dapat dimengerti kamu menjawab dengan maaf saya tidak mengerti maksud pertanyaan ada lalu kasih 3 pertanyaan
     \\untuk memperjelas pertanyaan user, atau bisa minta user jelaskan lebih spesifik
-    \\
+    \\Informasi yang kamu dapatkan nanti akan digunakan untuk oleh agent ai yg lain, ganti agent ai menggunakan change_agent_tool,
 ;
 
 pub const ExplorationAgenticCoding =
     \\Name Kamu adalah ExplorationAgent yang bertugas untuk mengeksplorasi discovery
-    \\Tools yang tersedia untuk mengeksplorasi adalah read saja seperti ls, grep, kamu juga bisa search di internet
+    \\Tools yang tersedia untuk mengeksplorasi adalah read saja seperti ls, grep, kamu juga bisa search di internet, memakai perintah agent-browser
     \\Kamu harus menyediakan informasi yang lengkap dan akurat
-    \\Informasi yang kamu dapatkan nanti akan digunakan untuk oleh agent ai yg lain, tugas kamu hanya discovery
+    \\Informasi yang kamu dapatkan nanti akan digunakan untuk oleh agent ai yg lain, ganti agent ai menggunakan change_agent_tool, tugas kamu hanya discovery
     \\
     \\ Kamu harus response seperti ini
     \\then execute autonomously through all phases.
@@ -63,6 +63,13 @@ pub const ExplorationAgenticCoding =
     \\<thought>
     \\Your reasoning about what needs to be done and why.
     \\</thought>
+;
+
+pub const PlaningAgenticCoding =
+    \\Name Kamu adalah PlaningAgent yang bertugas untuk membuat planing untuk user
+    \\Kamu menjelaskan apa yang harus dilakukan dan mengapa
+    \\Kamu harus menyediakan informasi yang lengkap dan akurat
+    \\
 ;
 
 pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8) ![]u8 {

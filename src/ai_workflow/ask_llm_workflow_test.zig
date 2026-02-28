@@ -200,7 +200,7 @@ test "saveMessage saves response to llm_history" {
         .finish_reason = .stop,
     };
 
-    try workflow.saveMessage(response, "assistant", "");
+    try workflow.saveMessage(response, "assistant", null);
 
     const row = try db.queryRow(allocator, "SELECT response_content, finish_reason FROM llm_history WHERE session_id = ?", &.{"test-session"});
     defer row.deinit(allocator);
@@ -369,7 +369,7 @@ test "getMessages retrieves messages by session_id" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessage(response1, "assistant", "");
+    try workflow.saveMessage(response1, "assistant", null);
 
     const response2 = agent.Agent.CallResponse{
         .allocator = allocator,
@@ -377,7 +377,7 @@ test "getMessages retrieves messages by session_id" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessage(response2, "assistant", "");
+    try workflow.saveMessage(response2, "assistant", null);
 
     const messages = try workflow.getMessages();
     defer {
@@ -431,7 +431,7 @@ test "buildMessages handles tool_calls response correctly" {
         .content = null,
         .tool_calls = tool_calls_slice,
         .finish_reason = .tool_calls,
-    }, "assistant", "[tool_calls]");
+    }, "assistant", tool_calls_slice);
 
     const messages = try workflow.buildMessages();
     defer {

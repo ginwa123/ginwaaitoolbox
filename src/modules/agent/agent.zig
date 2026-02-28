@@ -138,9 +138,11 @@ pub const AgentCall = struct {
 pub const AgentLogger = *const fn (level: std.log.Level, message: []const u8) void;
 
 pub const HttpOptions = struct {
-    read_timeout_ms: u32 = 60000,
+    read_timeout_ms: u32 = 300_000, // 5 minutes for LLM APIs
     /// Buffer size for reading HTTP response body (default 64KB for large API responses)
     response_buffer_size: usize = 64 * 1024,
+    /// Buffer size for HTTP headers (default 16KB for large cookie headers)
+    header_buffer_size: usize = 16 * 1024,
 };
 
 pub const Agent = struct {
@@ -175,6 +177,18 @@ pub const Agent = struct {
         return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator } };
     }
 
+    /// Initialize agent with custom HTTP options
+    pub fn initWithOptions(allocator: std.mem.Allocator, options: HttpOptions) !Agent {
+        return Agent{
+            .allocator = allocator,
+            .httpClient = std.http.Client{
+                .allocator = allocator,
+                .read_buffer_size = options.header_buffer_size,
+            },
+            .httpOptions = options,
+        };
+    }
+
     pub fn logMsg(self: Agent, level: std.log.Level, message: []const u8) void {
         if (self.logger) |logger| {
             logger(level, message);
@@ -188,7 +202,7 @@ pub const Agent = struct {
         }
     }
 
-    pub fn buildJsonRequest(self: Agent, params: AgentCall) ![]const u8 {
+    pub fn buildJsonRequest(self: Agent, params: AgentCall) ![]u8 {
         var messages_arr = std.array_list.Managed(json.Value).init(self.allocator);
 
         var user_msgs: []std.StringArrayHashMap(json.Value) = try self.allocator.alloc(std.StringArrayHashMap(json.Value), params.messages.len);
@@ -232,6 +246,10 @@ pub const Agent = struct {
             var thinking = std.StringArrayHashMap(json.Value).init(self.allocator);
             try thinking.put("type", .{ .string = "disabled" });
             try root.put("thinking", .{ .object = thinking });
+        }
+
+        if (self.thinkingEnabled) {
+            try root.put("enable_thinking", .{ .bool = true });
         }
 
         try root.put("messages", .{ .array = messages_arr });
@@ -327,7 +345,7 @@ pub const Agent = struct {
 
     pub fn call(self: *Agent, params: AgentCall) CallError!CallResponse {
         self.logMsg(.info, "Building JSON request...");
-        const json_body = try self.buildJsonRequest(params);
+        const json_body: []u8 = try self.buildJsonRequest(params);
         self.logMsg(.info, "JSON request built, sending...");
         defer self.allocator.free(json_body);
 
@@ -365,21 +383,32 @@ pub const Agent = struct {
             std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
         }
 
-        req.sendBodyComplete(@constCast(json_body)) catch |err| {
+        req.sendBodyComplete(json_body) catch |err| {
             self.logMsg(.err, @errorName(err));
             return error.SendBodyFailed;
         };
-        var redirect_buffer: [4096]u8 = undefined;
+        var redirect_buffer: [8192]u8 = undefined;
         // Use heap-allocated buffer for response body to handle large API responses
         const transfer_buffer = try self.allocator.alloc(u8, self.httpOptions.response_buffer_size);
         defer self.allocator.free(transfer_buffer);
         var response = req.receiveHead(&redirect_buffer) catch |err| {
-            self.logMsg(.err, @errorName(err));
+            if (req.connection) |conn| {
+                if (conn.getReadError()) |read_err| {
+                    const detail = std.fmt.allocPrint(self.allocator, "HTTP receive failed: {s} (detail: {s})", .{ @errorName(err), @errorName(read_err) }) catch @errorName(err);
+                    defer if (detail.len > @errorName(err).len) self.allocator.free(detail);
+                    self.logMsg(.err, detail);
+                } else {
+                    self.logMsg(.err, @errorName(err));
+                }
+            } else {
+                self.logMsg(.err, @errorName(err));
+            }
             return error.ReceiveFailed;
         };
 
         const body = response.reader(transfer_buffer[0..]).allocRemaining(self.allocator, .unlimited) catch |err| {
-            self.logMsg(.err, @errorName(err));
+            const detail_msg = std.fmt.allocPrint(self.allocator, "Failed to read response body: {s}", .{@errorName(err)}) catch @errorName(err);
+            self.logMsg(.err, detail_msg);
             return error.ReceiveFailed;
         };
         defer self.allocator.free(body);

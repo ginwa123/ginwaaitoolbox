@@ -183,7 +183,7 @@ test "bash stdin with data" {
         .timeout = 5,
         .cwd = null,
         .max_output = null,
-        .stdin_data = "hello world",
+        .stdin_data = "hell...",
     };
     const r = try bashMod.executeBash(allocator, input);
     defer allocator.free(r);

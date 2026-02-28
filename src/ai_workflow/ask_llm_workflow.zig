@@ -243,11 +243,10 @@ pub const AskLLMWorkflow = struct {
                 continue;
             };
             defer response.deinit();
+            retryCount = 0;
             // std.debug.print("response: {s}\n", .{response.content.?});
 
             if (response.finish_reason) |finish_reason| {
-                const toolsStr = if (response.tool_calls != null) "[tool_calls]" else "";
-
                 if (finish_reason == .stop) {
                     const content = response.content orelse "";
 
@@ -256,7 +255,7 @@ pub const AskLLMWorkflow = struct {
                     if (has_unresolved) {
                         std.debug.print("UNRESOLVED INTENT DETECTED - continuing loop\n", .{});
                         self.sendResponse(response, "");
-                        try self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr);
+                        try self.saveMessage(response, agent.Role.assistant.toStr(), null);
 
                         const user_msg = agent.AgentMessage{
                             .role = .user,
@@ -268,7 +267,7 @@ pub const AskLLMWorkflow = struct {
                     }
 
                     self.sendResponse(response, null);
-                    self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                    self.saveMessage(response, agent.Role.assistant.toStr(), null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
                     std.debug.print("FINISH REASON STOP", .{});
                     break;
                 } else if (finish_reason == .length) {
@@ -276,7 +275,7 @@ pub const AskLLMWorkflow = struct {
 
                     // Save partial response to history and send to client
                     self.sendResponse(response, "length");
-                    self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err|
+                    self.saveMessage(response, agent.Role.assistant.toStr(), null) catch |err|
                         std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
 
                     // Add assistant message to conversation for context
@@ -331,13 +330,24 @@ pub const AskLLMWorkflow = struct {
                             const c = contentNormal orelse "";
                             break :blk try std.mem.concat(self.allocator, u8, &.{ r, c });
                         } else null;
-                        const assistant_msg = agent.AgentMessage{
-                            .role = .assistant,
-                            .content = mergedContent,
-                            .tool_calls = assistant_tool_calls,
-                        };
-                        try messages_list.append(self.allocator, assistant_msg);
-                        self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+
+                        if (mergedContent != null and mergedContent.?.len > 0) {
+                            const assistant_msg = agent.AgentMessage{
+                                .role = .assistant,
+                                .content = mergedContent,
+                                .tool_calls = assistant_tool_calls,
+                            };
+
+                            try messages_list.append(self.allocator, assistant_msg);
+
+                            self.saveMessage(
+                                response,
+                                agent.Role.assistant.toStr(),
+                                assistant_tool_calls,  // Pass actual tool_calls, not marker string
+                            ) catch |err| {
+                                std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                            };
+                        }
 
                         // Execute each tool call and add tool result messages
                         for (tc) |tool_call| {
@@ -378,7 +388,7 @@ pub const AskLLMWorkflow = struct {
                     std.debug.print("FINISH REASON CONTENT FILTER - content was filtered due to safety policies\n", .{});
 
                     // Save the filtered response to history
-                    self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err|
+                    self.saveMessage(response, agent.Role.assistant.toStr(), null) catch |err|
                         std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
 
                     // Send error response to client with content_filter finish reason
@@ -398,7 +408,7 @@ pub const AskLLMWorkflow = struct {
                     break;
                 }
             } else {
-                self.saveMessage(response, "assistant", "") catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                self.saveMessage(response, "assistant", null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
                 std.debug.print("BREAK LLM", .{});
                 break;
             }
@@ -407,7 +417,26 @@ pub const AskLLMWorkflow = struct {
         }
     }
 
-    pub fn saveMessage(self: *AskLLMWorkflow, response: agent.Agent.CallResponse, role: []const u8, tools: []const u8) !void {
+    /// Serialize tool_calls array to JSON string
+    fn serializeToolCalls(self: *AskLLMWorkflow, tool_calls: []agent.ToolCall) ![]u8 {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+
+        var w = buf.writer(self.allocator);
+        try w.writeAll("[");
+
+        for (tool_calls, 0..) |tc, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.print(
+                \\{{"id":"{s}","function":{{"name":"{s}","arguments":"{s}"}}}}
+            , .{ tc.id, tc.function.name, tc.function.arguments });
+        }
+
+        try w.writeAll("]");
+        return try buf.toOwnedSlice(self.allocator);
+    }
+
+    pub fn saveMessage(self: *AskLLMWorkflow, response: agent.Agent.CallResponse, role: []const u8, tool_calls: ?[]agent.ToolCall) !void {
         const db = self.db;
 
         const id = try std.fmt.allocPrint(self.allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
@@ -420,8 +449,17 @@ pub const AskLLMWorkflow = struct {
         const contentStr = if (response.content) |c| c else "";
         const reasoningStr = if (response.reasoning_content) |rc| rc else "";
 
+        // Serialize tool_calls to JSON if present
+        var toolCallsJson: []const u8 = "";
+        var toolCallsOwned: ?[]u8 = null;
+        if (tool_calls) |tc| {
+            toolCallsOwned = try self.serializeToolCalls(tc);
+            toolCallsJson = toolCallsOwned.?;
+        }
+        defer if (toolCallsOwned) |tcj| self.allocator.free(tcj);
+
         const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, role, tools, reasoningStr };
+        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, role, toolCallsJson, reasoningStr };
         try db.exec(self.allocator, sql, sqlArgs);
     }
 
