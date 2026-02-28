@@ -385,12 +385,20 @@ pub const AskLLMWorkflow = struct {
                                     .{ agent_prompt, agent_message },
                                 );
 
-                                // 1. Send tool result FIRST (satisfies the API requirement)
+                                // 1. Create tool result message and add to messages_list (required for API)
+                                const tool_result_msg = agent.AgentMessage{
+                                    .role = .tool,
+                                    .content = "<change_agent_tool_result>",
+                                    .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                                };
+                                try messages_list.append(self.allocator, tool_result_msg);
+
+                                // 2. Save tool result to database
                                 self.saveMessageAsTool("<change_agent_tool_result>", tool_call.id) catch |err|
                                     std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
                                 self.sendToolResult("<change_agent_tool_result>", tool_call.id, tool_call.function.name);
 
-                                // 2. Replace system message only, keep all history
+                                // 3. Replace system message only, keep all history
                                 var system_replaced = false;
                                 for (messages_list.items) |*msg| {
                                     if (msg.role == .system) {
