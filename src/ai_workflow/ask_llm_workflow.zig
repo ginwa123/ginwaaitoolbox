@@ -150,7 +150,7 @@ pub const AskLLMWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
-    pub fn sendError(self: *AskLLMWorkflow, err_msg: []const u8) void {
+    pub fn sendError(self: *AskLLMWorkflow, err_msg: []const u8, finish_reason: ?[]const u8) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -159,7 +159,10 @@ pub const AskLLMWorkflow = struct {
 
         w.writeAll("<response><error>") catch return;
         w.writeAll(err_msg) catch return;
-        w.writeAll("</error><finish_reason>stop</finish_reason></response>") catch return;
+        w.writeAll("</error><finish_reason>") catch return;
+        const fr = finish_reason orelse "stop";
+        w.writeAll(fr) catch return;
+        w.writeAll("</finish_reason></response>") catch return;
 
         std.debug.print("SEND ERROR XML: {s}\n", .{buf.items});
 
@@ -205,7 +208,7 @@ pub const AskLLMWorkflow = struct {
         self.runInternal() catch |err| {
             const err_msg = std.fmt.allocPrint(self.allocator, "{s}", .{@errorName(err)}) catch return;
             defer self.allocator.free(err_msg);
-            self.sendError(err_msg);
+            self.sendError(err_msg, null);
         };
     }
 
@@ -267,10 +270,33 @@ pub const AskLLMWorkflow = struct {
                     self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
                     std.debug.print("FINISH REASON STOP", .{});
                     break;
-                } else if (finish_reason == .length) { // still not implemented
-                    // self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
-                    std.debug.print("FINISH REASON LENGTH", .{});
-                    break;
+                } else if (finish_reason == .length) {
+                    std.debug.print("FINISH REASON LENGTH - continuing...\n", .{});
+
+                    // Save partial response to history and send to client
+                    self.sendResponse(response, "length");
+                    self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err|
+                        std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+
+                    // Add assistant message to conversation for context
+                    const content_copy = if (response.content) |c|
+                        try self.allocator.dupe(u8, c)
+                    else
+                        null;
+
+                    const assistant_msg = agent.AgentMessage{
+                        .role = .assistant,
+                        .content = content_copy,
+                    };
+                    try messages_list.append(self.allocator, assistant_msg);
+
+                    // Add continuation prompt
+                    const continue_msg = agent.AgentMessage{
+                        .role = .user,
+                        .content = "Please continue from where you left off.",
+                    };
+                    try messages_list.append(self.allocator, continue_msg);
+                    continue;
                 } else if (finish_reason == .tool_calls) {
                     self.sendResponse(response, null);
                     std.debug.print("FINISH REASON TOOL CALLS - executing tools\n", .{});
@@ -348,8 +374,26 @@ pub const AskLLMWorkflow = struct {
                     }
                     continue;
                 } else if (finish_reason == .content_filter) {
-                    self.saveMessage(response, "assistant", toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
-                    std.debug.print("FINISH REASON CONTENT FILTER", .{});
+                    std.debug.print("FINISH REASON CONTENT FILTER - content was filtered due to safety policies\n", .{});
+                    
+                    // Save the filtered response to history
+                    self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| 
+                        std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                    
+                    // Send error response to client with content_filter finish reason
+                    // The response content may be empty or contain partial filtered content
+                    if (response.content) |c| {
+                        if (c.len > 0) {
+                            // Send the partial content with content_filter finish reason
+                            self.sendResponse(response, "content_filter");
+                        } else {
+                            // No content, send error message
+                            self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "content_filter");
+                        }
+                    } else {
+                        // No content, send error message
+                        self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "content_filter");
+                    }
                     break;
                 }
             } else {

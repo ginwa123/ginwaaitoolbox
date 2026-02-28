@@ -96,11 +96,11 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) ![]const u8 {
 
     const was_truncated = stdout_data.items.len >= max_output or stderr_data.items.len >= max_output;
 
-    var trunc_buf: [203]u8 = undefined;
-    const truncated_command = if (input.command.len > 200) blk: {
-        trunc_buf[0..200].* = input.command[0..200].*;
-        trunc_buf[200..203].* = "...".*;
-        break :blk trunc_buf[0..203];
+    var trunc_buf: [13]u8 = undefined;
+    const truncated_command = if (input.command.len > 10) blk: {
+        trunc_buf[0..10].* = input.command[0..10].*;
+        trunc_buf[10..13].* = "...".*;
+        break :blk trunc_buf[0..13];
     } else input.command;
 
     const output = try std.fmt.allocPrint(allocator,

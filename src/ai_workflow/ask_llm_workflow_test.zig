@@ -538,3 +538,118 @@ test "sendResponse generates valid XML with markdown content" {
 
     workflow.sendResponse(response, null);
 }
+
+test "sendError with content_filter finish reason" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.session_id = "test-content-filter";
+    workflow.model = "test-model";
+    workflow.conn_fd = -1; // No connection, just test it doesn't crash
+
+    // Test sendError with content_filter finish reason
+    workflow.sendError("Content was filtered due to safety policies.", "content_filter");
+}
+
+test "sendError with null finish reason defaults to stop" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.session_id = "test-error-stop";
+    workflow.model = "test-model";
+    workflow.conn_fd = -1;
+
+    // Test sendError with null finish reason (should default to "stop")
+    workflow.sendError("Some error occurred.", null);
+}
+
+test "sendResponse with content_filter override" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.session_id = "test-response-filter";
+    workflow.model = "test-model";
+    workflow.conn_fd = -1;
+
+    // Test sendResponse with content_filter override
+    const response = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Partial content before filter",
+        .tool_calls = null,
+        .finish_reason = .content_filter,
+    };
+
+    workflow.sendResponse(response, "content_filter");
+}
