@@ -149,6 +149,7 @@ pub const Agent = struct {
     temperature: f32 = 0.6,
     maxTokens: usize = 10000,
     httpClient: std.http.Client,
+    thinkingEnabled: bool = true,
     allocator: std.mem.Allocator,
     logger: ?AgentLogger = null,
     httpOptions: HttpOptions = .{},
@@ -209,6 +210,14 @@ pub const Agent = struct {
 
         var root = std.StringArrayHashMap(json.Value).init(self.allocator);
         try root.put("model", .{ .string = self.model });
+        
+        // Add thinking configuration for Kimi K2.5 models
+        if (!self.thinkingEnabled) {
+            var thinking = std.StringArrayHashMap(json.Value).init(self.allocator);
+            try thinking.put("type", .{ .string = "disabled" });
+            try root.put("thinking", .{ .object = thinking });
+        }
+        
         try root.put("messages", .{ .array = messages_arr });
         const temp = params.temperature orelse self.temperature;
         try root.put("temperature", .{ .float = temp });

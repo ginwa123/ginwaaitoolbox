@@ -289,13 +289,21 @@ pub const AskLLMWorkflow = struct {
                         }
 
                         // Merge reasoning_content into content of the tool call assistant message
-                        const mergedContent = if (response.reasoning_content) |rc|
+                        const reasoningContent: ?[]u8 = if (response.reasoning_content) |rc|
                             try self.allocator.dupe(u8, rc)
-                        else if (response.content) |c|
+                        else
+                            null;
+
+                        const contentNormal: ?[]u8 = if (response.content) |c|
                             try self.allocator.dupe(u8, c)
                         else
                             null;
 
+                        const mergedContent: ?[]u8 = if (reasoningContent != null or contentNormal != null) blk: {
+                            const r = reasoningContent orelse "";
+                            const c = contentNormal orelse "";
+                            break :blk try std.mem.concat(self.allocator, u8, &.{ r, c });
+                        } else null;
                         const assistant_msg = agent.AgentMessage{
                             .role = .assistant,
                             .content = mergedContent,
@@ -364,7 +372,7 @@ pub const AskLLMWorkflow = struct {
         defer self.allocator.free(createdStr);
 
         const finishReasonStr = if (response.finish_reason) |fr| fr.toStr() else "null";
-        const contentStr = if (response.content) |c| c else if (response.tool_calls != null) "" else return;
+        const contentStr = if (response.content) |c| c else "";
         const reasoningStr = if (response.reasoning_content) |rc| rc else "";
 
         const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";

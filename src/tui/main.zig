@@ -15,6 +15,25 @@ const sockaddr_un = if (builtin.os.tag != .windows)
 else
     void;
 
+fn enableRawMode() !std.posix.termios {
+    const original = try std.posix.tcgetattr(std.posix.STDIN_FILENO);
+    var raw = original;
+    raw.lflag.ECHO = false; // no echo
+    raw.lflag.ICANON = false; // no line buffering
+    raw.lflag.ISIG = false; // no signals
+    raw.lflag.IEXTEN = false;
+    // DO NOT touch ICRNL - keep \r -> \n conversion
+    // DO NOT touch OPOST - keep output processing
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+    try std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw);
+    return original;
+}
+
+fn disableRawMode(original: std.posix.termios) void {
+    std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, original) catch {};
+}
+
 fn spawnBackend() !void {
     if (std.fs.accessAbsolute(SOCKET_PATH, .{})) |_| {
         return;
@@ -71,7 +90,6 @@ fn connectToSocket() !std.posix.fd_t {
 fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
-
     for (s) |c| {
         switch (c) {
             '"' => try result.appendSlice(allocator, "\\\""),
@@ -106,7 +124,6 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
     var buf: [4096]u8 = undefined;
-    // var in_content = false;
 
     std.debug.print("{s}▸{s} ", .{ yellow, reset });
 
@@ -116,7 +133,6 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
 
         try buffer.appendSlice(allocator, buf[0..n]);
 
-        // Check for content tag in full buffer
         for (buf[0..n]) |byte| {
             std.debug.print("{c}", .{byte});
         }
@@ -126,10 +142,6 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
                 break;
             }
         }
-
-        // if (buffer.items.len >= 11 and std.mem.endsWith(u8, buffer.items, "</response>")) {
-        //     break;
-        // }
     }
     std.debug.print("\n", .{});
     return try buffer.toOwnedSlice(allocator);
@@ -163,122 +175,109 @@ pub fn trim(s: []const u8) []const u8 {
     return s[start..end];
 }
 
-fn showResponse(response: []const u8) void {
-    var xml = response;
-
-    if (std.mem.startsWith(u8, response, "<response>")) {
-        xml = response[9..];
-        if (std.mem.endsWith(u8, xml, "</response>")) {
-            xml = xml[0 .. xml.len - 11];
-        }
-    }
-
-    const content = extractTag(xml, "content") orelse {
-        std.debug.print("{s}{s}{s}\n", .{ dim, xml, reset });
-        return;
-    };
-
-    std.debug.print("\n{s}┌{s}┐{s}\n", .{ cyan, "─" ** 56, reset });
-
-    if (extractTag(content, "agent")) |n| {
-        const t = trim(n);
-        if (t.len > 0) std.debug.print("{s}│{s} 🤖 {s}Agent:{s} {s}{s}{s}\n", .{ cyan, reset, yellow, reset, bold, t, reset });
-    }
-    if (extractTag(content, "thought")) |t| {
-        const x = trim(t);
-        if (x.len > 0) std.debug.print("{s}│{s} 💭 {s}{s}{s}\n", .{ cyan, reset, dim, x, reset });
-    }
-    if (extractTag(content, "markdown")) |m| {
-        const x = trim(m);
-        if (x.len > 0) std.debug.print("{s}├{s}┤{s}\n{s}│{s}\n{s}\n", .{ cyan, "─" ** 56, reset, cyan, reset, x });
-    }
-
-    if (extractTag(content, "finish_reason")) |fr| {
-        const fr_trimmed = trim(fr);
-        if (fr_trimmed.len > 0) {
-            const fr_display = if (std.mem.eql(u8, fr_trimmed, "stop"))
-                "stop"
-            else if (std.mem.eql(u8, fr_trimmed, "tool_calls"))
-                "tool_calls"
-            else if (std.mem.eql(u8, fr_trimmed, "length"))
-                "length"
-            else if (std.mem.eql(u8, fr_trimmed, "content_filter"))
-                "content_filter"
-            else
-                fr_trimmed;
-            std.debug.print("{s}│{s} ✓ {s}Finish: {s}{s}\n", .{ cyan, reset, green, fr_display, reset });
-        }
-    }
-
-    std.debug.print("{s}└{s}┘{s}\n\n", .{ cyan, "─" ** 56, reset });
-}
-
 pub const KEBINDING = enum(u8) {
     CTRL_C = 3,
     ENTER = 13,
 };
 
+fn readEscapeSequence(buf: *[16]u8) !usize {
+    buf[0] = 0x1b;
+    var i: usize = 1;
+    while (i < buf.len) {
+        var b: [1]u8 = undefined;
+        var bytes_available: c_int = 0;
+        _ = std.os.linux.ioctl(std.posix.STDIN_FILENO, std.os.linux.T.FIONREAD, @intFromPtr(&bytes_available));
+        if (bytes_available == 0) break;
+        const n = std.posix.read(std.posix.STDIN_FILENO, &b) catch break;
+        if (n == 0) break;
+        buf[i] = b[0];
+        i += 1;
+        if (b[0] == '~') break;
+    }
+    return i;
+}
+
 pub fn main() !void {
     try spawnBackend();
     try waitForSocket(10000);
-
     const socket_fd = try connectToSocket();
     defer std.posix.close(socket_fd);
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("{s}Connected!{s}\n", .{ green, reset });
-    std.debug.print("Type message and press Enter. Ctrl+C to exit.\n\n", .{});
+    // enable raw mode BEFORE printing anything interactive
+    const original_termios = try enableRawMode();
+    defer disableRawMode(original_termios);
+
+    std.debug.print("{s}Connected!{s}\r\n", .{ green, reset });
+    std.debug.print("Type message and press Enter. Ctrl+C to exit.\r\n\r\n", .{});
 
     const session_id: []u8 = try std.fmt.allocPrint(allocator, "session_{}", .{std.time.timestamp()});
     defer allocator.free(session_id);
-
     var input = std.ArrayList(u8).empty;
     defer input.deinit(allocator);
 
+    // enable bracketed paste mode
+    std.debug.print("\x1b[?2004h", .{});
+    defer std.debug.print("\x1b[?2004l", .{});
+
     std.debug.print("{s}>{s} ", .{ bold, reset });
+
+    var pasting: bool = false;
 
     while (true) {
         var buf: [1]u8 = undefined;
         const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
-
         if (n == 0) {
             std.Thread.sleep(10000000);
             continue;
         }
-
         const c = buf[0];
 
         if (c == @intFromEnum(KEBINDING.CTRL_C)) break;
 
+        if (c == 0x1b) {
+            var esc: [16]u8 = undefined;
+            const len = try readEscapeSequence(&esc);
+            const seq = esc[0..len];
+
+            if (std.mem.eql(u8, seq, "\x1b[200~")) {
+                pasting = true;
+            } else if (std.mem.eql(u8, seq, "\x1b[201~")) {
+                pasting = false;
+            }
+            continue;
+        }
+
         if (c == 127 or c == 8) {
-            if (input.items.len > 0) {
+            if (!pasting and input.items.len > 0) {
                 _ = input.pop();
                 std.debug.print("\x08 \x08", .{});
             }
-        } else if (c == 13 or c == 10 or c == @intFromEnum(KEBINDING.ENTER)) {
-            if (input.items.len > 0) {
-                std.debug.print("\n\n", .{});
-                try sendMessage(socket_fd, session_id, input.items);
-
-                const response = readResponseAndStream(socket_fd, allocator) catch "";
-                if (response.len > 0) {
-                    // Content already shown via streaming
-                } else {
-                    std.debug.print("{s}No response{s}\n", .{ dim, reset });
-                }
-
-                input.clearRetainingCapacity();
-                std.debug.print("\n{s}>{s} ", .{ bold, reset });
+        } else if (c == @intFromEnum(KEBINDING.ENTER) or c == 10) {
+            if (pasting) {
+                try input.append(allocator, '\n');
+                std.debug.print("\r\n", .{});
             } else {
-                std.debug.print("\n{s}>{s} ", .{ bold, reset });
+                if (input.items.len > 0) {
+                    std.debug.print("\r\n\r\n", .{});
+                    std.debug.print("\r\nDEBUG sending: '{s}'\r\n", .{input.items});
+                    try sendMessage(socket_fd, session_id, input.items);
+                    const response = readResponseAndStream(socket_fd, allocator) catch "";
+                    if (response.len == 0) {
+                        std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
+                    }
+                    input.clearRetainingCapacity();
+                    std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
+                } else {
+                    std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
+                }
             }
         } else if (c >= 32) {
             try input.append(allocator, c);
             std.debug.print("{c}", .{c});
         }
     }
-    std.debug.print("\n{s}Bye!{s}\n", .{ dim, reset });
+    std.debug.print("\r\n{s}Bye!{s}\r\n", .{ dim, reset });
 }
