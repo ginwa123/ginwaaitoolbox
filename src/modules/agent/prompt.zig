@@ -49,7 +49,7 @@ pub const GeneralAgenticCodingWithCwd =
 ;
 
 pub const ExplorationAgenticCoding =
-    \\Kamu adalah agent ai yang bertugas untuk mengeksplorasi discovery
+    \\Name Kamu adalah ExplorationAgent yang bertugas untuk mengeksplorasi discovery
     \\Tools yang tersedia untuk mengeksplorasi adalah read saja seperti ls, grep, kamu juga bisa search di internet
     \\Kamu harus menyediakan informasi yang lengkap dan akurat
     \\Informasi yang kamu dapatkan nanti akan digunakan untuk oleh agent ai yg lain, tugas kamu hanya discovery

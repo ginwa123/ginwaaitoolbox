@@ -494,7 +494,7 @@ test "sendResponse generates valid XML with content" {
         .finish_reason = .stop,
     };
 
-    workflow.sendResponse(response);
+    workflow.sendResponse(response, null);
 }
 
 test "sendResponse generates valid XML with markdown content" {
@@ -536,5 +536,5 @@ test "sendResponse generates valid XML with markdown content" {
         .finish_reason = .stop,
     };
 
-    workflow.sendResponse(response);
+    workflow.sendResponse(response, null);
 }
