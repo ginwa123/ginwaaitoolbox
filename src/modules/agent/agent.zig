@@ -35,6 +35,7 @@ pub const Message = struct {
     role: []const u8 = "assistant",
     content: ?[]const u8 = null,
     tool_calls: ?[]ToolCall = null,
+    reasoning_content: ?[]const u8 = null,
 };
 
 pub const Role = enum {
@@ -70,10 +71,12 @@ pub const AgentMessage = struct {
     content: ?[]const u8,
     tool_calls: ?[]ToolCall = null,
     tool_call_id: ?[]const u8 = null,
+    reasoning_content: ?[]const u8 = null,
 
     pub fn deinit(self: *const AgentMessage, allocator: std.mem.Allocator) void {
         if (self.content) |c| allocator.free(c);
         if (self.tool_call_id) |id| allocator.free(id);
+        if (self.reasoning_content) |rc| allocator.free(rc);
         if (self.tool_calls) |tc| {
             for (tc) |*tool_call| {
                 allocator.free(tool_call.id);
@@ -121,6 +124,8 @@ pub const FinishReason = enum {
 pub const AgentCall = struct {
     tools: []const AgentTool,
     messages: []const AgentMessage,
+    temperature: ?f32 = null,
+    max_tokens: ?usize = null,
 };
 
 pub const AgentLogger = *const fn (level: std.log.Level, message: []const u8) void;
@@ -146,9 +151,11 @@ pub const Agent = struct {
         content: ?[]const u8,
         tool_calls: ?[]ToolCall,
         finish_reason: ?FinishReason,
+        reasoning_content: ?[]const u8 = null,
 
         pub fn deinit(self: *const CallResponse) void {
             if (self.content) |c| self.allocator.free(c);
+            if (self.reasoning_content) |rc| self.allocator.free(rc);
             if (self.tool_calls) |tc| self.allocator.free(tc);
         }
     };
@@ -181,6 +188,10 @@ pub const Agent = struct {
             if (msg.content) |c| {
                 try user_msgs[i].put("content", .{ .string = c });
             }
+            // Add reasoning_content for assistant messages
+            if (msg.reasoning_content) |rc| {
+                try user_msgs[i].put("reasoning_content", .{ .string = rc });
+            }
             // Add tool_call_id for tool result messages
             if (msg.tool_call_id) |id| {
                 try user_msgs[i].put("tool_call_id", .{ .string = id });
@@ -191,8 +202,10 @@ pub const Agent = struct {
         var root = std.StringArrayHashMap(json.Value).init(self.allocator);
         try root.put("model", .{ .string = self.model });
         try root.put("messages", .{ .array = messages_arr });
-        try root.put("temperature", .{ .float = self.temperature });
-        try root.put("max_tokens", .{ .integer = @intCast(self.maxTokens) });
+        const temp = params.temperature orelse self.temperature;
+        try root.put("temperature", .{ .float = temp });
+        const max_tokens = params.max_tokens orelse self.maxTokens;
+        try root.put("max_tokens", .{ .integer = @intCast(max_tokens) });
 
         var message_buffer_out = std.io.Writer.Allocating.init(self.allocator);
         var stringifier = json.Stringify{
@@ -362,11 +375,16 @@ pub const Agent = struct {
         const content = message.object.get("content");
         const tool_calls_val = message.object.get("tool_calls");
         const finish_reason_val = first_choice.object.get("finish_reason");
+        const reasoning_content_val = message.object.get("reasoning_content");
 
         if (content != null) {
             self.logMsg(.info, "Response content received");
         } else if (tool_calls_val != null) {
             self.logMsg(.info, "Response contains tool_calls");
+        }
+
+        if (reasoning_content_val) |rc| {
+            self.logMsg(.debug, rc.string);
         }
 
         var tool_calls: ?[]ToolCall = null;
@@ -390,15 +408,80 @@ pub const Agent = struct {
             content_copy = try self.allocator.dupe(u8, c.string);
         }
 
+        var reasoning_content_copy: ?[]const u8 = null;
+        if (reasoning_content_val) |rc| {
+            reasoning_content_copy = try self.allocator.dupe(u8, rc.string);
+        }
+
         return .{
             .allocator = self.allocator,
             .content = content_copy,
             .tool_calls = tool_calls,
             .finish_reason = finish_reason,
+            .reasoning_content = reasoning_content_copy,
         };
     }
 
     pub fn deinit(self: *Agent) void {
         self.httpClient.deinit();
+    }
+
+    pub const INTENT_JUDGE_SYSTEM =
+        \\You are an intent classifier for an AI agent loop.
+        \\
+        \\Your job is to determine if an assistant message contains UNRESOLVED intent —
+        \\meaning the assistant described or planned an action but did NOT actually perform it.
+        \\
+        \\UNRESOLVED intent examples (answer YES):
+        \\- "Let me check the file..." (but no tool was called)
+        \\- "Now I'll verify the backend can start..."
+        \\- "I need to run the tests first"
+        \\- "Let me look at the directory structure"
+        \\- "I should verify this works"
+        \\- "Next, I will install the dependencies"
+        \\- "Good, all the files are in place. Now let me check..."
+        \\
+        \\RESOLVED intent examples (answer NO):
+        \\- The assistant summarized results of something already done
+        \\- The assistant asked the user a question
+        \\- The assistant explained a concept or gave instructions
+        \\- The assistant said the task is complete
+        \\- The assistant listed what was accomplished
+        \\
+        \\Answer ONLY with YES or NO. No explanation.
+    ;
+
+    pub fn hasUnresolvedIntent(self: *Agent, assistant_message: []const u8) !bool {
+        const user_content = try std.fmt.allocPrint(self.allocator,
+            \\Assistant message to classify:
+            \\
+            \\<message>
+            \\{s}
+            \\</message>
+            \\
+            \\Does this message contain unresolved intent (planned but not yet executed action)?
+            \\Answer YES or NO only.
+        , .{assistant_message});
+        defer self.allocator.free(user_content);
+
+        const messages = &.{
+            AgentMessage{ .role = .system, .content = Agent.INTENT_JUDGE_SYSTEM },
+            AgentMessage{ .role = .user, .content = user_content },
+        };
+
+        const call_response = try self.call(.{
+            .tools = &.{},
+            .messages = messages,
+            .temperature = 0.0,
+        });
+        defer call_response.deinit();
+
+        const answer = call_response.content orelse "";
+        var upper = try self.allocator.alloc(u8, answer.len);
+        for (answer, 0..) |c, i| {
+            upper[i] = std.ascii.toUpper(c);
+        }
+
+        return std.mem.startsWith(u8, upper, "YES");
     }
 };

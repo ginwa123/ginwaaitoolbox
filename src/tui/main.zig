@@ -71,9 +71,13 @@ fn connectToSocket() !std.posix.fd_t {
 fn sendMessage(socket_fd: std.posix.fd_t, session_id: []const u8, message: []const u8) !void {
     var json_buf = std.ArrayList(u8).empty;
     defer json_buf.deinit(std.heap.page_allocator);
+
+    const cwd = std.process.getCwdAlloc(std.heap.page_allocator) catch "";
+    defer std.heap.page_allocator.free(cwd);
+
     try json_buf.writer(std.heap.page_allocator).print(
-        "{{\"command_type\":\"agent_ask\",\"session_id\":\"{s}\",\"message\":\"{s}\"}}",
-        .{ session_id, message },
+        "{{\"command_type\":\"agent_ask\",\"session_id\":\"{s}\",\"message\":\"{s}\",\"cwd_session\":\"{s}\"}}",
+        .{ session_id, message, cwd },
     );
     _ = try std.posix.write(socket_fd, json_buf.items);
 }

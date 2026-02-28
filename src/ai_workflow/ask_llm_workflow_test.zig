@@ -23,6 +23,11 @@ test "transformMessageToAgentMessages with user message" {
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -70,6 +75,11 @@ test "transformMessageToAgentMessages with assistant message" {
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -116,6 +126,11 @@ test "transformMessageToAgentMessages with tool_calls message" {
         .version = migrations.Migration002AddRoleToLLMHistory.version,
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
     });
     try mgr.runMigrations();
 
@@ -166,6 +181,11 @@ test "saveMessage saves response to llm_history" {
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -208,6 +228,11 @@ test "saveMessageAsUser saves user message to llm_history" {
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -242,6 +267,11 @@ test "saveMessageAsTool saves tool result to llm_history" {
         .version = migrations.Migration002AddRoleToLLMHistory.version,
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
     });
     try mgr.runMigrations();
 
@@ -279,6 +309,11 @@ test "buildMessages returns correct message structure" {
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -315,6 +350,11 @@ test "getMessages retrieves messages by session_id" {
         .version = migrations.Migration002AddRoleToLLMHistory.version,
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
     });
     try mgr.runMigrations();
 
@@ -369,6 +409,11 @@ test "buildMessages handles tool_calls response correctly" {
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -391,9 +436,7 @@ test "buildMessages handles tool_calls response correctly" {
     const messages = try workflow.buildMessages();
     defer {
         for (messages) |*msg| {
-            if (msg.role == .assistant or msg.role == .tool) {
-                if (msg.content) |c| allocator.free(c);
-            }
+            if (msg.content) |c| allocator.free(c);
             if (msg.tool_call_id) |tid| allocator.free(tid);
             if (msg.tool_calls) |tc| {
                 for (tc) |*call| {
@@ -431,6 +474,11 @@ test "sendResponse generates valid XML with content" {
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -467,6 +515,11 @@ test "sendResponse generates valid XML with markdown content" {
         .version = migrations.Migration002AddRoleToLLMHistory.version,
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
     });
     try mgr.runMigrations();
 

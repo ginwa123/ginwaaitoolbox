@@ -16,6 +16,7 @@ pub const AskLLMHistory = struct {
     finish_reason: []const u8,
     role: []const u8,
     tools: []const u8,
+    reasoning_content: ?[]const u8 = null,
 
     pub fn deinit(self: *AskLLMHistory, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -26,6 +27,7 @@ pub const AskLLMHistory = struct {
         allocator.free(self.finish_reason);
         allocator.free(self.role);
         allocator.free(self.tools);
+        if (self.reasoning_content) |rc| allocator.free(rc);
     }
 };
 
@@ -36,6 +38,9 @@ pub const AskLLMWorkflow = struct {
     session_id: []const u8 = "",
 
     message: []const u8 = "",
+
+    // current working directory
+    cwd: []const u8 = "",
 
     api_key: []const u8 = "",
     model: []const u8 = "",
@@ -50,7 +55,7 @@ pub const AskLLMWorkflow = struct {
         };
     }
 
-    pub fn sendResponse(self: *AskLLMWorkflow, response: agent.Agent.CallResponse) void {
+    pub fn sendResponse(self: *AskLLMWorkflow, response: agent.Agent.CallResponse, override_finish_reason: ?[]const u8) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -63,6 +68,12 @@ pub const AskLLMWorkflow = struct {
             w.writeAll("<content>") catch return;
             w.writeAll(content) catch return;
             w.writeAll("</content>") catch return;
+        }
+
+        if (response.reasoning_content) |rc| {
+            w.writeAll("<reasoning_content>") catch return;
+            w.writeAll(rc) catch return;
+            w.writeAll("</reasoning_content>") catch return;
         }
 
         if (response.tool_calls) |tc| {
@@ -81,7 +92,13 @@ pub const AskLLMWorkflow = struct {
 
         w.writeAll("</message>") catch return;
 
-        if (response.finish_reason) |fr| {
+        if (override_finish_reason) |fr| {
+            if (fr.len > 0) {
+                w.writeAll("<finish_reason>") catch return;
+                w.writeAll(fr) catch return;
+                w.writeAll("</finish_reason>") catch return;
+            }
+        } else if (response.finish_reason) |fr| {
             w.writeAll("<finish_reason>") catch return;
             w.writeAll(fr.toStr()) catch return;
             w.writeAll("</finish_reason>") catch return;
@@ -130,10 +147,33 @@ pub const AskLLMWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
+    pub fn sendError(self: *AskLLMWorkflow, err_msg: []const u8) void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.writeAll("<response><error>") catch return;
+        w.writeAll(err_msg) catch return;
+        w.writeAll("</error><finish_reason>stop</finish_reason></response>") catch return;
+
+        std.debug.print("SEND ERROR XML: {s}\n", .{buf.items});
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
+            if (err != error.BrokenPipe) {
+                std.debug.print("Send Error response error {s}\n", .{@errorName(err)});
+            }
+        };
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
+    }
+
     pub fn buildMessages(self: *AskLLMWorkflow) ![]agent.AgentMessage {
+        const systemContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd);
+
         const systemMessage = agent.AgentMessage{
             .role = .system,
-            .content = prompt.AgenticCoding,
+            .content = systemContent,
         };
 
         const historyMessages = try self.getMessages();
@@ -158,7 +198,15 @@ pub const AskLLMWorkflow = struct {
         return try allMessages.toOwnedSlice(self.allocator);
     }
 
-    pub fn run(self: *AskLLMWorkflow) !void {
+    pub fn run(self: *AskLLMWorkflow) void {
+        self.runInternal() catch |err| {
+            const err_msg = std.fmt.allocPrint(self.allocator, "{s}", .{@errorName(err)}) catch return;
+            defer self.allocator.free(err_msg);
+            self.sendError(err_msg);
+        };
+    }
+
+    fn runInternal(self: *AskLLMWorkflow) !void {
         self.saveMessageAsUser(self.message) catch |err| std.debug.print("saveMessageAsUser error: {s}\n", .{@errorName(err)});
 
         // Use ArrayList for dynamic message appending during tool execution
@@ -170,7 +218,7 @@ pub const AskLLMWorkflow = struct {
 
         var retryCount: usize = 0;
         while (true) {
-            if (retryCount > 3) return error.TooManyRetries;
+            if (retryCount > 10) return error.TooManyRetries;
             var agenttt = try agent.Agent.init(self.allocator);
             defer agenttt.deinit();
 
@@ -194,7 +242,25 @@ pub const AskLLMWorkflow = struct {
                 const toolsStr = if (response.tool_calls != null) "[tool_calls]" else "";
 
                 if (finish_reason == .stop) {
-                    self.sendResponse(response);
+                    const content = response.content orelse "";
+
+                    const has_unresolved = agenttt.hasUnresolvedIntent(content) catch false;
+
+                    if (has_unresolved) {
+                        std.debug.print("UNRESOLVED INTENT DETECTED - continuing loop\n", .{});
+                        self.sendResponse(response, "");
+                        try self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr);
+
+                        const user_msg = agent.AgentMessage{
+                            .role = .user,
+                            .content = "Please continue and execute the action you described.",
+                        };
+                        try messages_list.append(self.allocator, user_msg);
+                        retryCount += 1;
+                        continue;
+                    }
+
+                    self.sendResponse(response, null);
                     self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
                     std.debug.print("FINISH REASON STOP", .{});
                     break;
@@ -203,8 +269,7 @@ pub const AskLLMWorkflow = struct {
                     std.debug.print("FINISH REASON LENGTH", .{});
                     break;
                 } else if (finish_reason == .tool_calls) {
-                    self.sendResponse(response);
-                    self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                    self.sendResponse(response, null);
                     std.debug.print("FINISH REASON TOOL CALLS - executing tools\n", .{});
 
                     if (response.tool_calls) |tc| {
@@ -220,12 +285,21 @@ pub const AskLLMWorkflow = struct {
                             };
                         }
 
+                        // Merge reasoning_content into content of the tool call assistant message
+                        const mergedContent = if (response.reasoning_content) |rc|
+                            try self.allocator.dupe(u8, rc)
+                        else if (response.content) |c|
+                            try self.allocator.dupe(u8, c)
+                        else
+                            null;
+
                         const assistant_msg = agent.AgentMessage{
                             .role = .assistant,
-                            .content = if (response.content) |c| try self.allocator.dupe(u8, c) else null,
+                            .content = mergedContent,
                             .tool_calls = assistant_tool_calls,
                         };
                         try messages_list.append(self.allocator, assistant_msg);
+                        self.saveMessage(response, agent.Role.assistant.toStr(), toolsStr) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
 
                         // Execute each tool call and add tool result messages
                         for (tc) |tool_call| {
@@ -287,10 +361,11 @@ pub const AskLLMWorkflow = struct {
         defer self.allocator.free(createdStr);
 
         const finishReasonStr = if (response.finish_reason) |fr| fr.toStr() else "null";
-        const contentStr = if (response.content) |c| c else "";
+        const contentStr = if (response.content) |c| c else if (response.tool_calls != null) "" else return;
+        const reasoningStr = if (response.reasoning_content) |rc| rc else "";
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, role, tools };
+        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, role, tools, reasoningStr };
         try db.exec(self.allocator, sql, sqlArgs);
     }
 
@@ -325,7 +400,7 @@ pub const AskLLMWorkflow = struct {
     pub fn getMessages(self: *AskLLMWorkflow) ![]AskLLMHistory {
         var results: std.ArrayList(AskLLMHistory) = .empty;
 
-        const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, '') FROM llm_history WHERE session_id = ? ORDER BY created ASC";
+        const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, '') FROM llm_history WHERE session_id = ? ORDER BY created ASC";
         var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
         defer rows.deinit();
 
@@ -339,6 +414,7 @@ pub const AskLLMWorkflow = struct {
                 .finish_reason = try self.allocator.dupe(u8, row.values[5]),
                 .role = try self.allocator.dupe(u8, row.values[6]),
                 .tools = try self.allocator.dupe(u8, row.values[7]),
+                .reasoning_content = if (row.values[8].len > 0) try self.allocator.dupe(u8, row.values[8]) else null,
             };
             try results.append(self.allocator, history);
             row.deinit(self.allocator);
@@ -390,13 +466,20 @@ pub const AskLLMWorkflow = struct {
                 }
             }
 
-            const content: ?[]const u8 = if (isToolCalls) null else try self.allocator.dupe(u8, message.response_content);
+            const content: ?[]const u8 = if (isToolCalls)
+                (if (message.reasoning_content) |rc| try self.allocator.dupe(u8, rc) else null)
+            else
+                try self.allocator.dupe(u8, message.response_content);
+
+            const reasoning_content: ?[]const u8 = if (message.reasoning_content) |rc| try self.allocator.dupe(u8, rc) else null;
 
             const role = agent.Role.fromStr(message.role) orelse .assistant;
+
             const agentMessage = agent.AgentMessage{
                 .role = role,
                 .content = content,
                 .tool_calls = tool_calls,
+                .reasoning_content = reasoning_content,
             };
             try messages.append(self.allocator, agentMessage);
         }

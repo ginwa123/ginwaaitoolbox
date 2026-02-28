@@ -263,4 +263,31 @@ pub fn build(b: *std.Build) void {
     });
     copy_to_system.step.dependOn(&install_linux_system.step);
     linux_system_step.dependOn(&copy_to_system.step);
+
+    // TUI for Linux x86_64 - Install to system (/usr/local/bin)
+    const tui_linux_system_step = b.step("install:tui:linux:system", "Build TUI for Linux x86_64 and install to system (/usr/local/bin - requires sudo)");
+    const tui_linux_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .gnu,
+    });
+    const tui_linux_exe = b.addExecutable(.{
+        .name = "zigginagentic-tui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tui/main.zig"),
+            .target = tui_linux_target,
+            .optimize = optimize,
+        }),
+    });
+    tui_linux_exe.linkLibC();
+    const install_tui_linux_system = b.addInstallArtifact(tui_linux_exe, .{});
+    tui_linux_system_step.dependOn(&install_tui_linux_system.step);
+
+    const copy_tui_to_system = b.addSystemCommand(&.{
+        "cp",
+        "zig-out/bin/zigginagentic-tui",
+        "/usr/local/bin/zigginagentic-tui",
+    });
+    copy_tui_to_system.step.dependOn(&install_tui_linux_system.step);
+    tui_linux_system_step.dependOn(&copy_tui_to_system.step);
 }

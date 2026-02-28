@@ -26,6 +26,9 @@ pub const IPCMessage = struct {
 
     session_id: []const u8 = "",
     message: []const u8 = "",
+
+    // current working directory session
+    cwd_session: []const u8 = "",
 };
 
 pub fn parseMessage(comptime T: type, allocator: std.mem.Allocator, data: []const u8) !T {
@@ -109,6 +112,11 @@ pub fn main() !void {
         .name = migrations.Migration002AddRoleToLLMHistory.name,
         .up = migrations.Migration002AddRoleToLLMHistory.up,
     });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
     try migrationManager.runMigrations();
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
@@ -138,8 +146,9 @@ pub fn main() !void {
                     .base_url = g_base_url,
                     .message = t.message,
                     .session_id = t.session_id,
+                    .cwd = t.cwd_session,
                 };
-                workflowAsk.run() catch |err| std.debug.print("workflow error: {}\n", .{err});
+                workflowAsk.run();
                 // defer workflowAsk.deinit();
                 // var agenttt = try agent.Agent.init(allocator);
                 // defer agenttt.deinit();

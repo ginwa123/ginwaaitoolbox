@@ -3,6 +3,7 @@ pub const BashInput = struct {
     timeout: ?u32 = 30,
     cwd: ?[]const u8 = null,
     max_output: ?usize = 1024 * 1024, // default 1MB
+    stdin_data: ?[]const u8 = null, // optional stdin input, null = close stdin
 };
 
 pub const ToolProperty = struct {
@@ -33,5 +34,3 @@ pub const BashResult = struct {
     stderr: []const u8,
     exit_code: u32,
 };
-
-
