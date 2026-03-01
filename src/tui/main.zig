@@ -144,33 +144,48 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
     std.debug.print("{s}▸{s} ", .{ yellow, reset });
 
     var spinner_timer: usize = 0;
-    const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+    const spinners = [_][]const u8{
+        "[    ]",
+        "[=   ]",
+        "[==  ]",
+        "[=== ]",
+        "[====]",
+    };
+
+    var last_tick = std.time.milliTimestamp();
 
     while (true) {
         const n = std.posix.read(socket_fd, &buf) catch break;
         if (n == 0) break;
+
         try buffer.appendSlice(allocator, buf[0..n]);
 
-        spinner_timer += 1;
-        if (spinner_timer % 4 == 0) {
-            // Show chunk index if streaming, else generic spinner
-            const spin = spinners[(spinner_timer / 4) % spinners.len];
+        const now = std.time.milliTimestamp();
+        if (now - last_tick >= 100) { // update every 100ms
+            last_tick = now;
+
+            const spin = spinners[(spinner_timer) % spinners.len];
+            spinner_timer += 1;
+
             if (extractChunkIndex(buf[0..n])) |idx| {
-                std.debug.print("\r{s}{s}{s} chunk {d} ", .{ yellow, spin, reset, idx });
+                std.debug.print("\r{s}{s}{s} Loading chunk {d}...", .{
+                    yellow, spin, reset, idx,
+                });
             } else {
-                std.debug.print("\r{s}{s}{s} ", .{ yellow, spin, reset });
+                std.debug.print("\r{s}{s}{s} Loading...", .{
+                    yellow, spin, reset,
+                });
             }
         }
 
-        if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
+        if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null)
+            continue;
 
-        // Find the LAST finish_reason tag (the terminal signal)
         if (extractTag(buffer.items, "finish_reason")) |fr| {
-            if (std.mem.eql(u8, fr, "user_choice")) break;
+            if (std.mem.eql(u8, fr, "user_choice"))
+                break;
         }
     }
-    std.debug.print("\r{s}✓{s} done          \n", .{ yellow, reset });
-    std.debug.print("\r{s}▸{s} done.          \n", .{ yellow, reset });
 
     // Clear the spinner line and show clean response
     std.debug.print("\n=== RESPONSE ===\n", .{});

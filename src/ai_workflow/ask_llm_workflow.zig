@@ -346,11 +346,7 @@ pub const AskLLMWorkflow = struct {
             agenttt.model = self.model;
             agenttt.baseUrl = self.base_url;
 
-            const agetntCall = agent.AgentCall{
-                .tools = tools,
-                .messages = messages_list.items,
-                .temperature = agent_temperature
-            };
+            const agetntCall = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature };
 
             // Use streaming for better UX
             var stream_ctx = StreamingContext{
@@ -497,7 +493,6 @@ pub const AskLLMWorkflow = struct {
                                     agent_temperature = temperature;
                                 }
 
-
                                 const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_name, "GeneralAgent"))
                                     prompt.GeneralAgent
                                 else if (std.mem.eql(u8, agent_name, "ExplorationAgent"))
@@ -520,7 +515,7 @@ pub const AskLLMWorkflow = struct {
                                 const contentChangeAgent = try std.fmt.allocPrint(
                                     self.allocator,
                                     "<change_agent_tool>\n{s}\n<change_agent_tool>",
-                                    .{  tool_call.function.arguments},
+                                    .{tool_call.function.arguments},
                                 );
 
                                 // 1. Create tool result message and add to messages_list (required for API)
@@ -617,9 +612,12 @@ pub const AskLLMWorkflow = struct {
                     break;
                 }
             } else {
-                self.saveMessage(response, "assistant", null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
-                std.debug.print("BREAK LLM", .{});
-                break;
+                // self.saveMessage(response, "assistant", null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                // std.debug.print("BREAK LLM", .{});
+
+                retryCount += 1;
+                std.debug.print("Error calling agent: maybe streaming failed \n", .{});
+                continue;
             }
 
             retryCount = 0;
