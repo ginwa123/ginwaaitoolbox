@@ -9,6 +9,7 @@ pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const tool_models = @import("modules/agent/tools/models.zig");
 pub const change_agent_tool = @import("modules/agent/tools/change_agent.zig");
 pub const ipc = @import("modules/ipc/ipc.zig");
+pub const logger = @import("modules/logger/logger.zig");
 pub const migrations = @import("modules/databases/sqlite/migrations.zig");
 pub const ai_workflow = @import("ai_workflow/ask_llm_workflow.zig");
 pub const ai_workflow_models = @import("ai_workflow/models.zig");

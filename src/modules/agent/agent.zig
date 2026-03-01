@@ -7,6 +7,7 @@ const ToolProperty = @import("tools/models.zig").ToolProperty;
 const ToolParameters = @import("tools/models.zig").ToolParameters;
 const AgentToolFunction = @import("tools/models.zig").AgentToolFunction;
 const AgentTool = @import("tools/models.zig").AgentTool;
+const log = @import("tree1").logger;
 
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
@@ -332,8 +333,6 @@ pub const AgentCall = struct {
     max_tokens: ?usize = null,
 };
 
-pub const AgentLogger = *const fn (level: std.log.Level, message: []const u8) void;
-
 pub const HttpOptions = struct {
     read_timeout_ms: u32 = 300_000, // 5 minutes for LLM APIs
     /// Buffer size for reading HTTP response body (default 64KB for large API responses)
@@ -341,40 +340,6 @@ pub const HttpOptions = struct {
     /// Buffer size for HTTP headers (default 16KB for large cookie headers)
     header_buffer_size: usize = 16 * 1024,
 };
-
-/// Log levels for agent operations
-pub const LogLevel = enum {
-    trace,
-    debug,
-    info,
-    warn,
-    err,
-};
-
-/// Log with formatted message (allocates temporarily)
-pub fn logFmt(
-    allocator: std.mem.Allocator,
-    comptime level: LogLevel,
-    comptime fmt: []const u8,
-    args: anytype,
-) void {
-    const msg = std.fmt.allocPrint(allocator, fmt, args) catch return;
-    defer allocator.free(msg);
-    logRaw(level, msg);
-}
-
-/// Log a raw message without allocation
-pub fn logRaw(comptime level: LogLevel, message: []const u8) void {
-    const level_str = comptime switch (level) {
-        .trace => "TRACE",
-        .debug => "DEBUG",
-        .info => "INFO",
-        .warn => "WARN",
-        .err => "ERROR",
-    };
-    const timestamp = std.time.timestamp();
-    std.debug.print("[{s}] [{}] {s}\n", .{ level_str, timestamp, message });
-}
 
 pub const Agent = struct {
     name: []const u8 = "",
@@ -386,7 +351,7 @@ pub const Agent = struct {
     httpClient: std.http.Client,
     thinkingEnabled: bool = true,
     allocator: std.mem.Allocator,
-    logger: ?AgentLogger = null,
+    logger: ?*log.Logger = null,
     httpOptions: HttpOptions = .{},
 
     pub const CallResponse = struct {
@@ -427,22 +392,16 @@ pub const Agent = struct {
         };
     }
 
-    pub fn logMsg(self: Agent, level: std.log.Level, message: []const u8) void {
+    pub fn logMsg(self: Agent, level: log.LogLevel, message: []const u8) void {
         if (self.logger) |logger| {
-            logger(level, message);
+            logger.log(level, message) catch {};
         } else {
-            const level_str = switch (level) {
-                .err => "ERROR",
-                .warn => "WARN",
-                .info => "INFO",
-                .debug => "DEBUG",
-            };
-            std.debug.print("[{s}] [Agent:{s}] {s}\n", .{ level_str, self.name, message });
+            std.debug.print("[{s}] [Agent:{s}] {s}\n", .{ level.toString(), self.name, message });
         }
     }
 
     /// Log with formatted message and context
-    pub fn logFmt(self: Agent, comptime level: std.log.Level, comptime fmt: []const u8, args: anytype) void {
+    pub fn logFmt(self: Agent, comptime level: log.LogLevel, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
         defer self.allocator.free(msg);
         self.logMsg(level, msg);
