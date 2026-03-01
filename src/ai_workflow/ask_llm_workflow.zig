@@ -272,8 +272,9 @@ pub const AskLLMWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
-    /// Send the final streaming chunk with finish reason and usage
+    /// Send the final streaming chunk with usage info (finish_reason is sent by sendResponse)
     fn sendStreamChunkFinal(self: *AskLLMWorkflow, index: usize, finish_reason: ?agent.FinishReason, usage: ?agent.Usage) void {
+        _ = finish_reason; // unused - finish_reason comes from sendResponse
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -281,9 +282,7 @@ pub const AskLLMWorkflow = struct {
         var w = buf.writer(self.allocator);
 
         w.print("<response><chunk index=\"{}\" final=\"true\">", .{index}) catch return;
-        if (finish_reason) |fr| {
-            w.print("<finish_reason>{s}</finish_reason>", .{fr.toStr()}) catch return;
-        }
+        // Removed: <finish_reason> - this is sent by sendResponse() as the terminal signal
         if (usage) |u| {
             w.print("<usage><prompt_tokens>{}</prompt_tokens><completion_tokens>{}</completion_tokens><total_tokens>{}</total_tokens></usage>", .{ u.prompt_tokens, u.completion_tokens, u.total_tokens }) catch return;
         }

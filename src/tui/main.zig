@@ -164,7 +164,7 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
 
         if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
 
-        // Pattern 1: root-level response (sendResponse path)
+        // Find the LAST finish_reason tag (the terminal signal)
         if (extractTag(buffer.items, "finish_reason")) |fr| {
             if (std.mem.eql(u8, fr, "user_choice")) break;
         }
@@ -175,8 +175,8 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
     // Clear the spinner line and show clean response
     std.debug.print("\n=== RESPONSE ===\n", .{});
 
-    // Extract only the final response (the one with <choices>)
-    if (std.mem.indexOf(u8, buffer.items, "<response><choices>")) |start| {
+    // Extract only the FINAL response (the one with <choices>) - use lastIndexOf
+    if (std.mem.lastIndexOf(u8, buffer.items, "<response><choices>")) |start| {
         // Find the matching </response> for the final response
         if (std.mem.indexOf(u8, buffer.items[start..], "</response>")) |end_offset| {
             const final_response = buffer.items[start .. start + end_offset + 11]; // include </response>
@@ -193,26 +193,21 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
 }
 
 pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
-    // Find <tag> without allocating — scan manually
-    var i: usize = 0;
-    while (i + tag.len + 2 <= xml.len) : (i += 1) {
-        if (xml[i] != '<') continue;
-        if (!std.mem.eql(u8, xml[i + 1 .. i + 1 + tag.len], tag)) continue;
-        if (xml[i + 1 + tag.len] != '>') continue;
+    // Find the LAST <tag>...</tag> pair
+    const close_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
+    defer std.heap.page_allocator.free(close_tag);
+    const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
+    defer std.heap.page_allocator.free(open_tag);
 
-        const content_start = i + 1 + tag.len + 1; // skip <tag>
+    // Find last </tag>
+    const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
+    const content_end = close_pos;
 
-        // Find </tag>
-        var j: usize = content_start;
-        while (j + tag.len + 3 <= xml.len) : (j += 1) {
-            if (xml[j] != '<') continue;
-            if (xml[j + 1] != '/') continue;
-            if (!std.mem.eql(u8, xml[j + 2 .. j + 2 + tag.len], tag)) continue;
-            if (xml[j + 2 + tag.len] != '>') continue;
-            return xml[content_start..j]; // zero allocation
-        }
-    }
-    return null;
+    // Find the <tag> that comes before this </tag>
+    const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
+    const content_start = open_pos + open_tag.len;
+
+    return xml[content_start..content_end];
 }
 
 pub fn trim(s: []const u8) []const u8 {
