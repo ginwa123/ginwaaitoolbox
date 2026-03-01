@@ -139,6 +139,8 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
         const n = std.posix.read(socket_fd, &buf) catch break;
         if (n == 0) break;
 
+        // print all the data
+
         try buffer.appendSlice(allocator, buf[0..n]);
 
         // Show a spinner during streaming (don't print chunks)
@@ -146,25 +148,39 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
         const idx = buffer.items.len % spinners.len;
         std.debug.print("\r{s}▸{s} {c} ", .{ yellow, reset, spinners[idx] });
 
-        if (extractTag(buffer.items, "finish_reason")) |fr| {
-            if (std.mem.eql(u8, fr, "user_choice")) {
-                break; // Final response, we're done
-            }
-        }
-
-        // Also check for final chunk marker
+        // Check for final chunk marker - then keep reading until we get full response
         if (std.mem.indexOf(u8, buffer.items, "final=\"true\"")) |_| {
-            // Wait a bit for any remaining data
-            std.Thread.sleep(50000000); // 50ms
-            const remaining = std.posix.read(socket_fd, &buf) catch 0;
-            if (remaining > 0) {
-                try buffer.appendSlice(allocator, buf[0..remaining]);
+            // Keep reading until we get the full response with <finish_reason>
+            while (true) {
+                std.debug.print("\n Waiting for full response...\n", .{});
+                std.Thread.sleep(100000000); // 100ms
+                const remaining = std.posix.read(socket_fd, &buf) catch 0;
+                if (remaining > 0) {
+                    std.debug.print("{s}", .{buf[0..remaining]});
+                    try buffer.appendSlice(allocator, buf[0..remaining]);
+                }
+                // Check if we got the finish_reason now
+                if (extractTag(buffer.items, "finish_reason")) |fr| {
+                    if (std.mem.eql(u8, fr, "user_choice")) {
+                        break; // Final response, we're done
+                    }
+                }
+                // Also check for the complete response tag
+                if (std.mem.indexOf(u8, buffer.items, "</response>")) |_| {
+                    if (extractTag(buffer.items, "finish_reason")) |fr| {
+                        std.debug.print("\n[DEBUG] Found fr: '{s}'\n", .{fr});
+                        if (std.mem.eql(u8, fr, "user_choice")) {
+                            break;
+                        }
+                    }
+                }
             }
+            break; // Break outer loop too
         }
     }
 
     // Clear the spinner line and show clean response
-    std.debug.print("done\n", .{});
+    std.debug.print("\n=== RESPONSE ===\n", .{});
 
     // Extract only the final response (the one with <choices>)
     if (std.mem.indexOf(u8, buffer.items, "<response><choices>")) |start| {
