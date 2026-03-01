@@ -45,7 +45,6 @@ pub const ChangeAgentTool = AgentTool{
                         "ExecutingAgent: true only for complex multi-step implementation. " ++
                         "GeneralAgent: always false (just routing). " ++
                         "ExplorationAgent: always false (just reading files). " ++
-                        "CompactionAgent: always false (just summarizing). " ++
                         "Default: false.",
                 },
             },
