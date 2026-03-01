@@ -1,12 +1,13 @@
 const std = @import("std");
 const json = std.json;
-const agent = @import("../modules/agent/agent.zig");
-const prompt = @import("../modules/agent/prompt.zig");
+const tree1_mod = @import("tree1");
+const agent = tree1_mod.agent;
+const prompt = tree1_mod.prompt;
 const context = @import("models.zig").ContextIPCTui;
-const sqlite = @import("../modules/databases/sqlite/sqlite.zig");
-const bash_tool = @import("../modules/agent/tools/bash.zig");
-const tool_models = @import("../modules/agent/tools/models.zig");
-const change_agent_tool = @import("../modules/agent/tools/change_agent.zig");
+const sqlite = tree1_mod.sqlite;
+const bash_tool = tree1_mod.bash_tool;
+const tool_models = tree1_mod.tool_models;
+const change_agent_tool = tree1_mod.change_agent_tool;
 
 pub const AskLLMHistory = struct {
     id: []const u8,
@@ -31,6 +32,42 @@ pub const AskLLMHistory = struct {
         if (self.reasoning_content) |rc| allocator.free(rc);
     }
 };
+
+/// Context for streaming callbacks
+pub const StreamingContext = struct {
+    workflow: *AskLLMWorkflow,
+    chunk_index: usize = 0,
+};
+
+/// Callback for streaming chunks - sends each chunk to the client
+pub fn streamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
+    const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
+    const workflow = stream_ctx.workflow;
+
+    if (chunk.done) {
+        // Send final chunk with finish reason and usage
+        workflow.sendStreamChunkFinal(stream_ctx.chunk_index, chunk.finish_reason, chunk.usage);
+        return;
+    }
+
+    // Send content chunk
+    if (chunk.content) |content| {
+        workflow.sendStreamChunkContent(stream_ctx.chunk_index, content);
+        stream_ctx.chunk_index += 1;
+    }
+
+    // Send reasoning content chunk
+    if (chunk.reasoning_content) |rc| {
+        workflow.sendStreamChunkReasoning(stream_ctx.chunk_index, rc);
+        stream_ctx.chunk_index += 1;
+    }
+
+    // Handle tool calls delta - we'll aggregate these
+    if (chunk.tool_calls_delta) |deltas| {
+        workflow.sendStreamChunkToolCallDelta(stream_ctx.chunk_index, deltas);
+        stream_ctx.chunk_index += 1;
+    }
+}
 
 pub const AskLLMWorkflow = struct {
     allocator: std.mem.Allocator,
@@ -175,6 +212,87 @@ pub const AskLLMWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
+    /// Send a streaming content chunk
+    fn sendStreamChunkContent(self: *AskLLMWorkflow, index: usize, content: []const u8) void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.print("<response><chunk index=\"{}\"><content>", .{index}) catch return;
+        w.writeAll(content) catch return;
+        w.writeAll("</content></chunk></response>") catch return;
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch {};
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
+    }
+
+    /// Send a streaming reasoning content chunk
+    fn sendStreamChunkReasoning(self: *AskLLMWorkflow, index: usize, reasoning: []const u8) void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.print("<response><chunk index=\"{}\"><reasoning_content>", .{index}) catch return;
+        w.writeAll(reasoning) catch return;
+        w.writeAll("</reasoning_content></chunk></response>") catch return;
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch {};
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
+    }
+
+    /// Send a streaming tool call delta chunk
+    fn sendStreamChunkToolCallDelta(self: *AskLLMWorkflow, index: usize, deltas: []const agent.ToolCallDelta) void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.print("<response><chunk index=\"{}\"><tool_calls_delta>", .{index}) catch return;
+        for (deltas) |delta| {
+            w.print("<delta index=\"{}\">", .{delta.index}) catch return;
+            if (delta.id) |id| {
+                w.print("<id>{s}</id>", .{id}) catch return;
+            }
+            if (delta.function_name) |name| {
+                w.print("<function_name>{s}</function_name>", .{name}) catch return;
+            }
+            if (delta.function_arguments) |args| {
+                w.print("<function_arguments>{s}</function_arguments>", .{args}) catch return;
+            }
+            w.writeAll("</delta>") catch return;
+        }
+        w.writeAll("</tool_calls_delta></chunk></response>") catch return;
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch {};
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
+    }
+
+    /// Send the final streaming chunk with finish reason and usage
+    fn sendStreamChunkFinal(self: *AskLLMWorkflow, index: usize, finish_reason: ?agent.FinishReason, usage: ?agent.Usage) void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.print("<response><chunk index=\"{}\" final=\"true\">", .{index}) catch return;
+        if (finish_reason) |fr| {
+            w.print("<finish_reason>{s}</finish_reason>", .{fr.toStr()}) catch return;
+        }
+        if (usage) |u| {
+            w.print("<usage><prompt_tokens>{}</prompt_tokens><completion_tokens>{}</completion_tokens><total_tokens>{}</total_tokens></usage>", .{ u.prompt_tokens, u.completion_tokens, u.total_tokens }) catch return;
+        }
+        w.writeAll("</chunk></response>") catch return;
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch {};
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
+    }
+
     pub fn buildMessages(self: *AskLLMWorkflow) ![]agent.AgentMessage {
         const systemContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd);
 
@@ -237,7 +355,14 @@ pub const AskLLMWorkflow = struct {
                 .tools = tools,
                 .messages = messages_list.items,
             };
-            const response = agenttt.call(agetntCall) catch |err| {
+
+            // Use streaming for better UX
+            var stream_ctx = StreamingContext{
+                .workflow = self,
+                .chunk_index = 0,
+            };
+
+            const response = agenttt.callStreaming(agetntCall, &stream_ctx, streamCallback) catch |err| {
                 retryCount += 1;
                 std.debug.print("Error calling agent: {s}\n", .{@errorName(err)});
                 self.sendError("Error calling agent", "retry");

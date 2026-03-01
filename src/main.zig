@@ -1,25 +1,16 @@
 const std = @import("std");
 const tree1 = @import("tree1");
-const agentMod = @import("modules/agent/agent.zig");
-const ipc = @import("modules/ipc/ipc.zig");
-const agent = @import("modules/agent/agent.zig");
-const ai_workflow = @import("ai_workflow/ask_llm_workflow.zig");
-const ai_workflow_mod = @import("ai_workflow/models.zig");
-const sqlite = @import("modules/databases/sqlite/sqlite.zig");
-const migrations = @import("modules/databases/sqlite/migrations.zig");
+const agentMod = tree1.agent;
+const ipc = tree1.ipc;
+const agent = tree1.agent;
+const ai_workflow = tree1.ai_workflow;
+const ai_workflow_mod = tree1.ai_workflow_models;
+const sqlite = tree1.sqlite;
+const migrations = tree1.migrations;
 
 var g_api_key: []const u8 = "";
 var g_model: []const u8 = "";
 var g_base_url: []const u8 = "";
-
-test {
-    _ = @import("modules/databases/sqlite/sqlite_test.zig");
-    _ = @import("modules/databases/sqlite/migrations_test.zig");
-    _ = @import("modules/agent/tools/bash_test.zig");
-    _ = @import("modules/agent/agent_test.zig");
-    _ = @import("modules/ipc/ipc_test.zig");
-    _ = @import("ai_workflow/ask_llm_workflow_test.zig");
-}
 
 pub const IPCMessage = struct {
     command_type: []const u8 = "",

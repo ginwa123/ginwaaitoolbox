@@ -128,6 +128,174 @@ pub const Usage = struct {
     total_tokens: usize = 0,
 };
 
+/// Delta for tool calls in streaming responses
+pub const ToolCallDelta = struct {
+    index: usize,
+    id: ?[]const u8 = null,
+    function_name: ?[]const u8 = null,
+    function_arguments: ?[]const u8 = null,
+};
+
+/// Parsed chunk from streaming response
+pub const StreamChunk = struct {
+    content: ?[]const u8 = null,
+    reasoning_content: ?[]const u8 = null,
+    tool_calls_delta: ?[]const ToolCallDelta = null,
+    finish_reason: ?FinishReason = null,
+    usage: ?Usage = null,
+    done: bool = false,
+};
+
+/// Callback function type for streaming
+pub const StreamCallback = *const fn (ctx: ?*anyopaque, chunk: StreamChunk) void;
+
+/// Aggregator for combining streaming chunks into a complete response
+pub const StreamingAggregator = struct {
+    allocator: std.mem.Allocator,
+    content: std.ArrayList(u8),
+    reasoning_content: std.ArrayList(u8),
+    tool_calls: std.ArrayList(ToolCall),
+    finish_reason: ?FinishReason = null,
+    usage: Usage = .{},
+
+    /// Tool call accumulation state
+    tool_call_buffers: std.AutoHashMap(usize, struct {
+        id: ?[]const u8 = null,
+        name: ?[]const u8 = null,
+        arguments: std.ArrayList(u8),
+    }),
+
+    pub fn init(allocator: std.mem.Allocator) StreamingAggregator {
+        return .{
+            .allocator = allocator,
+            .content = .empty,
+            .reasoning_content = .empty,
+            .tool_calls = .empty,
+            .tool_call_buffers = .init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *StreamingAggregator) void {
+        self.content.deinit(self.allocator);
+        self.reasoning_content.deinit(self.allocator);
+        for (self.tool_calls.items) |*tc| {
+            self.allocator.free(tc.id);
+            self.allocator.free(tc.function.name);
+            self.allocator.free(tc.function.arguments);
+        }
+        self.tool_calls.deinit(self.allocator);
+
+        var iter = self.tool_call_buffers.iterator();
+        while (iter.next()) |entry| {
+            if (entry.value_ptr.id) |id| self.allocator.free(id);
+            if (entry.value_ptr.name) |name| self.allocator.free(name);
+            entry.value_ptr.arguments.deinit(self.allocator);
+        }
+        self.tool_call_buffers.deinit();
+    }
+
+    pub fn processChunk(self: *StreamingAggregator, chunk: StreamChunk) !void {
+        if (chunk.done) return;
+
+        // Accumulate content
+        if (chunk.content) |c| {
+            try self.content.appendSlice(self.allocator, c);
+        }
+
+        // Accumulate reasoning content
+        if (chunk.reasoning_content) |rc| {
+            try self.reasoning_content.appendSlice(self.allocator, rc);
+        }
+
+        // Process tool call deltas
+        if (chunk.tool_calls_delta) |deltas| {
+            for (deltas) |delta| {
+                const gop = try self.tool_call_buffers.getOrPut(delta.index);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = .{
+                        .id = null,
+                        .name = null,
+                        .arguments = .empty,
+                    };
+                }
+
+                if (delta.id) |id| {
+                    if (gop.value_ptr.id) |old| self.allocator.free(old);
+                    gop.value_ptr.id = try self.allocator.dupe(u8, id);
+                }
+                if (delta.function_name) |name| {
+                    if (gop.value_ptr.name) |old| self.allocator.free(old);
+                    gop.value_ptr.name = try self.allocator.dupe(u8, name);
+                }
+                if (delta.function_arguments) |args| {
+                    try gop.value_ptr.arguments.appendSlice(self.allocator, args);
+                }
+            }
+        }
+
+        // Store finish reason
+        if (chunk.finish_reason) |fr| {
+            self.finish_reason = fr;
+        }
+
+        // Store usage
+        if (chunk.usage) |usage| {
+            self.usage = usage;
+        }
+    }
+
+    /// Finalize the aggregated response - must be called after all chunks processed
+    pub fn finalize(self: *StreamingAggregator) !Agent.CallResponse {
+        // Finalize tool calls from buffers
+        var sorted_indices: std.ArrayList(usize) = .empty;
+        defer sorted_indices.deinit(self.allocator);
+
+        var iter = self.tool_call_buffers.iterator();
+        while (iter.next()) |entry| {
+            try sorted_indices.append(self.allocator, entry.key_ptr.*);
+        }
+        std.sort.pdq(usize, sorted_indices.items, {}, std.sort.asc(usize));
+
+        for (sorted_indices.items) |idx| {
+            const buffer = self.tool_call_buffers.get(idx).?;
+            if (buffer.id) |id| {
+                const tool_call = ToolCall{
+                    .id = try self.allocator.dupe(u8, id),
+                    .function = .{
+                        .name = if (buffer.name) |n| try self.allocator.dupe(u8, n) else try self.allocator.dupe(u8, ""),
+                        .arguments = try self.allocator.dupe(u8, buffer.arguments.items),
+                    },
+                };
+                try self.tool_calls.append(self.allocator, tool_call);
+            }
+        }
+
+        var content_copy: ?[]const u8 = null;
+        if (self.content.items.len > 0) {
+            content_copy = try self.allocator.dupe(u8, self.content.items);
+        }
+
+        var reasoning_copy: ?[]const u8 = null;
+        if (self.reasoning_content.items.len > 0) {
+            reasoning_copy = try self.allocator.dupe(u8, self.reasoning_content.items);
+        }
+
+        var tool_calls_copy: ?[]ToolCall = null;
+        if (self.tool_calls.items.len > 0) {
+            tool_calls_copy = try self.allocator.dupe(ToolCall, self.tool_calls.items);
+        }
+
+        return .{
+            .allocator = self.allocator,
+            .content = content_copy,
+            .tool_calls = tool_calls_copy,
+            .finish_reason = self.finish_reason,
+            .reasoning_content = reasoning_copy,
+            .usage = self.usage,
+        };
+    }
+};
+
 pub const AgentCall = struct {
     tools: []const AgentTool,
     messages: []const AgentMessage,
@@ -202,7 +370,7 @@ pub const Agent = struct {
         }
     }
 
-    pub fn buildJsonRequest(self: Agent, params: AgentCall) ![]u8 {
+    pub fn buildJsonRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
         var messages_arr = std.array_list.Managed(json.Value).init(self.allocator);
 
         var user_msgs: []std.StringArrayHashMap(json.Value) = try self.allocator.alloc(std.StringArrayHashMap(json.Value), params.messages.len);
@@ -257,6 +425,11 @@ pub const Agent = struct {
         try root.put("temperature", .{ .float = temp });
         const max_tokens = params.max_tokens orelse self.maxTokens;
         try root.put("max_tokens", .{ .integer = @intCast(max_tokens) });
+
+        // Add streaming flag
+        if (stream) {
+            try root.put("stream", .{ .bool = true });
+        }
 
         var message_buffer_out = std.io.Writer.Allocating.init(self.allocator);
         var stringifier = json.Stringify{
@@ -345,7 +518,7 @@ pub const Agent = struct {
 
     pub fn call(self: *Agent, params: AgentCall) CallError!CallResponse {
         self.logMsg(.info, "Building JSON request...");
-        const json_body: []u8 = try self.buildJsonRequest(params);
+        const json_body: []u8 = try self.buildJsonRequest(params, false);
         self.logMsg(.info, "JSON request built, sending...");
         defer self.allocator.free(json_body);
 
@@ -498,6 +671,269 @@ pub const Agent = struct {
             .finish_reason = finish_reason,
             .reasoning_content = reasoning_content_copy,
             .usage = usage,
+        };
+    }
+
+    /// Parse a single SSE line (format: "data: {...}" or "data: [DONE]")
+    pub fn parseSseLine(_: Agent, line: []const u8) ?[]const u8 {
+        // Skip empty lines
+        if (line.len == 0) return null;
+
+        // Check for "data: " prefix
+        if (!std.mem.startsWith(u8, line, "data: ")) return null;
+
+        const data = line[6..]; // Skip "data: "
+
+        // Check for [DONE] marker
+        if (std.mem.eql(u8, data, "[DONE]")) {
+            return null;
+        }
+
+        return data;
+    }
+
+    /// Parse a streaming chunk JSON into StreamChunk
+    pub fn parseStreamChunk(_: Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
+        const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch return null;
+        const root = parsed.value;
+
+        var chunk: StreamChunk = .{};
+
+        // Parse choices array
+        if (root.object.get("choices")) |choices| {
+            if (choices.array.items.len > 0) {
+                const first_choice = choices.array.items[0];
+
+                // Get finish reason
+                if (first_choice.object.get("finish_reason")) |fr| {
+                    if (fr == .string) {
+                        chunk.finish_reason = FinishReason.fromStr(fr.string);
+                    }
+                }
+
+                // Parse delta (streaming uses "delta" instead of "message")
+                if (first_choice.object.get("delta")) |delta| {
+                    // Content
+                    if (delta.object.get("content")) |content| {
+                        if (content == .string and content.string.len > 0) {
+                            chunk.content = content.string;
+                        }
+                    }
+
+                    // Reasoning content
+                    if (delta.object.get("reasoning_content")) |rc| {
+                        if (rc == .string and rc.string.len > 0) {
+                            chunk.reasoning_content = rc.string;
+                        }
+                    }
+
+                    // Tool calls delta
+                    if (delta.object.get("tool_calls")) |tc_delta| {
+                        if (tc_delta == .array and tc_delta.array.items.len > 0) {
+                            var deltas = arena.alloc(ToolCallDelta, tc_delta.array.items.len) catch return null;
+
+                            for (tc_delta.array.items, 0..) |tc_item, i| {
+                                var delta_item: ToolCallDelta = .{ .index = i };
+
+                                if (tc_item == .object) {
+                                    // Get index if present
+                                    if (tc_item.object.get("index")) |idx| {
+                                        if (idx == .integer) {
+                                            delta_item.index = @intCast(idx.integer);
+                                        }
+                                    }
+
+                                    // Get ID if present
+                                    if (tc_item.object.get("id")) |id| {
+                                        if (id == .string) {
+                                            delta_item.id = id.string;
+                                        }
+                                    }
+
+                                    // Get function delta
+                                    if (tc_item.object.get("function")) |func| {
+                                        if (func == .object) {
+                                            if (func.object.get("name")) |name| {
+                                                if (name == .string) {
+                                                    delta_item.function_name = name.string;
+                                                }
+                                            }
+                                            if (func.object.get("arguments")) |args| {
+                                                if (args == .string) {
+                                                    delta_item.function_arguments = args.string;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                deltas[i] = delta_item;
+                            }
+                            chunk.tool_calls_delta = deltas;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse usage (may appear in final chunk)
+        if (root.object.get("usage")) |usage_val| {
+            if (usage_val == .object) {
+                var usage: Usage = .{};
+                if (usage_val.object.get("prompt_tokens")) |pt| {
+                    if (pt == .integer) usage.prompt_tokens = @intCast(pt.integer);
+                }
+                if (usage_val.object.get("completion_tokens")) |ct| {
+                    if (ct == .integer) usage.completion_tokens = @intCast(ct.integer);
+                }
+                if (usage_val.object.get("total_tokens")) |tt| {
+                    if (tt == .integer) usage.total_tokens = @intCast(tt.integer);
+                }
+                chunk.usage = usage;
+            }
+        }
+
+        return chunk;
+    }
+
+    /// Streaming call with callback for each chunk
+    pub fn callStreaming(
+        self: *Agent,
+        params: AgentCall,
+        ctx: ?*anyopaque,
+        callback: StreamCallback,
+    ) CallError!CallResponse {
+        self.logMsg(.info, "Building streaming JSON request...");
+        const json_body: []u8 = try self.buildJsonRequest(params, true);
+        self.logMsg(.info, "Streaming JSON request built, sending...");
+        defer self.allocator.free(json_body);
+
+        self.logMsg(.debug, json_body);
+
+        const uri_str = try std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" });
+        defer self.allocator.free(uri_str);
+        const uri = std.Uri.parse(uri_str) catch {
+            self.logMsg(.err, "Invalid URI");
+            return error.InvalidUri;
+        };
+        const auth_value = try std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey });
+        defer self.allocator.free(auth_value);
+        var req = self.httpClient.request(.POST, uri, .{
+            .version = .@"HTTP/1.1",
+            .headers = .{
+                .authorization = .{ .override = auth_value },
+                .content_type = .{ .override = "application/json" },
+                .accept_encoding = .{ .override = "identity" },
+            },
+        }) catch |err| {
+            self.logMsg(.err, @errorName(err));
+            return error.HttpRequestFailed;
+        };
+        defer req.deinit();
+
+        if (req.connection) |conn| {
+            const stream = conn.stream_reader.getStream();
+            const handle = stream.handle;
+            const timeout = std.posix.timeval{
+                .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
+                .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
+            };
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
+        }
+
+        req.sendBodyComplete(json_body) catch |err| {
+            self.logMsg(.err, @errorName(err));
+            return error.SendBodyFailed;
+        };
+
+        var redirect_buffer: [8192]u8 = undefined;
+        var response = req.receiveHead(&redirect_buffer) catch |err| {
+            self.logMsg(.err, @errorName(err));
+            return error.ReceiveFailed;
+        };
+
+        // Use arena for temporary allocations during parsing
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        // Initialize aggregator
+        var aggregator = StreamingAggregator.init(self.allocator);
+        defer aggregator.deinit();
+
+        // Read response body incrementally
+        const transfer_buffer = try self.allocator.alloc(u8, self.httpOptions.response_buffer_size);
+        defer self.allocator.free(transfer_buffer);
+
+        var reader = response.reader(transfer_buffer[0..]);
+
+        // Buffer for accumulating SSE lines
+        var line_buffer: std.ArrayList(u8) = .empty;
+        defer line_buffer.deinit(self.allocator);
+
+        var read_buf: [4096]u8 = undefined;
+        while (true) {
+            const bytes_read = reader.readSliceShort(&read_buf) catch |err| {
+                // EndOfStream is expected when streaming completes
+                if (err == error.EndOfStream) {
+                    break;
+                }
+                self.logMsg(.err, @errorName(err));
+                break;
+            };
+            if (bytes_read == 0) break;
+
+            // Process each byte looking for SSE line boundaries
+            for (read_buf[0..bytes_read]) |byte| {
+                if (byte == '\n') {
+                    // Process complete line
+                    if (line_buffer.items.len > 0) {
+                        const line = line_buffer.items;
+
+                        // Skip empty lines and non-data lines
+                        if (self.parseSseLine(line)) |data| {
+                            // Reset arena for each chunk
+                            _ = arena.reset(.free_all);
+
+                            if (self.parseStreamChunk(data, arena_alloc)) |chunk| {
+                                // Invoke callback
+                                callback(ctx, chunk);
+
+                                // Aggregate chunk
+                                aggregator.processChunk(chunk) catch {
+                                    self.logMsg(.err, "Failed to aggregate chunk");
+                                };
+                            }
+                        }
+
+                        line_buffer.clearRetainingCapacity();
+                    }
+                } else if (byte != '\r') {
+                    line_buffer.append(self.allocator, byte) catch {};
+                }
+            }
+        }
+
+        // Process any remaining line
+        if (line_buffer.items.len > 0) {
+            if (self.parseSseLine(line_buffer.items)) |data| {
+                _ = arena.reset(.free_all);
+                if (self.parseStreamChunk(data, arena_alloc)) |chunk| {
+                    callback(ctx, chunk);
+                    aggregator.processChunk(chunk) catch {};
+                }
+            }
+        }
+
+        // Send done chunk
+        callback(ctx, .{ .done = true });
+
+        self.logMsg(.info, "Streaming complete, finalizing response...");
+
+        // Finalize and return the aggregated response
+        return aggregator.finalize() catch {
+            self.logMsg(.err, "Failed to finalize streaming response");
+            return error.AllocFailed;
         };
     }
 

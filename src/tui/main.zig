@@ -141,17 +141,50 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
 
         try buffer.appendSlice(allocator, buf[0..n]);
 
-        for (buf[0..n]) |byte| {
-            std.debug.print("{c}", .{byte});
-        }
+        // Show a spinner during streaming (don't print chunks)
+        const spinners = [_]u8{ '|', '/', '-', '\\' };
+        const idx = buffer.items.len % spinners.len;
+        std.debug.print("\r{s}▸{s} {c} ", .{ yellow, reset, spinners[idx] });
 
-        if (extractTag(buffer.items, "finish_reason")) |fr| {
-            if (std.mem.eql(u8, fr, "stop")) {
-                break;
+        // Only break when we see the final response (not streaming chunks)
+        // The final response has <choices> tag, streaming has <chunk> tags
+        if (std.mem.indexOf(u8, buffer.items, "<choices>")) |_| {
+            if (extractTag(buffer.items, "finish_reason")) |fr| {
+                if (std.mem.eql(u8, fr, "stop") or std.mem.eql(u8, fr, "length")) {
+                    break;
+                }
             }
         }
+
+        // Also check for final chunk marker
+        if (std.mem.indexOf(u8, buffer.items, "final=\"true\"")) |_| {
+            // Wait a bit for any remaining data
+            std.Thread.sleep(50000000); // 50ms
+            const remaining = std.posix.read(socket_fd, &buf) catch 0;
+            if (remaining > 0) {
+                try buffer.appendSlice(allocator, buf[0..remaining]);
+            }
+            break;
+        }
     }
-    std.debug.print("\n", .{});
+
+    // Clear the spinner line and show clean response
+    std.debug.print("\r{s}▸{s} ", .{ yellow, reset });
+
+    // Extract only the final response (the one with <choices>)
+    if (std.mem.indexOf(u8, buffer.items, "<response><choices>")) |start| {
+        // Find the matching </response> for the final response
+        if (std.mem.indexOf(u8, buffer.items[start..], "</response>")) |end_offset| {
+            const final_response = buffer.items[start .. start + end_offset + 11]; // include </response>
+            std.debug.print("{s}", .{final_response});
+        } else {
+            std.debug.print("{s}", .{buffer.items});
+        }
+    } else {
+        std.debug.print("{s}", .{buffer.items});
+    }
+
+    std.debug.print("\r\n", .{});
     return try buffer.toOwnedSlice(allocator);
 }
 
@@ -270,7 +303,7 @@ pub fn main() !void {
             } else {
                 if (input.items.len > 0) {
                     std.debug.print("\r\n\r\n", .{});
-                    std.debug.print("\r\nDEBUG sending: '{s}'\r\n", .{input.items});
+                    // std.debug.print("\r\nDEBUG sending: '{s}'\r\n", .{input.items});
                     try sendMessage(socket_fd, session_id, input.items);
                     const response = readResponseAndStream(socket_fd, allocator) catch "";
                     if (response.len == 0) {
