@@ -178,7 +178,7 @@ fn sendMessage(app: *App, message: []const u8) !void {
     defer app.allocator.free(escaped_cwd);
 
     try xml_buf.writer(app.allocator).print(
-        "<message><command_type>agent_ask</command_type><session_id>{s}</session_id><content>{s}</content><cwd_session>{s}</cwd_session></message>",
+        "<message><command_type>tui</command_type><session_id>{s}</session_id><content>{s}</content><cwd_session>{s}</cwd_session></message>",
         .{ escaped_session_id, escaped_message, escaped_cwd },
     );
     _ = try std.posix.write(app.socket_fd, xml_buf.items);
@@ -427,6 +427,8 @@ fn handleInput(app: *App) !bool {
             std.debug.print("\x08 \x08", .{});
         }
     } else if (c == @intFromEnum(KEYBINDING.ENTER) or c == 10) {
+        // const arena_allocator = std.heap.ArenaAllocator.init(app.allocator);
+        // defer arena_allocator.deinit();
         if (app.pasting) {
             try app.input.append(app.allocator, '\n');
             std.debug.print("\r\n", .{});
@@ -453,7 +455,10 @@ fn handleInput(app: *App) !bool {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena_allocator = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer arena_allocator.deinit();
+
+    const allocator = arena_allocator.allocator();
 
     var app = try App.init(allocator);
     defer app.deinit();

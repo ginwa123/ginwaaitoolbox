@@ -176,7 +176,7 @@ pub const bashTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "bash",
-        .description = "Execute a bash command and return stdout, stderr, exit_code, truncated flag, and timeout flag. Use this to run shell commands, scripts, or interact with the file system. If the command requires stdin input, provide it via stdin_data. If not provided, stdin is closed (useful for interactive programs that would otherwise hang).",
+        .description = "Execute a bash command and return stdout, stderr, exit_code, truncated flag, and timeout flag. Use this to run shell commands, scripts, or interact with the file system. If the command requires stdin input, provide it via stdin_data. If not provided, stdin is closed (useful for interactive programs that would otherwise hang). IMPORTANT: Never use sudo, su, or any other privilege escalation commands under any circumstances, even if the user requests it.",
         .parameters = .{
             .type = "object",
             .properties = &.{
@@ -206,7 +206,7 @@ pub const bashTool = AgentTool{
                     .description = "Data to send to stdin (optional). If not provided, stdin is closed immediately - useful for commands that would otherwise hang waiting for input",
                 },
             },
-            .required = &.{ "command", "cwd" , "timeout" },
+            .required = &.{ "command", "cwd", "timeout" },
         },
     },
 };

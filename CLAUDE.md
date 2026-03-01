@@ -51,7 +51,7 @@ The core is an LLM agent that communicates via OpenAI-compatible chat completion
 [TUI/Frontend] → JSON over socket → [IPC Server @ /tmp/agent.sock]
     → [AskLLMWorkflow] → [Agent] → HTTP POST to OpenAI-compatible API
     → Tool execution (bash, change_agent) → Response back through chain
-    
+
 Multi-Agent Routing:
     GeneralAgent → routes to ExplorationAgent, PlanningAgent, or ExecutingAgent
     based on task type (discovery, planning, or implementation)
@@ -62,7 +62,7 @@ Multi-Agent Routing:
 Messages sent to the socket are JSON with this structure:
 ```zig
 const IPCMessage = struct {
-    command_type: []const u8 = "",  // e.g., "agent_ask"
+    command_type: []const u8 = "",  // e.g., "tui"
     session_id: []const u8 = "",
     message: []const u8 = "",
     cwd_session: []const u8 = "",   // Working directory for the session

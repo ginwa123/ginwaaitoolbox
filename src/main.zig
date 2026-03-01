@@ -29,7 +29,7 @@ pub fn extractTag(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator
     const start_idx = std.mem.indexOf(u8, xml, start_tag) orelse return null;
     const content_start = start_idx + start_tag.len;
     const end_idx = std.mem.indexOf(u8, xml[content_start..], end_tag) orelse return null;
-    
+
     return xml[content_start .. content_start + end_idx];
 }
 
@@ -37,7 +37,7 @@ pub fn extractTag(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator
 pub fn decodeXmlEntities(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
-    
+
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == '&') {
@@ -65,14 +65,14 @@ pub fn decodeXmlEntities(allocator: std.mem.Allocator, s: []const u8) ![]const u
             i += 1;
         }
     }
-    
+
     return result.toOwnedSlice(allocator);
 }
 
 /// Parse XML message into IPCMessage struct
 pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !IPCMessage {
     var msg: IPCMessage = .{};
-    
+
     if (extractTag(data, "command_type", allocator)) |val| {
         msg.command_type = try decodeXmlEntities(allocator, val);
     }
@@ -85,7 +85,7 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !IPCMessage 
     if (extractTag(data, "cwd_session", allocator)) |val| {
         msg.cwd_session = try decodeXmlEntities(allocator, val);
     }
-    
+
     return msg;
 }
 
@@ -146,7 +146,7 @@ fn getDbPath(allocator: std.mem.Allocator) ![:0]const u8 {
         std.log.err("HOME environment variable not set", .{});
         return error.HomeNotFound;
     };
-    
+
     // Build the config directory path: ~/.config/zigginagentic
     const config_dir = try std.fs.path.join(allocator, &[_][]const u8{
         home,
@@ -154,7 +154,7 @@ fn getDbPath(allocator: std.mem.Allocator) ![:0]const u8 {
         "zigginagentic",
     });
     defer allocator.free(config_dir);
-    
+
     // Create the directory if it doesn't exist (makePath creates all parent directories too)
     std.fs.makeDirAbsolute(config_dir) catch |err| {
         if (err != error.PathAlreadyExists) {
@@ -162,14 +162,14 @@ fn getDbPath(allocator: std.mem.Allocator) ![:0]const u8 {
             return err;
         }
     };
-    
+
     // Build the full database path
     const db_path = try std.fs.path.join(allocator, &[_][]const u8{
         config_dir,
         "agent.db",
     });
     defer allocator.free(db_path);
-    
+
     // Return as null-terminated string (required by sqlite init)
     return try allocator.dupeZ(u8, db_path);
 }
@@ -187,7 +187,7 @@ pub fn main() !void {
     // Get database path following XDG standards: ~/.config/zigginagentic/agent.db
     const db_path = try getDbPath(parentAllocator);
     defer parentAllocator.free(db_path);
-    
+
     var dbSqlite: sqlite.SqliteBackend = .{};
     defer dbSqlite.deinit();
     try dbSqlite.init(db_path);
@@ -228,7 +228,7 @@ pub fn main() !void {
                 return;
             };
 
-            if (std.mem.eql(u8, t.command_type, "agent_ask")) {
+            if (std.mem.eql(u8, t.command_type, "tui")) {
                 var workflowAsk = ai_workflow.AskLLMWorkflow{
                     .db = ctxTui.db,
                     .allocator = allocator,
