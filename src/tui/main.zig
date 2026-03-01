@@ -128,6 +128,14 @@ fn sendMessage(socket_fd: std.posix.fd_t, session_id: []const u8, message: []con
     _ = try std.posix.write(socket_fd, xml_buf.items);
 }
 
+fn extractChunkIndex(data: []const u8) ?usize {
+    const marker = "index=\"";
+    const pos = std.mem.indexOf(u8, data, marker) orelse return null;
+    const after = data[pos + marker.len ..];
+    const end = std.mem.indexOf(u8, after, "\"") orelse return null;
+    return std.fmt.parseInt(usize, after[0..end], 10) catch null;
+}
+
 fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator) ![]u8 {
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
@@ -135,49 +143,34 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
 
     std.debug.print("{s}▸{s} ", .{ yellow, reset });
 
+    var spinner_timer: usize = 0;
+    const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+
     while (true) {
         const n = std.posix.read(socket_fd, &buf) catch break;
         if (n == 0) break;
-
-        // print all the data
-
         try buffer.appendSlice(allocator, buf[0..n]);
 
-        // Show a spinner during streaming (don't print chunks)
-        const spinners = [_]u8{ '|', '/', '-', '\\' };
-        const idx = buffer.items.len % spinners.len;
-        std.debug.print("\r{s}▸{s} {c} ", .{ yellow, reset, spinners[idx] });
-
-        // Check for final chunk marker - then keep reading until we get full response
-        if (std.mem.indexOf(u8, buffer.items, "final=\"true\"")) |_| {
-            // Keep reading until we get the full response with <finish_reason>
-            while (true) {
-                std.debug.print("\n Waiting for full response...\n", .{});
-                std.Thread.sleep(100000000); // 100ms
-                const remaining = std.posix.read(socket_fd, &buf) catch 0;
-                if (remaining > 0) {
-                    std.debug.print("{s}", .{buf[0..remaining]});
-                    try buffer.appendSlice(allocator, buf[0..remaining]);
-                }
-                // Check if we got the finish_reason now
-                if (extractTag(buffer.items, "finish_reason")) |fr| {
-                    if (std.mem.eql(u8, fr, "user_choice")) {
-                        break; // Final response, we're done
-                    }
-                }
-                // Also check for the complete response tag
-                if (std.mem.indexOf(u8, buffer.items, "</response>")) |_| {
-                    if (extractTag(buffer.items, "finish_reason")) |fr| {
-                        std.debug.print("\n[DEBUG] Found fr: '{s}'\n", .{fr});
-                        if (std.mem.eql(u8, fr, "user_choice")) {
-                            break;
-                        }
-                    }
-                }
+        spinner_timer += 1;
+        if (spinner_timer % 4 == 0) {
+            // Show chunk index if streaming, else generic spinner
+            const spin = spinners[(spinner_timer / 4) % spinners.len];
+            if (extractChunkIndex(buf[0..n])) |idx| {
+                std.debug.print("\r{s}{s}{s} chunk {d} ", .{ yellow, spin, reset, idx });
+            } else {
+                std.debug.print("\r{s}{s}{s} ", .{ yellow, spin, reset });
             }
-            break; // Break outer loop too
+        }
+
+        if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
+
+        // Pattern 1: root-level response (sendResponse path)
+        if (extractTag(buffer.items, "finish_reason")) |fr| {
+            if (std.mem.eql(u8, fr, "user_choice")) break;
         }
     }
+    std.debug.print("\r{s}✓{s} done          \n", .{ yellow, reset });
+    std.debug.print("\r{s}▸{s} done.          \n", .{ yellow, reset });
 
     // Clear the spinner line and show clean response
     std.debug.print("\n=== RESPONSE ===\n", .{});
@@ -200,15 +193,23 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
 }
 
 pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
-    const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
-    defer std.heap.page_allocator.free(start_tag);
-    const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
-    defer std.heap.page_allocator.free(end_tag);
+    // Find <tag> without allocating — scan manually
+    var i: usize = 0;
+    while (i + tag.len + 2 <= xml.len) : (i += 1) {
+        if (xml[i] != '<') continue;
+        if (!std.mem.eql(u8, xml[i + 1 .. i + 1 + tag.len], tag)) continue;
+        if (xml[i + 1 + tag.len] != '>') continue;
 
-    if (std.mem.indexOf(u8, xml, start_tag)) |start| {
-        const content_start = start + start_tag.len;
-        if (std.mem.indexOf(u8, xml[content_start..], end_tag)) |end| {
-            return xml[content_start .. content_start + end];
+        const content_start = i + 1 + tag.len + 1; // skip <tag>
+
+        // Find </tag>
+        var j: usize = content_start;
+        while (j + tag.len + 3 <= xml.len) : (j += 1) {
+            if (xml[j] != '<') continue;
+            if (xml[j + 1] != '/') continue;
+            if (!std.mem.eql(u8, xml[j + 2 .. j + 2 + tag.len], tag)) continue;
+            if (xml[j + 2 + tag.len] != '>') continue;
+            return xml[content_start..j]; // zero allocation
         }
     }
     return null;
