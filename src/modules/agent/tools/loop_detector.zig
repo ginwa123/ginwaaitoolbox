@@ -4,7 +4,7 @@ pub const LoopDetector = struct {
     last_command: ?[]const u8 = null,
     repeat_count: usize = 0,
 
-    fn check(self: *@This(), command: []const u8) bool {
+    pub fn check(self: *LoopDetector, command: []const u8) bool {
         if (self.last_command) |last| {
             if (std.mem.eql(u8, last, command)) {
                 self.repeat_count += 1;

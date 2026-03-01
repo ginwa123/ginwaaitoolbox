@@ -531,7 +531,7 @@ pub const AskLLMWorkflow = struct {
                         for (tc) |tool_call| {
                             self.logger.debugFmt("Executing tool: {s}   {s}", .{ tool_call.function.name, tool_call.function.arguments }) catch {};
 
-                            if (loop_detector.check(tool_call.function.arguments)) {
+                            if (self.loop_detector.check(tool_call.function.arguments)) {
                                 const warning = try std.fmt.allocPrint(
                                     self.allocator,
                                     "WARNING: Identical command repeated: {s}\n" ++

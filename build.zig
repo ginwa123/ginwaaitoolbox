@@ -94,7 +94,7 @@ fn addDiscoveredTests(
         test_step.dependOn(&run_test.step);
 
         test_count += 1;
-        std.log.info("Discovered test: {s}", .{rel_path});
+        // std.log.info("Discovered test: {s}", .{rel_path});
     }
 
     std.log.info("Total test files discovered: {d}", .{test_count});
