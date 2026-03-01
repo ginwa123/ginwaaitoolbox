@@ -362,7 +362,7 @@ pub const AskLLMWorkflow = struct {
             const response = agenttt.callStreaming(agetntCall, &stream_ctx, streamCallback) catch |err| {
                 retryCount += 1;
                 std.debug.print("Error calling agent: {s}\n", .{@errorName(err)});
-                self.sendError("Error calling agent", "user_choice");
+                self.sendError(@errorName(err), "notification_error");
                 continue;
             };
             defer response.deinit();

@@ -331,6 +331,8 @@ fn readResponseAndStream(app: *App) ![]u8 {
     var last_tick = std.time.milliTimestamp();
     var last_displayed_len: usize = 0; // track what we've already printed
 
+
+    var retry_count: usize = 0;
     while (true) {
         const n = std.posix.read(app.socket_fd, &buf) catch break;
         if (n == 0) break;
@@ -354,7 +356,7 @@ fn readResponseAndStream(app: *App) ![]u8 {
                 clean_buf[clean_len] = if (c == '\n' or c == '\r') ' ' else c;
                 clean_len += 1;
             }
-            std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{ yellow, spin, reset, buffer.items.len });
+            std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes) Retry count: {d}", .{ yellow, spin, reset, buffer.items.len, retry_count });
         }
 
         if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
@@ -363,6 +365,10 @@ fn readResponseAndStream(app: *App) ![]u8 {
             if (std.mem.eql(u8, fr, "user_choice")) {
                 std.debug.print("\n Your input \n", .{});
                 break;
+            }
+
+            if (std.mem.eql(u8, fr, "notification_error")) {
+                retry_count += 1;
             }
         }
     }

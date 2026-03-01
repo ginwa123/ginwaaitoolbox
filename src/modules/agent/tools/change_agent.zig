@@ -40,11 +40,14 @@ pub const ChangeAgentTool = AgentTool{
                 .{
                     .name = "is_thinking",
                     .type = "boolean",
-                    .description = "Enable deep reasoning for this agent call. " ++
-                        "PlanningAgent: always true (architecture decisions, tradeoffs). " ++
-                        "ExecutingAgent: true only for complex multi-step implementation. " ++
-                        "GeneralAgent: always false (just routing). " ++
-                        "ExplorationAgent: always false (just reading files). " ++
+                    .description = "Enable adaptive deep reasoning for this agent call. " ++
+                        "Use true when the task requires multi-step logic, architectural decisions, " ++
+                        "tradeoff analysis, ambiguity resolution, or multi-file changes. " ++
+                        "Use false for simple routing, direct lookups, mechanical transformations, " ++
+                        "file reading, or straightforward single-step execution. " ++
+                        "PlanningAgent: always true. " ++
+                        "GeneralAgent and ExplorationAgent: always false. " ++
+                        "ExecutingAgent: always false. " ++
                         "Default: false.",
                 },
             },

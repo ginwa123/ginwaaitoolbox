@@ -285,6 +285,10 @@ pub const StreamingAggregator = struct {
         var tool_calls_copy: ?[]ToolCall = null;
         if (self.tool_calls.items.len > 0) {
             tool_calls_copy = try self.allocator.dupe(ToolCall, self.tool_calls.items);
+            // Clear self.tool_calls so deinit() doesn't free the strings we just transferred
+            // to tool_calls_copy. The dupe above is a shallow copy of the struct, so the
+            // string pointers (id, function.name, function.arguments) are shared.
+            self.tool_calls.items.len = 0;
         }
 
         return .{
@@ -544,6 +548,7 @@ pub const Agent = struct {
                 .accept_encoding = .{ .override = "identity" },
             },
         }) catch |err| {
+            self.logMsg(.debug, "Error creating HTTP request", );
             self.logMsg(.err, @errorName(err));
             return error.HttpRequestFailed;
         };
@@ -556,8 +561,14 @@ pub const Agent = struct {
                 .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
                 .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
             };
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch |err| {
+                self.logMsg(.debug, "Error setsockopt RCVTIMEO", );
+                self.logMsg(.err, @errorName(err));
+            };
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch |err| {
+                self.logMsg(.debug, "Error setsockopt SNDTIMEO", );
+                self.logMsg(.err, @errorName(err));
+            };
         }
 
         req.sendBodyComplete(json_body) catch |err| {
@@ -699,8 +710,12 @@ pub const Agent = struct {
     }
 
     /// Parse a streaming chunk JSON into StreamChunk
-    pub fn parseStreamChunk(_: Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
-        const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch return null;
+    pub fn parseStreamChunk(self: Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
+        const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch |err| {
+            self.logMsg(.debug, "failed json parse slice");
+            self.logMsg(.err, @errorName(err));
+            return null;
+        };
         const root = parsed.value;
 
         var chunk: StreamChunk = .{};
@@ -736,7 +751,11 @@ pub const Agent = struct {
                     // Tool calls delta
                     if (delta.object.get("tool_calls")) |tc_delta| {
                         if (tc_delta == .array and tc_delta.array.items.len > 0) {
-                            var deltas = arena.alloc(ToolCallDelta, tc_delta.array.items.len) catch return null;
+                            var deltas = arena.alloc(ToolCallDelta, tc_delta.array.items.len) catch |err| {
+                                self.logMsg(.debug, "Error allocating ToolCallDelta", );
+                                self.logMsg(.err, @errorName(err));
+                                return null;
+                            };
 
                             for (tc_delta.array.items, 0..) |tc_item, i| {
                                 var delta_item: ToolCallDelta = .{ .index = i };
@@ -843,8 +862,14 @@ pub const Agent = struct {
                 .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
                 .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
             };
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch |err| {
+                self.logMsg(.debug, "Error setsockopt RCVTIMEO", );
+                self.logMsg(.err, @errorName(err));
+            };
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch |err| {
+                self.logMsg(.debug, "Error setsockopt SNDTIMEO", );
+                self.logMsg(.err, @errorName(err));
+            };
         }
 
         req.sendBodyComplete(json_body) catch |err| {
@@ -861,9 +886,11 @@ pub const Agent = struct {
         //
         // Initialize aggregator
         var aggregator = StreamingAggregator.init(self.allocator);
+        defer aggregator.deinit();
 
         // Read response body incrementally
         const transfer_buffer = try self.allocator.alloc(u8, self.httpOptions.response_buffer_size);
+        defer self.allocator.free(transfer_buffer);
 
         var reader = response.reader(transfer_buffer[0..]);
 
@@ -876,6 +903,7 @@ pub const Agent = struct {
             const bytes_read = reader.readSliceShort(&read_buf) catch |err| {
                 // EndOfStream is expected when streaming completes
                 if (err == error.EndOfStream) {
+                    self.logMsg(.debug, "EndOfStream");
                     break;
                 }
                 self.logMsg(.err, @errorName(err));
@@ -892,7 +920,11 @@ pub const Agent = struct {
 
                         // Skip empty lines and non-data lines
                         if (self.parseSseLine(line)) |data| {
-                            if (self.parseStreamChunk(data, self.allocator)) |chunk| {
+                            // Use per-chunk arena to prevent memory leaks
+                            var chunk_arena = std.heap.ArenaAllocator.init(self.allocator);
+                            defer chunk_arena.deinit();
+
+                            if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
                                 // Invoke callback
                                 callback(ctx, chunk);
 
@@ -906,7 +938,10 @@ pub const Agent = struct {
                         line_buffer.clearRetainingCapacity();
                     }
                 } else if (byte != '\r') {
-                    line_buffer.append(self.allocator, byte) catch {};
+                    line_buffer.append(self.allocator, byte) catch |err| {
+                        self.logMsg(.debug, "Error appending to line buffer", );
+                        self.logMsg(.err, @errorName(err));
+                    };
                 }
             }
         }
@@ -914,9 +949,16 @@ pub const Agent = struct {
         // Process any remaining line
         if (line_buffer.items.len > 0) {
             if (self.parseSseLine(line_buffer.items)) |data| {
-                if (self.parseStreamChunk(data, self.allocator)) |chunk| {
+                // Use per-chunk arena to prevent memory leaks
+                var chunk_arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer chunk_arena.deinit();
+
+                if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
                     callback(ctx, chunk);
-                    aggregator.processChunk(chunk) catch {};
+                    aggregator.processChunk(chunk) catch |err| {
+                        self.logMsg(.debug, "Error processing chunk", );
+                        self.logMsg(.err, @errorName(err));
+                    };
                 }
             }
         }
