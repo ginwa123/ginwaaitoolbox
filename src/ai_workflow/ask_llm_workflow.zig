@@ -297,6 +297,12 @@ pub const AskLLMWorkflow = struct {
         };
 
         const historyMessages = try self.getMessages();
+        defer {
+            for (historyMessages) |*hist| {
+                hist.deinit(self.allocator);
+            }
+            self.allocator.free(historyMessages);
+        }
 
         var allMessages: std.ArrayList(agent.AgentMessage) = .empty;
         defer allMessages.deinit(self.allocator);
@@ -308,6 +314,7 @@ pub const AskLLMWorkflow = struct {
             for (agentMsgs) |msg| {
                 try allMessages.append(self.allocator, msg);
             }
+            self.allocator.free(agentMsgs);
         }
 
         return try allMessages.toOwnedSlice(self.allocator);
@@ -659,6 +666,7 @@ pub const AskLLMWorkflow = struct {
 
             // Escape the arguments string since it contains JSON
             const escaped_args = try self.escapeJsonString(tc.function.arguments);
+            defer self.allocator.free(escaped_args);
 
             try w.print(
                 \\{{"id":"{s}","type":"function","function":{{"name":"{s}","arguments":"{s}"}}}}
