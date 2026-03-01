@@ -139,6 +139,7 @@ src/
     │       ├── bash_test.zig      # Bash tool tests
     │       ├── change_agent.zig   # Change agent tool for multi-agent routing
     │       ├── change_agent_test.zig  # Change agent tests (placeholder)
+    │       ├── loop_detector.zig      # Loop detection for repeated commands
     │       └── models.zig         # Tool type definitions (AgentTool, BashInput, etc.)
     ├── databases/
     │   ├── database.zig           # Database interface
@@ -151,6 +152,11 @@ src/
     └── ipc/
         ├── ipc.zig                # Unix socket / Windows named pipe server
         └── ipc_test.zig           # IPC tests
+    ├── logger/
+    │   ├── logger.zig             # Logger core with pluggable formatters
+    │   ├── formatter.zig          # Log formatters (text, JSON, color)
+    │   ├── request_id.zig         # Request/session ID generation
+    │   └── timing.zig             # Timestamp utilities
 └── tui/
     ├── main.zig                   # Zig TUI client (terminal interface)
     └── main_test.zig              # TUI tests
@@ -183,3 +189,37 @@ The system supports multiple specialized agent types defined in `prompt.zig`:
 - **ExecutingAgent**: Implementation, code writing, deliverable production
 
 Agents can delegate to each other via the `change_agent` tool.
+
+## Logger Module
+
+The logger module (`src/modules/logger/`) provides structured logging with pluggable formatters:
+
+**Components:**
+- `logger.zig` - Main `Logger` struct with support for text, JSON, and color formatters
+- `formatter.zig` - `LogLevel` enum, `LogEntry` struct, and formatter implementations:
+  - `TextFormatter` - Plain text output
+  - `JsonFormatter` - JSON structured output
+  - `ColorFormatter` - Colored terminal output
+- `request_id.zig` - `RequestId` and `SessionId` generation for request tracing
+- `timing.zig` - Timestamp utilities: `timestampMs()`, `elapsedMs()`, `formatDuration()`, `timestampIso()`
+
+**Usage:**
+```zig
+const log = @import("tree1").logger;
+
+// In Agent struct
+logger: ?*log.Logger = null,
+
+// Log levels
+log.LogLevel.debug, log.LogLevel.info, log.LogLevel.warn, log.LogLevel.err
+```
+
+**Exported from root.zig:** `pub const logger = @import("modules/logger/logger.zig");`
+
+## Loop Detector
+
+The loop detector (`src/modules/agent/tools/loop_detector.zig`) identifies repeated commands to prevent infinite loops in agent workflows:
+
+- Detects repeated command patterns
+- Used by agent to avoid getting stuck in loops
+- Exported from root.zig: `pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");`
