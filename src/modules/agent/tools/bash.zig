@@ -176,34 +176,41 @@ pub const bashTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "bash",
-        .description = "Execute a bash command and return stdout, stderr, exit_code, truncated flag, and timeout flag. Use this to run shell commands, scripts, or interact with the file system. If the command requires stdin input, provide it via stdin_data. If not provided, stdin is closed (useful for interactive programs that would otherwise hang). IMPORTANT: Never use sudo, su, or any other privilege escalation commands under any circumstances, even if the user requests it.",
+        .description = "Execute a bash command and return stdout, stderr, exit_code, truncated, and timeout flags. " ++
+            "RULES: " ++
+            "1. Never use sudo, su, or any privilege escalation. " ++
+            "2. Never read entire files — use `head -n 100` for start, `tail -n 100` for end, `sed -n 'X,Yp'` for ranges, `wc -l` to check size first. " ++
+            "3. Never write unbounded output — pipe through `head` or set max_output. " ++
+            "4. Prefer targeted commands: `grep -n`, `find`, `stat` over broad reads. " ++
+            "5. For large repos or files, always check size before reading (`wc -l`, `du -sh`, `ls -lh`). " ++
+            "6. If stdin is needed, provide stdin_data — otherwise stdin is closed to prevent hanging.",
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "command",
                     .type = "string",
-                    .description = "The bash command to execute (required)",
+                    .description = "The bash command to execute. Prefer scoped commands (head, tail, grep, stat, wc) over full reads (cat, find /).",
                 },
                 .{
                     .name = "timeout",
                     .type = "number",
-                    .description = "Timeout in seconds (default 30). If the command exceeds this time, it will be terminated and timeout=true returned",
+                    .description = "Timeout in seconds (default 30, max 120). Command is killed and timeout=true returned if exceeded.",
                 },
                 .{
                     .name = "cwd",
                     .type = "string",
-                    .description = "Working directory to run the command in (optional, defaults to current directory)",
+                    .description = "Working directory to run the command in (required). Always set explicitly — never assume current directory.",
                 },
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description = "Max output size in bytes (default 1048576 = 1MB). If exceeded, truncated=true and output is cut",
+                    .description = "Max stdout+stderr size in bytes (default 102400 = 100KB, max 1048576 = 1MB). If exceeded, truncated=true and output is cut. Keep low for file reads.",
                 },
                 .{
                     .name = "stdin_data",
                     .type = "string",
-                    .description = "Data to send to stdin (optional). If not provided, stdin is closed immediately - useful for commands that would otherwise hang waiting for input",
+                    .description = "Data to pipe into stdin (optional). If omitted, stdin is closed immediately.",
                 },
             },
             .required = &.{ "command", "cwd", "timeout" },

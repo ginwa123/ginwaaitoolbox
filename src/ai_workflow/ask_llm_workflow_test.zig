@@ -29,6 +29,11 @@ test "transformMessageToAgentMessages with user message" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -81,6 +86,11 @@ test "transformMessageToAgentMessages with assistant message" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -132,6 +142,11 @@ test "transformMessageToAgentMessages with tool message" {
         .version = migrations.Migration003AddReasoningContent.version,
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
     });
     try mgr.runMigrations();
 
@@ -189,6 +204,11 @@ test "transformMessageToAgentMessages with tool_calls message" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -243,6 +263,11 @@ test "saveMessage saves response to llm_history" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -290,6 +315,11 @@ test "saveMessageAsUser saves user message to llm_history" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -329,6 +359,11 @@ test "saveMessageAsTool saves tool result to llm_history" {
         .version = migrations.Migration003AddReasoningContent.version,
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
     });
     try mgr.runMigrations();
 
@@ -371,6 +406,11 @@ test "buildMessages returns correct message structure" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -412,6 +452,11 @@ test "getMessages retrieves messages by session_id" {
         .version = migrations.Migration003AddReasoningContent.version,
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
     });
     try mgr.runMigrations();
 
@@ -470,6 +515,11 @@ test "buildMessages handles tool_calls response correctly" {
         .version = migrations.Migration003AddReasoningContent.version,
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
     });
     try mgr.runMigrations();
 
@@ -536,6 +586,11 @@ test "sendResponse generates valid XML with content" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -577,6 +632,11 @@ test "sendResponse generates valid XML with markdown content" {
         .version = migrations.Migration003AddReasoningContent.version,
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
     });
     try mgr.runMigrations();
 
@@ -620,6 +680,11 @@ test "sendError with content_filter finish reason" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -656,6 +721,11 @@ test "sendError with null finish reason defaults to stop" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -691,6 +761,11 @@ test "sendResponse with content_filter override" {
         .version = migrations.Migration003AddReasoningContent.version,
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
     });
     try mgr.runMigrations();
 
@@ -734,6 +809,11 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
         .version = migrations.Migration003AddReasoningContent.version,
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
     });
     try mgr.runMigrations();
 
@@ -826,6 +906,11 @@ test "serializeToolCalls escapes JSON arguments correctly" {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try mgr.runMigrations();
 
     var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
@@ -888,6 +973,11 @@ test "escapeJsonString handles special characters" {
         .version = migrations.Migration003AddReasoningContent.version,
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
     });
     try mgr.runMigrations();
 

@@ -536,6 +536,12 @@ pub const CompactionAgent =
     \\  You have no tools. You reason only from the conversation history provided to you.
     \\</tool_access>
     \\
+    \\<compaction_target>
+    \\  Reduce to 20-30% of original token count.
+    \\  If you cannot reach 30% without losing critical info, keep the info and note why in <thought>.
+    \\  If context is already minimal and cannot be reduced further, output it unchanged and note "no compaction possible".
+    \\</compaction_target>
+    \\
     \\<compaction_rules>
     \\  <keep>
     \\    <item>original_request — never compress, always carry verbatim</item>
@@ -590,8 +596,10 @@ pub const CompactionAgent =
     \\        <goal>Add JWT validation to auth middleware</goal>
     \\        <constraints>No new dependencies without approval</constraints>
     \\        <success_criteria>All protected routes reject requests without valid JWT</success_criteria>
-    \\        <open_questions>Should expired tokens return 401 or 403?</open_questions>
     \\      </active_handoff>
+    \\      <open_questions>
+    \\        <item>Should expired tokens return 401 or 403?</item>
+    \\      </open_questions>
     \\      <known_limitations>
     \\        <item>Rate limiter uses in-memory store — not suitable for multi-instance deployments</item>
     \\      </known_limitations>
@@ -619,6 +627,7 @@ pub const CompactionAgent =
     \\  <original_request></original_request>
     \\  <completed_tasks></completed_tasks>
     \\  <active_handoff></active_handoff>
+    \\  <open_questions></open_questions>
     \\  <known_limitations></known_limitations>
     \\</compacted_context>
 ;

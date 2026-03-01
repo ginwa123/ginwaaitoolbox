@@ -9,6 +9,12 @@ const bash_tool = tree1_mod.bash_tool;
 const tool_models = tree1_mod.tool_models;
 const change_agent_tool = tree1_mod.change_agent_tool;
 
+/// Compaction configuration constants
+const COMPACTION_CONFIG = struct {
+    pub const target_body_size: usize = 50 * 1024; // 50KB target
+    pub const max_body_size: usize = 124 * 1024; // 124kb threshold to trigger
+};
+
 pub const AskLLMHistory = struct {
     id: []const u8,
     session_id: []const u8,
@@ -343,44 +349,61 @@ pub const AskLLMWorkflow = struct {
         var isThinking: bool = false;
         while (true) {
             if (retryCount > 10) return error.TooManyRetries;
-            var agenttt = try agent.Agent.init(self.allocator);
-            defer agenttt.deinit();
 
-            agenttt.apiKey = self.api_key;
-            agenttt.model = self.model;
-            agenttt.baseUrl = self.base_url;
+            // === COMPACTION CHECK ===
+            const body_size = self.estimateBodySize(messages_list.items);
+            std.debug.print("[COMPACTION] Body size: {} bytes\n", .{body_size});
 
-            const agetntCall = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature };
-            agenttt.thinkingEnabled = isThinking;
+            if (body_size > COMPACTION_CONFIG.max_body_size)
+            {
+                std.debug.print("[COMPACTION] Threshold exceeded, triggering compaction\n", .{});
 
-            // Use streaming for better UX
+                var arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena.deinit();
+
+                if (try self.callCompactionAgent(messages_list.items, arena.allocator())) |compacted_xml| {
+                    try self.compactMessagesInMemory(&messages_list, compacted_xml);
+                }
+            }
+            // === END COMPACTION CHECK ===
+
+            var arena_allocator_agent = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena_allocator_agent.deinit();
+            const allocator_agent = arena_allocator_agent.allocator();
+            var dynamic_agent = try agent.Agent.init(allocator_agent);
+            defer dynamic_agent.deinit();
+            dynamic_agent.apiKey = self.api_key;
+            dynamic_agent.model = self.model;
+            dynamic_agent.baseUrl = self.base_url;
+            const dynamic_agent_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature };
+            dynamic_agent.thinkingEnabled = isThinking;
+            dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 5 minutes
             var stream_ctx = StreamingContext{
                 .workflow = self,
                 .chunk_index = 0,
             };
-
-            const response = agenttt.callStreaming(agetntCall, &stream_ctx, streamCallback) catch |err| {
+            const res_dynamic_agent = dynamic_agent.callStreaming(dynamic_agent_params, &stream_ctx, streamCallback) catch |err| {
                 retryCount += 1;
                 std.debug.print("Error calling agent: {s}\n", .{@errorName(err)});
                 self.sendError(@errorName(err), "notification_error");
                 continue;
             };
-            defer response.deinit();
+            defer res_dynamic_agent.deinit();
             retryCount = 0;
 
-            if (response.finish_reason) |finish_reason| {
+            if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
                     const content = blk: {
-                        const a = response.content orelse "";
-                        const b = response.reasoning_content orelse "";
+                        const a = res_dynamic_agent.content orelse "";
+                        const b = res_dynamic_agent.reasoning_content orelse "";
                         break :blk try std.mem.concat(self.allocator, u8, &.{ a, b });
                     };
 
-                    const has_unresolved = agenttt.hasUnresolvedIntent(content) catch false;
+                    const has_unresolved = dynamic_agent.hasUnresolvedIntent(content) catch false;
                     if (has_unresolved) {
                         std.debug.print("UNRESOLVED INTENT DETECTED - continuing loop\n", .{});
-                        self.sendResponse(response, "");
-                        try self.saveMessageUnified(null, response, agent.Role.assistant.toStr(), null, null, null);
+                        self.sendResponse(res_dynamic_agent, "");
+                        try self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null);
 
                         const user_msg = agent.AgentMessage{
                             .role = .user,
@@ -391,8 +414,8 @@ pub const AskLLMWorkflow = struct {
                         continue;
                     }
 
-                    self.sendResponse(response, "user_choice");
-                    self.saveMessageUnified(null, response, agent.Role.assistant.toStr(), null, null, null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                    self.sendResponse(res_dynamic_agent, "user_choice");
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
 
                     std.debug.print("FINISH REASON STOP", .{});
                     break;
@@ -400,12 +423,12 @@ pub const AskLLMWorkflow = struct {
                     std.debug.print("FINISH REASON LENGTH - continuing...\n", .{});
 
                     // Save partial response to history and send to client
-                    self.sendResponse(response, "length");
-                    self.saveMessageUnified(null, response, agent.Role.assistant.toStr(), null, null, null) catch |err|
+                    self.sendResponse(res_dynamic_agent, "length");
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err|
                         std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
 
                     // Add assistant message to conversation for context
-                    const content_copy = if (response.content) |c|
+                    const content_copy = if (res_dynamic_agent.content) |c|
                         try self.allocator.dupe(u8, c)
                     else
                         null;
@@ -424,10 +447,10 @@ pub const AskLLMWorkflow = struct {
                     try messages_list.append(self.allocator, continue_msg);
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    self.sendResponse(response, null);
+                    self.sendResponse(res_dynamic_agent, null);
                     std.debug.print("FINISH REASON TOOL CALLS - executing tools\n", .{});
 
-                    if (response.tool_calls) |tc| {
+                    if (res_dynamic_agent.tool_calls) |tc| {
                         if (tc.len == 0) {
                             std.debug.print("WARNING: tool_calls array is empty!\n", .{});
                         }
@@ -444,12 +467,12 @@ pub const AskLLMWorkflow = struct {
                         }
 
                         // Merge reasoning_content into content of the tool call assistant message
-                        const reasoningContent: ?[]u8 = if (response.reasoning_content) |rc|
+                        const reasoningContent: ?[]u8 = if (res_dynamic_agent.reasoning_content) |rc|
                             try self.allocator.dupe(u8, rc)
                         else
                             null;
 
-                        const contentNormal: ?[]u8 = if (response.content) |c|
+                        const contentNormal: ?[]u8 = if (res_dynamic_agent.content) |c|
                             try self.allocator.dupe(u8, c)
                         else
                             null;
@@ -472,7 +495,7 @@ pub const AskLLMWorkflow = struct {
 
                         self.saveMessageUnified(
                             null,
-                            response,
+                            res_dynamic_agent,
                             agent.Role.assistant.toStr(),
                             null,
                             assistant_tool_calls,
@@ -605,15 +628,15 @@ pub const AskLLMWorkflow = struct {
                     std.debug.print("FINISH REASON CONTENT FILTER - content was filtered due to safety policies\n", .{});
 
                     // Save the filtered response to history
-                    self.saveMessageUnified(null, response, agent.Role.assistant.toStr(), null, null, null) catch |err|
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err|
                         std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
 
                     // Send error response to client with content_filter finish reason
                     // The response content may be empty or contain partial filtered content
-                    if (response.content) |c| {
+                    if (res_dynamic_agent.content) |c| {
                         if (c.len > 0) {
                             // Send the partial content with content_filter finish reason
-                            self.sendResponse(response, "content_filter");
+                            self.sendResponse(res_dynamic_agent, "content_filter");
                         } else {
                             // No content, send error message
                             self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
@@ -717,7 +740,6 @@ pub const AskLLMWorkflow = struct {
         try db.exec(self.allocator, sql, sqlArgs);
     }
 
-
     pub fn getMessages(self: *AskLLMWorkflow) ![]AskLLMHistory {
         var results: std.ArrayList(AskLLMHistory) = .empty;
 
@@ -817,6 +839,194 @@ pub const AskLLMWorkflow = struct {
         }
 
         return messages.toOwnedSlice(self.allocator);
+    }
+
+    /// Estimate the body size of messages for compaction threshold check
+    fn estimateBodySize(self: *AskLLMWorkflow, messages: []agent.AgentMessage) usize {
+        _ = self;
+        var total: usize = 0;
+        for (messages) |msg| {
+            total += 50; // JSON overhead per message
+            if (msg.content) |c| total += c.len;
+            if (msg.reasoning_content) |rc| total += rc.len;
+            if (msg.tool_call_id) |id| total += id.len + 20;
+            if (msg.tool_calls) |tcs| {
+                for (tcs) |tc| {
+                    total += tc.id.len + tc.function.name.len + tc.function.arguments.len + 50;
+                }
+            }
+        }
+        return total;
+    }
+
+    /// Call CompactionAgent to compress conversation history
+    /// Call CompactionAgent to compress conversation history
+    fn callCompactionAgent(
+        self: *AskLLMWorkflow,
+        messages: []agent.AgentMessage,
+        arena: std.mem.Allocator,
+    ) !?[]const u8 {
+        // Serialize messages as-is for CompactionAgent to reason over
+        var history_buf: std.ArrayList(u8) = .empty;
+        defer history_buf.deinit(arena);
+        var w = history_buf.writer(arena);
+
+        try w.print("Current context size: approximately {} bytes\n\n", .{self.estimateBodySize(messages)});
+        try w.writeAll("Conversation history to compact:\n\n");
+
+        for (messages, 0..) |msg, i| {
+            if (i == 0) continue; // Skip system prompt
+
+            if (msg.role == .tool) {
+                try w.print("--- Message {} (tool_result id:{s}) ---\n", .{ i, msg.tool_call_id orelse "unknown" });
+                if (msg.content) |c| try w.writeAll(c);
+            } else if (msg.reasoning_content) |rc| {
+                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.toStr() });
+                try w.writeAll("[REASONING]\n");
+                try w.writeAll(rc);
+                if (msg.content) |c| {
+                    try w.writeAll("\n[RESPONSE]\n");
+                    try w.writeAll(c);
+                }
+            } else if (msg.tool_calls) |tcs| {
+                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.toStr() });
+                try w.writeAll("[TOOL CALLS]\n");
+                for (tcs) |tc| {
+                    try w.print("  - {s}({s})\n", .{ tc.function.name, tc.function.arguments });
+                }
+            } else if (msg.content) |c| {
+                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.toStr() });
+                try w.writeAll(c);
+            }
+
+            try w.writeAll("\n");
+        }
+
+        const compaction_messages = try arena.alloc(agent.AgentMessage, 2);
+        compaction_messages[0] = .{ .role = .system, .content = prompt.CompactionAgent };
+        compaction_messages[1] = .{ .role = .user, .content = try history_buf.toOwnedSlice(arena) };
+
+        var compaction_agent = try agent.Agent.init(arena);
+        defer compaction_agent.deinit();
+        compaction_agent.apiKey = self.api_key;
+        compaction_agent.model = self.model;
+        compaction_agent.baseUrl = self.base_url;
+
+        const params = agent.AgentCall{
+            .tools = &.{},
+            .messages = compaction_messages,
+            .temperature = 0.0,
+            .max_tokens = 8000,
+        };
+
+        std.debug.print("[COMPACTION] Calling CompactionAgent ({} messages, ~{} bytes)\n", .{
+            messages.len,
+            self.estimateBodySize(messages),
+        });
+
+        const response = compaction_agent.call(params) catch |err| {
+            std.debug.print("[COMPACTION] Failed: {s}\n", .{@errorName(err)});
+            return null;
+        };
+        defer response.deinit();
+
+        if (response.content) |content| {
+            std.debug.print("[COMPACTION] Done: {} bytes -> {} bytes\n", .{
+                self.estimateBodySize(messages),
+                content.len,
+            });
+            return try arena.dupe(u8, content);
+        }
+        return null;
+    }
+
+    /// Compact messages in memory based on CompactionAgent output
+    fn compactMessagesInMemory(
+        self: *AskLLMWorkflow,
+        messages: *std.ArrayList(agent.AgentMessage),
+        compacted_xml: []const u8,
+    ) !void {
+        const total = messages.items.len;
+        if (total <= 4) return;
+
+        var new_messages: std.ArrayList(agent.AgentMessage) = .empty;
+
+        // Keep system message - duplicate content to be safe
+        const system_content = if (messages.items[0].content) |c|
+            try self.allocator.dupe(u8, c)
+        else
+            null;
+        try new_messages.append(self.allocator, .{
+            .role = .system,
+            .content = system_content,
+        });
+
+        // Add compacted summary
+        var summary: std.ArrayList(u8) = .empty;
+        defer summary.deinit(self.allocator);
+        var w = summary.writer(self.allocator);
+        try w.writeAll("[CONTEXT SUMMARY]\n\n");
+        try w.writeAll(compacted_xml);
+
+        try new_messages.append(self.allocator, .{
+            .role = .user,
+            .content = try summary.toOwnedSlice(self.allocator),
+        });
+
+        // Keep last 2 messages for context continuity - DUPLICATE their content
+        const start_last = @max(1, total - 2);
+        for (messages.items[start_last..]) |msg| {
+            // Duplicate content to ensure we own the memory
+            const duped_content = if (msg.content) |c|
+                try self.allocator.dupe(u8, c)
+            else
+                null;
+
+            // Duplicate tool_calls if present
+            var duped_tool_calls: ?[]agent.ToolCall = null;
+            if (msg.tool_calls) |tcs| {
+                var new_tcs = try self.allocator.alloc(agent.ToolCall, tcs.len);
+                for (tcs, 0..) |tc, i| {
+                    new_tcs[i] = .{
+                        .id = try self.allocator.dupe(u8, tc.id),
+                        .function = .{
+                            .name = try self.allocator.dupe(u8, tc.function.name),
+                            .arguments = try self.allocator.dupe(u8, tc.function.arguments),
+                        },
+                    };
+                }
+                duped_tool_calls = new_tcs;
+            }
+
+            // Duplicate tool_call_id if present
+            const duped_tool_call_id = if (msg.tool_call_id) |id|
+                try self.allocator.dupe(u8, id)
+            else
+                null;
+
+            // Duplicate reasoning_content if present
+            const duped_reasoning = if (msg.reasoning_content) |rc|
+                try self.allocator.dupe(u8, rc)
+            else
+                null;
+
+            try new_messages.append(self.allocator, .{
+                .role = msg.role,
+                .content = duped_content,
+                .tool_calls = duped_tool_calls,
+                .tool_call_id = duped_tool_call_id,
+                .reasoning_content = duped_reasoning,
+            });
+        }
+
+        // Free ALL old messages (including ones we "kept" - we have copies now)
+        for (messages.items) |*msg| {
+            msg.deinit(self.allocator);
+        }
+        messages.deinit(self.allocator);
+        messages.* = new_messages;
+
+        std.debug.print("[COMPACTION] Compacted: {} -> {} messages\n", .{ total, messages.items.len });
     }
 
     pub fn deinit(self: *AskLLMWorkflow) void {

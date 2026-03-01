@@ -10,6 +10,23 @@ const AgentTool = @import("tools/models.zig").AgentTool;
 
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
+/// Get current timestamp in milliseconds since epoch
+fn timestampMs() i64 {
+    return @divTrunc(std.time.milliTimestamp(), 1);
+}
+
+/// Calculate elapsed time in milliseconds
+fn elapsedMs(start: i64) i64 {
+    return timestampMs() - start;
+}
+
+/// Format duration for human-readable output
+fn formatDuration(ms: i64) struct { value: i64, unit: []const u8 } {
+    if (ms < 1000) return .{ .value = ms, .unit = "ms" };
+    if (ms < 60000) return .{ .value = @divTrunc(ms, 1000), .unit = "s" };
+    return .{ .value = @divTrunc(ms, 60000), .unit = "min" };
+}
+
 pub const ToolCall = struct {
     id: []const u8,
     type: []const u8 = "function",
@@ -284,11 +301,17 @@ pub const StreamingAggregator = struct {
 
         var tool_calls_copy: ?[]ToolCall = null;
         if (self.tool_calls.items.len > 0) {
-            tool_calls_copy = try self.allocator.dupe(ToolCall, self.tool_calls.items);
-            // Clear self.tool_calls so deinit() doesn't free the strings we just transferred
-            // to tool_calls_copy. The dupe above is a shallow copy of the struct, so the
-            // string pointers (id, function.name, function.arguments) are shared.
-            self.tool_calls.items.len = 0;
+            // Deep copy: allocate new strings for each tool call
+            tool_calls_copy = try self.allocator.alloc(ToolCall, self.tool_calls.items.len);
+            for (self.tool_calls.items, 0..) |tc, i| {
+                tool_calls_copy.?[i] = .{
+                    .id = try self.allocator.dupe(u8, tc.id),
+                    .function = .{
+                        .name = try self.allocator.dupe(u8, tc.function.name),
+                        .arguments = try self.allocator.dupe(u8, tc.function.arguments),
+                    },
+                };
+            }
         }
 
         return .{
@@ -319,13 +342,47 @@ pub const HttpOptions = struct {
     header_buffer_size: usize = 16 * 1024,
 };
 
+/// Log levels for agent operations
+pub const LogLevel = enum {
+    trace,
+    debug,
+    info,
+    warn,
+    err,
+};
+
+/// Log with formatted message (allocates temporarily)
+pub fn logFmt(
+    allocator: std.mem.Allocator,
+    comptime level: LogLevel,
+    comptime fmt: []const u8,
+    args: anytype,
+) void {
+    const msg = std.fmt.allocPrint(allocator, fmt, args) catch return;
+    defer allocator.free(msg);
+    logRaw(level, msg);
+}
+
+/// Log a raw message without allocation
+pub fn logRaw(comptime level: LogLevel, message: []const u8) void {
+    const level_str = comptime switch (level) {
+        .trace => "TRACE",
+        .debug => "DEBUG",
+        .info => "INFO",
+        .warn => "WARN",
+        .err => "ERROR",
+    };
+    const timestamp = std.time.timestamp();
+    std.debug.print("[{s}] [{}] {s}\n", .{ level_str, timestamp, message });
+}
+
 pub const Agent = struct {
     name: []const u8 = "",
     apiKey: []const u8 = "",
     baseUrl: []const u8 = "",
     model: []const u8 = "",
-    temperature: f32 = 0.6,
-    maxTokens: usize = 10000,
+    temperature: f32 = 0.4,
+    maxTokens: usize = 4096,
     httpClient: std.http.Client,
     thinkingEnabled: bool = true,
     allocator: std.mem.Allocator,
@@ -343,7 +400,14 @@ pub const Agent = struct {
         pub fn deinit(self: *const CallResponse) void {
             if (self.content) |c| self.allocator.free(c);
             if (self.reasoning_content) |rc| self.allocator.free(rc);
-            if (self.tool_calls) |tc| self.allocator.free(tc);
+            if (self.tool_calls) |tc| {
+                for (tc) |*tool_call| {
+                    self.allocator.free(tool_call.id);
+                    self.allocator.free(tool_call.function.name);
+                    self.allocator.free(tool_call.function.arguments);
+                }
+                self.allocator.free(tc);
+            }
         }
     };
 
@@ -367,13 +431,48 @@ pub const Agent = struct {
         if (self.logger) |logger| {
             logger(level, message);
         } else {
-            switch (level) {
-                .err => std.debug.print("[ERROR] {s}\n", .{message}),
-                .warn => std.debug.print("[WARN] {s}\n", .{message}),
-                .info => std.debug.print("[INFO] {s}\n", .{message}),
-                .debug => std.debug.print("[DEBUG] {s}\n", .{message}),
-            }
+            const level_str = switch (level) {
+                .err => "ERROR",
+                .warn => "WARN",
+                .info => "INFO",
+                .debug => "DEBUG",
+            };
+            std.debug.print("[{s}] [Agent:{s}] {s}\n", .{ level_str, self.name, message });
         }
+    }
+
+    /// Log with formatted message and context
+    pub fn logFmt(self: Agent, comptime level: std.log.Level, comptime fmt: []const u8, args: anytype) void {
+        const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        defer self.allocator.free(msg);
+        self.logMsg(level, msg);
+    }
+
+    /// Log error with context (operation, error name, and optional detail)
+    pub fn logError(self: Agent, operation: []const u8, err: anyerror, detail: ?[]const u8) void {
+        if (detail) |d| {
+            self.logFmt(.err, "{s} failed: {s} - {s}", .{ operation, @errorName(err), d });
+        } else {
+            self.logFmt(.err, "{s} failed: {s}", .{ operation, @errorName(err) });
+        }
+    }
+
+    /// Log error with JSON body for debugging API issues
+    pub fn logApiError(self: Agent, operation: []const u8, err: anyerror, body: []const u8) void {
+        // Truncate body if too long for logging
+        const max_body_len = 500;
+        const truncated = body.len > max_body_len;
+        const body_to_log = if (truncated) body[0..max_body_len] else body;
+        if (truncated) {
+            self.logFmt(.err, "{s} failed: {s}\nResponse (truncated): {s}...", .{ operation, @errorName(err), body_to_log });
+        } else {
+            self.logFmt(.err, "{s} failed: {s}\nResponse: {s}", .{ operation, @errorName(err), body_to_log });
+        }
+    }
+
+    /// Log HTTP request details for debugging
+    pub fn logRequest(self: Agent, method: []const u8, url: []const u8, body_len: usize) void {
+        self.logFmt(.debug, "HTTP {s} {s} (body: {} bytes)", .{ method, url, body_len });
     }
 
     pub fn buildJsonRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
@@ -525,21 +624,36 @@ pub const Agent = struct {
     };
 
     pub fn call(self: *Agent, params: AgentCall) CallError!CallResponse {
-        self.logMsg(.info, "Building JSON request...");
-        const json_body: []u8 = try self.buildJsonRequest(params, false);
-        self.logMsg(.info, "JSON request built, sending...");
+        self.logFmt(.info, "[CALL START] Building JSON request (model: {s}, messages: {})...", .{ self.model, params.messages.len });
+
+        const json_start = timestampMs();
+        const json_body: []u8 = self.buildJsonRequest(params, false) catch |err| {
+            self.logError("buildJsonRequest", err, null);
+            return error.BuildRequestFailed;
+        };
+        self.logFmt(.debug, "[TIMING] JSON build took {}ms ({} bytes)", .{ elapsedMs(json_start), json_body.len });
         defer self.allocator.free(json_body);
 
-        self.logMsg(.debug, json_body);
-
-        const uri_str = try std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" });
+        const connect_start = timestampMs();
+        const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
+            self.logError("concat URI", err, self.baseUrl);
+            return error.OutOfMemory;
+        };
         defer self.allocator.free(uri_str);
-        const uri = std.Uri.parse(uri_str) catch {
-            self.logMsg(.err, "Invalid URI");
+
+        const uri = std.Uri.parse(uri_str) catch |err| {
+            self.logFmt(.err, "Failed to parse URI '{s}': {s}", .{ uri_str, @errorName(err) });
             return error.InvalidUri;
         };
-        const auth_value = try std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey });
+
+        self.logFmt(.debug, "[REQUEST] POST {s} (body: {} bytes)", .{ uri_str, json_body.len });
+
+        const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
+            self.logError("concat auth", err, null);
+            return error.OutOfMemory;
+        };
         defer self.allocator.free(auth_value);
+
         var req = self.httpClient.request(.POST, uri, .{
             .version = .@"HTTP/1.1",
             .headers = .{
@@ -548,8 +662,7 @@ pub const Agent = struct {
                 .accept_encoding = .{ .override = "identity" },
             },
         }) catch |err| {
-            self.logMsg(.debug, "Error creating HTTP request", );
-            self.logMsg(.err, @errorName(err));
+            self.logFmt(.err, "HTTP request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
             return error.HttpRequestFailed;
         };
         defer req.deinit();
@@ -562,107 +675,163 @@ pub const Agent = struct {
                 .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
             };
             std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch |err| {
-                self.logMsg(.debug, "Error setsockopt RCVTIMEO", );
-                self.logMsg(.err, @errorName(err));
+                self.logFmt(.warn, "Failed to set socket RCVTIMEO: {s}", .{@errorName(err)});
             };
             std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch |err| {
-                self.logMsg(.debug, "Error setsockopt SNDTIMEO", );
-                self.logMsg(.err, @errorName(err));
+                self.logFmt(.warn, "Failed to set socket SNDTIMEO: {s}", .{@errorName(err)});
+            };
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&@as(u32, 1))) catch |err| {
+                self.logFmt(.warn, "Failed to set socket KEEPALIVE: {s}", .{@errorName(err)});
             };
         }
+        self.logFmt(.debug, "[TIMING] Connection setup took {}ms", .{elapsedMs(connect_start)});
 
+        const send_start = timestampMs();
         req.sendBodyComplete(json_body) catch |err| {
-            self.logMsg(.err, @errorName(err));
+            self.logError("sendBodyComplete", err, null);
             return error.SendBodyFailed;
         };
+        self.logFmt(.debug, "[TIMING] Request sent in {}ms", .{elapsedMs(send_start)});
+
+        const receive_start = timestampMs();
         var redirect_buffer: [8192]u8 = undefined;
         // Use heap-allocated buffer for response body to handle large API responses
-        const transfer_buffer = try self.allocator.alloc(u8, self.httpOptions.response_buffer_size);
+        const transfer_buffer = self.allocator.alloc(u8, self.httpOptions.response_buffer_size) catch |err| {
+            self.logError("alloc transfer_buffer", err, null);
+            return error.OutOfMemory;
+        };
         defer self.allocator.free(transfer_buffer);
+
+        self.logFmt(.debug, "[WAITING] Waiting for response (timeout: {}ms)...", .{self.httpOptions.read_timeout_ms});
+
         var response = req.receiveHead(&redirect_buffer) catch |err| {
+            self.logFmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(receive_start), @errorName(err) });
             if (req.connection) |conn| {
                 if (conn.getReadError()) |read_err| {
-                    const detail = std.fmt.allocPrint(self.allocator, "HTTP receive failed: {s} (detail: {s})", .{ @errorName(err), @errorName(read_err) }) catch @errorName(err);
-                    defer if (detail.len > @errorName(err).len) self.allocator.free(detail);
-                    self.logMsg(.err, detail);
+                    self.logFmt(.err, "HTTP receive failed: {s} (underlying: {s})", .{ @errorName(err), @errorName(read_err) });
                 } else {
-                    self.logMsg(.err, @errorName(err));
+                    self.logError("receiveHead", err, null);
                 }
             } else {
-                self.logMsg(.err, @errorName(err));
+                self.logFmt(.err, "HTTP receive failed (no connection): {s}", .{@errorName(err)});
             }
             return error.ReceiveFailed;
         };
 
         const body = response.reader(transfer_buffer[0..]).allocRemaining(self.allocator, .unlimited) catch |err| {
-            const detail_msg = std.fmt.allocPrint(self.allocator, "Failed to read response body: {s}", .{@errorName(err)}) catch @errorName(err);
-            self.logMsg(.err, detail_msg);
+            self.logFmt(.err, "[ERROR] Failed to read body after {}ms: {s}", .{ elapsedMs(receive_start), @errorName(err) });
             return error.ReceiveFailed;
         };
         defer self.allocator.free(body);
-        self.logMsg(.info, "Response received, parsing JSON...");
-        self.logMsg(.debug, body);
+
+        self.logFmt(.info, "[RESPONSE] Received {} bytes in {}ms (total wait: {}ms)", .{ body.len, elapsedMs(receive_start), elapsedMs(send_start) });
 
         const parsed = json.parseFromSlice(json.Value, self.allocator, body, .{}) catch |err| {
-            const msg = std.fmt.allocPrint(self.allocator, "Failed to parse JSON response: {s}\nBody: {s}", .{ @errorName(err), body }) catch "error";
-            self.logMsg(.err, msg);
+            self.logApiError("JSON parse", err, body);
             return error.ParseJsonFailed;
         };
         defer parsed.deinit();
-        self.logMsg(.debug, body);
 
         const root = parsed.value;
-        if (root.object.get("error")) |_| {
-            const msg = std.fmt.allocPrint(self.allocator, "API error: {s}", .{body}) catch "error";
-            self.logMsg(.err, msg);
+        if (root.object.get("error")) |api_error| {
+            const error_detail = switch (api_error) {
+                .string => |s| s,
+                .object => |obj| blk: {
+                    if (obj.get("message")) |msg| {
+                        break :blk switch (msg) {
+                            .string => |s| s,
+                            else => "unknown error object",
+                        };
+                    }
+                    break :blk "error object without message";
+                },
+                else => "unknown error format",
+            };
+            self.logFmt(.err, "API returned error: {s}", .{error_detail});
             return error.ApiError;
         }
+
         const choices = root.object.get("choices") orelse {
-            const msg = std.fmt.allocPrint(self.allocator, "No choices in response: {s}", .{body}) catch "error";
-            self.logMsg(.err, msg);
+            self.logApiError("No choices in response", error.NoChoices, body);
             return error.NoChoices;
         };
+
+        if (choices.array.items.len == 0) {
+            self.logApiError("Empty choices array", error.NoChoices, body);
+            return error.NoChoices;
+        }
+
         const first_choice = choices.array.items[0];
-        const message = first_choice.object.get("message").?;
+        const message = first_choice.object.get("message") orelse {
+            self.logApiError("No message in choice", error.NoChoices, body);
+            return error.NoChoices;
+        };
+
         const content = message.object.get("content");
         const tool_calls_val = message.object.get("tool_calls");
         const finish_reason_val = first_choice.object.get("finish_reason");
         const reasoning_content_val = message.object.get("reasoning_content");
 
-        if (content != null) {
-            self.logMsg(.info, "Response content received");
+        if (content) |c| {
+            self.logFmt(.info, "Response content received ({} chars)", .{c.string.len});
         } else if (tool_calls_val != null) {
             self.logMsg(.info, "Response contains tool_calls");
+        } else {
+            self.logMsg(.warn, "Response has no content or tool_calls");
         }
 
         if (reasoning_content_val) |rc| {
-            self.logMsg(.debug, rc.string);
+            self.logFmt(.debug, "Reasoning content ({} chars): {s}", .{ rc.string.len, rc.string });
         }
 
         var tool_calls: ?[]ToolCall = null;
         if (tool_calls_val) |tc| {
-            var calls = try self.allocator.alloc(ToolCall, tc.array.items.len);
+            self.logFmt(.debug, "Parsing {} tool calls", .{tc.array.items.len});
+            var calls = self.allocator.alloc(ToolCall, tc.array.items.len) catch |err| {
+                self.logError("alloc tool_calls", err, null);
+                return error.OutOfMemory;
+            };
             for (tc.array.items, 0..) |tc_item, i| {
                 const tc_obj = tc_item.object;
-                const id = tc_obj.get("id").?.string;
-                const func_obj = tc_obj.get("function").?.object;
-                const name = func_obj.get("name").?.string;
-                const arguments = func_obj.get("arguments").?.string;
-                calls[i] = .{ .id = id, .function = .{ .name = name, .arguments = arguments } };
+                const id = tc_obj.get("id") orelse {
+                    self.logFmt(.err, "Tool call {} missing 'id' field", .{i});
+                    return error.ParseJsonFailed;
+                };
+                const func_obj = tc_obj.get("function") orelse {
+                    self.logFmt(.err, "Tool call {} missing 'function' field", .{i});
+                    return error.ParseJsonFailed;
+                };
+                const name = func_obj.object.get("name") orelse {
+                    self.logFmt(.err, "Tool call {} missing function 'name'", .{i});
+                    return error.ParseJsonFailed;
+                };
+                const arguments = func_obj.object.get("arguments") orelse {
+                    self.logFmt(.err, "Tool call {} missing function 'arguments'", .{i});
+                    return error.ParseJsonFailed;
+                };
+                calls[i] = .{ .id = id.string, .function = .{ .name = name.string, .arguments = arguments.string } };
+                self.logFmt(.debug, "Tool call {}: {s}", .{ i, name.string });
             }
             tool_calls = calls;
         }
 
         const finish_reason = FinishReason.fromStr(if (finish_reason_val) |fr| fr.string else null);
+        self.logFmt(.debug, "Finish reason: {s}", .{if (finish_reason) |fr| fr.toStr() else "null"});
 
         var content_copy: ?[]const u8 = null;
         if (content) |c| {
-            content_copy = try self.allocator.dupe(u8, c.string);
+            content_copy = self.allocator.dupe(u8, c.string) catch |err| {
+                self.logError("dupe content", err, null);
+                return error.OutOfMemory;
+            };
         }
 
         var reasoning_content_copy: ?[]const u8 = null;
         if (reasoning_content_val) |rc| {
-            reasoning_content_copy = try self.allocator.dupe(u8, rc.string);
+            reasoning_content_copy = self.allocator.dupe(u8, rc.string) catch |err| {
+                self.logError("dupe reasoning_content", err, null);
+                return error.OutOfMemory;
+            };
         }
 
         // Parse usage information
@@ -678,6 +847,7 @@ pub const Agent = struct {
                 if (usage_val.object.get("total_tokens")) |tt| {
                     if (tt == .integer) usage.total_tokens = @intCast(tt.integer);
                 }
+                self.logFmt(.info, "Token usage - prompt: {}, completion: {}, total: {}", .{ usage.prompt_tokens, usage.completion_tokens, usage.total_tokens });
             }
         }
 
@@ -712,8 +882,15 @@ pub const Agent = struct {
     /// Parse a streaming chunk JSON into StreamChunk
     pub fn parseStreamChunk(self: Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
         const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch |err| {
-            self.logMsg(.debug, "failed json parse slice");
-            self.logMsg(.err, @errorName(err));
+            // Log the actual data that failed to parse for debugging
+            const max_data_len = 200;
+            const truncated = data.len > max_data_len;
+            const data_to_log = if (truncated) data[0..max_data_len] else data;
+            if (truncated) {
+                self.logFmt(.err, "JSON parse failed: {s}\nData (truncated): {s}...", .{ @errorName(err), data_to_log });
+            } else {
+                self.logFmt(.err, "JSON parse failed: {s}\nData: {s}", .{ @errorName(err), data_to_log });
+            }
             return null;
         };
         const root = parsed.value;
@@ -752,7 +929,10 @@ pub const Agent = struct {
                     if (delta.object.get("tool_calls")) |tc_delta| {
                         if (tc_delta == .array and tc_delta.array.items.len > 0) {
                             var deltas = arena.alloc(ToolCallDelta, tc_delta.array.items.len) catch |err| {
-                                self.logMsg(.debug, "Error allocating ToolCallDelta", );
+                                self.logMsg(
+                                    .debug,
+                                    "Error allocating ToolCallDelta",
+                                );
                                 self.logMsg(.err, @errorName(err));
                                 return null;
                             };
@@ -828,20 +1008,35 @@ pub const Agent = struct {
         callback: StreamCallback,
     ) CallError!CallResponse {
         self.logMsg(.info, "Building streaming JSON request...");
-        const json_body: []u8 = try self.buildJsonRequest(params, true);
-        self.logMsg(.info, "Streaming JSON request built, sending...");
+
+        const json_body: []u8 = self.buildJsonRequest(params, true) catch |err| {
+            self.logError("buildJsonRequest", err, null);
+            return error.BuildRequestFailed;
+        };
+        self.logFmt(.info, "Streaming JSON request built ({} bytes), sending...", .{json_body.len});
         defer self.allocator.free(json_body);
 
-        self.logMsg(.debug, json_body);
+        self.logFmt(.debug, "Streaming request body: {s}", .{json_body});
 
-        const uri_str = try std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" });
+        const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
+            self.logError("concat URI", err, null);
+            return error.OutOfMemory;
+        };
         defer self.allocator.free(uri_str);
-        const uri = std.Uri.parse(uri_str) catch {
-            self.logMsg(.err, "Invalid URI");
+
+        const uri = std.Uri.parse(uri_str) catch |err| {
+            self.logFmt(.err, "Failed to parse URI '{s}': {s}", .{ uri_str, @errorName(err) });
             return error.InvalidUri;
         };
-        const auth_value = try std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey });
+
+        self.logRequest("POST", uri_str, json_body.len);
+
+        const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
+            self.logError("concat auth", err, null);
+            return error.OutOfMemory;
+        };
         defer self.allocator.free(auth_value);
+
         var req = self.httpClient.request(.POST, uri, .{
             .version = .@"HTTP/1.1",
             .headers = .{
@@ -850,7 +1045,7 @@ pub const Agent = struct {
                 .accept_encoding = .{ .override = "identity" },
             },
         }) catch |err| {
-            self.logMsg(.err, @errorName(err));
+            self.logFmt(.err, "HTTP streaming request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
             return error.HttpRequestFailed;
         };
         defer req.deinit();
@@ -863,25 +1058,29 @@ pub const Agent = struct {
                 .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
             };
             std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch |err| {
-                self.logMsg(.debug, "Error setsockopt RCVTIMEO", );
-                self.logMsg(.err, @errorName(err));
+                self.logFmt(.warn, "Failed to set socket RCVTIMEO: {s}", .{@errorName(err)});
             };
             std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch |err| {
-                self.logMsg(.debug, "Error setsockopt SNDTIMEO", );
-                self.logMsg(.err, @errorName(err));
+                self.logFmt(.warn, "Failed to set socket SNDTIMEO: {s}", .{@errorName(err)});
+            };
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&@as(u32, 1))) catch |err| {
+                self.logFmt(.warn, "Failed to set socket KEEPALIVE: {s}", .{@errorName(err)});
             };
         }
 
         req.sendBodyComplete(json_body) catch |err| {
-            self.logMsg(.err, @errorName(err));
+            self.logError("sendBodyComplete", err, null);
             return error.SendBodyFailed;
         };
 
+        const stream_start = timestampMs();
         var redirect_buffer: [8192]u8 = undefined;
         var response = req.receiveHead(&redirect_buffer) catch |err| {
-            self.logMsg(.err, @errorName(err));
+            self.logFmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(stream_start), @errorName(err) });
             return error.ReceiveFailed;
         };
+
+        self.logFmt(.info, "[STREAM START] Response headers received in {}ms", .{elapsedMs(stream_start)});
 
         //
         // Initialize aggregator
@@ -889,7 +1088,10 @@ pub const Agent = struct {
         defer aggregator.deinit();
 
         // Read response body incrementally
-        const transfer_buffer = try self.allocator.alloc(u8, self.httpOptions.response_buffer_size);
+        const transfer_buffer = self.allocator.alloc(u8, self.httpOptions.response_buffer_size) catch |err| {
+            self.logError("alloc transfer_buffer", err, null);
+            return error.OutOfMemory;
+        };
         defer self.allocator.free(transfer_buffer);
 
         var reader = response.reader(transfer_buffer[0..]);
@@ -898,18 +1100,35 @@ pub const Agent = struct {
         var line_buffer: std.ArrayList(u8) = .empty;
         defer line_buffer.deinit(self.allocator);
 
+        var chunk_count: usize = 0;
+        var parse_failure_count: usize = 0;
+        var stream_ended_cleanly = false;
+        var total_bytes_read: usize = 0;
+        var last_chunk_time = timestampMs();
         var read_buf: [4096]u8 = undefined;
+
+        self.logFmt(.debug, "[STREAM] Starting to read chunks (buffer: {} bytes)...", .{self.httpOptions.response_buffer_size});
+
         while (true) {
             const bytes_read = reader.readSliceShort(&read_buf) catch |err| {
                 // EndOfStream is expected when streaming completes
                 if (err == error.EndOfStream) {
-                    self.logMsg(.debug, "EndOfStream");
+                    self.logFmt(.debug, "[STREAM END] Stream ended naturally after {} chunks, {} bytes", .{ chunk_count, total_bytes_read });
+                    stream_ended_cleanly = true;
                     break;
                 }
-                self.logMsg(.err, @errorName(err));
+                const time_since_last = elapsedMs(last_chunk_time);
+                self.logFmt(.err, "[STREAM ERROR] Read failed after {} chunks: {s} (last chunk was {}ms ago)", .{ chunk_count, @errorName(err), time_since_last });
                 break;
             };
-            if (bytes_read == 0) break;
+
+            if (bytes_read == 0) {
+                self.logFmt(.debug, "[STREAM END] Read returned 0 bytes after {} chunks", .{chunk_count});
+                break;
+            }
+
+            total_bytes_read += bytes_read;
+            last_chunk_time = timestampMs();
 
             // Process each byte looking for SSE line boundaries
             for (read_buf[0..bytes_read]) |byte| {
@@ -925,13 +1144,23 @@ pub const Agent = struct {
                             defer chunk_arena.deinit();
 
                             if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
+                                chunk_count += 1;
+
+                                // Log progress periodically
+                                if (chunk_count % 50 == 0) {
+                                    self.logFmt(.debug, "[STREAM PROGRESS] {} chunks, {} bytes, {}ms elapsed", .{ chunk_count, total_bytes_read, elapsedMs(stream_start) });
+                                }
+
                                 // Invoke callback
                                 callback(ctx, chunk);
 
                                 // Aggregate chunk - this copies data to aggregator's allocator
-                                aggregator.processChunk(chunk) catch {
-                                    self.logMsg(.err, "Failed to aggregate chunk");
+                                aggregator.processChunk(chunk) catch |err| {
+                                    self.logError("processChunk", err, null);
                                 };
+                            } else {
+                                parse_failure_count += 1;
+                                self.logFmt(.warn, "[STREAM] Failed to parse chunk {} (data length: {})", .{ parse_failure_count, data.len });
                             }
                         }
 
@@ -939,8 +1168,7 @@ pub const Agent = struct {
                     }
                 } else if (byte != '\r') {
                     line_buffer.append(self.allocator, byte) catch |err| {
-                        self.logMsg(.debug, "Error appending to line buffer", );
-                        self.logMsg(.err, @errorName(err));
+                        self.logError("append line_buffer", err, null);
                     };
                 }
             }
@@ -948,16 +1176,17 @@ pub const Agent = struct {
 
         // Process any remaining line
         if (line_buffer.items.len > 0) {
+            self.logFmt(.debug, "[STREAM] Processing remaining {} bytes in buffer", .{line_buffer.items.len});
             if (self.parseSseLine(line_buffer.items)) |data| {
                 // Use per-chunk arena to prevent memory leaks
                 var chunk_arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer chunk_arena.deinit();
 
                 if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
+                    chunk_count += 1;
                     callback(ctx, chunk);
                     aggregator.processChunk(chunk) catch |err| {
-                        self.logMsg(.debug, "Error processing chunk", );
-                        self.logMsg(.err, @errorName(err));
+                        self.logError("processChunk (final)", err, null);
                     };
                 }
             }
@@ -966,13 +1195,43 @@ pub const Agent = struct {
         // Send done chunk
         callback(ctx, .{ .done = true });
 
-        self.logMsg(.info, "Streaming complete, finalizing response...");
+        const stream_duration = elapsedMs(stream_start);
+        self.logFmt(.info, "[STREAM COMPLETE] {} chunks, {} bytes, {}ms total, {} parse failures, clean_end={}", .{
+            chunk_count,
+            total_bytes_read,
+            stream_duration,
+            parse_failure_count,
+            stream_ended_cleanly,
+        });
+
+        // Warn if stream didn't end cleanly
+        if (!stream_ended_cleanly) {
+            self.logFmt(.warn, "[STREAM WARNING] Stream did not end cleanly - response may be incomplete!", .{});
+        }
 
         // Finalize and return the aggregated response
-        return aggregator.finalize() catch {
-            self.logMsg(.err, "Failed to finalize streaming response");
+        const result = aggregator.finalize() catch |err| {
+            self.logError("finalize streaming response", err, null);
             return error.AllocFailed;
         };
+
+        if (result.tool_calls) |tc| {
+            self.logFmt(.info, "[RESULT] {} tool calls", .{tc.len});
+        } else if (result.content) |c| {
+            self.logFmt(.info, "[RESULT] {} chars content", .{c.len});
+        } else {
+            self.logFmt(.warn, "[RESULT] No content or tool_calls in response!", .{});
+        }
+
+        if (result.usage.total_tokens > 0) {
+            self.logFmt(.info, "[TOKENS] prompt={}, completion={}, total={}", .{
+                result.usage.prompt_tokens,
+                result.usage.completion_tokens,
+                result.usage.total_tokens,
+            });
+        }
+
+        return result;
     }
 
     pub fn deinit(self: *Agent) void {
