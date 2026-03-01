@@ -473,7 +473,7 @@ pub const AskLLMWorkflow = struct {
 
                         // Execute each tool call and add tool result messages
                         for (tc) |tool_call| {
-                            std.debug.print("Executing tool: {s}\n", .{tool_call.function.name});
+                            std.debug.print("Executing tool: {s}   {s}\n", .{ tool_call.function.name, tool_call.function.arguments });
 
                             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
                                 const parsed = try std.json.parseFromSlice(
