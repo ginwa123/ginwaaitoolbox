@@ -159,8 +159,8 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) ![]const u8 {
         \\<timeout>{}</timeout>
     , .{
         truncated_command,
-        stdout_data.items,
-        stderr_data.items,
+        if (stdout_data.items.len == 0) "No output produced." else stdout_data.items,
+        if (stderr_data.items.len == 0) "No errors." else stderr_data.items,
         exit_code,
         was_truncated,
         timeout_hit,

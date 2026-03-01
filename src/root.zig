@@ -12,6 +12,7 @@ pub const ipc = @import("modules/ipc/ipc.zig");
 pub const migrations = @import("modules/databases/sqlite/migrations.zig");
 pub const ai_workflow = @import("ai_workflow/ask_llm_workflow.zig");
 pub const ai_workflow_models = @import("ai_workflow/models.zig");
+pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you

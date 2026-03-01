@@ -9,6 +9,7 @@ const sqlite = tree1_mod.sqlite;
 const bash_tool = tree1_mod.bash_tool;
 const tool_models = tree1_mod.tool_models;
 const change_agent_tool = tree1_mod.change_agent_tool;
+const loop_detector = tree1_mod.loop_detector;
 
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -93,6 +94,8 @@ pub const AskLLMWorkflow = struct {
     base_url: []const u8 = "",
 
     conn_fd: std.posix.fd_t = -1,
+
+    loop_detector: loop_detector.LoopDetector = .{},
 
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !AskLLMWorkflow {
         const log_ptr = try allocator.create(logger.Logger);
@@ -351,7 +354,9 @@ pub const AskLLMWorkflow = struct {
     }
 
     fn runInternal(self: *AskLLMWorkflow) !void {
-        self.saveMessageUnified(self.message, null, "user", "null", null, null) catch |err| { self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {}; };
+        self.saveMessageUnified(self.message, null, "user", "null", null, null) catch |err| {
+            self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
+        };
 
         // Use ArrayList for dynamic message appending during tool execution
         var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
@@ -370,8 +375,7 @@ pub const AskLLMWorkflow = struct {
             const body_size = self.estimateBodySize(messages_list.items);
             self.logger.debugFmt("[COMPACTION] Body size: {} bytes", .{body_size}) catch {};
 
-            if (body_size > COMPACTION_CONFIG.max_body_size)
-            {
+            if (body_size > COMPACTION_CONFIG.max_body_size) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
 
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -431,7 +435,9 @@ pub const AskLLMWorkflow = struct {
                     }
 
                     self.sendResponse(res_dynamic_agent, "user_choice");
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| { self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {}; };
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| {
+                        self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
+                    };
 
                     self.logger.infoFmt("FINISH REASON STOP", .{}) catch {};
                     break;
@@ -440,7 +446,9 @@ pub const AskLLMWorkflow = struct {
 
                     // Save partial response to history and send to client
                     self.sendResponse(res_dynamic_agent, "length");
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| { self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {}; };
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| {
+                        self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
+                    };
 
                     // Add assistant message to conversation for context
                     const content_copy = if (res_dynamic_agent.content) |c|
@@ -523,6 +531,22 @@ pub const AskLLMWorkflow = struct {
                         for (tc) |tool_call| {
                             self.logger.debugFmt("Executing tool: {s}   {s}", .{ tool_call.function.name, tool_call.function.arguments }) catch {};
 
+                            if (loop_detector.check(tool_call.function.arguments)) {
+                                const warning = try std.fmt.allocPrint(
+                                    self.allocator,
+                                    "WARNING: Identical command repeated: {s}\n" ++
+                                        "Empty output means no results found — do NOT retry. Proceed with what you know.",
+                                    .{tool_call.function.arguments},
+                                );
+                                const tool_result_msg = agent.AgentMessage{
+                                    .role = .tool,
+                                    .content = warning,
+                                    .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                                };
+                                try messages_list.append(self.allocator, tool_result_msg);
+                                continue;
+                            }
+
                             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
                                 const parsed = try std.json.parseFromSlice(
                                     change_agent_tool.ChangeAgentToolResult,
@@ -578,7 +602,9 @@ pub const AskLLMWorkflow = struct {
                                 try messages_list.append(self.allocator, tool_result_msg);
 
                                 // 2. Save tool result to database
-                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id) catch |err| { self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {}; };
+                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id) catch |err| {
+                                    self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
+                                };
                                 self.sendToolResult(contentChangeAgent, tool_call.id, tool_call.function.name);
 
                                 // 3. Replace system message only, keep all history
@@ -627,7 +653,9 @@ pub const AskLLMWorkflow = struct {
                                     .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
                                 };
                                 try messages_list.append(self.allocator, tool_result_msg);
-                                self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id) catch |err| { self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {}; };
+                                self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id) catch |err| {
+                                    self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
+                                };
                                 self.sendToolResult(result, tool_call.id, tool_call.function.name);
                                 self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
@@ -642,7 +670,9 @@ pub const AskLLMWorkflow = struct {
                     self.logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
                     // Save the filtered response to history
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| { self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {}; };
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| {
+                        self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
+                    };
 
                     // Send error response to client with content_filter finish reason
                     // The response content may be empty or contain partial filtered content
@@ -1041,5 +1071,4 @@ pub const AskLLMWorkflow = struct {
 
         self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages", .{ total, messages.items.len }) catch {};
     }
-
 };
