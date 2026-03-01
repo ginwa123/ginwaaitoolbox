@@ -655,14 +655,16 @@ pub const Agent = struct {
         // Parse usage information
         var usage: Usage = .{};
         if (root.object.get("usage")) |usage_val| {
-            if (usage_val.object.get("prompt_tokens")) |pt| {
-                usage.prompt_tokens = @intCast(pt.integer);
-            }
-            if (usage_val.object.get("completion_tokens")) |ct| {
-                usage.completion_tokens = @intCast(ct.integer);
-            }
-            if (usage_val.object.get("total_tokens")) |tt| {
-                usage.total_tokens = @intCast(tt.integer);
+            if (usage_val == .object) {
+                if (usage_val.object.get("prompt_tokens")) |pt| {
+                    if (pt == .integer) usage.prompt_tokens = @intCast(pt.integer);
+                }
+                if (usage_val.object.get("completion_tokens")) |ct| {
+                    if (ct == .integer) usage.completion_tokens = @intCast(ct.integer);
+                }
+                if (usage_val.object.get("total_tokens")) |tt| {
+                    if (tt == .integer) usage.total_tokens = @intCast(tt.integer);
+                }
             }
         }
 
