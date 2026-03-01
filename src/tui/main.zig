@@ -153,17 +153,6 @@ fn escapeXmlString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     return result.toOwnedSlice(allocator);
 }
 
-pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
-    const close_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
-    defer std.heap.page_allocator.free(close_tag);
-    const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
-    defer std.heap.page_allocator.free(open_tag);
-
-    const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
-    const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
-    return xml[open_pos + open_tag.len .. close_pos];
-}
-
 pub fn trim(s: []const u8) []const u8 {
     var start: usize = 0;
     while (start < s.len and (s[start] == ' ' or s[start] == '\n')) start += 1;
@@ -198,14 +187,9 @@ fn sendMessage(app: *App, message: []const u8) !void {
 // ─── Response formatting ─────────────────────────────────────────────────────
 
 fn printFormattedResponse(content: []const u8) void {
-    var agent_name: []const u8 = "";
-    if (extractTag(content, "agent")) |agent| {
-        agent_name = agent;
-    }
-    // Print agent header
-    std.debug.print("{s}━━ {s} {s}━━{s}\n", .{ cyan, agent_name, reset, reset });
+    const agent_name = extractTag(content, "agent") orelse "unknown";
+    std.debug.print("{s}━━ {s} ━━{s}\n", .{ cyan, agent_name, reset });
 
-    // Extract and print markdown content (the main response to user)
     if (extractTag(content, "markdown")) |md| {
         const trimmed = trim(md);
         if (trimmed.len > 0) {
@@ -213,51 +197,122 @@ fn printFormattedResponse(content: []const u8) void {
         }
     }
 
-    // Extract and print handoff info (useful context about agent's decision)
-    if (extractTag(content, "handoff")) |handoff| {
-        std.debug.print("\n{s}┌─ Handoff ─{s}\n", .{ dim, reset });
+    printAllTags(content, &.{ "agent", "markdown" }, 0);
+}
 
-        if (extractTag(handoff, "goal")) |goal| {
-            std.debug.print("{s}│ Goal:{s} {s}\n", .{ dim, reset, goal });
+fn isNestedElsewhere(xml: []const u8, tag: []const u8, tag_content: []const u8) bool {
+    const tag_content_ptr = @intFromPtr(tag_content.ptr);
+    var pos: usize = 0;
+    while (pos < xml.len) {
+        const open_start = std.mem.indexOfPos(u8, xml, pos, "<") orelse break;
+        const open_end = std.mem.indexOfPos(u8, xml, open_start + 1, ">") orelse break;
+        const other_tag = xml[open_start + 1 .. open_end];
+        pos = open_end + 1;
+
+        if (other_tag.len == 0 or other_tag[0] == '/' or std.mem.indexOfScalar(u8, other_tag, ' ') != null) continue;
+        if (std.mem.eql(u8, other_tag, tag)) continue;
+
+        const other_content = extractTag(xml, other_tag) orelse continue;
+        const other_ptr = @intFromPtr(other_content.ptr);
+        const other_end = other_ptr + other_content.len;
+
+        if (tag_content_ptr >= other_ptr and tag_content_ptr + tag_content.len <= other_end) {
+            return true;
         }
-        if (extractTag(handoff, "next_agent")) |next| {
-            std.debug.print("{s}│ Next Agent:{s} {s}\n", .{ dim, reset, next });
+    }
+    return false;
+}
+
+fn printAllTags(content: []const u8, skip: []const []const u8, depth: usize) void {
+    var pos: usize = 0;
+    var printed_buf: [64][]const u8 = undefined;
+    var printed_len: usize = 0;
+
+    while (pos < content.len) {
+        const open_start = std.mem.indexOfPos(u8, content, pos, "<") orelse break;
+        const open_end = std.mem.indexOfPos(u8, content, open_start + 1, ">") orelse break;
+        const tag = content[open_start + 1 .. open_end];
+        pos = open_end + 1;
+
+        if (tag.len == 0 or tag[0] == '/' or std.mem.indexOfScalar(u8, tag, ' ') != null) continue;
+
+        const should_skip = for (skip) |s| {
+            if (std.mem.eql(u8, s, tag)) break true;
+        } else false;
+        if (should_skip) continue;
+
+        const already_printed = for (printed_buf[0..printed_len]) |p| {
+            if (std.mem.eql(u8, p, tag)) break true;
+        } else false;
+        if (already_printed) continue;
+
+        const tag_content = extractTag(content, tag) orelse continue;
+
+        if (isNestedElsewhere(content, tag, tag_content)) continue;
+
+        if (printed_len < printed_buf.len) {
+            printed_buf[printed_len] = tag;
+            printed_len += 1;
         }
-        if (extractTag(handoff, "reason")) |reason| {
-            std.debug.print("{s}│ Reason:{s} {s}\n", .{ dim, reset, reason });
+
+        printTagBox(tag, tag_content, depth);
+    }
+}
+
+fn printTagBox(tag: []const u8, content: []const u8, depth: usize) void {
+    const colors = [_][]const u8{ cyan, green, yellow, dim };
+    var hash: usize = 0;
+    for (tag) |c| hash = hash *% 31 +% c;
+    const color = colors[hash % colors.len];
+
+    const indent_base = "                "; // 16 spaces
+    const indent_str = indent_base[0..@min(depth * 2, indent_base.len)];
+
+    var label_buf: [64]u8 = undefined;
+    const label = blk: {
+        const n = @min(tag.len, label_buf.len);
+        @memcpy(label_buf[0..n], tag[0..n]);
+        if (label_buf[0] >= 'a' and label_buf[0] <= 'z') label_buf[0] -= 32;
+        for (label_buf[0..n]) |*c| if (c.* == '_') {
+            c.* = ' ';
+        };
+        break :blk label_buf[0..n];
+    };
+
+    var border_buf: [256]u8 = undefined;
+    var border_len: usize = 0;
+    const dash = "─";
+    const dash_count = label.len + 4;
+    for (0..dash_count) |_| {
+        if (border_len + dash.len <= border_buf.len) {
+            @memcpy(border_buf[border_len..][0..dash.len], dash);
+            border_len += dash.len;
         }
-        std.debug.print("{s}└───────────{s}\n", .{ dim, reset });
+    }
+    const border = border_buf[0..border_len];
+
+    const trimmed = trim(content);
+    const has_children = std.mem.indexOf(u8, trimmed, "<") != null;
+
+    std.debug.print("{s}{s}┌─ {s} ─{s}\n", .{ indent_str, color, label, reset });
+
+    if (has_children) {
+        printAllTags(content, &.{}, depth + 1);
+    } else if (trimmed.len > 0) {
+        std.debug.print("{s}{s}│{s} {s}\n", .{ indent_str, color, reset, trimmed });
     }
 
-    // Extract and print completion info (from ExecutingAgent)
-    if (extractTag(content, "completion")) |completion| {
-        std.debug.print("\n{s}┌─ Completion ─{s}\n", .{ green, reset });
+    std.debug.print("{s}{s}└{s}{s}\n", .{ indent_str, color, border, reset });
+}
 
-        if (extractTag(completion, "goal")) |goal| {
-            std.debug.print("{s}│ Goal:{s} {s}\n", .{ green, reset, goal });
-        }
-        if (extractTag(completion, "delivered")) |delivered| {
-            std.debug.print("{s}│ Delivered:{s} {s}\n", .{ green, reset, delivered });
-        }
-        if (extractTag(completion, "validation")) |validation| {
-            std.debug.print("{s}│ Validation:{s} {s}\n", .{ green, reset, validation });
-        }
-        std.debug.print("{s}└─────────────{s}\n", .{ green, reset });
-    }
-
-    // Print findings from ExplorationAgent
-    if (extractTag(content, "findings")) |findings| {
-        std.debug.print("\n{s}┌─ Findings ─{s}\n", .{ cyan, reset });
-        std.debug.print("{s}│{s} {s}\n", .{ cyan, reset, trim(findings) });
-        std.debug.print("{s}└───────────{s}\n", .{ cyan, reset });
-    }
-
-    // Print plan from PlanningAgent
-    if (extractTag(content, "plan")) |plan| {
-        std.debug.print("\n{s}┌─ Plan ─{s}\n", .{ yellow, reset });
-        std.debug.print("{s}│{s} {s}\n", .{ yellow, reset, trim(plan) });
-        std.debug.print("{s}└───────{s}\n", .{ yellow, reset });
-    }
+pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
+    const close_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
+    defer std.heap.page_allocator.free(close_tag);
+    const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
+    defer std.heap.page_allocator.free(open_tag);
+    const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
+    const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
+    return xml[open_pos + open_tag.len .. close_pos];
 }
 
 // ─── Response streaming ──────────────────────────────────────────────────────
@@ -298,8 +353,12 @@ fn readResponseAndStream(app: *App) ![]u8 {
         }
 
         if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
+
         if (extractTag(buffer.items, "finish_reason")) |fr| {
-            if (std.mem.eql(u8, fr, "user_choice")) break;
+            if (std.mem.eql(u8, fr, "user_choice")) {
+                std.debug.print("Your input \n", .{});
+                break;
+            }
         }
     }
 
