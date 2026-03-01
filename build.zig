@@ -332,7 +332,7 @@ pub fn build(b: *std.Build) void {
 
     // Linux x86_64 - Install to system (/usr/local/bin)
     const linux_system_step = b.step("install:linux:system", "Build for Linux x86_64 and install to system (/usr/local/bin - requires sudo)");
-    const linux_system_exe = createPlatformExe(b, mod, linux_target, optimize, "zigginagentic");
+    const linux_system_exe = createPlatformExe(b, mod, target, optimize, "zigginagentic");
     linux_system_exe.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
 
@@ -351,16 +351,11 @@ pub fn build(b: *std.Build) void {
 
     // TUI for Linux x86_64 - Install to system (/usr/local/bin)
     const tui_linux_system_step = b.step("install:tui:linux:system", "Build TUI for Linux x86_64 and install to system (/usr/local/bin - requires sudo)");
-    const tui_linux_target = b.resolveTargetQuery(.{
-        .cpu_arch = .x86_64,
-        .os_tag = .linux,
-        .abi = .gnu,
-    });
     const tui_linux_exe = b.addExecutable(.{
         .name = "zigginagentic-tui",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/tui/main.zig"),
-            .target = tui_linux_target,
+            .target = target,
             .optimize = optimize,
         }),
     });

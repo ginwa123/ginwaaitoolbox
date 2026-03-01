@@ -81,46 +81,51 @@ fn disableRawMode(original: std.posix.termios) void {
 }
 
 // ─── Backend / Socket ────────────────────────────────────────────────────────
-
 fn spawnBackend() !void {
+    // Remove stale socket file if it exists but nothing is listening
     if (std.fs.accessAbsolute(SOCKET_PATH, .{})) |_| {
-        return;
+        // Try connecting — if it works, backend is alive, skip spawn
+        const test_fd = std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0) catch null;
+        if (test_fd) |fd| {
+            defer std.posix.close(fd);
+            var addr = std.mem.zeroInit(sockaddr_un, .{});
+            addr.sun_family = std.posix.AF.UNIX;
+            @memcpy(addr.sun_path[0..SOCKET_PATH.len], SOCKET_PATH);
+            if (std.posix.connect(fd, @as(*std.posix.sockaddr, @ptrCast(&addr)), @sizeOf(sockaddr_un))) {
+                return; // already running
+            } else |_| {}
+        }
+        // Stale socket — remove it
+        std.fs.deleteFileAbsolute(SOCKET_PATH) catch {};
     } else |_| {}
 
-    const cwd = std.fs.cwd();
-    const backend_path = try cwd.realpathAlloc(std.heap.page_allocator, "zig-out/bin/tree1");
+    const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/zigginagentic");
     defer std.heap.page_allocator.free(backend_path);
-
     var child = std.process.Child.init(&.{backend_path}, std.heap.page_allocator);
     child.spawn() catch |err| {
         std.debug.print("{s}Warning: failed to spawn backend: {s}{s}\n", .{ yellow, @errorName(err), reset });
         return;
     };
-
     std.debug.print("{s}Backend started in background{s}\n", .{ green, reset });
 }
-
 fn waitForSocket(timeout_ms: u64) !void {
     const start = std.time.milliTimestamp();
     while (true) {
+        if (std.time.milliTimestamp() - start > timeout_ms) {
+            return error.Timeout;
+        }
         const socket_fd = std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0) catch {
-            std.Thread.sleep(50000000);
+            std.Thread.sleep(50_000_000);
             continue;
         };
         defer std.posix.close(socket_fd);
-
         var addr = std.mem.zeroInit(sockaddr_un, .{});
         addr.sun_family = std.posix.AF.UNIX;
         @memcpy(addr.sun_path[0..SOCKET_PATH.len], SOCKET_PATH);
-
         if (std.posix.connect(socket_fd, @as(*std.posix.sockaddr, @ptrCast(&addr)), @sizeOf(sockaddr_un))) {
-            return;
+            return; // connected!
         } else |_| {
-            std.Thread.sleep(50000000);
-        }
-
-        if (std.time.milliTimestamp() - start > timeout_ms) {
-            return error.Timeout;
+            std.Thread.sleep(50_000_000); // 50ms
         }
     }
 }
