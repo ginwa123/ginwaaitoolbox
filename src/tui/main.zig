@@ -32,9 +32,8 @@ const App = struct {
     input: std.ArrayList(u8),
     pasting: bool,
 
-
-    agent_name: []const u8 = "Agent",
-    reasoning_content: []const u8 = "",
+    // agent name buffer (fixed size to avoid memory issues)
+    agent_name_buf: [64]u8 = [_]u8{0} ** 64,
 
     pub fn init(allocator: std.mem.Allocator) !App {
         try spawnBackend();
@@ -196,62 +195,85 @@ fn sendMessage(app: *App, message: []const u8) !void {
     _ = try std.posix.write(app.socket_fd, xml_buf.items);
 }
 
-// ─── Response streaming ──────────────────────────────────────────────────────
+// ─── Response formatting ─────────────────────────────────────────────────────
 
-fn printThoughtLines(thought_xml: []const u8, agent_name: []const u8, spin: []const u8) usize {
-    var line_count: usize = 0;
-
-    std.debug.print("\r\x1b[2K {s}{s}{s} [{s}]\n", .{ yellow, spin, reset, agent_name });
-    line_count += 1;
-
-    if (thought_xml.len == 0) return line_count;
-
-    var pos: usize = 0;
-    while (pos < thought_xml.len) {
-        const tag_start = std.mem.indexOfPos(u8, thought_xml, pos, "<") orelse break;
-        const tag_end = std.mem.indexOfPos(u8, thought_xml, tag_start, ">") orelse break;
-        const tag_name = thought_xml[tag_start + 1 .. tag_end];
-
-        if (tag_name.len == 0 or tag_name[0] == '/') {
-            pos = tag_end + 1;
-            continue;
-        }
-
-        var close_buf: [64]u8 = undefined;
-        const close_tag = std.fmt.bufPrint(&close_buf, "</{s}>", .{tag_name}) catch {
-            pos = tag_end + 1;
-            continue;
-        };
-        const val_start = tag_end + 1;
-        const val_end = std.mem.indexOfPos(u8, thought_xml, val_start, close_tag) orelse {
-            pos = tag_end + 1;
-            continue;
-        };
-        const value = std.mem.trim(u8, thought_xml[val_start..val_end], " \n\r\t");
-
-        if (value.len > 0) {
-            std.debug.print("\x1b[2K  {s}{s}: {s}{s}\n", .{ dim, tag_name, value, reset });
-            line_count += 1;
-        }
-        pos = val_end + close_tag.len;
+fn printFormattedResponse(content: []const u8) void {
+    var agent_name: []const u8 = "";
+    if (extractTag(content, "agent")) |agent| {
+        agent_name = agent;
     }
-    return line_count;
+    // Print agent header
+    std.debug.print("{s}━━ {s} {s}━━{s}\n", .{ cyan, agent_name, reset, reset });
+
+    // Extract and print markdown content (the main response to user)
+    if (extractTag(content, "markdown")) |md| {
+        const trimmed = trim(md);
+        if (trimmed.len > 0) {
+            std.debug.print("\n{s}{s}{s}\n", .{ bold, trimmed, reset });
+        }
+    }
+
+    // Extract and print handoff info (useful context about agent's decision)
+    if (extractTag(content, "handoff")) |handoff| {
+        std.debug.print("\n{s}┌─ Handoff ─{s}\n", .{ dim, reset });
+
+        if (extractTag(handoff, "goal")) |goal| {
+            std.debug.print("{s}│ Goal:{s} {s}\n", .{ dim, reset, goal });
+        }
+        if (extractTag(handoff, "next_agent")) |next| {
+            std.debug.print("{s}│ Next Agent:{s} {s}\n", .{ dim, reset, next });
+        }
+        if (extractTag(handoff, "reason")) |reason| {
+            std.debug.print("{s}│ Reason:{s} {s}\n", .{ dim, reset, reason });
+        }
+        std.debug.print("{s}└───────────{s}\n", .{ dim, reset });
+    }
+
+    // Extract and print completion info (from ExecutingAgent)
+    if (extractTag(content, "completion")) |completion| {
+        std.debug.print("\n{s}┌─ Completion ─{s}\n", .{ green, reset });
+
+        if (extractTag(completion, "goal")) |goal| {
+            std.debug.print("{s}│ Goal:{s} {s}\n", .{ green, reset, goal });
+        }
+        if (extractTag(completion, "delivered")) |delivered| {
+            std.debug.print("{s}│ Delivered:{s} {s}\n", .{ green, reset, delivered });
+        }
+        if (extractTag(completion, "validation")) |validation| {
+            std.debug.print("{s}│ Validation:{s} {s}\n", .{ green, reset, validation });
+        }
+        std.debug.print("{s}└─────────────{s}\n", .{ green, reset });
+    }
+
+    // Print findings from ExplorationAgent
+    if (extractTag(content, "findings")) |findings| {
+        std.debug.print("\n{s}┌─ Findings ─{s}\n", .{ cyan, reset });
+        std.debug.print("{s}│{s} {s}\n", .{ cyan, reset, trim(findings) });
+        std.debug.print("{s}└───────────{s}\n", .{ cyan, reset });
+    }
+
+    // Print plan from PlanningAgent
+    if (extractTag(content, "plan")) |plan| {
+        std.debug.print("\n{s}┌─ Plan ─{s}\n", .{ yellow, reset });
+        std.debug.print("{s}│{s} {s}\n", .{ yellow, reset, trim(plan) });
+        std.debug.print("{s}└───────{s}\n", .{ yellow, reset });
+    }
 }
+
+// ─── Response streaming ──────────────────────────────────────────────────────
 
 fn readResponseAndStream(app: *App) ![]u8 {
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(app.allocator);
     var buf: [4096]u8 = undefined;
-
     var spinner_timer: usize = 0;
     const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     var last_tick = std.time.milliTimestamp();
-    var prev_lines: usize = 0;
+    var last_displayed_len: usize = 0; // track what we've already printed
 
     while (true) {
         const n = std.posix.read(app.socket_fd, &buf) catch break;
         if (n == 0) break;
-
         try buffer.appendSlice(app.allocator, buf[0..n]);
 
         const now = std.time.milliTimestamp();
@@ -259,14 +281,20 @@ fn readResponseAndStream(app: *App) ![]u8 {
             last_tick = now;
             const spin = spinners[spinner_timer % spinners.len];
             spinner_timer += 1;
-            app.agent_name = extractTag(buffer.items, "agent") orelse app.agent_name;
-            app.reasoning_content = extractTag(buffer.items, "reasoning_content") orelse app.reasoning_content;
 
+            const chunk = if (extractTag(buffer.items, "content")) |c| c else "";
+            const new_text = if (chunk.len > last_displayed_len) chunk[last_displayed_len..] else "";
+            last_displayed_len = chunk.len;
 
-            const thought_xml = extractTag(buffer.items, "thought") orelse "";
-
-            if (prev_lines > 0) std.debug.print("\x1b[{d}A", .{prev_lines});
-            prev_lines = printThoughtLines(thought_xml, app.agent_name, spin);
+            // Replace newlines with spaces for single-line display
+            var clean_buf: [200]u8 = undefined;
+            var clean_len: usize = 0;
+            for (new_text) |c| {
+                if (clean_len >= clean_buf.len - 1) break;
+                clean_buf[clean_len] = if (c == '\n' or c == '\r') ' ' else c;
+                clean_len += 1;
+            }
+            std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{ yellow, spin, reset, buffer.items.len });
         }
 
         if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
@@ -275,16 +303,15 @@ fn readResponseAndStream(app: *App) ![]u8 {
         }
     }
 
+    // Clear spinner and print clean response
     std.debug.print("\r\x1b[2K", .{});
-    std.debug.print("\n=== RESPONSE ===\n", .{});
+    std.debug.print("\n", .{});
 
-    if (std.mem.lastIndexOf(u8, buffer.items, "<response><choices>")) |start| {
-        if (std.mem.indexOf(u8, buffer.items[start..], "</response>")) |end_offset| {
-            std.debug.print("{s}", .{buffer.items[start .. start + end_offset + 11]});
-        } else {
-            std.debug.print("{s}", .{buffer.items});
-        }
+    // Extract and display the valuable content
+    if (extractTag(buffer.items, "content")) |content| {
+        printFormattedResponse(content);
     } else {
+        // Fallback: just print the raw buffer
         std.debug.print("{s}", .{buffer.items});
     }
 
