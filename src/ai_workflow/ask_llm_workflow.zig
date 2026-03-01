@@ -317,7 +317,7 @@ pub const AskLLMWorkflow = struct {
         self.runInternal() catch |err| {
             const err_msg = std.fmt.allocPrint(self.allocator, "{s}", .{@errorName(err)}) catch return;
             defer self.allocator.free(err_msg);
-            self.sendError(err_msg, null);
+            self.sendError(err_msg, "user_choice");
         };
     }
 
@@ -355,7 +355,7 @@ pub const AskLLMWorkflow = struct {
             const response = agenttt.callStreaming(agetntCall, &stream_ctx, streamCallback) catch |err| {
                 retryCount += 1;
                 std.debug.print("Error calling agent: {s}\n", .{@errorName(err)});
-                self.sendError("Error calling agent", "retry");
+                self.sendError("Error calling agent", "user_choice");
                 continue;
             };
             defer response.deinit();
@@ -609,11 +609,11 @@ pub const AskLLMWorkflow = struct {
                             self.sendResponse(response, "content_filter");
                         } else {
                             // No content, send error message
-                            self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "content_filter");
+                            self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
                         }
                     } else {
                         // No content, send error message
-                        self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "content_filter");
+                        self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
                     }
                     break;
                 }
@@ -688,7 +688,7 @@ pub const AskLLMWorkflow = struct {
         defer self.allocator.free(createdStr);
 
         const contentStr = content orelse (if (response) |r| (r.content orelse "") else "");
-        const finishReasonStr = finish_reason orelse 
+        const finishReasonStr = finish_reason orelse
             (if (response) |r| (if (r.finish_reason) |fr| fr.toStr() else "null") else "null");
         const roleStr = role orelse "assistant";
         const reasoningStr = if (response) |r| (r.reasoning_content orelse "") else "";
