@@ -1,4 +1,5 @@
 const std = @import("std");
+const posix = std.posix;
 const BashInput = @import("models.zig").BashInput;
 const ToolProperty = @import("models.zig").ToolProperty;
 const ToolParameters = @import("models.zig").ToolParameters;
@@ -42,7 +43,34 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) ![]const u8 {
     var timeout_hit = false;
     var child_term: ?std.process.Child.Term = null;
 
+    // Prepare poll fds for stdout and stderr
+    var poll_fds: [2]posix.pollfd = undefined;
+    var poll_count: usize = 0;
+    var stdout_idx: ?usize = null;
+    var stderr_idx: ?usize = null;
+
+    if (child.stdout) |_| {
+        stdout_idx = poll_count;
+        poll_fds[poll_count] = .{
+            .fd = child.stdout.?.handle,
+            .events = posix.POLL.IN,
+            .revents = 0,
+        };
+        poll_count += 1;
+    }
+
+    if (child.stderr) |_| {
+        stderr_idx = poll_count;
+        poll_fds[poll_count] = .{
+            .fd = child.stderr.?.handle,
+            .events = posix.POLL.IN,
+            .revents = 0,
+        };
+        poll_count += 1;
+    }
+
     while (true) {
+        // Check timeout first
         const elapsed = std.time.nanoTimestamp() - start_time;
         if (elapsed > timeout_ns) {
             timeout_hit = true;
@@ -51,36 +79,55 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) ![]const u8 {
             break;
         }
 
+        // Calculate remaining time for poll (max 100ms per poll call)
+        const remaining_ns = timeout_ns - @as(u64, @intCast(elapsed));
+        const poll_timeout_ms = @min(100, @as(i32, @intCast(@divFloor(remaining_ns, std.time.ns_per_ms))));
+
+        // Poll for available data - this won't block longer than poll_timeout_ms
+        const ready = posix.poll(poll_fds[0..poll_count], poll_timeout_ms) catch 0;
+
+        if (ready == 0) {
+            // Poll timed out with no data - loop back to check overall timeout
+            continue;
+        }
+
+        // Read from ready file descriptors
         var any_read = false;
 
-        if (child.stdout) |stdout| {
-            const bytes_read = stdout.read(&buf) catch 0;
-            if (bytes_read > 0) {
-                any_read = true;
-                try stdout_data.appendSlice(allocator, buf[0..bytes_read]);
-                if (stdout_data.items.len >= max_output) break;
-            }
-        }
-
-        if (child.stderr) |stderr| {
-            const bytes_read = stderr.read(&buf) catch 0;
-            if (bytes_read > 0) {
-                any_read = true;
-                try stderr_data.appendSlice(allocator, buf[0..bytes_read]);
-                if (stderr_data.items.len >= max_output) break;
-            }
-        }
-
-        if (!any_read) {
-            child_term = child.wait() catch .{ .Unknown = 1 };
-            if (child_term) |term| {
-                if (term == .Exited or term == .Unknown) {
-                    break;
+        // Check stdout using stored index
+        if (stdout_idx) |idx| {
+            if (poll_fds[idx].revents & posix.POLL.IN != 0) {
+                const bytes_read = child.stdout.?.read(&buf) catch 0;
+                if (bytes_read > 0) {
+                    any_read = true;
+                    try stdout_data.appendSlice(allocator, buf[0..bytes_read]);
+                    if (stdout_data.items.len >= max_output) break;
                 }
             }
         }
 
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        // Check stderr using stored index
+        if (stderr_idx) |idx| {
+            if (poll_fds[idx].revents & posix.POLL.IN != 0) {
+                const bytes_read = child.stderr.?.read(&buf) catch 0;
+                if (bytes_read > 0) {
+                    any_read = true;
+                    try stderr_data.appendSlice(allocator, buf[0..bytes_read]);
+                    if (stderr_data.items.len >= max_output) break;
+                }
+            }
+        }
+
+        // Check if child has exited (pipes closed = process ended)
+        const all_closed = for (poll_fds[0..poll_count]) |pf| {
+            if (pf.revents & (posix.POLL.HUP | posix.POLL.ERR) == 0) break false;
+        } else true;
+
+        if (all_closed or (!any_read and ready > 0)) {
+            // Pipes closed or poll returned but no data = process likely exited
+            child_term = child.wait() catch .{ .Unknown = 1 };
+            break;
+        }
     }
 
     if (child_term == null) {

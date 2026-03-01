@@ -65,7 +65,8 @@ fn addDiscoveredTests(
         const rel_path = std.fs.path.join(allocator, &.{ "src", entry.path }) catch continue;
 
         // Determine if this test needs sqlite3 (database tests)
-        const needs_sqlite = mem.indexOf(u8, rel_path, "/databases/sqlite/") != null;
+        const needs_sqlite = mem.indexOf(u8, rel_path, "/databases/sqlite/") != null or
+                     mem.indexOf(u8, rel_path, "/ai_workflow/") != null;
 
         // Create a test module that can import tree1
         const test_mod = b.createModule(.{

@@ -7,15 +7,15 @@ const AgentTool = @import("models.zig").AgentTool;
 pub const ChangeAgentToolResult = struct {
     agent: []const u8,
     message: []const u8,
-    temperature: ?f32,
-    is_thinking: ?bool,
+    temperature: ?f32 = null, // default null if omitted
+    is_thinking: ?bool = null, // default null if omitted
 };
 
 pub const ChangeAgentTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "change_agent_tool",
-        .description = "Transfer the current task to another specialized agent. Available agents: GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent. Set temperature based on your confidence — low confidence = higher temperature. return agent, message, temperature",
+        .description = "Transfer the current task to another specialized agent. Available agents: GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent. Set temperature based on your confidence — low confidence = higher temperature. return agent, message, temperature, is_thinking",
         .parameters = .{
             .type = "object",
             .properties = &.{

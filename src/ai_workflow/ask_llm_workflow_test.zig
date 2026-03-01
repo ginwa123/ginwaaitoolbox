@@ -257,7 +257,7 @@ test "saveMessage saves response to llm_history" {
         .finish_reason = .stop,
     };
 
-    try workflow.saveMessage(response, "assistant", null);
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null);
 
     const row = try db.queryRow(allocator, "SELECT response_content, finish_reason FROM llm_history WHERE session_id = ?", &.{"test-session"});
     defer row.deinit(allocator);
@@ -297,7 +297,7 @@ test "saveMessageAsUser saves user message to llm_history" {
     workflow.session_id = "user-msg-test";
     workflow.model = "test-model";
 
-    try workflow.saveMessageAsUser("Hello, world!");
+    try workflow.saveMessageUnified("Hello, world!", null, "user", "null", null, null);
 
     const row = try db.queryRow(allocator, "SELECT response_content, role FROM llm_history WHERE session_id = ?", &.{"user-msg-test"});
     defer row.deinit(allocator);
@@ -337,7 +337,7 @@ test "saveMessageAsTool saves tool result to llm_history" {
     workflow.session_id = "tool-msg-test";
     workflow.model = "test-model";
 
-    try workflow.saveMessageAsTool("bash output here", "tool_call_123");
+    try workflow.saveMessageUnified("bash output here", null, "tool", "tool", null, "tool_call_123");
 
     const row = try db.queryRow(allocator, "SELECT response_content, role, tool_calls_json FROM llm_history WHERE session_id = ?", &.{"tool-msg-test"});
     defer row.deinit(allocator);
@@ -426,7 +426,7 @@ test "getMessages retrieves messages by session_id" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessage(response1, "assistant", null);
+    try workflow.saveMessageUnified(null, response1, "assistant", null, null, null);
 
     const response2 = agent.Agent.CallResponse{
         .allocator = allocator,
@@ -434,7 +434,7 @@ test "getMessages retrieves messages by session_id" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessage(response2, "assistant", null);
+    try workflow.saveMessageUnified(null, response2, "assistant", null, null, null);
 
     const messages = try workflow.getMessages();
     defer {
@@ -483,12 +483,12 @@ test "buildMessages handles tool_calls response correctly" {
     tool_calls_slice[0] = .{ .id = "call_123", .function = .{ .name = "bash", .arguments = "{\"command\":\"ls\"}" } };
     defer allocator.free(tool_calls_slice);
 
-    try workflow.saveMessage(agent.Agent.CallResponse{
+    try workflow.saveMessageUnified(null, agent.Agent.CallResponse{
         .allocator = allocator,
         .content = null,
         .tool_calls = tool_calls_slice,
         .finish_reason = .tool_calls,
-    }, "assistant", tool_calls_slice);
+    }, "assistant", null, tool_calls_slice, null);
 
     const messages = try workflow.buildMessages();
     defer {
@@ -743,7 +743,7 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
     workflow.model = "test-model";
 
     // 1. Save user message
-    try workflow.saveMessageAsUser("run ls command");
+    try workflow.saveMessageUnified("run ls command", null, "user", "null", null, null);
 
     // 2. Save assistant message with tool_calls (simulating LLM response that wants to call a tool)
     var tool_calls = try allocator.alloc(agent.ToolCall, 1);
@@ -761,10 +761,10 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
         .tool_calls = tool_calls,
         .finish_reason = .tool_calls,
     };
-    try workflow.saveMessage(assistant_response, "assistant", tool_calls);
+    try workflow.saveMessageUnified(null, assistant_response, "assistant", null, tool_calls, null);
 
     // 3. Save tool result message
-    try workflow.saveMessageAsTool("file1.txt\nfile2.txt", "tool-abc123");
+    try workflow.saveMessageUnified("file1.txt\nfile2.txt", null, "tool", "tool", null, "tool-abc123");
 
     // 4. Now reconstruct messages using buildMessages
     workflow.message = "continue";

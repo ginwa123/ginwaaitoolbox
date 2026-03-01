@@ -14,7 +14,7 @@ test "bash execute helloworld" {
     defer allocator.free(r);
 
     const expected =
-        \\<command>echo "hello world"</command>
+        \\<command>echo "hell...</command>
         \\<stdout>hello world
         \\</stdout>
         \\<stderr></stderr>
@@ -183,11 +183,43 @@ test "bash stdin with data" {
         .timeout = 5,
         .cwd = null,
         .max_output = null,
-        .stdin_data = "hell...",
+        .stdin_data = "hello world",
     };
     const r = try bashMod.executeBash(allocator, input);
     defer allocator.free(r);
 
     try std.testing.expect(std.mem.indexOf(u8, r, "got: hello world") != null);
     try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+}
+
+test "bash pipe with multiple stages" {
+    const allocator = std.testing.allocator;
+    const input = BashInput{
+        .command = "printf 'line1\\nline2\\nline3\\n' | grep line | wc -l",
+        .timeout = 5,
+        .cwd = null,
+        .max_output = null,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r);
+
+    try std.testing.expect(std.mem.indexOf(u8, r, "3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+}
+
+test "bash pipe with slow producer respects timeout" {
+    const allocator = std.testing.allocator;
+    // This tests the poll-based timeout with a pipe that produces data slowly
+    // The command outputs one line every 0.5s, but we timeout after 1s
+    const input = BashInput{
+        .command = "for i in 1 2 3 4 5; do echo $i; sleep 0.5; done",
+        .timeout = 1,
+        .cwd = null,
+        .max_output = null,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r);
+
+    // Should timeout before completing all 5 iterations
+    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
 }
