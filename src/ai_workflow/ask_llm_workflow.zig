@@ -1,3 +1,4 @@
+const logger = @import("../modules/logger/logger.zig");
 const std = @import("std");
 const json = std.json;
 const tree1_mod = @import("tree1");
@@ -78,6 +79,7 @@ pub fn streamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 pub const AskLLMWorkflow = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
+    logger: *logger.Logger,
 
     session_id: []const u8 = "",
 
@@ -92,13 +94,27 @@ pub const AskLLMWorkflow = struct {
 
     conn_fd: std.posix.fd_t = -1,
 
-    pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) AskLLMWorkflow {
-        return AskLLMWorkflow{
+    pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !AskLLMWorkflow {
+        const log_ptr = try allocator.create(logger.Logger);
+        log_ptr.* = logger.Logger.initColor(allocator, .{ .min_level = .debug });
+        return .{
             .allocator = allocator,
             .db = db,
+            .logger = log_ptr,
+            .session_id = "",
+            .message = "",
+            .cwd = "",
+            .api_key = "",
+            .model = "",
+            .base_url = "",
+            .conn_fd = -1,
         };
     }
 
+    pub fn deinit(self: *AskLLMWorkflow) void {
+        self.logger.deinit();
+        self.allocator.destroy(self.logger);
+    }
     pub fn sendResponse(self: *AskLLMWorkflow, response: agent.Agent.CallResponse, override_finish_reason: ?[]const u8) void {
         if (self.conn_fd < 0) return;
 
@@ -153,11 +169,11 @@ pub const AskLLMWorkflow = struct {
 
         w.writeAll("</choice></choices></response>") catch return;
 
-        std.debug.print("SEND RESPONSE XML: {s}\n", .{buf.items});
+        self.logger.traceFmt("SEND RESPONSE XML: {s}", .{buf.items}) catch {};
 
         _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
             if (err != error.BrokenPipe) {
-                std.debug.print("Send Response error {s}\n", .{@errorName(err)});
+                self.logger.errFmt("Send Response error {s}", .{@errorName(err)}) catch {};
             }
         };
         _ = std.posix.write(self.conn_fd, "\n") catch {};
@@ -180,11 +196,11 @@ pub const AskLLMWorkflow = struct {
 
         w.writeAll("</result></tool_result></response>") catch return;
 
-        std.debug.print("SEND TOOL RESULT XML: {s}\n", .{buf.items});
+        self.logger.traceFmt("SEND TOOL RESULT XML: {s}", .{buf.items}) catch {};
 
         _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
             if (err != error.BrokenPipe) {
-                std.debug.print("Send Tool Result error {s}\n", .{@errorName(err)});
+                self.logger.errFmt("Send Tool Result error {s}", .{@errorName(err)}) catch {};
             }
         };
         _ = std.posix.write(self.conn_fd, "\n") catch {};
@@ -204,11 +220,11 @@ pub const AskLLMWorkflow = struct {
         w.writeAll(fr) catch return;
         w.writeAll("</finish_reason></response>") catch return;
 
-        std.debug.print("SEND ERROR XML: {s}\n", .{buf.items});
+        self.logger.traceFmt("SEND ERROR XML: {s}", .{buf.items}) catch {};
 
         _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
             if (err != error.BrokenPipe) {
-                std.debug.print("Send Error response error {s}\n", .{@errorName(err)});
+                self.logger.errFmt("Send Error response error {s}", .{@errorName(err)}) catch {};
             }
         };
         _ = std.posix.write(self.conn_fd, "\n") catch {};
@@ -335,7 +351,7 @@ pub const AskLLMWorkflow = struct {
     }
 
     fn runInternal(self: *AskLLMWorkflow) !void {
-        self.saveMessageUnified(self.message, null, "user", "null", null, null) catch |err| std.debug.print("saveMessageAsUser error: {s}\n", .{@errorName(err)});
+        self.saveMessageUnified(self.message, null, "user", "null", null, null) catch |err| { self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {}; };
 
         // Use ArrayList for dynamic message appending during tool execution
         var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
@@ -352,11 +368,11 @@ pub const AskLLMWorkflow = struct {
 
             // === COMPACTION CHECK ===
             const body_size = self.estimateBodySize(messages_list.items);
-            std.debug.print("[COMPACTION] Body size: {} bytes\n", .{body_size});
+            self.logger.debugFmt("[COMPACTION] Body size: {} bytes", .{body_size}) catch {};
 
             if (body_size > COMPACTION_CONFIG.max_body_size)
             {
-                std.debug.print("[COMPACTION] Threshold exceeded, triggering compaction\n", .{});
+                self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
 
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer arena.deinit();
@@ -384,7 +400,7 @@ pub const AskLLMWorkflow = struct {
             };
             const res_dynamic_agent = dynamic_agent.callStreaming(dynamic_agent_params, &stream_ctx, streamCallback) catch |err| {
                 retryCount += 1;
-                std.debug.print("Error calling agent: {s}\n", .{@errorName(err)});
+                self.logger.errFmt("Error calling agent: {s}", .{@errorName(err)}) catch {};
                 self.sendError(@errorName(err), "notification_error");
                 continue;
             };
@@ -401,7 +417,7 @@ pub const AskLLMWorkflow = struct {
 
                     const has_unresolved = dynamic_agent.hasUnresolvedIntent(content) catch false;
                     if (has_unresolved) {
-                        std.debug.print("UNRESOLVED INTENT DETECTED - continuing loop\n", .{});
+                        self.logger.infoFmt("UNRESOLVED INTENT DETECTED - continuing loop", .{}) catch {};
                         self.sendResponse(res_dynamic_agent, "");
                         try self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null);
 
@@ -415,17 +431,16 @@ pub const AskLLMWorkflow = struct {
                     }
 
                     self.sendResponse(res_dynamic_agent, "user_choice");
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| { self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {}; };
 
-                    std.debug.print("FINISH REASON STOP", .{});
+                    self.logger.infoFmt("FINISH REASON STOP", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
-                    std.debug.print("FINISH REASON LENGTH - continuing...\n", .{});
+                    self.logger.infoFmt("FINISH REASON LENGTH - continuing...", .{}) catch {};
 
                     // Save partial response to history and send to client
                     self.sendResponse(res_dynamic_agent, "length");
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err|
-                        std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| { self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {}; };
 
                     // Add assistant message to conversation for context
                     const content_copy = if (res_dynamic_agent.content) |c|
@@ -448,11 +463,11 @@ pub const AskLLMWorkflow = struct {
                     continue;
                 } else if (finish_reason == .tool_calls) {
                     self.sendResponse(res_dynamic_agent, null);
-                    std.debug.print("FINISH REASON TOOL CALLS - executing tools\n", .{});
+                    self.logger.infoFmt("FINISH REASON TOOL CALLS - executing tools", .{}) catch {};
 
                     if (res_dynamic_agent.tool_calls) |tc| {
                         if (tc.len == 0) {
-                            std.debug.print("WARNING: tool_calls array is empty!\n", .{});
+                            self.logger.warnFmt("WARNING: tool_calls array is empty!", .{}) catch {};
                         }
                         // Add assistant message with tool_calls to history
                         var assistant_tool_calls = try self.allocator.alloc(agent.ToolCall, tc.len);
@@ -501,12 +516,12 @@ pub const AskLLMWorkflow = struct {
                             assistant_tool_calls,
                             null,
                         ) catch |err| {
-                            std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                            self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                         };
 
                         // Execute each tool call and add tool result messages
                         for (tc) |tool_call| {
-                            std.debug.print("Executing tool: {s}   {s}\n", .{ tool_call.function.name, tool_call.function.arguments });
+                            self.logger.debugFmt("Executing tool: {s}   {s}", .{ tool_call.function.name, tool_call.function.arguments }) catch {};
 
                             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
                                 const parsed = try std.json.parseFromSlice(
@@ -538,7 +553,7 @@ pub const AskLLMWorkflow = struct {
                                 else if (std.mem.eql(u8, agent_name, "ExecutingAgent"))
                                     prompt.ExecutingAgent
                                 else {
-                                    std.debug.print("change_agent_tool: unknown agent '{s}'\n", .{agent_name});
+                                    self.logger.warnFmt("change_agent_tool: unknown agent '{s}'", .{agent_name}) catch {};
                                     continue;
                                 };
 
@@ -563,8 +578,7 @@ pub const AskLLMWorkflow = struct {
                                 try messages_list.append(self.allocator, tool_result_msg);
 
                                 // 2. Save tool result to database
-                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id) catch |err|
-                                    std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
+                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id) catch |err| { self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {}; };
                                 self.sendToolResult(contentChangeAgent, tool_call.id, tool_call.function.name);
 
                                 // 3. Replace system message only, keep all history
@@ -583,7 +597,7 @@ pub const AskLLMWorkflow = struct {
                                     });
                                 }
 
-                                std.debug.print("Switched to agent: {s}\n", .{agent_name});
+                                self.logger.infoFmt("Switched to agent: {s}", .{agent_name}) catch {};
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
@@ -595,14 +609,14 @@ pub const AskLLMWorkflow = struct {
                                     tool_call.function.arguments,
                                     .{ .allocate = .alloc_always },
                                 ) catch |err| {
-                                    std.debug.print("Failed to parse tool arguments: {s}\n", .{@errorName(err)});
+                                    self.logger.errFmt("Failed to parse tool arguments: {s}", .{@errorName(err)}) catch {};
                                     continue;
                                 };
                                 defer parsed.deinit();
 
                                 // Execute bash command
                                 const result = bash_tool.executeBash(self.allocator, parsed.value) catch |err| blk: {
-                                    std.debug.print("Error executing bash: {s}\n", .{@errorName(err)});
+                                    self.logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
                                     break :blk "Error executing command";
                                 };
 
@@ -613,23 +627,22 @@ pub const AskLLMWorkflow = struct {
                                     .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
                                 };
                                 try messages_list.append(self.allocator, tool_result_msg);
-                                self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id) catch |err| std.debug.print("saveMessageAsTool error: {s}\n", .{@errorName(err)});
+                                self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id) catch |err| { self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {}; };
                                 self.sendToolResult(result, tool_call.id, tool_call.function.name);
-                                std.debug.print("Tool result added to messages\n", .{});
+                                self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
                         }
-                        std.debug.print("All tools executed, continuing to next LLM call. Message count: {}\n", .{messages_list.items.len});
+                        self.logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
                     } else {
-                        std.debug.print("Tool function not found \n", .{});
+                        self.logger.warnFmt("Tool function not found", .{}) catch {};
                     }
                     // Continue to next LLM call - no break, loop continues naturally
-                    std.debug.print("Tool calls processing complete, looping back for next API call...\n", .{});
+                    self.logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{}) catch {};
                 } else if (finish_reason == .content_filter) {
-                    std.debug.print("FINISH REASON CONTENT FILTER - content was filtered due to safety policies\n", .{});
+                    self.logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
                     // Save the filtered response to history
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err|
-                        std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| { self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {}; };
 
                     // Send error response to client with content_filter finish reason
                     // The response content may be empty or contain partial filtered content
@@ -649,7 +662,7 @@ pub const AskLLMWorkflow = struct {
                 }
             } else {
                 retryCount += 1;
-                std.debug.print("Error calling agent: maybe streaming failed \n", .{});
+                self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
                 continue;
             }
 
@@ -919,22 +932,22 @@ pub const AskLLMWorkflow = struct {
             .max_tokens = 8000,
         };
 
-        std.debug.print("[COMPACTION] Calling CompactionAgent ({} messages, ~{} bytes)\n", .{
+        self.logger.debugFmt("[COMPACTION] Calling CompactionAgent ({} messages, ~{} bytes)", .{
             messages.len,
             self.estimateBodySize(messages),
-        });
+        }) catch {};
 
         const response = compaction_agent.call(params) catch |err| {
-            std.debug.print("[COMPACTION] Failed: {s}\n", .{@errorName(err)});
+            self.logger.errFmt("[COMPACTION] Failed: {s}", .{@errorName(err)}) catch {};
             return null;
         };
         defer response.deinit();
 
         if (response.content) |content| {
-            std.debug.print("[COMPACTION] Done: {} bytes -> {} bytes\n", .{
+            self.logger.debugFmt("[COMPACTION] Done: {} bytes -> {} bytes", .{
                 self.estimateBodySize(messages),
                 content.len,
-            });
+            }) catch {};
             return try arena.dupe(u8, content);
         }
         return null;
@@ -1026,10 +1039,7 @@ pub const AskLLMWorkflow = struct {
         messages.deinit(self.allocator);
         messages.* = new_messages;
 
-        std.debug.print("[COMPACTION] Compacted: {} -> {} messages\n", .{ total, messages.items.len });
+        self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages", .{ total, messages.items.len }) catch {};
     }
 
-    pub fn deinit(self: *AskLLMWorkflow) void {
-        _ = self;
-    }
 };

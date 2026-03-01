@@ -235,17 +235,17 @@ pub fn main() !void {
             };
 
             if (std.mem.eql(u8, t.command_type, "tui")) {
-                var workflowAsk = ai_workflow.AskLLMWorkflow{
-                    .db = ctxTui.db,
-                    .allocator = allocator,
-                    .conn_fd = conn_fd,
-                    .api_key = g_api_key,
-                    .model = g_model,
-                    .base_url = g_base_url,
-                    .message = t.message,
-                    .session_id = t.session_id,
-                    .cwd = t.cwd_session,
+                var workflowAsk = ai_workflow.AskLLMWorkflow.init(allocator, ctxTui.db) catch |err| {
+                    std.debug.print("Failed to init workflow: {}\n", .{err});
+                    return;
                 };
+                workflowAsk.conn_fd = conn_fd;
+                workflowAsk.api_key = g_api_key;
+                workflowAsk.model = g_model;
+                workflowAsk.base_url = g_base_url;
+                workflowAsk.message = t.message;
+                workflowAsk.session_id = t.session_id;
+                workflowAsk.cwd = t.cwd_session;
                 workflowAsk.run();
             }
 

@@ -36,7 +36,7 @@ test "transformMessageToAgentMessages with user message" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-1";
     workflow.model = "test-model";
@@ -93,7 +93,7 @@ test "transformMessageToAgentMessages with assistant message" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-2";
     workflow.model = "test-model";
@@ -150,7 +150,7 @@ test "transformMessageToAgentMessages with tool message" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-tool-msg";
     workflow.model = "test-model";
@@ -211,7 +211,7 @@ test "transformMessageToAgentMessages with tool_calls message" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-3";
     workflow.model = "test-model";
@@ -270,7 +270,7 @@ test "saveMessage saves response to llm_history" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-session";
     workflow.model = "test-model";
@@ -322,7 +322,7 @@ test "saveMessageAsUser saves user message to llm_history" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "user-msg-test";
     workflow.model = "test-model";
@@ -367,7 +367,7 @@ test "saveMessageAsTool saves tool result to llm_history" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "tool-msg-test";
     workflow.model = "test-model";
@@ -413,7 +413,7 @@ test "buildMessages returns correct message structure" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "build-msg-test";
     workflow.model = "test-model";
@@ -460,7 +460,7 @@ test "getMessages retrieves messages by session_id" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "session-get-test";
     workflow.model = "test-model";
@@ -523,7 +523,7 @@ test "buildMessages handles tool_calls response correctly" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "tool-calls-test";
     workflow.model = "test-model";
@@ -593,7 +593,7 @@ test "sendResponse generates valid XML with content" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-session-xml";
     workflow.model = "test-model";
@@ -640,7 +640,7 @@ test "sendResponse generates valid XML with markdown content" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-session-md";
     workflow.model = "test-model";
@@ -687,7 +687,7 @@ test "sendError with content_filter finish reason" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-content-filter";
     workflow.model = "test-model";
@@ -728,7 +728,7 @@ test "sendError with null finish reason defaults to stop" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-error-stop";
     workflow.model = "test-model";
@@ -769,7 +769,7 @@ test "sendResponse with content_filter override" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-response-filter";
     workflow.model = "test-model";
@@ -817,7 +817,7 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-tool-reconstruction";
     workflow.model = "test-model";
@@ -913,7 +913,7 @@ test "serializeToolCalls escapes JSON arguments correctly" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
 
     // Create tool_calls with JSON arguments that need escaping
@@ -981,7 +981,7 @@ test "escapeJsonString handles special characters" {
     });
     try mgr.runMigrations();
 
-    var workflow = ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
+    var workflow = try ask_llm_workflow.AskLLMWorkflow.init(allocator, &db);
     defer workflow.deinit();
 
     // Test escaping of special characters
