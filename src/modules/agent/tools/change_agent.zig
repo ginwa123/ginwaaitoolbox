@@ -8,6 +8,7 @@ pub const ChangeAgentToolResult = struct {
     agent: []const u8,
     message: []const u8,
     temperature: ?f32,
+    is_thinking: ?bool,
 };
 
 pub const ChangeAgentTool = AgentTool{
@@ -35,6 +36,17 @@ pub const ChangeAgentTool = AgentTool{
                         "Use LOW (0.0-0.2) when the task is factual or deterministic, you have high confidence, or the agent is routing or verifying — precision matters more than creativity. " ++
                         "Use MEDIUM (0.3-0.5) when the task requires reasoning or judgment, you have medium confidence, or the agent is planning a solution. " ++
                         "Use HIGH (0.6-1.0) when you have low confidence, the current approach is not working, a previous attempt failed, or the problem is ambiguous with no clear single solution.",
+                },
+                .{
+                    .name = "is_thinking",
+                    .type = "boolean",
+                    .description = "Enable deep reasoning for this agent call. " ++
+                        "PlanningAgent: always true (architecture decisions, tradeoffs). " ++
+                        "ExecutingAgent: true only for complex multi-step implementation. " ++
+                        "GeneralAgent: always false (just routing). " ++
+                        "ExplorationAgent: always false (just reading files). " ++
+                        "CompactionAgent: always false (just summarizing). " ++
+                        "Default: false.",
                 },
             },
             .required = &.{ "agent", "message", "temperature" },

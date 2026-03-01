@@ -1,4 +1,6 @@
 const std = @import("std");
+const fs = std.fs;
+const mem = std.mem;
 
 // Helper function to create platform-specific executables
 fn createPlatformExe(
@@ -20,6 +22,81 @@ fn createPlatformExe(
     exe.linkSystemLibrary("sqlite3");
     exe.linkLibC();
     return exe;
+}
+
+/// Discovers and adds all *_test.zig files in the src/ directory to the test step.
+/// Uses an arena allocator for the directory walk, which is freed after the build graph is constructed.
+fn addDiscoveredTests(
+    b: *std.Build,
+    test_step: *std.Build.Step,
+    mod: *std.Build.Module,
+) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Walk the src/ directory recursively to find test files
+    var src_dir = fs.cwd().openDir("src", .{ .iterate = true }) catch |err| {
+        std.log.warn("Failed to open src directory: {s}", .{@errorName(err)});
+        return;
+    };
+    defer src_dir.close();
+
+    var walker = src_dir.walk(allocator) catch |err| {
+        std.log.warn("Failed to create directory walker: {s}", .{@errorName(err)});
+        return;
+    };
+    defer walker.deinit();
+
+    const test_suffix = "_test.zig";
+    var test_count: usize = 0;
+
+    while (true) {
+        const entry = walker.next() catch |err| {
+            std.log.warn("Error walking directory: {s}", .{@errorName(err)});
+            break;
+        } orelse break;
+
+        // Check if this is a file ending with _test.zig
+        if (entry.kind != .file) continue;
+        if (!mem.endsWith(u8, entry.basename, test_suffix)) continue;
+
+        // Construct the full path relative to project root
+        const rel_path = std.fs.path.join(allocator, &.{ "src", entry.path }) catch continue;
+
+        // Determine if this test needs sqlite3 (database tests)
+        const needs_sqlite = mem.indexOf(u8, rel_path, "/databases/sqlite/") != null;
+
+        // Create a test module that can import tree1
+        const test_mod = b.createModule(.{
+            .root_source_file = b.path(rel_path),
+            .target = mod.resolved_target orelse b.standardTargetOptions(.{}),
+            .optimize = .Debug,
+            .imports = &.{.{ .name = "tree1", .module = mod }},
+        });
+
+        // Create the test executable
+        const test_exe = b.addTest(.{
+            .root_module = test_mod,
+        });
+
+        // Link required libraries
+        test_exe.linkLibC();
+        if (needs_sqlite) {
+            test_exe.linkSystemLibrary("sqlite3");
+        }
+
+        // Create run step for this test
+        const run_test = b.addRunArtifact(test_exe);
+
+        // Add to test step
+        test_step.dependOn(&run_test.step);
+
+        test_count += 1;
+        std.log.info("Discovered test: {s}", .{rel_path});
+    }
+
+    std.log.info("Total test files discovered: {d}", .{test_count});
 }
 
 // Although this function looks imperative, it does not perform the build
@@ -189,6 +266,9 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    // Discover and add all *_test.zig files automatically
+    addDiscoveredTests(b, test_step, mod);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

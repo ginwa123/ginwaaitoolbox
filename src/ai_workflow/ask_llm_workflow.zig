@@ -172,10 +172,6 @@ pub const AskLLMWorkflow = struct {
 
         w.writeAll(result) catch return;
 
-        // const esc = self.escapeXml(result) catch return;
-        // defer self.allocator.free(esc);
-        // w.writeAll(esc) catch return;
-
         w.writeAll("</result></tool_result></response>") catch return;
 
         std.debug.print("SEND TOOL RESULT XML: {s}\n", .{buf.items});
@@ -337,6 +333,7 @@ pub const AskLLMWorkflow = struct {
 
         var retryCount: usize = 0;
         var agent_temperature: f32 = 0.5;
+        var isThinking: bool = false;
         while (true) {
             if (retryCount > 10) return error.TooManyRetries;
             var agenttt = try agent.Agent.init(self.allocator);
@@ -347,6 +344,7 @@ pub const AskLLMWorkflow = struct {
             agenttt.baseUrl = self.base_url;
 
             const agetntCall = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature };
+            agenttt.thinkingEnabled = isThinking;
 
             // Use streaming for better UX
             var stream_ctx = StreamingContext{
@@ -493,6 +491,11 @@ pub const AskLLMWorkflow = struct {
                                     agent_temperature = temperature;
                                 }
 
+                                const new_is_thinking = parsed.value.is_thinking;
+                                if (new_is_thinking) |thinking| {
+                                    isThinking = thinking;
+                                }
+
                                 const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_name, "GeneralAgent"))
                                     prompt.GeneralAgent
                                 else if (std.mem.eql(u8, agent_name, "ExplorationAgent"))
@@ -612,9 +615,6 @@ pub const AskLLMWorkflow = struct {
                     break;
                 }
             } else {
-                // self.saveMessage(response, "assistant", null) catch |err| std.debug.print("saveMessage error: {s}\n", .{@errorName(err)});
-                // std.debug.print("BREAK LLM", .{});
-
                 retryCount += 1;
                 std.debug.print("Error calling agent: maybe streaming failed \n", .{});
                 continue;
