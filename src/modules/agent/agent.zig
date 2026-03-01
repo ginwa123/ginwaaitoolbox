@@ -411,7 +411,6 @@ pub const Agent = struct {
         var root = std.StringArrayHashMap(json.Value).init(self.allocator);
         try root.put("model", .{ .string = self.model });
 
-        // Add thinking configuration for Kimi K2.5 models
         if (!self.thinkingEnabled) {
             var thinking = std.StringArrayHashMap(json.Value).init(self.allocator);
             try thinking.put("type", .{ .string = "disabled" });
@@ -420,6 +419,9 @@ pub const Agent = struct {
 
         if (self.thinkingEnabled) {
             try root.put("enable_thinking", .{ .bool = true });
+        }
+        if (!self.thinkingEnabled) {
+            try root.put("enable_thinking", .{ .bool = false });
         }
 
         try root.put("messages", .{ .array = messages_arr });
@@ -899,7 +901,6 @@ pub const Agent = struct {
                                     self.logMsg(.err, "Failed to aggregate chunk");
                                 };
                             }
-
                         }
 
                         line_buffer.clearRetainingCapacity();

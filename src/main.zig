@@ -209,6 +209,12 @@ pub fn main() !void {
         .name = migrations.Migration003AddReasoningContent.name,
         .up = migrations.Migration003AddReasoningContent.up,
     });
+
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
     try migrationManager.runMigrations();
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);

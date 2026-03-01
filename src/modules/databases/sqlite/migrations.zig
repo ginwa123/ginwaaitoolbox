@@ -51,6 +51,15 @@ pub const Migration003AddReasoningContent = struct {
     }
 };
 
+pub const Migration004AddSessionDir = struct {
+    pub const version: u32 = 4;
+    pub const name = "add_session_dir";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN session_dir TEXT", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,

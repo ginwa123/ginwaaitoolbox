@@ -712,8 +712,8 @@ pub const AskLLMWorkflow = struct {
         }
         defer if (toolCallsOwned) |tcj| self.allocator.free(tcj);
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, roleStr, toolCallsJson, reasoningStr };
+        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, roleStr, toolCallsJson, reasoningStr, self.cwd };
         try db.exec(self.allocator, sql, sqlArgs);
     }
 

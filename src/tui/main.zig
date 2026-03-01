@@ -361,7 +361,7 @@ fn readResponseAndStream(app: *App) ![]u8 {
 
         if (extractTag(buffer.items, "finish_reason")) |fr| {
             if (std.mem.eql(u8, fr, "user_choice")) {
-                std.debug.print("Your input \n", .{});
+                std.debug.print("\n Your input \n", .{});
                 break;
             }
         }
