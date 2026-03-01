@@ -146,13 +146,9 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
         const idx = buffer.items.len % spinners.len;
         std.debug.print("\r{s}▸{s} {c} ", .{ yellow, reset, spinners[idx] });
 
-        // Only break when we see the final response (not streaming chunks)
-        // The final response has <choices> tag, streaming has <chunk> tags
-        if (std.mem.indexOf(u8, buffer.items, "<choices>")) |_| {
-            if (extractTag(buffer.items, "finish_reason")) |fr| {
-                if (std.mem.eql(u8, fr, "stop") or std.mem.eql(u8, fr, "length")) {
-                    break;
-                }
+        if (extractTag(buffer.items, "finish_reason")) |fr| {
+            if (std.mem.eql(u8, fr, "user_choice")) {
+                break; // Final response, we're done
             }
         }
 
@@ -164,12 +160,11 @@ fn readResponseAndStream(socket_fd: std.posix.fd_t, allocator: std.mem.Allocator
             if (remaining > 0) {
                 try buffer.appendSlice(allocator, buf[0..remaining]);
             }
-            break;
         }
     }
 
     // Clear the spinner line and show clean response
-    std.debug.print("\r{s}▸{s} ", .{ yellow, reset });
+    std.debug.print("done\n", .{});
 
     // Extract only the final response (the one with <choices>)
     if (std.mem.indexOf(u8, buffer.items, "<response><choices>")) |start| {
@@ -194,18 +189,13 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
     const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
     defer std.heap.page_allocator.free(end_tag);
 
-    var result: ?[]const u8 = null;
-    var search_start: usize = 0;
-
-    while (true) {
-        const start = std.mem.indexOf(u8, xml[search_start..], start_tag) orelse break;
-        const content_start = search_start + start + start_tag.len;
-        const end = std.mem.indexOf(u8, xml[content_start..], end_tag) orelse break;
-        result = xml[content_start .. content_start + end];
-        search_start = content_start + end;
+    if (std.mem.indexOf(u8, xml, start_tag)) |start| {
+        const content_start = start + start_tag.len;
+        if (std.mem.indexOf(u8, xml[content_start..], end_tag)) |end| {
+            return xml[content_start .. content_start + end];
+        }
     }
-
-    return result;
+    return null;
 }
 
 pub fn trim(s: []const u8) []const u8 {

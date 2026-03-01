@@ -49,11 +49,20 @@ pub const GeneralAgent =
     \\  </response>
     \\</example>
     \\
+    \\<tool_call_requirement>
+    \\  Writing the <handoff> block alone does NOT complete routing.
+    \\  After writing your <handoff> block, you MUST call change_agent_tool.
+    \\  Pass next_agent and goal as arguments to the tool.
+    \\  The task is only complete when change_agent_tool has been called.
+    \\  Failure to call the tool means routing has failed.
+    \\</tool_call_requirement>
+    \\
     \\<never_do>
     \\  <item>Route without a complete handoff block</item>
     \\  <item>Route to PlanningAgent for a simple one-line fix</item>
     \\  <item>Set confidence High when key information is missing</item>
     \\  <item>Attempt to gather information yourself instead of asking the user</item>
+    \\  <item>Finish a response without calling change_agent_tool</item>
     \\</never_do>
     \\
     \\You MUST always structure your response exactly like this:

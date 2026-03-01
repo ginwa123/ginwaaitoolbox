@@ -267,6 +267,8 @@ pub const StreamingAggregator = struct {
                     },
                 };
                 try self.tool_calls.append(self.allocator, tool_call);
+            } else {
+                std.debug.print("WARNING: Tool call at index {} has no ID - skipping. Name: {?s}\n", .{ idx, buffer.name });
             }
         }
 
@@ -852,18 +854,12 @@ pub const Agent = struct {
             return error.ReceiveFailed;
         };
 
-        // Use arena for temporary allocations during parsing
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const arena_alloc = arena.allocator();
-
+        //
         // Initialize aggregator
         var aggregator = StreamingAggregator.init(self.allocator);
-        defer aggregator.deinit();
 
         // Read response body incrementally
         const transfer_buffer = try self.allocator.alloc(u8, self.httpOptions.response_buffer_size);
-        defer self.allocator.free(transfer_buffer);
 
         var reader = response.reader(transfer_buffer[0..]);
 
@@ -892,18 +888,16 @@ pub const Agent = struct {
 
                         // Skip empty lines and non-data lines
                         if (self.parseSseLine(line)) |data| {
-                            // Reset arena for each chunk
-                            _ = arena.reset(.free_all);
-
-                            if (self.parseStreamChunk(data, arena_alloc)) |chunk| {
+                            if (self.parseStreamChunk(data, self.allocator)) |chunk| {
                                 // Invoke callback
                                 callback(ctx, chunk);
 
-                                // Aggregate chunk
+                                // Aggregate chunk - this copies data to aggregator's allocator
                                 aggregator.processChunk(chunk) catch {
                                     self.logMsg(.err, "Failed to aggregate chunk");
                                 };
                             }
+
                         }
 
                         line_buffer.clearRetainingCapacity();
@@ -917,8 +911,7 @@ pub const Agent = struct {
         // Process any remaining line
         if (line_buffer.items.len > 0) {
             if (self.parseSseLine(line_buffer.items)) |data| {
-                _ = arena.reset(.free_all);
-                if (self.parseStreamChunk(data, arena_alloc)) |chunk| {
+                if (self.parseStreamChunk(data, self.allocator)) |chunk| {
                     callback(ctx, chunk);
                     aggregator.processChunk(chunk) catch {};
                 }

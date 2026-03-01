@@ -14,7 +14,7 @@ pub const ChangeAgentTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "change_agent_tool",
-        .description = "Transfer the current task to another specialized agent. Available agents: GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent. Set temperature based on your confidence — low confidence = higher temperature.",
+        .description = "Transfer the current task to another specialized agent. Available agents: GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent. Set temperature based on your confidence — low confidence = higher temperature. return agent, message, temperature",
         .parameters = .{
             .type = "object",
             .properties = &.{

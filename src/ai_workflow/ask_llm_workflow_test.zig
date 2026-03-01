@@ -1,8 +1,9 @@
 const std = @import("std");
-const agent = @import("../modules/agent/agent.zig");
-const ask_llm_workflow = @import("ask_llm_workflow.zig");
-const sqlite = @import("../modules/databases/sqlite/sqlite.zig");
-const migrations = @import("../modules/databases/sqlite/migrations.zig");
+const tree1 = @import("tree1");
+const agent = tree1.agent;
+const ask_llm_workflow = tree1.ai_workflow;
+const sqlite = tree1.sqlite;
+const migrations = tree1.migrations;
 
 test "transformMessageToAgentMessages with user message" {
     const allocator = std.testing.allocator;
