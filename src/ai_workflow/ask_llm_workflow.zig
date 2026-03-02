@@ -14,7 +14,7 @@ const loop_detector = tree1_mod.loop_detector;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
-    pub const max_body_size: usize = 124 * 1024; // 124kb threshold to trigger
+    pub const max_body_size: usize = 124 * 1024; // 150kb threshold to trigger
 };
 
 pub const AskLLMHistory = struct {
@@ -640,23 +640,24 @@ pub const AskLLMWorkflow = struct {
                                 };
                                 defer parsed.deinit();
 
-                                // Execute bash command
-                                const result = bash_tool.executeBash(self.allocator, parsed.value) catch |err| blk: {
+                                var arena_allocator_exec = std.heap.ArenaAllocator.init(self.allocator);
+                                defer arena_allocator_exec.deinit();
+                                const res_bash = bash_tool.executeBash(arena_allocator_exec.allocator(), parsed.value) catch |err| blk: {
                                     self.logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
                                     break :blk "Error executing command";
                                 };
 
-                                // Create tool result message
+                                const copy_res_bash = try self.allocator.dupe(u8, res_bash);
                                 const tool_result_msg = agent.AgentMessage{
                                     .role = .tool,
-                                    .content = result,
+                                    .content = copy_res_bash,
                                     .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
                                 };
                                 try messages_list.append(self.allocator, tool_result_msg);
-                                self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id) catch |err| {
+                                self.saveMessageUnified(copy_res_bash, null, "tool", "tool", null, tool_call.id) catch |err| {
                                     self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
                                 };
-                                self.sendToolResult(result, tool_call.id, tool_call.function.name);
+                                self.sendToolResult(copy_res_bash, tool_call.id, tool_call.function.name);
                                 self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
                         }

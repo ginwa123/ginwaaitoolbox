@@ -97,7 +97,7 @@ fn addDiscoveredTests(
         // std.log.info("Discovered test: {s}", .{rel_path});
     }
 
-    std.log.info("Total test files discovered: {d}", .{test_count});
+    // std.log.info("Total test files discovered: {d}", .{test_count});
 }
 
 // Although this function looks imperative, it does not perform the build
