@@ -695,9 +695,9 @@ pub const KnowledgeAgent =
     \\<markdown>Your answer following answer_structure above.</markdown>
 ;
 
-pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8) ![]u8 {
+pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8) ![]const u8 {
     if (cwd.len == 0) {
-        return try allocator.dupe(u8, GeneralAgent);
+        return try allocator.dupe(u8, agentPrompt);
     }
-    return try std.fmt.allocPrint(allocator, "{s}\n\n**Current working directory:** {s}", .{ GeneralAgent, cwd });
+    return try std.fmt.allocPrint(allocator, "{s}\n\n**Current working directory:** {s}", .{ agentPrompt, cwd });
 }

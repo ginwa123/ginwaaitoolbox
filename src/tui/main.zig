@@ -190,8 +190,19 @@ fn sendMessage(app: *App, message: []const u8) !void {
     defer app.allocator.free(escaped_cwd);
 
     try xml_buf.writer(app.allocator).print(
-        "<message><command_type>tui</command_type><session_id>{s}</session_id><content>{s}</content><cwd_session>{s}</cwd_session></message>",
+        "<message><app_type>tui</app_type><command_type>run_llm</command_type><session_id>{s}</session_id><content>{s}</content><cwd_session>{s}</cwd_session></message>",
         .{ escaped_session_id, escaped_message, escaped_cwd },
+    );
+    _ = try std.posix.write(app.socket_fd, xml_buf.items);
+}
+
+fn sendSessionsCommand(app: *App) !void {
+    var xml_buf = std.ArrayList(u8).empty;
+    defer xml_buf.deinit(app.allocator);
+
+    try xml_buf.writer(app.allocator).print(
+        "<message><app_type>tui</app_type><command_type>get_sessions</command_type></message>",
+        .{},
     );
     _ = try std.posix.write(app.socket_fd, xml_buf.items);
 }
@@ -451,6 +462,16 @@ fn handleInput(app: *App) !bool {
             std.debug.print("\r\n", .{});
         } else {
             if (app.input.items.len > 0) {
+                // Check for /sessions command
+                if (std.mem.eql(u8, app.input.items, "/sessions")) {
+                    std.debug.print("\r\n", .{});
+                    try sendSessionsCommand(app);
+                    const response = readResponseAndStream(app) catch "";
+                    if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
+                    app.input.clearRetainingCapacity();
+                    std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
+                    return false;
+                }
                 std.debug.print("\r\n\r\n", .{});
                 try sendMessage(app, app.input.items);
                 const response = readResponseAndStream(app) catch "";

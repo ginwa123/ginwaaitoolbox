@@ -13,6 +13,7 @@ var g_model: []const u8 = "";
 var g_base_url: []const u8 = "";
 
 pub const IPCMessage = struct {
+    app_type: []const u8 = "",
     command_type: []const u8 = "",
     session_id: []const u8 = "",
     message: []const u8 = "",
@@ -84,6 +85,9 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !IPCMessage 
     }
     if (extractTag(data, "cwd_session", allocator)) |val| {
         msg.cwd_session = try decodeXmlEntities(allocator, val);
+    }
+    if (extractTag(data, "app_type", allocator)) |val| {
+        msg.app_type = try decodeXmlEntities(allocator, val);
     }
 
     return msg;
@@ -234,7 +238,7 @@ pub fn main() !void {
                 return;
             };
 
-            if (std.mem.eql(u8, t.command_type, "tui")) {
+            if (std.mem.eql(u8, t.app_type, "tui")) {
                 var workflowAsk = ai_workflow.TUIWorkflow.init(allocator, ctxTui.db) catch |err| {
                     std.debug.print("Failed to init workflow: {}\n", .{err});
                     return;
@@ -246,7 +250,17 @@ pub fn main() !void {
                 workflowAsk.message = t.message;
                 workflowAsk.session_id = t.session_id;
                 workflowAsk.cwd = t.cwd_session;
-                workflowAsk.run();
+
+                if (std.mem.eql(u8, t.command_type, "run_llm")) {
+                    workflowAsk.run();
+                }
+                if (std.mem.eql(u8, t.command_type, "get_sessions")) {
+                    const sessions = workflowAsk.get_session_by_dir() catch |err| {
+                        std.debug.print("Failed to get sessions: {}\n", .{err});
+                        return;
+                    };
+                    workflowAsk.sendSessionsResponse(sessions);
+                }
             }
 
             std.debug.print("Received: {s}\n", .{data});

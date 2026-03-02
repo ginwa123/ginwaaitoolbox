@@ -41,6 +41,18 @@ pub const TUIHistory = struct {
     }
 };
 
+pub const SessionInfo = struct {
+    session_id: []const u8,
+    session_dir: []const u8,
+    created: []const u8,
+
+    pub fn deinit(self: *SessionInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.session_dir);
+        allocator.free(self.created);
+    }
+};
+
 /// Context for streaming callbacks
 pub const StreamingContext = struct {
     workflow: *TUIWorkflow,
@@ -233,6 +245,35 @@ pub const TUIWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
+    pub fn sendSessionsResponse(self: *TUIWorkflow, sessions: []SessionInfo) void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.writeAll("<response><finish_reason>user_choice</finish_reason><type>sessions</type><sessions>") catch return;
+        for (sessions) |session| {
+            w.writeAll("<session><id>") catch return;
+            w.writeAll(session.session_id) catch return;
+            w.writeAll("</id><dir>") catch return;
+            w.writeAll(session.session_dir) catch return;
+            w.writeAll("</dir><created>") catch return;
+            w.writeAll(session.created) catch return;
+            w.writeAll("</created></session>") catch return;
+        }
+        w.writeAll("</sessions></response>") catch return;
+
+        self.logger.traceFmt("SEND SESSIONS XML: {s}", .{buf.items}) catch {};
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
+            if (err != error.BrokenPipe) {
+                self.logger.errFmt("Send Sessions response error {s}", .{@errorName(err)}) catch {};
+            }
+        };
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
+    }
+
     /// Send a streaming content chunk
     fn sendStreamChunkContent(self: *TUIWorkflow, index: usize, content: []const u8) void {
         if (self.conn_fd < 0) return;
@@ -314,7 +355,7 @@ pub const TUIWorkflow = struct {
     }
 
     pub fn buildMessages(self: *TUIWorkflow) ![]agent.AgentMessage {
-        const systemContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd);
+        const systemContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd, prompt.GeneralAgent);
 
         const systemMessage = agent.AgentMessage{
             .role = .system,
@@ -568,7 +609,7 @@ pub const TUIWorkflow = struct {
                                     isThinking = thinking;
                                 }
 
-                                const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_name, "GeneralAgent"))
+                                var agent_prompt: []const u8 = if (std.mem.eql(u8, agent_name, "GeneralAgent"))
                                     prompt.GeneralAgent
                                 else if (std.mem.eql(u8, agent_name, "ExplorationAgent"))
                                     prompt.ExplorationAgent
@@ -578,6 +619,11 @@ pub const TUIWorkflow = struct {
                                     prompt.ExecutingAgent
                                 else {
                                     self.logger.warnFmt("change_agent_tool: unknown agent '{s}'", .{agent_name}) catch {};
+                                    continue;
+                                };
+
+                                agent_prompt = prompt.agenticCodingWithCwd(self.allocator, self.cwd, agent_prompt) catch |err| {
+                                    self.logger.errFmt("Failed to format agent prompt: {s}", .{@errorName(err)}) catch {};
                                     continue;
                                 };
 
@@ -804,6 +850,27 @@ pub const TUIWorkflow = struct {
                 .reasoning_content = if (row.values[8].len > 0) try self.allocator.dupe(u8, row.values[8]) else null,
             };
             try results.append(self.allocator, history);
+            row.deinit(self.allocator);
+        }
+
+        return results.toOwnedSlice(self.allocator);
+    }
+
+
+    pub fn get_session_by_dir(self: *TUIWorkflow) ![]SessionInfo {
+        var results: std.ArrayList(SessionInfo) = .empty;
+
+        const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created) as created FROM llm_history GROUP BY session_id ORDER BY created DESC LIMIT 10";
+        var rows = try self.db.query(self.allocator, sql, &[_][]const u8{});
+        defer rows.deinit();
+
+        while (try rows.next()) |row| {
+            const session = SessionInfo{
+                .session_id = try self.allocator.dupe(u8, row.values[0]),
+                .session_dir = try self.allocator.dupe(u8, row.values[1]),
+                .created = try self.allocator.dupe(u8, row.values[2]),
+            };
+            try results.append(self.allocator, session);
             row.deinit(self.allocator);
         }
 
