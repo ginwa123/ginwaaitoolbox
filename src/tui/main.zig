@@ -333,9 +333,9 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
     defer std.heap.page_allocator.free(close_tag);
     const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
     defer std.heap.page_allocator.free(open_tag);
-    const open_pos = std.mem.indexOf(u8, xml, open_tag) orelse return null;
-    const close_pos = std.mem.indexOf(u8, xml[open_pos..], close_tag) orelse return null;
-    return xml[open_pos + open_tag.len .. open_pos + close_pos];
+    const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
+    const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
+    return xml[open_pos + open_tag.len .. close_pos];
 }
 
 // ─── Response streaming ──────────────────────────────────────────────────────

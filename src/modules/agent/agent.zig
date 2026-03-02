@@ -285,8 +285,6 @@ pub const StreamingAggregator = struct {
                     },
                 };
                 try self.tool_calls.append(self.allocator, tool_call);
-            } else {
-                std.debug.print("WARNING: Tool call at index {} has no ID - skipping. Name: {?s}\n", .{ idx, buffer.name });
             }
         }
 
@@ -351,7 +349,7 @@ pub const Agent = struct {
     httpClient: std.http.Client,
     thinkingEnabled: bool = true,
     allocator: std.mem.Allocator,
-    logger: ?*log.Logger = null,
+    logger: *log.Logger,
     httpOptions: HttpOptions = .{},
 
     pub const CallResponse = struct {
@@ -376,12 +374,12 @@ pub const Agent = struct {
         }
     };
 
-    pub fn init(allocator: std.mem.Allocator) !Agent {
-        return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator } };
+    pub fn init(allocator: std.mem.Allocator, logger_ptr: *log.Logger) !Agent {
+        return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator }, .logger = logger_ptr };
     }
 
     /// Initialize agent with custom HTTP options
-    pub fn initWithOptions(allocator: std.mem.Allocator, options: HttpOptions) !Agent {
+    pub fn initWithOptions(allocator: std.mem.Allocator, options: HttpOptions, logger_ptr: *log.Logger) !Agent {
         return Agent{
             .allocator = allocator,
             .httpClient = std.http.Client{
@@ -389,15 +387,12 @@ pub const Agent = struct {
                 .read_buffer_size = options.header_buffer_size,
             },
             .httpOptions = options,
+            .logger = logger_ptr,
         };
     }
 
     pub fn logMsg(self: Agent, level: log.LogLevel, message: []const u8) void {
-        if (self.logger) |logger| {
-            logger.log(level, message) catch {};
-        } else {
-            std.debug.print("[{s}] [Agent:{s}] {s}\n", .{ level.toString(), self.name, message });
-        }
+        self.logger.log(level, message) catch {};
     }
 
     /// Log with formatted message and context

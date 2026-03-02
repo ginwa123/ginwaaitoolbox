@@ -1,5 +1,6 @@
 const std = @import("std");
 const agent = @import("agent.zig");
+const logger = @import("logger.zig");
 
 test "StreamingAggregator - accumulate content chunks" {
     const allocator = std.testing.allocator;
@@ -144,7 +145,8 @@ test "StreamingAggregator - done flag does not process" {
 }
 
 test "parseSseLine - valid data line" {
-    var test_agent = try agent.Agent.init(std.testing.allocator);
+    var test_logger = logger.Logger.init(std.testing.allocator, .{});
+    var test_agent = try agent.Agent.init(std.testing.allocator, &test_logger);
     defer test_agent.deinit();
 
     const line = "data: {\"test\":\"value\"}";
@@ -155,7 +157,8 @@ test "parseSseLine - valid data line" {
 }
 
 test "parseSseLine - [DONE] marker" {
-    var test_agent = try agent.Agent.init(std.testing.allocator);
+    var test_logger = logger.Logger.init(std.testing.allocator, .{});
+    var test_agent = try agent.Agent.init(std.testing.allocator, &test_logger);
     defer test_agent.deinit();
 
     const line = "data: [DONE]";
@@ -165,7 +168,8 @@ test "parseSseLine - [DONE] marker" {
 }
 
 test "parseSseLine - empty line" {
-    var test_agent = try agent.Agent.init(std.testing.allocator);
+    var test_logger = logger.Logger.init(std.testing.allocator, .{});
+    var test_agent = try agent.Agent.init(std.testing.allocator, &test_logger);
     defer test_agent.deinit();
 
     const result = test_agent.parseSseLine("");
@@ -173,7 +177,8 @@ test "parseSseLine - empty line" {
 }
 
 test "parseSseLine - non-data line" {
-    var test_agent = try agent.Agent.init(std.testing.allocator);
+    var test_logger = logger.Logger.init(std.testing.allocator, .{});
+    var test_agent = try agent.Agent.init(std.testing.allocator, &test_logger);
     defer test_agent.deinit();
 
     const line = ": comment";
@@ -187,7 +192,8 @@ test "parseStreamChunk - content delta" {
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    var test_agent = try agent.Agent.init(std.testing.allocator);
+    var test_logger = logger.Logger.init(std.testing.allocator, .{});
+    var test_agent = try agent.Agent.init(std.testing.allocator, &test_logger);
     defer test_agent.deinit();
 
     const data = "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}";
@@ -203,7 +209,8 @@ test "parseStreamChunk - finish reason" {
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    var test_agent = try agent.Agent.init(std.testing.allocator);
+    var test_logger = logger.Logger.init(std.testing.allocator, .{});
+    var test_agent = try agent.Agent.init(std.testing.allocator, &test_logger);
     defer test_agent.deinit();
 
     const data = "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
@@ -219,7 +226,8 @@ test "parseStreamChunk - tool call delta" {
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    var test_agent = try agent.Agent.init(std.testing.allocator);
+    var test_logger = logger.Logger.init(std.testing.allocator, .{});
+    var test_agent = try agent.Agent.init(std.testing.allocator, &test_logger);
     defer test_agent.deinit();
 
     const data = "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_123\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}]},\"finish_reason\":null}]}";
@@ -237,7 +245,8 @@ test "parseStreamChunk - usage in final chunk" {
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    var test_agent = try agent.Agent.init(std.testing.allocator);
+    var test_logger = logger.Logger.init(std.testing.allocator, .{});
+    var test_agent = try agent.Agent.init(std.testing.allocator, &test_logger);
     defer test_agent.deinit();
 
     const data = "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50,\"total_tokens\":150}}";

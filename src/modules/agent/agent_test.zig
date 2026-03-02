@@ -9,6 +9,7 @@ const AgentToolFunction = @import("tools/models.zig").AgentToolFunction;
 const AgentTool = @import("tools/models.zig").AgentTool;
 
 const Agent = @import("agent.zig").Agent;
+const logger = @import("logger.zig");
 const AgentCall = @import("agent.zig").AgentCall;
 const AgentMessage = @import("agent.zig").AgentMessage;
 
@@ -50,7 +51,8 @@ test "agent call builds correct json with tools" {
     var config = try AgentConfig.init(allocator);
     defer config.deinit();
 
-    var agent = try Agent.init(allocator);
+    var test_logger = logger.Logger.init(allocator, .{});
+    var agent = try Agent.init(allocator, &test_logger);
     agent.apiKey = config.apiKey;
     agent.model = config.model;
     agent.baseUrl = config.baseUrl;
@@ -113,7 +115,8 @@ test "agent call builds correct json with tools" {
 //     var config = try AgentConfig.init(allocator);
 //     defer config.deinit();
 //
-//     var agent = try Agent.init(allocator);
+// //     var test_logger = logger.Logger.init(allocator, .{});
+//     var agent = try Agent.init(allocator, &test_logger);
 //     agent.apiKey = config.apiKey;
 //     agent.model = config.model;
 //     agent.baseUrl = config.baseUrl;
@@ -138,7 +141,8 @@ test "agent call builds correct json with tools" {
 //     var config = try AgentConfig.init(allocator);
 //     defer config.deinit();
 //
-//     var agent = try Agent.init(allocator);
+// //     var test_logger = logger.Logger.init(allocator, .{});
+//     var agent = try Agent.init(allocator, &test_logger);
 //     agent.apiKey = config.apiKey;
 //     agent.model = config.model;
 //     agent.baseUrl = config.baseUrl;

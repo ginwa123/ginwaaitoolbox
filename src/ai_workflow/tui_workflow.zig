@@ -184,7 +184,7 @@ pub const TUIWorkflow = struct {
 
         w.writeAll("</choice></choices></response>") catch return;
 
-        self.logger.traceFmt("SEND RESPONSE XML: {s}", .{buf.items}) catch {};
+        self.logger.infoFmt("SEND RESPONSE XML: {s}", .{buf.items}) catch {};
 
         _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
             if (err != error.BrokenPipe) {
@@ -451,7 +451,7 @@ pub const TUIWorkflow = struct {
             var arena_allocator_agent = std.heap.ArenaAllocator.init(self.allocator);
             defer arena_allocator_agent.deinit();
             const allocator_agent = arena_allocator_agent.allocator();
-            var dynamic_agent = try agent.Agent.init(allocator_agent);
+            var dynamic_agent = try agent.Agent.init(allocator_agent, self.logger);
             defer dynamic_agent.deinit();
             dynamic_agent.apiKey = self.api_key;
             dynamic_agent.model = self.model;
@@ -500,7 +500,8 @@ pub const TUIWorkflow = struct {
                         self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                     };
 
-                    self.logger.infoFmt("FINISH REASON STOP", .{}) catch {};
+                    // _ = try self.sendUserChoice();
+                    self.logger.infoFmt("FINISH REASON STOPPP", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
                     self.logger.infoFmt("FINISH REASON LENGTH - continuing...", .{}) catch {};
@@ -1036,7 +1037,7 @@ pub const TUIWorkflow = struct {
         compaction_messages[0] = .{ .role = .system, .content = prompt.CompactionAgent };
         compaction_messages[1] = .{ .role = .user, .content = try history_buf.toOwnedSlice(arena) };
 
-        var compaction_agent = try agent.Agent.init(arena);
+        var compaction_agent = try agent.Agent.init(arena, self.logger);
         defer compaction_agent.deinit();
         compaction_agent.apiKey = self.api_key;
         compaction_agent.model = self.model;

@@ -260,8 +260,8 @@ pub fn main() !void {
                         return;
                     };
                     workflowAsk.sendSessionsResponse(sessions);
+                    _ = try workflowAsk.sendUserChoice();
                 }
-                _= try workflowAsk.sendUserChoice();
             }
 
             std.debug.print("Received: {s}\n", .{data});
