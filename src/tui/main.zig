@@ -16,6 +16,9 @@ const sockaddr_un = if (builtin.os.tag != .windows)
 else
     void;
 
+// Double ESC detection window in milliseconds
+const DOUBLE_ESC_WINDOW_MS: i64 = 500;
+
 // ─── App struct ──────────────────────────────────────────────────────────────
 
 const App = struct {
@@ -32,6 +35,9 @@ const App = struct {
     // input
     input: std.ArrayList(u8),
     pasting: bool,
+
+    // double ESC detection
+    last_esc_time: ?i64 = null,
 
     // agent name buffer (fixed size to avoid memory issues)
     agent_name_buf: [64]u8 = [_]u8{0} ** 64,
@@ -55,6 +61,7 @@ const App = struct {
             .allocator = allocator,
             .input = std.ArrayList(u8).empty,
             .pasting = false,
+            .last_esc_time = null,
             .keybindings = kb,
         };
     }
@@ -62,9 +69,9 @@ const App = struct {
     pub fn deinit(app: *App) void {
         app.keybindings.deinit();
         disableRawMode(app.original_termios);
-        std.posix.close(app.socket_fd);
         app.allocator.free(app.session_id);
         app.input.deinit(app.allocator);
+        std.posix.close(app.socket_fd);
     }
 };
 
@@ -340,6 +347,54 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
 
 // ─── Response streaming ──────────────────────────────────────────────────────
 
+/// Check stdin for ESC key and detect double ESC within time window
+/// Returns true if double ESC detected (stream should be interrupted)
+fn checkStdinForDoubleEscape(app: *App) bool {
+    // Use FIONREAD to check if stdin has data
+    var bytes_available: c_int = 0;
+    _ = std.os.linux.ioctl(std.posix.STDIN_FILENO, std.os.linux.T.FIONREAD, @intFromPtr(&bytes_available));
+
+    if (bytes_available == 0) return false;
+
+    // Read the byte(s) available
+    var buf: [16]u8 = undefined;
+    const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return false;
+    if (n == 0) return false;
+
+    // Check if it's an escape sequence or standalone ESC
+    const first_byte = buf[0];
+
+    // If it's ESC (0x1b), check for double ESC
+    if (first_byte == 0x1b) {
+        // Check if this is a bracketed paste sequence
+        if (n >= 6 and std.mem.eql(u8, buf[0..6], "\x1b[200~")) {
+            // Start of bracketed paste - reset ESC tracking
+            app.last_esc_time = null;
+            return false;
+        }
+        if (n >= 6 and std.mem.eql(u8, buf[0..6], "\x1b[201~")) {
+            // End of bracketed paste - reset ESC tracking
+            app.last_esc_time = null;
+            return false;
+        }
+
+        // Standalone ESC - check for double press
+        const now = std.time.milliTimestamp();
+        if (app.last_esc_time) |last| {
+            if (now - last < DOUBLE_ESC_WINDOW_MS) {
+                // Double ESC detected!
+                app.last_esc_time = null;
+                return true;
+            }
+        }
+        // Record this ESC press
+        app.last_esc_time = now;
+        return false;
+    }
+
+    return false;
+}
+
 fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(app.allocator);
@@ -350,10 +405,45 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     var last_displayed_len: usize = 0; // track what we've already printed
 
     var retry_count: usize = 0;
+
+    // Set up poll for both socket and stdin
+    var poll_fds = [2]std.os.linux.pollfd{
+        .{ .fd = app.socket_fd, .events = std.os.linux.POLL.IN, .revents = 0 },
+        .{ .fd = std.posix.STDIN_FILENO, .events = std.os.linux.POLL.IN, .revents = 0 },
+    };
+
+    var stream_interrupted = false;
+    var thought: []const u8 = "";
+
     while (true) {
-        const n = std.posix.read(app.socket_fd, &buf) catch break;
-        if (n == 0) break;
-        try buffer.appendSlice(app.allocator, buf[0..n]);
+        // Poll with 50ms timeout to allow checking for ESC
+        const ready = std.os.linux.poll(&poll_fds, 2, 50);
+
+        if (ready > 0) {
+            // Check stdin first for double ESC
+            if (poll_fds[1].revents & std.os.linux.POLL.IN != 0) {
+                if (checkStdinForDoubleEscape(app)) {
+                    stream_interrupted = true;
+                    break;
+                }
+                // Reset revents for next iteration
+                poll_fds[1].revents = 0;
+            }
+
+            // Then check socket for data
+            if (poll_fds[0].revents & std.os.linux.POLL.IN != 0) {
+                const n = std.posix.read(app.socket_fd, &buf) catch break;
+                if (n == 0) break;
+                try buffer.appendSlice(app.allocator, buf[0..n]);
+                // Reset revents for next iteration
+                poll_fds[0].revents = 0;
+            }
+
+            // Check for socket hangup or error
+            if (poll_fds[0].revents & (std.os.linux.POLL.HUP | std.os.linux.POLL.ERR) != 0) {
+                break;
+            }
+        }
 
         const now = std.time.milliTimestamp();
         if (now - last_tick >= 100) {
@@ -373,7 +463,18 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                 clean_buf[clean_len] = if (c == '\n' or c == '\r') ' ' else c;
                 clean_len += 1;
             }
-            std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes) Retry count: {d}", .{ yellow, spin, reset, buffer.items.len, retry_count });
+
+            if (extractTag(buffer.items, "content")) |fr| {
+                const max_len: usize = 6;
+
+                if (fr.len > max_len) {
+                    thought = try std.fmt.allocPrint(app.allocator, "{s}...", .{fr[0..max_len]});
+                } else {
+                    thought = fr;
+                }
+            }
+
+            std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes) Retry count: {d} thought: {s}", .{ yellow, spin, reset, buffer.items.len, retry_count, thought });
         }
 
         if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
@@ -392,7 +493,12 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
 
     // Clear spinner and print clean response
     std.debug.print("\r\x1b[2K", .{});
-    std.debug.print("\n", .{});
+
+    if (stream_interrupted) {
+        std.debug.print("\n{s}Stream interrupted by user (double ESC){s}\n", .{ yellow, reset });
+    } else {
+        std.debug.print("\n", .{});
+    }
 
     // Extract and display the valuable content
     if (extractTag(buffer.items, "content")) |content| {
@@ -410,10 +516,42 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(app.allocator);
     var buf: [4096]u8 = undefined;
+
+    // Set up poll for both socket and stdin
+    var poll_fds = [2]std.os.linux.pollfd{
+        .{ .fd = app.socket_fd, .events = std.os.linux.POLL.IN, .revents = 0 },
+        .{ .fd = std.posix.STDIN_FILENO, .events = std.os.linux.POLL.IN, .revents = 0 },
+    };
+
+    var stream_interrupted = false;
+
     while (true) {
-        const n = std.posix.read(app.socket_fd, &buf) catch break;
-        if (n == 0) break;
-        try buffer.appendSlice(app.allocator, buf[0..n]);
+        // Poll with 50ms timeout to allow checking for ESC
+        const ready = std.os.linux.poll(&poll_fds, 2, 50);
+
+        if (ready > 0) {
+            // Check stdin first for double ESC
+            if (poll_fds[1].revents & std.os.linux.POLL.IN != 0) {
+                if (checkStdinForDoubleEscape(app)) {
+                    stream_interrupted = true;
+                    break;
+                }
+                poll_fds[1].revents = 0;
+            }
+
+            // Then check socket for data
+            if (poll_fds[0].revents & std.os.linux.POLL.IN != 0) {
+                const n = std.posix.read(app.socket_fd, &buf) catch break;
+                if (n == 0) break;
+                try buffer.appendSlice(app.allocator, buf[0..n]);
+                poll_fds[0].revents = 0;
+            }
+
+            // Check for socket hangup or error
+            if (poll_fds[0].revents & (std.os.linux.POLL.HUP | std.os.linux.POLL.ERR) != 0) {
+                break;
+            }
+        }
 
         if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
 
@@ -427,7 +565,12 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
     // Clear spinner and print clean response
     std.debug.print("\r\x1b[2K", .{});
-    std.debug.print("\n", .{});
+
+    if (stream_interrupted) {
+        std.debug.print("\n{s}Stream interrupted by user (double ESC){s}\n", .{ yellow, reset });
+    } else {
+        std.debug.print("\n", .{});
+    }
 
     // // Extract and display the valuable content
     // if (extractTag(buffer.items, "content")) |content| {
@@ -458,7 +601,6 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     // std.debug.print("\r\n", .{});
     return try buffer.toOwnedSlice(app.allocator);
 }
-
 // ─── Input handling ──────────────────────────────────────────────────────────
 
 pub const KEYBINDING = enum(u8) {

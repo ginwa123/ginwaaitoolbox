@@ -14,7 +14,7 @@ const loop_detector = tree1_mod.loop_detector;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
-    pub const max_body_size: usize = 124 * 1024; // 150kb threshold to trigger
+    pub const max_body_size: usize = 100 * 1024; // 150kb threshold to trigger
 };
 
 pub const TUIHistory = struct {
@@ -429,11 +429,10 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var agent_temperature: f32 = 0.5;
         var isThinking: bool = false;
-        var current_max_tokens: usize = 4096;
+        var current_max_tokens: usize = 2000;
         while (true) {
             if (retryCount > 10) return error.TooManyRetries;
 
-            // === COMPACTION CHECK ===
             const body_size = self.estimateBodySize(messages_list.items);
             self.logger.debugFmt("[COMPACTION] Body size: {} bytes", .{body_size}) catch {};
 
@@ -447,7 +446,6 @@ pub const TUIWorkflow = struct {
                     try self.compactMessagesInMemory(&messages_list, compacted_xml);
                 }
             }
-            // === END COMPACTION CHECK ===
 
             var arena_allocator_agent = std.heap.ArenaAllocator.init(self.allocator);
             defer arena_allocator_agent.deinit();
@@ -459,7 +457,7 @@ pub const TUIWorkflow = struct {
             dynamic_agent.baseUrl = self.base_url;
             const dynamic_agent_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
             dynamic_agent.thinkingEnabled = isThinking;
-            dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 5 minutes
+            dynamic_agent.httpOptions.read_timeout_ms = 150_000; // 5 minutes
             var stream_ctx = StreamingContext{
                 .workflow = self,
                 .chunk_index = 0,
@@ -506,7 +504,7 @@ pub const TUIWorkflow = struct {
                     break;
                 } else if (finish_reason == .length) {
                     self.logger.infoFmt("FINISH REASON LENGTH - continuing...", .{}) catch {};
-                    current_max_tokens += 4096;
+                    current_max_tokens += 1000;
                     self.logger.infoFmt("FINISH REASON LENGTH - increasing max_tokens to {}", .{current_max_tokens}) catch {};
                     continue;
                 } else if (finish_reason == .tool_calls) {
