@@ -429,6 +429,7 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var agent_temperature: f32 = 0.5;
         var isThinking: bool = false;
+        var current_max_tokens: usize = 4096;
         while (true) {
             if (retryCount > 10) return error.TooManyRetries;
 
@@ -456,7 +457,7 @@ pub const TUIWorkflow = struct {
             dynamic_agent.apiKey = self.api_key;
             dynamic_agent.model = self.model;
             dynamic_agent.baseUrl = self.base_url;
-            const dynamic_agent_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature };
+            const dynamic_agent_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
             dynamic_agent.thinkingEnabled = isThinking;
             dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 5 minutes
             var stream_ctx = StreamingContext{
@@ -505,31 +506,8 @@ pub const TUIWorkflow = struct {
                     break;
                 } else if (finish_reason == .length) {
                     self.logger.infoFmt("FINISH REASON LENGTH - continuing...", .{}) catch {};
-
-                    // Save partial response to history and send to client
-                    self.sendResponse(res_dynamic_agent, "length");
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| {
-                        self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
-                    };
-
-                    // Add assistant message to conversation for context
-                    const content_copy = if (res_dynamic_agent.content) |c|
-                        try self.allocator.dupe(u8, c)
-                    else
-                        null;
-
-                    const assistant_msg = agent.AgentMessage{
-                        .role = .assistant,
-                        .content = content_copy,
-                    };
-                    try messages_list.append(self.allocator, assistant_msg);
-
-                    // Add continuation prompt
-                    const continue_msg = agent.AgentMessage{
-                        .role = .user,
-                        .content = "Please continue from where you left off.",
-                    };
-                    try messages_list.append(self.allocator, continue_msg);
+                    current_max_tokens += 4096;
+                    self.logger.infoFmt("FINISH REASON LENGTH - increasing max_tokens to {}", .{current_max_tokens}) catch {};
                     continue;
                 } else if (finish_reason == .tool_calls) {
                     self.sendResponse(res_dynamic_agent, null);
