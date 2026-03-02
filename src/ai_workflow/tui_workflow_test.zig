@@ -999,3 +999,336 @@ test "escapeJsonString handles special characters" {
         try std.testing.expectEqualStrings(tc[1], escaped);
     }
 }
+
+test "get_session_by_dir returns empty slice when no sessions" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    const sessions = try workflow.get_session_by_dir();
+    defer {
+        for (sessions) |*s| s.deinit(allocator);
+        allocator.free(sessions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), sessions.len);
+}
+
+test "get_session_by_dir returns single session" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    workflow.session_id = "session-1";
+    workflow.cwd = "/home/user/project1";
+    workflow.model = "test-model";
+
+    const response = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Test response",
+        .tool_calls = null,
+        .finish_reason = .stop,
+    };
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null);
+
+    const sessions = try workflow.get_session_by_dir();
+    defer {
+        for (sessions) |*s| s.deinit(allocator);
+        allocator.free(sessions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), sessions.len);
+    try std.testing.expectEqualStrings("session-1", sessions[0].session_id);
+    try std.testing.expectEqualStrings("/home/user/project1", sessions[0].session_dir);
+    try std.testing.expect(sessions[0].created.len > 0);
+}
+
+test "get_session_by_dir returns multiple sessions ordered by created DESC" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    workflow.model = "test-model";
+
+    // Insert sessions directly with explicit timestamps for deterministic ordering
+    // Insert oldest session (timestamp 1000)
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id1", "session-old", "test-model", "1000", "Old message", "stop", "assistant", "/home/user/old"});
+
+    // Insert middle session (timestamp 2000)
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id2", "session-middle", "test-model", "2000", "Middle message", "stop", "assistant", "/home/user/middle"});
+
+    // Insert newest session (timestamp 3000)
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id3", "session-new", "test-model", "3000", "New message", "stop", "assistant", "/home/user/new"});
+
+    const sessions = try workflow.get_session_by_dir();
+    defer {
+        for (sessions) |*s| s.deinit(allocator);
+        allocator.free(sessions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), sessions.len);
+
+    // Verify ordering: newest first (DESC)
+    try std.testing.expectEqualStrings("session-new", sessions[0].session_id);
+    try std.testing.expectEqualStrings("session-middle", sessions[1].session_id);
+    try std.testing.expectEqualStrings("session-old", sessions[2].session_id);
+}
+
+test "get_session_by_dir handles NULL session_dir with COALESCE" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    workflow.session_id = "session-null-dir";
+    // Leave cwd as default (empty string) - this will insert empty string, not NULL
+    // To test NULL, we need to insert directly into the database
+    workflow.model = "test-model";
+
+    // Insert a record with NULL session_dir directly via SQL
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)", &.{ "id-null-test", "session-null-dir", "test-model", "1000", "content", "stop", "assistant" });
+
+    const sessions = try workflow.get_session_by_dir();
+    defer {
+        for (sessions) |*s| s.deinit(allocator);
+        allocator.free(sessions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), sessions.len);
+    try std.testing.expectEqualStrings("session-null-dir", sessions[0].session_id);
+    // COALESCE should convert NULL to empty string
+    try std.testing.expectEqualStrings("", sessions[0].session_dir);
+}
+
+test "get_session_by_dir groups by session_id" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    workflow.model = "test-model";
+
+    // Insert multiple messages with same session_id but different timestamps directly
+    // This tests GROUP BY and MAX(created)
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id1", "shared-session", "test-model", "1000", "First message", "stop", "assistant", "/home/user/shared"});
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id2", "shared-session", "test-model", "2000", "Second message", "stop", "assistant", "/home/user/shared"});
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id3", "shared-session", "test-model", "3000", "Third message", "stop", "assistant", "/home/user/shared"});
+
+    const sessions = try workflow.get_session_by_dir();
+    defer {
+        for (sessions) |*s| s.deinit(allocator);
+        allocator.free(sessions);
+    }
+
+    // Should only return 1 session due to GROUP BY
+    try std.testing.expectEqual(@as(usize, 1), sessions.len);
+    try std.testing.expectEqualStrings("shared-session", sessions[0].session_id);
+    try std.testing.expectEqualStrings("/home/user/shared", sessions[0].session_dir);
+
+    // Verify that created is the MAX(created) - should be "3000" (the newest)
+    try std.testing.expectEqualStrings("1970-01-01 07:50:00", sessions[0].created);
+}
+
+test "get_session_by_dir limits to 10 results" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    workflow.model = "test-model";
+
+    // Insert 15 sessions directly with explicit timestamps for deterministic testing
+    var i: usize = 0;
+    while (i < 15) : (i += 1) {
+        const id = try std.fmt.allocPrint(allocator, "id-{}", .{i});
+        defer allocator.free(id);
+        const sessionId = try std.fmt.allocPrint(allocator, "session-{}", .{i});
+        defer allocator.free(sessionId);
+        const sessionDir = try std.fmt.allocPrint(allocator, "/home/user/project{}", .{i});
+        defer allocator.free(sessionDir);
+        const created = try std.fmt.allocPrint(allocator, "{}", .{i});
+        defer allocator.free(created);
+        
+        try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{id, sessionId, "test-model", created, "Test message", "stop", "assistant", sessionDir});
+    }
+
+    const sessions = try workflow.get_session_by_dir();
+    defer {
+        for (sessions) |*s| s.deinit(allocator);
+        allocator.free(sessions);
+    }
+
+    // Should only return 10 sessions due to LIMIT
+    try std.testing.expectEqual(@as(usize, 10), sessions.len);
+}

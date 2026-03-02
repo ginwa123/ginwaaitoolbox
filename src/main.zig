@@ -261,6 +261,7 @@ pub fn main() !void {
                     };
                     workflowAsk.sendSessionsResponse(sessions);
                 }
+                _= try workflowAsk.sendUserChoice();
             }
 
             std.debug.print("Received: {s}\n", .{data});

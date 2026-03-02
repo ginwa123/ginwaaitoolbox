@@ -333,14 +333,14 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
     defer std.heap.page_allocator.free(close_tag);
     const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
     defer std.heap.page_allocator.free(open_tag);
-    const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
-    const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
-    return xml[open_pos + open_tag.len .. close_pos];
+    const open_pos = std.mem.indexOf(u8, xml, open_tag) orelse return null;
+    const close_pos = std.mem.indexOf(u8, xml[open_pos..], close_tag) orelse return null;
+    return xml[open_pos + open_tag.len .. open_pos + close_pos];
 }
 
 // ─── Response streaming ──────────────────────────────────────────────────────
 
-fn readResponseAndStream(app: *App) ![]u8 {
+fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(app.allocator);
     var buf: [4096]u8 = undefined;
@@ -406,6 +406,59 @@ fn readResponseAndStream(app: *App) ![]u8 {
     return try buffer.toOwnedSlice(app.allocator);
 }
 
+fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(app.allocator);
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(app.socket_fd, &buf) catch break;
+        if (n == 0) break;
+        try buffer.appendSlice(app.allocator, buf[0..n]);
+
+        if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
+
+        if (extractTag(buffer.items, "finish_reason")) |fr| {
+            if (std.mem.eql(u8, fr, "user_choice")) {
+                std.debug.print("\n Your input \n", .{});
+                break;
+            }
+        }
+    }
+
+    // Clear spinner and print clean response
+    std.debug.print("\r\x1b[2K", .{});
+    std.debug.print("\n", .{});
+
+    // // Extract and display the valuable content
+    // if (extractTag(buffer.items, "content")) |content| {
+    //     printFormattedResponse(content);
+    // } else {
+    //     // Fallback: just print the raw buffer
+    //     std.debug.print("{s}", .{buffer.items});
+    // }
+
+    if (extractTag(buffer.items, "sessions")) |md| {
+        const trimmed = trim(md);
+        std.debug.print("> /sessions\n Your input\n\n", .{});
+        std.debug.print("{s}Session ID           Directory                        Created{s}\n", .{ bold, reset });
+        std.debug.print("─────────────────────────────────────────────────────────────────────\n", .{});
+        var rest = trimmed;
+        while (extractTag(rest, "session")) |session| {
+            const id = extractTag(session, "id") orelse "";
+            const dir = extractTag(session, "dir") orelse "";
+            const ts = extractTag(session, "created") orelse "";
+            std.debug.print("{s:<20} {s:<32} {s}\n", .{ id, dir, ts });
+            const end = std.mem.indexOf(u8, rest, "</session>") orelse break;
+            rest = rest[end + "</session>".len ..];
+        }
+    }
+
+    // printAllTags(content, &.{ "agent", "markdown" }, 0);
+    //
+    // std.debug.print("\r\n", .{});
+    return try buffer.toOwnedSlice(app.allocator);
+}
+
 // ─── Input handling ──────────────────────────────────────────────────────────
 
 pub const KEYBINDING = enum(u8) {
@@ -466,7 +519,7 @@ fn handleInput(app: *App) !bool {
                 if (std.mem.eql(u8, app.input.items, "/sessions")) {
                     std.debug.print("\r\n", .{});
                     try sendSessionsCommand(app);
-                    const response = readResponseAndStream(app) catch "";
+                    const response = readResponseAndStreamGetSessions(app) catch "";
                     if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
                     app.input.clearRetainingCapacity();
                     std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
@@ -474,7 +527,7 @@ fn handleInput(app: *App) !bool {
                 }
                 std.debug.print("\r\n\r\n", .{});
                 try sendMessage(app, app.input.items);
-                const response = readResponseAndStream(app) catch "";
+                const response = readResponseAndStreamRunLLM(app) catch "";
                 if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
                 app.input.clearRetainingCapacity();
             }

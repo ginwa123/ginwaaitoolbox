@@ -252,7 +252,7 @@ pub const TUIWorkflow = struct {
         defer buf.deinit(self.allocator);
         var w = buf.writer(self.allocator);
 
-        w.writeAll("<response><finish_reason>user_choice</finish_reason><type>sessions</type><sessions>") catch return;
+        w.writeAll("<response><type>sessions</type><sessions>") catch return;
         for (sessions) |session| {
             w.writeAll("<session><id>") catch return;
             w.writeAll(session.session_id) catch return;
@@ -263,6 +263,26 @@ pub const TUIWorkflow = struct {
             w.writeAll("</created></session>") catch return;
         }
         w.writeAll("</sessions></response>") catch return;
+
+        self.logger.traceFmt("SEND SESSIONS XML: {s}", .{buf.items}) catch {};
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
+            if (err != error.BrokenPipe) {
+                self.logger.errFmt("Send Sessions response error {s}", .{@errorName(err)}) catch {};
+            }
+        };
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
+    }
+
+    pub fn sendUserChoice(self: *TUIWorkflow) !void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.writeAll("<response><finish_reason>user_choice</finish_reason>") catch return;
+        w.writeAll("</response>") catch return;
 
         self.logger.traceFmt("SEND SESSIONS XML: {s}", .{buf.items}) catch {};
 
@@ -856,11 +876,10 @@ pub const TUIWorkflow = struct {
         return results.toOwnedSlice(self.allocator);
     }
 
-
     pub fn get_session_by_dir(self: *TUIWorkflow) ![]SessionInfo {
         var results: std.ArrayList(SessionInfo) = .empty;
 
-        const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created) as created FROM llm_history GROUP BY session_id ORDER BY created DESC LIMIT 10";
+        const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, COALESCE(datetime(CAST(MAX(created) AS INTEGER), 'unixepoch', 'localtime'), MAX(created)) as created FROM llm_history GROUP BY session_id ORDER BY CAST(MAX(created) AS INTEGER) DESC LIMIT 10";
         var rows = try self.db.query(self.allocator, sql, &[_][]const u8{});
         defer rows.deinit();
 
