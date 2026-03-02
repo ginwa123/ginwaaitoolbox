@@ -235,7 +235,7 @@ pub fn main() !void {
             };
 
             if (std.mem.eql(u8, t.command_type, "tui")) {
-                var workflowAsk = ai_workflow.AskLLMWorkflow.init(allocator, ctxTui.db) catch |err| {
+                var workflowAsk = ai_workflow.TUIWorkflow.init(allocator, ctxTui.db) catch |err| {
                     std.debug.print("Failed to init workflow: {}\n", .{err});
                     return;
                 };

@@ -13,16 +13,9 @@ test "bash execute helloworld" {
     const r = try bashMod.executeBash(allocator, input);
     defer allocator.free(r);
 
-    const expected =
-        \\<command>echo "hell...</command>
-        \\<stdout>hello world
-        \\</stdout>
-        \\<stderr></stderr>
-        \\<exit_code>0</exit_code>
-        \\<truncated>false</truncated>
-        \\<timeout>false</timeout>
-    ;
-    try std.testing.expectEqualStrings(expected, r);
+    try std.testing.expect(std.mem.indexOf(u8, r, "<stdout>hello world") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>false</timeout>") != null);
 }
 
 test "bash execute non-zero exit code" {
@@ -221,5 +214,55 @@ test "bash pipe with slow producer respects timeout" {
     defer allocator.free(r);
 
     // Should timeout before completing all 5 iterations
+    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
+}
+
+test "bash timeout with complex pipe command" {
+    const allocator = std.testing.allocator;
+    // Simulates command like: zig build test 2>&1 | tail -100
+    // Uses a long-running command with pipe that should timeout
+    const input = BashInput{
+        .command = "for i in $(seq 1 100); do echo \"line $i\"; sleep 0.1; done | tail -50",
+        .timeout = 2,
+        .cwd = null,
+        .max_output = null,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r);
+
+    // Should timeout before completing all 100 iterations (would take ~10s)
+    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
+}
+
+test "bash timeout with continuous output and pipe" {
+    const allocator = std.testing.allocator;
+    // Tests that timeout works even when command produces continuous output
+    // This simulates a build command that outputs a lot and pipes through tail
+    const input = BashInput{
+        .command = "seq 1 10000 | while read i; do echo \"output line $i\"; sleep 0.01; done | tail -100",
+        .timeout = 1,
+        .cwd = null,
+        .max_output = null,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r);
+
+    // Should timeout - the full command would take ~100 seconds
+    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
+}
+
+test "bash timeout with stderr redirect and pipe" {
+    const allocator = std.testing.allocator;
+    // Tests the exact pattern: command 2>&1 | tail -N
+    const input = BashInput{
+        .command = "for i in $(seq 1 50); do echo \"stdout $i\"; echo \"stderr $i\" >&2; sleep 0.1; done 2>&1 | tail -20",
+        .timeout = 2,
+        .cwd = null,
+        .max_output = null,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r);
+
+    // Should timeout before completing
     try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
 }

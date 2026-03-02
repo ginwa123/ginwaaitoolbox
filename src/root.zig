@@ -11,7 +11,7 @@ pub const change_agent_tool = @import("modules/agent/tools/change_agent.zig");
 pub const ipc = @import("modules/ipc/ipc.zig");
 pub const logger = @import("modules/logger/logger.zig");
 pub const migrations = @import("modules/databases/sqlite/migrations.zig");
-pub const ai_workflow = @import("ai_workflow/ask_llm_workflow.zig");
+pub const ai_workflow = @import("ai_workflow/tui_workflow.zig");
 pub const ai_workflow_models = @import("ai_workflow/models.zig");
 pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
 

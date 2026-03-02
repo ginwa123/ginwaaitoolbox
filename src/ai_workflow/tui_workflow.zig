@@ -17,7 +17,7 @@ const COMPACTION_CONFIG = struct {
     pub const max_body_size: usize = 124 * 1024; // 150kb threshold to trigger
 };
 
-pub const AskLLMHistory = struct {
+pub const TUIHistory = struct {
     id: []const u8,
     session_id: []const u8,
     model: []const u8,
@@ -28,7 +28,7 @@ pub const AskLLMHistory = struct {
     tools: []const u8,
     reasoning_content: ?[]const u8 = null,
 
-    pub fn deinit(self: *AskLLMHistory, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *TUIHistory, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.session_id);
         allocator.free(self.model);
@@ -43,7 +43,7 @@ pub const AskLLMHistory = struct {
 
 /// Context for streaming callbacks
 pub const StreamingContext = struct {
-    workflow: *AskLLMWorkflow,
+    workflow: *TUIWorkflow,
     chunk_index: usize = 0,
 };
 
@@ -77,7 +77,7 @@ pub fn streamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     }
 }
 
-pub const AskLLMWorkflow = struct {
+pub const TUIWorkflow = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger.Logger,
@@ -97,7 +97,7 @@ pub const AskLLMWorkflow = struct {
 
     loop_detector: loop_detector.LoopDetector = .{},
 
-    pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !AskLLMWorkflow {
+    pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger.Logger);
         log_ptr.* = logger.Logger.initColor(allocator, .{ .min_level = .debug });
         return .{
@@ -114,11 +114,11 @@ pub const AskLLMWorkflow = struct {
         };
     }
 
-    pub fn deinit(self: *AskLLMWorkflow) void {
+    pub fn deinit(self: *TUIWorkflow) void {
         self.logger.deinit();
         self.allocator.destroy(self.logger);
     }
-    pub fn sendResponse(self: *AskLLMWorkflow, response: agent.Agent.CallResponse, override_finish_reason: ?[]const u8) void {
+    pub fn sendResponse(self: *TUIWorkflow, response: agent.Agent.CallResponse, override_finish_reason: ?[]const u8) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -182,7 +182,7 @@ pub const AskLLMWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
-    fn sendToolResult(self: *AskLLMWorkflow, result: []const u8, tool_call_id: []const u8, tool_name: []const u8) void {
+    fn sendToolResult(self: *TUIWorkflow, result: []const u8, tool_call_id: []const u8, tool_name: []const u8) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -209,7 +209,7 @@ pub const AskLLMWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
-    pub fn sendError(self: *AskLLMWorkflow, err_msg: []const u8, finish_reason: ?[]const u8) void {
+    pub fn sendError(self: *TUIWorkflow, err_msg: []const u8, finish_reason: ?[]const u8) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -234,7 +234,7 @@ pub const AskLLMWorkflow = struct {
     }
 
     /// Send a streaming content chunk
-    fn sendStreamChunkContent(self: *AskLLMWorkflow, index: usize, content: []const u8) void {
+    fn sendStreamChunkContent(self: *TUIWorkflow, index: usize, content: []const u8) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -250,7 +250,7 @@ pub const AskLLMWorkflow = struct {
     }
 
     /// Send a streaming reasoning content chunk
-    fn sendStreamChunkReasoning(self: *AskLLMWorkflow, index: usize, reasoning: []const u8) void {
+    fn sendStreamChunkReasoning(self: *TUIWorkflow, index: usize, reasoning: []const u8) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -266,7 +266,7 @@ pub const AskLLMWorkflow = struct {
     }
 
     /// Send a streaming tool call delta chunk
-    fn sendStreamChunkToolCallDelta(self: *AskLLMWorkflow, index: usize, deltas: []const agent.ToolCallDelta) void {
+    fn sendStreamChunkToolCallDelta(self: *TUIWorkflow, index: usize, deltas: []const agent.ToolCallDelta) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
@@ -294,7 +294,7 @@ pub const AskLLMWorkflow = struct {
     }
 
     /// Send the final streaming chunk with usage info (finish_reason is sent by sendResponse)
-    fn sendStreamChunkFinal(self: *AskLLMWorkflow, index: usize, finish_reason: ?agent.FinishReason, usage: ?agent.Usage) void {
+    fn sendStreamChunkFinal(self: *TUIWorkflow, index: usize, finish_reason: ?agent.FinishReason, usage: ?agent.Usage) void {
         _ = finish_reason; // unused - finish_reason comes from sendResponse
         if (self.conn_fd < 0) return;
 
@@ -313,7 +313,7 @@ pub const AskLLMWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
-    pub fn buildMessages(self: *AskLLMWorkflow) ![]agent.AgentMessage {
+    pub fn buildMessages(self: *TUIWorkflow) ![]agent.AgentMessage {
         const systemContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd);
 
         const systemMessage = agent.AgentMessage{
@@ -345,7 +345,7 @@ pub const AskLLMWorkflow = struct {
         return try allMessages.toOwnedSlice(self.allocator);
     }
 
-    pub fn run(self: *AskLLMWorkflow) void {
+    pub fn run(self: *TUIWorkflow) void {
         self.runInternal() catch |err| {
             const err_msg = std.fmt.allocPrint(self.allocator, "{s}", .{@errorName(err)}) catch return;
             defer self.allocator.free(err_msg);
@@ -353,7 +353,7 @@ pub const AskLLMWorkflow = struct {
         };
     }
 
-    fn runInternal(self: *AskLLMWorkflow) !void {
+    fn runInternal(self: *TUIWorkflow) !void {
         self.saveMessageUnified(self.message, null, "user", "null", null, null) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
@@ -702,7 +702,7 @@ pub const AskLLMWorkflow = struct {
     }
 
     /// Escape a string for JSON string value
-    pub fn escapeJsonString(self: *AskLLMWorkflow, s: []const u8) ![]u8 {
+    pub fn escapeJsonString(self: *TUIWorkflow, s: []const u8) ![]u8 {
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
 
@@ -721,7 +721,7 @@ pub const AskLLMWorkflow = struct {
     }
 
     /// Serialize tool_calls array to JSON string
-    pub fn serializeToolCalls(self: *AskLLMWorkflow, tool_calls: []agent.ToolCall) ![]u8 {
+    pub fn serializeToolCalls(self: *TUIWorkflow, tool_calls: []agent.ToolCall) ![]u8 {
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
 
@@ -746,7 +746,7 @@ pub const AskLLMWorkflow = struct {
 
     /// Unified method to save messages to llm_history table.
     pub fn saveMessageUnified(
-        self: *AskLLMWorkflow,
+        self: *TUIWorkflow,
         content: ?[]const u8,
         response: ?agent.Agent.CallResponse,
         role: ?[]const u8,
@@ -784,15 +784,15 @@ pub const AskLLMWorkflow = struct {
         try db.exec(self.allocator, sql, sqlArgs);
     }
 
-    pub fn getMessages(self: *AskLLMWorkflow) ![]AskLLMHistory {
-        var results: std.ArrayList(AskLLMHistory) = .empty;
+    pub fn getMessages(self: *TUIWorkflow) ![]TUIHistory {
+        var results: std.ArrayList(TUIHistory) = .empty;
 
         const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, '') FROM llm_history WHERE session_id = ? ORDER BY created ASC";
         var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
         defer rows.deinit();
 
         while (try rows.next()) |row| {
-            const history = AskLLMHistory{
+            const history = TUIHistory{
                 .id = try self.allocator.dupe(u8, row.values[0]),
                 .session_id = try self.allocator.dupe(u8, row.values[1]),
                 .model = try self.allocator.dupe(u8, row.values[2]),
@@ -810,7 +810,7 @@ pub const AskLLMWorkflow = struct {
         return results.toOwnedSlice(self.allocator);
     }
 
-    pub fn transformMessageToAgentMessages(self: *AskLLMWorkflow, message: AskLLMHistory) ![]agent.AgentMessage {
+    pub fn transformMessageToAgentMessages(self: *TUIWorkflow, message: TUIHistory) ![]agent.AgentMessage {
         var messages: std.ArrayList(agent.AgentMessage) = .empty;
 
         const role = agent.Role.fromStr(message.role) orelse .assistant;
@@ -886,7 +886,7 @@ pub const AskLLMWorkflow = struct {
     }
 
     /// Estimate the body size of messages for compaction threshold check
-    fn estimateBodySize(self: *AskLLMWorkflow, messages: []agent.AgentMessage) usize {
+    fn estimateBodySize(self: *TUIWorkflow, messages: []agent.AgentMessage) usize {
         _ = self;
         var total: usize = 0;
         for (messages) |msg| {
@@ -906,7 +906,7 @@ pub const AskLLMWorkflow = struct {
     /// Call CompactionAgent to compress conversation history
     /// Call CompactionAgent to compress conversation history
     fn callCompactionAgent(
-        self: *AskLLMWorkflow,
+        self: *TUIWorkflow,
         messages: []agent.AgentMessage,
         arena: std.mem.Allocator,
     ) !?[]const u8 {
@@ -986,7 +986,7 @@ pub const AskLLMWorkflow = struct {
 
     /// Compact messages in memory based on CompactionAgent output
     fn compactMessagesInMemory(
-        self: *AskLLMWorkflow,
+        self: *TUIWorkflow,
         messages: *std.ArrayList(agent.AgentMessage),
         compacted_xml: []const u8,
     ) !void {

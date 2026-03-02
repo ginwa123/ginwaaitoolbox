@@ -9,7 +9,25 @@ pub const ChangeAgentToolResult = struct {
     message: []const u8,
     temperature: ?f32 = null, // default null if omitted
     is_thinking: ?bool = null, // default null if omitted
+
 };
+
+// pub fn change_agent_tool(tool: ChangeAgentTool, input: ChangeAgentToolResult) !BashResult {
+//     const result = try std.ChildProcess.exec(.{
+//         .allocator = tool.allocator,
+//         .argv = &.{ "python3", "-m", "agentic.tools.change_agent" },
+//         .stdin_behavior = .Ignore,
+//         .stdout_behavior = .Inherit,
+//         .stderr_behavior = .Inherit,
+//     });
+//     defer result.deinit();
+//
+//     return BashResult{
+//         .stdout = result.stdout,
+//         .stderr = result.stderr,
+//         .exit_code = result.exit_code,
+//     };
+// }
 
 pub const ChangeAgentTool = AgentTool{
     .type = "function",
