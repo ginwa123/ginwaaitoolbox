@@ -71,21 +71,6 @@
 //     try std.testing.expect(std.mem.startsWith(u8, id_str, "REQ-"));
 //     try std.testing.expectEqual(id_str.len, 24);
 // }
-// //
-// // test "Logger filters by minimum level" {
-// //     const allocator = std.testing.allocator;
-// //     var logger_inst = Logger.init(allocator, .{ .min_level = .warn });
-// //     defer logger_inst.deinit();
-// //
-// //     // These should be filtered (no error, just skipped)
-// //     try logger_inst.trace("trace message");
-// //     try logger_inst.debug("debug message");
-// //     try logger_inst.info("info message");
-// //
-// //     // These should pass
-// //     try logger_inst.warn("warn message");
-// //     try logger_inst.err("error message");
-// // }
 //
 // test "Logger with JSON formatter" {
 //     const allocator = std.testing.allocator;

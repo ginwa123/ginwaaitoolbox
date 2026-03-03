@@ -37,8 +37,20 @@ fn stdinBytesAvailable() c_int {
     }
 }
 
-
 // ─── App struct ──────────────────────────────────────────────────────────────
+pub const CompletionState = struct {
+    last_match_count: usize = 0,
+    visible: bool = false,
+    selected: usize = 0,
+    matches: std.ArrayList([]const u8),
+};
+
+pub const COMMANDS = [_][]const u8{
+    "/sessions",
+    "/exit",
+    "/help",
+    // add more commands here
+};
 
 const App = struct {
     // connection
@@ -64,6 +76,8 @@ const App = struct {
     // runtime-configurable keybindings
     keybindings: keybindings.Keybindings,
 
+    state: CompletionState = CompletionState{ .matches = .empty },
+
     pub fn init(allocator: std.mem.Allocator) !App {
         try spawnBackend();
         try waitForSocket(10000);
@@ -82,6 +96,9 @@ const App = struct {
             .pasting = false,
             .last_esc_time = null,
             .keybindings = kb,
+            .state = CompletionState{
+                .matches = std.ArrayList([]const u8).empty,
+            },
         };
     }
 
@@ -90,6 +107,7 @@ const App = struct {
         disableRawMode(app.original_termios);
         app.allocator.free(app.session_id);
         app.input.deinit(app.allocator);
+        app.state.matches.deinit(app.allocator);
         std.posix.close(app.socket_fd);
     }
 };
@@ -433,6 +451,8 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     var stream_interrupted = false;
     var thought: []const u8 = "";
 
+    std.debug.print("Your sessions {s}\r\n\n", .{app.session_id});
+
     while (true) {
         // Poll with 50ms timeout to allow checking for ESC
         const ready = std.posix.poll(&poll_fds, 50) catch 0;
@@ -651,6 +671,101 @@ fn readEscapeSequence(buf: *[16]u8) !usize {
     return i;
 }
 
+
+fn clearCompletions(app: *App) void {
+    if (app.state.last_match_count == 0) return;
+    
+    // Move down to the first completion line, clear each line
+    var i: usize = 0;
+    while (i < app.state.last_match_count) : (i += 1) {
+        std.debug.print("\x1b[1B", .{}); // move down one line
+        std.debug.print("\x1b[2K", .{}); // clear the line
+    }
+    
+    // Move back up to original position
+    std.debug.print("\x1b[{}A", .{app.state.last_match_count});
+    
+    // Reset state
+    app.state.visible = false;
+    app.state.last_match_count = 0;
+}
+
+fn handleCompletion(app: *App) !bool {
+    const input = app.input.items;
+
+    // If completions are visible, cycle through matches
+    if (app.state.visible and app.state.matches.items.len > 0) {
+        app.state.selected = (app.state.selected + 1) % app.state.matches.items.len;
+        renderCompletions(app);
+        return true;
+    }
+
+    // Clear any previous matches
+    app.state.matches.clearRetainingCapacity();
+    app.state.selected = 0;
+
+    // Only complete if input is empty or starts with '/'
+    if (input.len == 0 or input[0] == '/') {
+        for (COMMANDS) |cmd| {
+            if (std.mem.startsWith(u8, cmd, input)) {
+                try app.state.matches.append(app.allocator, cmd);
+            }
+        }
+    }
+
+    if (app.state.matches.items.len == 0) {
+        // No matches, nothing to do
+        return true;
+    }
+
+    if (app.state.matches.items.len == 1) {
+        // Single match — auto-complete immediately
+        app.input.clearRetainingCapacity();
+        try app.input.appendSlice(app.allocator, app.state.matches.items[0]);
+        app.state.visible = false;
+        app.state.last_match_count = 0;
+        std.debug.print("\r\x1b[2K{s}>{s} {s}", .{ bold, reset, app.input.items });
+    } else {
+        // Multiple matches — display them
+        app.state.visible = true;
+        renderCompletions(app);
+    }
+
+    return true;
+}
+
+fn renderCompletions(app: *App) void {
+    // Clear any previous completions first
+    if (app.state.last_match_count > 0) {
+        var i: usize = 0;
+        while (i < app.state.last_match_count) : (i += 1) {
+            std.debug.print("\x1b[1B", .{}); // move down one line
+            std.debug.print("\x1b[2K", .{}); // clear the line
+        }
+        std.debug.print("\x1b[{}A", .{app.state.last_match_count}); // move back up
+    }
+
+    // Save cursor position
+    std.debug.print("\x1b[s", .{});
+
+    // Print completions below the prompt
+    for (app.state.matches.items, 0..) |cmd, i| {
+        std.debug.print("\x1b[1E", .{}); // move to beginning of next line
+        if (i == app.state.selected) {
+            // Highlighted row
+            std.debug.print("  \x1b[7m {s} \x1b[0m", .{cmd});
+        } else {
+            std.debug.print("    {s}", .{cmd});
+        }
+    }
+
+    // Track how many lines we printed
+    app.state.last_match_count = app.state.matches.items.len;
+
+    // Restore cursor position
+    std.debug.print("\x1b[u", .{});
+}
+
 fn handleInput(app: *App) !bool {
     var buf: [1]u8 = undefined;
     const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
@@ -663,6 +778,7 @@ fn handleInput(app: *App) !bool {
     if (c == @intFromEnum(KEYBINDING.CTRL_C)) return true; // signal exit
 
     if (c == 0x1b) {
+        clearCompletions(app);
         var esc: [16]u8 = undefined;
         const len = try readEscapeSequence(&esc);
         const seq = esc[0..len];
@@ -675,6 +791,8 @@ fn handleInput(app: *App) !bool {
             _ = app.input.pop();
             std.debug.print("\x08 \x08", .{});
         }
+    } else if (c == '\t') {
+        _ = try handleCompletion(app);
     } else if (c == @intFromEnum(KEYBINDING.ENTER) or c == 10) {
         // const arena_allocator = std.heap.ArenaAllocator.init(app.allocator);
         // defer arena_allocator.deinit();
@@ -693,6 +811,11 @@ fn handleInput(app: *App) !bool {
                     std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
                     return false;
                 }
+
+                if (std.mem.eql(u8, app.input.items, "/exit")) {
+                    return true;
+                }
+
                 std.debug.print("\r\n\r\n", .{});
                 try sendMessage(app, app.input.items);
                 const response = readResponseAndStreamRunLLM(app) catch "";
@@ -702,6 +825,7 @@ fn handleInput(app: *App) !bool {
             std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
         }
     } else if (c >= 32) {
+        clearCompletions(app);
         try app.input.append(app.allocator, c);
         std.debug.print("{c}", .{c});
     }
@@ -722,7 +846,7 @@ pub fn main() !void {
     var app = try App.init(allocator);
     defer app.deinit();
 
-    std.debug.print("{s}Connected!{s}\r\n", .{ green, reset });
+    // std.debug.print("{s}Connected!{s}\r\n", .{ green, reset });
     std.debug.print("Type message and press Enter. Ctrl+C to exit.\r\n\r\n", .{});
 
     std.debug.print("\x1b[?2004h", .{}); // enable bracketed paste

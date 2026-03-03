@@ -209,6 +209,11 @@ pub fn main() !void {
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
     });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
     try migrationManager.runMigrations();
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);

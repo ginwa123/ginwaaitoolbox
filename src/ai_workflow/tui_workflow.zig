@@ -27,6 +27,7 @@ pub const TUIHistory = struct {
     role: []const u8,
     tools: []const u8,
     reasoning_content: ?[]const u8 = null,
+    agent: []const u8 = "GeneralAgent",
 
     pub fn deinit(self: *TUIHistory, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -38,6 +39,7 @@ pub const TUIHistory = struct {
         allocator.free(self.role);
         allocator.free(self.tools);
         if (self.reasoning_content) |rc| allocator.free(rc);
+        allocator.free(self.agent);
     }
 };
 
@@ -108,6 +110,7 @@ pub const TUIWorkflow = struct {
     conn_fd: std.posix.fd_t = -1,
 
     loop_detector: loop_detector.LoopDetector = .{},
+    current_agent: []const u8 = "GeneralAgent",
 
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger.Logger);
@@ -375,13 +378,6 @@ pub const TUIWorkflow = struct {
     }
 
     pub fn buildMessages(self: *TUIWorkflow) ![]agent.AgentMessage {
-        const systemContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd, prompt.GeneralAgent);
-
-        const systemMessage = agent.AgentMessage{
-            .role = .system,
-            .content = systemContent,
-        };
-
         const historyMessages = try self.getMessages();
         defer {
             for (historyMessages) |*hist| {
@@ -389,6 +385,38 @@ pub const TUIWorkflow = struct {
             }
             self.allocator.free(historyMessages);
         }
+
+        // Determine the agent to use from the latest message in history
+        var agent_to_use: []const u8 = "GeneralAgent";
+        if (historyMessages.len > 0) {
+            // Get the agent from the last message
+            const last_msg = historyMessages[historyMessages.len - 1];
+            agent_to_use = last_msg.agent;
+        }
+
+        // Update current_agent based on history
+        self.current_agent = agent_to_use;
+
+        // Get the appropriate prompt for the agent
+        const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_to_use, "GeneralAgent"))
+            prompt.GeneralAgent
+        else if (std.mem.eql(u8, agent_to_use, "ExplorationAgent"))
+            prompt.ExplorationAgent
+        else if (std.mem.eql(u8, agent_to_use, "PlanningAgent"))
+            prompt.PlanningAgent
+        else if (std.mem.eql(u8, agent_to_use, "ExecutingAgent"))
+            prompt.ExecutingAgent
+        else if (std.mem.eql(u8, agent_to_use, "KnowledgeAgent"))
+            prompt.KnowledgeAgent
+        else
+            prompt.GeneralAgent;
+
+        const systemContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd, agent_prompt);
+
+        const systemMessage = agent.AgentMessage{
+            .role = .system,
+            .content = systemContent,
+        };
 
         var allMessages: std.ArrayList(agent.AgentMessage) = .empty;
         defer allMessages.deinit(self.allocator);
@@ -427,7 +455,7 @@ pub const TUIWorkflow = struct {
         const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, change_agent_tool.ChangeAgentTool };
 
         var retryCount: usize = 0;
-        var agent_temperature: f32 = 0.5;
+        var agent_temperature: f32 = 0.2;
         var isThinking: bool = false;
         var current_max_tokens: usize = 2000;
         while (true) {
@@ -628,6 +656,8 @@ pub const TUIWorkflow = struct {
                                     prompt.PlanningAgent
                                 else if (std.mem.eql(u8, agent_name, "ExecutingAgent"))
                                     prompt.ExecutingAgent
+                                else if (std.mem.eql(u8, agent_name, "KnowledgeAgent"))
+                                    prompt.KnowledgeAgent
                                 else {
                                     self.logger.warnFmt("change_agent_tool: unknown agent '{s}'", .{agent_name}) catch {};
                                     continue;
@@ -812,6 +842,7 @@ pub const TUIWorkflow = struct {
         finish_reason: ?[]const u8,
         tool_calls: ?[]agent.ToolCall,
         tool_call_id: ?[]const u8,
+        agent_name: ?[]const u8,
     ) !void {
         const db = self.db;
 
@@ -826,6 +857,7 @@ pub const TUIWorkflow = struct {
             (if (response) |r| (if (r.finish_reason) |fr| fr.toStr() else "null") else "null");
         const roleStr = role orelse "assistant";
         const reasoningStr = if (response) |r| (r.reasoning_content orelse "") else "";
+        const agentStr = agent_name orelse "GeneralAgent";
 
         // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
         var toolCallsJson: []const u8 = "";
@@ -838,15 +870,15 @@ pub const TUIWorkflow = struct {
         }
         defer if (toolCallsOwned) |tcj| self.allocator.free(tcj);
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)";
-        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, roleStr, toolCallsJson, reasoningStr, self.cwd };
+        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)";
+        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, roleStr, toolCallsJson, reasoningStr, self.cwd, agentStr };
         try db.exec(self.allocator, sql, sqlArgs);
     }
 
     pub fn getMessages(self: *TUIWorkflow) ![]TUIHistory {
         var results: std.ArrayList(TUIHistory) = .empty;
 
-        const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, '') FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created ASC";
+        const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'GeneralAgent') FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created ASC";
         var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
         defer rows.deinit();
 
@@ -861,6 +893,7 @@ pub const TUIWorkflow = struct {
                 .role = try self.allocator.dupe(u8, row.values[6]),
                 .tools = try self.allocator.dupe(u8, row.values[7]),
                 .reasoning_content = if (row.values[8].len > 0) try self.allocator.dupe(u8, row.values[8]) else null,
+                .agent = try self.allocator.dupe(u8, row.values[9]),
             };
             try results.append(self.allocator, history);
             row.deinit(self.allocator);

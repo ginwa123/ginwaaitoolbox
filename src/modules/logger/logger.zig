@@ -122,7 +122,7 @@ pub const Logger = struct {
 
     /// Get the current request ID as a string (if set)
     pub fn getRequestIdString(self: *const Logger) ?[]const u8 {
-        if (self.request_id) |id| {
+        if (self.request_id) |*id| {
             return id.toString();
         }
         return null;
