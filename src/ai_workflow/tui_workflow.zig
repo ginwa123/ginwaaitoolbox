@@ -838,7 +838,7 @@ pub const TUIWorkflow = struct {
         }
         defer if (toolCallsOwned) |tcj| self.allocator.free(tcj);
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)";
         const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, roleStr, toolCallsJson, reasoningStr, self.cwd };
         try db.exec(self.allocator, sql, sqlArgs);
     }
@@ -846,7 +846,7 @@ pub const TUIWorkflow = struct {
     pub fn getMessages(self: *TUIWorkflow) ![]TUIHistory {
         var results: std.ArrayList(TUIHistory) = .empty;
 
-        const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, '') FROM llm_history WHERE session_id = ? ORDER BY created ASC";
+        const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, '') FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created ASC";
         var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
         defer rows.deinit();
 
@@ -867,6 +867,12 @@ pub const TUIWorkflow = struct {
         }
 
         return results.toOwnedSlice(self.allocator);
+    }
+
+    /// Mark all messages in the current session as not for LLM (soft-delete for compaction)
+    pub fn markMessagesNotForLLM(self: *TUIWorkflow) !void {
+        const sql = "UPDATE llm_history SET is_feed_to_llm = 0 WHERE session_id = ?";
+        try self.db.exec(self.allocator, sql, &.{self.session_id});
     }
 
     pub fn get_session_by_dir(self: *TUIWorkflow) ![]SessionInfo {
@@ -1063,7 +1069,9 @@ pub const TUIWorkflow = struct {
         return null;
     }
 
+
     /// Compact messages in memory based on CompactionAgent output
+    /// Also persists to database: marks old messages as not for LLM, saves new compacted message
     fn compactMessagesInMemory(
         self: *TUIWorkflow,
         messages: *std.ArrayList(agent.AgentMessage),
@@ -1072,6 +1080,27 @@ pub const TUIWorkflow = struct {
         const total = messages.items.len;
         if (total <= 4) return;
 
+        // Mark all existing messages in this session as not for LLM (soft-delete)
+        try self.markMessagesNotForLLM();
+
+        // Build the compacted summary content
+        var summary: std.ArrayList(u8) = .empty;
+        defer summary.deinit(self.allocator);
+        var w = summary.writer(self.allocator);
+        try w.writeAll("[CONTEXT SUMMARY]\n\n");
+        try w.writeAll(compacted_xml);
+        const summary_content = try summary.toOwnedSlice(self.allocator);
+
+        // Save the compacted summary to the database with is_feed_to_llm = 1
+        const id = try std.fmt.allocPrint(self.allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
+        defer self.allocator.free(id);
+        const createdStr = try std.fmt.allocPrint(self.allocator, "{}", .{std.time.timestamp()});
+        defer self.allocator.free(createdStr);
+
+        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)";
+        try self.db.exec(self.allocator, sql, &.{ id, self.session_id, self.model, createdStr, summary_content, "stop", "user", "", "", self.cwd });
+
+        // Build new in-memory message list: system message + compacted summary
         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;
 
         // Keep system message - duplicate content to be safe
@@ -1084,63 +1113,11 @@ pub const TUIWorkflow = struct {
             .content = system_content,
         });
 
-        // Add compacted summary
-        var summary: std.ArrayList(u8) = .empty;
-        defer summary.deinit(self.allocator);
-        var w = summary.writer(self.allocator);
-        try w.writeAll("[CONTEXT SUMMARY]\n\n");
-        try w.writeAll(compacted_xml);
-
+        // Add compacted summary as user message
         try new_messages.append(self.allocator, .{
             .role = .user,
-            .content = try summary.toOwnedSlice(self.allocator),
+            .content = summary_content,
         });
-
-        // Keep last 2 messages for context continuity - DUPLICATE their content
-        const start_last = @max(1, total - 2);
-        for (messages.items[start_last..]) |msg| {
-            // Duplicate content to ensure we own the memory
-            const duped_content = if (msg.content) |c|
-                try self.allocator.dupe(u8, c)
-            else
-                null;
-
-            // Duplicate tool_calls if present
-            var duped_tool_calls: ?[]agent.ToolCall = null;
-            if (msg.tool_calls) |tcs| {
-                var new_tcs = try self.allocator.alloc(agent.ToolCall, tcs.len);
-                for (tcs, 0..) |tc, i| {
-                    new_tcs[i] = .{
-                        .id = try self.allocator.dupe(u8, tc.id),
-                        .function = .{
-                            .name = try self.allocator.dupe(u8, tc.function.name),
-                            .arguments = try self.allocator.dupe(u8, tc.function.arguments),
-                        },
-                    };
-                }
-                duped_tool_calls = new_tcs;
-            }
-
-            // Duplicate tool_call_id if present
-            const duped_tool_call_id = if (msg.tool_call_id) |id|
-                try self.allocator.dupe(u8, id)
-            else
-                null;
-
-            // Duplicate reasoning_content if present
-            const duped_reasoning = if (msg.reasoning_content) |rc|
-                try self.allocator.dupe(u8, rc)
-            else
-                null;
-
-            try new_messages.append(self.allocator, .{
-                .role = msg.role,
-                .content = duped_content,
-                .tool_calls = duped_tool_calls,
-                .tool_call_id = duped_tool_call_id,
-                .reasoning_content = duped_reasoning,
-            });
-        }
 
         // Free ALL old messages (including ones we "kept" - we have copies now)
         for (messages.items) |*msg| {
@@ -1149,6 +1126,6 @@ pub const TUIWorkflow = struct {
         messages.deinit(self.allocator);
         messages.* = new_messages;
 
-        self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages", .{ total, messages.items.len }) catch {};
+        self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len }) catch {};
     }
 };

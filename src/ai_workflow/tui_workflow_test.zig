@@ -34,6 +34,11 @@ test "transformMessageToAgentMessages with user message" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -91,6 +96,11 @@ test "transformMessageToAgentMessages with assistant message" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -147,6 +157,11 @@ test "transformMessageToAgentMessages with tool message" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -209,6 +224,11 @@ test "transformMessageToAgentMessages with tool_calls message" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -268,6 +288,11 @@ test "saveMessage saves response to llm_history" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -320,6 +345,11 @@ test "saveMessageAsUser saves user message to llm_history" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -364,6 +394,11 @@ test "saveMessageAsTool saves tool result to llm_history" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -411,6 +446,11 @@ test "buildMessages returns correct message structure" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -457,6 +497,11 @@ test "getMessages retrieves messages by session_id" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -520,6 +565,11 @@ test "buildMessages handles tool_calls response correctly" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -591,6 +641,11 @@ test "sendResponse generates valid XML with content" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -637,6 +692,11 @@ test "sendResponse generates valid XML with markdown content" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -685,6 +745,11 @@ test "sendError with content_filter finish reason" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -726,6 +791,11 @@ test "sendError with null finish reason defaults to stop" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -766,6 +836,11 @@ test "sendResponse with content_filter override" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -814,6 +889,11 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -911,6 +991,11 @@ test "serializeToolCalls escapes JSON arguments correctly" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -979,6 +1064,11 @@ test "escapeJsonString handles special characters" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -1029,6 +1119,11 @@ test "get_session_by_dir returns empty slice when no sessions" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -1071,6 +1166,11 @@ test "get_session_by_dir returns single session" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -1129,6 +1229,11 @@ test "get_session_by_dir returns multiple sessions ordered by created DESC" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -1190,6 +1295,11 @@ test "get_session_by_dir handles NULL session_dir with COALESCE" {
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -1243,6 +1353,11 @@ test "get_session_by_dir groups by session_id" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
@@ -1300,6 +1415,11 @@ test "get_session_by_dir limits to 10 results" {
         .version = migrations.Migration004AddSessionDir.version,
         .name = migrations.Migration004AddSessionDir.name,
         .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
     });
     try mgr.runMigrations();
 
