@@ -28,6 +28,11 @@ fn formatDuration(ms: i64) struct { value: i64, unit: []const u8 } {
     return .{ .value = @divTrunc(ms, 60000), .unit = "min" };
 }
 
+pub const UnresolvedIntentResult = struct {
+    has_unresolved: bool,
+    reason: ?[]const u8, // Owned by caller, must be freed
+};
+
 pub const ToolCall = struct {
     id: []const u8,
     type: []const u8 = "function",
@@ -967,7 +972,9 @@ pub const Agent = struct {
             self.logError("buildJsonRequest", err, null);
             return error.BuildRequestFailed;
         };
+
         self.logFmt(.info, "Streaming JSON request built ({} bytes), sending...", .{json_body.len});
+        std.debug.print("Streaming request body: {s}\n", .{json_body});
         defer self.allocator.free(json_body);
 
         self.logFmt(.debug, "Streaming request body: {s}", .{json_body});
@@ -1168,6 +1175,7 @@ pub const Agent = struct {
             self.logError("finalize streaming response", err, null);
             return error.AllocFailed;
         };
+        self.logFmt(.info, "[RESULT] Finalized streaming response", .{});
 
         if (result.tool_calls) |tc| {
             self.logFmt(.info, "[RESULT] {} tool calls", .{tc.len});
@@ -1214,10 +1222,17 @@ pub const Agent = struct {
         \\- The assistant said the task is complete
         \\- The assistant listed what was accomplished
         \\
-        \\Answer ONLY with YES or NO. No explanation.
+        \\Respond in XML format:
+        \\- If unresolved: <result>YES</result><reason>brief description of planned action</reason>
+        \\- If resolved: <result>NO</result>
+        \\
+        \\Examples:
+        \\<result>YES</result><reason>Check the file contents</reason>
+        \\<result>YES</result><reason>Run the tests</reason>
+        \\<result>NO</result>
     ;
 
-    pub fn hasUnresolvedIntent(self: *Agent, assistant_message: []const u8) !bool {
+    pub fn hasUnresolvedIntent(self: *Agent, assistant_message: []const u8) !UnresolvedIntentResult {
         const user_content = try std.fmt.allocPrint(self.allocator,
             \\Assistant message to classify:
             \\
@@ -1226,7 +1241,7 @@ pub const Agent = struct {
             \\</message>
             \\
             \\Does this message contain unresolved intent (planned but not yet executed action)?
-            \\Answer YES or NO only.
+            \\Respond in XML format: <result>YES</result><reason>...</reason> or <result>NO</result>
         , .{assistant_message});
         defer self.allocator.free(user_content);
 
@@ -1243,11 +1258,42 @@ pub const Agent = struct {
         defer call_response.deinit();
 
         const answer = call_response.content orelse "";
-        var upper = try self.allocator.alloc(u8, answer.len);
-        for (answer, 0..) |c, i| {
-            upper[i] = std.ascii.toUpper(c);
+        std.debug.print("intent answer: {s}\n", .{answer});
+
+        // Parse XML format: <result>YES</result><reason>...</reason> or <result>NO</result>
+        const result_start = std.mem.indexOf(u8, answer, "<result>") orelse return UnresolvedIntentResult{
+            .has_unresolved = false,
+            .reason = null,
+        };
+        const result_end = std.mem.indexOf(u8, answer[result_start..], "</result>") orelse return UnresolvedIntentResult{
+            .has_unresolved = false,
+            .reason = null,
+        };
+        const result_value = std.mem.trim(u8, answer[result_start + 8 .. result_start + result_end], " \t\n\r");
+
+        if (std.ascii.eqlIgnoreCase(result_value, "YES")) {
+            // Extract reason if present
+            if (std.mem.indexOf(u8, answer, "<reason>")) |reason_start| {
+                if (std.mem.indexOf(u8, answer[reason_start..], "</reason>")) |reason_end_offset| {
+                    const reason = std.mem.trim(u8, answer[reason_start + 8 .. reason_start + reason_end_offset], " \t\n\r");
+                    if (reason.len > 0) {
+                        return UnresolvedIntentResult{
+                            .has_unresolved = true,
+                            .reason = try self.allocator.dupe(u8, reason),
+                        };
+                    }
+                }
+            }
+            // YES without reason
+            return UnresolvedIntentResult{
+                .has_unresolved = true,
+                .reason = null,
+            };
         }
 
-        return std.mem.startsWith(u8, upper, "YES");
+        return UnresolvedIntentResult{
+            .has_unresolved = false,
+            .reason = null,
+        };
     }
 };

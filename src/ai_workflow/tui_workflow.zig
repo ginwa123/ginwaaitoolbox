@@ -14,7 +14,7 @@ const loop_detector = tree1_mod.loop_detector;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
-    pub const max_body_size: usize = 100 * 1024; // 150kb threshold to trigger
+    pub const max_body_size: usize = 200 * 1024; // 150kb threshold to trigger
 };
 
 pub const TUIHistory = struct {
@@ -479,15 +479,29 @@ pub const TUIWorkflow = struct {
                         break :blk try std.mem.concat(self.allocator, u8, &.{ a, b });
                     };
 
-                    const has_unresolved = dynamic_agent.hasUnresolvedIntent(content) catch false;
-                    if (has_unresolved) {
+                    const intent_result = dynamic_agent.hasUnresolvedIntent(content) catch |err| blk: {
+                        self.logger.errFmt("hasUnresolvedIntent error: {s}", .{@errorName(err)}) catch {};
+                        break :blk agent.UnresolvedIntentResult{ .has_unresolved = false, .reason = null };
+                    };
+                    defer if (intent_result.reason) |r| self.allocator.free(r);
+
+                    if (intent_result.has_unresolved) {
                         self.logger.infoFmt("UNRESOLVED INTENT DETECTED - continuing loop", .{}) catch {};
+                        if (intent_result.reason) |r| {
+                            self.logger.infoFmt("Reason: {s}", .{r}) catch {};
+                        }
                         self.sendResponse(res_dynamic_agent, "");
                         try self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null);
 
+                        const continuation_msg = if (intent_result.reason) |r|
+                            try std.fmt.allocPrint(self.allocator, "Please continue: {s}", .{r})
+                        else
+                            try self.allocator.dupe(u8, "Please continue and execute the action you described.");
+                        defer self.allocator.free(continuation_msg);
+
                         const user_msg = agent.AgentMessage{
                             .role = .user,
-                            .content = "Please continue and execute the action you described.",
+                            .content = continuation_msg,
                         };
                         try messages_list.append(self.allocator, user_msg);
                         retryCount += 1;
@@ -737,7 +751,9 @@ pub const TUIWorkflow = struct {
             } else {
                 retryCount += 1;
                 self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                continue;
+                _ = try self.sendUserChoice();
+                break;
+                // continue;
             }
 
             retryCount = 0;
