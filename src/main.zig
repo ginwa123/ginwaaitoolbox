@@ -8,10 +8,6 @@ const ai_workflow_mod = tree1.ai_workflow_models;
 const sqlite = tree1.sqlite;
 const migrations = tree1.migrations;
 
-var g_api_key: []const u8 = "";
-var g_model: []const u8 = "";
-var g_base_url: []const u8 = "";
-
 pub const IPCMessage = struct {
     app_type: []const u8 = "",
     command_type: []const u8 = "",
@@ -93,23 +89,6 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !IPCMessage 
     return msg;
 }
 
-fn loadEnv() !void {
-    const env_path = "/home/ginwa/agentic_coding_zig/tree1/src/.env";
-    const content = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, env_path, 1024);
-    defer std.heap.page_allocator.free(content);
-
-    var lines = std.mem.tokenizeScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "API_KEY=")) {
-            g_api_key = try std.heap.page_allocator.dupe(u8, line[8..]);
-        } else if (std.mem.startsWith(u8, line, "MODEL=")) {
-            g_model = try std.heap.page_allocator.dupe(u8, line[6..]);
-        } else if (std.mem.startsWith(u8, line, "BASE_URL=")) {
-            g_base_url = try std.heap.page_allocator.dupe(u8, line[9..]);
-        }
-    }
-}
-
 fn killExistingProcess() void {
     const process_name = "zigginagentic";
     const self_pid = std.c.getpid();
@@ -186,7 +165,13 @@ pub fn main() !void {
 
     const parentAllocator = gpa.allocator();
 
-    try loadEnv();
+    // Load LLM config from JSON file
+    var llm_config = tree1.config.LlmConfig.init(parentAllocator, null) catch |err| {
+        std.log.err("Failed to load config: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer llm_config.deinit();
+    try llm_config.validate();
 
     // Get database path following XDG standards: ~/.config/zigginagentic/agent.db
     const db_path = try getDbPath(parentAllocator);
@@ -223,7 +208,10 @@ pub fn main() !void {
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
     defer parentAllocator.destroy(ctxParent);
-    ctxParent.* = ai_workflow_mod.ContextIPCTui{ .db = &dbSqlite };
+    ctxParent.* = ai_workflow_mod.ContextIPCTui{
+        .db = &dbSqlite,
+        .llm_config = &llm_config,
+    };
 
     var server = ipc.IpcServer.init(parentAllocator, ctxParent);
 
@@ -244,9 +232,9 @@ pub fn main() !void {
                     return;
                 };
                 workflowAsk.conn_fd = conn_fd;
-                workflowAsk.api_key = g_api_key;
-                workflowAsk.model = g_model;
-                workflowAsk.base_url = g_base_url;
+                workflowAsk.api_key = ctxTui.llm_config.api_key;
+                workflowAsk.model = ctxTui.llm_config.model;
+                workflowAsk.base_url = ctxTui.llm_config.base_url;
                 workflowAsk.message = t.message;
                 workflowAsk.session_id = t.session_id;
                 workflowAsk.cwd = t.cwd_session;

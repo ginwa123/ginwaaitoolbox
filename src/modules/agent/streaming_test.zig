@@ -1,6 +1,6 @@
 const std = @import("std");
-const agent = @import("agent.zig");
-const logger = @import("logger.zig");
+const agent = @import("tree1").agent;
+const logger = @import("tree1").logger;
 
 test "StreamingAggregator - accumulate content chunks" {
     const allocator = std.testing.allocator;

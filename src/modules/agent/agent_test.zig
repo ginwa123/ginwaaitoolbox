@@ -1,17 +1,17 @@
 const std = @import("std");
 const json = std.json;
-const bashTool = @import("tools/bash.zig").bashTool;
-const bashMod = @import("tools/bash.zig");
-const BashInput = @import("tools/models.zig").BashInput;
-const ToolProperty = @import("tools/models.zig").ToolProperty;
-const ToolParameters = @import("tools/models.zig").ToolParameters;
-const AgentToolFunction = @import("tools/models.zig").AgentToolFunction;
-const AgentTool = @import("tools/models.zig").AgentTool;
+const bashTool = @import("tree1").bash_tool.bashTool;
+const bashMod = @import("tree1").bash_tool;
+const BashInput = @import("tree1").tool_models.BashInput;
+const ToolProperty = @import("tree1").tool_models.ToolProperty;
+const ToolParameters = @import("tree1").tool_models.ToolParameters;
+const AgentToolFunction = @import("tree1").tool_models.AgentToolFunction;
+const AgentTool = @import("tree1").tool_models.AgentTool;
 
-const Agent = @import("agent.zig").Agent;
-const logger = @import("logger.zig");
-const AgentCall = @import("agent.zig").AgentCall;
-const AgentMessage = @import("agent.zig").AgentMessage;
+const Agent = @import("tree1").agent.Agent;
+const logger = @import("tree1").logger;
+const AgentCall = @import("tree1").agent.AgentCall;
+const AgentMessage = @import("tree1").agent.AgentMessage;
 
 /// Get environment variable or return default value (caller owns the memory)
 fn getEnvOrDefault(allocator: std.mem.Allocator, key: []const u8, default: []const u8) ![]const u8 {
