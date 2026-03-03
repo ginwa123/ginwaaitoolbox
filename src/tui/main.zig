@@ -482,7 +482,16 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                 clean_len += 1;
             }
 
-            if (extractTag(buffer.items, "content")) |fr| {
+            if (extractTag(buffer.items, "content")) |raw_content| {
+                // Sanitize content by replacing newlines with spaces
+                var clean_content: [100]u8 = undefined;
+                var clean_content_len: usize = 0;
+                for (raw_content) |ch| {
+                    if (clean_content_len >= clean_content.len - 1) break;
+                    clean_content[clean_content_len] = if (ch == '\n' or ch == '\r') ' ' else ch;
+                    clean_content_len += 1;
+                }
+                const fr = clean_content[0..clean_content_len];
                 const max_len: usize = 6;
 
                 if (fr.len > max_len) {
