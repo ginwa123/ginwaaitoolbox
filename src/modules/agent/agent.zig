@@ -1112,6 +1112,11 @@ pub const Agent = struct {
                                     self.logFmt(.debug, "[STREAM PROGRESS] {} chunks, {} bytes, {}ms elapsed", .{ chunk_count, total_bytes_read, elapsedMs(stream_start) });
                                 }
 
+                                // Debug print streaming content
+                                if (chunk.content) |content| {
+                                    std.debug.print("{s}", .{content});
+                                }
+
                                 // Invoke callback
                                 callback(ctx, chunk);
 
@@ -1270,6 +1275,7 @@ pub const Agent = struct {
             .reason = null,
         };
         const result_value = std.mem.trim(u8, answer[result_start + 8 .. result_start + result_end], " \t\n\r");
+        std.debug.print("intent result result_value: {s}\n", .{result_value});
 
         if (std.ascii.eqlIgnoreCase(result_value, "YES")) {
             // Extract reason if present

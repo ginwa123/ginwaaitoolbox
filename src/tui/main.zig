@@ -19,6 +19,25 @@ else
 // Double ESC detection window in milliseconds
 const DOUBLE_ESC_WINDOW_MS: i64 = 500;
 
+// ─── Platform-specific stdin bytes available check ─────────────────────────────
+
+/// Check how many bytes are available to read from stdin without blocking.
+/// Returns 0 on Windows or if the operation is not supported.
+fn stdinBytesAvailable() c_int {
+    if (builtin.os.tag == .windows) {
+        // On Windows, we would need to use PeekConsoleInput or similar.
+        // For now, return 0 to indicate no data available (non-blocking behavior).
+        // This effectively disables double-ESC detection on Windows.
+        return 0;
+    } else {
+        // Linux and macOS support FIONREAD via ioctl
+        var bytes_available: c_int = 0;
+        const result = std.posix.system.ioctl(std.posix.STDIN_FILENO, std.posix.system.T.FIONREAD, @intFromPtr(&bytes_available));
+        return if (result == 0) bytes_available else 0;
+    }
+}
+
+
 // ─── App struct ──────────────────────────────────────────────────────────────
 
 const App = struct {
@@ -350,9 +369,8 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
 /// Check stdin for ESC key and detect double ESC within time window
 /// Returns true if double ESC detected (stream should be interrupted)
 fn checkStdinForDoubleEscape(app: *App) bool {
-    // Use FIONREAD to check if stdin has data
-    var bytes_available: c_int = 0;
-    _ = std.os.linux.ioctl(std.posix.STDIN_FILENO, std.os.linux.T.FIONREAD, @intFromPtr(&bytes_available));
+    // Use platform-agnostic stdin bytes available check
+    const bytes_available = stdinBytesAvailable();
 
     if (bytes_available == 0) return false;
 
@@ -407,9 +425,9 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     var retry_count: usize = 0;
 
     // Set up poll for both socket and stdin
-    var poll_fds = [2]std.os.linux.pollfd{
-        .{ .fd = app.socket_fd, .events = std.os.linux.POLL.IN, .revents = 0 },
-        .{ .fd = std.posix.STDIN_FILENO, .events = std.os.linux.POLL.IN, .revents = 0 },
+    var poll_fds = [2]std.posix.pollfd{
+        .{ .fd = app.socket_fd, .events = std.posix.POLL.IN, .revents = 0 },
+        .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
     };
 
     var stream_interrupted = false;
@@ -417,11 +435,11 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
 
     while (true) {
         // Poll with 50ms timeout to allow checking for ESC
-        const ready = std.os.linux.poll(&poll_fds, 2, 50);
+        const ready = std.posix.poll(&poll_fds, 50) catch 0;
 
         if (ready > 0) {
             // Check stdin first for double ESC
-            if (poll_fds[1].revents & std.os.linux.POLL.IN != 0) {
+            if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
                     stream_interrupted = true;
                     break;
@@ -431,7 +449,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
             }
 
             // Then check socket for data
-            if (poll_fds[0].revents & std.os.linux.POLL.IN != 0) {
+            if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
                 const n = std.posix.read(app.socket_fd, &buf) catch break;
                 if (n == 0) break;
                 try buffer.appendSlice(app.allocator, buf[0..n]);
@@ -440,7 +458,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
             }
 
             // Check for socket hangup or error
-            if (poll_fds[0].revents & (std.os.linux.POLL.HUP | std.os.linux.POLL.ERR) != 0) {
+            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
                 break;
             }
         }
@@ -518,20 +536,20 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     var buf: [4096]u8 = undefined;
 
     // Set up poll for both socket and stdin
-    var poll_fds = [2]std.os.linux.pollfd{
-        .{ .fd = app.socket_fd, .events = std.os.linux.POLL.IN, .revents = 0 },
-        .{ .fd = std.posix.STDIN_FILENO, .events = std.os.linux.POLL.IN, .revents = 0 },
+    var poll_fds = [2]std.posix.pollfd{
+        .{ .fd = app.socket_fd, .events = std.posix.POLL.IN, .revents = 0 },
+        .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
     };
 
     var stream_interrupted = false;
 
     while (true) {
         // Poll with 50ms timeout to allow checking for ESC
-        const ready = std.os.linux.poll(&poll_fds, 2, 50);
+        const ready = std.posix.poll(&poll_fds, 50) catch 0;
 
         if (ready > 0) {
             // Check stdin first for double ESC
-            if (poll_fds[1].revents & std.os.linux.POLL.IN != 0) {
+            if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
                     stream_interrupted = true;
                     break;
@@ -540,7 +558,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
             }
 
             // Then check socket for data
-            if (poll_fds[0].revents & std.os.linux.POLL.IN != 0) {
+            if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
                 const n = std.posix.read(app.socket_fd, &buf) catch break;
                 if (n == 0) break;
                 try buffer.appendSlice(app.allocator, buf[0..n]);
@@ -548,7 +566,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
             }
 
             // Check for socket hangup or error
-            if (poll_fds[0].revents & (std.os.linux.POLL.HUP | std.os.linux.POLL.ERR) != 0) {
+            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
                 break;
             }
         }
@@ -613,8 +631,7 @@ fn readEscapeSequence(buf: *[16]u8) !usize {
     var i: usize = 1;
     while (i < buf.len) {
         var b: [1]u8 = undefined;
-        var bytes_available: c_int = 0;
-        _ = std.os.linux.ioctl(std.posix.STDIN_FILENO, std.os.linux.T.FIONREAD, @intFromPtr(&bytes_available));
+        const bytes_available = stdinBytesAvailable();
         if (bytes_available == 0) break;
         const n = std.posix.read(std.posix.STDIN_FILENO, &b) catch break;
         if (n == 0) break;

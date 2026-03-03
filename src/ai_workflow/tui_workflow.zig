@@ -14,7 +14,7 @@ const loop_detector = tree1_mod.loop_detector;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
-    pub const max_body_size: usize = 200 * 1024; // 150kb threshold to trigger
+    pub const max_body_size: usize = 700 * 1024; // 150kb threshold to trigger
 };
 
 pub const TUIHistory = struct {

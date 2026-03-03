@@ -1,8 +1,17 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("sys/un.h");
-});
+const builtin = @import("builtin");
 const ipc = @import("ipc.zig");
+
+// POSIX sockaddr_un - only needed on non-Windows for tests
+const c = if (builtin.os.tag != .windows) struct {
+    const sockaddr_un = extern struct {
+        sun_family: c_ushort,
+        sun_path: [108]u8,
+    };
+} else struct {
+    // Placeholder for Windows - tests that need this are skipped
+    const sockaddr_un = void;
+};
 const testing = std.testing;
 
 test "IpcServer init returns correct socket path on unix" {
