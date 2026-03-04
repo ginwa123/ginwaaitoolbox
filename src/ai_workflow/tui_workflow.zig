@@ -505,7 +505,6 @@ pub const TUIWorkflow = struct {
                         self.logger.errFmt("hasUnresolvedIntent error: {s}", .{@errorName(err)}) catch {};
                         break :blk agent.UnresolvedIntentResult{ .has_unresolved = false, .reason = null };
                     };
-                    defer if (intent_result.reason) |r| self.allocator.free(r);
 
                     if (intent_result.has_unresolved) {
                         self.logger.infoFmt("UNRESOLVED INTENT DETECTED - continuing loop", .{}) catch {};
@@ -519,7 +518,6 @@ pub const TUIWorkflow = struct {
                             try std.fmt.allocPrint(self.allocator, "Please continue: {s}", .{r})
                         else
                             try self.allocator.dupe(u8, "Please continue and execute the action you described.");
-                        defer self.allocator.free(continuation_msg);
 
                         const user_msg = agent.AgentMessage{
                             .role = .user,
@@ -818,7 +816,7 @@ pub const TUIWorkflow = struct {
             }
         }
 
-        std.debug.print("saveMessage aa role={s} content={s}", .{ roleStr, contentStr }) ;
+        std.debug.print("saveMessage aa role={s} content={s}", .{ roleStr, contentStr });
 
         // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
         var toolCallsJson: []const u8 = "";
@@ -832,9 +830,28 @@ pub const TUIWorkflow = struct {
         defer if (toolCallsOwned) |tcj| self.allocator.free(tcj);
 
         const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)";
-        const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, roleStr, toolCallsJson, reasoningStr, self.cwd, agentStr };
 
-        std.debug.print("saveMessage content={s}", .{contentStr}) ;
+        const copy_session_id = try self.allocator.dupe(u8, self.session_id);
+        defer self.allocator.free(copy_session_id);
+        const copy_model = try self.allocator.dupe(u8, self.model);
+        defer self.allocator.free(copy_model);
+        const copy_content = try self.allocator.dupe(u8, contentStr);
+        defer self.allocator.free(copy_content);
+        const copy_finish_reason = try self.allocator.dupe(u8, finishReasonStr);
+        defer self.allocator.free(copy_finish_reason);
+        const copy_role = try self.allocator.dupe(u8, roleStr);
+        defer self.allocator.free(copy_role);
+        const copy_tool_calls = try self.allocator.dupe(u8, toolCallsJson);
+        defer self.allocator.free(copy_tool_calls);
+        const copy_reasoning = try self.allocator.dupe(u8, reasoningStr);
+        defer self.allocator.free(copy_reasoning);
+        const copy_cwd = try self.allocator.dupe(u8, self.cwd);
+        defer self.allocator.free(copy_cwd);
+        const copy_agent = try self.allocator.dupe(u8, agentStr);
+        defer self.allocator.free(copy_agent);
+        const sqlArgs = &.{ id, copy_session_id, copy_model, createdStr, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent };
+
+        std.debug.print("saveMessage content={s}", .{contentStr});
         try db.exec(self.allocator, sql, sqlArgs);
     }
 

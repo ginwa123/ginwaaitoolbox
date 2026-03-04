@@ -264,7 +264,7 @@ fn printFormattedResponse(content: []const u8) void {
         }
     }
 
-    printAllTags(content, &.{ "agent", "markdown" }, 0);
+    // printAllTags(content, &.{ "agent", "markdown" }, 0);
 }
 
 fn isNestedElsewhere(xml: []const u8, tag: []const u8, tag_content: []const u8) bool {
@@ -674,17 +674,17 @@ fn readEscapeSequence(buf: *[16]u8) !usize {
 
 fn clearCompletions(app: *App) void {
     if (app.state.last_match_count == 0) return;
-    
+
     // Move down to the first completion line, clear each line
     var i: usize = 0;
     while (i < app.state.last_match_count) : (i += 1) {
         std.debug.print("\x1b[1B", .{}); // move down one line
         std.debug.print("\x1b[2K", .{}); // clear the line
     }
-    
+
     // Move back up to original position
     std.debug.print("\x1b[{}A", .{app.state.last_match_count});
-    
+
     // Reset state
     app.state.visible = false;
     app.state.last_match_count = 0;

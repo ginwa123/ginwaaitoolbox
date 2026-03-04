@@ -124,9 +124,9 @@ test "agent call builds correct json with tool_calls in message" {
     defer agent.deinit();
 
     // Message with tool_calls (assistant response with tool call)
-    var tool_calls_list = std.ArrayList(ToolCall).init(allocator);
-    defer tool_calls_list.deinit();
-    try tool_calls_list.append(.{
+    var tool_calls_list: std.ArrayList(ToolCall) = .empty;
+    defer tool_calls_list.deinit(allocator);
+    try tool_calls_list.append(allocator, .{
         .id = "call_123",
         .type = "function",
         .function = .{
@@ -134,7 +134,7 @@ test "agent call builds correct json with tool_calls in message" {
             .arguments = "{\"command\":\"ls -la\"}",
         },
     });
-    const tool_calls_slice = try tool_calls_list.toOwnedSlice();
+    const tool_calls_slice = try tool_calls_list.toOwnedSlice(allocator);
     defer allocator.free(tool_calls_slice);
 
     const msgAssistant = AgentMessage{
@@ -157,7 +157,7 @@ test "agent call builds correct json with tool_calls in message" {
     defer allocator.free(json_body);
 
     // Verify the JSON is valid and contains the tool_calls array
-    var parsed = try json.parseFromSlice(allocator, json_body, .{});
+    var parsed = try json.parseFromSlice(json.Value, allocator, json_body, .{});
     defer parsed.deinit();
 
     const root = parsed.value;

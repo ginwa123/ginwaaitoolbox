@@ -177,20 +177,26 @@ pub const bashTool = AgentTool{
     .function = .{
         .name = "bash",
         .description = "Execute a bash command and return stdout, stderr, exit_code, truncated, and timeout flags. " ++
+            "This tool is optimized for precise, scoped CLI operations — especially fast text processing and structured data manipulation. " ++
+            "Preferred tools: `rg` (ripgrep) for fast search, `grep -n` for targeted matches, `sed` for ranged edits, `awk` for field-based processing, " ++
+            "`jq` for JSON, `yq` for YAML, `stat`/`ls -lh` for metadata, `wc -l` for file size checks. " ++
+            "Avoid full-file reads and unbounded output. " ++
             "RULES: " ++
             "1. Never use sudo, su, or any privilege escalation. " ++
             "2. Never read entire files — use `head -n 100` for start, `tail -n 100` for end, `sed -n 'X,Yp'` for ranges, `wc -l` to check size first. " ++
-            "3. Never write unbounded output — pipe through `head` or set max_output. " ++
-            "4. Prefer targeted commands: `grep -n`, `find`, `stat` over broad reads. " ++
+            "3. Never write unbounded output — always pipe through `head`, `rg --max-count`, or set max_output. " ++
+            "4. Prefer targeted commands: `rg`, `grep -n`, `find`, `stat`, `wc`, `awk` over broad reads like `cat` or recursive `find /`. " ++
             "5. For large repos or files, always check size before reading (`wc -l`, `du -sh`, `ls -lh`). " ++
-            "6. If stdin is needed, provide stdin_data — otherwise stdin is closed to prevent hanging.",
+            "6. For structured data, never use sed on JSON/YAML — use `jq` or `yq`. " ++
+            "7. If stdin is needed, provide stdin_data — otherwise stdin is closed to prevent hanging.",
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "command",
                     .type = "string",
-                    .description = "The bash command to execute. Prefer scoped commands (head, tail, grep, stat, wc) over full reads (cat, find /).",
+                    .description = "The bash command to execute. Prefer scoped commands (rg, grep, sed -n, awk, jq, stat, wc) " ++
+                        "over full reads (cat, find /, recursive globbing).",
                 },
                 .{
                     .name = "timeout",
@@ -205,7 +211,8 @@ pub const bashTool = AgentTool{
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description = "Max stdout+stderr size in bytes (default 102400 = 100KB, max 1048576 = 1MB). If exceeded, truncated=true and output is cut. Keep low for file reads.",
+                    .description = "Max stdout+stderr size in bytes (default 102400 = 100KB, max 1048576 = 1MB). " ++
+                        "If exceeded, truncated=true and output is cut. Keep low for file reads.",
                 },
                 .{
                     .name = "stdin_data",
