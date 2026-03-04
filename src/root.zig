@@ -8,12 +8,15 @@ pub const sqlite = @import("modules/databases/sqlite/sqlite.zig");
 pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const tool_models = @import("modules/agent/tools/models.zig");
 pub const change_agent_tool = @import("modules/agent/tools/change_agent.zig");
+pub const get_skill_tool = @import("modules/agent/tools/get_skill.zig");
+pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
 pub const ipc = @import("modules/ipc/ipc.zig");
 pub const logger = @import("modules/logger/logger.zig");
 pub const migrations = @import("modules/databases/sqlite/migrations.zig");
 pub const ai_workflow = @import("ai_workflow/tui_workflow.zig");
 pub const ai_workflow_models = @import("ai_workflow/models.zig");
 pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
+pub const skills = @import("modules/agent/tools/skills.zig");
 pub const config = @import("modules/config/config.zig");
 
 pub fn bufferedPrint() !void {

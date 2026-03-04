@@ -103,7 +103,7 @@ test "agent call builds correct json with tools" {
 
     // expected JSON with tools array
     const expectedString =
-        \\{"model":"glm-5","enable_thinking":true,"messages":[{"role":"system","content":"You are a helpful assistant"},{"role":"user","content":"Hello world"}],"temperature":0.4,"max_tokens":4096,"tools":[{"type":"function","function":{"name":"read_file","description":"Read the contents of a file","parameters":{"type":"object","properties":{"path":{"type":"string","description":"The file path to read"}},"required":["path"]}}},{"type":"function","function":{"name":"write_file","description":"Write content to a file","parameters":{"type":"object","properties":{"path":{"type":"string","description":"The file path to write"},"content":{"type":"string","description":"The content to write"}},"required":["path","content"]}}}],"tool_choice":"auto"}
+        \\{"model":"glm-5","enable_thinking":true,"messages":[{"role":"system","content":"You are a helpful assistant"},{"role":"user","content":"Hello world"}],"temperature":0.4000000059604645,"max_tokens":4096,"tools":[{"type":"function","function":{"name":"read_file","description":"Read the contents of a file","parameters":{"type":"object","properties":{"path":{"type":"string","description":"The file path to read"}},"required":["path"]}}},{"type":"function","function":{"name":"write_file","description":"Write content to a file","parameters":{"type":"object","properties":{"path":{"type":"string","description":"The file path to write"},"content":{"type":"string","description":"The content to write"}},"required":["path","content"]}}}],"tool_choice":"auto"}
     ;
 
     try std.testing.expectEqualSlices(u8, json_body, expectedString);

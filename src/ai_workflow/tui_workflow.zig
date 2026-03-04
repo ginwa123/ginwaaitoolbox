@@ -501,13 +501,7 @@ pub const TUIWorkflow = struct {
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    const content = blk: {
-                        const a = res_dynamic_agent.content orelse "";
-                        const b = res_dynamic_agent.reasoning_content orelse "";
-                        break :blk try std.mem.concat(self.allocator, u8, &.{ a, b });
-                    };
-
-                    const intent_result = dynamic_agent.hasUnresolvedIntent(content) catch |err| blk: {
+                    const intent_result = dynamic_agent.hasUnresolvedIntent(messages_list.items) catch |err| blk: {
                         self.logger.errFmt("hasUnresolvedIntent error: {s}", .{@errorName(err)}) catch {};
                         break :blk agent.UnresolvedIntentResult{ .has_unresolved = false, .reason = null };
                     };
@@ -785,47 +779,11 @@ pub const TUIWorkflow = struct {
         }
     }
 
-    /// Escape a string for JSON string value
-    pub fn escapeJsonString(self: *TUIWorkflow, s: []const u8) ![]u8 {
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-
-        for (s) |c| {
-            switch (c) {
-                '"' => try buf.appendSlice(self.allocator, "\\\""),
-                '\\' => try buf.appendSlice(self.allocator, "\\\\"),
-                '\n' => try buf.appendSlice(self.allocator, "\\n"),
-                '\r' => try buf.appendSlice(self.allocator, "\\r"),
-                '\t' => try buf.appendSlice(self.allocator, "\\t"),
-                else => try buf.append(self.allocator, c),
-            }
-        }
-
-        return try buf.toOwnedSlice(self.allocator);
-    }
-
     /// Serialize tool_calls array to JSON string
     pub fn serializeToolCalls(self: *TUIWorkflow, tool_calls: []agent.ToolCall) ![]u8 {
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-
-        var w = buf.writer(self.allocator);
-        try w.writeAll("[");
-
-        for (tool_calls, 0..) |tc, i| {
-            if (i > 0) try w.writeAll(",");
-
-            // Escape the arguments string since it contains JSON
-            const escaped_args = try self.escapeJsonString(tc.function.arguments);
-            defer self.allocator.free(escaped_args);
-
-            try w.print(
-                \\{{"id":"{s}","type":"function","function":{{"name":"{s}","arguments":"{s}"}}}}
-            , .{ tc.id, tc.function.name, escaped_args });
-        }
-
-        try w.writeAll("]");
-        return try buf.toOwnedSlice(self.allocator);
+        var aw: std.io.Writer.Allocating = .init(self.allocator);
+        try aw.writer.print("{f}", .{std.json.fmt(tool_calls, .{})});
+        return try aw.toOwnedSlice();
     }
 
     /// Unified method to save messages to llm_history table.

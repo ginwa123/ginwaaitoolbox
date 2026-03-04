@@ -12,35 +12,18 @@ pub const ChangeAgentToolResult = struct {
 
 };
 
-// pub fn change_agent_tool(tool: ChangeAgentTool, input: ChangeAgentToolResult) !BashResult {
-//     const result = try std.ChildProcess.exec(.{
-//         .allocator = tool.allocator,
-//         .argv = &.{ "python3", "-m", "agentic.tools.change_agent" },
-//         .stdin_behavior = .Ignore,
-//         .stdout_behavior = .Inherit,
-//         .stderr_behavior = .Inherit,
-//     });
-//     defer result.deinit();
-//
-//     return BashResult{
-//         .stdout = result.stdout,
-//         .stderr = result.stderr,
-//         .exit_code = result.exit_code,
-//     };
-// }
-
 pub const ChangeAgentTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "change_agent_tool",
-        .description = "Transfer the current task to another specialized agent. Available agents: GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent, KnowledgeAgent. Set temperature based on your confidence — low confidence = higher temperature. return agent, message, temperature, is_thinking",
+        .description = "Transfer the current task to another specialized agent. Available agents: GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent, KnowledgeAgent, ReviewAgent. Set temperature based on your confidence — low confidence = higher temperature. return agent, message, temperature, is_thinking",
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "agent",
                     .type = "string",
-                    .description = "Target agent. Must be one of: GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent, KnowledgeAgent",
+                    .description = "Target agent. Must be one of: GeneralAgent, ExplorationAgent, PlanningAgent, ExecutingAgent, KnowledgeAgent, ReviewAgent",
                 },
                 .{
                     .name = "message",
@@ -64,8 +47,6 @@ pub const ChangeAgentTool = AgentTool{
                         "Use false for simple routing, direct lookups, mechanical transformations, " ++
                         "file reading, or straightforward single-step execution. " ++
                         "PlanningAgent: always true. " ++
-                        "GeneralAgent and ExplorationAgent: always false. " ++
-                        "ExecutingAgent: always false. " ++
                         "Default: false.",
                 },
             },

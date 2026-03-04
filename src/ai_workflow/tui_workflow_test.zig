@@ -1069,61 +1069,6 @@ test "serializeToolCalls escapes JSON arguments correctly" {
     allocator.free(tool_calls);
 }
 
-test "escapeJsonString handles special characters" {
-    const allocator = std.testing.allocator;
-
-    var db: sqlite.SqliteBackend = .{};
-    try db.init(":memory:");
-    defer db.deinit();
-
-    var mgr = migrations.MigrationManager.init(allocator, &db);
-    defer mgr.deinit();
-    try mgr.registerMigration(.{
-        .version = migrations.Migration001CreateLLMHistory.version,
-        .name = migrations.Migration001CreateLLMHistory.name,
-        .up = migrations.Migration001CreateLLMHistory.up,
-    });
-    try mgr.registerMigration(.{
-        .version = migrations.Migration002AddRoleToLLMHistory.version,
-        .name = migrations.Migration002AddRoleToLLMHistory.name,
-        .up = migrations.Migration002AddRoleToLLMHistory.up,
-    });
-    try mgr.registerMigration(.{
-        .version = migrations.Migration003AddReasoningContent.version,
-        .name = migrations.Migration003AddReasoningContent.name,
-        .up = migrations.Migration003AddReasoningContent.up,
-    });
-    try mgr.registerMigration(.{
-        .version = migrations.Migration004AddSessionDir.version,
-        .name = migrations.Migration004AddSessionDir.name,
-        .up = migrations.Migration004AddSessionDir.up,
-    });
-    try mgr.registerMigration(.{
-        .version = migrations.Migration005AddIsFeedToLLM.version,
-        .name = migrations.Migration005AddIsFeedToLLM.name,
-        .up = migrations.Migration005AddIsFeedToLLM.up,
-    });
-    try mgr.runMigrations();
-
-    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
-    defer workflow.deinit();
-
-    // Test escaping of special characters
-    const test_cases = .{
-        .{ "hello\"world", "hello\\\"world" },
-        .{ "line1\nline2", "line1\\nline2" },
-        .{ "tab\there", "tab\\there" },
-        .{ "back\\slash", "back\\\\slash" },
-        .{ "{\"key\":\"value\"}", "{\\\"key\\\":\\\"value\\\"}" },
-    };
-
-    inline for (test_cases) |tc| {
-        const escaped = try workflow.escapeJsonString(tc[0]);
-        defer allocator.free(escaped);
-        try std.testing.expectEqualStrings(tc[1], escaped);
-    }
-}
-
 test "get_session_by_dir returns empty slice when no sessions" {
     const allocator = std.testing.allocator;
 

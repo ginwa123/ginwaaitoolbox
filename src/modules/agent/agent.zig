@@ -44,6 +44,168 @@ pub const FunctionCall = struct {
     arguments: []const u8,
 };
 
+// JSON serialization types for API requests
+// These types handle snake_case field names and null field omission
+
+/// Wrapper for pre-serialized JSON strings that should be written directly
+/// without escaping (e.g., tool.function.arguments which is already JSON)
+const RawJson = struct {
+    data: []const u8,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.writer.writeAll(self.data);
+    }
+};
+
+/// JSON-serializable function call with pre-serialized arguments
+const JsonFunctionCall = struct {
+    name: []const u8,
+    arguments: RawJson,
+};
+
+/// JSON-serializable tool call with snake_case field names
+const JsonToolCall = struct {
+    id: []const u8,
+    type: []const u8 = "function",
+    function: JsonFunctionCall,
+};
+
+/// JSON-serializable message with custom serialization to omit null fields
+const JsonMessage = struct {
+    role: []const u8,
+    content: ?[]const u8 = null,
+    tool_calls: ?[]const JsonToolCall = null,
+    tool_call_id: ?[]const u8 = null,
+    reasoning_content: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("role");
+        try stringify.write(self.role);
+        if (self.content) |c| {
+            try stringify.objectField("content");
+            try stringify.write(c);
+        }
+        if (self.tool_calls) |tc| {
+            try stringify.objectField("tool_calls");
+            try stringify.write(tc);
+        }
+        if (self.tool_call_id) |id| {
+            try stringify.objectField("tool_call_id");
+            try stringify.write(id);
+        }
+        if (self.reasoning_content) |rc| {
+            try stringify.objectField("reasoning_content");
+            try stringify.write(rc);
+        }
+        try stringify.endObject();
+    }
+};
+
+/// JSON-serializable tool parameters with custom serialization for properties map
+const JsonToolParameters = struct {
+    properties: []const ToolProperty,
+    required: []const []const u8,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write("object");
+        try stringify.objectField("properties");
+        try stringify.beginObject();
+        for (self.properties) |prop| {
+            try stringify.objectField(prop.name);
+            try stringify.beginObject();
+            try stringify.objectField("type");
+            try stringify.write(prop.type);
+            try stringify.objectField("description");
+            try stringify.write(prop.description);
+            try stringify.endObject();
+        }
+        try stringify.endObject();
+        try stringify.objectField("required");
+        try stringify.write(self.required);
+        try stringify.endObject();
+    }
+};
+
+/// JSON-serializable tool function
+const JsonToolFunction = struct {
+    name: []const u8,
+    description: []const u8,
+    parameters: JsonToolParameters,
+};
+
+/// JSON-serializable tool
+const JsonTool = struct {
+    type: []const u8,
+    function: JsonToolFunction,
+};
+
+/// Thinking configuration for requests
+const JsonThinkingConfig = struct {
+    type: []const u8 = "disabled",
+};
+
+/// JSON-serializable request with custom serialization for conditional fields
+const JsonRequest = struct {
+    model: []const u8,
+    enable_thinking: bool,
+    thinking: ?JsonThinkingConfig = null,
+    messages: []const JsonMessage,
+    temperature: f32,
+    max_tokens: usize,
+    stream: bool,
+    tools: ?[]const JsonTool = null,
+    tool_choice: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        
+        // model
+        try stringify.objectField("model");
+        try stringify.write(self.model);
+        
+        // thinking config (only when disabled)
+        if (self.thinking) |th| {
+            try stringify.objectField("thinking");
+            try stringify.write(th);
+        }
+        
+        // enable_thinking
+        try stringify.objectField("enable_thinking");
+        try stringify.write(self.enable_thinking);
+        
+        // messages
+        try stringify.objectField("messages");
+        try stringify.write(self.messages);
+        
+        // temperature
+        try stringify.objectField("temperature");
+        try stringify.write(self.temperature);
+        
+        // max_tokens
+        try stringify.objectField("max_tokens");
+        try stringify.write(self.max_tokens);
+        
+        // stream (only when true)
+        if (self.stream) {
+            try stringify.objectField("stream");
+            try stringify.write(true);
+        }
+        
+        // tools (only when present)
+        if (self.tools) |t| {
+            try stringify.objectField("tools");
+            try stringify.write(t);
+            try stringify.objectField("tool_choice");
+            try stringify.write(self.tool_choice.?);
+        }
+        
+        try stringify.endObject();
+    }
+};
+
 pub const AgentResponse = struct {
     choices: []Choice,
 };
@@ -436,122 +598,83 @@ pub const Agent = struct {
 
     pub fn buildJsonRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
         const allocator = self.allocator;
-        var buffer = std.io.Writer.Allocating.init(allocator);
-        const writer = &buffer.writer;
-
-        try writer.writeAll("{\"model\":\"");
-        try writer.writeAll(self.model);
-        try writer.writeAll("\"");
-
-        // Thinking config
-        if (!self.thinkingEnabled) {
-            try writer.writeAll(",\"thinking\":{\"type\":\"disabled\"},\"enable_thinking\":false");
-        } else {
-            try writer.writeAll(",\"enable_thinking\":true");
-        }
-
-        // Messages array
-        try writer.writeAll(",\"messages\":[");
+        
+        // Use arena allocator for temporary conversions
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+        
+        // Convert messages
+        const json_messages = try arena_alloc.alloc(JsonMessage, params.messages.len);
         for (params.messages, 0..) |msg, i| {
-            if (i > 0) try writer.writeAll(",");
-            try writer.writeAll("{\"role\":\"");
-            try writer.writeAll(msg.role.toStr());
-            try writer.writeAll("\"");
-
-            if (msg.content) |c| {
-                try writer.writeAll(",\"content\":\"");
-                try writeEscaped(writer, c);
-                try writer.writeAll("\"");
-            }
-
-            if (msg.reasoning_content) |rc| {
-                try writer.writeAll(",\"reasoning_content\":\"");
-                try writeEscaped(writer, rc);
-                try writer.writeAll("\"");
-            }
-
-            if (msg.tool_call_id) |id| {
-                try writer.writeAll(",\"tool_call_id\":\"");
-                try writer.writeAll(id);
-                try writer.writeAll("\"");
-            }
-
+            var json_tool_calls: ?[]JsonToolCall = null;
             if (msg.tool_calls) |tcs| {
-                try writer.writeAll(",\"tool_calls\":[");
+                const tc_slice = try arena_alloc.alloc(JsonToolCall, tcs.len);
                 for (tcs, 0..) |tc, j| {
-                    if (j > 0) try writer.writeAll(",");
-                    try writer.print("{{\"id\":\"{s}\",\"type\":\"{s}\",\"function\":{{\"name\":\"{s}\",\"arguments\":{s}}}}}", .{ tc.id, tc.type, tc.function.name, tc.function.arguments });
+                    tc_slice[j] = .{
+                        .id = tc.id,
+                        .type = tc.type,
+                        .function = .{
+                            .name = tc.function.name,
+                            .arguments = .{ .data = tc.function.arguments },
+                        },
+                    };
                 }
-                try writer.writeAll("]");
+                json_tool_calls = tc_slice;
             }
-
-            try writer.writeAll("}");
+            json_messages[i] = .{
+                .role = msg.role.toStr(),
+                .content = msg.content,
+                .tool_calls = json_tool_calls,
+                .tool_call_id = msg.tool_call_id,
+                .reasoning_content = msg.reasoning_content,
+            };
         }
-        try writer.writeAll("]");
-
-        // Temperature and max_tokens
-        const temp = params.temperature orelse self.temperature;
-        const max_tokens = params.max_tokens orelse self.maxTokens;
-        try writer.print(",\"temperature\":{d},\"max_tokens\":{d}", .{ temp, max_tokens });
-
-        // Stream flag
-        if (stream) {
-            try writer.writeAll(",\"stream\":true");
-        }
-
-        // Tools
+        
+        // Convert tools
+        var json_tools: ?[]JsonTool = null;
         if (params.tools.len > 0) {
-            try writer.writeAll(",\"tools\":[");
+            const tool_slice = try arena_alloc.alloc(JsonTool, params.tools.len);
             for (params.tools, 0..) |tool, i| {
-                if (i > 0) try writer.writeAll(",");
-                try writer.writeAll("{\"type\":\"");
-                try writer.writeAll(tool.type);
-                try writer.writeAll("\",\"function\":{\"name\":\"");
-                try writer.writeAll(tool.function.name);
-                try writer.writeAll("\",\"description\":\"");
-                try writeEscaped(writer, tool.function.description);
-                try writer.writeAll("\",\"parameters\":{\"type\":\"object\",\"properties\":{");
-
-                for (tool.function.parameters.properties, 0..) |prop, j| {
-                    if (j > 0) try writer.writeAll(",");
-                    try writer.print("\"{s}\":{{\"type\":\"{s}\",\"description\":\"{s}\"}}", .{ prop.name, prop.type, prop.description });
+                const props = tool.function.parameters.properties;
+                const json_props = try arena_alloc.alloc(ToolProperty, props.len);
+                for (props, 0..) |prop, j| {
+                    json_props[j] = prop;
                 }
-
-                try writer.writeAll("},\"required\":[");
-                for (tool.function.parameters.required, 0..) |req, j| {
-                    if (j > 0) try writer.writeAll(",");
-                    try writer.print("\"{s}\"", .{req});
-                }
-                try writer.writeAll("]}}}");
+                tool_slice[i] = .{
+                    .type = tool.type,
+                    .function = .{
+                        .name = tool.function.name,
+                        .description = tool.function.description,
+                        .parameters = .{
+                            .properties = json_props,
+                            .required = tool.function.parameters.required,
+                        },
+                    },
+                };
             }
-            try writer.writeAll("],\"tool_choice\":\"auto\"");
+            json_tools = tool_slice;
         }
-
-        try writer.writeAll("}");
-        return buffer.toOwnedSlice();
+        
+        // Build request
+        const json_request = JsonRequest{
+            .model = self.model,
+            .enable_thinking = self.thinkingEnabled,
+            .thinking = if (!self.thinkingEnabled) .{} else null,
+            .messages = json_messages,
+            .temperature = params.temperature orelse self.temperature,
+            .max_tokens = params.max_tokens orelse self.maxTokens,
+            .stream = stream,
+            .tools = json_tools,
+            .tool_choice = if (json_tools != null) "auto" else null,
+        };
+        
+        // Serialize to JSON
+        var aw: std.io.Writer.Allocating = .init(allocator);
+        try aw.writer.print("{f}", .{std.json.fmt(json_request, .{})});
+        return try aw.toOwnedSlice();
     }
 
-    /// Write escaped JSON string to writer
-    fn writeEscaped(writer: anytype, input: []const u8) !void {
-        for (input) |c| {
-            switch (c) {
-                '"' => try writer.writeAll("\\\""),
-                '\\' => try writer.writeAll("\\\\"),
-                '\n' => try writer.writeAll("\\n"),
-                '\r' => try writer.writeAll("\\r"),
-                '\t' => try writer.writeAll("\\t"),
-                0x08 => try writer.writeAll("\\b"),
-                0x0C => try writer.writeAll("\\f"),
-                else => {
-                    if (c < 0x20) {
-                        try writer.print("\\u{d:0>4}", .{c});
-                    } else {
-                        try writer.writeByte(c);
-                    }
-                },
-            }
-        }
-    }
 
     pub const CallError = error{
         BuildRequestFailed,
@@ -827,7 +950,6 @@ pub const Agent = struct {
     /// Parse a streaming chunk JSON into StreamChunk
     pub fn parseStreamChunk(self: Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
         const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch |err| {
-            // Log the actual data that failed to parse for debugging
             const max_data_len = 200;
             const truncated = data.len > max_data_len;
             const data_to_log = if (truncated) data[0..max_data_len] else data;
@@ -842,42 +964,35 @@ pub const Agent = struct {
 
         var chunk: StreamChunk = .{};
 
-        // Parse choices array
         if (root.object.get("choices")) |choices| {
             if (choices.array.items.len > 0) {
                 const first_choice = choices.array.items[0];
 
-                // Get finish reason
                 if (first_choice.object.get("finish_reason")) |fr| {
                     if (fr == .string) {
                         chunk.finish_reason = FinishReason.fromStr(fr.string);
                     }
                 }
 
-                // Parse delta (streaming uses "delta" instead of "message")
-                if (first_choice.object.get("delta")) |delta| {
-                    // Content
+                // Handle both "delta" (streaming) and "message" (non-streaming)
+                const msg_field = first_choice.object.get("delta") orelse first_choice.object.get("message");
+                if (msg_field) |delta| {
                     if (delta.object.get("content")) |content| {
                         if (content == .string and content.string.len > 0) {
                             chunk.content = content.string;
                         }
                     }
 
-                    // Reasoning content
                     if (delta.object.get("reasoning_content")) |rc| {
                         if (rc == .string and rc.string.len > 0) {
                             chunk.reasoning_content = rc.string;
                         }
                     }
 
-                    // Tool calls delta
                     if (delta.object.get("tool_calls")) |tc_delta| {
                         if (tc_delta == .array and tc_delta.array.items.len > 0) {
                             var deltas = arena.alloc(ToolCallDelta, tc_delta.array.items.len) catch |err| {
-                                self.logMsg(
-                                    .debug,
-                                    "Error allocating ToolCallDelta",
-                                );
+                                self.logMsg(.debug, "Error allocating ToolCallDelta");
                                 self.logMsg(.err, @errorName(err));
                                 return null;
                             };
@@ -886,30 +1001,27 @@ pub const Agent = struct {
                                 var delta_item: ToolCallDelta = .{ .index = i };
 
                                 if (tc_item == .object) {
-                                    // Get index if present
                                     if (tc_item.object.get("index")) |idx| {
                                         if (idx == .integer) {
                                             delta_item.index = @intCast(idx.integer);
                                         }
                                     }
 
-                                    // Get ID if present
                                     if (tc_item.object.get("id")) |id| {
-                                        if (id == .string) {
+                                        if (id == .string and id.string.len > 0) {
                                             delta_item.id = id.string;
                                         }
                                     }
 
-                                    // Get function delta
                                     if (tc_item.object.get("function")) |func| {
                                         if (func == .object) {
                                             if (func.object.get("name")) |name| {
-                                                if (name == .string) {
+                                                if (name == .string and name.string.len > 0) {
                                                     delta_item.function_name = name.string;
                                                 }
                                             }
                                             if (func.object.get("arguments")) |args| {
-                                                if (args == .string) {
+                                                if (args == .string and args.string.len > 0) {
                                                     delta_item.function_arguments = args.string;
                                                 }
                                             }
@@ -925,7 +1037,6 @@ pub const Agent = struct {
             }
         }
 
-        // Parse usage (may appear in final chunk)
         if (root.object.get("usage")) |usage_val| {
             if (usage_val == .object) {
                 var usage: Usage = .{};
@@ -955,8 +1066,8 @@ pub const Agent = struct {
         self.logMsg(.info, "Building streaming JSON request...");
 
         // get last message
-        const a = params.messages[params.messages.len - 1];
-        std.debug.print("testtt ini {s}", .{a.content.?});
+        // const a = params.messages[params.messages.len - 1];
+        // std.debug.print("testtt ini {s}", .{a.content.?});
         const json_body: []u8 = self.buildJsonRequest(params, true) catch |err| {
             self.logError("buildJsonRequest", err, null);
             return error.BuildRequestFailed;
@@ -1226,27 +1337,64 @@ pub const Agent = struct {
         \\<result>NO</result>
     ;
 
-    pub fn hasUnresolvedIntent(self: *Agent, assistant_message: []const u8) !UnresolvedIntentResult {
+    pub fn hasUnresolvedIntent(self: *Agent, messages: []const AgentMessage) !UnresolvedIntentResult {
+        // Handle empty messages array
+        if (messages.len == 0) {
+            return UnresolvedIntentResult{
+                .has_unresolved = false,
+                .reason = null,
+            };
+        }
+
+        // Build conversation history string
+        var history_parts: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (history_parts.items) |part| {
+                self.allocator.free(part);
+            }
+            history_parts.deinit(self.allocator);
+        }
+
+        for (messages) |msg| {
+            const role_str = msg.role.toStr();
+            const content = msg.content orelse "";
+            const reasoning = msg.reasoning_content orelse "";
+
+            // Format: [role]: content
+            if (content.len > 0 or reasoning.len > 0) {
+                if (reasoning.len > 0) {
+                    const part = try std.fmt.allocPrint(self.allocator, "[{s}]: {s} {s}", .{ role_str, content, reasoning });
+                    try history_parts.append(self.allocator, part);
+                } else {
+                    const part = try std.fmt.allocPrint(self.allocator, "[{s}]: {s}", .{ role_str, content });
+                    try history_parts.append(self.allocator, part);
+                }
+            }
+        }
+
+        const conversation_history = try std.mem.join(self.allocator, "\n", history_parts.items);
+        defer self.allocator.free(conversation_history);
+
         const user_content = try std.fmt.allocPrint(self.allocator,
-            \\Assistant message to classify:
+            \\Conversation history:
             \\
-            \\<message>
+            \\<conversation>
             \\{s}
-            \\</message>
+            \\</conversation>
             \\
-            \\Does this message contain unresolved intent (planned but not yet executed action)?
+            \\Does the last assistant message contain unresolved intent (planned but not yet executed action)?
             \\Respond in XML format: <result>YES</result><reason>...</reason> or <result>NO</result>
-        , .{assistant_message});
+        , .{conversation_history});
         defer self.allocator.free(user_content);
 
-        const messages = &.{
+        const call_messages = &.{
             AgentMessage{ .role = .system, .content = Agent.INTENT_JUDGE_SYSTEM },
-            AgentMessage{ .role = .user, .content = user_content },
+            AgentMessage{ .role = .assistant, .content = user_content },
         };
 
         const call_response = try self.call(.{
             .tools = &.{},
-            .messages = messages,
+            .messages = call_messages,
             .temperature = 0.0,
         });
         defer call_response.deinit();
