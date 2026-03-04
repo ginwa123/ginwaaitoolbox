@@ -151,39 +151,39 @@ const JsonRequest = struct {
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
-        
+
         // model
         try stringify.objectField("model");
         try stringify.write(self.model);
-        
+
         // thinking config (only when disabled)
         if (self.thinking) |th| {
             try stringify.objectField("thinking");
             try stringify.write(th);
         }
-        
+
         // enable_thinking
         try stringify.objectField("enable_thinking");
         try stringify.write(self.enable_thinking);
-        
+
         // messages
         try stringify.objectField("messages");
         try stringify.write(self.messages);
-        
+
         // temperature
         try stringify.objectField("temperature");
         try stringify.write(self.temperature);
-        
+
         // max_tokens
         try stringify.objectField("max_tokens");
         try stringify.write(self.max_tokens);
-        
+
         // stream (only when true)
         if (self.stream) {
             try stringify.objectField("stream");
             try stringify.write(true);
         }
-        
+
         // tools (only when present)
         if (self.tools) |t| {
             try stringify.objectField("tools");
@@ -191,7 +191,7 @@ const JsonRequest = struct {
             try stringify.objectField("tool_choice");
             try stringify.write(self.tool_choice.?);
         }
-        
+
         try stringify.endObject();
     }
 };
@@ -588,12 +588,12 @@ pub const Agent = struct {
 
     pub fn buildJsonRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
         const allocator = self.allocator;
-        
+
         // Use arena allocator for temporary conversions
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const arena_alloc = arena.allocator();
-        
+
         // Convert messages
         const json_messages = try arena_alloc.alloc(JsonMessage, params.messages.len);
         for (params.messages, 0..) |msg, i| {
@@ -620,7 +620,7 @@ pub const Agent = struct {
                 .reasoning_content = msg.reasoning_content,
             };
         }
-        
+
         // Convert tools
         var json_tools: ?[]JsonTool = null;
         if (params.tools.len > 0) {
@@ -645,7 +645,7 @@ pub const Agent = struct {
             }
             json_tools = tool_slice;
         }
-        
+
         // Build request
         const json_request = JsonRequest{
             .model = self.model,
@@ -658,13 +658,12 @@ pub const Agent = struct {
             .tools = json_tools,
             .tool_choice = if (json_tools != null) "auto" else null,
         };
-        
+
         // Serialize to JSON
         var aw: std.io.Writer.Allocating = .init(allocator);
         try aw.writer.print("{f}", .{std.json.fmt(json_request, .{})});
         return try aw.toOwnedSlice();
     }
-
 
     pub const CallError = error{
         BuildRequestFailed,
@@ -1056,8 +1055,8 @@ pub const Agent = struct {
         self.logMsg(.info, "Building streaming JSON request...");
 
         // get last message
-        // const a = params.messages[params.messages.len - 1];
-        // std.debug.print("testtt ini {s}", .{a.content.?});
+        const a = params.messages[params.messages.len - 1];
+        std.debug.print("testtt ini {s}", .{a.content.?});
         const json_body: []u8 = self.buildJsonRequest(params, true) catch |err| {
             self.logError("buildJsonRequest", err, null);
             return error.BuildRequestFailed;
@@ -1379,7 +1378,7 @@ pub const Agent = struct {
 
         const call_messages = &.{
             AgentMessage{ .role = .system, .content = Agent.INTENT_JUDGE_SYSTEM },
-            AgentMessage{ .role = .assistant, .content = user_content },
+            AgentMessage{ .role = .user, .content = user_content },
         };
 
         const call_response = try self.call(.{

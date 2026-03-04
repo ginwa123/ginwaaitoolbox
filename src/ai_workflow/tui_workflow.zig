@@ -485,7 +485,7 @@ pub const TUIWorkflow = struct {
             dynamic_agent.baseUrl = self.base_url;
             const dynamic_agent_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
             dynamic_agent.thinkingEnabled = isThinking;
-            dynamic_agent.httpOptions.read_timeout_ms = 150_000; // 5 minutes
+            dynamic_agent.httpOptions.read_timeout_ms = 600_000; // 10 minutes
             var stream_ctx = StreamingContext{
                 .workflow = self,
                 .chunk_index = 0,

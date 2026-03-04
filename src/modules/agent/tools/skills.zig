@@ -1,9 +1,17 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Maximum size for skills.md file (100KB)
 const MAX_SKILLS_SIZE: usize = 100 * 1024;
 
-/// Default path to skills.md file
+/// App name for config directory
+const APP_NAME = "zigginagentic";
+
+/// Local skills directory and filename
+const LOCAL_SKILLS_DIR = ".zigagentic/skills";
+const SKILLS_FILENAME = "skill.md";
+
+/// Default path to skills.md file (for backwards compatibility)
 pub const SKILLS_PATH = "src/modules/agent/tools/skills.md";
 
 /// Skill information structure
