@@ -177,47 +177,71 @@ pub const bashTool = AgentTool{
     .function = .{
         .name = "bash",
         .description = "Execute a bash command and return stdout, stderr, exit_code, truncated, and timeout flags. " ++
-            "This tool is optimized for precise, scoped CLI operations — especially fast text processing and structured data manipulation. " ++
-            "Preferred tools: `rg` (ripgrep) for fast search, `grep -n` for targeted matches, `sed` for ranged edits, `awk` for field-based processing, " ++
-            "`jq` for JSON, `yq` for YAML, `stat`/`ls -lh` for metadata, `wc -l` for file size checks. " ++
-            "Avoid full-file reads and unbounded output. " ++
-            "RULES: " ++
-            "1. Never use sudo, su, or any privilege escalation. " ++
-            "2. Never read entire files — use `head -n 100` for start, `tail -n 100` for end, `sed -n 'X,Yp'` for ranges, `wc -l` to check size first. " ++
-            "3. Never write unbounded output — always pipe through `head`, `rg --max-count`, or set max_output. " ++
-            "4. Prefer targeted commands: `rg`, `grep -n`, `find`, `stat`, `wc`, `awk` over broad reads like `cat` or recursive `find /`. " ++
-            "5. For large repos or files, always check size before reading (`wc -l`, `du -sh`, `ls -lh`). " ++
-            "6. For structured data, never use sed on JSON/YAML — use `jq` or `yq`. " ++
-            "7. If stdin is needed, provide stdin_data — otherwise stdin is closed to prevent hanging.",
+            "Optimized for precise, scoped CLI operations — fast text processing, file inspection, and structured data manipulation. " ++
+            "" ++
+            "PREFERRED TOOLS (use these by default): " ++
+            "`rg` — fast regex search across files; " ++
+            "`grep -n` — line-numbered matches; " ++
+            "`sed -n 'X,Yp'` — extract line ranges without reading whole file; " ++
+            "`awk` — field extraction and row filtering; " ++
+            "`jq` — JSON query/transform (never use sed/awk on JSON); " ++
+            "`yq` — YAML query/transform (never use sed/awk on YAML); " ++
+            "`stat` / `ls -lh` — file metadata without reading content; " ++
+            "`wc -l` / `du -sh` — size checks before any read. " ++
+            "" ++
+            "OUTPUT DISCIPLINE: " ++
+            "Always bound output. Pipe through `head -n N`, `tail -n N`, or `rg --max-count=N`. " ++
+            "Never emit unbounded streams. Set max_output conservatively. " ++
+            "" ++
+            "RULES (strictly enforced — never violate): " ++
+            "1. NO privilege escalation — never use sudo, su, doas, or pkexec. " ++
+            "2. NO full-file reads — use head/tail/sed ranges; always run `wc -l` first on unknown files. " ++
+            "3. NO unbounded output — every pipeline must have an explicit output cap. " ++
+            "4. NO sed/awk on structured data — use jq (JSON) or yq (YAML) exclusively. " ++
+            "5. NO blind recursion — avoid `find /`, `cat **/*`, or unscoped recursive globs on large trees; check `du -sh` first. " ++
+            "6. NO hanging commands — if stdin is required, provide stdin_data; otherwise stdin is closed immediately. " ++
+            "7. ALWAYS set cwd explicitly — never rely on an assumed working directory. " ++
+            "" ++
+            "WORKFLOW PATTERN: " ++
+            "Check size → scope the read → cap the output → parse structured data with the right tool. " ++
+            "When in doubt, rg before cat.",
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "command",
                     .type = "string",
-                    .description = "The bash command to execute. Prefer scoped commands (rg, grep, sed -n, awk, jq, stat, wc) " ++
-                        "over full reads (cat, find /, recursive globbing).",
+                    .description = "Bash command to execute. " ++
+                        "Must be scoped and output-bounded. " ++
+                        "Prefer: rg, grep -n, sed -n 'X,Yp', awk, jq, stat, wc. " ++
+                        "Avoid: cat <file>, find / (unscoped), recursive globs without size checks. " ++
+                        "Chain with | head -n N or | rg --max-count=N to cap output.",
                 },
                 .{
                     .name = "timeout",
                     .type = "number",
-                    .description = "Timeout in seconds (default 30, max 120). Command is killed and timeout=true returned if exceeded.",
+                    .description = "Max execution time in seconds. Default: 30. Max: 120. " ++
+                        "If exceeded, the process is killed and timeout=true is set in the response. " ++
+                        "Use lower values for reads/searches; higher only for compiles or network ops.",
                 },
                 .{
                     .name = "cwd",
                     .type = "string",
-                    .description = "Working directory to run the command in (required). Always set explicitly — never assume current directory.",
+                    .description = "Absolute working directory for the command. REQUIRED — always set explicitly. " ++
+                        "Never assume the current directory. All relative paths in the command resolve from here.",
                 },
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description = "Max stdout+stderr size in bytes (default 102400 = 100KB, max 1048576 = 1MB). " ++
-                        "If exceeded, truncated=true and output is cut. Keep low for file reads.",
+                    .description = "Max combined stdout+stderr in bytes. Default: 102400 (100KB). Max: 1048576 (1MB). " ++
+                        "If exceeded, output is truncated and truncated=true is set. " ++
+                        "Keep low for file reads and searches. Raise only for known-large structured outputs (e.g. JSON dumps).",
                 },
                 .{
                     .name = "stdin_data",
                     .type = "string",
-                    .description = "Data to pipe into stdin (optional). If omitted, stdin is closed immediately.",
+                    .description = "Optional data piped to the command's stdin. " ++
+                        "If omitted, stdin is closed immediately — do not run interactive or stdin-blocking commands without this.",
                 },
             },
             .required = &.{ "command", "cwd", "timeout" },

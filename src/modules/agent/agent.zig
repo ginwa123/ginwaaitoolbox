@@ -1334,33 +1334,24 @@ pub const Agent = struct {
             };
         }
 
-        // Build conversation history string
-        var history_parts: std.ArrayList([]const u8) = .empty;
-        defer {
-            for (history_parts.items) |part| {
-                self.allocator.free(part);
-            }
-            history_parts.deinit(self.allocator);
+        // Only process message at index 5
+        if (messages.len <= 5) {
+            return UnresolvedIntentResult{
+                .has_unresolved = false,
+                .reason = null,
+            };
         }
 
-        for (messages) |msg| {
-            const role_str = msg.role.toStr();
-            const content = msg.content orelse "";
-            const reasoning = msg.reasoning_content orelse "";
+        const msg = messages[5];
+        const role_str = msg.role.toStr();
+        const content = msg.content orelse "";
+        const reasoning = msg.reasoning_content orelse "";
 
-            // Format: [role]: content
-            if (content.len > 0 or reasoning.len > 0) {
-                if (reasoning.len > 0) {
-                    const part = try std.fmt.allocPrint(self.allocator, "[{s}]: {s} {s}", .{ role_str, content, reasoning });
-                    try history_parts.append(self.allocator, part);
-                } else {
-                    const part = try std.fmt.allocPrint(self.allocator, "[{s}]: {s}", .{ role_str, content });
-                    try history_parts.append(self.allocator, part);
-                }
-            }
-        }
-
-        const conversation_history = try std.mem.join(self.allocator, "\n", history_parts.items);
+        // Format single message into conversation history
+        const conversation_history = if (reasoning.len > 0)
+            try std.fmt.allocPrint(self.allocator, "[{s}]: {s} {s}", .{ role_str, content, reasoning })
+        else
+            try std.fmt.allocPrint(self.allocator, "[{s}]: {s}", .{ role_str, content });
         defer self.allocator.free(conversation_history);
 
         const user_content = try std.fmt.allocPrint(self.allocator,
