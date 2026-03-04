@@ -435,136 +435,122 @@ pub const Agent = struct {
     }
 
     pub fn buildJsonRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
-        var messages_arr = std.array_list.Managed(json.Value).init(self.allocator);
+        const allocator = self.allocator;
+        var buffer = std.io.Writer.Allocating.init(allocator);
+        const writer = &buffer.writer;
 
-        var user_msgs: []std.StringArrayHashMap(json.Value) = try self.allocator.alloc(std.StringArrayHashMap(json.Value), params.messages.len);
+        try writer.writeAll("{\"model\":\"");
+        try writer.writeAll(self.model);
+        try writer.writeAll("\"");
 
+        // Thinking config
+        if (!self.thinkingEnabled) {
+            try writer.writeAll(",\"thinking\":{\"type\":\"disabled\"},\"enable_thinking\":false");
+        } else {
+            try writer.writeAll(",\"enable_thinking\":true");
+        }
+
+        // Messages array
+        try writer.writeAll(",\"messages\":[");
         for (params.messages, 0..) |msg, i| {
-            user_msgs[i] = std.StringArrayHashMap(json.Value).init(self.allocator);
-            try user_msgs[i].put("role", .{ .string = msg.role.toStr() });
+            if (i > 0) try writer.writeAll(",");
+            try writer.writeAll("{\"role\":\"");
+            try writer.writeAll(msg.role.toStr());
+            try writer.writeAll("\"");
+
             if (msg.content) |c| {
-                try user_msgs[i].put("content", .{ .string = c });
+                try writer.writeAll(",\"content\":\"");
+                try writeEscaped(writer, c);
+                try writer.writeAll("\"");
             }
-            // Add reasoning_content for assistant messages
+
             if (msg.reasoning_content) |rc| {
-                try user_msgs[i].put("reasoning_content", .{ .string = rc });
+                try writer.writeAll(",\"reasoning_content\":\"");
+                try writeEscaped(writer, rc);
+                try writer.writeAll("\"");
             }
-            // Add tool_call_id for tool result messages
+
             if (msg.tool_call_id) |id| {
-                try user_msgs[i].put("tool_call_id", .{ .string = id });
+                try writer.writeAll(",\"tool_call_id\":\"");
+                try writer.writeAll(id);
+                try writer.writeAll("\"");
             }
+
             if (msg.tool_calls) |tcs| {
-                var tc_arr = std.array_list.Managed(json.Value).init(self.allocator);
-                for (tcs) |tc| {
-                    var tc_obj = std.StringArrayHashMap(json.Value).init(self.allocator);
-                    try tc_obj.put("id", .{ .string = tc.id });
-                    try tc_obj.put("type", .{ .string = tc.type });
-                    var func_obj = std.StringArrayHashMap(json.Value).init(self.allocator);
-                    try func_obj.put("name", .{ .string = tc.function.name });
-                    try func_obj.put("arguments", .{ .string = tc.function.arguments });
-                    try tc_obj.put("function", .{ .object = func_obj });
-                    try tc_arr.append(.{ .object = tc_obj });
+                try writer.writeAll(",\"tool_calls\":[");
+                for (tcs, 0..) |tc, j| {
+                    if (j > 0) try writer.writeAll(",");
+                    try writer.print("{{\"id\":\"{s}\",\"type\":\"{s}\",\"function\":{{\"name\":\"{s}\",\"arguments\":{s}}}}}", .{ tc.id, tc.type, tc.function.name, tc.function.arguments });
                 }
-                try user_msgs[i].put("tool_calls", .{ .array = tc_arr });
+                try writer.writeAll("]");
             }
-            try messages_arr.append(.{ .object = user_msgs[i] });
-        }
 
-        var root = std.StringArrayHashMap(json.Value).init(self.allocator);
-        try root.put("model", .{ .string = self.model });
-
-        if (!self.thinkingEnabled) {
-            var thinking = std.StringArrayHashMap(json.Value).init(self.allocator);
-            try thinking.put("type", .{ .string = "disabled" });
-            try root.put("thinking", .{ .object = thinking });
+            try writer.writeAll("}");
         }
+        try writer.writeAll("]");
 
-        if (self.thinkingEnabled) {
-            try root.put("enable_thinking", .{ .bool = true });
-        }
-        if (!self.thinkingEnabled) {
-            try root.put("enable_thinking", .{ .bool = false });
-        }
-
-        try root.put("messages", .{ .array = messages_arr });
+        // Temperature and max_tokens
         const temp = params.temperature orelse self.temperature;
-        try root.put("temperature", .{ .float = temp });
         const max_tokens = params.max_tokens orelse self.maxTokens;
-        try root.put("max_tokens", .{ .integer = @intCast(max_tokens) });
+        try writer.print(",\"temperature\":{d},\"max_tokens\":{d}", .{ temp, max_tokens });
 
-        // Add streaming flag
+        // Stream flag
         if (stream) {
-            try root.put("stream", .{ .bool = true });
+            try writer.writeAll(",\"stream\":true");
         }
 
-        var message_buffer_out = std.io.Writer.Allocating.init(self.allocator);
-        var stringifier = json.Stringify{
-            .writer = &message_buffer_out.writer,
-            .options = .{},
-        };
-
-        try stringifier.write(json.Value{ .object = root });
-
-        const result = try message_buffer_out.toOwnedSlice();
-
-        messages_arr.deinit();
-        for (user_msgs) |*m| m.deinit();
-        self.allocator.free(user_msgs);
-        root.deinit();
-
+        // Tools
         if (params.tools.len > 0) {
-            var tools_json_parts = try std.ArrayList([]const u8).initCapacity(self.allocator, params.tools.len);
-            defer tools_json_parts.deinit(self.allocator);
+            try writer.writeAll(",\"tools\":[");
+            for (params.tools, 0..) |tool, i| {
+                if (i > 0) try writer.writeAll(",");
+                try writer.writeAll("{\"type\":\"");
+                try writer.writeAll(tool.type);
+                try writer.writeAll("\",\"function\":{\"name\":\"");
+                try writer.writeAll(tool.function.name);
+                try writer.writeAll("\",\"description\":\"");
+                try writeEscaped(writer, tool.function.description);
+                try writer.writeAll("\",\"parameters\":{\"type\":\"object\",\"properties\":{");
 
-            for (params.tools) |tool| {
-                var props_json_parts: std.ArrayList([]const u8) = .empty;
-                defer {
-                    for (props_json_parts.items) |item| self.allocator.free(item);
-                    props_json_parts.deinit(self.allocator);
+                for (tool.function.parameters.properties, 0..) |prop, j| {
+                    if (j > 0) try writer.writeAll(",");
+                    try writer.print("\"{s}\":{{\"type\":\"{s}\",\"description\":\"{s}\"}}", .{ prop.name, prop.type, prop.description });
                 }
 
-                for (tool.function.parameters.properties) |prop| {
-                    const prop_json = try std.fmt.allocPrint(self.allocator, "\"{s}\":{{\"type\":\"{s}\",\"description\":\"{s}\"}}", .{ prop.name, prop.type, prop.description });
-                    try props_json_parts.append(self.allocator, prop_json);
+                try writer.writeAll("},\"required\":[");
+                for (tool.function.parameters.required, 0..) |req, j| {
+                    if (j > 0) try writer.writeAll(",");
+                    try writer.print("\"{s}\"", .{req});
                 }
-
-                const props_str = try std.mem.join(self.allocator, ",", props_json_parts.items);
-                defer self.allocator.free(props_str);
-
-                var required_parts: std.ArrayList([]const u8) = .empty;
-                defer {
-                    for (required_parts.items) |item| self.allocator.free(item);
-                    required_parts.deinit(self.allocator);
-                }
-
-                for (tool.function.parameters.required) |req| {
-                    const req_json = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{req});
-                    try required_parts.append(self.allocator, req_json);
-                }
-
-                const required_str = try std.mem.join(self.allocator, ",", required_parts.items);
-                defer self.allocator.free(required_str);
-
-                const tool_json = try std.fmt.allocPrint(self.allocator, "{{\"type\":\"{s}\",\"function\":{{\"name\":\"{s}\",\"description\":\"{s}\",\"parameters\":{{\"type\":\"object\",\"properties\":{{{s}}},\"required\":[{s}]}}}}}}", .{ tool.type, tool.function.name, tool.function.description, props_str, required_str });
-                try tools_json_parts.append(self.allocator, tool_json);
+                try writer.writeAll("]}}}");
             }
-
-            const tools_str = try std.mem.join(self.allocator, ",", tools_json_parts.items);
-            defer self.allocator.free(tools_str);
-
-            defer {
-                for (tools_json_parts.items) |item| self.allocator.free(item);
-            }
-
-            const full_tools_json = try std.fmt.allocPrint(self.allocator, ",\"tools\":[{s}],\"tool_choice\":\"auto\"}}", .{tools_str});
-            defer self.allocator.free(full_tools_json);
-
-            const json_str = try std.mem.concat(self.allocator, u8, &.{ result[0 .. result.len - 1], full_tools_json });
-            self.allocator.free(result);
-            return json_str;
+            try writer.writeAll("],\"tool_choice\":\"auto\"");
         }
 
-        return result;
+        try writer.writeAll("}");
+        return buffer.toOwnedSlice();
+    }
+
+    /// Write escaped JSON string to writer
+    fn writeEscaped(writer: anytype, input: []const u8) !void {
+        for (input) |c| {
+            switch (c) {
+                '"' => try writer.writeAll("\\\""),
+                '\\' => try writer.writeAll("\\\\"),
+                '\n' => try writer.writeAll("\\n"),
+                '\r' => try writer.writeAll("\\r"),
+                '\t' => try writer.writeAll("\\t"),
+                0x08 => try writer.writeAll("\\b"),
+                0x0C => try writer.writeAll("\\f"),
+                else => {
+                    if (c < 0x20) {
+                        try writer.print("\\u{d:0>4}", .{c});
+                    } else {
+                        try writer.writeByte(c);
+                    }
+                },
+            }
+        }
     }
 
     pub const CallError = error{
@@ -968,6 +954,9 @@ pub const Agent = struct {
     ) CallError!CallResponse {
         self.logMsg(.info, "Building streaming JSON request...");
 
+        // get last message
+        const a = params.messages[params.messages.len - 1];
+        std.debug.print("testtt ini {s}", .{a.content.?});
         const json_body: []u8 = self.buildJsonRequest(params, true) catch |err| {
             self.logError("buildJsonRequest", err, null);
             return error.BuildRequestFailed;

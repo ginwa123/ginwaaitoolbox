@@ -443,7 +443,7 @@ pub const TUIWorkflow = struct {
     }
 
     fn runInternal(self: *TUIWorkflow) !void {
-        self.saveMessageUnified(self.message, null, "user", "null", null, null) catch |err| {
+        self.saveMessageUnified(self.message, null, "user", "null", null, null, self.current_agent) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
 
@@ -519,7 +519,7 @@ pub const TUIWorkflow = struct {
                             self.logger.infoFmt("Reason: {s}", .{r}) catch {};
                         }
                         self.sendResponse(res_dynamic_agent, "");
-                        try self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null);
+                        try self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, self.current_agent);
 
                         const continuation_msg = if (intent_result.reason) |r|
                             try std.fmt.allocPrint(self.allocator, "Please continue: {s}", .{r})
@@ -537,7 +537,7 @@ pub const TUIWorkflow = struct {
                     }
 
                     self.sendResponse(res_dynamic_agent, "user_choice");
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| {
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, self.current_agent) catch |err| {
                         self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                     };
 
@@ -596,14 +596,7 @@ pub const TUIWorkflow = struct {
 
                         try messages_list.append(self.allocator, assistant_msg);
 
-                        self.saveMessageUnified(
-                            null,
-                            res_dynamic_agent,
-                            agent.Role.assistant.toStr(),
-                            null,
-                            assistant_tool_calls,
-                            null,
-                        ) catch |err| {
+                        self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, self.current_agent) catch |err| {
                             self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                         };
 
@@ -658,10 +651,14 @@ pub const TUIWorkflow = struct {
                                     prompt.ExecutingAgent
                                 else if (std.mem.eql(u8, agent_name, "KnowledgeAgent"))
                                     prompt.KnowledgeAgent
+                                else if (std.mem.eql(u8, agent_name, "ReviewAgent"))
+                                    prompt.ReviewAgent
                                 else {
                                     self.logger.warnFmt("change_agent_tool: unknown agent '{s}'", .{agent_name}) catch {};
                                     continue;
                                 };
+
+                                self.current_agent = agent_name;
 
                                 agent_prompt = prompt.agenticCodingWithCwd(self.allocator, self.cwd, agent_prompt) catch |err| {
                                     self.logger.errFmt("Failed to format agent prompt: {s}", .{@errorName(err)}) catch {};
@@ -689,7 +686,7 @@ pub const TUIWorkflow = struct {
                                 try messages_list.append(self.allocator, tool_result_msg);
 
                                 // 2. Save tool result to database
-                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id) catch |err| {
+                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id, self.current_agent) catch |err| {
                                     self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
                                 };
                                 self.sendToolResult(contentChangeAgent, tool_call.id, tool_call.function.name);
@@ -727,24 +724,22 @@ pub const TUIWorkflow = struct {
                                 };
                                 defer parsed.deinit();
 
-                                var arena_allocator_exec = std.heap.ArenaAllocator.init(self.allocator);
-                                defer arena_allocator_exec.deinit();
-                                const res_bash = bash_tool.executeBash(arena_allocator_exec.allocator(), parsed.value) catch |err| blk: {
+                                const res_bash = bash_tool.executeBash(self.allocator, parsed.value) catch |err| blk: {
                                     self.logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
                                     break :blk "Error executing command";
                                 };
+                                self.logger.debugFmt("RESPONSE TOOLS: {s}", .{res_bash}) catch |err| {
+                                    self.logger.errFmt("RESPONSE TOOLS error: {s}", .{@errorName(err)}) catch {};
+                                };
 
-                                const copy_res_bash = try self.allocator.dupe(u8, res_bash);
                                 const tool_result_msg = agent.AgentMessage{
                                     .role = .tool,
-                                    .content = copy_res_bash,
+                                    .content = res_bash,
                                     .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
                                 };
                                 try messages_list.append(self.allocator, tool_result_msg);
-                                self.saveMessageUnified(copy_res_bash, null, "tool", "tool", null, tool_call.id) catch |err| {
-                                    self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
-                                };
-                                self.sendToolResult(copy_res_bash, tool_call.id, tool_call.function.name);
+                                try self.saveMessageUnified(res_bash, null, "tool", "tool", null, tool_call.id, self.current_agent);
+                                self.sendToolResult(res_bash, tool_call.id, tool_call.function.name);
                                 self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
                         }
@@ -758,7 +753,7 @@ pub const TUIWorkflow = struct {
                     self.logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
                     // Save the filtered response to history
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null) catch |err| {
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, self.current_agent) catch |err| {
                         self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                     };
 
@@ -852,12 +847,20 @@ pub const TUIWorkflow = struct {
         const createdStr = try std.fmt.allocPrint(self.allocator, "{}", .{std.time.timestamp()});
         defer self.allocator.free(createdStr);
 
-        const contentStr = content orelse (if (response) |r| (r.content orelse "") else "");
+        var contentStr = content orelse "";
         const finishReasonStr = finish_reason orelse
             (if (response) |r| (if (r.finish_reason) |fr| fr.toStr() else "null") else "null");
         const roleStr = role orelse "assistant";
         const reasoningStr = if (response) |r| (r.reasoning_content orelse "") else "";
         const agentStr = agent_name orelse "GeneralAgent";
+
+        if (response) |r| {
+            if (r.content) |c| {
+                contentStr = c;
+            }
+        }
+
+        std.debug.print("saveMessage aa role={s} content={s}", .{ roleStr, contentStr }) ;
 
         // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
         var toolCallsJson: []const u8 = "";
@@ -872,6 +875,8 @@ pub const TUIWorkflow = struct {
 
         const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)";
         const sqlArgs = &.{ id, self.session_id, self.model, createdStr, contentStr, finishReasonStr, roleStr, toolCallsJson, reasoningStr, self.cwd, agentStr };
+
+        std.debug.print("saveMessage content={s}", .{contentStr}) ;
         try db.exec(self.allocator, sql, sqlArgs);
     }
 
@@ -1101,7 +1106,6 @@ pub const TUIWorkflow = struct {
         }
         return null;
     }
-
 
     /// Compact messages in memory based on CompactionAgent output
     /// Also persists to database: marks old messages as not for LLM, saves new compacted message
