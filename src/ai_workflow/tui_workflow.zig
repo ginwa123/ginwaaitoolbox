@@ -110,7 +110,6 @@ pub const TUIWorkflow = struct {
     conn_fd: std.posix.fd_t = -1,
 
     loop_detector: loop_detector.LoopDetector = .{},
-    current_agent: []const u8 = "GeneralAgent",
 
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger.Logger);
@@ -133,6 +132,21 @@ pub const TUIWorkflow = struct {
         self.logger.deinit();
         self.allocator.destroy(self.logger);
     }
+
+    /// Get the current agent from the last message in the database.
+    /// Returns "GeneralAgent" if no messages exist for this session.
+    pub fn getCurrentAgent(self: *TUIWorkflow) ![]const u8 {
+        const sql = "SELECT COALESCE(agent, 'GeneralAgent') FROM llm_history WHERE session_id = ? ORDER BY created DESC LIMIT 1";
+        var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
+        defer rows.deinit();
+
+        if (try rows.next()) |row| {
+            return try self.allocator.dupe(u8, row.values[0]);
+        } else {
+            return try self.allocator.dupe(u8, "GeneralAgent");
+        }
+    }
+
     pub fn sendResponse(self: *TUIWorkflow, response: agent.Agent.CallResponse, override_finish_reason: ?[]const u8) void {
         if (self.conn_fd < 0) return;
 
@@ -394,9 +408,6 @@ pub const TUIWorkflow = struct {
             agent_to_use = last_msg.agent;
         }
 
-        // Update current_agent based on history
-        self.current_agent = agent_to_use;
-
         // Get the appropriate prompt for the agent
         const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_to_use, "GeneralAgent"))
             prompt.GeneralAgent
@@ -443,7 +454,9 @@ pub const TUIWorkflow = struct {
     }
 
     fn runInternal(self: *TUIWorkflow) !void {
-        self.saveMessageUnified(self.message, null, "user", "null", null, null, self.current_agent) catch |err| {
+        const current_agent = try self.getCurrentAgent();
+        defer self.allocator.free(current_agent);
+        self.saveMessageUnified(self.message, null, "user", "null", null, null, current_agent) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
 
@@ -512,7 +525,9 @@ pub const TUIWorkflow = struct {
                             self.logger.infoFmt("Reason: {s}", .{r}) catch {};
                         }
                         self.sendResponse(res_dynamic_agent, "");
-                        try self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, self.current_agent);
+                        const current_agent_2 = try self.getCurrentAgent();
+                        defer self.allocator.free(current_agent_2);
+                        try self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_2);
 
                         const continuation_msg = if (intent_result.reason) |r|
                             try std.fmt.allocPrint(self.allocator, "Please continue: {s}", .{r})
@@ -529,7 +544,9 @@ pub const TUIWorkflow = struct {
                     }
 
                     self.sendResponse(res_dynamic_agent, "user_choice");
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, self.current_agent) catch |err| {
+                    const current_agent_3 = try self.getCurrentAgent();
+                    defer self.allocator.free(current_agent_3);
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_3) catch |err| {
                         self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                     };
 
@@ -588,7 +605,9 @@ pub const TUIWorkflow = struct {
 
                         try messages_list.append(self.allocator, assistant_msg);
 
-                        self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, self.current_agent) catch |err| {
+                        const current_agent_4 = try self.getCurrentAgent();
+                        defer self.allocator.free(current_agent_4);
+                        self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent_4) catch |err| {
                             self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                         };
 
@@ -650,8 +669,6 @@ pub const TUIWorkflow = struct {
                                     continue;
                                 };
 
-                                self.current_agent = agent_name;
-
                                 agent_prompt = prompt.agenticCodingWithCwd(self.allocator, self.cwd, agent_prompt) catch |err| {
                                     self.logger.errFmt("Failed to format agent prompt: {s}", .{@errorName(err)}) catch {};
                                     continue;
@@ -678,7 +695,9 @@ pub const TUIWorkflow = struct {
                                 try messages_list.append(self.allocator, tool_result_msg);
 
                                 // 2. Save tool result to database
-                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id, self.current_agent) catch |err| {
+                                const current_agent_5 = agent_name;
+                                defer self.allocator.free(current_agent_5);
+                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id, current_agent_5) catch |err| {
                                     self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
                                 };
                                 self.sendToolResult(contentChangeAgent, tool_call.id, tool_call.function.name);
@@ -730,7 +749,9 @@ pub const TUIWorkflow = struct {
                                     .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
                                 };
                                 try messages_list.append(self.allocator, tool_result_msg);
-                                try self.saveMessageUnified(res_bash, null, "tool", "tool", null, tool_call.id, self.current_agent);
+                                const current_agent_6 = try self.getCurrentAgent();
+                                defer self.allocator.free(current_agent_6);
+                                try self.saveMessageUnified(res_bash, null, "tool", "tool", null, tool_call.id, current_agent_6);
                                 self.sendToolResult(res_bash, tool_call.id, tool_call.function.name);
                                 self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
@@ -745,7 +766,9 @@ pub const TUIWorkflow = struct {
                     self.logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
                     // Save the filtered response to history
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, self.current_agent) catch |err| {
+                    const current_agent_7 = try self.getCurrentAgent();
+                    defer self.allocator.free(current_agent_7);
+                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_7) catch |err| {
                         self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                     };
 

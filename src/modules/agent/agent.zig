@@ -1295,35 +1295,34 @@ pub const Agent = struct {
     }
 
     pub const INTENT_JUDGE_SYSTEM =
-        \\You are an intent classifier for an AI agent loop.
+        \\You are a strict intent classifier for an AI agent loop.
         \\
-        \\Your job is to determine if an assistant message contains UNRESOLVED intent —
-        \\meaning the assistant described or planned an action but did NOT actually perform it.
+        \\Your ONLY job: does the LAST assistant message describe an action it did NOT yet perform?
         \\
-        \\UNRESOLVED intent examples (answer YES):
-        \\- "Let me check the file..." (but no tool was called)
-        \\- "Now I'll verify the backend can start..."
-        \\- "I need to run the tests first"
-        \\- "Let me look at the directory structure"
-        \\- "I should verify this works"
-        \\- "Next, I will install the dependencies"
-        \\- "Good, all the files are in place. Now let me check..."
+        \\Answer YES if the last assistant message contains ANY of:
+        \\- Future tense about an action: "I will...", "I'll...", "Let me...", "Now I'll..."
+        \\- Stated necessity: "I need to...", "I should...", "I must..."
+        \\- Announced next step: "Next,...", "First,...", "The next step is..."
+        \\- Partial completion bridge: "...now let me check", "...then I'll verify"
+        \\- Conditional promise: "If X, I'll do Y"
         \\
-        \\RESOLVED intent examples (answer NO):
-        \\- The assistant summarized results of something already done
-        \\- The assistant asked the user a question
-        \\- The assistant explained a concept or gave instructions
-        \\- The assistant said the task is complete
-        \\- The assistant listed what was accomplished
+        \\Answer NO if the last assistant message ONLY contains:
+        \\- A question directed at the user
+        \\- A summary of already-completed tool calls
+        \\- A declaration that the task is done/complete
+        \\- An explanation, concept, or instructions for the USER to follow
+        \\- A list of what was accomplished
         \\
-        \\Respond in XML format:
-        \\- If unresolved: <result>YES</result><reason>brief description of planned action</reason>
-        \\- If resolved: <result>NO</result>
+        \\STRICT RULES:
+        \\- Ignore all messages except the LAST assistant message
+        \\- A tool call result in the history does NOT resolve a later stated intent
+        \\- "I've done X, now let me do Y" → YES (Y is unresolved)
+        \\- "I've done X and Y" → NO (both resolved)
+        \\- When in doubt, answer YES
         \\
-        \\Examples:
-        \\<result>YES</result><reason>Check the file contents</reason>
-        \\<result>YES</result><reason>Run the tests</reason>
-        \\<result>NO</result>
+        \\Respond ONLY in XML. No other text.
+        \\Unresolved: <result>YES</result><reason>one short phrase</reason>
+        \\Resolved:   <result>NO</result>
     ;
 
     pub fn hasUnresolvedIntent(self: *Agent, messages: []const AgentMessage) !UnresolvedIntentResult {

@@ -3,6 +3,14 @@ const std = @import("std");
 pub const BasePrompt =
     \\You are an AI assistant in a coding workflow system.
     \\Follow all instructions carefully and respond in the expected format.
+    \\
+    \\**Before doing anything else, read the following files if they exist in the current working directory:**
+    \\- `CLAUDE.md`  — project-specific assistant instructions and conventions
+    \\- `AGENT.md`   — agent behavior overrides and workflow configuration
+    \\- `MEMORY.md`  — persistent context, decisions, and notes from prior sessions
+    \\
+    \\If any of these files are missing, continue without them. Never fail or halt because a file is absent.
+    \\Treat their contents as high-priority instructions that extend or override your defaults.
 ;
 
 pub const GeneralAgent =
