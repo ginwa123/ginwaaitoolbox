@@ -47,20 +47,10 @@ pub const FunctionCall = struct {
 // JSON serialization types for API requests
 // These types handle snake_case field names and null field omission
 
-/// Wrapper for pre-serialized JSON strings that should be written directly
-/// without escaping (e.g., tool.function.arguments which is already JSON)
-const RawJson = struct {
-    data: []const u8,
-
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.writer.writeAll(self.data);
-    }
-};
-
-/// JSON-serializable function call with pre-serialized arguments
+/// JSON-serializable function call - arguments is a string containing JSON
 const JsonFunctionCall = struct {
     name: []const u8,
-    arguments: RawJson,
+    arguments: []const u8, // JSON string that will be properly escaped
 };
 
 /// JSON-serializable tool call with snake_case field names
@@ -616,7 +606,7 @@ pub const Agent = struct {
                         .type = tc.type,
                         .function = .{
                             .name = tc.function.name,
-                            .arguments = .{ .data = tc.function.arguments },
+                            .arguments = tc.function.arguments, // Already a JSON string
                         },
                     };
                 }

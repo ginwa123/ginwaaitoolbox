@@ -12,6 +12,7 @@ const Agent = @import("tree1").agent.Agent;
 const logger = @import("tree1").logger;
 const AgentCall = @import("tree1").agent.AgentCall;
 const AgentMessage = @import("tree1").agent.AgentMessage;
+const ToolCall = @import("tree1").agent.ToolCall;
 
 /// Get environment variable or return default value (caller owns the memory)
 fn getEnvOrDefault(allocator: std.mem.Allocator, key: []const u8, default: []const u8) ![]const u8 {
@@ -107,6 +108,72 @@ test "agent call builds correct json with tools" {
     ;
 
     try std.testing.expectEqualSlices(u8, json_body, expectedString);
+}
+
+test "agent call builds correct json with tool_calls in message" {
+    const allocator = std.testing.allocator;
+
+    var config = try AgentConfig.init(allocator);
+    defer config.deinit();
+
+    var test_logger = logger.Logger.init(allocator, .{});
+    var agent = try Agent.init(allocator, &test_logger);
+    agent.apiKey = config.apiKey;
+    agent.model = config.model;
+    agent.baseUrl = config.baseUrl;
+    defer agent.deinit();
+
+    // Message with tool_calls (assistant response with tool call)
+    var tool_calls_list = std.ArrayList(ToolCall).init(allocator);
+    defer tool_calls_list.deinit();
+    try tool_calls_list.append(.{
+        .id = "call_123",
+        .type = "function",
+        .function = .{
+            .name = "bash",
+            .arguments = "{\"command\":\"ls -la\"}",
+        },
+    });
+    const tool_calls_slice = try tool_calls_list.toOwnedSlice();
+    defer allocator.free(tool_calls_slice);
+
+    const msgAssistant = AgentMessage{
+        .role = .assistant,
+        .content = null,
+        .tool_calls = tool_calls_slice,
+    };
+    const msgTool = AgentMessage{
+        .role = .tool,
+        .content = "file1.txt\nfile2.txt",
+        .tool_call_id = "call_123",
+    };
+
+    const params = AgentCall{
+        .messages = &.{ msgAssistant, msgTool },
+        .tools = &.{},
+    };
+
+    const json_body = try agent.buildJsonRequest(params, false);
+    defer allocator.free(json_body);
+
+    // Verify the JSON is valid and contains the tool_calls array
+    var parsed = try json.parseFromSlice(allocator, json_body, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    try std.testing.expect(root.object.get("messages") != null);
+    const messages = root.object.get("messages").?.array;
+    try std.testing.expectEqual(@as(usize, 2), messages.items.len);
+
+    // Check first message has tool_calls
+    const first_msg = messages.items[0].object;
+    try std.testing.expect(first_msg.get("tool_calls") != null);
+    const tool_calls = first_msg.get("tool_calls").?.array;
+    try std.testing.expectEqual(@as(usize, 1), tool_calls.items.len);
+
+    const tc = tool_calls.items[0].object;
+    try std.testing.expectEqualSlices(u8, "call_123", tc.get("id").?.string);
+    try std.testing.expectEqualSlices(u8, "bash", tc.get("function").?.object.get("name").?.string);
 }
 
 // test "agent call http get response ok" {
