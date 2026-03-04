@@ -1134,8 +1134,8 @@ pub const TUIWorkflow = struct {
         const createdStr = try std.fmt.allocPrint(self.allocator, "{}", .{std.time.timestamp()});
         defer self.allocator.free(createdStr);
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)";
-        try self.db.exec(self.allocator, sql, &.{ id, self.session_id, self.model, createdStr, summary_content, "stop", "user", "", "", self.cwd });
+        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)";
+        try self.db.exec(self.allocator, sql, &.{ id, self.session_id, self.model, createdStr, summary_content, "stop", "user", "", "", self.cwd, "GeneralAgent" });
 
         // Build new in-memory message list: system message + compacted summary
         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;

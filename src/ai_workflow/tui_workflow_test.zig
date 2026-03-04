@@ -293,8 +293,12 @@ test "saveMessage saves response to llm_history" {
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
     try mgr.runMigrations();
-
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
     defer workflow.deinit();
     workflow.session_id = "test-session";
@@ -307,7 +311,7 @@ test "saveMessage saves response to llm_history" {
         .finish_reason = .stop,
     };
 
-    try workflow.saveMessageUnified(null, response, "assistant", null, null, null);
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null);
 
     const row = try db.queryRow(allocator, "SELECT response_content, finish_reason FROM llm_history WHERE session_id = ?", &.{"test-session"});
     defer row.deinit(allocator);
@@ -350,6 +354,11 @@ test "saveMessageAsUser saves user message to llm_history" {
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -357,7 +366,7 @@ test "saveMessageAsUser saves user message to llm_history" {
     workflow.session_id = "user-msg-test";
     workflow.model = "test-model";
 
-    try workflow.saveMessageUnified("Hello, world!", null, "user", "null", null, null);
+    try workflow.saveMessageUnified("Hello, world!", null, "user", "null", null, null, null);
 
     const row = try db.queryRow(allocator, "SELECT response_content, role FROM llm_history WHERE session_id = ?", &.{"user-msg-test"});
     defer row.deinit(allocator);
@@ -400,6 +409,11 @@ test "saveMessageAsTool saves tool result to llm_history" {
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -407,7 +421,7 @@ test "saveMessageAsTool saves tool result to llm_history" {
     workflow.session_id = "tool-msg-test";
     workflow.model = "test-model";
 
-    try workflow.saveMessageUnified("bash output here", null, "tool", "tool", null, "tool_call_123");
+    try workflow.saveMessageUnified("bash output here", null, "tool", "tool", null, "tool_call_123", null);
 
     const row = try db.queryRow(allocator, "SELECT response_content, role, tool_calls_json FROM llm_history WHERE session_id = ?", &.{"tool-msg-test"});
     defer row.deinit(allocator);
@@ -450,6 +464,11 @@ test "buildMessages returns correct message structure" {
         .version = migrations.Migration005AddIsFeedToLLM.version,
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
     });
     try mgr.runMigrations();
 
@@ -503,6 +522,11 @@ test "getMessages retrieves messages by session_id" {
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -516,7 +540,7 @@ test "getMessages retrieves messages by session_id" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessageUnified(null, response1, "assistant", null, null, null);
+    try workflow.saveMessageUnified(null, response1, "assistant", null, null, null, null);
 
     const response2 = agent.Agent.CallResponse{
         .allocator = allocator,
@@ -524,7 +548,7 @@ test "getMessages retrieves messages by session_id" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessageUnified(null, response2, "assistant", null, null, null);
+    try workflow.saveMessageUnified(null, response2, "assistant", null, null, null, null);
 
     const messages = try workflow.getMessages();
     defer {
@@ -571,6 +595,11 @@ test "buildMessages handles tool_calls response correctly" {
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -588,7 +617,7 @@ test "buildMessages handles tool_calls response correctly" {
         .content = null,
         .tool_calls = tool_calls_slice,
         .finish_reason = .tool_calls,
-    }, "assistant", null, tool_calls_slice, null);
+    }, "assistant", null, tool_calls_slice, null, null);
 
     const messages = try workflow.buildMessages();
     defer {
@@ -895,6 +924,11 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -903,7 +937,7 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
     workflow.model = "test-model";
 
     // 1. Save user message
-    try workflow.saveMessageUnified("run ls command", null, "user", "null", null, null);
+    try workflow.saveMessageUnified("run ls command", null, "user", "null", null, null, null);
 
     // 2. Save assistant message with tool_calls (simulating LLM response that wants to call a tool)
     var tool_calls = try allocator.alloc(agent.ToolCall, 1);
@@ -921,10 +955,10 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
         .tool_calls = tool_calls,
         .finish_reason = .tool_calls,
     };
-    try workflow.saveMessageUnified(null, assistant_response, "assistant", null, tool_calls, null);
+    try workflow.saveMessageUnified(null, assistant_response, "assistant", null, tool_calls, null, null);
 
     // 3. Save tool result message
-    try workflow.saveMessageUnified("file1.txt\nfile2.txt", null, "tool", "tool", null, "tool-abc123");
+    try workflow.saveMessageUnified("file1.txt\nfile2.txt", null, "tool", "tool", null, "tool-abc123", null);
 
     // 4. Now reconstruct messages using buildMessages
     workflow.message = "continue";
@@ -1172,6 +1206,11 @@ test "get_session_by_dir returns single session" {
         .name = migrations.Migration005AddIsFeedToLLM.name,
         .up = migrations.Migration005AddIsFeedToLLM.up,
     });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
     try mgr.runMigrations();
 
     var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
@@ -1187,7 +1226,7 @@ test "get_session_by_dir returns single session" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessageUnified(null, response, "assistant", null, null, null);
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null);
 
     const sessions = try workflow.get_session_by_dir();
     defer {
@@ -1451,4 +1490,301 @@ test "get_session_by_dir limits to 10 results" {
 
     // Should only return 10 sessions due to LIMIT
     try std.testing.expectEqual(@as(usize, 10), sessions.len);
+}
+
+test "saveMessageUnified with null agent_name defaults to GeneralAgent" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.session_id = "test-agent-null";
+    workflow.model = "test-model";
+
+    const response = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Test response",
+        .tool_calls = null,
+        .finish_reason = .stop,
+    };
+
+    // Call saveMessageUnified with null agent_name (8th param)
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null);
+
+    // Verify agent column contains "GeneralAgent"
+    const row = try db.queryRow(allocator, "SELECT agent FROM llm_history WHERE session_id = ?", &.{"test-agent-null"});
+    defer row.deinit(allocator);
+
+    try std.testing.expectEqualStrings("GeneralAgent", row.values[0]);
+}
+
+test "saveMessageUnified with explicit agent_name stores provided value" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.session_id = "test-agent-explicit";
+    workflow.model = "test-model";
+
+    const response = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Test response from PlanningAgent",
+        .tool_calls = null,
+        .finish_reason = .stop,
+    };
+
+    // Call saveMessageUnified with explicit agent_name = "PlanningAgent"
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, "PlanningAgent");
+
+    // Verify agent column contains "PlanningAgent"
+    const row = try db.queryRow(allocator, "SELECT agent FROM llm_history WHERE session_id = ?", &.{"test-agent-explicit"});
+    defer row.deinit(allocator);
+
+    try std.testing.expectEqualStrings("PlanningAgent", row.values[0]);
+}
+
+test "getMessages retrieves agent column correctly" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.session_id = "test-agent-getmessages";
+    workflow.model = "test-model";
+
+    const response = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Test response from ExplorationAgent",
+        .tool_calls = null,
+        .finish_reason = .stop,
+    };
+
+    // Call saveMessageUnified with agent_name = "ExplorationAgent"
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, "ExplorationAgent");
+
+    // Retrieve messages using getMessages()
+    const messages = try workflow.getMessages();
+    defer {
+        for (messages) |*msg| msg.deinit(allocator);
+        allocator.free(messages);
+    }
+
+    // Verify we got one message and agent field is correct
+    try std.testing.expectEqual(@as(usize, 1), messages.len);
+    try std.testing.expectEqualStrings("ExplorationAgent", messages[0].agent);
+}
+
+test "saveMessageUnified handles various agent names" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration002AddRoleToLLMHistory.version,
+        .name = migrations.Migration002AddRoleToLLMHistory.name,
+        .up = migrations.Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration003AddReasoningContent.version,
+        .name = migrations.Migration003AddReasoningContent.name,
+        .up = migrations.Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration004AddSessionDir.version,
+        .name = migrations.Migration004AddSessionDir.name,
+        .up = migrations.Migration004AddSessionDir.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration005AddIsFeedToLLM.version,
+        .name = migrations.Migration005AddIsFeedToLLM.name,
+        .up = migrations.Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = migrations.Migration006AddAgent.version,
+        .name = migrations.Migration006AddAgent.name,
+        .up = migrations.Migration006AddAgent.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.model = "test-model";
+
+    // Test ExplorationAgent
+    workflow.session_id = "test-various-1";
+    const response1 = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Exploration response",
+        .tool_calls = null,
+        .finish_reason = .stop,
+    };
+    try workflow.saveMessageUnified(null, response1, "assistant", null, null, null, "ExplorationAgent");
+
+    // Test PlanningAgent
+    workflow.session_id = "test-various-2";
+    const response2 = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Planning response",
+        .tool_calls = null,
+        .finish_reason = .stop,
+    };
+    try workflow.saveMessageUnified(null, response2, "assistant", null, null, null, "PlanningAgent");
+
+    // Test ExecutingAgent
+    workflow.session_id = "test-various-3";
+    const response3 = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Executing response",
+        .tool_calls = null,
+        .finish_reason = .stop,
+    };
+    try workflow.saveMessageUnified(null, response3, "assistant", null, null, null, "ExecutingAgent");
+
+    // Test KnowledgeAgent
+    workflow.session_id = "test-various-4";
+    const response4 = agent.Agent.CallResponse{
+        .allocator = allocator,
+        .content = "Knowledge response",
+        .tool_calls = null,
+        .finish_reason = .stop,
+    };
+    try workflow.saveMessageUnified(null, response4, "assistant", null, null, null, "KnowledgeAgent");
+
+    // Verify each agent name is stored correctly
+    const row1 = try db.queryRow(allocator, "SELECT agent FROM llm_history WHERE session_id = ?", &.{"test-various-1"});
+    defer row1.deinit(allocator);
+    try std.testing.expectEqualStrings("ExplorationAgent", row1.values[0]);
+
+    const row2 = try db.queryRow(allocator, "SELECT agent FROM llm_history WHERE session_id = ?", &.{"test-various-2"});
+    defer row2.deinit(allocator);
+    try std.testing.expectEqualStrings("PlanningAgent", row2.values[0]);
+
+    const row3 = try db.queryRow(allocator, "SELECT agent FROM llm_history WHERE session_id = ?", &.{"test-various-3"});
+    defer row3.deinit(allocator);
+    try std.testing.expectEqualStrings("ExecutingAgent", row3.values[0]);
+
+    const row4 = try db.queryRow(allocator, "SELECT agent FROM llm_history WHERE session_id = ?", &.{"test-various-4"});
+    defer row4.deinit(allocator);
+    try std.testing.expectEqualStrings("KnowledgeAgent", row4.values[0]);
 }
