@@ -1733,3 +1733,290 @@ test "saveMessageUnified handles various agent names" {
     defer row4.deinit(allocator);
     try std.testing.expectEqualStrings("KnowledgeAgent", row4.values[0]);
 }
+
+test "LoadedSkill deinit frees memory correctly" {
+    const allocator = std.testing.allocator;
+
+    // Create a LoadedSkill with allocated strings
+    const skill_name = try allocator.dupe(u8, "test-skill");
+    const content = try allocator.dupe(u8, "This is the skill content");
+
+    const skill = tui_workflow.LoadedSkill{
+        .skill_name = skill_name,
+        .content = content,
+    };
+
+    // Deinit should free both allocations without leaking
+    skill.deinit(allocator);
+}
+
+test "isSkillLoaded returns false when no skills loaded" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    // Should return false when no skills are loaded
+    try std.testing.expect(!workflow.isSkillLoaded("any-skill"));
+    try std.testing.expect(!workflow.isSkillLoaded(""));
+}
+
+test "isSkillLoaded returns true for loaded skill" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    // Manually add a skill to loaded_skills
+    const skill_name = try allocator.dupe(u8, "my-test-skill");
+    const content = try allocator.dupe(u8, "Skill content here");
+
+    const skill = tui_workflow.LoadedSkill{
+        .skill_name = skill_name,
+        .content = content,
+    };
+
+    try workflow.loaded_skills.append(allocator, skill);
+
+    // Should find the loaded skill
+    try std.testing.expect(workflow.isSkillLoaded("my-test-skill"));
+    // Should not find non-existent skill
+    try std.testing.expect(!workflow.isSkillLoaded("other-skill"));
+}
+
+test "isSkillLoaded handles multiple skills" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+
+    // Add multiple skills
+    const skills = [_]struct { name: []const u8, content: []const u8 }{
+        .{ .name = "skill-one", .content = "Content one" },
+        .{ .name = "skill-two", .content = "Content two" },
+        .{ .name = "skill-three", .content = "Content three" },
+    };
+
+    for (skills) |s| {
+        const skill_name = try allocator.dupe(u8, s.name);
+        const content = try allocator.dupe(u8, s.content);
+        const skill = tui_workflow.LoadedSkill{
+            .skill_name = skill_name,
+            .content = content,
+        };
+        try workflow.loaded_skills.append(allocator, skill);
+    }
+
+    // Verify all skills can be found
+    try std.testing.expect(workflow.isSkillLoaded("skill-one"));
+    try std.testing.expect(workflow.isSkillLoaded("skill-two"));
+    try std.testing.expect(workflow.isSkillLoaded("skill-three"));
+    try std.testing.expect(!workflow.isSkillLoaded("skill-four"));
+}
+
+test "buildSystemMessageWithSkills returns base content when no skills" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.cwd = "/test/dir";
+
+    // Build system message with no skills loaded
+    const system_content = try workflow.buildSystemMessageWithSkills(agent.GeneralAgent);
+    defer allocator.free(system_content);
+
+    // Should contain base prompt elements
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "Current working directory:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "/test/dir") != null);
+
+    // Should NOT contain "Loaded Skills" section
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "## Loaded Skills") == null);
+}
+
+test "buildSystemMessageWithSkills includes skills in output" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.cwd = "/test/dir";
+
+    // Add a skill
+    const skill_name = try allocator.dupe(u8, "test-skill");
+    const content = try allocator.dupe(u8, "This is the skill content for testing");
+    const skill = tui_workflow.LoadedSkill{
+        .skill_name = skill_name,
+        .content = content,
+    };
+    try workflow.loaded_skills.append(allocator, skill);
+
+    // Build system message with skill
+    const system_content = try workflow.buildSystemMessageWithSkills(agent.GeneralAgent);
+    defer allocator.free(system_content);
+
+    // Should contain "Loaded Skills" section
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "## Loaded Skills") != null);
+    // Should contain the skill name
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "### test-skill") != null);
+    // Should contain the skill content
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "This is the skill content for testing") != null);
+}
+
+test "buildSystemMessageWithSkills includes multiple skills" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.runMigrations();
+
+    var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+    defer workflow.deinit();
+    workflow.cwd = "/test/dir";
+
+    // Add multiple skills
+    const skill1_name = try allocator.dupe(u8, "coding-style");
+    const skill1_content = try allocator.dupe(u8, "Use 4 spaces for indentation");
+    const skill1 = tui_workflow.LoadedSkill{
+        .skill_name = skill1_name,
+        .content = skill1_content,
+    };
+    try workflow.loaded_skills.append(allocator, skill1);
+
+    const skill2_name = try allocator.dupe(u8, "error-handling");
+    const skill2_content = try allocator.dupe(u8, "Always use explicit error handling");
+    const skill2 = tui_workflow.LoadedSkill{
+        .skill_name = skill2_name,
+        .content = skill2_content,
+    };
+    try workflow.loaded_skills.append(allocator, skill2);
+
+    // Build system message with skills
+    const system_content = try workflow.buildSystemMessageWithSkills(agent.GeneralAgent);
+    defer allocator.free(system_content);
+
+    // Should contain both skills
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "### coding-style") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "Use 4 spaces for indentation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "### error-handling") != null);
+    try std.testing.expect(std.mem.indexOf(u8, system_content, "Always use explicit error handling") != null);
+
+    // Should have proper structure
+    const skills_section_pos = std.mem.indexOf(u8, system_content, "## Loaded Skills").?;
+    const first_skill_pos = std.mem.indexOf(u8, system_content, "### coding-style").?;
+    const second_skill_pos = std.mem.indexOf(u8, system_content, "### error-handling").?;
+
+    // Skills section should come before individual skills
+    try std.testing.expect(skills_section_pos < first_skill_pos);
+    try std.testing.expect(first_skill_pos < second_skill_pos);
+}
+
+test "loaded_skills memory properly freed on deinit" {
+    const allocator = std.testing.allocator;
+
+    var db: sqlite.SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = migrations.MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = migrations.Migration001CreateLLMHistory.version,
+        .name = migrations.Migration001CreateLLMHistory.name,
+        .up = migrations.Migration001CreateLLMHistory.up,
+    });
+    try mgr.runMigrations();
+
+    {
+        var workflow = try tui_workflow.TUIWorkflow.init(allocator, &db);
+
+        // Add multiple skills
+        var i: usize = 0;
+        while (i < 5) : (i += 1) {
+            const name = try std.fmt.allocPrint(allocator, "skill-{}", .{i});
+            const content = try std.fmt.allocPrint(allocator, "Content for skill {}", .{i});
+            const skill = tui_workflow.LoadedSkill{
+                .skill_name = name,
+                .content = content,
+            };
+            try workflow.loaded_skills.append(allocator, skill);
+        }
+
+        // deinit should free all skill memory - this is verified by the GPA allocator
+        workflow.deinit();
+    }
+
+    // If we reach here without memory leaks, the test passes
+}

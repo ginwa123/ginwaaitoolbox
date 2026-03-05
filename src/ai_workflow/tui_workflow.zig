@@ -96,6 +96,16 @@ pub fn streamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
         stream_ctx.chunk_index += 1;
     }
 }
+/// Loaded skill tracking for system context injection
+pub const LoadedSkill = struct {
+    skill_name: []const u8,
+    content: []const u8,
+
+    pub fn deinit(self: *const LoadedSkill, allocator: std.mem.Allocator) void {
+        allocator.free(self.skill_name);
+        allocator.free(self.content);
+    }
+};
 
 pub const TUIWorkflow = struct {
     allocator: std.mem.Allocator,
@@ -116,6 +126,7 @@ pub const TUIWorkflow = struct {
     conn_fd: std.posix.fd_t = -1,
 
     loop_detector: loop_detector.LoopDetector = .{},
+    loaded_skills: std.ArrayList(LoadedSkill) = .{},
 
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger.Logger);
@@ -131,11 +142,18 @@ pub const TUIWorkflow = struct {
             .model = "",
             .base_url = "",
             .conn_fd = -1,
+            .loaded_skills = .{},
         };
     }
 
     pub fn deinit(self: *TUIWorkflow) void {
         self.logger.deinit();
+        // Free all loaded skills
+        for (self.loaded_skills.items) |skill| {
+            skill.deinit(self.allocator);
+        }
+        self.loaded_skills.deinit(self.allocator);
+
         self.allocator.destroy(self.logger);
     }
 
@@ -502,24 +520,22 @@ pub const TUIWorkflow = struct {
             defer arena_allocator_agent.deinit();
             const allocator_agent = arena_allocator_agent.allocator();
             var dynamic_agent = try agent.Agent.init(allocator_agent, self.logger);
-            defer dynamic_agent.deinit();
             dynamic_agent.apiKey = self.api_key;
             dynamic_agent.model = self.model;
             dynamic_agent.baseUrl = self.base_url;
-            const dynamic_agent_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+            const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
             dynamic_agent.thinkingEnabled = isThinking;
             dynamic_agent.httpOptions.read_timeout_ms = 600_000; // 10 minutes
             var stream_ctx = StreamingContext{
                 .workflow = self,
                 .chunk_index = 0,
             };
-            const res_dynamic_agent = dynamic_agent.callStreaming(dynamic_agent_params, &stream_ctx, streamCallback) catch |err| {
+            const res_dynamic_agent = dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, streamCallback) catch |err| {
                 retryCount += 1;
                 self.logger.errFmt("Error calling agent: {s}", .{@errorName(err)}) catch {};
                 self.sendError(@errorName(err), "notification_error");
                 continue;
             };
-            defer res_dynamic_agent.deinit();
             retryCount = 0;
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
@@ -1225,18 +1241,149 @@ pub const TUIWorkflow = struct {
             self.logger.errFmt("Error executing get_skill: {s}", .{@errorName(err)}) catch {};
             break :blk "{\"error\": \"Failed to get skill\"}";
         };
+        defer self.allocator.free(result);
 
         self.logger.debugFmt("GET_SKILL RESULT: {s}", .{result}) catch {};
 
+        // Parse the result JSON to extract skill info
+        const resultParsed = std.json.parseFromSlice(
+            get_skill_tool.GetSkillResult,
+            self.allocator,
+            result,
+            .{ .allocate = .alloc_always },
+        ) catch |err| {
+            self.logger.errFmt("Failed to parse get_skill result: {s}", .{@errorName(err)}) catch {};
+            // Still send tool result even if parsing fails
+            const tool_result_msg = agent.AgentMessage{
+                .role = .tool,
+                .content = result,
+                .tool_call_id = self.allocator.dupe(u8, tool_call.id) catch return,
+            };
+            messages_list.append(self.allocator, tool_result_msg) catch return;
+            const current_agent = self.getCurrentAgent() catch return;
+            self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0) catch {};
+            self.sendToolResult(result, tool_call.id, tool_call.function.name);
+            return;
+        };
+
+        const skill_result = resultParsed.value;
+
+        // Only inject if skill was successfully loaded and not already loaded
+        if (skill_result.loaded and skill_result.content.len > 0) {
+            if (!self.isSkillLoaded(skill_result.skill_name)) {
+                // Add to loaded skills list
+                const skill_name_copy = self.allocator.dupe(u8, skill_result.skill_name) catch return;
+                const content_copy = self.allocator.dupe(u8, skill_result.content) catch {
+                    return;
+                };
+                const loaded_skill = LoadedSkill{
+                    .skill_name = skill_name_copy,
+                    .content = content_copy,
+                };
+                self.loaded_skills.append(self.allocator, loaded_skill) catch {
+                    loaded_skill.deinit(self.allocator);
+                    return;
+                };
+
+                self.logger.debugFmt("Skill '{s}' loaded and added to system context", .{skill_result.skill_name}) catch {};
+
+                // Rebuild system message with all loaded skills
+                const current_agent = self.getCurrentAgent() catch return;
+
+                // Get agent prompt based on current agent
+                const agent_prompt: []const u8 = if (std.mem.eql(u8, current_agent, "GeneralAgent"))
+                    prompt.GeneralAgent
+                else if (std.mem.eql(u8, current_agent, "ExplorationAgent"))
+                    prompt.ExplorationAgent
+                else if (std.mem.eql(u8, current_agent, "PlanningAgent"))
+                    prompt.PlanningAgent
+                else if (std.mem.eql(u8, current_agent, "ExecutingAgent"))
+                    prompt.ExecutingAgent
+                else if (std.mem.eql(u8, current_agent, "KnowledgeAgent"))
+                    prompt.KnowledgeAgent
+                else
+                    prompt.GeneralAgent;
+
+                const newSystemContent = self.buildSystemMessageWithSkills(agent_prompt) catch |err| {
+                    self.logger.errFmt("Failed to build system message with skills: {s}", .{@errorName(err)}) catch {};
+                    return;
+                };
+                defer self.allocator.free(newSystemContent);
+
+                // Replace system message in messages_list
+                var system_replaced = false;
+                for (messages_list.items) |*msg| {
+                    if (msg.role == .system) {
+                        // Free old content and replace with new
+                        if (msg.content) |old_content| {
+                            self.allocator.free(old_content);
+                        }
+                        msg.content = self.allocator.dupe(u8, newSystemContent) catch return;
+                        system_replaced = true;
+                        break;
+                    }
+                }
+                if (!system_replaced) {
+                    // Insert new system message at beginning
+                    messages_list.insert(self.allocator, 0, agent.AgentMessage{
+                        .role = .system,
+                        .content = self.allocator.dupe(u8, newSystemContent) catch return,
+                    }) catch return;
+                }
+            } else {
+                self.logger.debugFmt("Skill '{s}' already loaded, skipping duplicate", .{skill_result.skill_name}) catch {};
+            }
+        }
+
+        // Send tool result (use original result before deinit)
         const tool_result_msg = agent.AgentMessage{
             .role = .tool,
             .content = result,
             .tool_call_id = self.allocator.dupe(u8, tool_call.id) catch return,
         };
         messages_list.append(self.allocator, tool_result_msg) catch return;
-        const current_agent = self.getCurrentAgent() catch return;
-        self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0) catch {};
+        const current_agent_final = self.getCurrentAgent() catch return;
+        self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
         self.sendToolResult(result, tool_call.id, tool_call.function.name);
+    }
+
+    /// Build system message content with loaded skills injected
+    fn buildSystemMessageWithSkills(self: *TUIWorkflow, agent_prompt: []const u8) ![]const u8 {
+        const treeDir = try self.getTreeDir();
+
+        // Build base system content without skills
+        const baseContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd, agent_prompt, treeDir);
+
+        // If no skills loaded, return base content
+        if (self.loaded_skills.items.len == 0) {
+            return self.allocator.dupe(u8, baseContent);
+        }
+
+        // Build skills section
+        var skillsBuilder: std.ArrayList(u8) = .empty;
+        try skillsBuilder.appendSlice(self.allocator, "\n\n## Loaded Skills\n\n");
+        for (self.loaded_skills.items) |skill| {
+            try skillsBuilder.appendSlice(self.allocator, "### ");
+            try skillsBuilder.appendSlice(self.allocator, skill.skill_name);
+            try skillsBuilder.appendSlice(self.allocator, "\n\n");
+            try skillsBuilder.appendSlice(self.allocator, skill.content);
+            try skillsBuilder.appendSlice(self.allocator, "\n\n");
+        }
+
+        // Combine base content with skills section
+        const skillsSection = try skillsBuilder.toOwnedSlice(self.allocator);
+
+        return try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ baseContent, skillsSection });
+    }
+
+    /// Check if a skill is already loaded
+    fn isSkillLoaded(self: *TUIWorkflow, skill_name: []const u8) bool {
+        for (self.loaded_skills.items) |skill| {
+            if (std.mem.eql(u8, skill.skill_name, skill_name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn getTreeDir(self: *TUIWorkflow) ![]const u8 {

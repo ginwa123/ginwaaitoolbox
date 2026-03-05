@@ -555,6 +555,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
                     stream_interrupted = true;
+                    std.debug.print("stream interrupted\n", .{});
                     break;
                 }
                 // Reset revents for next iteration
@@ -572,6 +573,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
 
             // Check for socket hangup or error
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+                std.debug.print("socket error\n", .{});
                 break;
             }
         }
@@ -625,7 +627,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                 for (displayed_tool_ids.items) |id| {
                     if (std.mem.eql(u8, id, result.id)) {
                         already_displayed = true;
-                        break;
+                        // break;
                     }
                 }
 
@@ -633,10 +635,24 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                     // Truncate result to 500 chars
                     const max_result_len: usize = 500;
                     const display_result = if (result.result.len > max_result_len) result.result[0..max_result_len] else result.result;
+                    const std_out =  extractTag(display_result, "stdout") orelse display_result;
+                    const error_code = extractTag(display_result, "stderr");
+                    var is_error = false;
+                    if (error_code) |ec| {
+                        if (std.mem.eql(u8, ec, "0") == false) {
+                            is_error = true;
+                        }
+                    }
 
                     // Print tool result with color
                     std.debug.print("\n{s}[Tool: {s}]{s}\n", .{ cyan, result.name, reset });
-                    std.debug.print("{s}\n", .{display_result});
+                    if (is_error) {
+                        // make it red
+                        std.debug.print("{s}\n", .{std_out});
+                    } else {
+                        std.debug.print("{s}\n", .{std_out});
+                    }
+                    // std.debug.print("{s}\n", .{display_result});
 
                     // Add to displayed list (duplicate the id string)
                     const id_copy = app.allocator.dupe(u8, result.id) catch continue;
