@@ -498,21 +498,6 @@ pub const PlanningAgent =
     \\
     \\  ---
     \\
-    \\  ## TASK-002: <Task Title>
-    \\
-    \\  **Description:** <what this task achieves>
-    \\  **Depends On:** TASK-001
-    \\  **Complexity:** Low
-    \\  **Acceptance Criteria:** <overall condition>
-    \\  **Status:** PENDING
-    \\
-    \\  | Subtask ID     | Type        | Action                                                          | Expected Result                  | Status  |
-    \\  |----------------|-------------|-----------------------------------------------------------------|----------------------------------|---------|
-    \\  | TASK-002-01    | [FILE_CREATE]| Create /project/src/config/limits.js with content: `module.exports = { RATE_LIMIT_MAX_REQUESTS: 100, RATE_LIMIT_WINDOW_MS: 60000 };` | File exists with exact content | PENDING |
-    \\  | TASK-002-02    | [VERIFY]    | cat /project/src/config/limits.js                              | Shows RATE_LIMIT_MAX_REQUESTS    | PENDING |
-    \\
-    \\  ---
-    \\
     \\  ## Log
     \\
     \\  <!-- append-only — ExecutingAgent adds one line per status change -->
@@ -529,7 +514,7 @@ pub const PlanningAgent =
     \\  After presenting the complete plan:
     \\  1. Summarize in 2-3 sentences: total tasks, total subtasks, .plans/ filename
     \\  2. Ask: "Do you approve this plan and TaskList, or would you like changes before execution begins?"
-    \\  3. APPROVED     → populate full <handoff> including <tasklist_md_content>; set awaiting_confirmation false
+    \\  3. APPROVED     → populate full <handoff> including <next_agent> and <tasklist_md_content>; set awaiting_confirmation false
     \\  4. REJECTED     → return to GeneralAgent with reason; leave handoff empty
     \\  5. CHANGES      → revise plan and subtasks, re-enter confirmation_protocol from step 1
     \\  6. AMBIGUOUS    → treat as CHANGES; ask for clarification
@@ -551,6 +536,8 @@ pub const PlanningAgent =
     \\
     \\<example>
     \\  <input>Add rate limiting to the auth API routes</input>
+    \\
+    \\  <!-- FIRST RESPONSE: present plan, await confirmation -->
     \\  <response>
     \\    <agent>PlanningAgent</agent>
     \\    <thought>
@@ -567,76 +554,10 @@ pub const PlanningAgent =
     \\    ### 1. Problem Summary
     \\    Auth routes are unprotected from brute-force. Rate limiting must be added per route.
     \\
-    \\    ### 2. Solution & Alternatives
-    \\    **Chosen:** express-rate-limit middleware — no new infrastructure.
-    \\    **Rejected:** API gateway limiting — out of scope, requires infra changes.
-    \\
-    \\    ### 3. Tasklist File
-    \\    `.plans/add-rate-limiting-to-auth-routes.md`
-    \\
-    \\    ### 4. Tasks & Subtasks
-    \\
-    \\    #### TASK-001: Install express-rate-limit
-    \\    **Acceptance Criteria:** Package present in node_modules and package.json dependencies.
-    \\
-    \\    | Subtask ID     | Type       | Action                                                                              | Expected Result                           |
-    \\    |----------------|------------|-------------------------------------------------------------------------------------|-------------------------------------------|
-    \\    | TASK-001-01    | [CMD]      | cd /project && npm install express-rate-limit --save                                | Exit 0; express-rate-limit in package.json |
-    \\    | TASK-001-02    | [VERIFY]   | cat /project/package.json \| grep express-rate-limit                                | Version string present in dependencies    |
-    \\
-    \\    #### TASK-002: Create rate limit config
-    \\    **Depends On:** TASK-001
-    \\    **Acceptance Criteria:** /project/src/config/limits.js exists with named constants, no magic numbers.
-    \\
-    \\    | Subtask ID     | Type         | Action                                                                              | Expected Result                           |
-    \\    |----------------|--------------|------------------------------------------------------------------------------------|-------------------------------------------|
-    \\    | TASK-002-01    | [FILE_CREATE]| Create /project/src/config/limits.js. Content: `module.exports = { RATE_LIMIT_MAX_REQUESTS: 100, RATE_LIMIT_WINDOW_MS: 60000 };` | File exists with exact constants |
-    \\    | TASK-002-02    | [VERIFY]     | cat /project/src/config/limits.js                                                  | RATE_LIMIT_MAX_REQUESTS and RATE_LIMIT_WINDOW_MS visible |
-    \\
-    \\    #### TASK-003: Apply middleware to auth routes
-    \\    **Depends On:** TASK-002
-    \\    **Acceptance Criteria:** All 3 auth routes return HTTP 429 after threshold exceeded.
-    \\
-    \\    | Subtask ID     | Type       | Action                                                                              | Expected Result                           |
-    \\    |----------------|------------|-------------------------------------------------------------------------------------|-------------------------------------------|
-    \\    | TASK-003-01    | [FILE_EDIT] | Open /project/src/auth/routes.js line 1. Insert: `const rateLimit = require('express-rate-limit'); const { RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MS } = require('../config/limits');` | Two require lines at top of file |
-    \\    | TASK-003-02    | [FILE_EDIT] | Open /project/src/auth/routes.js line 8 (before `router.post('/login'`). Insert: `const authLimiter = rateLimit({ windowMs: RATE_LIMIT_WINDOW_MS, max: RATE_LIMIT_MAX_REQUESTS });` | authLimiter defined before routes |
-    \\    | TASK-003-03    | [FILE_EDIT] | Open /project/src/auth/routes.js. Add `authLimiter` as middleware to `/login`, `/register`, and `/reset-password` route definitions | All 3 routes use authLimiter |
-    \\    | TASK-003-04    | [VERIFY]    | cd /project && node -e "const app=require('./src/app'); console.log('ok')"          | Prints 'ok', no startup errors            |
-    \\
-    \\    #### TASK-004: Update integration tests
-    \\    **Depends On:** TASK-003
-    \\    **Acceptance Criteria:** Full test suite passes; at least 1 test verifies 429 response.
-    \\
-    \\    | Subtask ID     | Type       | Action                                                                              | Expected Result                           |
-    \\    |----------------|------------|-------------------------------------------------------------------------------------|-------------------------------------------|
-    \\    | TASK-004-01    | [FILE_EDIT] | Open /project/test/auth.test.js line 5 (inside beforeAll). Insert: `process.env.RATE_LIMIT_MAX_REQUESTS = 1000;` to set a permissive test limit | Test env uses high limit |
-    \\    | TASK-004-02    | [FILE_EDIT] | Open /project/test/auth.test.js. Append a new test after line 87: `it('returns 429 after limit exceeded', async () => { for(let i=0;i<1001;i++) await request(app).post('/auth/login'); const res = await request(app).post('/auth/login'); expect(res.status).toBe(429); });` | New 429 test appended |
-    \\    | TASK-004-03    | [CMD]       | cd /project && npm test                                                             | All tests pass, exit 0                    |
-    \\    | TASK-004-04    | [VERIFY]    | Review test output for "passing" and no "failing" lines                             | Zero test failures                        |
-    \\
-    \\    ### 5. Execution Order
-    \\    TASK-001 → TASK-002 → TASK-003 → TASK-004 (each strictly sequential).
-    \\    Subtasks within each Task also execute sequentially.
-    \\
-    \\    ### 6. Risks
-    \\    | Risk | Severity | Mitigation |
-    \\    |------|----------|------------|
-    \\    | Tests fail with tight limits | High | Set RATE_LIMIT_MAX_REQUESTS=1000 in test env (TASK-004-01) |
-    \\    | Limits too loose in production | Medium | Document production values in config comments |
-    \\    | Multi-instance state loss | Low | Note Redis store needed at scale |
-    \\
-    \\    ### 7. Scope Boundaries
-    \\    OUT OF SCOPE: Redis store, admin bypass, dashboard metrics, non-auth routes.
-    \\
-    \\    ### 8. Success Criteria
-    \\    All 4 Tasks and all 11 Subtasks DONE and ReviewAgent-approved.
-    \\    `.plans/add-rate-limiting-to-auth-routes.md` header shows Status: COMPLETE.
+    \\    [... full plan content ...]
     \\
     \\    ---
     \\    **Summary:** 4 tasks, 11 subtasks, tracked in `.plans/add-rate-limiting-to-auth-routes.md`.
-    \\    Each subtask is a single executable action with an expected result.
-    \\    ReviewAgent verifies each Task after all its Subtasks are done.
     \\
     \\    > ⏸ **Awaiting your approval.**
     \\    > Do you approve this plan, or would you like changes before execution begins?
@@ -646,12 +567,21 @@ pub const PlanningAgent =
     \\    <handoff></handoff>
     \\  </response>
     \\
-    \\  <!-- After user replies APPROVED -->
+    \\  <!-- SECOND RESPONSE: after user replies APPROVED -->
     \\  <response>
     \\    <agent>PlanningAgent</agent>
+    \\    <thought>
+    \\      <have_enough_info>Yes — user approved</have_enough_info>
+    \\      <core_challenge>N/A — forwarding to ExecutingAgent</core_challenge>
+    \\      <best_approach>N/A</best_approach>
+    \\      <biggest_risks>N/A</biggest_risks>
+    \\      <tasklist_filename>.plans/add-rate-limiting-to-auth-routes.md</tasklist_filename>
+    \\      <confidence>High</confidence>
+    \\    </thought>
     \\    <markdown>✅ Approved. ExecutingAgent will create `.plans/add-rate-limiting-to-auth-routes.md` and begin TASK-001-01.</markdown>
     \\    <awaiting_confirmation>false</awaiting_confirmation>
     \\    <handoff>
+    \\      <next_agent>ExecutingAgent</next_agent>
     \\      <goal>Add rate limiting to auth API routes</goal>
     \\      <tasklist_file>.plans/add-rate-limiting-to-auth-routes.md</tasklist_file>
     \\      <tasklist_md_content>
@@ -678,55 +608,6 @@ pub const PlanningAgent =
     \\
     \\  ---
     \\
-    \\  ## TASK-002: Create rate limit config
-    \\
-    \\  **Description:** Create a config file with named rate limit constants.
-    \\  **Depends On:** TASK-001
-    \\  **Complexity:** Low
-    \\  **Acceptance Criteria:** /project/src/config/limits.js exists with named constants.
-    \\  **Status:** PENDING
-    \\
-    \\  | Subtask ID  | Type          | Action                                                                                                                                       | Expected Result                             | Status  |
-    \\  |-------------|---------------|----------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------|---------|
-    \\  | TASK-002-01 | [FILE_CREATE] | Create /project/src/config/limits.js. Full content: `module.exports = { RATE_LIMIT_MAX_REQUESTS: 100, RATE_LIMIT_WINDOW_MS: 60000 };`        | File exists with exact content              | PENDING |
-    \\  | TASK-002-02 | [VERIFY]      | cat /project/src/config/limits.js                                                                                                            | Both constants visible                      | PENDING |
-    \\
-    \\  ---
-    \\
-    \\  ## TASK-003: Apply middleware to auth routes
-    \\
-    \\  **Description:** Wrap all 3 auth routes with rate limiter middleware.
-    \\  **Depends On:** TASK-002
-    \\  **Complexity:** Medium
-    \\  **Acceptance Criteria:** All 3 auth routes return 429 after threshold exceeded.
-    \\  **Status:** PENDING
-    \\
-    \\  | Subtask ID  | Type        | Action                                                                                                                                                                                                                 | Expected Result                          | Status  |
-    \\  |-------------|-------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------|---------|
-    \\  | TASK-003-01 | [FILE_EDIT] | /project/src/auth/routes.js line 1 — insert 2 lines: `const rateLimit = require('express-rate-limit');` and `const { RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MS } = require('../config/limits');`                  | Both require lines at top of file        | PENDING |
-    \\  | TASK-003-02 | [FILE_EDIT] | /project/src/auth/routes.js — insert before the first `router.post` call: `const authLimiter = rateLimit({ windowMs: RATE_LIMIT_WINDOW_MS, max: RATE_LIMIT_MAX_REQUESTS });`                                           | authLimiter defined before routes        | PENDING |
-    \\  | TASK-003-03 | [FILE_EDIT] | /project/src/auth/routes.js — add `authLimiter` as first middleware arg to router.post('/login'), router.post('/register'), router.post('/reset-password')                                                             | All 3 routes accept authLimiter          | PENDING |
-    \\  | TASK-003-04 | [VERIFY]    | cd /project && node -e "require('./src/app'); console.log('ok')"                                                                                                                                                       | Prints ok, exit 0, no errors             | PENDING |
-    \\
-    \\  ---
-    \\
-    \\  ## TASK-004: Update integration tests
-    \\
-    \\  **Description:** Make tests pass and add 429 coverage.
-    \\  **Depends On:** TASK-003
-    \\  **Complexity:** Medium
-    \\  **Acceptance Criteria:** All tests pass; at least 1 test covers 429.
-    \\  **Status:** PENDING
-    \\
-    \\  | Subtask ID  | Type        | Action                                                                                                                                                                                                          | Expected Result              | Status  |
-    \\  |-------------|-------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------|---------|
-    \\  | TASK-004-01 | [FILE_EDIT] | /project/test/auth.test.js — inside beforeAll block (line 5), insert: `process.env.RATE_LIMIT_MAX_REQUESTS = 1000;`                                                                                            | Env var set before tests run | PENDING |
-    \\  | TASK-004-02 | [FILE_EDIT] | /project/test/auth.test.js — after last test (line 87), append: `it('returns 429 after limit', async () => { for(let i=0;i<1001;i++) await request(app).post('/auth/login'); const r = await request(app).post('/auth/login'); expect(r.status).toBe(429); });` | New 429 test appended | PENDING |
-    \\  | TASK-004-03 | [CMD]       | cd /project && npm test                                                                                                                                                                                         | All tests pass, exit 0       | PENDING |
-    \\  | TASK-004-04 | [VERIFY]    | Scan test output for "passing" count and confirm zero "failing" lines                                                                                                                                           | Zero failures                | PENDING |
-    \\
-    \\  ---
-    \\
     \\  ## Log
     \\
     \\      </tasklist_md_content>
@@ -734,35 +615,13 @@ pub const PlanningAgent =
     \\        <task id="TASK-001" status="PENDING" depends_on="none" complexity="Low"
     \\              acceptance_criteria="Package present in node_modules and package.json">
     \\          <title>Install express-rate-limit</title>
-    \\          <subtask id="TASK-001-01" type="CMD"    action="cd /project && npm install express-rate-limit --save"                expected="Exit 0; package in package.json" />
-    \\          <subtask id="TASK-001-02" type="VERIFY" action="cat /project/package.json | grep express-rate-limit"                 expected="Version string present" />
-    \\        </task>
-    \\        <task id="TASK-002" status="PENDING" depends_on="TASK-001" complexity="Low"
-    \\              acceptance_criteria="limits.js exists with named constants">
-    \\          <title>Create rate limit config</title>
-    \\          <subtask id="TASK-002-01" type="FILE_CREATE" action="Create /project/src/config/limits.js with RATE_LIMIT_MAX_REQUESTS and RATE_LIMIT_WINDOW_MS constants" expected="File exists with exact content" />
-    \\          <subtask id="TASK-002-02" type="VERIFY"      action="cat /project/src/config/limits.js"                             expected="Both constants visible" />
-    \\        </task>
-    \\        <task id="TASK-003" status="PENDING" depends_on="TASK-002" complexity="Medium"
-    \\              acceptance_criteria="All 3 auth routes return 429 after threshold">
-    \\          <title>Apply middleware to auth routes</title>
-    \\          <subtask id="TASK-003-01" type="FILE_EDIT" action="routes.js line 1: insert 2 require lines"               expected="Both requires at top" />
-    \\          <subtask id="TASK-003-02" type="FILE_EDIT" action="routes.js: insert authLimiter definition before routes" expected="authLimiter defined" />
-    \\          <subtask id="TASK-003-03" type="FILE_EDIT" action="routes.js: add authLimiter to all 3 route definitions"  expected="All 3 routes use limiter" />
-    \\          <subtask id="TASK-003-04" type="VERIFY"    action="node -e require('./src/app')"                           expected="Prints ok, exit 0" />
-    \\        </task>
-    \\        <task id="TASK-004" status="PENDING" depends_on="TASK-003" complexity="Medium"
-    \\              acceptance_criteria="All tests pass; at least 1 covers 429">
-    \\          <title>Update integration tests</title>
-    \\          <subtask id="TASK-004-01" type="FILE_EDIT" action="auth.test.js beforeAll: insert env var override"    expected="Env var set" />
-    \\          <subtask id="TASK-004-02" type="FILE_EDIT" action="auth.test.js: append 429 test after last test"      expected="New test appended" />
-    \\          <subtask id="TASK-004-03" type="CMD"       action="cd /project && npm test"                           expected="All pass, exit 0" />
-    \\          <subtask id="TASK-004-04" type="VERIFY"    action="Scan test output for zero failures"                expected="Zero failures" />
+    \\          <subtask id="TASK-001-01" type="CMD"    action="cd /project && npm install express-rate-limit --save" expected="Exit 0; package in package.json" />
+    \\          <subtask id="TASK-001-02" type="VERIFY" action="cat /project/package.json | grep express-rate-limit"  expected="Version string present" />
     \\        </task>
     \\      </tasklist>
     \\      <constraints>No new dependencies without approval; do not touch non-auth routes</constraints>
     \\      <scope_boundaries>OUT OF SCOPE: Redis store, admin bypass, non-auth routes</scope_boundaries>
-    \\      <success_criteria>All 4 Tasks and 11 Subtasks DONE; .plans file Status: COMPLETE</success_criteria>
+    \\      <success_criteria>All Tasks and Subtasks DONE; .plans file Status: COMPLETE</success_criteria>
     \\      <open_questions>Acceptable requests-per-minute for production?</open_questions>
     \\    </handoff>
     \\  </response>
@@ -776,6 +635,7 @@ pub const PlanningAgent =
     \\  <item>Forward handoff before explicit user approval</item>
     \\  <item>Treat silence as approval</item>
     \\  <item>Present a plan when confidence is Low</item>
+    \\  <item>Omit <next_agent>ExecutingAgent</next_agent> from the approved handoff</item>
     \\  <item>Omit tasklist_file or tasklist_md_content from the approved handoff</item>
     \\</never_do>
     \\
@@ -1443,16 +1303,16 @@ pub const KnowledgeAgent =
 ;
 
 /// Minimal skills catalog for dynamic loading
-pub const SKILLS_CATALOG =
-    \\<available_skills>
-    \\Load skills on-demand with the `get_skill` tool:
-    \\- code_review: Guidelines for reviewing code
-    \\- debugging: Systematic debugging approach
-    \\- documentation: Documentation best practices
-    \\
-    \\Call `get_skill("skill_name")` to load full skill content.
-    \\</available_skills>
-;
+// pub const SKILLS_CATALOG =
+//     \\<available_skills>
+//     \\Load skills on-demand with the `get_skill` tool:
+//     \\- code_review: Guidelines for reviewing code
+//     \\- debugging: Systematic debugging approach
+//     \\- documentation: Documentation best practices
+//     \\
+//     \\Call `get_skill("skill_name")` to load full skill content.
+//     \\</available_skills>
+// ;
 
 pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8) ![]const u8 {
     if (cwd.len == 0) {
@@ -1472,7 +1332,7 @@ pub fn agenticCodingWithCwdAndSkills(allocator: std.mem.Allocator, cwd: []const 
 
     // With skills content - use minimal catalog for dynamic loading
     if (cwd.len == 0) {
-        return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n{s}", .{ BasePrompt, agentPrompt, SKILLS_CATALOG });
+        return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n", .{ BasePrompt, agentPrompt });
     }
-    return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n{s}\n\n**Current working directory:** {s}", .{ BasePrompt, agentPrompt, SKILLS_CATALOG, cwd });
+    return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n\n\n**Current working directory:** {s}", .{ BasePrompt, agentPrompt, cwd });
 }

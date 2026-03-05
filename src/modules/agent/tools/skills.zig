@@ -7,13 +7,11 @@ const MAX_SKILLS_SIZE: usize = 100 * 1024;
 /// App name for config directory
 const APP_NAME = "zigginagentic";
 
-/// Local skills directory and filename
+/// Local skills directory
 const LOCAL_SKILLS_DIR = ".zigginagentic/skills";
-const SKILLS_FILENAME = "skill.md";
 
-/// Deprecated: Use resolveSkillsPath() instead.
-/// This constant is kept for backwards compatibility with *FromPath functions.
-pub const SKILLS_PATH = "src/modules/agent/tools/skills.md";
+/// Skills file extension (case-insensitive matching)
+const SKILLS_FILE_EXTENSION = ".MD";
 
 /// Skill information structure
 pub const SkillInfo = struct {
@@ -21,7 +19,178 @@ pub const SkillInfo = struct {
     description: []const u8,
 };
 
-/// Get the local skills path (cwd/.zigginagentic/skills/skill.md)
+/// Parsed YAML frontmatter from a skill file
+pub const ParsedFrontmatter = struct {
+    name: []const u8,
+    description: []const u8,
+};
+
+/// Parse YAML frontmatter from skill file content
+/// Expected format:
+/// ---
+/// name: skill-name
+/// description: "Skill description text"
+/// ---
+/// # Skill content follows...
+///
+/// Returns ParsedFrontmatter with allocated strings, or null if no valid frontmatter found.
+/// Caller owns the returned memory and must free name and description.
+fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
+    // Check for frontmatter start marker
+    if (!std.mem.startsWith(u8, content, "---")) {
+        return null;
+    }
+
+    // Find the end of the first line (the opening ---)
+    const first_newline = std.mem.indexOf(u8, content, "\n") orelse return null;
+    const after_first_line = content[first_newline + 1 ..];
+
+    // Find the closing --- marker
+    const closing_marker = std.mem.indexOf(u8, after_first_line, "\n---") orelse return null;
+    const frontmatter_content = after_first_line[0..closing_marker];
+
+    // Parse name and description from frontmatter
+    var name: ?[]const u8 = null;
+    var description: ?[]const u8 = null;
+
+    var line_start: usize = 0;
+    while (line_start < frontmatter_content.len) {
+        const line_end = std.mem.indexOf(u8, frontmatter_content[line_start..], "\n") orelse frontmatter_content.len - line_start;
+        const line = std.mem.trim(u8, frontmatter_content[line_start .. line_start + line_end], " \t\r");
+
+        if (line.len == 0) {
+            line_start += line_end + 1;
+            continue;
+        }
+
+        // Parse "name:" or "description:" lines
+        if (std.mem.startsWith(u8, line, "name:")) {
+            const value = std.mem.trim(u8, line[5..], " \t");
+            // Remove quotes if present
+            if (value.len >= 2 and ((value[0] == '"' and value[value.len - 1] == '"') or (value[0] == '\'' and value[value.len - 1] == '\''))) {
+                name = value[1 .. value.len - 1];
+            } else {
+                name = value;
+            }
+        } else if (std.mem.startsWith(u8, line, "description:")) {
+            const value = std.mem.trim(u8, line[12..], " \t");
+            // Remove quotes if present
+            if (value.len >= 2 and ((value[0] == '"' and value[value.len - 1] == '"') or (value[0] == '\'' and value[value.len - 1] == '\''))) {
+                description = value[1 .. value.len - 1];
+            } else {
+                description = value;
+            }
+        }
+
+        line_start += line_end + 1;
+    }
+
+    // Name is required, description defaults to empty string
+    const parsed_name = name orelse return null;
+    const parsed_desc = description orelse "";
+
+    return .{
+        .name = allocator.dupe(u8, parsed_name) catch return null,
+        .description = allocator.dupe(u8, parsed_desc) catch return null,
+    };
+}
+
+/// Free a ParsedFrontmatter allocated by parseYamlFrontmatter
+fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) void {
+    allocator.free(fm.name);
+    allocator.free(fm.description);
+}
+
+/// Get the local skills directory path (cwd/.zigginagentic/skills/)
+/// Returns allocated string that caller must free, or null if cwd unavailable
+pub fn getSkillsDirPath(allocator: std.mem.Allocator) ?[]const u8 {
+    // Get current working directory
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = std.posix.getcwd(&cwd_buf) catch {
+        std.log.debug("Could not get current working directory", .{});
+        return null;
+    };
+
+    // Build path: cwd/.zigginagentic/skills/
+    const path = std.fs.path.join(allocator, &[_][]const u8{
+        cwd,
+        LOCAL_SKILLS_DIR,
+    }) catch {
+        std.log.debug("Could not build local skills directory path", .{});
+        return null;
+    };
+
+    return path;
+}
+
+/// List all skill files in the skills directory
+/// Returns allocated array of file paths that caller must free
+/// Empty files are excluded from the list
+pub fn listSkillFiles(allocator: std.mem.Allocator) ?[][]const u8 {
+    const dir_path = getSkillsDirPath(allocator) orelse return null;
+    defer allocator.free(dir_path);
+
+    // Open the skills directory
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        std.log.debug("Could not open skills directory at {s}: {s}", .{ dir_path, @errorName(err) });
+        return null;
+    };
+    defer dir.close();
+
+    // Collect skill file paths
+    var files: std.ArrayList([]const u8) = .empty;
+    defer files.deinit(allocator);
+
+    var iter = dir.iterate();
+    while (iter.next() catch null) |entry| {
+        // Check for .MD extension (case-insensitive)
+        const name = entry.name;
+        const lower_name = std.ascii.allocLowerString(allocator, name) catch continue;
+        defer allocator.free(lower_name);
+
+        if (!std.mem.endsWith(u8, lower_name, ".md")) {
+            continue;
+        }
+
+        // Build full path
+        const full_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, name }) catch continue;
+
+        // Check if file is non-empty
+        const file = dir.openFile(name, .{}) catch {
+            allocator.free(full_path);
+            continue;
+        };
+        defer file.close();
+
+        const stat = file.stat() catch {
+            allocator.free(full_path);
+            continue;
+        };
+
+        // Skip empty files
+        if (stat.size == 0) {
+            allocator.free(full_path);
+            continue;
+        }
+
+        files.append(allocator, full_path) catch {
+            allocator.free(full_path);
+            continue;
+        };
+    }
+
+    return files.toOwnedSlice(allocator) catch null;
+}
+
+/// Free a list of skill file paths
+pub fn freeSkillFiles(allocator: std.mem.Allocator, files: [][]const u8) void {
+    for (files) |file| {
+        allocator.free(file);
+    }
+    allocator.free(files);
+}
+
+/// Get the local skills path (cwd/.zigginagentic/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn getLocalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
@@ -31,23 +200,22 @@ pub fn getLocalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
         return null;
     };
 
-    // Build path: cwd/.zigginagentic/skills/skill.md
-    const path = std.fs.path.join(allocator, &[_][]const u8{
+    // Build path: cwd/.zigginagentic/skills/
+    const dir_path = std.fs.path.join(allocator, &[_][]const u8{
         cwd,
         LOCAL_SKILLS_DIR,
-        SKILLS_FILENAME,
     }) catch {
         std.log.debug("Could not build local skills path", .{});
         return null;
     };
 
-    return path;
+    return dir_path;
 }
 
 /// Get the global skills path following XDG standards
-/// Linux: ~/.config/zigginagentic/skills/skill.md
-/// macOS: ~/Library/Application Support/zigginagentic/skills/skill.md
-/// Windows: %APPDATA%/zigginagentic/skills/skill.md
+/// Linux: ~/.config/zigginagentic/skills/
+/// macOS: ~/Library/Application Support/zigginagentic/skills/
+/// Windows: %APPDATA%/zigginagentic/skills/
 /// Returns allocated string that caller must free, or null if home/env not found
 pub fn getGlobalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
     var config_dir: ?[]const u8 = null;
@@ -85,17 +253,16 @@ pub fn getGlobalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
                 config_dir = std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME }) catch null;
                 if (config_dir != null) needs_free = true;
             }
-        },
+        }
     }
 
     const dir = config_dir orelse return null;
     defer if (needs_free) allocator.free(dir);
 
-    // Build full path: config_dir/skills/skill.md
+    // Build full path: config_dir/skills/
     const path = std.fs.path.join(allocator, &[_][]const u8{
         dir,
         "skills",
-        SKILLS_FILENAME,
     }) catch {
         std.log.debug("Could not build global skills path", .{});
         return null;
@@ -104,12 +271,12 @@ pub fn getGlobalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
     return path;
 }
 
-/// Resolve the skills path by checking local first, then global
+/// Resolve the skills directory path by checking local first, then global
 /// Returns allocated string that caller must free, or null if neither exists
 pub fn resolveSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
     // Try local path first
     if (getLocalSkillsPath(allocator)) |local_path| {
-        // Check if file exists
+        // Check if directory exists
         const exists = blk: {
             std.fs.cwd().access(local_path, .{}) catch {
                 break :blk false;
@@ -124,7 +291,7 @@ pub fn resolveSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
 
     // Try global path
     if (getGlobalSkillsPath(allocator)) |global_path| {
-        // Check if file exists
+        // Check if directory exists
         const exists = blk: {
             std.fs.cwd().access(global_path, .{}) catch {
                 break :blk false;
@@ -145,20 +312,7 @@ pub fn freeSkillsPath(allocator: std.mem.Allocator, path: []const u8) void {
     allocator.free(path);
 }
 
-/// Load skills content from skills.md file
-/// Returns allocated string with skills content, or empty string if file not found/invalid
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn loadSkills(allocator: std.mem.Allocator) []const u8 {
-    // Try to resolve path
-    if (resolveSkillsPath(allocator)) |path| {
-        defer allocator.free(path);
-        return loadSkillsFromPath(allocator, path);
-    }
-    // Fallback to hardcoded path for backwards compatibility
-    return loadSkillsFromPath(allocator, SKILLS_PATH);
-}
-
-/// Load skills content from a specific path
+/// Load skills content from a specific file path
 /// Returns allocated string with skills content, or empty string if file not found/invalid
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn loadSkillsFromPath(allocator: std.mem.Allocator, path: []const u8) []const u8 {
@@ -197,154 +351,83 @@ pub fn loadSkillsFromPath(allocator: std.mem.Allocator, path: []const u8) []cons
     return content;
 }
 
-/// Parse a specific skill from skills.md file
+/// Parse a specific skill from the skills directory by name
 /// Returns allocated string with skill content, or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn parseSkill(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
-    // Try to resolve path
-    if (resolveSkillsPath(allocator)) |path| {
-        defer allocator.free(path);
-        return parseSkillFromPath(allocator, path, skill_name);
-    }
-    // Fallback to hardcoded path for backwards compatibility
-    return parseSkillFromPath(allocator, SKILLS_PATH, skill_name);
+    return parseSkillFromDir(allocator, skill_name);
 }
 
-/// Parse a specific skill from a specific path
-/// Returns allocated string with skill content, or null if not found
+/// Parse a specific skill from the skills directory by name
+/// Returns allocated string with skill content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parseSkillFromPath(allocator: std.mem.Allocator, path: []const u8, skill_name: []const u8) ?[]const u8 {
-    // Load the full content
-    const content = loadSkillsFromPath(allocator, path);
-    defer allocator.free(content);
+pub fn parseSkillFromDir(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
+    const files = listSkillFiles(allocator) orelse return null;
+    defer freeSkillFiles(allocator, files);
 
-    if (content.len == 0) return null;
-
-    // Find the skill delimiter: <!-- SKILL: name -->
-    const start_marker = "<!-- SKILL: ";
-    const end_marker = " -->";
-    const end_skill_marker = "<!-- END_SKILL -->";
-
-    var pos: usize = 0;
-    while (pos < content.len) {
-        // Find start marker
-        const start_idx = std.mem.indexOf(u8, content[pos..], start_marker) orelse break;
-        const abs_start_idx = pos + start_idx;
-
-        // Find the end of the start marker (the " -->" part)
-        const marker_end = std.mem.indexOf(u8, content[abs_start_idx..], end_marker) orelse break;
-        const name_start = abs_start_idx + start_marker.len;
-        const name_end = abs_start_idx + marker_end;
-        const found_name = content[name_start..name_end];
-
-        // Check if this is the skill we're looking for
-        if (std.mem.eql(u8, found_name, skill_name)) {
-            // Find the end of this skill
-            const content_start = abs_start_idx + marker_end + end_marker.len;
-            const end_idx = std.mem.indexOf(u8, content[content_start..], end_skill_marker) orelse break;
-            const skill_content = content[content_start .. content_start + end_idx];
-
-            // Trim whitespace and return
-            const trimmed = std.mem.trim(u8, skill_content, " \t\n\r");
-            return allocator.dupe(u8, trimmed) catch null;
+    for (files) |file_path| {
+        const content = loadSkillsFromPath(allocator, file_path);
+        if (content.len == 0) {
+            allocator.free(content);
+            continue;
         }
 
-        // Move past this skill
-        const content_start = abs_start_idx + marker_end + end_marker.len;
-        const end_idx = std.mem.indexOf(u8, content[content_start..], end_skill_marker) orelse break;
-        pos = content_start + end_idx + end_skill_marker.len;
+        if (parseYamlFrontmatter(allocator, content)) |parsed| {
+            defer freeParsedFrontmatter(allocator, parsed);
+            if (std.mem.eql(u8, parsed.name, skill_name)) {
+                // Return the full content (including frontmatter)
+                return content;
+            }
+        }
+        allocator.free(content);
     }
 
     return null;
 }
 
-/// List all available skills from skills.md file
+/// List all available skills from the skills directory
 /// Returns allocated array of SkillInfo structs
-/// Caller owns the returned memory and must free it with allocator.free()
+/// Caller owns the returned memory and must free it with freeSkillsList()
 pub fn listSkills(allocator: std.mem.Allocator) []SkillInfo {
-    // Try to resolve path
-    if (resolveSkillsPath(allocator)) |path| {
-        defer allocator.free(path);
-        return listSkillsFromPath(allocator, path);
-    }
-    // Fallback to hardcoded path for backwards compatibility
-    return listSkillsFromPath(allocator, SKILLS_PATH);
+    return listSkillsFromDir(allocator);
 }
 
-/// List all available skills from a specific path
+/// List all available skills from the skills directory
 /// Returns allocated array of SkillInfo structs
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn listSkillsFromPath(allocator: std.mem.Allocator, path: []const u8) []SkillInfo {
-    // Load the full content
-    const content = loadSkillsFromPath(allocator, path);
-    defer allocator.free(content);
+/// Caller owns the returned memory and must free it with freeSkillsList()
+pub fn listSkillsFromDir(allocator: std.mem.Allocator) []SkillInfo {
+    const files = listSkillFiles(allocator) orelse return &.{};
+    defer freeSkillFiles(allocator, files);
 
-    if (content.len == 0) return &.{};
+    if (files.len == 0) return &.{};
 
-    // Count skills first
-    const start_marker = "<!-- SKILL: ";
-    const end_marker = " -->";
-    const end_skill_marker = "<!-- END_SKILL -->";
+    // Collect skills with valid frontmatter
+    var skills_list: std.ArrayList(SkillInfo) = .empty;
+    defer skills_list.deinit(allocator);
 
-    var count: usize = 0;
-    var pos: usize = 0;
-    while (pos < content.len) {
-        const start_idx = std.mem.indexOf(u8, content[pos..], start_marker) orelse break;
-        const abs_start_idx = pos + start_idx;
-        const marker_end = std.mem.indexOf(u8, content[abs_start_idx..], end_marker) orelse break;
-        const content_start = abs_start_idx + marker_end + end_marker.len;
-        const end_idx = std.mem.indexOf(u8, content[content_start..], end_skill_marker) orelse break;
-        pos = content_start + end_idx + end_skill_marker.len;
-        count += 1;
-    }
-
-    if (count == 0) return &.{};
-
-    // Allocate array
-    var skills = allocator.alloc(SkillInfo, count) catch return &.{};
-
-    // Parse skills
-    pos = 0;
-    var idx: usize = 0;
-    while (pos < content.len and idx < count) {
-        const start_idx = std.mem.indexOf(u8, content[pos..], start_marker) orelse break;
-        const abs_start_idx = pos + start_idx;
-
-        const marker_end = std.mem.indexOf(u8, content[abs_start_idx..], end_marker) orelse break;
-        const name_start = abs_start_idx + start_marker.len;
-        const name_end = abs_start_idx + marker_end;
-        const skill_name = content[name_start..name_end];
-
-        const content_start = abs_start_idx + marker_end + end_marker.len;
-        const end_idx = std.mem.indexOf(u8, content[content_start..], end_skill_marker) orelse break;
-        const skill_content = content[content_start .. content_start + end_idx];
-
-        // Extract description from first line after heading
-        const trimmed_content = std.mem.trim(u8, skill_content, " \t\n\r");
-        var description: []const u8 = "";
-
-        // Find the first non-heading line for description
-        var line_start: usize = 0;
-        while (line_start < trimmed_content.len) {
-            const line_end = std.mem.indexOf(u8, trimmed_content[line_start..], "\n") orelse trimmed_content.len - line_start;
-            const line = std.mem.trim(u8, trimmed_content[line_start .. line_start + line_end], " \t\r");
-            if (line.len > 0 and !std.mem.startsWith(u8, line, "#")) {
-                description = line;
-                break;
-            }
-            line_start += line_end + 1;
+    for (files) |file_path| {
+        const content = loadSkillsFromPath(allocator, file_path);
+        if (content.len == 0) {
+            allocator.free(content);
+            continue;
         }
 
-        skills[idx] = .{
-            .name = allocator.dupe(u8, skill_name) catch "",
-            .description = allocator.dupe(u8, description) catch "",
-        };
-        idx += 1;
-
-        pos = content_start + end_idx + end_skill_marker.len;
+        if (parseYamlFrontmatter(allocator, content)) |parsed| {
+            skills_list.append(allocator, .{
+                .name = parsed.name,
+                .description = parsed.description,
+            }) catch {
+                freeParsedFrontmatter(allocator, parsed);
+                allocator.free(content);
+                continue;
+            };
+            // Note: parsed.name and parsed.description are now owned by skills_list
+        } else {
+            allocator.free(content);
+        }
     }
 
-    return skills;
+    return skills_list.toOwnedSlice(allocator) catch &.{};
 }
 
 /// Free a skills array allocated by listSkills

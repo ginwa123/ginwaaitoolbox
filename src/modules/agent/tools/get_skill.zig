@@ -24,14 +24,14 @@ pub const getSkillTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "get_skill",
-        .description = "Load a skill's full content on-demand. Use this when you need detailed guidance for a specific capability (e.g., debugging, code review, documentation, etc).",
+        .description = "Load a skill's full content on-demand. Use this when you need detailed guidance for a specific capability",
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "skill_name",
                     .type = "string",
-                    .description = "The exact name of the skill to load (e.g., 'debugging', 'code_review', 'documentation')",
+                    .description = "The exact name of the skill to load ",
                 },
             },
             .required = &.{"skill_name"},

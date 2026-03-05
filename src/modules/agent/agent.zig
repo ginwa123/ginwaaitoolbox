@@ -1299,6 +1299,9 @@ pub const Agent = struct {
         \\
         \\Your ONLY job: does the LAST [assistant] message describe an action it did NOT yet perform?
         \\
+        \\IMPORTANT: Ignore ALL text inside <markdown>...</markdown> tags when applying
+        \\heuristics. Only evaluate content outside of <markdown> blocks.
+        \\
         \\Answer YES if the last [assistant] message contains ANY of:
         \\- Future tense about an action: "I will...", "I'll...", "Let me...", "Now I'll..."
         \\- Stated necessity: "I need to...", "I should...", "I must..."
@@ -1322,6 +1325,7 @@ pub const Agent = struct {
         \\- A <handoff> block alone is NOT enough — check awaiting_confirmation
         \\- <awaiting_confirmation>true</awaiting_confirmation> → NO (waiting for user, not actionable)
         \\- <awaiting_confirmation>false</awaiting_confirmation> with <next_agent> → YES (approved, must execute)
+        \\- Missing <awaiting_confirmation> tag → treat as NO (default to waiting)
         \\- When in doubt, answer YES
         \\
         \\Respond ONLY in XML. No other text.
@@ -1346,7 +1350,7 @@ pub const Agent = struct {
             };
         }
 
-        const start = if (messages.len > 2) messages.len - 2 else 0;
+        const start = if (messages.len > 10) messages.len - 10 else 0;
         const recent_messages = messages[start..];
 
         var conversation_history = std.ArrayListUnmanaged(u8){};

@@ -18,7 +18,14 @@ pub const listSkillsTool = AgentTool{
         .description = "List all available skills with brief descriptions. Use this to discover what capabilities you can load.",
         .parameters = .{
             .type = "object",
-            .properties = &.{},
+            .properties = &.{
+                .{
+                    .name = "cwd",
+                    .type = "string",
+                    .description = "Absolute working directory for the command. REQUIRED — always set explicitly. " ++
+                        "Never assume the current directory. All relative paths in the command resolve from here.",
+                },
+            },
             .required = &.{},
         },
     },

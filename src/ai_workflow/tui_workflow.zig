@@ -9,6 +9,8 @@ const sqlite = tree1_mod.sqlite;
 const bash_tool = tree1_mod.bash_tool;
 const tool_models = tree1_mod.tool_models;
 const change_agent_tool = tree1_mod.change_agent_tool;
+const list_skills_tool = tree1_mod.list_skills_tool;
+const get_skill_tool = tree1_mod.get_skill_tool;
 const loop_detector = tree1_mod.loop_detector;
 
 /// Compaction configuration constants
@@ -465,7 +467,7 @@ pub const TUIWorkflow = struct {
         const initial_messages = try self.buildMessages();
         try messages_list.appendSlice(self.allocator, initial_messages);
 
-        const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, change_agent_tool.ChangeAgentTool };
+        const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool };
 
         var retryCount: usize = 0;
         var agent_temperature: f32 = 0.2;
@@ -754,6 +756,14 @@ pub const TUIWorkflow = struct {
                                 try self.saveMessageUnified(res_bash, null, "tool", "tool", null, tool_call.id, current_agent_6);
                                 self.sendToolResult(res_bash, tool_call.id, tool_call.function.name);
                                 self.logger.debugFmt("Tool result added to messages", .{}) catch {};
+                            }
+
+                            if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
+                                handleListSkills(self, &messages_list, tool_call);
+                            }
+
+                            if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
+                                handleGetSkill(self, &messages_list, tool_call);
                             }
                         }
                         self.logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
@@ -1162,5 +1172,54 @@ pub const TUIWorkflow = struct {
         messages.* = new_messages;
 
         self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len }) catch {};
+    }
+
+    fn handleListSkills(self: *TUIWorkflow, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) void {
+        const result = list_skills_tool.executeListSkills(self.allocator) catch |err| blk: {
+            self.logger.errFmt("Error executing list_skills: {s}", .{@errorName(err)}) catch {};
+            break :blk "{\"error\": \"Failed to list skills\"}";
+        };
+
+        self.logger.debugFmt("LIST_SKILLS RESULT: {s}", .{result}) catch {};
+
+        const tool_result_msg = agent.AgentMessage{
+            .role = .tool,
+            .content = result,
+            .tool_call_id = self.allocator.dupe(u8, tool_call.id) catch return,
+        };
+        messages_list.append(self.allocator, tool_result_msg) catch return;
+        const current_agent = self.getCurrentAgent() catch return;
+        self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id, current_agent) catch {};
+        self.sendToolResult(result, tool_call.id, tool_call.function.name);
+    }
+
+    fn handleGetSkill(self: *TUIWorkflow, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) void {
+        // Parse arguments JSON to GetSkillInput
+        const parsed = std.json.parseFromSlice(
+            get_skill_tool.GetSkillInput,
+            self.allocator,
+            tool_call.function.arguments,
+            .{ .allocate = .alloc_always },
+        ) catch |err| {
+            self.logger.errFmt("Failed to parse get_skill arguments: {s}", .{@errorName(err)}) catch {};
+            return;
+        };
+
+        const result = get_skill_tool.executeGetSkill(self.allocator, parsed.value) catch |err| blk: {
+            self.logger.errFmt("Error executing get_skill: {s}", .{@errorName(err)}) catch {};
+            break :blk "{\"error\": \"Failed to get skill\"}";
+        };
+
+        self.logger.debugFmt("GET_SKILL RESULT: {s}", .{result}) catch {};
+
+        const tool_result_msg = agent.AgentMessage{
+            .role = .tool,
+            .content = result,
+            .tool_call_id = self.allocator.dupe(u8, tool_call.id) catch return,
+        };
+        messages_list.append(self.allocator, tool_result_msg) catch return;
+        const current_agent = self.getCurrentAgent() catch return;
+        self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id, current_agent) catch {};
+        self.sendToolResult(result, tool_call.id, tool_call.function.name);
     }
 };
