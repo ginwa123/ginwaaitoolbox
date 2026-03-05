@@ -76,10 +76,13 @@ const App = struct {
     // runtime-configurable keybindings
     keybindings: keybindings.Keybindings,
 
+    // verbose mode for backend debug output
+    verbose: bool = false,
+
     state: CompletionState = CompletionState{ .matches = .empty },
 
-    pub fn init(allocator: std.mem.Allocator) !App {
-        try spawnBackend();
+    pub fn init(allocator: std.mem.Allocator, verbose: bool) !App {
+        try spawnBackend(verbose);
         try waitForSocket(10000);
 
         const socket_fd = try connectToSocket();
@@ -96,6 +99,7 @@ const App = struct {
             .pasting = false,
             .last_esc_time = null,
             .keybindings = kb,
+            .verbose = verbose,
             .state = CompletionState{
                 .matches = std.ArrayList([]const u8).empty,
             },
@@ -132,7 +136,7 @@ fn disableRawMode(original: std.posix.termios) void {
 }
 
 // ─── Backend / Socket ────────────────────────────────────────────────────────
-fn spawnBackend() !void {
+fn spawnBackend(verbose: bool) !void {
     // Remove stale socket file if it exists but nothing is listening
     if (std.fs.accessAbsolute(SOCKET_PATH, .{})) |_| {
         // Try connecting — if it works, backend is alive, skip spawn
@@ -153,6 +157,16 @@ fn spawnBackend() !void {
     const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/zigginagentic");
     defer std.heap.page_allocator.free(backend_path);
     var child = std.process.Child.init(&.{backend_path}, std.heap.page_allocator);
+
+    // Redirect stdout and stderr to /dev/null to prevent backend debug output
+    // from interfering with the TUI display (unless --verbose is set)
+    if (!verbose) {
+        child.stdout_behavior = .Close;
+        child.stderr_behavior = .Close;
+    }
+    child.stdout_behavior = .Close;
+    child.stderr_behavior = .Close;
+
     child.spawn() catch |err| {
         std.debug.print("{s}Warning: failed to spawn backend: {s}{s}\n", .{ yellow, @errorName(err), reset });
         return;
@@ -954,7 +968,25 @@ pub fn main() !void {
 
     const allocator = arena_allocator.allocator();
 
-    var app = try App.init(allocator);
+    // Parse command-line arguments for --verbose
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    var verbose = false;
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
+            verbose = true;
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            std.debug.print("zigginagentic-tui - Terminal UI for AI agent\n\n", .{});
+            std.debug.print("Usage: zigginagentic-tui [options]\n\n", .{});
+            std.debug.print("Options:\n", .{});
+            std.debug.print("  -v, --verbose    Show backend debug output\n", .{});
+            std.debug.print("  -h, --help       Show this help message\n", .{});
+            return;
+        }
+    }
+
+    var app = try App.init(allocator, verbose);
     defer app.deinit();
 
     // std.debug.print("{s}Connected!{s}\r\n", .{ green, reset });

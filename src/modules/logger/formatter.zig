@@ -41,6 +41,8 @@ pub const LogEntry = struct {
     request_id: ?[]const u8,
     message: []const u8,
     context: ?[]const u8 = null,
+    file: ?[]const u8 = null,
+    line: ?u32 = null,
 
     /// Format timestamp as ISO string (caller owns memory)
     pub fn formatTimestampIso(self: *const LogEntry, allocator: std.mem.Allocator) ![]const u8 {
@@ -82,6 +84,7 @@ pub const Formatter = struct {
 pub const TextFormatter = struct {
     include_timestamp: bool = true,
     include_request_id: bool = true,
+    include_location: bool = false,
 
     pub fn init() TextFormatter {
         return .{};
@@ -114,6 +117,11 @@ pub const TextFormatter = struct {
         // Request ID
         if (self.include_request_id and entry.request_id != null) {
             try writer.print("[{s}] ", .{entry.request_id.?});
+        }
+        
+        // Location (file:line)
+        if (self.include_location and entry.file != null) {
+            try writer.print("[{s}:{d}] ", .{entry.file.?, entry.line.?});
         }
         
         // Message
@@ -155,12 +163,16 @@ pub const JsonFormatter = struct {
             request_id: ?[]const u8,
             message: []const u8,
             context: ?[]const u8,
+            file: ?[]const u8,
+            line: ?u32,
         }{
             .level = entry.level.toString(),
             .timestamp = entry.timestamp,
             .request_id = entry.request_id,
             .message = entry.message,
             .context = entry.context,
+            .file = entry.file,
+            .line = entry.line,
         };
         
         const options: std.json.Stringify.Options = if (false) .{ .whitespace = .indent_2 } else .{};
@@ -173,6 +185,7 @@ pub const ColorFormatter = struct {
     include_timestamp: bool = true,
     include_request_id: bool = true,
     color_by_level: bool = true,
+    include_location: bool = false,
 
     pub fn init() ColorFormatter {
         return .{};
@@ -218,6 +231,11 @@ pub const ColorFormatter = struct {
         // Request ID (cyan)
         if (self.include_request_id and entry.request_id != null) {
             try writer.print("{s}[{s}]{s} ", .{ AnsiColors.cyan, entry.request_id.?, AnsiColors.reset });
+        }
+        
+        // Location (dimmed)
+        if (self.include_location and entry.file != null) {
+            try writer.print("{s}[{s}:{d}]{s} ", .{ AnsiColors.dim, entry.file.?, entry.line.?, AnsiColors.reset });
         }
         
         // Message

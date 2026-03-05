@@ -104,3 +104,96 @@ test "LogEntry with context" {
     try std.testing.expect(std.mem.indexOf(u8, output, "User logged in") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "(user_id=123)") != null);
 }
+
+test "TextFormatter with location" {
+    var formatter_inst = TextFormatter{
+        .include_timestamp = false,
+        .include_request_id = false,
+        .include_location = true,
+    };
+    const entry = LogEntry{
+        .level = .info,
+        .timestamp = 1234567890000,
+        .request_id = null,
+        .message = "Test message",
+        .file = "test.zig",
+        .line = 42,
+    };
+    
+    const output = try formatter_inst.formatter().format(std.testing.allocator, entry);
+    defer std.testing.allocator.free(output);
+    
+    try std.testing.expect(std.mem.indexOf(u8, output, "[INFO]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "[test.zig:42]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Test message") != null);
+}
+
+test "ColorFormatter with location" {
+    var formatter_inst = ColorFormatter{
+        .include_timestamp = false,
+        .include_request_id = false,
+        .color_by_level = false,
+        .include_location = true,
+    };
+    const entry = LogEntry{
+        .level = .err,
+        .timestamp = 1234567890000,
+        .request_id = null,
+        .message = "Error occurred",
+        .file = "main.zig",
+        .line = 100,
+    };
+    
+    const output = try formatter_inst.formatter().format(std.testing.allocator, entry);
+    defer std.testing.allocator.free(output);
+    
+    try std.testing.expect(std.mem.indexOf(u8, output, "ERROR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "[main.zig:100]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Error occurred") != null);
+}
+
+test "JsonFormatter with location" {
+    var formatter_inst = JsonFormatter{ .pretty = false };
+    const entry = LogEntry{
+        .level = .warn,
+        .timestamp = 1234567890000,
+        .request_id = null,
+        .message = "Warning message",
+        .file = "app.zig",
+        .line = 25,
+    };
+    
+    const output = try formatter_inst.formatter().format(std.testing.allocator, entry);
+    defer std.testing.allocator.free(output);
+    
+    // Verify it's valid JSON
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
+    defer parsed.deinit();
+    
+    try std.testing.expectEqualStrings("WARN", parsed.value.object.get("level").?.string);
+    try std.testing.expectEqualStrings("app.zig", parsed.value.object.get("file").?.string);
+    try std.testing.expectEqual(@as(i64, 25), parsed.value.object.get("line").?.integer);
+}
+
+test "TextFormatter without location when disabled" {
+    var formatter_inst = TextFormatter{
+        .include_timestamp = false,
+        .include_request_id = false,
+        .include_location = false,
+    };
+    const entry = LogEntry{
+        .level = .info,
+        .timestamp = 1234567890000,
+        .request_id = null,
+        .message = "Test message",
+        .file = "test.zig",
+        .line = 42,
+    };
+    
+    const output = try formatter_inst.formatter().format(std.testing.allocator, entry);
+    defer std.testing.allocator.free(output);
+    
+    // Location should NOT appear when disabled
+    try std.testing.expect(std.mem.indexOf(u8, output, "[test.zig:42]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Test message") != null);
+}

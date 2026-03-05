@@ -26,6 +26,13 @@ pub const formatDuration = timing.formatDuration;
 pub const timestampIso = timing.timestampIso;
 pub const timestampCompact = timing.timestampCompact;
 
+/// Output mode for logger
+pub const OutputMode = enum {
+    stdout,
+    file,
+    both,
+};
+
 /// Configuration for Logger
 pub const LoggerConfig = struct {
     /// Minimum log level to output (messages below this level are filtered)
@@ -36,6 +43,16 @@ pub const LoggerConfig = struct {
     include_request_id: bool = true,
     /// Output writer (defaults to stdout)
     output: ?std.fs.File = null,
+    /// Include file:line location in output
+    include_location: bool = true,
+    /// Path to log file (null means no file output)
+    log_file_path: ?[]const u8 = null,
+    /// Maximum file size before rotation (default 10MB)
+    max_file_size_bytes: usize = 10 * 1024 * 1024,
+    /// Enable automatic file rotation at size limit
+    enable_auto_rotation: bool = true,
+    /// Output mode: stdout, file, or both
+    output_mode: OutputMode = .stdout,
 };
 
 /// Thread-safe logger with pluggable formatters
@@ -45,7 +62,9 @@ pub const Logger = struct {
     mutex: std.Thread.Mutex,
     formatter_ctx: FormatterContext,
     request_id: ?RequestId,
-    
+    log_file: ?std.fs.File = null,
+    current_file_size: usize = 0,
+
     const FormatterContext = union(enum) {
         text: TextFormatter,
         json: JsonFormatter,
@@ -61,6 +80,7 @@ pub const Logger = struct {
             .formatter_ctx = .{ .text = TextFormatter{
                 .include_timestamp = config.include_timestamp,
                 .include_request_id = config.include_request_id,
+                .include_location = config.include_location,
             }},
             .request_id = null,
         };
@@ -87,6 +107,7 @@ pub const Logger = struct {
                 .include_timestamp = config.include_timestamp,
                 .include_request_id = config.include_request_id,
                 .color_by_level = true,
+                .include_location = config.include_location,
             }},
             .request_id = null,
         };
@@ -94,9 +115,53 @@ pub const Logger = struct {
 
     /// Clean up resources
     pub fn deinit(self: *Logger) void {
-        // No heap allocations to clean up in Logger itself
-        // The mutex is statically allocated
-        _ = self;
+        // Close log file if open
+        if (self.log_file) |file| {
+            file.close();
+            self.log_file = null;
+        }
+    }
+
+    /// Ensure log file is open, creating parent directories if needed
+    fn ensureLogFileOpen(self: *Logger) !void {
+        if (self.log_file != null) return;
+
+        const path = self.config.log_file_path orelse return;
+
+        // Create parent directories if they don't exist
+        const dir_path = std.fs.path.dirname(path) orelse ".";
+        try std.fs.cwd().makePath(dir_path);
+
+        // Open or create the log file
+        const file = try std.fs.cwd().createFile(path, .{ .truncate = false });
+        errdefer file.close();
+
+        // Seek to end for appending
+        try file.seekFromEnd(0);
+
+        self.log_file = file;
+
+        // Get current file size
+        const stat = try file.stat();
+        self.current_file_size = stat.size;
+    }
+
+    /// Rotate log file when it exceeds max size (delete and recreate)
+    fn rotateLogFile(self: *Logger) !void {
+        if (self.log_file) |file| {
+            file.close();
+            self.log_file = null;
+        }
+
+        const path = self.config.log_file_path orelse return;
+
+        // Delete the old file
+        std.fs.cwd().deleteFile(path) catch {};
+
+        // Create a new empty file
+        const file = try std.fs.cwd().createFile(path, .{});
+        self.log_file = file;
+        self.current_file_size = 0;
     }
 
     /// Set a new request ID for subsequent log messages
@@ -140,6 +205,8 @@ pub const Logger = struct {
             .timestamp = timestampMs(),
             .request_id = self.getRequestIdString(),
             .message = message,
+            .file = null,
+            .line = null,
         };
 
         try self.writeEntry(entry);
@@ -158,6 +225,8 @@ pub const Logger = struct {
             .request_id = self.getRequestIdString(),
             .message = message,
             .context = context,
+            .file = null,
+            .line = null,
         };
 
         try self.writeEntry(entry);
@@ -234,8 +303,30 @@ pub const Logger = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const file = self.config.output orelse std.fs.File.stdout();
-        try file.writeAll(output);
+        // Handle file output if configured
+        if (self.config.log_file_path != null and
+            (self.config.output_mode == .file or self.config.output_mode == .both)) {
+            // Ensure file is open
+            try self.ensureLogFileOpen();
+
+            // Check if rotation is needed
+            if (self.config.enable_auto_rotation and
+                self.current_file_size >= self.config.max_file_size_bytes) {
+                try self.rotateLogFile();
+            }
+
+            // Write to file
+            if (self.log_file) |log_file| {
+                try log_file.writeAll(output);
+                self.current_file_size += output.len;
+            }
+        }
+
+        // Handle stdout output if configured
+        if (self.config.output_mode == .stdout or self.config.output_mode == .both) {
+            const stdout_file = self.config.output orelse std.fs.File.stdout();
+            try stdout_file.writeAll(output);
+        }
     }
 
     /// Set the minimum log level
@@ -259,7 +350,7 @@ var global_mutex: std.Thread.Mutex = .{};
 pub fn initGlobal(allocator: std.mem.Allocator, config: LoggerConfig) void {
     global_mutex.lock();
     defer global_mutex.unlock();
-    
+
     if (global_logger) |*logger| {
         logger.deinit();
     }
@@ -270,7 +361,7 @@ pub fn initGlobal(allocator: std.mem.Allocator, config: LoggerConfig) void {
 pub fn initGlobalColor(allocator: std.mem.Allocator, config: LoggerConfig) void {
     global_mutex.lock();
     defer global_mutex.unlock();
-    
+
     if (global_logger) |*logger| {
         logger.deinit();
     }
@@ -281,7 +372,7 @@ pub fn initGlobalColor(allocator: std.mem.Allocator, config: LoggerConfig) void 
 pub fn deinitGlobal() void {
     global_mutex.lock();
     defer global_mutex.unlock();
-    
+
     if (global_logger) |*logger| {
         logger.deinit();
         global_logger = null;
@@ -292,7 +383,7 @@ pub fn deinitGlobal() void {
 pub fn getGlobal() ?*Logger {
     global_mutex.lock();
     defer global_mutex.unlock();
-    
+
     if (global_logger) |*logger| {
         return logger;
     }
