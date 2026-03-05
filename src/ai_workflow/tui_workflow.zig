@@ -247,12 +247,13 @@ pub const TUIWorkflow = struct {
         defer buf.deinit(self.allocator);
         var w = buf.writer(self.allocator);
 
-        w.writeAll("<response><error>") catch return;
+        // Wrap error in proper response structure with content/markdown for TUI display
+        w.writeAll("<response><choices><choice><index>0</index><message><role>assistant</role><content><agent>ErrorAgent</agent><markdown>") catch return;
         w.writeAll(err_msg) catch return;
-        w.writeAll("</error><finish_reason>") catch return;
+        w.writeAll("</markdown></content></message><finish_reason>") catch return;
         const fr = finish_reason orelse "stop";
         w.writeAll(fr) catch return;
-        w.writeAll("</finish_reason></response>") catch return;
+        w.writeAll("</finish_reason></choice></choices></response>") catch return;
 
         self.logger.traceFmt("SEND ERROR XML: {s}", .{buf.items}) catch {};
 

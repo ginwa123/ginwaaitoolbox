@@ -261,7 +261,13 @@ fn printFormattedResponse(content: []const u8) void {
         const trimmed = trim(md);
         if (trimmed.len > 0) {
             std.debug.print("\n{s}{s}{s}\n", .{ bold, trimmed, reset });
+        } else {
+            // Empty markdown tag - print raw content as fallback
+            std.debug.print("\n{s}{s}{s}\n", .{ bold, content, reset });
         }
+    } else {
+        // No markdown tag found - print content directly as fallback
+        std.debug.print("\n{s}{s}{s}\n", .{ bold, content, reset });
     }
 
     // printAllTags(content, &.{ "agent", "markdown" }, 0);
@@ -377,6 +383,28 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
     defer std.heap.page_allocator.free(close_tag);
     const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
     defer std.heap.page_allocator.free(open_tag);
+
+    // For <content>, find it inside the final <message> block (not streaming chunks)
+    // Streaming chunks have: <response><chunk><content>...</content></chunk></response>
+    // Final response has: <response><choices><choice><message><content>...</content></message>...
+    if (std.mem.eql(u8, tag, "content")) {
+        // Find <message> tag first
+        if (std.mem.lastIndexOf(u8, xml, "</message>")) |msg_end| {
+            if (std.mem.lastIndexOf(u8, xml[0..msg_end], "<message>")) |msg_start| {
+                const message_content = xml[msg_start .. msg_end + "</message>".len];
+                // Now find <content> inside this message block
+                if (std.mem.indexOf(u8, message_content, open_tag)) |open_pos| {
+                    const content_start = open_pos + open_tag.len;
+                    if (std.mem.indexOf(u8, message_content[content_start..], close_tag)) |close_offset| {
+                        return message_content[content_start .. content_start + close_offset];
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    // Default: find last complete tag pair
     const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
     const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
     return xml[open_pos + open_tag.len .. close_pos];
@@ -451,7 +479,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     var stream_interrupted = false;
     var thought: []const u8 = "";
 
-    std.debug.print("Your sessions {s}\r\n\n", .{app.session_id});
+    // std.debug.print("Your sessions {s}\r\n\n", .{app.session_id});
 
     while (true) {
         // Poll with 50ms timeout to allow checking for ESC
