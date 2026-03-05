@@ -470,7 +470,7 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var agent_temperature: f32 = 0.2;
         var isThinking: bool = false;
-        var current_max_tokens: usize = 2000;
+        var current_max_tokens: usize = 8000;
         while (true) {
             if (retryCount > 10) return error.TooManyRetries;
 
@@ -555,7 +555,7 @@ pub const TUIWorkflow = struct {
                     break;
                 } else if (finish_reason == .length) {
                     self.logger.infoFmt("FINISH REASON LENGTH - continuing...", .{}) catch {};
-                    current_max_tokens += 1000;
+                    current_max_tokens += 4096;
                     self.logger.infoFmt("FINISH REASON LENGTH - increasing max_tokens to {}", .{current_max_tokens}) catch {};
                     continue;
                 } else if (finish_reason == .tool_calls) {

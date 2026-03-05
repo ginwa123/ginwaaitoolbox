@@ -1297,27 +1297,31 @@ pub const Agent = struct {
     pub const INTENT_JUDGE_SYSTEM =
         \\You are a strict intent classifier for an AI agent loop.
         \\
-        \\Your ONLY job: does the LAST assistant message describe an action it did NOT yet perform?
+        \\Your ONLY job: does the LAST [assistant] message describe an action it did NOT yet perform?
         \\
-        \\Answer YES if the last assistant message contains ANY of:
+        \\Answer YES if the last [assistant] message contains ANY of:
         \\- Future tense about an action: "I will...", "I'll...", "Let me...", "Now I'll..."
         \\- Stated necessity: "I need to...", "I should...", "I must..."
         \\- Announced next step: "Next,...", "First,...", "The next step is..."
         \\- Partial completion bridge: "...now let me check", "...then I'll verify"
         \\- Conditional promise: "If X, I'll do Y"
+        \\- A <handoff> block with <next_agent> tag AND <awaiting_confirmation>false</awaiting_confirmation>
         \\
-        \\Answer NO if the last assistant message ONLY contains:
+        \\Answer NO if the last [assistant] message ONLY contains:
         \\- A question directed at the user
         \\- A summary of already-completed tool calls
         \\- A declaration that the task is done/complete
         \\- An explanation, concept, or instructions for the USER to follow
         \\- A list of what was accomplished
+        \\- A <handoff> block with <awaiting_confirmation>true</awaiting_confirmation> — plan is waiting for user approval, not yet actionable
         \\
         \\STRICT RULES:
-        \\- Ignore all messages except the LAST assistant message
-        \\- A tool call result in the history does NOT resolve a later stated intent
+        \\- Use conversation history only to check if a stated intent was already executed
         \\- "I've done X, now let me do Y" → YES (Y is unresolved)
         \\- "I've done X and Y" → NO (both resolved)
+        \\- A <handoff> block alone is NOT enough — check awaiting_confirmation
+        \\- <awaiting_confirmation>true</awaiting_confirmation> → NO (waiting for user, not actionable)
+        \\- <awaiting_confirmation>false</awaiting_confirmation> with <next_agent> → YES (approved, must execute)
         \\- When in doubt, answer YES
         \\
         \\Respond ONLY in XML. No other text.
@@ -1325,8 +1329,16 @@ pub const Agent = struct {
         \\Resolved:   <result>NO</result>
     ;
 
+    /// Simple streaming callback for hasUnresolvedIntent - just prints content chunks
+    fn intentStreamCallback(ctx: ?*anyopaque, chunk: StreamChunk) void {
+        _ = ctx; // No context needed for this simple callback
+        if (chunk.done) return;
+        if (chunk.content) |content| {
+            std.debug.print("{s}", .{content});
+        }
+    }
+
     pub fn hasUnresolvedIntent(self: *Agent, messages: []const AgentMessage) !UnresolvedIntentResult {
-        // Handle empty messages array
         if (messages.len == 0) {
             return UnresolvedIntentResult{
                 .has_unresolved = false,
@@ -1334,25 +1346,23 @@ pub const Agent = struct {
             };
         }
 
-        // Only process message at index 5
-        if (messages.len <= 5) {
-            return UnresolvedIntentResult{
-                .has_unresolved = false,
-                .reason = null,
-            };
+        const start = if (messages.len > 2) messages.len - 2 else 0;
+        const recent_messages = messages[start..];
+
+        var conversation_history = std.ArrayListUnmanaged(u8){};
+        defer conversation_history.deinit(self.allocator);
+
+        for (recent_messages) |msg| {
+            const role_str = msg.role.toStr();
+            const content = msg.content orelse "";
+            const reasoning = msg.reasoning_content orelse "";
+
+            if (reasoning.len > 0) {
+                try conversation_history.writer(self.allocator).print("[{s}]: {s} {s}\n", .{ role_str, content, reasoning });
+            } else {
+                try conversation_history.writer(self.allocator).print("[{s}]: {s}\n", .{ role_str, content });
+            }
         }
-
-        const msg = messages[5];
-        const role_str = msg.role.toStr();
-        const content = msg.content orelse "";
-        const reasoning = msg.reasoning_content orelse "";
-
-        // Format single message into conversation history
-        const conversation_history = if (reasoning.len > 0)
-            try std.fmt.allocPrint(self.allocator, "[{s}]: {s} {s}", .{ role_str, content, reasoning })
-        else
-            try std.fmt.allocPrint(self.allocator, "[{s}]: {s}", .{ role_str, content });
-        defer self.allocator.free(conversation_history);
 
         const user_content = try std.fmt.allocPrint(self.allocator,
             \\Conversation history:
@@ -1361,9 +1371,9 @@ pub const Agent = struct {
             \\{s}
             \\</conversation>
             \\
-            \\Does the last assistant message contain unresolved intent (planned but not yet executed action)?
+            \\Analyze the conversation above. Does the last [assistant] message describe an action that has NOT been executed yet?
             \\Respond in XML format: <result>YES</result><reason>...</reason> or <result>NO</result>
-        , .{conversation_history});
+        , .{conversation_history.items});
         defer self.allocator.free(user_content);
 
         const call_messages = &.{
@@ -1371,17 +1381,16 @@ pub const Agent = struct {
             AgentMessage{ .role = .user, .content = user_content },
         };
 
-        const call_response = try self.call(.{
+        const call_response = try self.callStreaming(.{
             .tools = &.{},
             .messages = call_messages,
             .temperature = 0.0,
-        });
+        }, null, intentStreamCallback);
         defer call_response.deinit();
 
         const answer = call_response.content orelse "";
         std.debug.print("intent answer: {s}\n", .{answer});
 
-        // Parse XML format: <result>YES</result><reason>...</reason> or <result>NO</result>
         const result_start = std.mem.indexOf(u8, answer, "<result>") orelse return UnresolvedIntentResult{
             .has_unresolved = false,
             .reason = null,
@@ -1394,7 +1403,6 @@ pub const Agent = struct {
         std.debug.print("intent result result_value: {s}\n", .{result_value});
 
         if (std.ascii.eqlIgnoreCase(result_value, "YES")) {
-            // Extract reason if present
             if (std.mem.indexOf(u8, answer, "<reason>")) |reason_start| {
                 if (std.mem.indexOf(u8, answer[reason_start..], "</reason>")) |reason_end_offset| {
                     const reason = std.mem.trim(u8, answer[reason_start + 8 .. reason_start + reason_end_offset], " \t\n\r");
@@ -1406,7 +1414,6 @@ pub const Agent = struct {
                     }
                 }
             }
-            // YES without reason
             return UnresolvedIntentResult{
                 .has_unresolved = true,
                 .reason = null,

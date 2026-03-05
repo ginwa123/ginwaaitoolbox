@@ -8,10 +8,11 @@ const MAX_SKILLS_SIZE: usize = 100 * 1024;
 const APP_NAME = "zigginagentic";
 
 /// Local skills directory and filename
-const LOCAL_SKILLS_DIR = ".zigagentic/skills";
+const LOCAL_SKILLS_DIR = ".zigginagentic/skills";
 const SKILLS_FILENAME = "skill.md";
 
-/// Default path to skills.md file (for backwards compatibility)
+/// Deprecated: Use resolveSkillsPath() instead.
+/// This constant is kept for backwards compatibility with *FromPath functions.
 pub const SKILLS_PATH = "src/modules/agent/tools/skills.md";
 
 /// Skill information structure
@@ -20,10 +21,140 @@ pub const SkillInfo = struct {
     description: []const u8,
 };
 
+/// Get the local skills path (cwd/.zigginagentic/skills/skill.md)
+/// Returns allocated string that caller must free, or null if cwd unavailable
+pub fn getLocalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
+    // Get current working directory
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = std.posix.getcwd(&cwd_buf) catch {
+        std.log.debug("Could not get current working directory", .{});
+        return null;
+    };
+
+    // Build path: cwd/.zigginagentic/skills/skill.md
+    const path = std.fs.path.join(allocator, &[_][]const u8{
+        cwd,
+        LOCAL_SKILLS_DIR,
+        SKILLS_FILENAME,
+    }) catch {
+        std.log.debug("Could not build local skills path", .{});
+        return null;
+    };
+
+    return path;
+}
+
+/// Get the global skills path following XDG standards
+/// Linux: ~/.config/zigginagentic/skills/skill.md
+/// macOS: ~/Library/Application Support/zigginagentic/skills/skill.md
+/// Windows: %APPDATA%/zigginagentic/skills/skill.md
+/// Returns allocated string that caller must free, or null if home/env not found
+pub fn getGlobalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
+    var config_dir: ?[]const u8 = null;
+    var needs_free: bool = false;
+
+    switch (builtin.os.tag) {
+        .windows => {
+            const appdata = std.posix.getenv("APPDATA") orelse {
+                std.log.debug("APPDATA environment variable not set", .{});
+                return null;
+            };
+            config_dir = std.fs.path.join(allocator, &[_][]const u8{ appdata, APP_NAME }) catch null;
+            if (config_dir != null) needs_free = true;
+        },
+        .macos => {
+            const home = std.posix.getenv("HOME") orelse {
+                std.log.debug("HOME environment variable not set", .{});
+                return null;
+            };
+            config_dir = std.fs.path.join(allocator, &[_][]const u8{
+                home, "Library", "Application Support", APP_NAME,
+            }) catch null;
+            if (config_dir != null) needs_free = true;
+        },
+        else => { // Linux, FreeBSD, etc.
+            // XDG_CONFIG_HOME or default to ~/.config
+            if (std.posix.getenv("XDG_CONFIG_HOME")) |xdg_config| {
+                config_dir = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME }) catch null;
+                if (config_dir != null) needs_free = true;
+            } else {
+                const home = std.posix.getenv("HOME") orelse {
+                    std.log.debug("HOME environment variable not set", .{});
+                    return null;
+                };
+                config_dir = std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME }) catch null;
+                if (config_dir != null) needs_free = true;
+            }
+        },
+    }
+
+    const dir = config_dir orelse return null;
+    defer if (needs_free) allocator.free(dir);
+
+    // Build full path: config_dir/skills/skill.md
+    const path = std.fs.path.join(allocator, &[_][]const u8{
+        dir,
+        "skills",
+        SKILLS_FILENAME,
+    }) catch {
+        std.log.debug("Could not build global skills path", .{});
+        return null;
+    };
+
+    return path;
+}
+
+/// Resolve the skills path by checking local first, then global
+/// Returns allocated string that caller must free, or null if neither exists
+pub fn resolveSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
+    // Try local path first
+    if (getLocalSkillsPath(allocator)) |local_path| {
+        // Check if file exists
+        const exists = blk: {
+            std.fs.cwd().access(local_path, .{}) catch {
+                break :blk false;
+            };
+            break :blk true;
+        };
+        if (exists) {
+            return local_path;
+        }
+        allocator.free(local_path);
+    }
+
+    // Try global path
+    if (getGlobalSkillsPath(allocator)) |global_path| {
+        // Check if file exists
+        const exists = blk: {
+            std.fs.cwd().access(global_path, .{}) catch {
+                break :blk false;
+            };
+            break :blk true;
+        };
+        if (exists) {
+            return global_path;
+        }
+        allocator.free(global_path);
+    }
+
+    return null;
+}
+
+/// Free a skills path allocated by getLocalSkillsPath, getGlobalSkillsPath, or resolveSkillsPath
+pub fn freeSkillsPath(allocator: std.mem.Allocator, path: []const u8) void {
+    allocator.free(path);
+}
+
 /// Load skills content from skills.md file
 /// Returns allocated string with skills content, or empty string if file not found/invalid
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn loadSkills(allocator: std.mem.Allocator) []const u8 {
+    // Try to resolve path
+    if (resolveSkillsPath(allocator)) |path| {
+        defer allocator.free(path);
+        return loadSkillsFromPath(allocator, path);
+    }
+    // Fallback to hardcoded path for backwards compatibility
     return loadSkillsFromPath(allocator, SKILLS_PATH);
 }
 
@@ -70,6 +201,12 @@ pub fn loadSkillsFromPath(allocator: std.mem.Allocator, path: []const u8) []cons
 /// Returns allocated string with skill content, or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn parseSkill(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
+    // Try to resolve path
+    if (resolveSkillsPath(allocator)) |path| {
+        defer allocator.free(path);
+        return parseSkillFromPath(allocator, path, skill_name);
+    }
+    // Fallback to hardcoded path for backwards compatibility
     return parseSkillFromPath(allocator, SKILLS_PATH, skill_name);
 }
 
@@ -125,6 +262,12 @@ pub fn parseSkillFromPath(allocator: std.mem.Allocator, path: []const u8, skill_
 /// Returns allocated array of SkillInfo structs
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn listSkills(allocator: std.mem.Allocator) []SkillInfo {
+    // Try to resolve path
+    if (resolveSkillsPath(allocator)) |path| {
+        defer allocator.free(path);
+        return listSkillsFromPath(allocator, path);
+    }
+    // Fallback to hardcoded path for backwards compatibility
     return listSkillsFromPath(allocator, SKILLS_PATH);
 }
 

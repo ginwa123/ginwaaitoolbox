@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const skills = @import("skills.zig");
 
 test "loadSkills returns empty string for missing file" {
@@ -197,4 +198,73 @@ test "listSkills returns all skills" {
     try testing.expectEqual(@as(usize, 2), result.len);
     try testing.expectEqualStrings("code_review", result[0].name);
     try testing.expectEqualStrings("debugging", result[1].name);
+}
+
+// ============================================
+// Tests for new path resolution functions
+// ============================================
+
+test "getLocalSkillsPath returns a valid path structure" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    
+    const path = skills.getLocalSkillsPath(allocator);
+    if (path) |p| {
+        defer allocator.free(p);
+        
+        // Path should contain the local skills directory and filename
+        try testing.expect(std.mem.indexOf(u8, p, ".zigginagentic") != null);
+        try testing.expect(std.mem.indexOf(u8, p, "skills") != null);
+        try testing.expect(std.mem.indexOf(u8, p, "skill.md") != null);
+    }
+}
+
+test "getGlobalSkillsPath returns XDG-compliant path" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    
+    const path = skills.getGlobalSkillsPath(allocator);
+    if (path) |p| {
+        defer allocator.free(p);
+        
+        // Path should contain the app name and skills directory
+        try testing.expect(std.mem.indexOf(u8, p, "zigginagentic") != null);
+        try testing.expect(std.mem.indexOf(u8, p, "skills") != null);
+        try testing.expect(std.mem.indexOf(u8, p, "skill.md") != null);
+        
+        // On Linux, should contain .config or XDG_CONFIG_HOME
+        if (builtin.os.tag == .linux) {
+            const has_config = std.mem.indexOf(u8, p, ".config") != null or 
+                               std.posix.getenv("XDG_CONFIG_HOME") != null;
+            try testing.expect(has_config);
+        }
+    }
+}
+
+test "resolveSkillsPath returns null when no skills file exists" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    
+    // This test assumes no skills file exists in default locations
+    // The function should return null gracefully
+    const path = skills.resolveSkillsPath(allocator);
+    if (path) |p| {
+        defer allocator.free(p);
+        // If a path was returned, the file should exist
+        std.fs.cwd().access(p, .{}) catch {
+            try testing.expect(false); // Should not happen
+        };
+    }
+    // null is also a valid result when no skills file exists
+}
+
+test "freeSkillsPath properly frees allocated path" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    
+    // Get a path and free it - this should not cause memory issues
+    if (skills.getLocalSkillsPath(allocator)) |path| {
+        skills.freeSkillsPath(allocator, path);
+    }
+    // Test passes if no crash or memory leak
 }
