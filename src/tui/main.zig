@@ -410,6 +410,52 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
     return xml[open_pos + open_tag.len .. close_pos];
 }
 
+
+// ─── Tool Result Extraction ─────────────────────────────────────────────────
+
+/// Struct to hold extracted tool result data
+const ToolResult = struct {
+    id: []const u8,
+    name: []const u8,
+    result: []const u8,
+};
+
+/// Extract all tool_result blocks from XML buffer
+/// Returns an ArrayList of ToolResult structs (caller owns the memory)
+fn extractToolResults(allocator: std.mem.Allocator, xml: []const u8) !std.ArrayList(ToolResult) {
+    var results = std.ArrayList(ToolResult).empty;
+    errdefer results.deinit(allocator);
+
+    var pos: usize = 0;
+    while (pos < xml.len) {
+        // Find next <tool_result> tag
+        const tool_result_start = std.mem.indexOfPos(u8, xml, pos, "<tool_result>") orelse break;
+        const tool_result_end = std.mem.indexOfPos(u8, xml, tool_result_start, "</tool_result>") orelse break;
+
+        const tool_result_block = xml[tool_result_start .. tool_result_end + "</tool_result>".len];
+        pos = tool_result_end + "</tool_result>".len;
+
+        // Extract tool_call_id
+        const id = if (extractTag(tool_result_block, "tool_call_id")) |v| v else "";
+
+        // Extract tool_name
+        const name = if (extractTag(tool_result_block, "tool_name")) |v| v else "";
+
+        // Extract result
+        const result = if (extractTag(tool_result_block, "result")) |v| v else "";
+
+        if (id.len > 0) {
+            try results.append(allocator, .{
+                .id = id,
+                .name = name,
+                .result = result,
+            });
+        }
+    }
+
+    return results;
+}
+
 // ─── Response streaming ──────────────────────────────────────────────────────
 
 /// Check stdin for ESC key and detect double ESC within time window
@@ -478,6 +524,11 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
 
     var stream_interrupted = false;
     var thought: []const u8 = "";
+    var displayed_tool_ids = std.ArrayList([]const u8).empty;
+    defer {
+        for (displayed_tool_ids.items) |id| app.allocator.free(id);
+        displayed_tool_ids.deinit(app.allocator);
+    }
 
     // std.debug.print("Your sessions {s}\r\n\n", .{app.session_id});
 
@@ -549,6 +600,38 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                 }
             }
 
+
+            // Display tool results inline
+            var tool_results = extractToolResults(app.allocator, buffer.items) catch continue;
+            defer tool_results.deinit(app.allocator);
+
+            for (tool_results.items) |result| {
+                // Check if already displayed
+                var already_displayed = false;
+                for (displayed_tool_ids.items) |id| {
+                    if (std.mem.eql(u8, id, result.id)) {
+                        already_displayed = true;
+                        break;
+                    }
+                }
+
+                if (!already_displayed) {
+                    // Truncate result to 500 chars
+                    const max_result_len: usize = 500;
+                    const display_result = if (result.result.len > max_result_len) result.result[0..max_result_len] else result.result;
+
+                    // Print tool result with color
+                    std.debug.print("\n{s}[Tool: {s}]{s}\n", .{ cyan, result.name, reset });
+                    std.debug.print("{s}\n", .{display_result});
+
+                    // Add to displayed list (duplicate the id string)
+                    const id_copy = app.allocator.dupe(u8, result.id) catch continue;
+                    displayed_tool_ids.append(app.allocator, id_copy) catch {
+                        app.allocator.free(id_copy);
+                        continue;
+                    };
+                }
+            }
             std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes) Retry count: {d} thought: {s}", .{ yellow, spin, reset, buffer.items.len, retry_count, thought });
         }
 
