@@ -311,7 +311,7 @@ test "saveMessage saves response to llm_history" {
         .finish_reason = .stop,
     };
 
-    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null);
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null, null, 0);
 
     const row = try db.queryRow(allocator, "SELECT response_content, finish_reason FROM llm_history WHERE session_id = ?", &.{"test-session"});
     defer row.deinit(allocator);
@@ -366,7 +366,7 @@ test "saveMessageAsUser saves user message to llm_history" {
     workflow.session_id = "user-msg-test";
     workflow.model = "test-model";
 
-    try workflow.saveMessageUnified("Hello, world!", null, "user", "null", null, null, null);
+    try workflow.saveMessageUnified("Hello, world!", null, "user", "null", null, null, null, null, 0);
 
     const row = try db.queryRow(allocator, "SELECT response_content, role FROM llm_history WHERE session_id = ?", &.{"user-msg-test"});
     defer row.deinit(allocator);
@@ -421,7 +421,7 @@ test "saveMessageAsTool saves tool result to llm_history" {
     workflow.session_id = "tool-msg-test";
     workflow.model = "test-model";
 
-    try workflow.saveMessageUnified("bash output here", null, "tool", "tool", null, "tool_call_123", null);
+    try workflow.saveMessageUnified("bash output here", null, "tool", "tool", null, "tool_call_123", null, null, 0);
 
     const row = try db.queryRow(allocator, "SELECT response_content, role, tool_calls_json FROM llm_history WHERE session_id = ?", &.{"tool-msg-test"});
     defer row.deinit(allocator);
@@ -540,7 +540,7 @@ test "getMessages retrieves messages by session_id" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessageUnified(null, response1, "assistant", null, null, null, null);
+    try workflow.saveMessageUnified(null, response1, "assistant", null, null, null, null, null, 0);
 
     const response2 = agent.Agent.CallResponse{
         .allocator = allocator,
@@ -617,7 +617,7 @@ test "buildMessages handles tool_calls response correctly" {
         .content = null,
         .tool_calls = tool_calls_slice,
         .finish_reason = .tool_calls,
-    }, "assistant", null, tool_calls_slice, null, null);
+    }, "assistant", null, tool_calls_slice, null, null, null, 0);
 
     const messages = try workflow.buildMessages();
     defer {
@@ -937,7 +937,7 @@ test "buildMessages reconstructs tool_calls and tool_call_id correctly" {
     workflow.model = "test-model";
 
     // 1. Save user message
-    try workflow.saveMessageUnified("run ls command", null, "user", "null", null, null, null);
+    try workflow.saveMessageUnified("run ls command", null, "user", "null", null, null, null, null, 0);
 
     // 2. Save assistant message with tool_calls (simulating LLM response that wants to call a tool)
     var tool_calls = try allocator.alloc(agent.ToolCall, 1);
@@ -1171,7 +1171,7 @@ test "get_session_by_dir returns single session" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null);
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null, null, 0);
 
     const sessions = try workflow.get_session_by_dir();
     defer {
@@ -1228,13 +1228,13 @@ test "get_session_by_dir returns multiple sessions ordered by created DESC" {
 
     // Insert sessions directly with explicit timestamps for deterministic ordering
     // Insert oldest session (timestamp 1000)
-    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id1", "session-old", "test-model", "1000", "Old message", "stop", "assistant", "/home/user/old"});
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &.{ "id1", "session-old", "test-model", "1000", "Old message", "stop", "assistant", "/home/user/old", "", "0" });
 
     // Insert middle session (timestamp 2000)
-    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id2", "session-middle", "test-model", "2000", "Middle message", "stop", "assistant", "/home/user/middle"});
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &.{ "id2", "session-middle", "test-model", "2000", "Middle message", "stop", "assistant", "/home/user/middle", "", "0" });
 
     // Insert newest session (timestamp 3000)
-    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id3", "session-new", "test-model", "3000", "New message", "stop", "assistant", "/home/user/new"});
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &.{ "id3", "session-new", "test-model", "3000", "New message", "stop", "assistant", "/home/user/new", "", "0" });
 
     const sessions = try workflow.get_session_by_dir();
     defer {
@@ -1295,7 +1295,7 @@ test "get_session_by_dir handles NULL session_dir with COALESCE" {
     workflow.model = "test-model";
 
     // Insert a record with NULL session_dir directly via SQL
-    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)", &.{ "id-null-test", "session-null-dir", "test-model", "1000", "content", "stop", "assistant" });
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)", &.{ "id-null-test", "session-null-dir", "test-model", "1000", "content", "stop", "assistant", "", "", "0" });
 
     const sessions = try workflow.get_session_by_dir();
     defer {
@@ -1352,9 +1352,9 @@ test "get_session_by_dir groups by session_id" {
 
     // Insert multiple messages with same session_id but different timestamps directly
     // This tests GROUP BY and MAX(created)
-    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id1", "shared-session", "test-model", "1000", "First message", "stop", "assistant", "/home/user/shared"});
-    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id2", "shared-session", "test-model", "2000", "Second message", "stop", "assistant", "/home/user/shared"});
-    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{"id3", "shared-session", "test-model", "3000", "Third message", "stop", "assistant", "/home/user/shared"});
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &.{ "id1", "shared-session", "test-model", "1000", "First message", "stop", "assistant", "/home/user/shared", "", "0" });
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &.{ "id2", "shared-session", "test-model", "2000", "Second message", "stop", "assistant", "/home/user/shared", "", "0" });
+    try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &.{ "id3", "shared-session", "test-model", "3000", "Third message", "stop", "assistant", "/home/user/shared", "", "0" });
 
     const sessions = try workflow.get_session_by_dir();
     defer {
@@ -1423,8 +1423,8 @@ test "get_session_by_dir limits to 10 results" {
         defer allocator.free(sessionDir);
         const created = try std.fmt.allocPrint(allocator, "{}", .{i});
         defer allocator.free(created);
-        
-        try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", &.{id, sessionId, "test-model", created, "Test message", "stop", "assistant", sessionDir});
+
+        try db.exec(allocator, "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, session_dir, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &.{ id, sessionId, "test-model", created, "Test message", "stop", "assistant", sessionDir, "", "0" });
     }
 
     const sessions = try workflow.get_session_by_dir();
@@ -1491,7 +1491,7 @@ test "saveMessageUnified with null agent_name defaults to GeneralAgent" {
     };
 
     // Call saveMessageUnified with null agent_name (8th param)
-    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null);
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, null, null, 0);
 
     // Verify agent column contains "GeneralAgent"
     const row = try db.queryRow(allocator, "SELECT agent FROM llm_history WHERE session_id = ?", &.{"test-agent-null"});
@@ -1554,7 +1554,7 @@ test "saveMessageUnified with explicit agent_name stores provided value" {
     };
 
     // Call saveMessageUnified with explicit agent_name = "PlanningAgent"
-    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, "PlanningAgent");
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, "PlanningAgent", null, 0);
 
     // Verify agent column contains "PlanningAgent"
     const row = try db.queryRow(allocator, "SELECT agent FROM llm_history WHERE session_id = ?", &.{"test-agent-explicit"});
@@ -1617,7 +1617,7 @@ test "getMessages retrieves agent column correctly" {
     };
 
     // Call saveMessageUnified with agent_name = "ExplorationAgent"
-    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, "ExplorationAgent");
+    try workflow.saveMessageUnified(null, response, "assistant", null, null, null, "ExplorationAgent", null, 0);
 
     // Retrieve messages using getMessages()
     const messages = try workflow.getMessages();
@@ -1684,7 +1684,7 @@ test "saveMessageUnified handles various agent names" {
         .tool_calls = null,
         .finish_reason = .stop,
     };
-    try workflow.saveMessageUnified(null, response1, "assistant", null, null, null, "ExplorationAgent");
+    try workflow.saveMessageUnified(null, response1, "assistant", null, null, null, "ExplorationAgent", null, 0);
 
     // Test PlanningAgent
     workflow.session_id = "test-various-2";

@@ -77,6 +77,15 @@ pub const Migration006AddAgent = struct {
         try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN agent TEXT DEFAULT 'GeneralAgent'", &[_][]const u8{});
     }
 };
+pub const Migration007AddSessionTracking = struct {
+    pub const version: u32 = 7;
+    pub const name = "add_session_tracking";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN session_name TEXT", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN loop_index INTEGER DEFAULT 0", &[_][]const u8{});
+    }
+};
 
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,

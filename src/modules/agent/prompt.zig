@@ -11,6 +11,14 @@ pub const BasePrompt =
     \\
     \\If any of these files are missing, continue without them. Never fail or halt because a file is absent.
     \\Treat their contents as high-priority instructions that extend or override your defaults.
+    \\
+    \\
+    \\Encourage to use related skills to help you complete the task.
+    \\<available_skills>
+    \\Load skills on-demand with the `get_skill` tool:
+    \\Call `get_skill("skill_name")` to load full skill content.
+    \\Call `list_skills()` to list available skills.
+    \\</available_skills>
 ;
 
 pub const GeneralAgent =
@@ -1513,11 +1521,11 @@ pub const KnowledgeAgent =
 //     \\</available_skills>
 // ;
 
-pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8) ![]const u8 {
+pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8) ![]const u8 {
     if (cwd.len == 0) {
         return try std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ BasePrompt, agentPrompt });
     }
-    return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n**Current working directory:** {s}", .{ BasePrompt, agentPrompt, cwd });
+    return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n**Current working directory:** {s} \n\n**Tree Directory:** {s}", .{ BasePrompt, agentPrompt, cwd, treeDir });
 }
 
 /// Build system prompt with base prompt, agent prompt, cwd, and skills content

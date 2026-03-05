@@ -143,22 +143,22 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) ![]const u8 {
 
     const was_truncated = stdout_data.items.len >= max_output or stderr_data.items.len >= max_output;
 
-    var trunc_buf: [13]u8 = undefined;
-    const truncated_command = if (input.command.len > 10) blk: {
-        trunc_buf[0..10].* = input.command[0..10].*;
-        trunc_buf[10..13].* = "...".*;
-        break :blk trunc_buf[0..13];
-    } else input.command;
+    // var trunc_buf: [13]u8 = undefined;
+    // const truncated_command = if (input.command.len > 10) blk: {
+    //     trunc_buf[0..10].* = input.command[0..10].*;
+    //     trunc_buf[10..13].* = "...".*;
+    //     break :blk trunc_buf[0..13];
+    // } else input.command;
 
     const output = try std.fmt.allocPrint(allocator,
-        \\<command>{s}</command>
+        // \\<command>{s}</command>
         \\<stdout>{s}</stdout>
         \\<stderr>{s}</stderr>
         \\<exit_code>{d}</exit_code>
         \\<truncated>{}</truncated>
         \\<timeout>{}</timeout>
     , .{
-        truncated_command,
+        // truncated_command,
         if (stdout_data.items.len == 0) "No output produced." else stdout_data.items,
         if (stderr_data.items.len == 0) "No errors." else stderr_data.items,
         exit_code,

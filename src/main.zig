@@ -214,6 +214,11 @@ pub fn main() !void {
         .name = migrations.Migration006AddAgent.name,
         .up = migrations.Migration006AddAgent.up,
     });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration007AddSessionTracking.version,
+        .name = migrations.Migration007AddSessionTracking.name,
+        .up = migrations.Migration007AddSessionTracking.up,
+    });
     try migrationManager.runMigrations();
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
