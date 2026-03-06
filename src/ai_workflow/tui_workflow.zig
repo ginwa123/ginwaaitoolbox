@@ -341,7 +341,7 @@ pub const TUIWorkflow = struct {
                                 save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, contentChangeAgent, null, "tool", "tool", null, tool_call.id, agent_name, session_name, loop_counter) catch |err| {
                                     self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
                                 };
-                                send_tool_result.run(allocator, self.conn_fd, self.logger, contentChangeAgent, tool_call.id, tool_call.function.name);
+                                send_tool_result.run(allocator, self.conn_fd, self.logger, contentChangeAgent, tool_call.id, tool_call.function.name, null);
 
                                 // Update the loop-persistent current_agent variable
                                 current_agent = try parent_allocator.dupe(u8, agent_name);
@@ -393,7 +393,7 @@ pub const TUIWorkflow = struct {
                                 };
                                 try messages_list.append(allocator, tool_result_msg);
                                 _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, res_bash, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter);
-                                send_tool_result.run(allocator, self.conn_fd, self.logger, res_bash, tool_call.id, tool_call.function.name);
+                                send_tool_result.run(allocator, self.conn_fd, self.logger, res_bash, tool_call.id, tool_call.function.name, null);
                                 self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
 
@@ -654,7 +654,7 @@ pub const TUIWorkflow = struct {
         const current_agent = get_current_agent_by_session_id.run(allocator, self.db, self.session_id) catch return;
 
         save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0) catch {};
-        send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name);
+        send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
     }
 
     fn handleGetSkill(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) !void {
@@ -696,7 +696,7 @@ pub const TUIWorkflow = struct {
             const current_agent = get_current_agent_by_session_id.run(allocator, self.db, self.session_id) catch return;
 
             _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0);
-            send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name);
+            send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
             return;
         };
         defer resultParsed.deinit();
@@ -788,7 +788,7 @@ pub const TUIWorkflow = struct {
 
         const current_agent_final = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
         save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
-        send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name);
+        send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
     }
 
     /// Build system message content with loaded skills injected

@@ -2,7 +2,7 @@ const std = @import("std");
 const tree1_mod = @import("tree1");
 const logger_mod = tree1_mod.logger;
 
-pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logger_mod.Logger, result: []const u8, tool_call_id: []const u8, tool_name: []const u8) void {
+pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logger_mod.Logger, result: []const u8, tool_call_id: []const u8, tool_name: []const u8, command: ?[]const u8) void {
     if (conn_fd < 0) return;
 
     var buf: std.ArrayList(u8) = .empty;
@@ -13,7 +13,15 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logge
     w.writeAll(tool_call_id) catch return;
     w.writeAll("</tool_call_id><tool_name>") catch return;
     w.writeAll(tool_name) catch return;
-    w.writeAll("</tool_name><result>") catch return;
+    w.writeAll("</tool_name>") catch return;
+
+    if (command) |cmd| {
+        w.writeAll("<command>") catch return;
+        w.writeAll(cmd) catch return;
+        w.writeAll("</command>") catch return;
+    }
+
+    w.writeAll("<result>") catch return;
 
     w.writeAll(result) catch return;
 
