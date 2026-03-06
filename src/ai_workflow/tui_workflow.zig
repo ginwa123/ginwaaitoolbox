@@ -1,4 +1,3 @@
-const logger = @import("../modules/logger/logger.zig");
 const std = @import("std");
 const json = std.json;
 const tree1_mod = @import("tree1");
@@ -13,40 +12,28 @@ const list_skills_tool = tree1_mod.list_skills_tool;
 const get_skill_tool = tree1_mod.get_skill_tool;
 const loop_detector = tree1_mod.loop_detector;
 const bash_helper = tree1_mod.helperTool;
+const get_tree_dir = @import("get_tree_dir.zig");
+const logger_mod = tree1_mod.logger;
+const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
+const TUIHistory = @import("models.zig").TUIHistory;
+const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
+const send_tool_result = @import("send_tool_result.zig");
+const send_user_choice = @import("send_user_choice.zig");
+const send_response = @import("send_response.zig");
+const send_error = @import("send_error.zig");
+const save_message = @import("save_message.zig");
+const build_messages = @import("build_messages_for_agent.zig");
+const get_messages = @import("get_messages.zig");
+const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
+const send_stream_chunk_final = @import("send_stream_chunk_final.zig");
+const send_steam_chunk_content = @import("send_stream_chunk_content.zig");
+const send_stream_chunk_reasoning = @import("send_stream_chunk_reasoning.zig");
+const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_call_delta.zig");
 
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
     pub const max_body_size: usize = 700 * 1024; // 150kb threshold to trigger
-};
-
-pub const TUIHistory = struct {
-    id: []const u8,
-    session_id: []const u8,
-    model: []const u8,
-    created: []const u8,
-    response_content: []const u8,
-    finish_reason: []const u8,
-    role: []const u8,
-    tools: []const u8,
-    reasoning_content: ?[]const u8 = null,
-    agent: []const u8 = "GeneralAgent",
-    session_name: []const u8 = "",
-    loop_index: u32 = 0,
-
-    pub fn deinit(self: *TUIHistory, allocator: std.mem.Allocator) void {
-        allocator.free(self.id);
-        allocator.free(self.session_id);
-        allocator.free(self.model);
-        allocator.free(self.created);
-        allocator.free(self.response_content);
-        allocator.free(self.finish_reason);
-        allocator.free(self.role);
-        allocator.free(self.tools);
-        if (self.reasoning_content) |rc| allocator.free(rc);
-        allocator.free(self.agent);
-        allocator.free(self.session_name);
-    }
 };
 
 pub const SessionInfo = struct {
@@ -61,38 +48,39 @@ pub const SessionInfo = struct {
     }
 };
 
-/// Context for streaming callbacks
 pub const StreamingContext = struct {
+    allocator: std.mem.Allocator,
     workflow: *TUIWorkflow,
+    conn_fd: std.posix.fd_t,
     chunk_index: usize = 0,
 };
 
 /// Callback for streaming chunks - sends each chunk to the client
 pub fn streamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
-    const workflow = stream_ctx.workflow;
+    const allocator = stream_ctx.allocator;
+    const conn_fd = stream_ctx.conn_fd;
 
     if (chunk.done) {
-        // Send final chunk with finish reason and usage
-        workflow.sendStreamChunkFinal(stream_ctx.chunk_index, chunk.finish_reason, chunk.usage);
+        send_stream_chunk_final.run(allocator, conn_fd, stream_ctx.chunk_index, chunk.usage);
         return;
     }
 
     // Send content chunk
     if (chunk.content) |content| {
-        workflow.sendStreamChunkContent(stream_ctx.chunk_index, content);
+        send_steam_chunk_content.run(allocator, conn_fd, stream_ctx.chunk_index, content);
         stream_ctx.chunk_index += 1;
     }
 
     // Send reasoning content chunk
     if (chunk.reasoning_content) |rc| {
-        workflow.sendStreamChunkReasoning(stream_ctx.chunk_index, rc);
+        send_stream_chunk_reasoning.run(allocator, conn_fd, stream_ctx.chunk_index, rc);
         stream_ctx.chunk_index += 1;
     }
 
     // Handle tool calls delta - we'll aggregate these
     if (chunk.tool_calls_delta) |deltas| {
-        workflow.sendStreamChunkToolCallDelta(stream_ctx.chunk_index, deltas);
+        send_stream_to_chunk_tool_call_delta.run(allocator, conn_fd, stream_ctx.chunk_index, deltas);
         stream_ctx.chunk_index += 1;
     }
 }
@@ -108,9 +96,9 @@ pub const LoadedSkill = struct {
 };
 
 pub const TUIWorkflow = struct {
-    allocator: std.mem.Allocator,
+    // allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    logger: *logger.Logger,
+    logger: *logger_mod.Logger,
 
     session_id: []const u8 = "",
 
@@ -129,10 +117,9 @@ pub const TUIWorkflow = struct {
     loaded_skills: std.ArrayList(LoadedSkill) = .{},
 
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
-        const log_ptr = try allocator.create(logger.Logger);
-        log_ptr.* = logger.Logger.initColor(allocator, .{ .min_level = .debug });
+        const log_ptr = try allocator.create(logger_mod.Logger);
+        log_ptr.* = logger_mod.Logger.initColor(allocator, .{ .min_level = .debug });
         return .{
-            .allocator = allocator,
             .db = db,
             .logger = log_ptr,
             .session_id = "",
@@ -146,352 +133,24 @@ pub const TUIWorkflow = struct {
         };
     }
 
-    pub fn deinit(self: *TUIWorkflow) void {
-        self.logger.deinit();
-        // Free all loaded skills
-        for (self.loaded_skills.items) |skill| {
-            skill.deinit(self.allocator);
-        }
-        self.loaded_skills.deinit(self.allocator);
-
-        self.allocator.destroy(self.logger);
-    }
-
-    /// Get the current agent from the last message in the database.
-    /// Returns "GeneralAgent" if no messages exist for this session.
-    pub fn getCurrentAgent(self: *TUIWorkflow) ![]const u8 {
-        const sql = "SELECT COALESCE(agent, 'GeneralAgent'), COALESCE(session_name, ''), COALESCE(loop_index, 0) FROM llm_history WHERE session_id = ? ORDER BY created DESC LIMIT 1";
-        var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
-        defer rows.deinit();
-
-        if (try rows.next()) |row| {
-            return try self.allocator.dupe(u8, row.values[0]);
-        } else {
-            return try self.allocator.dupe(u8, "GeneralAgent");
-        }
-    }
-
-    pub fn sendResponse(self: *TUIWorkflow, response: agent.Agent.CallResponse, override_finish_reason: ?[]const u8) void {
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        w.writeAll("<response><choices><choice><index>0</index><message><role>assistant</role>") catch return;
-
-        if (response.content) |content| {
-            w.writeAll("<content>") catch return;
-            w.writeAll(content) catch return;
-            w.writeAll("</content>") catch return;
-        }
-
-        if (response.reasoning_content) |rc| {
-            w.writeAll("<reasoning_content>") catch return;
-            w.writeAll(rc) catch return;
-            w.writeAll("</reasoning_content>") catch return;
-        }
-
-        if (response.tool_calls) |tc| {
-            w.writeAll("<tool_calls>") catch return;
-            for (tc) |tci| {
-                w.writeAll("<tool_call id=\"") catch return;
-                w.writeAll(tci.id) catch return;
-                w.writeAll("\" type=\"function\"><function><name>") catch return;
-                w.writeAll(tci.function.name) catch return;
-                w.writeAll("</name><arguments>") catch return;
-                w.writeAll(tci.function.arguments) catch return;
-                w.writeAll("</arguments></function></tool_call>") catch return;
-            }
-            w.writeAll("</tool_calls>") catch return;
-        }
-
-        w.writeAll("</message>") catch return;
-
-        if (override_finish_reason) |fr| {
-            if (fr.len > 0) {
-                w.writeAll("<finish_reason>") catch return;
-                w.writeAll(fr) catch return;
-                w.writeAll("</finish_reason>") catch return;
-            }
-        } else if (response.finish_reason) |fr| {
-            w.writeAll("<finish_reason>") catch return;
-            w.writeAll(fr.toStr()) catch return;
-            w.writeAll("</finish_reason>") catch return;
-        }
-
-        // Add usage information
-        w.print("<usage><prompt_tokens>{}</prompt_tokens><completion_tokens>{}</completion_tokens><total_tokens>{}</total_tokens></usage>", .{ response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total_tokens }) catch return;
-
-        w.writeAll("</choice></choices></response>") catch return;
-
-        self.logger.infoFmt("SEND RESPONSE XML: {s}", .{buf.items}) catch {};
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
-            if (err != error.BrokenPipe) {
-                self.logger.errFmt("Send Response error {s}", .{@errorName(err)}) catch {};
-            }
-        };
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    fn sendToolResult(self: *TUIWorkflow, result: []const u8, tool_call_id: []const u8, tool_name: []const u8) void {
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        w.writeAll("<response><tool_result><tool_call_id>") catch return;
-        w.writeAll(tool_call_id) catch return;
-        w.writeAll("</tool_call_id><tool_name>") catch return;
-        w.writeAll(tool_name) catch return;
-        w.writeAll("</tool_name><result>") catch return;
-
-        w.writeAll(result) catch return;
-
-        w.writeAll("</result></tool_result></response>") catch return;
-
-        self.logger.traceFmt("SEND TOOL RESULT XML: {s}", .{buf.items}) catch {};
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
-            if (err != error.BrokenPipe) {
-                self.logger.errFmt("Send Tool Result error {s}", .{@errorName(err)}) catch {};
-            }
-        };
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    pub fn sendError(self: *TUIWorkflow, err_msg: []const u8, finish_reason: ?[]const u8) void {
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        // Wrap error in proper response structure with content/markdown for TUI display
-        w.writeAll("<response><choices><choice><index>0</index><message><role>assistant</role><content><agent>ErrorAgent</agent><markdown>") catch return;
-        w.writeAll(err_msg) catch return;
-        w.writeAll("</markdown></content></message><finish_reason>") catch return;
-        const fr = finish_reason orelse "stop";
-        w.writeAll(fr) catch return;
-        w.writeAll("</finish_reason></choice></choices></response>") catch return;
-
-        self.logger.traceFmt("SEND ERROR XML: {s}", .{buf.items}) catch {};
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
-            if (err != error.BrokenPipe) {
-                self.logger.errFmt("Send Error response error {s}", .{@errorName(err)}) catch {};
-            }
-        };
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    pub fn sendSessionsResponse(self: *TUIWorkflow, sessions: []SessionInfo) void {
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        w.writeAll("<response><type>sessions</type><sessions>") catch return;
-        for (sessions) |session| {
-            w.writeAll("<session><id>") catch return;
-            w.writeAll(session.session_id) catch return;
-            w.writeAll("</id><dir>") catch return;
-            w.writeAll(session.session_dir) catch return;
-            w.writeAll("</dir><created>") catch return;
-            w.writeAll(session.created) catch return;
-            w.writeAll("</created></session>") catch return;
-        }
-        w.writeAll("</sessions></response>") catch return;
-
-        self.logger.traceFmt("SEND SESSIONS XML: {s}", .{buf.items}) catch {};
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
-            if (err != error.BrokenPipe) {
-                self.logger.errFmt("Send Sessions response error {s}", .{@errorName(err)}) catch {};
-            }
-        };
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    pub fn sendUserChoice(self: *TUIWorkflow) !void {
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        w.writeAll("<response><finish_reason>user_choice</finish_reason>") catch return;
-        w.writeAll("</response>") catch return;
-
-        self.logger.traceFmt("SEND SESSIONS XML: {s}", .{buf.items}) catch {};
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
-            if (err != error.BrokenPipe) {
-                self.logger.errFmt("Send Sessions response error {s}", .{@errorName(err)}) catch {};
-            }
-        };
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    /// Send a streaming content chunk
-    fn sendStreamChunkContent(self: *TUIWorkflow, index: usize, content: []const u8) void {
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        w.print("<response><chunk index=\"{}\"><content>", .{index}) catch return;
-        w.writeAll(content) catch return;
-        w.writeAll("</content></chunk></response>") catch return;
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch {};
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    /// Send a streaming reasoning content chunk
-    fn sendStreamChunkReasoning(self: *TUIWorkflow, index: usize, reasoning: []const u8) void {
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        w.print("<response><chunk index=\"{}\"><reasoning_content>", .{index}) catch return;
-        w.writeAll(reasoning) catch return;
-        w.writeAll("</reasoning_content></chunk></response>") catch return;
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch {};
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    /// Send a streaming tool call delta chunk
-    fn sendStreamChunkToolCallDelta(self: *TUIWorkflow, index: usize, deltas: []const agent.ToolCallDelta) void {
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        w.print("<response><chunk index=\"{}\"><tool_calls_delta>", .{index}) catch return;
-        for (deltas) |delta| {
-            w.print("<delta index=\"{}\">", .{delta.index}) catch return;
-            if (delta.id) |id| {
-                w.print("<id>{s}</id>", .{id}) catch return;
-            }
-            if (delta.function_name) |name| {
-                w.print("<function_name>{s}</function_name>", .{name}) catch return;
-            }
-            if (delta.function_arguments) |args| {
-                w.print("<function_arguments>{s}</function_arguments>", .{args}) catch return;
-            }
-            w.writeAll("</delta>") catch return;
-        }
-        w.writeAll("</tool_calls_delta></chunk></response>") catch return;
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch {};
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    /// Send the final streaming chunk with usage info (finish_reason is sent by sendResponse)
-    fn sendStreamChunkFinal(self: *TUIWorkflow, index: usize, finish_reason: ?agent.FinishReason, usage: ?agent.Usage) void {
-        _ = finish_reason; // unused - finish_reason comes from sendResponse
-        if (self.conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
-
-        w.print("<response><chunk index=\"{}\" final=\"true\">", .{index}) catch return;
-        // Removed: <finish_reason> - this is sent by sendResponse() as the terminal signal
-        if (usage) |u| {
-            w.print("<usage><prompt_tokens>{}</prompt_tokens><completion_tokens>{}</completion_tokens><total_tokens>{}</total_tokens></usage>", .{ u.prompt_tokens, u.completion_tokens, u.total_tokens }) catch return;
-        }
-        w.writeAll("</chunk></response>") catch return;
-
-        _ = std.posix.write(self.conn_fd, buf.items) catch {};
-        _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    pub fn buildMessages(self: *TUIWorkflow) ![]agent.AgentMessage {
-        const historyMessages = try self.getMessages();
-        defer {
-            for (historyMessages) |*hist| {
-                hist.deinit(self.allocator);
-            }
-            self.allocator.free(historyMessages);
-        }
-
-        // Determine the agent to use from the latest message in history
-        var agent_to_use: []const u8 = "GeneralAgent";
-        if (historyMessages.len > 0) {
-            // Get the agent from the last message
-            const last_msg = historyMessages[historyMessages.len - 1];
-            agent_to_use = last_msg.agent;
-        }
-
-        // Get the appropriate prompt for the agent
-        const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_to_use, "GeneralAgent"))
-            prompt.GeneralAgent
-        else if (std.mem.eql(u8, agent_to_use, "ExplorationAgent"))
-            prompt.ExplorationAgent
-        else if (std.mem.eql(u8, agent_to_use, "PlanningAgent"))
-            prompt.PlanningAgent
-        else if (std.mem.eql(u8, agent_to_use, "ExecutingAgent"))
-            prompt.ExecutingAgent
-        else if (std.mem.eql(u8, agent_to_use, "KnowledgeAgent"))
-            prompt.KnowledgeAgent
-        else
-            prompt.GeneralAgent;
-
-        const systemContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd, agent_prompt, try self.getTreeDir());
-
-        const systemMessage = agent.AgentMessage{
-            .role = .system,
-            .content = systemContent,
-        };
-
-        var allMessages: std.ArrayList(agent.AgentMessage) = .empty;
-        defer allMessages.deinit(self.allocator);
-
-        try allMessages.append(self.allocator, systemMessage);
-
-        for (historyMessages) |hist| {
-            const agentMsgs = try self.transformMessageToAgentMessages(hist);
-            for (agentMsgs) |msg| {
-                try allMessages.append(self.allocator, msg);
-            }
-            self.allocator.free(agentMsgs);
-        }
-
-        return try allMessages.toOwnedSlice(self.allocator);
-    }
-
-    pub fn run(self: *TUIWorkflow) void {
-        self.runInternal() catch |err| {
-            const err_msg = std.fmt.allocPrint(self.allocator, "{s}", .{@errorName(err)}) catch return;
-            defer self.allocator.free(err_msg);
-            self.sendError(err_msg, "user_choice");
+    pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator) void {
+        self.runInternal(allocator) catch |err| {
+            const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
+            defer allocator.free(err_msg);
+            send_error.run(allocator, self.conn_fd, self.logger, err_msg, "user_choice");
         };
     }
 
-    fn runInternal(self: *TUIWorkflow) !void {
-        const current_agent = try self.getCurrentAgent();
-        defer self.allocator.free(current_agent);
+    fn runInternal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator) !void {
+        const current_agent = try get_current_agent_by_session_id.run(
+            parent_allocator,
+            self.db,
+            self.session_id,
+        );
         const session_name = self.message;
-        self.saveMessageUnified(self.message, null, "user", "null", null, null, current_agent, session_name, 0) catch |err| {
+        save_message.run(parent_allocator, self.db, self.session_id, self.model, self.cwd, self.message, null, "user", "null", null, null, current_agent, session_name, 0) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
-
-        // Use ArrayList for dynamic message appending during tool execution
-        var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
-        const initial_messages = try self.buildMessages();
-        try messages_list.appendSlice(self.allocator, initial_messages);
-
-        const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool };
 
         var retryCount: usize = 0;
         var agent_temperature: f32 = 0.2;
@@ -499,84 +158,42 @@ pub const TUIWorkflow = struct {
         var current_max_tokens: usize = 8000;
         var loop_counter: u32 = 0;
         while (true) {
+            var arena_allocator_while_loop = std.heap.ArenaAllocator.init(parent_allocator);
+            defer arena_allocator_while_loop.deinit();
+            const allocator = arena_allocator_while_loop.allocator();
+
+            var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
+            const initial_messages = try build_messages.run(
+                allocator,
+                self.cwd,
+                try get_tree_dir.run(allocator, self.cwd),
+                try get_messages.run(allocator, self.db, self.session_id),
+            );
+
+            try messages_list.appendSlice(allocator, initial_messages);
+
             loop_counter += 1;
             if (retryCount > 10) return error.TooManyRetries;
 
             const body_size = self.estimateBodySize(messages_list.items);
             self.logger.debugFmt("[COMPACTION] Body size: {} bytes", .{body_size}) catch {};
-
             if (body_size > COMPACTION_CONFIG.max_body_size) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
-
-                var arena = std.heap.ArenaAllocator.init(self.allocator);
-                defer arena.deinit();
-
-                if (try self.callCompactionAgent(messages_list.items, arena.allocator())) |compacted_xml| {
-                    try self.compactMessagesInMemory(&messages_list, compacted_xml);
+                if (try self.call_compact_agent(messages_list.items, allocator)) |compacted_xml| {
+                    try self.compactMessagesInMemory(allocator, &messages_list, compacted_xml);
                 }
             }
 
-            var arena_allocator_agent = std.heap.ArenaAllocator.init(self.allocator);
-            defer arena_allocator_agent.deinit();
-            const allocator_agent = arena_allocator_agent.allocator();
-            var dynamic_agent = try agent.Agent.init(allocator_agent, self.logger);
-            dynamic_agent.apiKey = self.api_key;
-            dynamic_agent.model = self.model;
-            dynamic_agent.baseUrl = self.base_url;
-            const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
-            dynamic_agent.thinkingEnabled = isThinking;
-            dynamic_agent.httpOptions.read_timeout_ms = 600_000; // 10 minutes
-            var stream_ctx = StreamingContext{
-                .workflow = self,
-                .chunk_index = 0,
-            };
-            const res_dynamic_agent = dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, streamCallback) catch |err| {
-                retryCount += 1;
-                self.logger.errFmt("Error calling agent: {s}", .{@errorName(err)}) catch {};
-                self.sendError(@errorName(err), "notification_error");
-                continue;
-            };
+            const res_dynamic_agent = try self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking);
+
             retryCount = 0;
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    // const intent_result = dynamic_agent.hasUnresolvedIntent(messages_list.items) catch |err| blk: {
-                    //     self.logger.errFmt("hasUnresolvedIntent error: {s}", .{@errorName(err)}) catch {};
-                    //     break :blk agent.UnresolvedIntentResult{ .has_unresolved = false, .reason = null };
-                    // };
-                    //
-                    // if (intent_result.has_unresolved) {
-                    //     self.logger.infoFmt("UNRESOLVED INTENT DETECTED - continuing loop", .{}) catch {};
-                    //     if (intent_result.reason) |r| {
-                    //         self.logger.infoFmt("Reason: {s}", .{r}) catch {};
-                    //     }
-                    //     self.sendResponse(res_dynamic_agent, "");
-                    //     const current_agent_2 = try self.getCurrentAgent();
-                    //     defer self.allocator.free(current_agent_2);
-                    //     try self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_2);
-                    //
-                    //     const continuation_msg = if (intent_result.reason) |r|
-                    //         try std.fmt.allocPrint(self.allocator, "Please continue: {s}", .{r})
-                    //     else
-                    //         try self.allocator.dupe(u8, "Please continue and execute the action you described.");
-                    //
-                    //     const user_msg = agent.AgentMessage{
-                    //         .role = .user,
-                    //         .content = continuation_msg,
-                    //     };
-                    //     try messages_list.append(self.allocator, user_msg);
-                    //     retryCount += 1;
-                    //     continue;
-                    // }
-
-                    self.sendResponse(res_dynamic_agent, "user_choice");
-                    const current_agent_3 = try self.getCurrentAgent();
-                    defer self.allocator.free(current_agent_3);
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_3, session_name, loop_counter) catch |err| {
-                        self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
-                    };
-
-                    // _ = try self.sendUserChoice();
+                    send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, "user_choice");
+                    const current_agent_3 = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
+                    _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_3, session_name, loop_counter);
+                    _ = try send_user_choice.run(allocator, self.conn_fd, self.logger);
                     self.logger.infoFmt("FINISH REASON STOPPP", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
@@ -585,65 +202,62 @@ pub const TUIWorkflow = struct {
                     self.logger.infoFmt("FINISH REASON LENGTH - increasing max_tokens to {}", .{current_max_tokens}) catch {};
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    self.sendResponse(res_dynamic_agent, null);
+                    send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, null);
                     self.logger.infoFmt("FINISH REASON TOOL CALLS - executing tools", .{}) catch {};
-
                     if (res_dynamic_agent.tool_calls) |tc| {
                         if (tc.len == 0) {
                             self.logger.warnFmt("WARNING: tool_calls array is empty!", .{}) catch {};
                         }
                         // Add assistant message with tool_calls to history
-                        var assistant_tool_calls = try self.allocator.alloc(agent.ToolCall, tc.len);
+                        var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
                         for (tc, 0..) |tool_call, i| {
                             assistant_tool_calls[i] = .{
-                                .id = try self.allocator.dupe(u8, tool_call.id),
+                                .id = try allocator.dupe(u8, tool_call.id),
                                 .function = .{
-                                    .name = try self.allocator.dupe(u8, tool_call.function.name),
-                                    .arguments = try self.allocator.dupe(u8, tool_call.function.arguments),
+                                    .name = try allocator.dupe(u8, tool_call.function.name),
+                                    .arguments = try allocator.dupe(u8, tool_call.function.arguments),
                                 },
                             };
                         }
 
                         // Merge reasoning_content into content of the tool call assistant message
                         const reasoningContent: ?[]u8 = if (res_dynamic_agent.reasoning_content) |rc|
-                            try self.allocator.dupe(u8, rc)
+                            try allocator.dupe(u8, rc)
                         else
                             null;
 
                         const contentNormal: ?[]u8 = if (res_dynamic_agent.content) |c|
-                            try self.allocator.dupe(u8, c)
+                            try allocator.dupe(u8, c)
                         else
                             null;
 
                         const mergedContent: ?[]u8 = if (reasoningContent != null or contentNormal != null) blk: {
                             const r = reasoningContent orelse "";
                             const c = contentNormal orelse "";
-                            break :blk try std.mem.concat(self.allocator, u8, &.{ r, c });
+                            break :blk try std.mem.concat(allocator, u8, &.{ r, c });
                         } else null;
 
-                        // ALWAYS add assistant message with tool_calls - required by API
-                        // even if there's no content
                         const assistant_msg = agent.AgentMessage{
                             .role = .assistant,
                             .content = mergedContent,
                             .tool_calls = assistant_tool_calls,
                         };
 
-                        try messages_list.append(self.allocator, assistant_msg);
+                        try messages_list.append(allocator, assistant_msg);
 
-                        const current_agent_4 = try self.getCurrentAgent();
-                        defer self.allocator.free(current_agent_4);
-                        self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent_4, session_name, loop_counter) catch |err| {
+                        const current_agent_4 = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
+
+                        defer allocator.free(current_agent_4);
+                        save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent_4, session_name, loop_counter) catch |err| {
                             self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                         };
 
                         // Execute each tool call and add tool result messages
                         for (tc) |tool_call| {
                             self.logger.debugFmt("Executing tool: {s}   {s}", .{ tool_call.function.name, tool_call.function.arguments }) catch {};
-
                             if (self.loop_detector.check(tool_call.function.arguments)) {
                                 const warning = try std.fmt.allocPrint(
-                                    self.allocator,
+                                    allocator,
                                     "WARNING: Identical command repeated: {s}\n" ++
                                         "Empty output means no results found — do NOT retry. Proceed with what you know.",
                                     .{tool_call.function.arguments},
@@ -651,16 +265,16 @@ pub const TUIWorkflow = struct {
                                 const tool_result_msg = agent.AgentMessage{
                                     .role = .tool,
                                     .content = warning,
-                                    .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
                                 };
-                                try messages_list.append(self.allocator, tool_result_msg);
+                                try messages_list.append(allocator, tool_result_msg);
                                 continue;
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
                                 const parsed = try std.json.parseFromSlice(
                                     change_agent_tool.ChangeAgentToolResult,
-                                    self.allocator,
+                                    allocator,
                                     tool_call.function.arguments,
                                     .{},
                                 );
@@ -695,19 +309,19 @@ pub const TUIWorkflow = struct {
                                     continue;
                                 };
 
-                                agent_prompt = prompt.agenticCodingWithCwd(self.allocator, self.cwd, agent_prompt, try self.getTreeDir()) catch |err| {
+                                agent_prompt = prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, try get_tree_dir.run(allocator, self.cwd)) catch |err| {
                                     self.logger.errFmt("Failed to format agent prompt: {s}", .{@errorName(err)}) catch {};
                                     continue;
                                 };
 
                                 const msgPrompt = try std.fmt.allocPrint(
-                                    self.allocator,
+                                    allocator,
                                     "{s}\n\n{s}",
                                     .{ agent_prompt, agent_message },
                                 );
 
                                 const contentChangeAgent = try std.fmt.allocPrint(
-                                    self.allocator,
+                                    allocator,
                                     "<change_agent_tool>\n{s}\n<change_agent_tool>",
                                     .{tool_call.function.arguments},
                                 );
@@ -716,17 +330,17 @@ pub const TUIWorkflow = struct {
                                 const tool_result_msg = agent.AgentMessage{
                                     .role = .tool,
                                     .content = contentChangeAgent,
-                                    .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
                                 };
-                                try messages_list.append(self.allocator, tool_result_msg);
+                                try messages_list.append(allocator, tool_result_msg);
 
                                 // 2. Save tool result to database
                                 const current_agent_5 = agent_name;
-                                defer self.allocator.free(current_agent_5);
-                                self.saveMessageUnified(contentChangeAgent, null, "tool", "tool", null, tool_call.id, current_agent_5, session_name, loop_counter) catch |err| {
+                                defer allocator.free(current_agent_5);
+                                save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, contentChangeAgent, null, "tool", "tool", null, tool_call.id, current_agent_5, session_name, loop_counter) catch |err| {
                                     self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
                                 };
-                                self.sendToolResult(contentChangeAgent, tool_call.id, tool_call.function.name);
+                                send_tool_result.run(allocator, self.conn_fd, self.logger, contentChangeAgent, tool_call.id, tool_call.function.name);
 
                                 // 3. Replace system message only, keep all history
                                 var system_replaced = false;
@@ -738,7 +352,7 @@ pub const TUIWorkflow = struct {
                                     }
                                 }
                                 if (!system_replaced) {
-                                    try messages_list.insert(self.allocator, 0, agent.AgentMessage{
+                                    try messages_list.insert(allocator, 0, agent.AgentMessage{
                                         .role = .system,
                                         .content = msgPrompt,
                                     });
@@ -748,11 +362,10 @@ pub const TUIWorkflow = struct {
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-
                                 // Parse arguments JSON to BashInput
                                 const parsed = std.json.parseFromSlice(
                                     tool_models.BashInput,
-                                    self.allocator,
+                                    allocator,
                                     tool_call.function.arguments,
                                     .{ .allocate = .alloc_always },
                                 ) catch |err| {
@@ -761,7 +374,7 @@ pub const TUIWorkflow = struct {
                                 };
                                 defer parsed.deinit();
 
-                                const res_bash = bash_tool.executeBash(self.allocator, parsed.value) catch |err| blk: {
+                                const res_bash = bash_tool.executeBash(allocator, parsed.value) catch |err| blk: {
                                     self.logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
                                     break :blk "Error executing command";
                                 };
@@ -772,22 +385,23 @@ pub const TUIWorkflow = struct {
                                 const tool_result_msg = agent.AgentMessage{
                                     .role = .tool,
                                     .content = res_bash,
-                                    .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
                                 };
-                                try messages_list.append(self.allocator, tool_result_msg);
-                                const current_agent_6 = try self.getCurrentAgent();
-                                defer self.allocator.free(current_agent_6);
-                                try self.saveMessageUnified(res_bash, null, "tool", "tool", null, tool_call.id, current_agent_6, session_name, loop_counter);
-                                self.sendToolResult(res_bash, tool_call.id, tool_call.function.name);
+                                try messages_list.append(allocator, tool_result_msg);
+                                const current_agent_6 = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
+
+                                defer allocator.free(current_agent_6);
+                                _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, res_bash, null, "tool", "tool", null, tool_call.id, current_agent_6, session_name, loop_counter);
+                                send_tool_result.run(allocator, self.conn_fd, self.logger, res_bash, tool_call.id, tool_call.function.name);
                                 self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
-                                handleListSkills(self, &messages_list, tool_call);
+                                self.handleListSkills(allocator, &messages_list, tool_call);
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
-                                handleGetSkill(self, &messages_list, tool_call);
+                                _ = try self.handleGetSkill(allocator, &messages_list, tool_call);
                             }
                         }
                         self.logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
@@ -800,9 +414,10 @@ pub const TUIWorkflow = struct {
                     self.logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
                     // Save the filtered response to history
-                    const current_agent_7 = try self.getCurrentAgent();
-                    defer self.allocator.free(current_agent_7);
-                    self.saveMessageUnified(null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_7, session_name, loop_counter) catch |err| {
+                    const current_agent_7 = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
+
+                    defer allocator.free(current_agent_7);
+                    save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_7, session_name, loop_counter) catch |err| {
                         self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                     };
 
@@ -811,21 +426,25 @@ pub const TUIWorkflow = struct {
                     if (res_dynamic_agent.content) |c| {
                         if (c.len > 0) {
                             // Send the partial content with content_filter finish reason
-                            self.sendResponse(res_dynamic_agent, "content_filter");
+                            send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, "content_filter");
                         } else {
                             // No content, send error message
-                            self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
+                            send_error.run(allocator, self.conn_fd, self.logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
                         }
                     } else {
                         // No content, send error message
-                        self.sendError("Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
+                        send_error.run(allocator, self.conn_fd, self.logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
                     }
                     break;
                 }
             } else {
                 retryCount += 1;
                 self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                _ = try self.sendUserChoice();
+                _ = try send_user_choice.run(
+                    allocator,
+                    self.conn_fd,
+                    self.logger,
+                );
                 break;
                 // continue;
             }
@@ -834,218 +453,32 @@ pub const TUIWorkflow = struct {
         }
     }
 
-    /// Serialize tool_calls array to JSON string
-    pub fn serializeToolCalls(self: *TUIWorkflow, tool_calls: []agent.ToolCall) ![]u8 {
-        var aw: std.io.Writer.Allocating = .init(self.allocator);
-        try aw.writer.print("{f}", .{std.json.fmt(tool_calls, .{})});
-        return try aw.toOwnedSlice();
-    }
-
-    /// Unified method to save messages to llm_history table.
-    pub fn saveMessageUnified(
+    fn call_dynamic_agent(
         self: *TUIWorkflow,
-        content: ?[]const u8,
-        response: ?agent.Agent.CallResponse,
-        role: ?[]const u8,
-        finish_reason: ?[]const u8,
-        tool_calls: ?[]agent.ToolCall,
-        tool_call_id: ?[]const u8,
-        agent_name: ?[]const u8,
-        session_name: ?[]const u8,
-        loop_index: u32,
-    ) !void {
-        const db = self.db;
+        allocator: std.mem.Allocator,
+        messages_list: *std.ArrayList(agent.AgentMessage),
+        agent_temperature: f32,
+        current_max_tokens: usize,
+        isThinking: bool,
+    ) !agent.CallResponse {
+        const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool };
 
-        const id = try std.fmt.allocPrint(self.allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
-        defer self.allocator.free(id);
+        var dynamic_agent = try agent.Agent.init(allocator, self.logger);
+        dynamic_agent.apiKey = self.api_key;
+        dynamic_agent.model = self.model;
+        dynamic_agent.baseUrl = self.base_url;
+        const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+        dynamic_agent.thinkingEnabled = isThinking;
+        dynamic_agent.httpOptions.read_timeout_ms = 600_000; // 10 minutes
+        var stream_ctx = StreamingContext{
+            .allocator = allocator,
+            .workflow = self,
+            .chunk_index = 0,
+            .conn_fd = self.conn_fd,
+        };
+        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, streamCallback);
 
-        const createdStr = try std.fmt.allocPrint(self.allocator, "{}", .{std.time.timestamp()});
-        defer self.allocator.free(createdStr);
-
-        var contentStr = content orelse "";
-        const finishReasonStr = finish_reason orelse
-            (if (response) |r| (if (r.finish_reason) |fr| fr.toStr() else "null") else "null");
-        const roleStr = role orelse "assistant";
-        const reasoningStr = if (response) |r| (r.reasoning_content orelse "") else "";
-        const agentStr = agent_name orelse "GeneralAgent";
-
-        if (response) |r| {
-            if (r.content) |c| {
-                contentStr = c;
-            }
-        }
-
-        std.debug.print("saveMessage aa role={s} content={s}", .{ roleStr, contentStr });
-
-        // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
-        var toolCallsJson: []const u8 = "";
-        var toolCallsOwned: ?[]u8 = null;
-        if (tool_calls) |tc| {
-            toolCallsOwned = try self.serializeToolCalls(tc);
-            toolCallsJson = toolCallsOwned.?;
-        } else if (tool_call_id) |tcid| {
-            toolCallsJson = tcid;
-        }
-        defer if (toolCallsOwned) |tcj| self.allocator.free(tcj);
-
-        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)";
-
-        const copy_session_id = try self.allocator.dupe(u8, self.session_id);
-        defer self.allocator.free(copy_session_id);
-        const copy_model = try self.allocator.dupe(u8, self.model);
-        defer self.allocator.free(copy_model);
-        const copy_content = try self.allocator.dupe(u8, contentStr);
-        defer self.allocator.free(copy_content);
-        const copy_finish_reason = try self.allocator.dupe(u8, finishReasonStr);
-        defer self.allocator.free(copy_finish_reason);
-        const copy_role = try self.allocator.dupe(u8, roleStr);
-        defer self.allocator.free(copy_role);
-        const copy_tool_calls = try self.allocator.dupe(u8, toolCallsJson);
-        defer self.allocator.free(copy_tool_calls);
-        const copy_reasoning = try self.allocator.dupe(u8, reasoningStr);
-        defer self.allocator.free(copy_reasoning);
-        const copy_cwd = try self.allocator.dupe(u8, self.cwd);
-        defer self.allocator.free(copy_cwd);
-        const copy_agent = try self.allocator.dupe(u8, agentStr);
-        defer self.allocator.free(copy_agent);
-        const copy_session_name = try self.allocator.dupe(u8, session_name orelse "");
-        defer self.allocator.free(copy_session_name);
-        const loop_index_str = try std.fmt.allocPrint(self.allocator, "{}", .{loop_index});
-        defer self.allocator.free(loop_index_str);
-        const sqlArgs = &.{ id, copy_session_id, copy_model, createdStr, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str };
-
-        std.debug.print("saveMessage content={s}", .{contentStr});
-        try db.exec(self.allocator, sql, sqlArgs);
-    }
-
-    pub fn getMessages(self: *TUIWorkflow) ![]TUIHistory {
-        var results: std.ArrayList(TUIHistory) = .empty;
-
-        const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'GeneralAgent'), COALESCE(session_name, ''), COALESCE(loop_index, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created ASC";
-        var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
-        defer rows.deinit();
-
-        while (try rows.next()) |row| {
-            const history = TUIHistory{
-                .id = try self.allocator.dupe(u8, row.values[0]),
-                .session_id = try self.allocator.dupe(u8, row.values[1]),
-                .model = try self.allocator.dupe(u8, row.values[2]),
-                .created = try self.allocator.dupe(u8, row.values[3]),
-                .response_content = try self.allocator.dupe(u8, row.values[4]),
-                .finish_reason = try self.allocator.dupe(u8, row.values[5]),
-                .role = try self.allocator.dupe(u8, row.values[6]),
-                .tools = try self.allocator.dupe(u8, row.values[7]),
-                .reasoning_content = if (row.values[8].len > 0) try self.allocator.dupe(u8, row.values[8]) else null,
-                .agent = try self.allocator.dupe(u8, row.values[9]),
-                .session_name = try self.allocator.dupe(u8, row.values[10]),
-                .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            };
-            try results.append(self.allocator, history);
-            row.deinit(self.allocator);
-        }
-
-        return results.toOwnedSlice(self.allocator);
-    }
-
-    /// Mark all messages in the current session as not for LLM (soft-delete for compaction)
-    pub fn markMessagesNotForLLM(self: *TUIWorkflow) !void {
-        const sql = "UPDATE llm_history SET is_feed_to_llm = 0 WHERE session_id = ?";
-        try self.db.exec(self.allocator, sql, &.{self.session_id});
-    }
-
-    pub fn get_session_by_dir(self: *TUIWorkflow) ![]SessionInfo {
-        var results: std.ArrayList(SessionInfo) = .empty;
-
-        const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, COALESCE(datetime(CAST(MAX(created) AS INTEGER), 'unixepoch', 'localtime'), MAX(created)) as created FROM llm_history GROUP BY session_id ORDER BY CAST(MAX(created) AS INTEGER) DESC LIMIT 10";
-        var rows = try self.db.query(self.allocator, sql, &[_][]const u8{});
-        defer rows.deinit();
-
-        while (try rows.next()) |row| {
-            const session = SessionInfo{
-                .session_id = try self.allocator.dupe(u8, row.values[0]),
-                .session_dir = try self.allocator.dupe(u8, row.values[1]),
-                .created = try self.allocator.dupe(u8, row.values[2]),
-            };
-            try results.append(self.allocator, session);
-            row.deinit(self.allocator);
-        }
-
-        return results.toOwnedSlice(self.allocator);
-    }
-
-    pub fn transformMessageToAgentMessages(self: *TUIWorkflow, message: TUIHistory) ![]agent.AgentMessage {
-        var messages: std.ArrayList(agent.AgentMessage) = .empty;
-
-        const role = agent.Role.fromStr(message.role) orelse .assistant;
-
-        // Handle tool result messages (role == "tool")
-        // For tool messages, the tools column contains the tool_call_id string directly
-        if (role == .tool) {
-            const agentMessage = agent.AgentMessage{
-                .role = .tool,
-                .content = try self.allocator.dupe(u8, message.response_content),
-                .tool_call_id = try self.allocator.dupe(u8, message.tools),
-            };
-            try messages.append(self.allocator, agentMessage);
-            return messages.toOwnedSlice(self.allocator);
-        }
-
-        // Handle assistant/user/system messages
-        const finishReason = agent.FinishReason.fromStr(message.finish_reason);
-        const isToolCalls = finishReason == .tool_calls;
-
-        if (message.response_content.len > 0 or isToolCalls) {
-            var tool_calls: ?[]agent.ToolCall = null;
-            const toolSource = if (message.tools.len > 0) message.tools else message.response_content;
-            const tcParsed = json.parseFromSlice(json.Value, self.allocator, toolSource, .{}) catch null;
-            if (tcParsed) |tcp| {
-                defer tcp.deinit();
-                if (tcp.value == .array and tcp.value.array.items.len > 0) {
-                    var calls = try self.allocator.alloc(agent.ToolCall, tcp.value.array.items.len);
-                    for (tcp.value.array.items, 0..) |tc_item, i| {
-                        if (tc_item == .object) {
-                            const id_raw = if (tc_item.object.get("id")) |id_val| id_val.string else "";
-                            const func_obj = if (tc_item.object.get("function")) |f| f.object else null;
-                            const name_raw = if (func_obj) |fo| if (fo.get("name")) |n| n.string else "" else "";
-                            const args_raw = if (func_obj) |fo| if (fo.get("arguments")) |a| a.string else "" else "";
-                            calls[i] = .{
-                                .id = try self.allocator.dupe(u8, id_raw),
-                                .function = .{
-                                    .name = try self.allocator.dupe(u8, name_raw),
-                                    .arguments = try self.allocator.dupe(u8, args_raw),
-                                },
-                            };
-                        } else {
-                            calls[i] = .{
-                                .id = try self.allocator.dupe(u8, ""),
-                                .function = .{
-                                    .name = try self.allocator.dupe(u8, ""),
-                                    .arguments = try self.allocator.dupe(u8, ""),
-                                },
-                            };
-                        }
-                    }
-                    tool_calls = calls;
-                }
-            }
-
-            const content: ?[]const u8 = if (isToolCalls)
-                (if (message.reasoning_content) |rc| try self.allocator.dupe(u8, rc) else null)
-            else
-                try self.allocator.dupe(u8, message.response_content);
-
-            const reasoning_content: ?[]const u8 = if (message.reasoning_content) |rc| try self.allocator.dupe(u8, rc) else null;
-
-            const agentMessage = agent.AgentMessage{
-                .role = role,
-                .content = content,
-                .tool_calls = tool_calls,
-                .reasoning_content = reasoning_content,
-            };
-            try messages.append(self.allocator, agentMessage);
-        }
-
-        return messages.toOwnedSlice(self.allocator);
+        return res_dynamic_agent;
     }
 
     /// Estimate the body size of messages for compaction threshold check
@@ -1067,8 +500,7 @@ pub const TUIWorkflow = struct {
     }
 
     /// Call CompactionAgent to compress conversation history
-    /// Call CompactionAgent to compress conversation history
-    fn callCompactionAgent(
+    fn call_compact_agent(
         self: *TUIWorkflow,
         messages: []agent.AgentMessage,
         arena: std.mem.Allocator,
@@ -1151,6 +583,7 @@ pub const TUIWorkflow = struct {
     /// Also persists to database: marks old messages as not for LLM, saves new compacted message
     fn compactMessagesInMemory(
         self: *TUIWorkflow,
+        allocator: std.mem.Allocator,
         messages: *std.ArrayList(agent.AgentMessage),
         compacted_xml: []const u8,
     ) !void {
@@ -1158,56 +591,56 @@ pub const TUIWorkflow = struct {
         if (total <= 4) return;
 
         // Mark all existing messages in this session as not for LLM (soft-delete)
-        try self.markMessagesNotForLLM();
+        try mark_messages_not_for_llm.run(allocator, self.db, self.session_id);
 
         // Build the compacted summary content
         var summary: std.ArrayList(u8) = .empty;
-        defer summary.deinit(self.allocator);
-        var w = summary.writer(self.allocator);
+        defer summary.deinit(allocator);
+        var w = summary.writer(allocator);
         try w.writeAll("[CONTEXT SUMMARY]\n\n");
         try w.writeAll(compacted_xml);
-        const summary_content = try summary.toOwnedSlice(self.allocator);
+        const summary_content = try summary.toOwnedSlice(allocator);
 
         // Save the compacted summary to the database with is_feed_to_llm = 1
-        const id = try std.fmt.allocPrint(self.allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
-        defer self.allocator.free(id);
-        const createdStr = try std.fmt.allocPrint(self.allocator, "{}", .{std.time.timestamp()});
-        defer self.allocator.free(createdStr);
+        const id = try std.fmt.allocPrint(allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
+        defer allocator.free(id);
+        const createdStr = try std.fmt.allocPrint(allocator, "{}", .{std.time.timestamp()});
+        defer allocator.free(createdStr);
 
         const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)";
-        try self.db.exec(self.allocator, sql, &.{ id, self.session_id, self.model, createdStr, summary_content, "stop", "user", "", "", self.cwd, "GeneralAgent", "", "0" });
+        try self.db.exec(allocator, sql, &.{ id, self.session_id, self.model, createdStr, summary_content, "stop", "user", "", "", self.cwd, "GeneralAgent", "", "0" });
 
         // Build new in-memory message list: system message + compacted summary
         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;
 
         // Keep system message - duplicate content to be safe
         const system_content = if (messages.items[0].content) |c|
-            try self.allocator.dupe(u8, c)
+            try allocator.dupe(u8, c)
         else
             null;
-        try new_messages.append(self.allocator, .{
+        try new_messages.append(allocator, .{
             .role = .system,
             .content = system_content,
         });
 
         // Add compacted summary as user message
-        try new_messages.append(self.allocator, .{
+        try new_messages.append(allocator, .{
             .role = .user,
             .content = summary_content,
         });
 
         // Free ALL old messages (including ones we "kept" - we have copies now)
         for (messages.items) |*msg| {
-            msg.deinit(self.allocator);
+            msg.deinit(allocator);
         }
-        messages.deinit(self.allocator);
+        messages.deinit(allocator);
         messages.* = new_messages;
 
         self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len }) catch {};
     }
 
-    fn handleListSkills(self: *TUIWorkflow, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) void {
-        const result = list_skills_tool.executeListSkills(self.allocator) catch |err| blk: {
+    fn handleListSkills(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) void {
+        const result = list_skills_tool.executeListSkills(allocator) catch |err| blk: {
             self.logger.errFmt("Error executing list_skills: {s}", .{@errorName(err)}) catch {};
             break :blk "{\"error\": \"Failed to list skills\"}";
         };
@@ -1217,19 +650,20 @@ pub const TUIWorkflow = struct {
         const tool_result_msg = agent.AgentMessage{
             .role = .tool,
             .content = result,
-            .tool_call_id = self.allocator.dupe(u8, tool_call.id) catch return,
+            .tool_call_id = allocator.dupe(u8, tool_call.id) catch return,
         };
-        messages_list.append(self.allocator, tool_result_msg) catch return;
-        const current_agent = self.getCurrentAgent() catch return;
-        self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0) catch {};
-        self.sendToolResult(result, tool_call.id, tool_call.function.name);
+        messages_list.append(allocator, tool_result_msg) catch return;
+        const current_agent = get_current_agent_by_session_id.run(allocator, self.db, self.session_id) catch return;
+
+        save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0) catch {};
+        send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name);
     }
 
-    fn handleGetSkill(self: *TUIWorkflow, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) void {
+    fn handleGetSkill(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) !void {
         // Parse arguments JSON to GetSkillInput
         const parsed = std.json.parseFromSlice(
             get_skill_tool.GetSkillInput,
-            self.allocator,
+            allocator,
             tool_call.function.arguments,
             .{ .allocate = .alloc_always },
         ) catch |err| {
@@ -1237,18 +671,18 @@ pub const TUIWorkflow = struct {
             return;
         };
 
-        const result = get_skill_tool.executeGetSkill(self.allocator, parsed.value) catch |err| blk: {
+        const result = get_skill_tool.executeGetSkill(allocator, parsed.value) catch |err| blk: {
             self.logger.errFmt("Error executing get_skill: {s}", .{@errorName(err)}) catch {};
             break :blk "{\"error\": \"Failed to get skill\"}";
         };
-        defer self.allocator.free(result);
+        defer allocator.free(result);
 
         self.logger.debugFmt("GET_SKILL RESULT: {s}", .{result}) catch {};
 
         // Parse the result JSON to extract skill info
         const resultParsed = std.json.parseFromSlice(
             get_skill_tool.GetSkillResult,
-            self.allocator,
+            allocator,
             result,
             .{ .allocate = .alloc_always },
         ) catch |err| {
@@ -1257,12 +691,13 @@ pub const TUIWorkflow = struct {
             const tool_result_msg = agent.AgentMessage{
                 .role = .tool,
                 .content = result,
-                .tool_call_id = self.allocator.dupe(u8, tool_call.id) catch return,
+                .tool_call_id = allocator.dupe(u8, tool_call.id) catch return,
             };
-            messages_list.append(self.allocator, tool_result_msg) catch return;
-            const current_agent = self.getCurrentAgent() catch return;
-            self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0) catch {};
-            self.sendToolResult(result, tool_call.id, tool_call.function.name);
+            messages_list.append(allocator, tool_result_msg) catch return;
+            const current_agent = get_current_agent_by_session_id.run(allocator, self.db, self.session_id) catch return;
+
+            _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0);
+            send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name);
             return;
         };
 
@@ -1272,29 +707,31 @@ pub const TUIWorkflow = struct {
         if (skill_result.loaded and skill_result.content.len > 0) {
             if (!self.isSkillLoaded(skill_result.skill_name)) {
                 // Add to loaded skills list
-                const skill_name_copy = self.allocator.dupe(u8, skill_result.skill_name) catch return;
-                const content_copy = self.allocator.dupe(u8, skill_result.content) catch {
+                const skill_name_copy = allocator.dupe(u8, skill_result.skill_name) catch return;
+                const content_copy = allocator.dupe(u8, skill_result.content) catch {
                     return;
                 };
                 const loaded_skill = LoadedSkill{
                     .skill_name = skill_name_copy,
                     .content = content_copy,
                 };
-                self.loaded_skills.append(self.allocator, loaded_skill) catch {
-                    loaded_skill.deinit(self.allocator);
+                self.loaded_skills.append(allocator, loaded_skill) catch {
+                    loaded_skill.deinit(allocator);
                     return;
                 };
 
                 self.logger.debugFmt("Skill '{s}' loaded and added to system context", .{skill_result.skill_name}) catch {};
 
                 // Save skill to database for persistence
-                self.saveSkillToDB(skill_name_copy, content_copy) catch |err| {
+                self.saveSkillToDB(allocator, skill_name_copy, content_copy) catch |err| {
                     self.logger.errFmt("Failed to save skill to database: {s}", .{@errorName(err)}) catch {};
                 };
                 // Send updated skills list to TUI
-                self.sendSkillsList();
+                self.sendSkillsList(allocator);
+                // Send updated skills list to TUI
+                self.sendSkillsList(allocator);
                 // Rebuild system message with all loaded skills
-                const current_agent = self.getCurrentAgent() catch return;
+                const current_agent = get_current_agent_by_session_id.run(allocator, self.db, self.session_id) catch return;
 
                 // Get agent prompt based on current agent
                 const agent_prompt: []const u8 = if (std.mem.eql(u8, current_agent, "GeneralAgent"))
@@ -1310,11 +747,11 @@ pub const TUIWorkflow = struct {
                 else
                     prompt.GeneralAgent;
 
-                const newSystemContent = self.buildSystemMessageWithSkills(agent_prompt) catch |err| {
+                const newSystemContent = self.buildSystemMessageWithSkills(allocator, agent_prompt) catch |err| {
                     self.logger.errFmt("Failed to build system message with skills: {s}", .{@errorName(err)}) catch {};
                     return;
                 };
-                defer self.allocator.free(newSystemContent);
+                defer allocator.free(newSystemContent);
 
                 // Replace system message in messages_list
                 var system_replaced = false;
@@ -1322,18 +759,18 @@ pub const TUIWorkflow = struct {
                     if (msg.role == .system) {
                         // Free old content and replace with new
                         if (msg.content) |old_content| {
-                            self.allocator.free(old_content);
+                            allocator.free(old_content);
                         }
-                        msg.content = self.allocator.dupe(u8, newSystemContent) catch return;
+                        msg.content = allocator.dupe(u8, newSystemContent) catch return;
                         system_replaced = true;
                         break;
                     }
                 }
                 if (!system_replaced) {
                     // Insert new system message at beginning
-                    messages_list.insert(self.allocator, 0, agent.AgentMessage{
+                    messages_list.insert(allocator, 0, agent.AgentMessage{
                         .role = .system,
-                        .content = self.allocator.dupe(u8, newSystemContent) catch return,
+                        .content = allocator.dupe(u8, newSystemContent) catch return,
                     }) catch return;
                 }
             } else {
@@ -1345,41 +782,42 @@ pub const TUIWorkflow = struct {
         const tool_result_msg = agent.AgentMessage{
             .role = .tool,
             .content = result,
-            .tool_call_id = self.allocator.dupe(u8, tool_call.id) catch return,
+            .tool_call_id = allocator.dupe(u8, tool_call.id) catch return,
         };
-        messages_list.append(self.allocator, tool_result_msg) catch return;
-        const current_agent_final = self.getCurrentAgent() catch return;
-        self.saveMessageUnified(result, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
-        self.sendToolResult(result, tool_call.id, tool_call.function.name);
+        messages_list.append(allocator, tool_result_msg) catch return;
+
+        const current_agent_final = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
+        save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
+        send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name);
     }
 
     /// Build system message content with loaded skills injected
-    fn buildSystemMessageWithSkills(self: *TUIWorkflow, agent_prompt: []const u8) ![]const u8 {
-        const treeDir = try self.getTreeDir();
+    fn buildSystemMessageWithSkills(self: *TUIWorkflow, allocator: std.mem.Allocator, agent_prompt: []const u8) ![]const u8 {
+        const treeDir = try get_tree_dir.run(allocator, self.cwd);
 
         // Build base system content without skills
-        const baseContent = try prompt.agenticCodingWithCwd(self.allocator, self.cwd, agent_prompt, treeDir);
+        const baseContent = try prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, treeDir);
 
         // If no skills loaded, return base content
         if (self.loaded_skills.items.len == 0) {
-            return self.allocator.dupe(u8, baseContent);
+            return allocator.dupe(u8, baseContent);
         }
 
         // Build skills section
         var skillsBuilder: std.ArrayList(u8) = .empty;
-        try skillsBuilder.appendSlice(self.allocator, "\n\n## Loaded Skills\n\n");
+        try skillsBuilder.appendSlice(allocator, "\n\n## Loaded Skills\n\n");
         for (self.loaded_skills.items) |skill| {
-            try skillsBuilder.appendSlice(self.allocator, "### ");
-            try skillsBuilder.appendSlice(self.allocator, skill.skill_name);
-            try skillsBuilder.appendSlice(self.allocator, "\n\n");
-            try skillsBuilder.appendSlice(self.allocator, skill.content);
-            try skillsBuilder.appendSlice(self.allocator, "\n\n");
+            try skillsBuilder.appendSlice(allocator, "### ");
+            try skillsBuilder.appendSlice(allocator, skill.skill_name);
+            try skillsBuilder.appendSlice(allocator, "\n\n");
+            try skillsBuilder.appendSlice(allocator, skill.content);
+            try skillsBuilder.appendSlice(allocator, "\n\n");
         }
 
         // Combine base content with skills section
-        const skillsSection = try skillsBuilder.toOwnedSlice(self.allocator);
+        const skillsSection = try skillsBuilder.toOwnedSlice(allocator);
 
-        return try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ baseContent, skillsSection });
+        return try std.fmt.allocPrint(allocator, "{s}{s}", .{ baseContent, skillsSection });
     }
 
     /// Check if a skill is already loaded
@@ -1393,55 +831,55 @@ pub const TUIWorkflow = struct {
     }
 
     /// Save a loaded skill to the database for persistence
-    fn saveSkillToDB(self: *TUIWorkflow, skill_name: []const u8, content: []const u8) !void {
+    fn saveSkillToDB(self: *TUIWorkflow, allocator: std.mem.Allocator, skill_name: []const u8, content: []const u8) !void {
         // Skip if session_id is empty
         if (self.session_id.len == 0) return;
-        
+
         const sql = "INSERT OR REPLACE INTO session_skills (session_id, skill_name, content, loaded_at) VALUES (?, ?, ?, strftime('%s', 'now'))";
-        try self.db.exec(self.allocator, sql, &.{ self.session_id, skill_name, content });
+        try self.db.exec(allocator, sql, &.{ self.session_id, skill_name, content });
         self.logger.debugFmt("Skill '{s}' saved to database for session {s}", .{ skill_name, self.session_id }) catch {};
     }
 
     /// Load all skills for the current session from the database
-    pub fn loadSkillsFromDB(self: *TUIWorkflow) !void {
+    pub fn loadSkillsFromDB(self: *TUIWorkflow, allocator: std.mem.Allocator) !void {
         // Skip if session_id is empty
         if (self.session_id.len == 0) return;
-        
+
         // Clear existing skills first
         for (self.loaded_skills.items) |skill| {
-            skill.deinit(self.allocator);
+            skill.deinit(allocator);
         }
         self.loaded_skills.clearRetainingCapacity();
-        
+
         // Load from database
         const sql = "SELECT skill_name, content FROM session_skills WHERE session_id = ? ORDER BY loaded_at ASC";
-        var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
+        var rows = try self.db.query(allocator, sql, &.{self.session_id});
         defer rows.deinit();
-        
+
         while (try rows.next()) |row| {
-            const skill_name = try self.allocator.dupe(u8, row.values[0]);
-            errdefer self.allocator.free(skill_name);
-            const content = try self.allocator.dupe(u8, row.values[1]);
-            errdefer self.allocator.free(content);
-            
+            const skill_name = try allocator.dupe(u8, row.values[0]);
+            errdefer allocator.free(skill_name);
+            const content = try allocator.dupe(u8, row.values[1]);
+            errdefer allocator.free(content);
+
             const loaded_skill = LoadedSkill{
                 .skill_name = skill_name,
                 .content = content,
             };
-            try self.loaded_skills.append(self.allocator, loaded_skill);
+            try self.loaded_skills.append(allocator, loaded_skill);
             self.logger.debugFmt("Loaded skill '{s}' from database for session {s}", .{ skill_name, self.session_id }) catch {};
         }
-        
+
         self.logger.debugFmt("Loaded {} skills from database for session {s}", .{ self.loaded_skills.items.len, self.session_id }) catch {};
     }
 
     /// Send skills list to TUI via IPC
-    pub fn sendSkillsList(self: *TUIWorkflow) void {
+    pub fn sendSkillsList(self: *TUIWorkflow, allocator: std.mem.Allocator) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        var w = buf.writer(self.allocator);
+        defer buf.deinit(allocator);
+        var w = buf.writer(allocator);
 
         w.writeAll("<response><type>skills</type><skills>") catch return;
         for (self.loaded_skills.items) |skill| {
@@ -1459,17 +897,5 @@ pub const TUIWorkflow = struct {
             }
         };
         _ = std.posix.write(self.conn_fd, "\n") catch {};
-    }
-
-    fn getTreeDir(self: *TUIWorkflow) ![]const u8 {
-        const treeBashInput = tool_models.BashInput{
-            .command = "tree",
-            .cwd = self.cwd,
-            .timeout = 30,
-        };
-        const treeDir = try bash_tool.executeBash(self.allocator, treeBashInput);
-        const treeDirTrim = std.mem.trim(u8, treeDir, "\n");
-        const treeDirStdout = bash_helper.extractTag(treeDirTrim, "stdout", self.allocator) orelse return "";
-        return treeDirStdout;
     }
 };

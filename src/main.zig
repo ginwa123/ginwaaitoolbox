@@ -260,19 +260,20 @@ pub fn main() !void {
                 workflowAsk.cwd = t.cwd_session;
 
                 // Load previously saved skills for this session
-                workflowAsk.loadSkillsFromDB() catch |err| {
-                    std.debug.print("Failed to load skills from database: {s}\n", .{@errorName(err)});
-                };
+                // workflowAsk.loadSkillsFromDB(allocator) catch |err| {
+                //     std.debug.print("Failed to load skills from database: {s}\n", .{@errorName(err)});
+                // };
                 if (std.mem.eql(u8, t.command_type, "run_llm")) {
-                    workflowAsk.run();
+                    workflowAsk.run(allocator);
                 }
                 if (std.mem.eql(u8, t.command_type, "get_sessions")) {
-                    const sessions = workflowAsk.get_session_by_dir() catch |err| {
-                        std.debug.print("Failed to get sessions: {}\n", .{err});
-                        return;
-                    };
-                    workflowAsk.sendSessionsResponse(sessions);
-                    _ = try workflowAsk.sendUserChoice();
+                    // todo rework
+                    // const sessions = workflowAsk.get_session_by_dir(allocator) catch |err| {
+                    //     std.debug.print("Failed to get sessions: {}\n", .{err});
+                    //     return;
+                    // };
+                    // workflowAsk.sendSessionsResponse(allocator, sessions);
+                    // _ = try workflowAsk.sendUserChoice(allocator);
                 }
             }
 

@@ -420,7 +420,7 @@ pub const StreamingAggregator = struct {
     }
 
     /// Finalize the aggregated response - must be called after all chunks processed
-    pub fn finalize(self: *StreamingAggregator) !Agent.CallResponse {
+    pub fn finalize(self: *StreamingAggregator) !CallResponse {
         // Finalize tool calls from buffers
         var sorted_indices: std.ArrayList(usize) = .empty;
         defer sorted_indices.deinit(self.allocator);
@@ -496,6 +496,28 @@ pub const HttpOptions = struct {
     header_buffer_size: usize = 16 * 1024,
 };
 
+pub const CallResponse = struct {
+    allocator: std.mem.Allocator,
+    content: ?[]const u8,
+    tool_calls: ?[]ToolCall,
+    finish_reason: ?FinishReason,
+    reasoning_content: ?[]const u8 = null,
+    usage: Usage = .{},
+
+    pub fn deinit(self: *const CallResponse) void {
+        if (self.content) |c| self.allocator.free(c);
+        if (self.reasoning_content) |rc| self.allocator.free(rc);
+        if (self.tool_calls) |tc| {
+            for (tc) |*tool_call| {
+                self.allocator.free(tool_call.id);
+                self.allocator.free(tool_call.function.name);
+                self.allocator.free(tool_call.function.arguments);
+            }
+            self.allocator.free(tc);
+        }
+    }
+};
+
 pub const Agent = struct {
     name: []const u8 = "",
     apiKey: []const u8 = "",
@@ -508,28 +530,6 @@ pub const Agent = struct {
     allocator: std.mem.Allocator,
     logger: *log.Logger,
     httpOptions: HttpOptions = .{},
-
-    pub const CallResponse = struct {
-        allocator: std.mem.Allocator,
-        content: ?[]const u8,
-        tool_calls: ?[]ToolCall,
-        finish_reason: ?FinishReason,
-        reasoning_content: ?[]const u8 = null,
-        usage: Usage = .{},
-
-        pub fn deinit(self: *const CallResponse) void {
-            if (self.content) |c| self.allocator.free(c);
-            if (self.reasoning_content) |rc| self.allocator.free(rc);
-            if (self.tool_calls) |tc| {
-                for (tc) |*tool_call| {
-                    self.allocator.free(tool_call.id);
-                    self.allocator.free(tool_call.function.name);
-                    self.allocator.free(tool_call.function.arguments);
-                }
-                self.allocator.free(tc);
-            }
-        }
-    };
 
     pub fn init(allocator: std.mem.Allocator, logger_ptr: *log.Logger) !Agent {
         return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator }, .logger = logger_ptr };
