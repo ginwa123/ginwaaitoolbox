@@ -33,6 +33,7 @@ const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 
 const handle_content_filter = @import("handle_content_filter.zig");
+const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
@@ -213,104 +214,7 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, null);
-                    self.logger.infoFmt("FINISH REASON TOOL CALLS - executing tools", .{}) catch {};
-                    if (res_dynamic_agent.tool_calls) |tc| {
-                        if (tc.len == 0) {
-                            self.logger.warnFmt("WARNING: tool_calls array is empty!", .{}) catch {};
-                        }
-                        // Add assistant message with tool_calls to history
-                        var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
-                        for (tc, 0..) |tool_call, i| {
-                            assistant_tool_calls[i] = .{
-                                .id = try allocator.dupe(u8, tool_call.id),
-                                .function = .{
-                                    .name = try allocator.dupe(u8, tool_call.function.name),
-                                    .arguments = try allocator.dupe(u8, tool_call.function.arguments),
-                                },
-                            };
-                        }
-
-                        // Merge reasoning_content into content of the tool call assistant message
-                        const reasoningContent: ?[]u8 = if (res_dynamic_agent.reasoning_content) |rc|
-                            try allocator.dupe(u8, rc)
-                        else
-                            null;
-
-                        const contentNormal: ?[]u8 = if (res_dynamic_agent.content) |c|
-                            try allocator.dupe(u8, c)
-                        else
-                            null;
-
-                        const mergedContent: ?[]u8 = if (reasoningContent != null or contentNormal != null) blk: {
-                            const r = reasoningContent orelse "";
-                            const c = contentNormal orelse "";
-                            break :blk try std.mem.concat(allocator, u8, &.{ r, c });
-                        } else null;
-
-                        const assistant_msg = agent.AgentMessage{
-                            .role = .assistant,
-                            .content = mergedContent,
-                            .tool_calls = assistant_tool_calls,
-                        };
-
-                        try messages_list.append(allocator, assistant_msg);
-
-                        save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent, session_name, loop_counter) catch |err| {
-                            self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
-                        };
-
-                        // Execute each tool call and add tool result messages
-                        for (tc) |tool_call| {
-                            self.logger.debugFmt("Executing tool: {s}   {s}", .{ tool_call.function.name, tool_call.function.arguments }) catch {};
-                            if (self.loop_detector.check(tool_call.function.arguments)) {
-                                const warning = try std.fmt.allocPrint(
-                                    allocator,
-                                    "WARNING: Identical command repeated: {s}\n" ++
-                                        "Empty output means no results found — do NOT retry. Proceed with what you know.",
-                                    .{tool_call.function.arguments},
-                                );
-                                const tool_result_msg = agent.AgentMessage{
-                                    .role = .tool,
-                                    .content = warning,
-                                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
-                                };
-                                try messages_list.append(allocator, tool_result_msg);
-                                continue;
-                            }
-
-                            if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
-                                try handle_change_agent_tool.run(allocator, parent_allocator, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, session_name, loop_counter, &messages_list, tool_call, &agent_temperature, &isThinking, &current_agent);
-                            }
-                            if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                                handle_bash_tool.run(allocator, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, current_agent, session_name, loop_counter, &messages_list, tool_call) catch |err| {
-                                    self.logger.errFmt("Error handling bash tool: {s}", .{@errorName(err)}) catch {};
-                                    continue;
-                                };
-                            }
-
-                            if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
-                                self.handleListSkills(allocator, &messages_list, tool_call);
-                                continue;
-                            }
-
-                            if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
-                                _ = try self.handleGetSkill(allocator, &messages_list, tool_call);
-                                continue;
-                            }
-                        }
-                        self.logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
-                    } else {
-                        self.logger.warnFmt("Tool function not found", .{}) catch {};
-                    }
-                    // Continue to next LLM call - no break, loop continues naturally
-                    self.logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{}) catch {};
-                } else if (finish_reason == .content_filter) {
-                    const should_break = handle_content_filter.run(allocator, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, current_agent, session_name, loop_counter, res_dynamic_agent) catch |err| blk: {
-                        self.logger.errFmt("Error handling content filter: {s}", .{@errorName(err)}) catch {};
-                        break :blk true;
-                    };
-                    if (should_break) break;
+                    try handle_tool.run(allocator, parent_allocator, self, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, &current_agent, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
@@ -513,7 +417,7 @@ pub const TUIWorkflow = struct {
         self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len }) catch {};
     }
 
-    fn handleListSkills(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) void {
+    pub fn handleListSkills(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) void {
         const result = list_skills_tool.executeListSkills(allocator) catch |err| blk: {
             self.logger.errFmt("Error executing list_skills: {s}", .{@errorName(err)}) catch {};
             break :blk "{\"error\": \"Failed to list skills\"}";
@@ -533,7 +437,7 @@ pub const TUIWorkflow = struct {
         send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
     }
 
-    fn handleGetSkill(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) !void {
+    pub fn handleGetSkill(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) !void {
         // Parse arguments JSON to GetSkillInput
         const parsed = std.json.parseFromSlice(
             get_skill_tool.GetSkillInput,
