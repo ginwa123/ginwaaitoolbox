@@ -30,6 +30,7 @@ const send_steam_chunk_content = @import("send_stream_chunk_content.zig");
 const send_stream_chunk_reasoning = @import("send_stream_chunk_reasoning.zig");
 const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_call_delta.zig");
 const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
+const handle_bash_tool = @import("handle_bash_tool.zig");
 
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -280,37 +281,11 @@ pub const TUIWorkflow = struct {
                             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
                                 try handle_change_agent_tool.run(allocator, parent_allocator, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, session_name, loop_counter, &messages_list, tool_call, &agent_temperature, &isThinking, &current_agent);
                             }
-
                             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                                // Parse arguments JSON to BashInput
-                                const parsed = std.json.parseFromSlice(
-                                    tool_models.BashInput,
-                                    allocator,
-                                    tool_call.function.arguments,
-                                    .{ .allocate = .alloc_always },
-                                ) catch |err| {
-                                    self.logger.errFmt("Failed to parse tool arguments: {s}", .{@errorName(err)}) catch {};
+                                handle_bash_tool.run(allocator, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, current_agent, session_name, loop_counter, &messages_list, tool_call) catch |err| {
+                                    self.logger.errFmt("Error handling bash tool: {s}", .{@errorName(err)}) catch {};
                                     continue;
                                 };
-                                defer parsed.deinit();
-
-                                const res_bash = bash_tool.executeBash(allocator, parsed.value) catch |err| blk: {
-                                    self.logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
-                                    break :blk "Error executing command";
-                                };
-                                self.logger.debugFmt("RESPONSE TOOLS: {s}", .{res_bash}) catch |err| {
-                                    self.logger.errFmt("RESPONSE TOOLS error: {s}", .{@errorName(err)}) catch {};
-                                };
-
-                                const tool_result_msg = agent.AgentMessage{
-                                    .role = .tool,
-                                    .content = res_bash,
-                                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
-                                };
-                                try messages_list.append(allocator, tool_result_msg);
-                                _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, res_bash, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter);
-                                send_tool_result.run(allocator, self.conn_fd, self.logger, res_bash, tool_call.id, tool_call.function.name, null);
-                                self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
