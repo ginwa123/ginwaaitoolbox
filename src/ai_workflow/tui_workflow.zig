@@ -33,6 +33,7 @@ const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 
 const handle_content_filter = @import("handle_content_filter.zig");
+const cancellation_registry = @import("cancellation_registry.zig");
 const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -57,6 +58,7 @@ pub const StreamingContext = struct {
     workflow: *TUIWorkflow,
     conn_fd: std.posix.fd_t,
     chunk_index: usize = 0,
+    session_id: []const u8 = "",
 };
 
 // Global cancellation check function that uses thread-local storage
@@ -69,6 +71,19 @@ pub fn setCancelledPtr(ptr: *std.atomic.Value(bool)) void {
 pub fn isCancelled() bool {
     if (g_cancelled_ptr) |ptr| {
         return ptr.load(.seq_cst);
+    }
+    return false;
+}
+
+/// Context-aware cancellation check for use with callStreaming
+/// ctx should be a pointer to the session_id string
+pub fn isCancelledWithContext(ctx: ?*anyopaque) bool {
+    if (ctx == null) return false;
+    
+    const session_id_ptr = @as(?*const []const u8, @ptrCast(@alignCast(ctx))) orelse return false;
+    
+    if (cancellation_registry.getGlobalRegistry()) |registry| {
+        return registry.isCancelled(session_id_ptr.*);
     }
     return false;
 }
