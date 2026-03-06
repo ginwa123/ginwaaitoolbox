@@ -150,7 +150,6 @@ pub const TUIWorkflow = struct {
     loop_detector: loop_detector.LoopDetector = .{},
     loaded_skills: std.ArrayList(LoadedSkill) = .{},
 
-    cancelled: *std.atomic.Value(bool),
 
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger_mod.Logger);
@@ -173,7 +172,6 @@ pub const TUIWorkflow = struct {
             .base_url = "",
             .conn_fd = -1,
             .loaded_skills = .{},
-            .cancelled = undefined,
         };
     }
 
