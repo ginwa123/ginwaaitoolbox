@@ -100,9 +100,9 @@ pub const TextFormatter = struct {
     fn formatImpl(formatter_ctx: *anyopaque, allocator: std.mem.Allocator, entry: LogEntry) ![]const u8 {
         const self: *TextFormatter = @ptrCast(@alignCast(formatter_ctx));
         
-        var buf: [1024]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        const writer = fbs.writer();
+        var list: std.ArrayList(u8) = .{};
+        defer list.deinit(allocator);
+        const writer = list.writer(allocator);
         
         // Timestamp
         if (self.include_timestamp) {
@@ -134,7 +134,7 @@ pub const TextFormatter = struct {
         
         try writer.writeByte('\n');
         
-        return allocator.dupe(u8, fbs.getWritten());
+        return list.toOwnedSlice(allocator);
     }
 };
 
@@ -211,9 +211,9 @@ pub const ColorFormatter = struct {
     fn formatImpl(formatter_ctx: *anyopaque, allocator: std.mem.Allocator, entry: LogEntry) ![]const u8 {
         const self: *ColorFormatter = @ptrCast(@alignCast(formatter_ctx));
         
-        var buf: [2048]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        const writer = fbs.writer();
+        var list: std.ArrayList(u8) = .{};
+        defer list.deinit(allocator);
+        const writer = list.writer(allocator);
         
         const level_color = if (self.color_by_level) getLevelColor(entry.level) else "";
         const reset = if (self.color_by_level) AnsiColors.reset else "";
@@ -248,7 +248,7 @@ pub const ColorFormatter = struct {
         
         try writer.writeByte('\n');
         
-        return allocator.dupe(u8, fbs.getWritten());
+        return list.toOwnedSlice(allocator);
     }
 };
 

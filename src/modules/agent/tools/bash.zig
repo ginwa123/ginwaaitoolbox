@@ -223,18 +223,13 @@ pub const bashTool = AgentTool{
                     .name = "command",
                     .type = "string",
                     .description = "Bash command to execute. " ++
+                        "ALWAYS wrap with `timeout N <cmd>` — e.g. `timeout 10 rg ...`, `timeout 120 zig build`. " ++
+                        "Recommended N by type: reads/searches → 10; ast-check → 15; full builds → 120; network → 60. " ++
                         "Must be scoped and output-bounded. " ++
                         "Prefer: rg, grep -n, sed -n 'X,Yp', awk, jq, stat, wc. " ++
                         "Avoid: cat <file>, find / (unscoped), recursive globs without size checks. " ++
                         "Chain with | head -n N or | rg --max-count=N to cap output. " ++
                         "For Zig: run `zig ast-check` before `zig build` to catch syntax errors faster.",
-                },
-                .{
-                    .name = "timeout",
-                    .type = "number",
-                    .description = "Max execution time in seconds. Default: 30. Max: 120. " ++
-                        "If exceeded, the process is killed and timeout=true is set in the response. " ++
-                        "Recommended by operation: reads/searches → 10; ast-check → 15; full builds/compiles → 120; network ops → 60.",
                 },
                 .{
                     .name = "cwd",
@@ -260,7 +255,7 @@ pub const bashTool = AgentTool{
                         "If omitted, stdin is closed immediately — do not run interactive or stdin-blocking commands without this.",
                 },
             },
-            .required = &.{ "command", "cwd", "timeout" },
+            .required = &.{ "command", "cwd" },
         },
     },
 };

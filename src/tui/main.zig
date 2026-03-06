@@ -613,7 +613,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                     if (std.mem.eql(u8, std_out, "") == false) {
                         const stderr = extractTag(result.result, "stderr");
                         const display = if (std_out.len > max_result_len) std_out[0..max_result_len] else std_out;
-                        const is_error = if (stderr) |ec| !std.mem.eql(u8, ec, "0") else false;
+                        const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
                         const color = if (is_error) "\x1b[31m" else "";
                         std.debug.print("\r\x1b[2K\n{s}[Tool: {s}]{s}\n{s}{s}{s}\n", .{ cyan, result.name, reset, color, display, if (is_error) reset else "" });
                     }

@@ -121,7 +121,10 @@ pub const TUIWorkflow = struct {
         log_ptr.* = logger_mod.Logger.initColor(allocator, .{
             .min_level = .debug,
             .output_mode = .file,
-            .log_file_path = "agent_debug.log",
+            .log_file_path = "/var/tmp/agentic_coding.log",
+            .include_location = true,
+            .include_request_id = true,
+            .include_timestamp = true,
         });
         return .{
             .db = db,
