@@ -4,6 +4,7 @@ const agentMod = tree1.agent;
 const ipc = tree1.ipc;
 const agent = tree1.agent;
 const ai_workflow = tree1.ai_workflow;
+const tui_workflow = tree1.ai_workflow;
 const ai_workflow_mod = tree1.ai_workflow_models;
 const sqlite = tree1.sqlite;
 const migrations = tree1.migrations;
@@ -247,6 +248,14 @@ pub fn main() !void {
             };
 
             if (std.mem.eql(u8, t.app_type, "tui")) {
+
+                // Handle cancel command first
+                if (std.mem.eql(u8, t.command_type, "cancel")) {
+                    ctxTui.cancelled.store(true, .seq_cst);
+                    return;
+                }
+                // Reset cancelled flag for new commands
+                ctxTui.cancelled.store(false, .seq_cst);
                 var workflowAsk = ai_workflow.TUIWorkflow.init(allocator, ctxTui.db) catch |err| {
                     std.debug.print("Failed to init workflow: {}\n", .{err});
                     return;
@@ -258,6 +267,11 @@ pub fn main() !void {
                 workflowAsk.message = t.message;
                 workflowAsk.session_id = t.session_id;
                 workflowAsk.cwd = t.cwd_session;
+
+                workflowAsk.cancelled = &ctxTui.cancelled;
+
+                // Set global cancellation pointer for streaming
+                tui_workflow.setCancelledPtr(&ctxTui.cancelled);
 
                 // Load previously saved skills for this session
                 // workflowAsk.loadSkillsFromDB(allocator) catch |err| {

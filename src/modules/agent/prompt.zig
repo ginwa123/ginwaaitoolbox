@@ -13,12 +13,14 @@ pub const BasePrompt =
     \\If any of these files are missing, continue without them. Never fail or halt because a file is absent.
     \\Treat their contents as high-priority instructions that extend or override your defaults.
     \\
-    \\Use related skills to help you complete the task.
-    \\
-    \\<available_skills>
-    \\Call `get_skill("skill_name")` to load full skill content.
-    \\Call `list_skills()` to list available skills.
-    \\</available_skills>
+    \\**Skill Usage:**
+    \\Available skills are listed in `<available_skills>` below.
+    \\If any skill is relevant to the current task or explicitly requested by the user,
+    \\you MUST call `get_skill("skill_name")` and follow its instructions before proceeding.
+    \\Do not skip a relevant skill or begin the task without loading it first.
+    \\If you spawn or delegate to a sub-agent, instruct it to follow the same skill rules:
+    \\load any relevant skill on demand before starting its assigned task.
+    \\If no skill applies, proceed using best judgment.
 ;
 
 pub const GeneralAgent =
@@ -689,26 +691,21 @@ pub const KnowledgeAgent =
 pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8, skillsContent: []const u8) ![]const u8 {
     const dynamicBasePrompt = try buildBasePromptWithSkillsList(allocator);
     defer allocator.free(dynamicBasePrompt);
-
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
-
     try result.appendSlice(allocator, dynamicBasePrompt);
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, agentPrompt);
-
     if (skillsContent.len > 0) {
         try result.appendSlice(allocator, "\n\n");
         try result.appendSlice(allocator, skillsContent);
     }
-
     if (cwd.len > 0) {
         try result.appendSlice(allocator, "\n\n**Current working directory:** ");
         try result.appendSlice(allocator, cwd);
         try result.appendSlice(allocator, " \n\n**Tree Directory:** ");
         try result.appendSlice(allocator, treeDir);
     }
-
     return result.toOwnedSlice(allocator);
 }
 
@@ -720,41 +717,34 @@ pub fn buildBasePromptWithSkillsList(allocator: std.mem.Allocator) ![]const u8 {
         return allocator.dupe(u8, BasePrompt);
     };
     defer allocator.free(skills_json);
-
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{}) catch |err| {
         std.log.warn("Failed to parse skills JSON: {s}, using static BasePrompt", .{@errorName(err)});
         return allocator.dupe(u8, BasePrompt);
     };
     defer parsed.deinit();
-
     const root = parsed.value;
     const skills_array = root.object.get("skills") orelse {
         std.log.warn("No skills array in JSON, using static BasePrompt", .{});
         return allocator.dupe(u8, BasePrompt);
     };
-
     var skills_section: std.ArrayList(u8) = .empty;
     defer skills_section.deinit(allocator);
-
-    try skills_section.appendSlice(allocator, "\\n\\n<available_skills>\\n");
-
+    try skills_section.appendSlice(allocator, "\n\n<available_skills>\n");
     if (skills_array.array.items.len == 0) {
-        try skills_section.appendSlice(allocator, "No skills available.\\n");
+        try skills_section.appendSlice(allocator, "No skills available.\n");
     } else {
         for (skills_array.array.items) |skill| {
             const name = skill.object.get("name") orelse continue;
             const description = skill.object.get("description") orelse continue;
             if (name == .string and description == .string) {
-                try skills_section.appendSlice(allocator, "- ");
+                try skills_section.appendSlice(allocator, "- **");
                 try skills_section.appendSlice(allocator, name.string);
-                try skills_section.appendSlice(allocator, ": ");
+                try skills_section.appendSlice(allocator, "**: ");
                 try skills_section.appendSlice(allocator, description.string);
-                try skills_section.appendSlice(allocator, "\\n");
+                try skills_section.appendSlice(allocator, "\n");
             }
         }
     }
-
-    try skills_section.appendSlice(allocator, "\\nCall `get_skill(\\\"skill_name\\\")` to load full skill content.\\n</available_skills>");
-
+    try skills_section.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
     return try std.fmt.allocPrint(allocator, "{s}{s}", .{ BasePrompt, skills_section.items });
 }

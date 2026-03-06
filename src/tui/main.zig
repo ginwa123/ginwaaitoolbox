@@ -254,6 +254,20 @@ fn sendMessage(app: *App, message: []const u8) !void {
     _ = try std.posix.write(app.socket_fd, xml_buf.items);
 }
 
+fn sendCancelCommand(app: *App) !void {
+    var xml_buf = std.ArrayList(u8).empty;
+    defer xml_buf.deinit(app.allocator);
+
+    const escaped_session_id = try escapeXmlString(app.allocator, app.session_id);
+    defer app.allocator.free(escaped_session_id);
+
+    try xml_buf.writer(app.allocator).print(
+        "<message><app_type>tui</app_type><command_type>cancel</command_type><session_id>{s}</session_id></message>",
+        .{escaped_session_id},
+    );
+    _ = try std.posix.write(app.socket_fd, xml_buf.items);
+}
+
 fn sendSessionsCommand(app: *App) !void {
     var xml_buf = std.ArrayList(u8).empty;
     defer xml_buf.deinit(app.allocator);
@@ -551,6 +565,8 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
         if (ready > 0) {
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
+                    // Send cancel command to backend
+                    sendCancelCommand(app) catch {};
                     stream_interrupted = true;
                     std.debug.print("stream interrupted\n", .{});
                     break;
@@ -658,6 +674,11 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
 
             if (std.mem.eql(u8, fr, "notification_error")) {
                 retry_count += 1;
+            }
+
+            if (std.mem.eql(u8, fr, "cancelled")) {
+                std.debug.print("\n{s}Task cancelled by user{s}\n", .{ yellow, reset });
+                break;
             }
         }
     }

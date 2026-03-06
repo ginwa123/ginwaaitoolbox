@@ -59,6 +59,21 @@ pub const StreamingContext = struct {
     chunk_index: usize = 0,
 };
 
+// Global cancellation check function that uses thread-local storage
+var g_cancelled_ptr: ?*std.atomic.Value(bool) = null;
+
+pub fn setCancelledPtr(ptr: *std.atomic.Value(bool)) void {
+    g_cancelled_ptr = ptr;
+}
+
+pub fn isCancelled() bool {
+    if (g_cancelled_ptr) |ptr| {
+        return ptr.load(.seq_cst);
+    }
+    return false;
+}
+
+
 /// Callback for streaming chunks - sends each chunk to the client
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
@@ -120,6 +135,8 @@ pub const TUIWorkflow = struct {
     loop_detector: loop_detector.LoopDetector = .{},
     loaded_skills: std.ArrayList(LoadedSkill) = .{},
 
+    cancelled: *std.atomic.Value(bool),
+
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger_mod.Logger);
         log_ptr.* = logger_mod.Logger.initColor(allocator, .{
@@ -141,6 +158,7 @@ pub const TUIWorkflow = struct {
             .base_url = "",
             .conn_fd = -1,
             .loaded_skills = .{},
+            .cancelled = undefined,
         };
     }
 
@@ -177,13 +195,7 @@ pub const TUIWorkflow = struct {
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
             const skills = try self.buildSkillsContent(allocator);
             defer allocator.free(skills);
-            const initial_messages = try build_messages.run(
-                allocator,
-                self.cwd,
-                try get_tree_dir.run(allocator, self.cwd),
-                try get_messages.run(allocator, self.db, self.session_id),
-                skills
-            );
+            const initial_messages = try build_messages.run(allocator, self.cwd, try get_tree_dir.run(allocator, self.cwd), try get_messages.run(allocator, self.db, self.session_id), skills);
 
             try messages_list.appendSlice(allocator, initial_messages);
 
@@ -248,13 +260,14 @@ pub const TUIWorkflow = struct {
         const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
         dynamic_agent.thinkingEnabled = isThinking;
         dynamic_agent.httpOptions.read_timeout_ms = 600_000; // 10 minutes
+
         var stream_ctx = StreamingContext{
             .allocator = allocator,
             .workflow = self,
             .chunk_index = 0,
             .conn_fd = self.conn_fd,
         };
-        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
+        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback, isCancelled);
 
         return res_dynamic_agent;
     }

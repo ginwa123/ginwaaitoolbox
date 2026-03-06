@@ -1052,6 +1052,7 @@ pub const Agent = struct {
         params: AgentCall,
         ctx: ?*anyopaque,
         callback: StreamCallback,
+        is_cancelled: ?*const fn () bool,
     ) CallError!CallResponse {
         self.logMsg(.info, "Building streaming JSON request...");
 
@@ -1157,6 +1158,15 @@ pub const Agent = struct {
         self.logFmt(.debug, "[STREAM] Starting to read chunks (buffer: {} bytes)...", .{self.httpOptions.response_buffer_size});
 
         while (true) {
+
+            // Check if cancelled
+            if (is_cancelled) |check| {
+                if (check()) {
+                    self.logMsg(.info, "[STREAM] Cancelled by user");
+                    stream_ended_cleanly = false;
+                    break;
+                }
+            }
             const bytes_read = reader.readSliceShort(&read_buf) catch |err| {
                 // EndOfStream is expected when streaming completes
                 if (err == error.EndOfStream) {
