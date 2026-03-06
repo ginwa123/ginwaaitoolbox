@@ -5,7 +5,7 @@ const std = @import("std");
 pub const ContextIPCTui = struct {
     db: *sqlite.SqliteBackend,
     llm_config: *const config.LlmConfig,
-    cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Cancellation is now handled per-session via CancellationRegistry
 };
 
 pub const TUIHistory = struct {
