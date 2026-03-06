@@ -1052,7 +1052,7 @@ pub const Agent = struct {
         params: AgentCall,
         ctx: ?*anyopaque,
         callback: StreamCallback,
-        is_cancelled: ?*const fn () bool,
+        is_cancelled: ?*const fn (?*anyopaque) bool,
     ) CallError!CallResponse {
         self.logMsg(.info, "Building streaming JSON request...");
 
@@ -1161,7 +1161,7 @@ pub const Agent = struct {
 
             // Check if cancelled
             if (is_cancelled) |check| {
-                if (check()) {
+                if (check(ctx)) {
                     self.logMsg(.info, "[STREAM] Cancelled by user");
                     stream_ended_cleanly = false;
                     break;
