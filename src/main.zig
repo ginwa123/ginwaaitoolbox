@@ -219,6 +219,11 @@ pub fn main() !void {
         .name = migrations.Migration007AddSessionTracking.name,
         .up = migrations.Migration007AddSessionTracking.up,
     });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration008AddSessionSkills.version,
+        .name = migrations.Migration008AddSessionSkills.name,
+        .up = migrations.Migration008AddSessionSkills.up,
+    });
     try migrationManager.runMigrations();
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
@@ -254,6 +259,10 @@ pub fn main() !void {
                 workflowAsk.session_id = t.session_id;
                 workflowAsk.cwd = t.cwd_session;
 
+                // Load previously saved skills for this session
+                workflowAsk.loadSkillsFromDB() catch |err| {
+                    std.debug.print("Failed to load skills from database: {s}\n", .{@errorName(err)});
+                };
                 if (std.mem.eql(u8, t.command_type, "run_llm")) {
                     workflowAsk.run();
                 }

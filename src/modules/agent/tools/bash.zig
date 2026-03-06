@@ -180,8 +180,8 @@ pub const bashTool = AgentTool{
             "Optimized for precise, scoped CLI operations — fast text processing, file inspection, and structured data manipulation. " ++
             "" ++
             "PREFERRED TOOLS (use these by default): " ++
-            "`rg` — fast regex search across files; " ++
-            "`grep -n` — line-numbered matches; " ++
+            "`rg` — fast regex search across files (prefer over grep); " ++
+            "`grep -n` — line-numbered matches fallback; " ++
             "`sed -n 'X,Yp'` — extract line ranges without reading whole file; " ++
             "`awk` — field extraction and row filtering; " ++
             "`jq` — JSON query/transform (never use sed/awk on JSON); " ++
@@ -189,9 +189,19 @@ pub const bashTool = AgentTool{
             "`stat` / `ls -lh` — file metadata without reading content; " ++
             "`wc -l` / `du -sh` — size checks before any read. " ++
             "" ++
+            "LANGUAGE-SPECIFIC FAST CHECKS (run before full build): " ++
+            "Zig: `zig ast-check <file>` — syntax check without full compilation; " ++
+            "Rust: `cargo check` — faster than `cargo build`; " ++
+            "Go: `go vet ./...` — fast static analysis. " ++
+            "" ++
             "OUTPUT DISCIPLINE: " ++
             "Always bound output. Pipe through `head -n N`, `tail -n N`, or `rg --max-count=N`. " ++
-            "Never emit unbounded streams. Set max_output conservatively. " ++
+            "Never emit unbounded streams. " ++
+            "Set max_output by command type: grep/sed/rg → 10000; builds/compiles → 50000; JSON dumps → up to 200000. " ++
+            "" ++
+            "BATCHING: " ++
+            "Plan all edits before executing. Group related sed -i changes into a single call when possible. " ++
+            "Use grep/rg to verify after edits — cheaper than sed -n reads. " ++
             "" ++
             "RULES (strictly enforced — never violate): " ++
             "1. NO privilege escalation — never use sudo, su, doas, or pkexec. " ++
@@ -204,6 +214,7 @@ pub const bashTool = AgentTool{
             "" ++
             "WORKFLOW PATTERN: " ++
             "Check size → scope the read → cap the output → parse structured data with the right tool. " ++
+            "For edits: rg to find line → sed -n to verify range → sed -i to edit → rg to confirm → ast-check before full build. " ++
             "When in doubt, rg before cat.",
         .parameters = .{
             .type = "object",
@@ -215,14 +226,15 @@ pub const bashTool = AgentTool{
                         "Must be scoped and output-bounded. " ++
                         "Prefer: rg, grep -n, sed -n 'X,Yp', awk, jq, stat, wc. " ++
                         "Avoid: cat <file>, find / (unscoped), recursive globs without size checks. " ++
-                        "Chain with | head -n N or | rg --max-count=N to cap output.",
+                        "Chain with | head -n N or | rg --max-count=N to cap output. " ++
+                        "For Zig: run `zig ast-check` before `zig build` to catch syntax errors faster.",
                 },
                 .{
                     .name = "timeout",
                     .type = "number",
                     .description = "Max execution time in seconds. Default: 30. Max: 120. " ++
                         "If exceeded, the process is killed and timeout=true is set in the response. " ++
-                        "Use lower values for reads/searches; higher only for compiles or network ops.",
+                        "Recommended by operation: reads/searches → 10; ast-check → 15; full builds/compiles → 120; network ops → 60.",
                 },
                 .{
                     .name = "cwd",
@@ -235,7 +247,11 @@ pub const bashTool = AgentTool{
                     .type = "number",
                     .description = "Max combined stdout+stderr in bytes. Default: 102400 (100KB). Max: 1048576 (1MB). " ++
                         "If exceeded, output is truncated and truncated=true is set. " ++
-                        "Keep low for file reads and searches. Raise only for known-large structured outputs (e.g. JSON dumps).",
+                        "Recommended by command type: " ++
+                        "grep/rg/sed reads → 10000; " ++
+                        "ast-check/vet → 20000; " ++
+                        "full builds (zig build, cargo build) → 50000; " ++
+                        "JSON/structured dumps → up to 200000.",
                 },
                 .{
                     .name = "stdin_data",

@@ -1287,6 +1287,12 @@ pub const TUIWorkflow = struct {
 
                 self.logger.debugFmt("Skill '{s}' loaded and added to system context", .{skill_result.skill_name}) catch {};
 
+                // Save skill to database for persistence
+                self.saveSkillToDB(skill_name_copy, content_copy) catch |err| {
+                    self.logger.errFmt("Failed to save skill to database: {s}", .{@errorName(err)}) catch {};
+                };
+                // Send updated skills list to TUI
+                self.sendSkillsList();
                 // Rebuild system message with all loaded skills
                 const current_agent = self.getCurrentAgent() catch return;
 
@@ -1384,6 +1390,75 @@ pub const TUIWorkflow = struct {
             }
         }
         return false;
+    }
+
+    /// Save a loaded skill to the database for persistence
+    fn saveSkillToDB(self: *TUIWorkflow, skill_name: []const u8, content: []const u8) !void {
+        // Skip if session_id is empty
+        if (self.session_id.len == 0) return;
+        
+        const sql = "INSERT OR REPLACE INTO session_skills (session_id, skill_name, content, loaded_at) VALUES (?, ?, ?, strftime('%s', 'now'))";
+        try self.db.exec(self.allocator, sql, &.{ self.session_id, skill_name, content });
+        self.logger.debugFmt("Skill '{s}' saved to database for session {s}", .{ skill_name, self.session_id }) catch {};
+    }
+
+    /// Load all skills for the current session from the database
+    pub fn loadSkillsFromDB(self: *TUIWorkflow) !void {
+        // Skip if session_id is empty
+        if (self.session_id.len == 0) return;
+        
+        // Clear existing skills first
+        for (self.loaded_skills.items) |skill| {
+            skill.deinit(self.allocator);
+        }
+        self.loaded_skills.clearRetainingCapacity();
+        
+        // Load from database
+        const sql = "SELECT skill_name, content FROM session_skills WHERE session_id = ? ORDER BY loaded_at ASC";
+        var rows = try self.db.query(self.allocator, sql, &.{self.session_id});
+        defer rows.deinit();
+        
+        while (try rows.next()) |row| {
+            const skill_name = try self.allocator.dupe(u8, row.values[0]);
+            errdefer self.allocator.free(skill_name);
+            const content = try self.allocator.dupe(u8, row.values[1]);
+            errdefer self.allocator.free(content);
+            
+            const loaded_skill = LoadedSkill{
+                .skill_name = skill_name,
+                .content = content,
+            };
+            try self.loaded_skills.append(self.allocator, loaded_skill);
+            self.logger.debugFmt("Loaded skill '{s}' from database for session {s}", .{ skill_name, self.session_id }) catch {};
+        }
+        
+        self.logger.debugFmt("Loaded {} skills from database for session {s}", .{ self.loaded_skills.items.len, self.session_id }) catch {};
+    }
+
+    /// Send skills list to TUI via IPC
+    pub fn sendSkillsList(self: *TUIWorkflow) void {
+        if (self.conn_fd < 0) return;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var w = buf.writer(self.allocator);
+
+        w.writeAll("<response><type>skills</type><skills>") catch return;
+        for (self.loaded_skills.items) |skill| {
+            w.writeAll("<skill><name>") catch return;
+            w.writeAll(skill.skill_name) catch return;
+            w.writeAll("</name></skill>") catch return;
+        }
+        w.writeAll("</skills></response>") catch return;
+
+        self.logger.debugFmt("SEND SKILLS XML: {s}", .{buf.items}) catch {};
+
+        _ = std.posix.write(self.conn_fd, buf.items) catch |err| {
+            if (err != error.BrokenPipe) {
+                self.logger.errFmt("Send Skills response error {s}", .{@errorName(err)}) catch {};
+            }
+        };
+        _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 
     fn getTreeDir(self: *TUIWorkflow) ![]const u8 {

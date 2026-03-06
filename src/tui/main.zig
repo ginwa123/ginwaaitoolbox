@@ -424,7 +424,6 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
     return xml[open_pos + open_tag.len .. close_pos];
 }
 
-
 // ─── Tool Result Extraction ─────────────────────────────────────────────────
 
 /// Struct to hold extracted tool result data
@@ -526,7 +525,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     var spinner_timer: usize = 0;
     const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     var last_tick = std.time.milliTimestamp();
-    var last_displayed_len: usize = 0; // track what we've already printed
+    // var last_displayed_len: usize = 0; // track what we've already printed
 
     var retry_count: usize = 0;
 
@@ -547,31 +546,25 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     // std.debug.print("Your sessions {s}\r\n\n", .{app.session_id});
 
     while (true) {
-        // Poll with 50ms timeout to allow checking for ESC
         const ready = std.posix.poll(&poll_fds, 50) catch 0;
 
         if (ready > 0) {
-            // Check stdin first for double ESC
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
                     stream_interrupted = true;
                     std.debug.print("stream interrupted\n", .{});
                     break;
                 }
-                // Reset revents for next iteration
                 poll_fds[1].revents = 0;
             }
 
-            // Then check socket for data
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
                 const n = std.posix.read(app.socket_fd, &buf) catch break;
                 if (n == 0) break;
                 try buffer.appendSlice(app.allocator, buf[0..n]);
-                // Reset revents for next iteration
                 poll_fds[0].revents = 0;
             }
 
-            // Check for socket hangup or error
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
                 std.debug.print("socket error\n", .{});
                 break;
@@ -584,77 +577,51 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
             const spin = spinners[spinner_timer % spinners.len];
             spinner_timer += 1;
 
-            const chunk = if (extractTag(buffer.items, "content")) |c| c else "";
-            const new_text = if (chunk.len > last_displayed_len) chunk[last_displayed_len..] else "";
-            last_displayed_len = chunk.len;
-
-            // Replace newlines with spaces for single-line display
-            var clean_buf: [200]u8 = undefined;
-            var clean_len: usize = 0;
-            for (new_text) |c| {
-                if (clean_len >= clean_buf.len - 1) break;
-                clean_buf[clean_len] = if (c == '\n' or c == '\r') ' ' else c;
-                clean_len += 1;
-            }
-
             if (extractTag(buffer.items, "content")) |raw_content| {
-                // Sanitize content by replacing newlines with spaces
-                var clean_content: [100]u8 = undefined;
-                var clean_content_len: usize = 0;
+                var clean: [100]u8 = undefined;
+                var len: usize = 0;
                 for (raw_content) |ch| {
-                    if (clean_content_len >= clean_content.len - 1) break;
-                    clean_content[clean_content_len] = if (ch == '\n' or ch == '\r') ' ' else ch;
-                    clean_content_len += 1;
+                    if (len >= clean.len - 1) break;
+                    clean[len] = if (ch == '\n' or ch == '\r') ' ' else ch;
+                    len += 1;
                 }
-                const fr = clean_content[0..clean_content_len];
+                const fr = clean[0..len];
                 const max_len: usize = 6;
-
-                if (fr.len > max_len) {
-                    thought = try std.fmt.allocPrint(app.allocator, "{s}...", .{fr[0..max_len]});
-                } else {
-                    thought = fr;
-                }
+                thought = if (fr.len > max_len)
+                    try std.fmt.allocPrint(app.allocator, "{s}...", .{fr[0..max_len]})
+                else
+                    fr;
             }
 
-
-            // Display tool results inline
             var tool_results = extractToolResults(app.allocator, buffer.items) catch continue;
             defer tool_results.deinit(app.allocator);
 
             for (tool_results.items) |result| {
-                // Check if already displayed
                 var already_displayed = false;
                 for (displayed_tool_ids.items) |id| {
                     if (std.mem.eql(u8, id, result.id)) {
                         already_displayed = true;
-                        // break;
                     }
                 }
 
                 if (!already_displayed) {
-                    // Truncate result to 500 chars
                     const max_result_len: usize = 500;
-                    const display_result = if (result.result.len > max_result_len) result.result[0..max_result_len] else result.result;
-                    const std_out =  extractTag(display_result, "stdout") orelse display_result;
-                    const error_code = extractTag(display_result, "stderr");
-                    var is_error = false;
-                    if (error_code) |ec| {
-                        if (std.mem.eql(u8, ec, "0") == false) {
-                            is_error = true;
-                        }
+                    const std_out = std.mem.trim(u8, extractTag(result.result, "stdout") orelse result.result, &std.ascii.whitespace);
+
+                    if (std.mem.eql(u8, std_out, "") == false) {
+                        const stderr = extractTag(result.result, "stderr");
+                        const display = if (std_out.len > max_result_len) std_out[0..max_result_len] else std_out;
+                        const is_error = if (stderr) |ec| !std.mem.eql(u8, ec, "0") else false;
+                        const color = if (is_error) "\x1b[31m" else "";
+                        std.debug.print("\r\x1b[2K\n{s}[Tool: {s}]{s}\n{s}{s}{s}\n", .{ cyan, result.name, reset, color, display, if (is_error) reset else "" });
                     }
 
-                    // Print tool result with color
-                    std.debug.print("\n{s}[Tool: {s}]{s}\n", .{ cyan, result.name, reset });
-                    if (is_error) {
-                        // make it red
-                        std.debug.print("{s}\n", .{std_out});
-                    } else {
-                        std.debug.print("{s}\n", .{std_out});
+                    const change_agent_tool = std.mem.trim(u8, extractTag(result.result, "change_agent_tool") orelse result.result, &std.ascii.whitespace);
+                    if (std.mem.eql(u8, change_agent_tool, "") == false) {
+                        const agent_name = extractTag(result.result, "agent") orelse "unknown";
+                        std.debug.print("\r\x1b[2K\n{s}[Tool: {s}]{s}\n{s}{s}{s}\n", .{ cyan, result.name, reset, cyan, agent_name, reset });
                     }
-                    // std.debug.print("{s}\n", .{display_result});
 
-                    // Add to displayed list (duplicate the id string)
                     const id_copy = app.allocator.dupe(u8, result.id) catch continue;
                     displayed_tool_ids.append(app.allocator, id_copy) catch {
                         app.allocator.free(id_copy);
@@ -662,6 +629,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                     };
                 }
             }
+
             std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes) Retry count: {d} thought: {s}", .{ yellow, spin, reset, buffer.items.len, retry_count, thought });
         }
 
@@ -811,7 +779,6 @@ fn readEscapeSequence(buf: *[16]u8) !usize {
     }
     return i;
 }
-
 
 fn clearCompletions(app: *App) void {
     if (app.state.last_match_count == 0) return;
