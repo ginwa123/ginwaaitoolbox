@@ -52,6 +52,7 @@ pub const SqliteBackend = struct {
             }
         }
         if (rc != c.SQLITE_OK) {
+            std.debug.print("sqlite3_prepare_v2 error: {s}\n", .{@errorName(Error.PrepareFailed)});
             return Error.PrepareFailed;
         }
 
@@ -63,6 +64,7 @@ pub const SqliteBackend = struct {
                 rc = c.sqlite3_bind_text(stmt, param_idx, arg.ptr, @intCast(arg.len), c.SQLITE_TRANSIENT);
             }
             if (rc != c.SQLITE_OK) {
+                std.debug.print("sqlite3_bind_text error: {s}\n", .{@errorName(Error.BindFailed)});
                 return Error.BindFailed;
             }
         }
@@ -74,6 +76,7 @@ pub const SqliteBackend = struct {
             } else if (rc == c.SQLITE_DONE) {
                 break;
             } else {
+                std.debug.print("sqlite3_step error: {s}\n", .{@errorName(Error.ExecuteFailed)});
                 return Error.ExecuteFailed;
             }
         }

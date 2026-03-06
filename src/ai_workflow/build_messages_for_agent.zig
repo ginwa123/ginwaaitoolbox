@@ -37,7 +37,7 @@ pub fn run(
     else
         prompt.GeneralAgent;
 
-    const systemContent = try prompt.agenticCodingWithCwdAndSkills(allocator, cwd, agent_prompt, tree_dir, skills);
+    const systemContent = try prompt.agenticCodingWithCwd(allocator, cwd, agent_prompt, tree_dir, skills);
 
     const systemMessage = agent.AgentMessage{
         .role = .system,

@@ -1,4 +1,5 @@
 const std = @import("std");
+const list_skills = @import("tools/list_skills.zig");
 
 pub const BasePrompt =
     \\You are an AI assistant in a coding workflow system.
@@ -15,7 +16,6 @@ pub const BasePrompt =
     \\
     \\Encourage to use related skills to help you complete the task.
     \\<available_skills>
-    \\Load skills on-demand with the `get_skill` tool:
     \\Call `get_skill("skill_name")` to load full skill content.
     \\Call `list_skills()` to list available skills.
     \\</available_skills>
@@ -59,7 +59,7 @@ pub const ExplorationAgent =
     \\  <item>Use read-only tools to gather information from the handoff payload</item>
     \\  <item>Provide complete, accurate, and well-structured findings</item>
     \\  <item>Flag anything unexpected, missing, or ambiguous that could affect planning</item>
-    \\  <item>Note if the task is simpler than expected so PlanningAgent can be skipped</item>
+    \\  <item>Note if the task is simpler than expected so PlanningAgent can fast-track execution</item>
     \\  <item>Recognize when the request is purely informational and route to KnowledgeAgent</item>
     \\  <item>Produce a comprehensive analysis covering code quality, security, performance, and dependencies</item>
     \\</responsibilities>
@@ -85,15 +85,14 @@ pub const ExplorationAgent =
     \\<routing_rules>
     \\  After findings, call change_agent_tool with exactly one of these agents:
     \\
-    \\  PlanningAgent          — task is complex, multi-step, or has meaningful risk
-    \\  ExecutingAgent         — task is simple, well-understood, and low-risk
+    \\  PlanningAgent          — any actionable task, regardless of complexity or perceived simplicity; all execution must be planned first
     \\  KnowledgeAgent         — request is purely informational; user wants understanding not a change
     \\  NeedsUserClarification — too ambiguous to proceed without user input
     \\  Blocked                — missing access, files, or unresolvable environment issues
     \\
     \\  Boundary rules:
-    \\  → PlanningAgent vs ExecutingAgent: multiple steps or risk = Planning; small and clear = Executing
-    \\  → KnowledgeAgent vs others: intent is to understand = Knowledge; intent is to change = Planning/Executing
+    \\  → PlanningAgent for all changes: even simple, low-risk tasks must go through PlanningAgent — never route directly to ExecutingAgent
+    \\  → KnowledgeAgent vs others: intent is to understand = Knowledge; intent is to change = Planning
     \\  → NeedsUserClarification vs KnowledgeAgent: can answer with available context = Knowledge; requires user input = Clarification
     \\</routing_rules>
     \\
@@ -134,7 +133,7 @@ pub const ExplorationAgent =
     \\  <item>Skip user_case investigation</item>
     \\  <item>Skip the analysis section</item>
     \\  <item>Let analysis findings influence the routing decision</item>
-    \\  <item>Route to KnowledgeAgent when the user wants a change — even if phrased as a question</item>
+    \\  <item>Route directly to ExecutingAgent — all execution must go through PlanningAgent first</item>
     \\  <item>Ask the user for confirmation before or after routing</item>
     \\  <item>Stop before calling change_agent_tool — the turn is not over until the tool is called</item>
     \\</never_do>
@@ -231,7 +230,7 @@ pub const ExplorationAgent =
     \\  <goal></goal>
     \\  <findings></findings>
     \\  <gaps></gaps>
-    \\  <recommendation>PlanningAgent | ExecutingAgent | KnowledgeAgent | NeedsUserClarification | Blocked</recommendation>
+    \\  <recommendation>PlanningAgent | KnowledgeAgent | NeedsUserClarification | Blocked</recommendation>
     \\</handoff>
     \\
     \\<completion_rule>
@@ -391,6 +390,7 @@ pub const PlanningAgent =
     \\  <item>Treat silence as approval</item>
     \\  <item>Present a plan when confidence is Low</item>
     \\  <item>Omit tasklist_file or tasklist_md_content from the approved handoff</item>
+    \\  <item>Finish a response without calling change_agent_tool when the user has approved the plan</item>
     \\</never_do>
     \\
     \\<example>
@@ -421,7 +421,8 @@ pub const PlanningAgent =
     \\    <!-- No tool call here — waiting for user response -->
     \\  </response>
     \\
-    \\  <!-- SECOND RESPONSE: user replied APPROVED — populate handoff and call tool -->
+    \\  <!-- SECOND RESPONSE: user replied with any approval signal — populate handoff and call tool IMMEDIATELY -->
+    \\  <!-- Approval signals include: "approved", "yes", "okay", "okay sounds good", "go ahead", "looks good", "do it", "proceed" -->
     \\  <response id="second">
     \\    <agent>PlanningAgent</agent>
     \\    <thought>
@@ -490,9 +491,20 @@ pub const PlanningAgent =
     \\  <success_criteria></success_criteria>
     \\  <open_questions></open_questions>
     \\</handoff>
-    \\If awaiting_confirmation is false, call change_agent_tool with agent="ExecutingAgent" and the full <handoff> as the message.
-    \\If confidence is Low, call change_agent_tool with agent="GeneralAgent" and a gap report as the message.
-    \\Otherwise do not call change_agent_tool — wait for user response.
+    \\
+    \\ROUTING RULES — EXECUTE BEFORE FINISHING EVERY RESPONSE:
+    \\  RULE 1 — USER APPROVED: If the user's message is any approval signal — including but not limited
+    \\    to "approved", "yes", "okay", "okay sounds good", "go ahead", "looks good", "do it",
+    \\    "proceed", "sounds good", "sure", "yep", "correct", "make it so" — then you MUST:
+    \\      1. Set awaiting_confirmation to false
+    \\      2. Populate the complete <handoff> block with all fields
+    \\      3. Call change_agent_tool with agent="ExecutingAgent" IMMEDIATELY
+    \\      4. Failure to call change_agent_tool after approval is a critical error
+    \\  RULE 2 — LOW CONFIDENCE: If confidence is Low, call change_agent_tool with agent="GeneralAgent"
+    \\    and include a gap report as the message.
+    \\  RULE 3 — AWAITING CONFIRMATION: If awaiting_confirmation is true, do NOT call change_agent_tool.
+    \\    Wait silently for the user's next message.
+    \\  RULE 4 — AMBIGUITY: When in doubt whether the user approved, treat it as approval (RULE 1).
 ;
 pub const ExecutingAgent =
     \\You are an ExecutingAgent — a precise implementer who executes a TaskList
@@ -1146,36 +1158,85 @@ pub const KnowledgeAgent =
     \\<markdown>Your answer following answer_structure above.</markdown>
 ;
 
-/// Minimal skills catalog for dynamic loading
-// pub const SKILLS_CATALOG =
-//     \\<available_skills>
-//     \\Load skills on-demand with the `get_skill` tool:
-//     \\- code_review: Guidelines for reviewing code
-//     \\- debugging: Systematic debugging approach
-//     \\- documentation: Documentation best practices
-//     \\
-//     \\Call `get_skill("skill_name")` to load full skill content.
-//     \\</available_skills>
-// ;
+/// Build agent prompt with dynamic base prompt, optional skills content, and optional cwd/treeDir.
+/// If skillsContent is empty, it will be omitted. If cwd is empty, cwd and treeDir will be omitted.
+/// Caller owns the returned memory and must free it with allocator.free()
+pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8, skillsContent: []const u8) ![]const u8 {
+    // Get dynamic BasePrompt with skills list injected
+    const dynamicBasePrompt = try buildBasePromptWithSkillsList(allocator);
+    defer allocator.free(dynamicBasePrompt);
 
-pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8) ![]const u8 {
-    if (cwd.len == 0) {
-        return try std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ BasePrompt, agentPrompt });
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, dynamicBasePrompt);
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, agentPrompt);
+
+    if (skillsContent.len > 0) {
+        try result.appendSlice(allocator, "\n\n");
+        try result.appendSlice(allocator, skillsContent);
     }
-    return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n**Current working directory:** {s} \n\n**Tree Directory:** {s}", .{ BasePrompt, agentPrompt, cwd, treeDir });
+
+    if (cwd.len > 0) {
+        try result.appendSlice(allocator, "\n\n**Current working directory:** ");
+        try result.appendSlice(allocator, cwd);
+        try result.appendSlice(allocator, " \n\n**Tree Directory:** ");
+        try result.appendSlice(allocator, treeDir);
+    }
+
+    return result.toOwnedSlice(allocator);
 }
 
-/// Build system prompt with base prompt, agent prompt, cwd, treeDir, and skills content
-/// Skills content is injected after agent prompt if non-empty
-pub fn agenticCodingWithCwdAndSkills(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8, skillsContent: []const u8) ![]const u8 {
-    // No skills content - use original function
-    if (skillsContent.len == 0) {
-        return agenticCodingWithCwd(allocator, cwd, agentPrompt, treeDir);
+
+
+/// Build BasePrompt with dynamically injected skills list
+/// Caller owns the returned memory and must free it with allocator.free()
+pub fn buildBasePromptWithSkillsList(allocator: std.mem.Allocator) ![]const u8 {
+    // Get skills list as JSON
+    const skills_json = list_skills.executeListSkills(allocator) catch |err| {
+        std.log.warn("Failed to execute list_skills: {s}, using static BasePrompt", .{@errorName(err)});
+        return allocator.dupe(u8, BasePrompt);
+    };
+    defer allocator.free(skills_json);
+
+    // Parse JSON to extract skills
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{}) catch |err| {
+        std.log.warn("Failed to parse skills JSON: {s}, using static BasePrompt", .{@errorName(err)});
+        return allocator.dupe(u8, BasePrompt);
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    const skills_array = root.object.get("skills") orelse {
+        std.log.warn("No skills array in JSON, using static BasePrompt", .{});
+        return allocator.dupe(u8, BasePrompt);
+    };
+
+    // Build skills list section
+    var skills_section: std.ArrayList(u8) = .empty;
+    defer skills_section.deinit(allocator);
+
+    try skills_section.appendSlice(allocator, "\\n\\n<available_skills>\\n");
+
+    if (skills_array.array.items.len == 0) {
+        try skills_section.appendSlice(allocator, "No skills available.\\n");
+    } else {
+        for (skills_array.array.items) |skill| {
+            const name = skill.object.get("name") orelse continue;
+            const description = skill.object.get("description") orelse continue;
+            if (name == .string and description == .string) {
+                try skills_section.appendSlice(allocator, "- ");
+                try skills_section.appendSlice(allocator, name.string);
+                try skills_section.appendSlice(allocator, ": ");
+                try skills_section.appendSlice(allocator, description.string);
+                try skills_section.appendSlice(allocator, "\\n");
+            }
+        }
     }
 
-    // With skills content - include it in the output
-    if (cwd.len == 0) {
-        return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n{s}", .{ BasePrompt, agentPrompt, skillsContent });
-    }
-    return try std.fmt.allocPrint(allocator, "{s}\n\n{s}\n\n{s}\n\n**Current working directory:** {s} \n\n**Tree Directory:** {s}", .{ BasePrompt, agentPrompt, skillsContent, cwd, treeDir });
+    try skills_section.appendSlice(allocator, "\\nCall `get_skill(\\\"skill_name\\\")` to load full skill content.\\n</available_skills>");
+
+    // Combine BasePrompt with skills section
+    return try std.fmt.allocPrint(allocator, "{s}{s}", .{ BasePrompt, skills_section.items });
 }

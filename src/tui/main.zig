@@ -623,7 +623,12 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                         } else {
                             std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, result.name, reset });
                         }
-                        std.debug.print("{s}  {s}{s}\n", .{ color, display, if (is_error) reset else "" });
+
+                        // indent each line
+                        var lines = std.mem.splitScalar(u8, display, '\n');
+                        while (lines.next()) |line| {
+                            std.debug.print("{s}  {s}{s}\n", .{ color, line, if (is_error) reset else "" });
+                        }
                         if (truncated) std.debug.print("  {s}[truncated...]{s}\n", .{ cyan, reset });
                     }
 

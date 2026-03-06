@@ -312,7 +312,7 @@ pub const TUIWorkflow = struct {
                                     continue;
                                 };
 
-                                agent_prompt = prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, try get_tree_dir.run(allocator, self.cwd)) catch |err| {
+                                agent_prompt = prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, try get_tree_dir.run(allocator, self.cwd), "") catch |err| {
                                     self.logger.errFmt("Failed to format agent prompt: {s}", .{@errorName(err)}) catch {};
                                     continue;
                                 };
@@ -796,7 +796,7 @@ pub const TUIWorkflow = struct {
         const treeDir = try get_tree_dir.run(allocator, self.cwd);
 
         // Build base system content without skills
-        const baseContent = try prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, treeDir);
+        const baseContent = try prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, treeDir, "");
 
         // If no skills loaded, return base content
         if (self.loaded_skills.items.len == 0) {
