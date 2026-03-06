@@ -186,6 +186,10 @@ pub const TUIWorkflow = struct {
     }
 
     fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator) !void {
+        // Register this session for cancellation tracking
+        if (cancellation_registry.getGlobalRegistry()) |registry| {
+            try registry.register(self.session_id);
+        }
         const initial_agent = try get_current_agent_by_session_id.run(
             parent_allocator,
             self.db,
@@ -281,8 +285,9 @@ pub const TUIWorkflow = struct {
             .workflow = self,
             .chunk_index = 0,
             .conn_fd = self.conn_fd,
+            .session_id = self.session_id,
         };
-        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback, isCancelled);
+        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback, isCancelledWithContext);
 
         return res_dynamic_agent;
     }
