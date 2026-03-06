@@ -223,13 +223,14 @@ pub const bashTool = AgentTool{
                     .name = "command",
                     .type = "string",
                     .description = "Bash command to execute. " ++
-                        "ALWAYS wrap with `timeout N <cmd>` — e.g. `timeout 10 rg ...`, `timeout 120 zig build`. " ++
-                        "Recommended N by type: reads/searches → 10; ast-check → 15; full builds → 120; network → 60. " ++
-                        "Must be scoped and output-bounded. " ++
-                        "Prefer: rg, grep -n, sed -n 'X,Yp', awk, jq, stat, wc. " ++
-                        "Avoid: cat <file>, find / (unscoped), recursive globs without size checks. " ++
-                        "Chain with | head -n N or | rg --max-count=N to cap output. " ++
-                        "For Zig: run `zig ast-check` before `zig build` to catch syntax errors faster.",
+                        "REQUIRED FORMAT: `timeout <N> <cmd>` — bare commands are REJECTED. " ++
+                        "timeout N by operation type: " ++
+                        "reads/searches=10, ast-check=15, network=60, full builds=120. " ++
+                        "Examples: `timeout 10 rg -n 'foo' src/`, `timeout 120 zig build`, `timeout 60 curl ...`. " ++
+                        "Output MUST be bounded: pipe to `| head -n 100` or `| rg --max-count=50`. " ++
+                        "Prefer: rg, grep -n, sed -n 'X,Yp', awk, jq, stat, wc -l. " ++
+                        "Avoid: cat <largefile>, unscoped find, recursive globs without -maxdepth. " ++
+                        "Zig: run `timeout 15 zig ast-check <file>` before `timeout 120 zig build` to catch syntax errors first.",
                 },
                 .{
                     .name = "cwd",

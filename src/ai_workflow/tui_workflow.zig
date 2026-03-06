@@ -29,6 +29,7 @@ const send_stream_chunk_final = @import("send_stream_chunk_final.zig");
 const send_steam_chunk_content = @import("send_stream_chunk_content.zig");
 const send_stream_chunk_reasoning = @import("send_stream_chunk_reasoning.zig");
 const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_call_delta.zig");
+const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -171,12 +172,14 @@ pub const TUIWorkflow = struct {
             const allocator = arena_allocator_while_loop.allocator();
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
+            const skills = try self.buildSkillsContent(allocator);
+            defer allocator.free(skills);
             const initial_messages = try build_messages.run(
                 allocator,
                 self.cwd,
                 try get_tree_dir.run(allocator, self.cwd),
                 try get_messages.run(allocator, self.db, self.session_id),
-                ""
+                skills
             );
 
             try messages_list.appendSlice(allocator, initial_messages);
@@ -275,94 +278,7 @@ pub const TUIWorkflow = struct {
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
-                                const parsed = try std.json.parseFromSlice(
-                                    change_agent_tool.ChangeAgentToolResult,
-                                    allocator,
-                                    tool_call.function.arguments,
-                                    .{},
-                                );
-                                defer parsed.deinit();
-
-                                const agent_name = parsed.value.agent;
-                                const agent_message = parsed.value.message;
-                                const new_agent_temperature = parsed.value.temperature;
-                                if (new_agent_temperature) |temperature| {
-                                    agent_temperature = temperature;
-                                }
-
-                                const new_is_thinking = parsed.value.is_thinking;
-                                if (new_is_thinking) |thinking| {
-                                    isThinking = thinking;
-                                }
-
-                                var agent_prompt: []const u8 = if (std.mem.eql(u8, agent_name, "GeneralAgent"))
-                                    prompt.GeneralAgent
-                                else if (std.mem.eql(u8, agent_name, "ExplorationAgent"))
-                                    prompt.ExplorationAgent
-                                else if (std.mem.eql(u8, agent_name, "PlanningAgent"))
-                                    prompt.PlanningAgent
-                                else if (std.mem.eql(u8, agent_name, "ExecutingAgent"))
-                                    prompt.ExecutingAgent
-                                else if (std.mem.eql(u8, agent_name, "KnowledgeAgent"))
-                                    prompt.KnowledgeAgent
-                                else if (std.mem.eql(u8, agent_name, "ReviewAgent"))
-                                    prompt.ReviewAgent
-                                else {
-                                    self.logger.warnFmt("change_agent_tool: unknown agent '{s}'", .{agent_name}) catch {};
-                                    continue;
-                                };
-
-                                agent_prompt = prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, try get_tree_dir.run(allocator, self.cwd), "") catch |err| {
-                                    self.logger.errFmt("Failed to format agent prompt: {s}", .{@errorName(err)}) catch {};
-                                    continue;
-                                };
-
-                                const msgPrompt = try std.fmt.allocPrint(
-                                    allocator,
-                                    "{s}\n\n{s}",
-                                    .{ agent_prompt, agent_message },
-                                );
-
-                                const contentChangeAgent = try std.fmt.allocPrint(
-                                    allocator,
-                                    "<change_agent_tool>\n{s}\n<change_agent_tool>",
-                                    .{tool_call.function.arguments},
-                                );
-
-                                // 1. Create tool result message and add to messages_list (required for API)
-                                const tool_result_msg = agent.AgentMessage{
-                                    .role = .tool,
-                                    .content = contentChangeAgent,
-                                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
-                                };
-                                try messages_list.append(allocator, tool_result_msg);
-
-                                // 2. Save tool result to database
-                                save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, contentChangeAgent, null, "tool", "tool", null, tool_call.id, agent_name, session_name, loop_counter) catch |err| {
-                                    self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
-                                };
-                                send_tool_result.run(allocator, self.conn_fd, self.logger, contentChangeAgent, tool_call.id, tool_call.function.name, null);
-
-                                // Update the loop-persistent current_agent variable
-                                current_agent = try parent_allocator.dupe(u8, agent_name);
-
-                                // 3. Replace system message only, keep all history
-                                var system_replaced = false;
-                                for (messages_list.items) |*msg| {
-                                    if (msg.role == .system) {
-                                        msg.content = msgPrompt;
-                                        system_replaced = true;
-                                        break;
-                                    }
-                                }
-                                if (!system_replaced) {
-                                    try messages_list.insert(allocator, 0, agent.AgentMessage{
-                                        .role = .system,
-                                        .content = msgPrompt,
-                                    });
-                                }
-
-                                self.logger.infoFmt("Switched to agent: {s}", .{agent_name}) catch {};
+                                try handle_change_agent_tool.run(allocator, parent_allocator, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, session_name, loop_counter, &messages_list, tool_call, &agent_temperature, &isThinking, &current_agent);
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
@@ -789,6 +705,25 @@ pub const TUIWorkflow = struct {
         const current_agent_final = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
         save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
         send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
+    }
+
+    /// Build skills content string from loaded skills
+    fn buildSkillsContent(self: *TUIWorkflow, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.loaded_skills.items.len == 0) {
+            return allocator.dupe(u8, "");
+        }
+
+        var skillsBuilder: std.ArrayList(u8) = .empty;
+        try skillsBuilder.appendSlice(allocator, "\n\n## Loaded Skills\n\n");
+        for (self.loaded_skills.items) |skill| {
+            try skillsBuilder.appendSlice(allocator, "### ");
+            try skillsBuilder.appendSlice(allocator, skill.skill_name);
+            try skillsBuilder.appendSlice(allocator, "\n\n");
+            try skillsBuilder.appendSlice(allocator, skill.content);
+            try skillsBuilder.appendSlice(allocator, "\n\n");
+        }
+
+        return try skillsBuilder.toOwnedSlice(allocator);
     }
 
     /// Build system message content with loaded skills injected
