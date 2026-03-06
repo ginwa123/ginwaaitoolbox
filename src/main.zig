@@ -234,6 +234,10 @@ pub fn main() !void {
         .llm_config = &llm_config,
     };
 
+    // Initialize global cancellation registry
+    ai_workflow.cancellation_registry.initGlobalRegistry(parentAllocator);
+    defer ai_workflow.cancellation_registry.deinitGlobalRegistry();
+
     var server = ipc.IpcServer.init(parentAllocator, ctxParent);
 
     server.messageIncoming(struct {
@@ -251,11 +255,18 @@ pub fn main() !void {
 
                 // Handle cancel command first
                 if (std.mem.eql(u8, t.command_type, "cancel")) {
-                    ctxTui.cancelled.store(true, .seq_cst);
+                    if (ai_workflow.cancellation_registry.getGlobalRegistry()) |registry| {
+                        registry.cancel(t.session_id);
+                    }
                     return;
                 }
-                // Reset cancelled flag for new commands
-                ctxTui.cancelled.store(false, .seq_cst);
+                // Register/reset session for cancellation tracking
+                if (ai_workflow.cancellation_registry.getGlobalRegistry()) |registry| {
+                        registry.register(t.session_id) catch |err| {
+                            std.debug.print("Failed to register session: {}\n", .{err});
+                            return;
+                        };
+                    }
                 var workflowAsk = ai_workflow.TUIWorkflow.init(allocator, ctxTui.db) catch |err| {
                     std.debug.print("Failed to init workflow: {}\n", .{err});
                     return;
@@ -268,10 +279,7 @@ pub fn main() !void {
                 workflowAsk.session_id = t.session_id;
                 workflowAsk.cwd = t.cwd_session;
 
-                workflowAsk.cancelled = &ctxTui.cancelled;
 
-                // Set global cancellation pointer for streaming
-                tui_workflow.setCancelledPtr(&ctxTui.cancelled);
 
                 // Load previously saved skills for this session
                 // workflowAsk.loadSkillsFromDB(allocator) catch |err| {

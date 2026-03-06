@@ -33,7 +33,7 @@ const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 
 const handle_content_filter = @import("handle_content_filter.zig");
-const cancellation_registry = @import("cancellation_registry.zig");
+pub const cancellation_registry = @import("cancellation_registry.zig");
 const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
