@@ -32,6 +32,7 @@ const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_
 const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 
+const handle_content_filter = @import("handle_content_filter.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
@@ -290,10 +291,12 @@ pub const TUIWorkflow = struct {
 
                             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
                                 self.handleListSkills(allocator, &messages_list, tool_call);
+                                continue;
                             }
 
                             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
                                 _ = try self.handleGetSkill(allocator, &messages_list, tool_call);
+                                continue;
                             }
                         }
                         self.logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
@@ -303,45 +306,27 @@ pub const TUIWorkflow = struct {
                     // Continue to next LLM call - no break, loop continues naturally
                     self.logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{}) catch {};
                 } else if (finish_reason == .content_filter) {
-                    self.logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
-
-                    // Save the filtered response to history
-                    save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter) catch |err| {
-                        self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
+                    const should_break = handle_content_filter.run(allocator, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, current_agent, session_name, loop_counter, res_dynamic_agent) catch |err| blk: {
+                        self.logger.errFmt("Error handling content filter: {s}", .{@errorName(err)}) catch {};
+                        break :blk true;
                     };
-
-                    // Send error response to client with content_filter finish reason
-                    // The response content may be empty or contain partial filtered content
-                    if (res_dynamic_agent.content) |c| {
-                        if (c.len > 0) {
-                            // Send the partial content with content_filter finish reason
-                            send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, "content_filter");
-                        } else {
-                            // No content, send error message
-                            send_error.run(allocator, self.conn_fd, self.logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
-                        }
-                    } else {
-                        // No content, send error message
-                        send_error.run(allocator, self.conn_fd, self.logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
-                    }
+                    if (should_break) break;
+                } else {
+                    retryCount += 1;
+                    self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
+                    _ = try send_user_choice.run(
+                        allocator,
+                        self.conn_fd,
+                        self.logger,
+                    );
                     break;
+                    // continue;
                 }
-            } else {
-                retryCount += 1;
-                self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                _ = try send_user_choice.run(
-                    allocator,
-                    self.conn_fd,
-                    self.logger,
-                );
-                break;
-                // continue;
-            }
 
-            retryCount = 0;
+                retryCount = 0;
+            }
         }
     }
-
     fn call_dynamic_agent(
         self: *TUIWorkflow,
         allocator: std.mem.Allocator,
