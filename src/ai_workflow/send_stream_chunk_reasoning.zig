@@ -10,6 +10,7 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, index: usize, 
     w.print("<response><chunk index=\"{}\"><reasoning_content>", .{index}) catch return;
     w.writeAll(reasoning) catch return;
     w.writeAll("</reasoning_content></chunk></response>") catch return;
+    // std.debug.print("chunk reasoning {s}\n", .{buf.items});
 
     _ = std.posix.write(conn_fd, buf.items) catch return;
     _ = std.posix.write(conn_fd, "\n") catch return;

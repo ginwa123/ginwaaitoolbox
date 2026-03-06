@@ -24,7 +24,8 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, index: usize, 
         w.writeAll("</delta>") catch return;
     }
     w.writeAll("</tool_calls_delta></chunk></response>") catch return;
+    // std.debug.print("chunk tool_calls_delta {s}\n", .{buf.items});
 
-    _ =  std.posix.write(conn_fd, buf.items) catch return;
-    _ =  std.posix.write(conn_fd, "\n") catch return;
+    _ = std.posix.write(conn_fd, buf.items) catch return;
+    _ = std.posix.write(conn_fd, "\n") catch return;
 }

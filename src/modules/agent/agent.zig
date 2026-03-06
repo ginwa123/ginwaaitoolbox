@@ -554,7 +554,7 @@ pub const Agent = struct {
 
     /// Log with formatted message and context
     pub fn logFmt(self: Agent, comptime level: log.LogLevel, comptime fmt: []const u8, args: anytype) void {
-        const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch { std.debug.print("fmt alloc failed\n", .{}); return; };
         defer self.allocator.free(msg);
         self.logMsg(level, msg);
     }
@@ -949,6 +949,7 @@ pub const Agent = struct {
             }
             return null;
         };
+        defer parsed.deinit();
         const root = parsed.value;
 
         var chunk: StreamChunk = .{};
@@ -1054,16 +1055,12 @@ pub const Agent = struct {
     ) CallError!CallResponse {
         self.logMsg(.info, "Building streaming JSON request...");
 
-        // get last message
-        const a = params.messages[params.messages.len - 1];
-        std.debug.print("testtt ini {s}", .{a.content.?});
         const json_body: []u8 = self.buildJsonRequest(params, true) catch |err| {
             self.logError("buildJsonRequest", err, null);
             return error.BuildRequestFailed;
         };
 
         self.logFmt(.info, "Streaming JSON request built ({} bytes), sending...", .{json_body.len});
-        std.debug.print("Streaming request body: {s}\n", .{json_body});
         defer self.allocator.free(json_body);
 
         self.logFmt(.debug, "Streaming request body: {s}", .{json_body});
@@ -1167,13 +1164,23 @@ pub const Agent = struct {
                     stream_ended_cleanly = true;
                     break;
                 }
+                // Log the specific error for debugging
                 const time_since_last = elapsedMs(last_chunk_time);
                 self.logFmt(.err, "[STREAM ERROR] Read failed after {} chunks: {s} (last chunk was {}ms ago)", .{ chunk_count, @errorName(err), time_since_last });
+
+                // Handle specific error types
+                if (err == error.WouldBlock) {
+                    self.logFmt(.err, "[STREAM ERROR] Socket timeout - no data received within {}ms", .{self.httpOptions.read_timeout_ms});
+                } else if (err == error.ConnectionResetByPeer or err == error.BrokenPipe) {
+                    self.logFmt(.err, "[STREAM ERROR] Connection closed by server", .{});
+                }
+
                 break;
             };
 
             if (bytes_read == 0) {
-                self.logFmt(.debug, "[STREAM END] Read returned 0 bytes after {} chunks", .{chunk_count});
+                self.logFmt(.info, "[STREAM END] Read returned 0 bytes after {} chunks", .{chunk_count});
+                stream_ended_cleanly = true;
                 break;
             }
 
@@ -1199,11 +1206,6 @@ pub const Agent = struct {
                                 // Log progress periodically
                                 if (chunk_count % 50 == 0) {
                                     self.logFmt(.debug, "[STREAM PROGRESS] {} chunks, {} bytes, {}ms elapsed", .{ chunk_count, total_bytes_read, elapsedMs(stream_start) });
-                                }
-
-                                // Debug print streaming content
-                                if (chunk.content) |content| {
-                                    std.debug.print("{s}", .{content});
                                 }
 
                                 // Invoke callback

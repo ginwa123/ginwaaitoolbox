@@ -12,6 +12,7 @@ pub fn run(
     cwd: []const u8,
     tree_dir: []const u8,
     historyMessages: []TUIHistory,
+    skills: []const u8,
 ) ![]agent.AgentMessage {
 
     // Determine the agent to use from the latest message in history
@@ -36,7 +37,7 @@ pub fn run(
     else
         prompt.GeneralAgent;
 
-    const systemContent = try prompt.agenticCodingWithCwd(allocator, cwd, agent_prompt, tree_dir);
+    const systemContent = try prompt.agenticCodingWithCwdAndSkills(allocator, cwd, agent_prompt, tree_dir, skills);
 
     const systemMessage = agent.AgentMessage{
         .role = .system,

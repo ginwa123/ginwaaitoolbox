@@ -16,6 +16,8 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, index: usize, 
     }
     w.writeAll("</chunk></response>") catch return;
 
+    // std.debug.print("chunk final {s}\n", .{buf.items});
+
     _ = std.posix.write(conn_fd, buf.items) catch return;
     _ = std.posix.write(conn_fd, "\n") catch return;
 }

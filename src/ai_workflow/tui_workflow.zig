@@ -56,7 +56,7 @@ pub const StreamingContext = struct {
 };
 
 /// Callback for streaming chunks - sends each chunk to the client
-pub fn streamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
+pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
     const allocator = stream_ctx.allocator;
     const conn_fd = stream_ctx.conn_fd;
@@ -118,7 +118,11 @@ pub const TUIWorkflow = struct {
 
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger_mod.Logger);
-        log_ptr.* = logger_mod.Logger.initColor(allocator, .{ .min_level = .debug });
+        log_ptr.* = logger_mod.Logger.initColor(allocator, .{
+            .min_level = .debug,
+            .output_mode = .file,
+            .log_file_path = "agent_debug.log",
+        });
         return .{
             .db = db,
             .logger = log_ptr,
@@ -134,19 +138,20 @@ pub const TUIWorkflow = struct {
     }
 
     pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator) void {
-        self.runInternal(allocator) catch |err| {
+        self.run_internal(allocator) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
             defer allocator.free(err_msg);
             send_error.run(allocator, self.conn_fd, self.logger, err_msg, "user_choice");
         };
     }
 
-    fn runInternal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator) !void {
-        const current_agent = try get_current_agent_by_session_id.run(
+    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator) !void {
+        const initial_agent = try get_current_agent_by_session_id.run(
             parent_allocator,
             self.db,
             self.session_id,
         );
+        var current_agent: []const u8 = initial_agent;
         const session_name = self.message;
         save_message.run(parent_allocator, self.db, self.session_id, self.model, self.cwd, self.message, null, "user", "null", null, null, current_agent, session_name, 0) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
@@ -168,6 +173,7 @@ pub const TUIWorkflow = struct {
                 self.cwd,
                 try get_tree_dir.run(allocator, self.cwd),
                 try get_messages.run(allocator, self.db, self.session_id),
+                ""
             );
 
             try messages_list.appendSlice(allocator, initial_messages);
@@ -191,15 +197,12 @@ pub const TUIWorkflow = struct {
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
                     send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, "user_choice");
-                    const current_agent_3 = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
-                    _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_3, session_name, loop_counter);
-                    _ = try send_user_choice.run(allocator, self.conn_fd, self.logger);
+                    _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter);
+                    // _ = try send_user_choice.run(allocator, self.conn_fd, self.logger);
                     self.logger.infoFmt("FINISH REASON STOPPP", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
-                    self.logger.infoFmt("FINISH REASON LENGTH - continuing...", .{}) catch {};
                     current_max_tokens += 4096;
-                    self.logger.infoFmt("FINISH REASON LENGTH - increasing max_tokens to {}", .{current_max_tokens}) catch {};
                     continue;
                 } else if (finish_reason == .tool_calls) {
                     send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, null);
@@ -245,10 +248,7 @@ pub const TUIWorkflow = struct {
 
                         try messages_list.append(allocator, assistant_msg);
 
-                        const current_agent_4 = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
-
-                        defer allocator.free(current_agent_4);
-                        save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent_4, session_name, loop_counter) catch |err| {
+                        save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent, session_name, loop_counter) catch |err| {
                             self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                         };
 
@@ -335,12 +335,13 @@ pub const TUIWorkflow = struct {
                                 try messages_list.append(allocator, tool_result_msg);
 
                                 // 2. Save tool result to database
-                                const current_agent_5 = agent_name;
-                                defer allocator.free(current_agent_5);
-                                save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, contentChangeAgent, null, "tool", "tool", null, tool_call.id, current_agent_5, session_name, loop_counter) catch |err| {
+                                save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, contentChangeAgent, null, "tool", "tool", null, tool_call.id, agent_name, session_name, loop_counter) catch |err| {
                                     self.logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
                                 };
                                 send_tool_result.run(allocator, self.conn_fd, self.logger, contentChangeAgent, tool_call.id, tool_call.function.name);
+
+                                // Update the loop-persistent current_agent variable
+                                current_agent = try parent_allocator.dupe(u8, agent_name);
 
                                 // 3. Replace system message only, keep all history
                                 var system_replaced = false;
@@ -388,10 +389,7 @@ pub const TUIWorkflow = struct {
                                     .tool_call_id = try allocator.dupe(u8, tool_call.id),
                                 };
                                 try messages_list.append(allocator, tool_result_msg);
-                                const current_agent_6 = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
-
-                                defer allocator.free(current_agent_6);
-                                _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, res_bash, null, "tool", "tool", null, tool_call.id, current_agent_6, session_name, loop_counter);
+                                _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, res_bash, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter);
                                 send_tool_result.run(allocator, self.conn_fd, self.logger, res_bash, tool_call.id, tool_call.function.name);
                                 self.logger.debugFmt("Tool result added to messages", .{}) catch {};
                             }
@@ -414,10 +412,7 @@ pub const TUIWorkflow = struct {
                     self.logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
                     // Save the filtered response to history
-                    const current_agent_7 = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
-
-                    defer allocator.free(current_agent_7);
-                    save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent_7, session_name, loop_counter) catch |err| {
+                    save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter) catch |err| {
                         self.logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
                     };
 
@@ -476,7 +471,7 @@ pub const TUIWorkflow = struct {
             .chunk_index = 0,
             .conn_fd = self.conn_fd,
         };
-        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, streamCallback);
+        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
 
         return res_dynamic_agent;
     }
@@ -670,6 +665,7 @@ pub const TUIWorkflow = struct {
             self.logger.errFmt("Failed to parse get_skill arguments: {s}", .{@errorName(err)}) catch {};
             return;
         };
+        defer parsed.deinit();
 
         const result = get_skill_tool.executeGetSkill(allocator, parsed.value) catch |err| blk: {
             self.logger.errFmt("Error executing get_skill: {s}", .{@errorName(err)}) catch {};
@@ -700,6 +696,7 @@ pub const TUIWorkflow = struct {
             send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name);
             return;
         };
+        defer resultParsed.deinit();
 
         const skill_result = resultParsed.value;
 
