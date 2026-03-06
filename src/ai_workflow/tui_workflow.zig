@@ -61,13 +61,16 @@ pub const StreamingContext = struct {
     session_id: []const u8 = "",
 };
 
-// Global cancellation check function that uses thread-local storage
+// DEPRECATED: Legacy global cancellation - use CancellationRegistry instead
+// Kept for backward compatibility during transition
 var g_cancelled_ptr: ?*std.atomic.Value(bool) = null;
 
+/// DEPRECATED: Use CancellationRegistry.register() instead
 pub fn setCancelledPtr(ptr: *std.atomic.Value(bool)) void {
     g_cancelled_ptr = ptr;
 }
 
+/// DEPRECATED: Use CancellationRegistry.isCancelled(session_id) instead
 pub fn isCancelled() bool {
     if (g_cancelled_ptr) |ptr| {
         return ptr.load(.seq_cst);
