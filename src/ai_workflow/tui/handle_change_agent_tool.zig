@@ -35,7 +35,7 @@ pub fn run(
     defer parsed.deinit();
 
     const agent_name = parsed.value.agent;
-    const agent_message = parsed.value.message;
+    // const agent_message = parsed.value.message;
     const new_agent_temperature = parsed.value.temperature;
     if (new_agent_temperature) |temperature| {
         agent_temperature.* = temperature;
@@ -46,33 +46,33 @@ pub fn run(
         isThinking.* = thinking;
     }
 
-    var agent_prompt: []const u8 = if (std.mem.eql(u8, agent_name, "GeneralAgent"))
-        prompt.GeneralAgent
-    else if (std.mem.eql(u8, agent_name, "ExplorationAgent"))
-        prompt.ExplorationAgent
-    else if (std.mem.eql(u8, agent_name, "PlanningAgent"))
-        prompt.PlanningAgent
-    else if (std.mem.eql(u8, agent_name, "ExecutingAgent"))
-        prompt.ExecutingAgent
-    else if (std.mem.eql(u8, agent_name, "KnowledgeAgent"))
-        prompt.KnowledgeAgent
-    else if (std.mem.eql(u8, agent_name, "ReviewAgent"))
-        prompt.ReviewAgent
-    else {
-        logger.warnFmt("change_agent_tool: unknown agent '{s}'", .{agent_name}) catch {};
-        return;
-    };
+    // var agent_prompt: []const u8 = if (std.mem.eql(u8, agent_name, "GeneralAgent"))
+    //     prompt.GeneralAgent
+    // else if (std.mem.eql(u8, agent_name, "ExplorationAgent"))
+    //     prompt.ExplorationAgent
+    // else if (std.mem.eql(u8, agent_name, "PlanningAgent"))
+    //     prompt.PlanningAgent
+    // else if (std.mem.eql(u8, agent_name, "ExecutingAgent"))
+    //     prompt.ExecutingAgent
+    // else if (std.mem.eql(u8, agent_name, "KnowledgeAgent"))
+    //     prompt.KnowledgeAgent
+    // else if (std.mem.eql(u8, agent_name, "ReviewAgent"))
+    //     prompt.ReviewAgent
+    // else {
+    //     logger.warnFmt("change_agent_tool: unknown agent '{s}'", .{agent_name}) catch {};
+    //     return;
+    // };
 
-    agent_prompt = prompt.agenticCodingWithCwd(allocator, cwd, agent_prompt, try get_tree_dir.run(allocator, cwd), "") catch |err| {
-        logger.errFmt("Failed to format agent prompt: {s}", .{@errorName(err)}) catch {};
-        return;
-    };
+    // agent_prompt = prompt.agenticCodingWithCwd(allocator, cwd, agent_prompt, try get_tree_dir.run(allocator, cwd), "") catch |err| {
+    //     logger.errFmt("Failed to format agent prompt: {s}", .{@errorName(err)}) catch {};
+    //     return;
+    // };
 
-    const msgPrompt = try std.fmt.allocPrint(
-        allocator,
-        "{s}\n\n{s}",
-        .{ agent_prompt, agent_message },
-    );
+    // const msgPrompt = try std.fmt.allocPrint(
+    //     allocator,
+    //     "{s}\n\n{s}",
+    //     .{ agent_prompt, agent_message },
+    // );
 
     const contentChangeAgent = try std.fmt.allocPrint(
         allocator,
@@ -98,20 +98,20 @@ pub fn run(
     current_agent.* = try parent_allocator.dupe(u8, agent_name);
 
     // 3. Replace system message only, keep all history
-    var system_replaced = false;
-    for (messages_list.items) |*msg| {
-        if (msg.role == .system) {
-            msg.content = msgPrompt;
-            system_replaced = true;
-            break;
-        }
-    }
-    if (!system_replaced) {
-        try messages_list.insert(allocator, 0, agent.AgentMessage{
-            .role = .system,
-            .content = msgPrompt,
-        });
-    }
+    // var system_replaced = false;
+    // for (messages_list.items) |*msg| {
+    //     if (msg.role == .system) {
+    //         msg.content = msgPrompt;
+    //         system_replaced = true;
+    //         break;
+    //     }
+    // }
+    // if (!system_replaced) {
+    //     try messages_list.insert(allocator, 0, agent.AgentMessage{
+    //         .role = .system,
+    //         .content = msgPrompt,
+    //     });
+    // }
 
     logger.infoFmt("Switched to agent: {s}", .{agent_name}) catch {};
 }

@@ -176,84 +176,131 @@ pub const bashTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "bash",
-        .description = "Execute a bash command and return stdout, stderr, exit_code, truncated, and timeout flags. " ++
-            "Optimized for precise, scoped CLI operations — fast text processing, file inspection, and structured data manipulation. " ++
-            "" ++
-            "PREFERRED TOOLS (use these by default): " ++
-            "`rg` — fast regex search across files (prefer over grep); " ++
-            "`grep -n` — line-numbered matches fallback; " ++
-            "`sed -n 'X,Yp'` — extract line ranges without reading whole file; " ++
-            "`awk` — field extraction and row filtering; " ++
-            "`jq` — JSON query/transform (never use sed/awk on JSON); " ++
-            "`yq` — YAML query/transform (never use sed/awk on YAML); " ++
-            "`stat` / `ls -lh` — file metadata without reading content; " ++
-            "`wc -l` / `du -sh` — size checks before any read. " ++
-            "" ++
-            "LANGUAGE-SPECIFIC FAST CHECKS (run before full build): " ++
-            "Zig: `zig ast-check <file>` — syntax check without full compilation; " ++
-            "Rust: `cargo check` — faster than `cargo build`; " ++
-            "Go: `go vet ./...` — fast static analysis. " ++
-            "" ++
-            "OUTPUT DISCIPLINE: " ++
-            "Always bound output. Pipe through `head -n N`, `tail -n N`, or `rg --max-count=N`. " ++
-            "Never emit unbounded streams. " ++
-            "Set max_output by command type: grep/sed/rg → 10000; builds/compiles → 50000; JSON dumps → up to 200000. " ++
-            "" ++
-            "BATCHING: " ++
-            "Plan all edits before executing. Group related sed -i changes into a single call when possible. " ++
-            "Use grep/rg to verify after edits — cheaper than sed -n reads. " ++
-            "" ++
-            "RULES (strictly enforced — never violate): " ++
-            "1. NO privilege escalation — never use sudo, su, doas, or pkexec. " ++
-            "2. NO full-file reads — use head/tail/sed ranges; always run `wc -l` first on unknown files. " ++
-            "3. NO unbounded output — every pipeline must have an explicit output cap. " ++
-            "4. NO sed/awk on structured data — use jq (JSON) or yq (YAML) exclusively. " ++
-            "5. NO blind recursion — avoid `find /`, `cat **/*`, or unscoped recursive globs on large trees; check `du -sh` first. " ++
-            "6. NO hanging commands — if stdin is required, provide stdin_data; otherwise stdin is closed immediately. " ++
-            "7. ALWAYS set cwd explicitly — never rely on an assumed working directory. " ++
-            "" ++
-            "WORKFLOW PATTERN: " ++
-            "Check size → scope the read → cap the output → parse structured data with the right tool. " ++
-            "For edits: rg to find line → sed -n to verify range → sed -i to edit → rg to confirm → ast-check before full build. " ++
-            "When in doubt, rg before cat.",
+        .description =
+        \\Execute a bash command. Returns stdout, stderr, exit_code, truncated, timeout flags.
+        \\
+        \\## EXPLORATION (strict order — do not skip steps)
+        \\  1. `du -sh <dir>`                                          — size gate first
+        \\  2. `tree -I 'node_modules|.git|dist|build|*.lock' --max-depth 3` — structure
+        \\  3. `rg -n <pattern> <path> --max-count 20`                 — targeted search
+        \\  4. `sed -n 'X,Yp' <file>`                                  — read only needed range
+        \\  NEVER: ls -laR, cat on unknown files, find without -maxdepth, unscoped globs
+        \\
+        \\## PREFERRED TOOLS
+        \\  `rg`        — regex search (always prefer over grep)
+        \\  `grep -n`   — line-numbered fallback only
+        \\  `sed -n`    — line range extraction only (never sed -i without rg confirm first)
+        \\  `jq`        — all JSON reads and writes (never sed/awk on JSON)
+        \\  `yq`        — all YAML reads and writes (never sed/awk on YAML)
+        \\  `wc -l`     — line count before reading any file
+        \\  `stat`      — file metadata (never cat for metadata)
+        \\  `awk`       — field/row filtering on plain text only
+        \\
+        \\## EDIT WORKFLOW (always follow this order)
+        \\  1. rg — find target line number
+        \\  2. sed -n 'X,Yp' — verify surrounding context
+        \\  3. sed -i — make the edit
+        \\  4. rg — confirm the change landed correctly
+        \\  5. ast-check / typecheck — verify no new errors introduced
+        \\  NEVER skip step 4 or 5. An unverified edit is a failed edit.
+        \\
+        \\## LANGUAGE CHECKS (run before any build)
+        \\  Zig:       `zig ast-check <file>`
+        \\  TypeScript:`tsc --noEmit 2>&1 | head -n 50`
+        \\  Rust:      `cargo check 2>&1 | head -n 100`
+        \\  Go:        `go vet ./... 2>&1 | head -n 50`
+        \\  Always check the SPECIFIC file edited, not the whole project, when possible.
+        \\
+        \\## ERROR HANDLING (critical — prevents loops)
+        \\  After a failed command:
+        \\  - Read the FULL error before acting
+        \\  - If the error points to a type/interface definition: read that file first
+        \\  - Never re-apply the same fix twice — if it failed once, change strategy
+        \\  - `as unknown as X` casts are never a valid fix for a type mismatch
+        \\  - If the same error appears after your fix: the problem is UPSTREAM
+        \\    → find and fix the source definition, not the call site
+        \\
+        \\## OUTPUT CAP (mandatory — no exceptions)
+        \\  rg/grep/sed   → head -n 50   (max_output: 10000)
+        \\  ast-check     → head -n 50   (max_output: 20000)
+        \\  builds        → head -n 200  (max_output: 50000)
+        \\  JSON dumps    → head -n 500  (max_output: 200000)
+        \\  If truncated=true: STOP — narrow scope with sed ranges, do NOT raise max_output
+        \\
+        \\## HARD RULES (violations break the task)
+        \\  1. `timeout <N>` is REQUIRED on every command — bare commands are rejected
+        \\  2. NO sudo / su / doas / pkexec
+        \\  3. NO full-file cat — use head / tail / sed -n ranges only
+        \\  4. NO unbounded output — every pipeline needs an explicit cap
+        \\  5. NO sed/awk on JSON or YAML — use jq/yq only
+        \\  6. NO find without -maxdepth and path exclusions
+        \\  7. NO sed -i without rg confirmation afterward
+        \\  8. NO re-applying an identical fix after it already failed
+        \\  9. ALWAYS set cwd explicitly — never assume working directory
+        ,
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "command",
                     .type = "string",
-                    .description = "Bash command to execute. " ++
-                        "REQUIRED FORMAT: `timeout <N> <cmd>` — bare commands are REJECTED. " ++
-                        "timeout N by operation type: " ++
-                        "reads/searches=10, ast-check=15, network=60, full builds=120. " ++
-                        "Examples: `timeout 10 rg -n 'foo' src/`, `timeout 120 zig build`, `timeout 60 curl ...`. " ++
-                        "Output MUST be bounded: pipe to `| head -n 100` or `| rg --max-count=50`. " ++
-                        "Prefer: rg, grep -n, sed -n 'X,Yp', awk, jq, stat, wc -l. " ++
-                        "Avoid: cat <largefile>, unscoped find, recursive globs without -maxdepth. " ++
-                        "Zig: run `timeout 15 zig ast-check <file>` before `timeout 120 zig build` to catch syntax errors first.",
+                    .description =
+                    \\REQUIRED format: `timeout <N> <cmd> | head -n <N>`
+                    \\
+                    \\Timeout by type:
+                    \\  reads/search = 10s
+                    \\  ast-check    = 15s
+                    \\  typecheck    = 30s
+                    \\  network      = 60s
+                    \\  builds       = 120s
+                    \\
+                    \\Output cap by type:
+                    \\  rg/grep/sed  = 50 lines
+                    \\  ast-check    = 50 lines
+                    \\  builds       = 200 lines
+                    \\  JSON         = 500 lines
+                    \\
+                    \\GOOD: `timeout 10 tree . -I 'node_modules|.git' --max-depth 3 | head -n 80`
+                    \\GOOD: `timeout 10 rg -n 'createSystemMessage' src/ --max-count 20 | head -n 50`
+                    \\GOOD: `timeout 10 sed -n '120,140p' src/store/messageStore.ts`
+                    \\GOOD: `timeout 10 wc -l src/types/index.ts`
+                    \\GOOD: `timeout 30 tsc --noEmit 2>&1 | head -n 50`
+                    \\
+                    \\BAD: `ls -laR`                         ← unbounded output
+                    \\BAD: `cat src/main.zig`                ← full file read
+                    \\BAD: `find . -name '*.ts'`             ← missing -maxdepth and filter
+                    \\BAD: `sed -i 's/x/y/g' file.ts`       ← edit without rg confirm after
+                    \\BAD: same fix command run twice        ← loop, change strategy instead
+                    ,
                 },
                 .{
                     .name = "cwd",
                     .type = "string",
-                    .description = "Absolute working directory for the command. REQUIRED — always set explicitly. " ++
-                        "Never assume the current directory. All relative paths in the command resolve from here.",
+                    .description =
+                    \\Absolute working directory. REQUIRED — always set explicitly.
+                    \\Never assume CWD. Verify with `pwd` if uncertain.
+                    ,
                 },
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description = "Max combined stdout+stderr in bytes. Default: 102400 (100KB). Max: 1048576 (1MB). " ++
-                        "If exceeded, output is truncated and truncated=true is set. " ++
-                        "Recommended by command type: " ++
-                        "grep/rg/sed reads → 10000; " ++
-                        "ast-check/vet → 20000; " ++
-                        "full builds (zig build, cargo build) → 50000; " ++
-                        "JSON/structured dumps → up to 200000.",
+                    .description =
+                    \\Max stdout+stderr bytes. Default: 10000. Max: 1048576.
+                    \\  rg/grep/sed  = 10000
+                    \\  ast-check    = 20000
+                    \\  builds       = 50000
+                    \\  JSON         = 200000
+                    \\If truncated=true: narrow your command scope with sed ranges.
+                    \\Do NOT raise this limit as a first response to truncation.
+                    ,
                 },
                 .{
                     .name = "stdin_data",
                     .type = "string",
-                    .description = "Optional data piped to the command's stdin. " ++
-                        "If omitted, stdin is closed immediately — do not run interactive or stdin-blocking commands without this.",
+                    .description =
+                    \\Stdin for the command. If omitted, stdin closes immediately.
+                    \\Never run interactive commands without providing this field.
+                    ,
                 },
             },
             .required = &.{ "command", "cwd" },

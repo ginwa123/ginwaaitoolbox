@@ -75,7 +75,6 @@ pub fn isCancelledWithContext(ctx: ?*anyopaque) bool {
     return false;
 }
 
-
 /// Callback for streaming chunks - sends each chunk to the client
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
@@ -137,7 +136,6 @@ pub const TUIWorkflow = struct {
     loop_detector: loop_detector.LoopDetector = .{},
     loaded_skills: std.ArrayList(LoadedSkill) = .{},
 
-
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger_mod.Logger);
         log_ptr.* = logger_mod.Logger.initColor(allocator, .{
@@ -198,8 +196,10 @@ pub const TUIWorkflow = struct {
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
             const skills = try self.buildSkillsContent(allocator);
+            self.logger.debugFmt("[SKILLS] Skills content: {s}", .{skills}) catch {};
+
             defer allocator.free(skills);
-            const initial_messages = try build_messages.run(allocator, self.cwd, try get_tree_dir.run(allocator, self.cwd), try get_messages.run(allocator, self.db, self.session_id), skills);
+            const initial_messages = try build_messages.run(allocator, self.cwd, "", try get_messages.run(allocator, self.db, self.session_id), skills);
 
             try messages_list.appendSlice(allocator, initial_messages);
 
@@ -610,10 +610,10 @@ pub const TUIWorkflow = struct {
 
     /// Build system message content with loaded skills injected
     fn buildSystemMessageWithSkills(self: *TUIWorkflow, allocator: std.mem.Allocator, agent_prompt: []const u8) ![]const u8 {
-        const treeDir = try get_tree_dir.run(allocator, self.cwd);
+        // const treeDir = try get_tree_dir.run(allocator, self.cwd);
 
         // Build base system content without skills
-        const baseContent = try prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, treeDir, "");
+        const baseContent = try prompt.agenticCodingWithCwd(allocator, self.cwd, agent_prompt, "", "");
 
         // If no skills loaded, return base content
         if (self.loaded_skills.items.len == 0) {

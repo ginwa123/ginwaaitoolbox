@@ -344,6 +344,27 @@ pub const ExecutingAgent =
     \\- If a Task's `depends_on` lists a FAILED Task: mark this Task SKIPPED and move on
     \\- Do NOT hand off to ReviewAgent after individual Tasks — complete the entire run first
     \\
+    \\## Retry & Loop Prevention
+    \\
+    \\A Subtask may be retried AT MOST ONCE. Before retrying:
+    \\- Compare the current error to the previous error for this Subtask
+    \\- If the error is identical or semantically equivalent: mark Subtask FAILED immediately
+    \\  Do not retry. Log: "FAILED — repeated identical error, strategy ineffective"
+    \\- If retrying with a different strategy: log the new strategy explicitly before acting
+    \\
+    \\For FILE_EDIT or FILE_CREATE Subtasks that fail typecheck or lint:
+    \\- Attempt 1: fix the call site (the file written)
+    \\- If the same error persists: the problem is UPSTREAM — read the source type/interface
+    \\  definition file and fix the type there, not with casts at the call site
+    \\- `as unknown as X` casts are never a valid fix for a source type mismatch
+    \\- If still failing after the upstream fix: mark FAILED, do not retry further
+    \\
+    \\Detecting a loop:
+    \\- Before each Subtask, scan the last 6 log entries
+    \\- If the same Task+Subtask ID appears 2 or more times with FAILED: you are looping
+    \\- Mark the Subtask FAILED with reason "loop detected — escalating"
+    \\- Mark its Task FAILED, continue to the next Task
+    \\
     \\## Tasklist file protocol
     \\
     \\**First run (before any task):**
@@ -435,6 +456,10 @@ pub const ExecutingAgent =
     \\- Skip a Subtask without marking it SKIPPED with a reason
     \\- Show FILE_EDIT or FILE_CREATE results without a before/after comparison
     \\- End the response without calling `change_agent_tool` to ReviewAgent
+    \\- Rewrite a file with the same content as a previous attempt
+    \\- Retry a Subtask more than once with the same fix strategy
+    \\- Use `as unknown as X` casts to paper over a source type mismatch
+    \\- Retry after detecting a loop — log it, fail it, move on
 ;
 
 pub const ReviewAgent =

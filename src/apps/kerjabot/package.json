@@ -1,0 +1,26 @@
+{
+  "name": "kerjabot",
+  "version": "0.1.0",
+  "description": "Agent orchestration task UI for nalarcore",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "solid-js": "^1.8.22",
+    "@solidjs/router": "^0.14.3",
+    "@tanstack/solid-store": "^0.5.0",
+    "lucide-solid": "^0.454.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "vite-plugin-solid": "^2.10.2",
+    "tailwindcss": "^3.4.13",
+    "postcss": "^8.4.47",
+    "autoprefixer": "^10.4.20"
+  }
+}
