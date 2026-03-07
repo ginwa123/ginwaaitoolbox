@@ -98,18 +98,15 @@ pub fn run(
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
                 handle_bash_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling bash tool: {s}", .{@errorName(err)}) catch {};
-                    continue;
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
                 tui_workflow.handleListSkills(allocator, messages_list, tool_call);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
                 _ = try tui_workflow.handleGetSkill(allocator, messages_list, tool_call);
-                continue;
             }
         }
         logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};

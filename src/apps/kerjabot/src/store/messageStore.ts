@@ -49,7 +49,8 @@ const streamingMessage = createMemo(() => {
 const addUserMessage = (content: string, sessionId: string): UserMessage => {
   const message = createUserMessage(content, sessionId);
   const current = messages();
-  setMessages([...current, message as Message]);
+  const newMessages: Message[] = [...current, message as Message];
+  setMessages(newMessages);
   return message;
 };
 
@@ -57,7 +58,8 @@ const startAssistantMessage = (sessionId: string): AssistantMessage => {
   const message = createAssistantMessage('', sessionId);
   batch(() => {
     const current = messages();
-    setMessages([...current, message as Message]);
+    const newMessages: Message[] = [...current, message as Message];
+    setMessages(newMessages);
     setStreamingMessageId(message.id);
     setIsStreaming(true);
   });
@@ -69,9 +71,12 @@ const appendToStreamingMessage = (chunk: MessageStreamChunk): void => {
   if (!streamId) return;
 
   const current = messages();
-  const updated = current.map((m) => {
-    if (m.id !== streamId || m.role !== Role.Assistant) return m;
-
+  const updated: Message[] = [];
+  for (const m of current) {
+    if (m.id !== streamId || m.role !== Role.Assistant) {
+      updated.push(m);
+      continue;
+    }
     const assistantMsg = m as AssistantMessage;
     const updatedMsg: AssistantMessage = {
       ...assistantMsg,
@@ -85,8 +90,8 @@ const appendToStreamingMessage = (chunk: MessageStreamChunk): void => {
         ? [...(assistantMsg.toolCalls ?? []), chunk.toolCall]
         : assistantMsg.toolCalls,
     };
-    return updatedMsg as Message;
-  });
+    updated.push(updatedMsg as Message);
+  }
   setMessages(updated);
 
   if (chunk.isComplete) {
@@ -104,7 +109,8 @@ const addSystemMessage = (
 ): void => {
   const message = createSystemMessage(content, sessionId, level);
   const current = messages();
-  setMessages([...current, message as Message]);
+  const newMessages: Message[] = [...current, message as Message];
+  setMessages(newMessages);
 };
 
 const addToolMessage = (
@@ -115,7 +121,8 @@ const addToolMessage = (
 ): void => {
   const message = createToolMessage(toolCallId, toolName, result, sessionId);
   const current = messages();
-  setMessages([...current, message as Message]);
+  const newMessages: Message[] = [...current, message as Message];
+  setMessages(newMessages);
 };
 
 const clearSessionMessages = (sessionId: string): void => {
@@ -123,12 +130,10 @@ const clearSessionMessages = (sessionId: string): void => {
 };
 
 const updateMessage = (id: string, updates: Partial<Message>): void => {
-  setMessages((prev) =>
-    prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
+  setMessages((prev: Message[]) =>
+    prev.map((m): Message => (m.id === id ? ({ ...m, ...updates } as Message) : m))
   );
-};
-
-const removeMessage = (id: string): void => {
+};const removeMessage = (id: string): void => {
   setMessages((prev) => prev.filter((m) => m.id !== id));
 };
 

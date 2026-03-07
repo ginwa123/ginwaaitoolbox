@@ -3,14 +3,16 @@
  */
 
 import type { Component } from 'solid-js';
-import { Router, useNavigate } from '@solidjs/router';
+import { Router, useNavigate, useLocation } from '@solidjs/router';
 import { AppLayout, Sidebar, Header } from '~/components/layout';
 import { sessionStore } from '~/store/sessionStore';
 import { getAgentByType } from '~/services';
 import { routes } from './routes';
 
-const AppContent: Component = () => {
+// Wrapper component that provides the layout with navigation
+const LayoutWrapper: Component = () => {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const activeSession = () => sessionStore.activeSession();
   const sessionSummaries = () => sessionStore.sessionSummaries();
@@ -32,6 +34,29 @@ const AppContent: Component = () => {
 
   const handleOpenSettings = () => {
     navigate('/settings');
+  };
+
+  // Get the current route component to render
+  const CurrentRoute = () => {
+    const path = location.pathname;
+    
+    // Find matching route
+    for (const route of routes) {
+      if (route.path === path) {
+        const RouteComponent = route.component as Component;
+        return <RouteComponent />;
+      }
+      // Handle dynamic routes like /chat/:id
+      if (route.path.includes(':')) {
+        const routePattern = route.path.replace(/:\w+/g, '[^/]+');
+        const regex = new RegExp(`^${routePattern}$`);
+        if (regex.test(path)) {
+          const RouteComponent = route.component as Component;
+          return <RouteComponent />;
+        }
+      }
+    }
+    return null;
   };
 
   return (
@@ -56,9 +81,7 @@ const AppContent: Component = () => {
         />
       }
     >
-      <Router>
-        {routes}
-      </Router>
+      <CurrentRoute />
     </AppLayout>
   );
 };
@@ -67,7 +90,7 @@ export const App: Component = () => {
   return (
     <div class="h-screen w-full bg-gray-50 dark:bg-gray-900">
       <Router>
-        <AppContent />
+        <LayoutWrapper />
       </Router>
     </div>
   );
