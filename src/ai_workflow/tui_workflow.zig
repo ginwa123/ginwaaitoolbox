@@ -79,14 +79,15 @@ pub fn isCancelled() bool {
 }
 
 /// Context-aware cancellation check for use with callStreaming
-/// ctx should be a pointer to the session_id string
+/// ctx should be a pointer to StreamingContext (same as stream_callback receives)
 pub fn isCancelledWithContext(ctx: ?*anyopaque) bool {
     if (ctx == null) return false;
-    
-    const session_id_ptr = @as(?*const []const u8, @ptrCast(@alignCast(ctx))) orelse return false;
-    
+
+    // ctx is actually *StreamingContext, not *[]const u8
+    const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return false;
+
     if (cancellation_registry.getGlobalRegistry()) |registry| {
-        return registry.isCancelled(session_id_ptr.*);
+        return registry.isCancelled(stream_ctx.session_id);
     }
     return false;
 }

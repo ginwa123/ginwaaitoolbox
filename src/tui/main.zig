@@ -577,6 +577,7 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
                 const n = std.posix.read(app.socket_fd, &buf) catch break;
                 if (n == 0) {
+                    std.debug.print("socket closed\n", .{});
                     break;
                 }
                 try buffer.appendSlice(app.allocator, buf[0..n]);
