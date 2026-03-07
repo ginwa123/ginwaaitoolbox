@@ -9,7 +9,7 @@ test "send_error with valid inputs" {
     const allocator = std.testing.allocator;
     
     // Create a minimal logger for testing
-    var logger = @import("../modules/logger/logger.zig").Logger.init(allocator, .{
+    var logger = @import("../../modules/logger/logger.zig").Logger.init(allocator, .{
         .min_level = .trace,
         .include_timestamp = false,
         .include_request_id = false,
@@ -26,7 +26,7 @@ test "send_error with valid inputs" {
 test "send_tool_result" {
     const allocator = std.testing.allocator;
     
-    var logger = @import("../modules/logger/logger.zig").Logger.init(allocator, .{
+    var logger = @import("../../modules/logger/logger.zig").Logger.init(allocator, .{
         .min_level = .trace,
         .include_timestamp = false,
         .include_request_id = false,
@@ -42,7 +42,7 @@ test "send_tool_result" {
 test "send_user_choice" {
     const allocator = std.testing.allocator;
     
-    var logger = @import("../modules/logger/logger.zig").Logger.init(allocator, .{
+    var logger = @import("../../modules/logger/logger.zig").Logger.init(allocator, .{
         .min_level = .trace,
         .include_timestamp = false,
         .include_request_id = false,

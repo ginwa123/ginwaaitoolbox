@@ -1,5 +1,5 @@
 const std = @import("std");
-const tree1_mod = @import("tree1");
+const tree1_mod = @import("nalarcore");
 const tui_workflow = @import("tui_workflow.zig");
 const logger_mod = tree1_mod.logger;
 

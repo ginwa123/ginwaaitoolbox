@@ -1,6 +1,6 @@
 const std = @import("std");
 const TUIHistory = @import("models.zig").TUIHistory;
-const tree1_mod = @import("tree1");
+const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const json = std.json;
 

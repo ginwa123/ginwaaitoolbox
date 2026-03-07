@@ -1,5 +1,5 @@
 const std = @import("std");
-const tree1_mod = @import("tree1");
+const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const get_messages = @import("get_messages.zig");
 const sqlite = tree1_mod.sqlite;

@@ -1,7 +1,7 @@
 const std = @import("std");
 const tui_workflow = @import("tui_workflow.zig");
 const TUIHistory = @import("models.zig").TUIHistory;
-const tree1_mod = @import("tree1");
+const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
 
 pub fn run(

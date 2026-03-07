@@ -1,7 +1,7 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
 
-// Module exports - these are available via @import("tree1")
+// Module exports - these are available via @import("nalarcore")
 pub const agent = @import("modules/agent/agent.zig");
 pub const prompt = @import("modules/agent/prompt.zig");
 pub const sqlite = @import("modules/databases/sqlite/sqlite.zig");
@@ -13,8 +13,9 @@ pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
 pub const ipc = @import("modules/ipc/ipc.zig");
 pub const logger = @import("modules/logger/logger.zig");
 pub const migrations = @import("modules/databases/sqlite/migrations.zig");
-pub const ai_workflow = @import("ai_workflow/tui_workflow.zig");
-pub const ai_workflow_models = @import("ai_workflow/models.zig");
+pub const ai_workflow = @import("ai_workflow/tui/tui_workflow.zig");
+pub const session_monitor = @import("modules/session/session_monitor.zig");
+pub const ai_workflow_models = @import("ai_workflow/tui/models.zig");
 pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
 pub const skills = @import("modules/agent/tools/skills.zig");
 pub const config = @import("modules/config/config.zig");
@@ -43,23 +44,24 @@ test "basic add functionality" {
 
 test {
     // Import all ai_workflow modules to ensure their tests run
-    _ = @import("ai_workflow/build_messages_for_agent.zig");
-    _ = @import("ai_workflow/cancellation_registry.zig");
-    _ = @import("ai_workflow/get_current_agent_by_session_id.zig");
-    _ = @import("ai_workflow/get_messages.zig");
-    _ = @import("ai_workflow/get_session_by_dir.zig");
-    _ = @import("ai_workflow/get_tree_dir.zig");
-    _ = @import("ai_workflow/handle_bash_tool.zig");
-    _ = @import("ai_workflow/handle_change_agent_tool.zig");
-    _ = @import("ai_workflow/handle_content_filter.zig");
-    _ = @import("ai_workflow/handle_tool.zig");
-    _ = @import("ai_workflow/mark_message_not_for_llm.zig");
-    _ = @import("ai_workflow/models.zig");
-    _ = @import("ai_workflow/run_agentic_loop.zig");
-    _ = @import("ai_workflow/save_message.zig");
-    _ = @import("ai_workflow/send_error.zig");
-    _ = @import("ai_workflow/send_response.zig");
-    _ = @import("ai_workflow/send_tool_result.zig");
-    _ = @import("ai_workflow/transform_llm_history_to_agent_messages.zig");
-    _ = @import("ai_workflow/tui_workflow.zig");
+    _ = @import("ai_workflow/tui/build_messages_for_agent.zig");
+    _ = @import("modules/session/cancellation_registry.zig");
+    _ = @import("ai_workflow/tui/get_current_agent_by_session_id.zig");
+    _ = @import("ai_workflow/tui/get_messages.zig");
+    _ = @import("ai_workflow/tui/get_session_by_dir.zig");
+    _ = @import("ai_workflow/tui/get_tree_dir.zig");
+    _ = @import("ai_workflow/tui/handle_bash_tool.zig");
+    _ = @import("ai_workflow/tui/handle_change_agent_tool.zig");
+    _ = @import("ai_workflow/tui/handle_content_filter.zig");
+    _ = @import("ai_workflow/tui/handle_tool.zig");
+    _ = @import("ai_workflow/tui/mark_message_not_for_llm.zig");
+    _ = @import("ai_workflow/tui/models.zig");
+    _ = @import("ai_workflow/tui/run_agentic_loop.zig");
+    _ = @import("ai_workflow/tui/save_message.zig");
+    _ = @import("ai_workflow/tui/send_error.zig");
+    _ = @import("ai_workflow/tui/send_response.zig");
+    _ = @import("ai_workflow/tui/send_tool_result.zig");
+    _ = @import("ai_workflow/tui/transform_llm_history_to_agent_messages.zig");
+    _ = @import("ai_workflow/tui/tui_workflow.zig");
+    _ = @import("modules/session/session_monitor.zig");
 }

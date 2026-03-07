@@ -1,5 +1,5 @@
 const std = @import("std");
-const tree1_mod = @import("tree1");
+const tree1_mod = @import("nalarcore");
 const logger_mod = tree1_mod.logger;
 
 pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logger_mod.Logger, result: []const u8, tool_call_id: []const u8, tool_name: []const u8, command: ?[]const u8) void {

@@ -7,7 +7,7 @@ const ToolProperty = @import("tools/models.zig").ToolProperty;
 const ToolParameters = @import("tools/models.zig").ToolParameters;
 const AgentToolFunction = @import("tools/models.zig").AgentToolFunction;
 const AgentTool = @import("tools/models.zig").AgentTool;
-const log = @import("tree1").logger;
+const log = @import("nalarcore").logger;
 
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 

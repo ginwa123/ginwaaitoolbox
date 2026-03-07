@@ -1,5 +1,5 @@
 const std = @import("std");
-const config = @import("tree1").config;
+const config = @import("nalarcore").config;
 
 // Helper to create unique temp file paths
 fn getTempPath(comptime suffix: []const u8) []const u8 {

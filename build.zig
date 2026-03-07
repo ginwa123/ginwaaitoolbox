@@ -14,7 +14,7 @@ fn createPlatformExe(
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "tree1", .module = mod }},
+            .imports = &.{.{ .name = "nalarcore", .module = mod }},
         }),
     });
     exe.linkSystemLibrary("sqlite3");
@@ -26,22 +26,22 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const mod = b.addModule("tree1", .{
+    const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
 
-    mod.addImport("tree1", mod);
+    mod.addImport("nalarcore", mod);
     mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
 
     const exe = b.addExecutable(.{
-        .name = "tree1",
+        .name = "nalarcore",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "tree1", .module = mod },
+                .{ .name = "nalarcore", .module = mod },
             },
         }),
     });
@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
 
     // TUI executable
     const tui_exe = b.addExecutable(.{
-        .name = "tree1-tui",
+        .name = "nalarcore-tui",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/tui/main.zig"),
             .target = target,
@@ -97,7 +97,7 @@ pub fn build(b: *std.Build) void {
         .os_tag = .linux,
         .abi = .gnu,
     });
-    const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "tree1-linux-x86_64");
+    const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "nalarcore-linux-x86_64");
     linux_exe.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
     const install_linux = b.addInstallArtifact(linux_exe, .{});
@@ -109,7 +109,7 @@ pub fn build(b: *std.Build) void {
         .os_tag = .windows,
         .abi = .gnu,
     });
-    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "tree1-windows-x86_64.exe");
+    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64.exe");
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
@@ -118,7 +118,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86_64,
         .os_tag = .macos,
     });
-    const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "tree1-macos-x86_64");
+    const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "nalarcore-macos-x86_64");
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -127,7 +127,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .aarch64,
         .os_tag = .macos,
     });
-    const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "tree1-macos-aarch64");
+    const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
 

@@ -1,5 +1,5 @@
 const std = @import("std");
-const tree1 = @import("tree1");
+const tree1 = @import("nalarcore");
 const sqlite = tree1.sqlite;
 const SessionInfo = @import("tui_workflow.zig").SessionInfo;
 

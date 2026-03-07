@@ -83,12 +83,18 @@ const App = struct {
 
     pub fn init(allocator: std.mem.Allocator, verbose: bool) !App {
         try spawnBackend(verbose);
+        std.log.info("Spawned backend", .{});
         try waitForSocket(10000);
+        std.log.info("Waiting for socket", .{});
 
         const socket_fd = try connectToSocket();
+        std.log.info("Connected to socket", .{});
         const original_termios = try enableRawMode();
+        std.log.info("Raw mode enabled", .{});
         const session_id = try std.fmt.allocPrint(allocator, "session_{}", .{std.time.timestamp()});
         const kb = try keybindings.loadKeybindings(allocator);
+
+        std.log.info("Session ID: {s}", .{session_id});
 
         return App{
             .socket_fd = socket_fd,

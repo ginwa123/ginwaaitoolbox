@@ -1,6 +1,6 @@
 const std = @import("std");
 const json = std.json;
-const tree1_mod = @import("tree1");
+const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const prompt = tree1_mod.prompt;
 const context = @import("models.zig").ContextIPCTui;
@@ -33,7 +33,7 @@ const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 
 const handle_content_filter = @import("handle_content_filter.zig");
-pub const cancellation_registry = @import("cancellation_registry.zig");
+pub const cancellation_registry = @import("../../modules/session/cancellation_registry.zig");
 const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -60,23 +60,6 @@ pub const StreamingContext = struct {
     chunk_index: usize = 0,
     session_id: []const u8 = "",
 };
-
-// DEPRECATED: Legacy global cancellation - use CancellationRegistry instead
-// Kept for backward compatibility during transition
-var g_cancelled_ptr: ?*std.atomic.Value(bool) = null;
-
-/// DEPRECATED: Use CancellationRegistry.register() instead
-pub fn setCancelledPtr(ptr: *std.atomic.Value(bool)) void {
-    g_cancelled_ptr = ptr;
-}
-
-/// DEPRECATED: Use CancellationRegistry.isCancelled(session_id) instead
-pub fn isCancelled() bool {
-    if (g_cancelled_ptr) |ptr| {
-        return ptr.load(.seq_cst);
-    }
-    return false;
-}
 
 /// Context-aware cancellation check for use with callStreaming
 /// ctx should be a pointer to StreamingContext (same as stream_callback receives)

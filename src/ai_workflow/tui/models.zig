@@ -1,5 +1,5 @@
-const sqlite = @import("tree1").sqlite;
-const config = @import("tree1").config;
+const sqlite = @import("nalarcore").sqlite;
+const config = @import("nalarcore").config;
 const std = @import("std");
 
 pub const ContextIPCTui = struct {

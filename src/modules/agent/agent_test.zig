@@ -1,18 +1,18 @@
 const std = @import("std");
 const json = std.json;
-const bashTool = @import("tree1").bash_tool.bashTool;
-const bashMod = @import("tree1").bash_tool;
-const BashInput = @import("tree1").tool_models.BashInput;
-const ToolProperty = @import("tree1").tool_models.ToolProperty;
-const ToolParameters = @import("tree1").tool_models.ToolParameters;
-const AgentToolFunction = @import("tree1").tool_models.AgentToolFunction;
-const AgentTool = @import("tree1").tool_models.AgentTool;
+const bashTool = @import("nalarcore").bash_tool.bashTool;
+const bashMod = @import("nalarcore").bash_tool;
+const BashInput = @import("nalarcore").tool_models.BashInput;
+const ToolProperty = @import("nalarcore").tool_models.ToolProperty;
+const ToolParameters = @import("nalarcore").tool_models.ToolParameters;
+const AgentToolFunction = @import("nalarcore").tool_models.AgentToolFunction;
+const AgentTool = @import("nalarcore").tool_models.AgentTool;
 
-const Agent = @import("tree1").agent.Agent;
-const logger = @import("tree1").logger;
-const AgentCall = @import("tree1").agent.AgentCall;
-const AgentMessage = @import("tree1").agent.AgentMessage;
-const ToolCall = @import("tree1").agent.ToolCall;
+const Agent = @import("nalarcore").agent.Agent;
+const logger = @import("nalarcore").logger;
+const AgentCall = @import("nalarcore").agent.AgentCall;
+const AgentMessage = @import("nalarcore").agent.AgentMessage;
+const ToolCall = @import("nalarcore").agent.ToolCall;
 
 /// Get environment variable or return default value (caller owns the memory)
 fn getEnvOrDefault(allocator: std.mem.Allocator, key: []const u8, default: []const u8) ![]const u8 {

@@ -1,5 +1,5 @@
 const std = @import("std");
-const tree1_mod = @import("tree1");
+const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const prompt = tree1_mod.prompt;
 const change_agent_tool = tree1_mod.change_agent_tool;

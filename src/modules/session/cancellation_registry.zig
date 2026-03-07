@@ -95,6 +95,20 @@ pub const CancellationRegistry = struct {
         
         return self.sessions.contains(session_id);
     }
+    /// Check if any sessions are registered
+    pub fn hasSessions(self: *Self) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.sessions.count() > 0;
+    }
+
+    /// Get the number of registered sessions
+    pub fn sessionCount(self: *Self) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.sessions.count();
+    }
+
     
     /// Get a direct pointer to the atomic for a session (for TUIWorkflow to store)
     /// Caller must ensure session is registered

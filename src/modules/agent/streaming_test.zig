@@ -1,6 +1,6 @@
 const std = @import("std");
-const agent = @import("tree1").agent;
-const logger = @import("tree1").logger;
+const agent = @import("nalarcore").agent;
+const logger = @import("nalarcore").logger;
 
 test "StreamingAggregator - accumulate content chunks" {
     const allocator = std.testing.allocator;

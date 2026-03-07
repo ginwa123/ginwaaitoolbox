@@ -64,3 +64,31 @@ test "CancellationRegistry can unregister session" {
     registry.unregister(session_id);
     try std.testing.expect(!registry.isRegistered(session_id));
 }
+
+test "CancellationRegistry hasSessions returns false when empty" {
+    const allocator = std.testing.allocator;
+    var registry = cancellation_registry.CancellationRegistry.init(allocator);
+    defer registry.deinit();
+    try std.testing.expect(!registry.hasSessions());
+}
+
+test "CancellationRegistry hasSessions returns true when session registered" {
+    const allocator = std.testing.allocator;
+    var registry = cancellation_registry.CancellationRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.register("session-1");
+    try std.testing.expect(registry.hasSessions());
+}
+
+test "CancellationRegistry sessionCount returns correct count" {
+    const allocator = std.testing.allocator;
+    var registry = cancellation_registry.CancellationRegistry.init(allocator);
+    defer registry.deinit();
+    try std.testing.expectEqual(@as(usize, 0), registry.sessionCount());
+    try registry.register("session-1");
+    try std.testing.expectEqual(@as(usize, 1), registry.sessionCount());
+    try registry.register("session-2");
+    try std.testing.expectEqual(@as(usize, 2), registry.sessionCount());
+    registry.unregister("session-1");
+    try std.testing.expectEqual(@as(usize, 1), registry.sessionCount());
+}

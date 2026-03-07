@@ -1,9 +1,10 @@
 const std = @import("std");
-const tree1 = @import("tree1");
+const tree1 = @import("nalarcore");
 const agentMod = tree1.agent;
 const ipc = tree1.ipc;
 const agent = tree1.agent;
 const ai_workflow = tree1.ai_workflow;
+const session_monitor = tree1.session_monitor;
 const tui_workflow = tree1.ai_workflow;
 const ai_workflow_mod = tree1.ai_workflow_models;
 const sqlite = tree1.sqlite;
@@ -91,7 +92,6 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !IPCMessage 
 }
 
 fn killExistingProcess() void {
-    const process_name = "zigginagentic";
     const self_pid = std.c.getpid();
 
     var proc_dir = std.fs.openDirAbsolute("/proc", .{
@@ -115,9 +115,18 @@ fn killExistingProcess() void {
         const cmdline = cmdline_file.readToEndAlloc(std.heap.page_allocator, 4096) catch continue;
         defer std.heap.page_allocator.free(cmdline);
 
-        if (std.mem.indexOf(u8, cmdline, process_name) != null) {
-            std.debug.print("Killing existing process {d}\n", .{pid_num});
-            _ = std.c.kill(pid_num, 15);
+        // Check if this is the backend process (not the TUI)
+        // The cmdline format is typically: "/path/to/zigginagentic\0..."
+        // We want to match "zigginagentic" but NOT "zigginagentic-tui"
+        const cmdline_str = std.mem.sliceTo(cmdline, 0);
+        if (std.mem.endsWith(u8, cmdline_str, "zigginagentic") or
+            std.mem.indexOf(u8, cmdline_str, "/zigginagentic") != null)
+        {
+            // Double-check it's not the TUI by looking for "-tui" suffix
+            if (std.mem.indexOf(u8, cmdline_str, "zigginagentic-tui") == null) {
+                std.debug.print("Killing existing backend process {d}\n", .{pid_num});
+                _ = std.c.kill(pid_num, 15);
+            }
         }
     }
 }
@@ -237,6 +246,13 @@ pub fn main() !void {
     // Initialize global cancellation registry
     ai_workflow.cancellation_registry.initGlobalRegistry(parentAllocator);
     defer ai_workflow.cancellation_registry.deinitGlobalRegistry();
+
+    // Spawn session monitor to exit if no active sessions
+    var monitor = session_monitor.SessionMonitor.spawn() catch |err| {
+        std.log.err("Failed to spawn session monitor: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer monitor.stop();
 
     var server = ipc.IpcServer.init(parentAllocator, ctxParent);
 

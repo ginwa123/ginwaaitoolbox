@@ -1,5 +1,5 @@
 const std = @import("std");
-const tree1_mod = @import("tree1");
+const tree1_mod = @import("nalarcore");
 const tool_models = tree1_mod.tool_models;
 const bash_tool = tree1_mod.bash_tool;
 const bash_helper = tree1_mod.helperTool;

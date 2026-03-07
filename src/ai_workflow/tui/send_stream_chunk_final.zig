@@ -1,5 +1,5 @@
 const std = @import("std");
-const tree1 = @import("tree1");
+const tree1 = @import("nalarcore");
 const agent = tree1.agent;
 
 pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, index: usize, usage: ?agent.Usage) void {
