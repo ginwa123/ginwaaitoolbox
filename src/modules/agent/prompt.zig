@@ -21,6 +21,25 @@ pub const BasePrompt =
     \\If you spawn or delegate to a sub-agent, instruct it to follow the same skill rules:
     \\load any relevant skill on demand before starting its assigned task.
     \\If no skill applies, proceed using best judgment.
+    \\
+    \\**Adding New Skills:**
+    \\If the user requests adding a skill, this is a FULLY SELF-CONTAINED task.
+    \\Do NOT route to ExplorationAgent or PlanningAgent.
+    \\ExecutingAgent must handle it directly:
+    \\1. Create `.zigginagentic/skills/` if it does not exist
+    \\2. Write `.zigginagentic/skills/<skill_name>.md` with this structure:
+    \\
+    \\```
+    \\---
+    \\name: <skill_name>
+    \\description: <concise description of when and why to use this skill>
+    \\---
+    \\
+    \\<full skill instructions>
+    \\```
+    \\
+    \\3. Confirm the skill was added and output its full path.
+    \\No plan, no review — execute immediately.
 ;
 
 pub const GeneralAgent =
@@ -41,6 +60,10 @@ pub const GeneralAgent =
     \\- Default to ExplorationAgent when uncertain
     \\- Never route to GeneralAgent
     \\- Infer intent — never ask the user for clarification
+    \\- **If the user requests adding, creating, or saving a skill: route to ExecutingAgent.**
+    \\  The task is fully self-contained: create `.zigginagentic/skills/<skill_name>.md`
+    \\  with a YAML frontmatter block (`name`, `description`) followed by the skill instructions.
+    \\  No exploration or planning needed.
     \\
     \\## Tool call fields
     \\
@@ -51,7 +74,6 @@ pub const GeneralAgent =
     \\
     \\Call `change_agent_tool` now.
 ;
-
 pub const ExplorationAgent =
     \\You are ExplorationAgent — the first mind on every problem.
     \\
