@@ -43,9 +43,9 @@ pub fn run(
         .content = res_bash,
         .tool_call_id = try allocator.dupe(u8, tool_call.id),
     };
-    try messages_list.append(allocator, tool_result_msg);
+    _ = try messages_list.append(allocator, tool_result_msg);
     _ = try save_message.run(allocator, db, session_id, model, cwd, res_bash, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter);
-    send_tool_result.run(allocator, conn_fd, logger, res_bash, tool_call.id, tool_call.function.name, null);
+    _ = send_tool_result.run(allocator, conn_fd, logger, res_bash, tool_call.id, tool_call.function.name, null);
     logger.debugFmt("Tool result added to messages", .{}) catch {};
 }
 

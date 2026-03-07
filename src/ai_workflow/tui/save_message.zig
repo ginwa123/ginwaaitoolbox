@@ -30,6 +30,8 @@ pub fn run(
 ) !void {
     const id = try std.fmt.allocPrint(allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
     defer allocator.free(id);
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.timestamp()});
+    defer allocator.free(created_at);
 
 
     var contentStr = content orelse "";
@@ -58,7 +60,7 @@ pub fn run(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)";
 
     const copy_session_id = try allocator.dupe(u8, session_id);
     defer allocator.free(copy_session_id);
@@ -82,7 +84,7 @@ pub fn run(
     defer allocator.free(copy_session_name);
     const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{loop_index});
     defer allocator.free(loop_index_str);
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, created_at };
 
     try db.exec(allocator, sql, sqlArgs);
 }

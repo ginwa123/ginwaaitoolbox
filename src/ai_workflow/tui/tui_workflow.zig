@@ -221,9 +221,8 @@ pub const TUIWorkflow = struct {
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, "user_choice");
+                    _ = send_response.run(allocator, self.conn_fd, self.logger, res_dynamic_agent, "user_choice");
                     _ = try save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter);
-                    // _ = try send_user_choice.run(allocator, self.conn_fd, self.logger);
                     self.logger.infoFmt("FINISH REASON STOPPP", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
@@ -400,9 +399,11 @@ pub const TUIWorkflow = struct {
         // Save the compacted summary to the database with is_feed_to_llm = 1
         const id = try std.fmt.allocPrint(allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
         defer allocator.free(id);
+        const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.timestamp()});
+        defer allocator.free(created_at);
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)";
-        try self.db.exec(allocator, sql, &.{ id, self.session_id, self.model, summary_content, "stop", "user", "", "", self.cwd, "GeneralAgent", "", "0" });
+        const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)";
+        try self.db.exec(allocator, sql, &.{ id, self.session_id, self.model, summary_content, "stop", "user", "", "", self.cwd, "GeneralAgent", "", "0", created_at });
 
         // Build new in-memory message list: system message + compacted summary
         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;
