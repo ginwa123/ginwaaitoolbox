@@ -9,7 +9,7 @@ test "TUIHistory struct creation and field access" {
         .id = try allocator.dupe(u8, "test-id-123"),
         .session_id = try allocator.dupe(u8, "session-456"),
         .model = try allocator.dupe(u8, "gpt-4"),
-        .created = try allocator.dupe(u8, "2024-01-01T00:00:00Z"),
+        .created_at = try allocator.dupe(u8, "2024-01-01T00:00:00Z"),
         .response_content = try allocator.dupe(u8, "Test response content"),
         .finish_reason = try allocator.dupe(u8, "stop"),
         .role = try allocator.dupe(u8, "assistant"),
@@ -25,7 +25,7 @@ test "TUIHistory struct creation and field access" {
     try std.testing.expectEqualStrings("test-id-123", history.id);
     try std.testing.expectEqualStrings("session-456", history.session_id);
     try std.testing.expectEqualStrings("gpt-4", history.model);
-    try std.testing.expectEqualStrings("2024-01-01T00:00:00Z", history.created);
+    try std.testing.expectEqualStrings("2024-01-01T00:00:00Z", history.created_at);
     try std.testing.expectEqualStrings("Test response content", history.response_content);
     try std.testing.expectEqualStrings("stop", history.finish_reason);
     try std.testing.expectEqualStrings("assistant", history.role);
@@ -43,7 +43,7 @@ test "TUIHistory with null reasoning_content" {
         .id = try allocator.dupe(u8, "test-id"),
         .session_id = try allocator.dupe(u8, "session"),
         .model = try allocator.dupe(u8, "model"),
-        .created = try allocator.dupe(u8, "2024-01-01"),
+        .created_at = try allocator.dupe(u8, "2024-01-01"),
         .response_content = try allocator.dupe(u8, "content"),
         .finish_reason = try allocator.dupe(u8, "stop"),
         .role = try allocator.dupe(u8, "user"),
@@ -65,7 +65,7 @@ test "TUIHistory default values" {
         .id = try allocator.dupe(u8, "id"),
         .session_id = try allocator.dupe(u8, "session"),
         .model = try allocator.dupe(u8, "model"),
-        .created = try allocator.dupe(u8, "created"),
+        .created_at = try allocator.dupe(u8, "created"),
         .response_content = try allocator.dupe(u8, "content"),
         .finish_reason = try allocator.dupe(u8, "stop"),
         .role = try allocator.dupe(u8, "assistant"),
@@ -91,7 +91,7 @@ test "TUIHistory deinit frees all memory" {
         .id = try allocator.dupe(u8, "test-id"),
         .session_id = try allocator.dupe(u8, "session"),
         .model = try allocator.dupe(u8, "model"),
-        .created = try allocator.dupe(u8, "created"),
+        .created_at = try allocator.dupe(u8, "created"),
         .response_content = try allocator.dupe(u8, "content"),
         .finish_reason = try allocator.dupe(u8, "stop"),
         .role = try allocator.dupe(u8, "role"),
@@ -113,7 +113,7 @@ test "TUIHistory deinit with null reasoning_content" {
         .id = try allocator.dupe(u8, "test-id"),
         .session_id = try allocator.dupe(u8, "session"),
         .model = try allocator.dupe(u8, "model"),
-        .created = try allocator.dupe(u8, "created"),
+        .created_at = try allocator.dupe(u8, "created"),
         .response_content = try allocator.dupe(u8, "content"),
         .finish_reason = try allocator.dupe(u8, "stop"),
         .role = try allocator.dupe(u8, "role"),

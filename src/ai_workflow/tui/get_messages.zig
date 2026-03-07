@@ -11,7 +11,7 @@ pub fn run(
 ) ![]TUIHistory {
     var results: std.ArrayList(TUIHistory) = .empty;
 
-    const sql = "SELECT id, session_id, model, created, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'GeneralAgent'), COALESCE(session_name, ''), COALESCE(loop_index, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created ASC";
+    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'GeneralAgent'), COALESCE(session_name, ''), COALESCE(loop_index, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at ASC";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -20,7 +20,7 @@ pub fn run(
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
             .model = try allocator.dupe(u8, row.values[2]),
-            .created = try allocator.dupe(u8, row.values[3]),
+            .created_at = try allocator.dupe(u8, row.values[3]),
             .response_content = try allocator.dupe(u8, row.values[4]),
             .finish_reason = try allocator.dupe(u8, row.values[5]),
             .role = try allocator.dupe(u8, row.values[6]),

@@ -234,6 +234,11 @@ pub fn main() !void {
         .name = migrations.Migration008AddSessionSkills.name,
         .up = migrations.Migration008AddSessionSkills.up,
     });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration009RemoveCreatedColumn.version,
+        .name = migrations.Migration009RemoveCreatedColumn.name,
+        .up = migrations.Migration009RemoveCreatedColumn.up,
+    });
     try migrationManager.runMigrations();
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);

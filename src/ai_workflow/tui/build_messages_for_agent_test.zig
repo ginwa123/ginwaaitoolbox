@@ -43,7 +43,7 @@ test "build messages preserves agent from history" {
             .id = try allocator.dupe(u8, "id1"),
             .session_id = try allocator.dupe(u8, "session1"),
             .model = try allocator.dupe(u8, "gpt-4"),
-            .created = try allocator.dupe(u8, "2024-01-01"),
+            .created_at = try allocator.dupe(u8, "2024-01-01"),
             .response_content = try allocator.dupe(u8, "Hello"),
             .finish_reason = try allocator.dupe(u8, "stop"),
             .role = try allocator.dupe(u8, "assistant"),

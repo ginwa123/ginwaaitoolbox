@@ -19,7 +19,7 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logge
         w.writeAll("</id><dir>") catch return;
         w.writeAll(session.session_dir) catch return;
         w.writeAll("</dir><created>") catch return;
-        w.writeAll(session.created) catch return;
+        w.writeAll(session.created_at) catch return;
         w.writeAll("</created></session>") catch return;
     }
     w.writeAll("</sessions></response>") catch return;

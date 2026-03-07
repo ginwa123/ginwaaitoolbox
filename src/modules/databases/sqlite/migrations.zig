@@ -19,13 +19,12 @@ pub const Migration001CreateLLMHistory = struct {
             \\    id TEXT PRIMARY KEY,
             \\    session_id TEXT NOT NULL,
             \\    model TEXT NOT NULL,
-            \\    created INTEGER NOT NULL,
             \\    response_content TEXT,
             \\    tool_calls_json TEXT,
             \\    tool_results_json TEXT,
             \\    finish_reason TEXT,
             \\    usage_json TEXT,
-            \\    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             \\)
         , &[_][]const u8{});
 
@@ -93,6 +92,58 @@ pub const Migration008AddSessionSkills = struct {
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         try db.exec(allocator, "CREATE TABLE IF NOT EXISTS session_skills (session_id TEXT NOT NULL, skill_name TEXT NOT NULL, content TEXT NOT NULL, loaded_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (session_id, skill_name))", &[_][]const u8{});
         try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_session_skills_session ON session_skills(session_id)", &[_][]const u8{});
+    }
+};
+
+pub const Migration009RemoveCreatedColumn = struct {
+    pub const version: u32 = 9;
+    pub const name = "remove_created_column";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Rename old table
+        try db.exec(allocator, "ALTER TABLE llm_history RENAME TO llm_history_old", &[_][]const u8{});
+
+        // Create new table without created column and with DATETIME created_at
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS llm_history (
+            \\    id TEXT PRIMARY KEY,
+            \\    session_id TEXT NOT NULL,
+            \\    model TEXT NOT NULL,
+            \\    response_content TEXT,
+            \\    tool_calls_json TEXT,
+            \\    tool_results_json TEXT,
+            \\    finish_reason TEXT,
+            \\    usage_json TEXT,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    role TEXT DEFAULT 'assistant',
+            \\    reasoning_content TEXT,
+            \\    session_dir TEXT,
+            \\    is_feed_to_llm INTEGER DEFAULT 1,
+            \\    agent TEXT DEFAULT 'GeneralAgent',
+            \\    session_name TEXT,
+            \\    loop_index INTEGER DEFAULT 0
+            \\)
+        , &[_][]const u8{});
+
+        // Copy data from old table, converting created to created_at
+        try db.exec(allocator,
+            \\INSERT INTO llm_history (id, session_id, model, response_content, tool_calls_json,
+            \\    tool_results_json, finish_reason, usage_json, created_at, role,
+            \\    reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index)
+            \\SELECT id, session_id, model, response_content, tool_calls_json,
+            \\    tool_results_json, finish_reason, usage_json,
+            \\    datetime(CAST(created AS INTEGER), 'unixepoch'),
+            \\    COALESCE(role, 'assistant'), reasoning_content, session_dir,
+            \\    COALESCE(is_feed_to_llm, 1), COALESCE(agent, 'GeneralAgent'),
+            \\    session_name, COALESCE(loop_index, 0)
+            \\FROM llm_history_old
+        , &[_][]const u8{});
+
+        // Recreate index
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_session ON llm_history(session_id)", &[_][]const u8{});
+
+        // Drop old table
+        try db.exec(allocator, "DROP TABLE llm_history_old", &[_][]const u8{});
     }
 };
 

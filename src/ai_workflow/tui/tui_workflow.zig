@@ -44,12 +44,12 @@ const COMPACTION_CONFIG = struct {
 pub const SessionInfo = struct {
     session_id: []const u8,
     session_dir: []const u8,
-    created: []const u8,
+    created_at: []const u8,
 
     pub fn deinit(self: *SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         allocator.free(self.session_dir);
-        allocator.free(self.created);
+        allocator.free(self.created_at);
     }
 };
 
@@ -400,11 +400,9 @@ pub const TUIWorkflow = struct {
         // Save the compacted summary to the database with is_feed_to_llm = 1
         const id = try std.fmt.allocPrint(allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
         defer allocator.free(id);
-        const createdStr = try std.fmt.allocPrint(allocator, "{}", .{std.time.timestamp()});
-        defer allocator.free(createdStr);
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, created, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)";
-        try self.db.exec(allocator, sql, &.{ id, self.session_id, self.model, createdStr, summary_content, "stop", "user", "", "", self.cwd, "GeneralAgent", "", "0" });
+        const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)";
+        try self.db.exec(allocator, sql, &.{ id, self.session_id, self.model, summary_content, "stop", "user", "", "", self.cwd, "GeneralAgent", "", "0" });
 
         // Build new in-memory message list: system message + compacted summary
         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;

@@ -12,7 +12,7 @@ pub const TUIHistory = struct {
     id: []const u8,
     session_id: []const u8,
     model: []const u8,
-    created: []const u8,
+    created_at: []const u8,
     response_content: []const u8,
     finish_reason: []const u8,
     role: []const u8,
@@ -26,7 +26,7 @@ pub const TUIHistory = struct {
         allocator.free(self.id);
         allocator.free(self.session_id);
         allocator.free(self.model);
-        allocator.free(self.created);
+        allocator.free(self.created_at);
         allocator.free(self.response_content);
         allocator.free(self.finish_reason);
         allocator.free(self.role);
