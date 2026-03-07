@@ -8,7 +8,7 @@ test "build messages with empty history" {
     const tree_dir = "src/\nmain.zig";
     const skills = "test skills";
     
-    const history: []TUIHistory = &[]TUIHistory{};
+    const history: []TUIHistory = &[_]TUIHistory{};
     
     const messages = try build_messages.run(allocator, cwd, tree_dir, history, skills);
     defer {

@@ -12,9 +12,14 @@ pub fn run(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
         .timeout = 30,
     };
     const treeDir = try bash_tool.executeBash(allocator, treeBashInput);
+    defer allocator.free(treeDir);
     const treeDirTrim = std.mem.trim(u8, treeDir, "\n");
-    const treeDirStdout = bash_helper.extractTag(treeDirTrim, "stdout", allocator) orelse return "";
-    return treeDirStdout;
+    const treeDirStdout = bash_helper.extractTag(treeDirTrim, "stdout", allocator);
+    if (treeDirStdout) |stdout| {
+        // extractTag returns a slice into treeDirTrim, so we need to dupe it
+        return try allocator.dupe(u8, stdout);
+    }
+    return try allocator.dupe(u8, "");
 }
 
 test {

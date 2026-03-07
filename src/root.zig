@@ -40,3 +40,26 @@ pub fn add(a: i32, b: i32) i32 {
 test "basic add functionality" {
     try std.testing.expect(add(3, 7) == 10);
 }
+
+test {
+    // Import all ai_workflow modules to ensure their tests run
+    _ = @import("ai_workflow/build_messages_for_agent.zig");
+    _ = @import("ai_workflow/cancellation_registry.zig");
+    _ = @import("ai_workflow/get_current_agent_by_session_id.zig");
+    _ = @import("ai_workflow/get_messages.zig");
+    _ = @import("ai_workflow/get_session_by_dir.zig");
+    _ = @import("ai_workflow/get_tree_dir.zig");
+    _ = @import("ai_workflow/handle_bash_tool.zig");
+    _ = @import("ai_workflow/handle_change_agent_tool.zig");
+    _ = @import("ai_workflow/handle_content_filter.zig");
+    _ = @import("ai_workflow/handle_tool.zig");
+    _ = @import("ai_workflow/mark_message_not_for_llm.zig");
+    _ = @import("ai_workflow/models.zig");
+    _ = @import("ai_workflow/run_agentic_loop.zig");
+    _ = @import("ai_workflow/save_message.zig");
+    _ = @import("ai_workflow/send_error.zig");
+    _ = @import("ai_workflow/send_response.zig");
+    _ = @import("ai_workflow/send_tool_result.zig");
+    _ = @import("ai_workflow/transform_llm_history_to_agent_messages.zig");
+    _ = @import("ai_workflow/tui_workflow.zig");
+}

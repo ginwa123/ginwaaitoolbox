@@ -5,7 +5,7 @@ const TUIHistory = @import("models.zig").TUIHistory;
 test "transform assistant message" {
     const allocator = std.testing.allocator;
     
-    const history = TUIHistory{
+    var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
         .model = try allocator.dupe(u8, "gpt-4"),
@@ -45,7 +45,7 @@ test "transform assistant message" {
 test "transform user message" {
     const allocator = std.testing.allocator;
     
-    const history = TUIHistory{
+    var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
         .model = try allocator.dupe(u8, "gpt-4"),
@@ -84,7 +84,7 @@ test "transform user message" {
 test "transform tool message" {
     const allocator = std.testing.allocator;
     
-    const history = TUIHistory{
+    var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
         .model = try allocator.dupe(u8, "gpt-4"),
@@ -125,7 +125,7 @@ test "transform tool message" {
 test "transform empty content" {
     const allocator = std.testing.allocator;
     
-    const history = TUIHistory{
+    var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
         .model = try allocator.dupe(u8, "gpt-4"),
@@ -165,7 +165,7 @@ test "transform empty content" {
 test "transform with reasoning content" {
     const allocator = std.testing.allocator;
     
-    const history = TUIHistory{
+    var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
         .model = try allocator.dupe(u8, "gpt-4"),
