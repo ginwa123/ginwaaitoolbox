@@ -53,6 +53,7 @@ pub fn run(
         for (agentMsgs) |msg| {
             try allMessages.append(allocator, msg);
         }
+        allocator.free(agentMsgs);
     }
 
     return try allMessages.toOwnedSlice(allocator);

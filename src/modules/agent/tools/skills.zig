@@ -422,6 +422,7 @@ pub fn listSkillsFromDir(allocator: std.mem.Allocator) []SkillInfo {
                 continue;
             };
             // Note: parsed.name and parsed.description are now owned by skills_list
+            allocator.free(content);
         } else {
             allocator.free(content);
         }

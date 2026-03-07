@@ -45,8 +45,10 @@ pub const getSkillTool = AgentTool{
 pub fn executeGetSkill(allocator: std.mem.Allocator, input: GetSkillInput) ![]const u8 {
     // Try to parse the skill
     if (skills.parseSkill(allocator, input.skill_name)) |content| {
+        defer allocator.free(content);
         // Success - return the skill content
         const escaped = escapeJsonString(allocator, content);
+        defer allocator.free(escaped);
         const result = try std.fmt.allocPrint(allocator,
             \\{{
             \\"skill_name": "{s}",
@@ -58,16 +60,24 @@ pub fn executeGetSkill(allocator: std.mem.Allocator, input: GetSkillInput) ![]co
     } else {
         // Skill not found - list available skills
         const skills_list = skills.listSkills(allocator);
+        defer skills.freeSkillsList(allocator, skills_list);
 
         // Build available skills array
         var available: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (available.items) |item| allocator.free(item);
+        }
+        defer available.deinit(allocator);
 
         for (skills_list) |skill| {
-            try available.append(allocator, try std.fmt.allocPrint(allocator, "\"{s}\"", .{skill.name}));
+            const formatted = try std.fmt.allocPrint(allocator, "\"{s}\"", .{skill.name});
+            errdefer allocator.free(formatted);
+            try available.append(allocator, formatted);
         }
 
         // Build JSON array string
         var available_str: std.ArrayList(u8) = .empty;
+        defer available_str.deinit(allocator);
         try available_str.append(allocator, '[');
         for (available.items, 0..) |item, i| {
             if (i > 0) {
@@ -94,6 +104,7 @@ pub fn executeGetSkill(allocator: std.mem.Allocator, input: GetSkillInput) ![]co
 /// Escape a string for JSON output
 fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
     var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
 
     for (s) |c| {
         switch (c) {
