@@ -16,3 +16,7 @@ pub fn run(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
     const treeDirStdout = bash_helper.extractTag(treeDirTrim, "stdout", allocator) orelse return "";
     return treeDirStdout;
 }
+
+test {
+    _ = @import("get_tree_dir_test.zig");
+}

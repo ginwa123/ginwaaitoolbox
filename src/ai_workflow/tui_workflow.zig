@@ -733,3 +733,7 @@ pub const TUIWorkflow = struct {
         _ = std.posix.write(self.conn_fd, "\n") catch {};
     }
 };
+
+test {
+    _ = @import("tui_workflow_test.zig");
+}

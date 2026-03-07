@@ -36,3 +36,7 @@ pub fn run(
 
     return results.toOwnedSlice(allocator);
 }
+
+test {
+    _ = @import("get_messages_test.zig");
+}

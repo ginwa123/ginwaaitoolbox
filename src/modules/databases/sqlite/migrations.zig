@@ -146,3 +146,7 @@ pub const MigrationManager = struct {
         self.migrations.deinit(self.allocator);
     }
 };
+
+test {
+    _ = @import("migrations_test.zig");
+}

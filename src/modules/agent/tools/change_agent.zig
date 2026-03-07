@@ -54,3 +54,7 @@ pub const ChangeAgentTool = AgentTool{
         },
     },
 };
+
+test {
+    _ = @import("change_agent_test.zig");
+}

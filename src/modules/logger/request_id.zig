@@ -91,3 +91,7 @@ pub fn generateSessionId() SessionId {
 }
 
 // Tests
+
+test {
+    _ = @import("request_id_test.zig");
+}

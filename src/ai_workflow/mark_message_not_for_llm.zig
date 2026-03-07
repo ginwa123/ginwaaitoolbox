@@ -10,3 +10,7 @@ pub fn run(
     const sql = "UPDATE llm_history SET is_feed_to_llm = 0 WHERE session_id = ?";
     try db.exec(allocator, sql, &.{session_id});
 }
+
+test {
+    _ = @import("mark_message_not_for_llm_test.zig");
+}

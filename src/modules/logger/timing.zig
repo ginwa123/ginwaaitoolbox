@@ -86,3 +86,7 @@ pub fn timestampCompact(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 // Tests
+
+test {
+    _ = @import("timing_test.zig");
+}

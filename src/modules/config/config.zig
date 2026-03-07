@@ -144,3 +144,7 @@ pub fn getDefaultConfigPath(allocator: std.mem.Allocator) LlmConfig.LoadError![]
 pub fn loadDefault(allocator: std.mem.Allocator) LlmConfig.LoadError!LlmConfig {
     return LlmConfig.init(allocator, null);
 }
+
+test {
+    _ = @import("config_test.zig");
+}

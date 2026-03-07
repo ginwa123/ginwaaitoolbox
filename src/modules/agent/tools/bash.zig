@@ -295,3 +295,7 @@ pub const bashTool = AgentTool{
 //         },
 //     },
 // };
+
+test {
+    _ = @import("bash_test.zig");
+}

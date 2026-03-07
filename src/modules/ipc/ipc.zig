@@ -164,3 +164,7 @@ pub const IpcServer = struct {
         }
     }
 };
+
+test {
+    _ = @import("ipc_test.zig");
+}

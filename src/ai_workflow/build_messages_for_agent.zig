@@ -57,3 +57,7 @@ pub fn run(
 
     return try allMessages.toOwnedSlice(allocator);
 }
+
+test {
+    _ = @import("build_messages_for_agent_test.zig");
+}

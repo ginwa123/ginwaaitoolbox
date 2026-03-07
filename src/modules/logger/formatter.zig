@@ -258,3 +258,7 @@ pub fn getAgentColor(agent_index: usize) []const u8 {
 }
 
 // Tests
+
+test {
+    _ = @import("formatter_test.zig");
+}

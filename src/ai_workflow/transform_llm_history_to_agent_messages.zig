@@ -78,3 +78,7 @@ pub fn run(allocator: std.mem.Allocator, message: TUIHistory) ![]agent.AgentMess
 
     return messages.toOwnedSlice(allocator);
 }
+
+test {
+    _ = @import("transform_llm_history_to_agent_messages_test.zig");
+}

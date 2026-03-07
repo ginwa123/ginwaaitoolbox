@@ -88,3 +88,7 @@ pub fn run(
 
     try db.exec(allocator, sql, sqlArgs);
 }
+
+test {
+    _ = @import("save_message_test.zig");
+}

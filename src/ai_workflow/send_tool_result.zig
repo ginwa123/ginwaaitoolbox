@@ -36,3 +36,7 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logge
     };
     _ = std.posix.write(conn_fd, "\n") catch {};
 }
+
+test {
+    _ = @import("send_tool_result_test.zig");
+}

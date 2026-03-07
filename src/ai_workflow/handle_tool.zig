@@ -119,3 +119,7 @@ pub fn run(
     // Continue to next LLM call - no break, loop continues naturally
     logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{}) catch {};
 }
+
+test {
+    _ = @import("handle_tool_test.zig");
+}

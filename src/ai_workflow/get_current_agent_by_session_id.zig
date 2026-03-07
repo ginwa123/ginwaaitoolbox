@@ -15,3 +15,7 @@ pub fn run(allocator: std.mem.Allocator,
         return try allocator.dupe(u8, "GeneralAgent");
     }
 }
+
+test {
+    _ = @import("get_current_agent_by_session_id_test.zig");
+}

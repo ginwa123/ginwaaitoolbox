@@ -26,3 +26,7 @@ pub fn run(
 
     return results.toOwnedSlice(allocator);
 }
+
+test {
+    _ = @import("get_session_by_dir_test.zig");
+}

@@ -115,3 +115,7 @@ pub fn run(
 
     logger.infoFmt("Switched to agent: {s}", .{agent_name}) catch {};
 }
+
+test {
+    _ = @import("handle_change_agent_tool_test.zig");
+}

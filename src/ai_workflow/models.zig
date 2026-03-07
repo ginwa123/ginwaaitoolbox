@@ -36,3 +36,7 @@ pub const TUIHistory = struct {
         allocator.free(self.session_name);
     }
 };
+
+test {
+    _ = @import("models_test.zig");
+}

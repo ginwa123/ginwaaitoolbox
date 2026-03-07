@@ -1442,3 +1442,9 @@ pub const Agent = struct {
         };
     }
 };
+
+
+test {
+    _ = @import("agent_test.zig");
+    _ = @import("streaming_test.zig");
+}

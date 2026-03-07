@@ -48,3 +48,7 @@ pub fn run(
     send_tool_result.run(allocator, conn_fd, logger, res_bash, tool_call.id, tool_call.function.name, null);
     logger.debugFmt("Tool result added to messages", .{}) catch {};
 }
+
+test {
+    _ = @import("handle_bash_tool_test.zig");
+}

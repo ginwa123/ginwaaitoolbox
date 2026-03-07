@@ -1024,3 +1024,7 @@ pub fn main() !void {
 
     std.debug.print("\r\n{s}Bye!{s}\r\n", .{ dim, reset });
 }
+
+test {
+    _ = @import("main_test.zig");
+}

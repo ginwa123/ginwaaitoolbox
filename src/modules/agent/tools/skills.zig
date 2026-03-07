@@ -438,3 +438,7 @@ pub fn freeSkillsList(allocator: std.mem.Allocator, skills_list: []SkillInfo) vo
     }
     allocator.free(skills_list);
 }
+
+test {
+    _ = @import("skills_test.zig");
+}

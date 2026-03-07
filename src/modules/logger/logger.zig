@@ -391,3 +391,8 @@ pub fn getGlobal() ?*Logger {
 }
 
 // Tests
+
+test {
+    _ = @import("logger_test.zig");
+    _ = @import("memory_leak_test.zig");
+}

@@ -141,3 +141,7 @@ pub fn deinitGlobalRegistry() void {
         g_registry = null;
     }
 }
+
+test {
+    _ = @import("cancellation_registry_test.zig");
+}
