@@ -18,7 +18,7 @@
 <!-- Issues encountered and fixed during runs. -->
 
 - [2026-03-08] No issues encountered.
-- [2026-03-09] No issues encountered.
+- [2026-03-09] Agent system restructured — GeneralAgent and KnowledgeAgent removed, ExplorationAgent enhanced with classification logic
 
 ## [2026-03-08] save_message.run error format string
 

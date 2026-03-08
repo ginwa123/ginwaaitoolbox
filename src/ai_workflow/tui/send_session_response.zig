@@ -4,7 +4,7 @@ const tui_workflow = @import("tui_workflow.zig");
 const logger_mod = tree1_mod.logger;
 
 /// Get the current agent from the last message itree1_mod.tui_workflow;n the database.
-/// Returns "GeneralAgent" if no messages exist for this session.
+/// Returns "ExplorationAgent" if no messages exist for this session.
 pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logger_mod.Logger, sessions: []tui_workflow.SessionInfo) void {
     if (conn_fd < 0) return;
 

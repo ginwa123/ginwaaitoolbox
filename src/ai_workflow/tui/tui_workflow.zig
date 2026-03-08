@@ -398,7 +398,7 @@ pub const TUIWorkflow = struct {
         defer allocator.free(created_at);
 
         const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)";
-        try self.db.exec(allocator, sql, &.{ id, session_id, model, summary_content, "stop", "user", "", "", cwd, "GeneralAgent", "", "0", created_at });
+        try self.db.exec(allocator, sql, &.{ id, session_id, model, summary_content, "stop", "user", "", "", cwd, "ExplorationAgent", "", "0", created_at });
 
         // Build new in-memory message list: system message + compacted summary
         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;

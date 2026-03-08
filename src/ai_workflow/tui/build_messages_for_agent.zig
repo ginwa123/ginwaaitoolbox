@@ -17,7 +17,7 @@ pub fn run(
 ) ![]agent.AgentMessage {
 
     // Determine the agent to use from the latest message in history
-    var agent_to_use: []const u8 = "GeneralAgent";
+    var agent_to_use: []const u8 = "ExplorationAgent";
     if (historyMessages.len > 0) {
         // Get the agent from the last message
         const last_msg = historyMessages[historyMessages.len - 1];
@@ -25,18 +25,14 @@ pub fn run(
     }
 
     // Get the appropriate prompt for the agent
-    const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_to_use, "GeneralAgent"))
-        prompt.GeneralAgent
-    else if (std.mem.eql(u8, agent_to_use, "ExplorationAgent"))
+    const agent_prompt: []const u8 = if (std.mem.eql(u8, agent_to_use, "ExplorationAgent"))
         prompt.ExplorationAgent
     else if (std.mem.eql(u8, agent_to_use, "PlanningAgent"))
         prompt.PlanningAgent
     else if (std.mem.eql(u8, agent_to_use, "ExecutingAgent"))
         prompt.ExecutingAgent
-    else if (std.mem.eql(u8, agent_to_use, "KnowledgeAgent"))
-        prompt.KnowledgeAgent
     else
-        return error.UnknownAgent;
+        prompt.ExplorationAgent;
 
     const systemContent = try prompt.agenticCodingWithCwd(allocator, cwd, agent_prompt, tree_dir, skills, memoryMd);
 
