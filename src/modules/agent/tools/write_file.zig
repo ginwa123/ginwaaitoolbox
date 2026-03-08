@@ -16,9 +16,13 @@ pub const WriteFileResult = struct {
     bytes_written: usize,
     lines_written: usize,
     total_lines: usize,
+    before: []u8 = &.{},
+    after: []u8 = &.{},
 
     pub fn deinit(self: WriteFileResult, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
+        if (self.before.len > 0) allocator.free(self.before);
+        if (self.after.len > 0) allocator.free(self.after);
     }
 };
 
@@ -69,6 +73,8 @@ fn write_file_overwrite(
                     .bytes_written = opts.content.len,
                     .lines_written = lines_written,
                     .total_lines = lines_written,
+                    .before = &.{},
+                    .after = try allocator.dupe(u8, opts.content),
                 };
             }
         }
@@ -85,6 +91,8 @@ fn write_file_overwrite(
         .bytes_written = opts.content.len,
         .lines_written = lines_written,
         .total_lines = lines_written,
+        .before = &.{},
+        .after = try allocator.dupe(u8, opts.content),
     };
 }
 
@@ -135,6 +143,13 @@ fn write_file_replace_lines(
         return error.LineRangeOutOfBounds;
     }
 
+    // Capture "before" content (lines being replaced)
+    var before_content = std.ArrayList(u8).empty;
+    defer before_content.deinit(allocator);
+    for (start_line..(end_line + 1)) |j| {
+        try before_content.appendSlice(allocator, lines.items[j]);
+    }
+
     // Build new content
     var new_content = std.ArrayList(u8).empty;
     defer new_content.deinit(allocator);
@@ -176,6 +191,8 @@ fn write_file_replace_lines(
         .bytes_written = new_content.items.len,
         .lines_written = 1,
         .total_lines = total_lines,
+        .before = try before_content.toOwnedSlice(allocator),
+        .after = try allocator.dupe(u8, opts.content),
     };
 }
 
@@ -196,11 +213,15 @@ pub fn writeFileToString(allocator: std.mem.Allocator, result: WriteFileResult) 
         \\<bytes_written>{d}</bytes_written>
         \\<lines_written>{d}</lines_written>
         \\<total_lines>{d}</total_lines>
+        \\<before>{s}</before>
+        \\<after>{s}</after>
     , .{
         result.path,
         result.bytes_written,
         result.lines_written,
         result.total_lines,
+        result.before,
+        result.after,
     });
 }
 
@@ -214,6 +235,7 @@ pub const writeFileTool = AgentTool{
         \\- Omit start_line and end_line to overwrite the entire file.
         \\- Use start_line + end_line to replace a specific block.
         \\- Always read_file first to find the correct line range.
+        \\- Returns before/after content for the affected region.
         ,
         .parameters = .{
             .type = "object",

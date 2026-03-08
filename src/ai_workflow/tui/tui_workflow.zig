@@ -34,6 +34,7 @@ const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const build_memory_for_agent = @import("build_memory_for_agent.zig");
 const write_file_tool = tree1_mod.write_file;
+const search_tool = tree1_mod.search_tool;
 
 const handle_content_filter = @import("handle_content_filter.zig");
 pub const cancellation_registry = tree1_mod.session.cancellation_registry;
@@ -244,7 +245,13 @@ pub const TUIWorkflow = struct {
         conn_fd: std.posix.fd_t,
         session_id: []const u8,
     ) !agent.CallResponse {
-        const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool, write_file_tool.writeFileTool };
+        const tools: []const tool_models.AgentTool = &.{
+            bash_tool.bashTool,     read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool,
+
+            // write_file_tool.writeFileTool,
+
+            search_tool.searchTool,
+        };
 
         var dynamic_agent = try agent.Agent.init(allocator, self.logger);
         dynamic_agent.apiKey = api_key;
