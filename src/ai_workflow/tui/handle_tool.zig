@@ -68,7 +68,13 @@ pub fn run(
 
         // try messages_list.append(allocator, assistant_msg);
 
-        save_message.run(allocator, db, session_id, model, cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent.*, session_name, loop_counter) catch |err| {
+        save_message.run(
+            allocator, db, session_id, model, cwd,
+            null,
+            res_dynamic_agent.content,
+            if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+            res_dynamic_agent.reasoning_content,
+            agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent.*, session_name, loop_counter) catch |err| {
             logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
         };
 

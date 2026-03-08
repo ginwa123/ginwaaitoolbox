@@ -17,9 +17,10 @@ pub fn run(
     model: []const u8,
     cwd: []const u8,
 
-
     content: ?[]const u8,
-    response: ?agent.CallResponse,
+    response_content: ?[]const u8,
+    response_finish_reason: ?[]const u8,
+    response_reasoning_content: ?[]const u8,
     role: ?[]const u8,
     finish_reason: ?[]const u8,
     tool_calls: ?[]agent.ToolCall,
@@ -36,15 +37,13 @@ pub fn run(
 
     var contentStr = content orelse "";
     const finishReasonStr = finish_reason orelse
-        (if (response) |r| (if (r.finish_reason) |fr| fr.toStr() else "null") else "null");
+        (response_finish_reason orelse "null");
     const roleStr = role orelse "assistant";
-    const reasoningStr = if (response) |r| (r.reasoning_content orelse "") else "";
+    const reasoningStr = response_reasoning_content orelse "";
     const agentStr = agent_name orelse "GeneralAgent";
 
-    if (response) |r| {
-        if (r.content) |c| {
-            contentStr = c;
-        }
+    if (response_content) |c| {
+        contentStr = c;
     }
 
     std.debug.print("saveMessage aa role={s} content={s}", .{ roleStr, contentStr });

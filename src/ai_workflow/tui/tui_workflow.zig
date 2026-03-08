@@ -161,10 +161,9 @@ pub const TUIWorkflow = struct {
         );
         var current_agent: []const u8 = initial_agent;
         const session_name = message;
-        save_message.run(parent_allocator, self.db, session_id, model, cwd, message, null, "user", "null", null, null, current_agent, session_name, 0) catch |err| {
+        save_message.run(parent_allocator, self.db, session_id, model, cwd, message, null, null, null, "user", "null", null, null, current_agent, session_name, 0) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
-
 
         // this variable is used to track the number of times the agent has been retried
         var retryCount: usize = 0;
@@ -177,14 +176,14 @@ pub const TUIWorkflow = struct {
             defer arena_allocator_while_loop.deinit();
             const allocator = arena_allocator_while_loop.allocator();
 
+            loop_counter += 1;
+            if (retryCount > 10) return error.TooManyRetries;
+
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
 
             const initial_messages = try build_messages.run(allocator, cwd, "", try get_messages.run(allocator, self.db, session_id), try self.build_skill_content(allocator), try build_memory_for_agent.run(allocator, cwd));
 
             try messages_list.appendSlice(allocator, initial_messages);
-
-            loop_counter += 1;
-            if (retryCount > 10) return error.TooManyRetries;
 
             const body_size = self.estimateBodySize(messages_list.items);
             self.logger.debugFmt("[COMPACTION] Body size: {} bytes", .{body_size}) catch {};
@@ -195,14 +194,24 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            const res_dynamic_agent = try self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, conn_fd, session_id);
+            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, conn_fd, session_id) catch |err| {
+                retryCount += 1;
+                self.logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)}) catch {};
+                continue;
+            };
 
             retryCount = 0;
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
                     _ = send_response.run(allocator, conn_fd, self.logger, res_dynamic_agent, "user_choice");
-                    _ = try save_message.run(allocator, self.db, session_id, model, cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter);
+                    _ = try save_message.run(
+                        allocator, self.db, session_id, model, cwd,
+                        null,
+                        res_dynamic_agent.content,
+                        if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+                        res_dynamic_agent.reasoning_content,
+                        agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter);
                     self.logger.infoFmt("FINISH REASON STOPPP", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
@@ -441,7 +450,7 @@ pub const TUIWorkflow = struct {
         messages_list.append(allocator, tool_result_msg) catch return;
         const current_agent = get_current_agent_by_session_id.run(allocator, self.db, session_id) catch return;
 
-        save_message.run(allocator, self.db, session_id, model, cwd, result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0) catch {};
+        save_message.run(allocator, self.db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent, null, 0) catch {};
         send_tool_result.run(allocator, conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
     }
 
@@ -484,7 +493,7 @@ pub const TUIWorkflow = struct {
             messages_list.append(allocator, tool_result_msg) catch return;
             const current_agent = get_current_agent_by_session_id.run(allocator, self.db, session_id) catch return;
 
-            _ = try save_message.run(allocator, self.db, session_id, model, cwd, result, null, "tool", "tool", null, tool_call.id, current_agent, null, 0);
+            _ = try save_message.run(allocator, self.db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent, null, 0);
             send_tool_result.run(allocator, conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
             return;
         };
@@ -523,7 +532,7 @@ pub const TUIWorkflow = struct {
         }
 
         const current_agent_final = try get_current_agent_by_session_id.run(allocator, self.db, session_id);
-        _ = save_message.run(allocator, self.db, session_id, model, cwd, result, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
+        _ = save_message.run(allocator, self.db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
         _ = send_tool_result.run(allocator, conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
     }
 
@@ -546,7 +555,6 @@ pub const TUIWorkflow = struct {
         return try skillsBuilder.toOwnedSlice(allocator);
     }
 
-
     /// Check if a skill is already loaded
     fn isSkillLoaded(self: *TUIWorkflow, skill_name: []const u8) bool {
         for (self.loaded_skills.items) |skill| {
@@ -565,39 +573,6 @@ pub const TUIWorkflow = struct {
         const sql = "INSERT OR REPLACE INTO session_skills (session_id, skill_name, content, loaded_at) VALUES (?, ?, ?, strftime('%s', 'now'))";
         try self.db.exec(allocator, sql, &.{ session_id, skill_name, content });
         self.logger.debugFmt("Skill '{s}' saved to database for session {s}", .{ skill_name, session_id }) catch {};
-    }
-
-    /// Load all skills for the current session from the database
-    pub fn loadSkillsFromDB(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8) !void {
-        // Skip if session_id is empty
-        if (session_id.len == 0) return;
-
-        // Clear existing skills first
-        for (self.loaded_skills.items) |skill| {
-            skill.deinit(allocator);
-        }
-        self.loaded_skills.clearRetainingCapacity();
-
-        // Load from database
-        const sql = "SELECT skill_name, content FROM session_skills WHERE session_id = ? ORDER BY loaded_at ASC";
-        var rows = try self.db.query(allocator, sql, &.{session_id});
-        defer rows.deinit();
-
-        while (try rows.next()) |row| {
-            const skill_name = try allocator.dupe(u8, row.values[0]);
-            errdefer allocator.free(skill_name);
-            const content = try allocator.dupe(u8, row.values[1]);
-            errdefer allocator.free(content);
-
-            const loaded_skill = LoadedSkill{
-                .skill_name = skill_name,
-                .content = content,
-            };
-            try self.loaded_skills.append(allocator, loaded_skill);
-            self.logger.debugFmt("Loaded skill '{s}' from database for session {s}", .{ skill_name, session_id }) catch {};
-        }
-
-        self.logger.debugFmt("Loaded {} skills from database for session {s}", .{ self.loaded_skills.items.len, session_id }) catch {};
     }
 
     /// Send skills list to TUI via IPC
