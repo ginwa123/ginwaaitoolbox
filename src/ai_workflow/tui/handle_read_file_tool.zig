@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
-const bash_tool = tree1_mod.bash_tool;
+const read_file_mod = tree1_mod.read_file;
 const tool_models = tree1_mod.tool_models;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
@@ -23,18 +23,23 @@ pub fn run(
     messages_list: *std.ArrayList(agent.AgentMessage),
     tool_call: agent.ToolCall,
 ) !void {
-    // Parse arguments JSON to BashInput
+    // Parse arguments JSON to ReadFileInput
     const parsed = try std.json.parseFromSlice(
-        tool_models.BashInput,
+        tool_models.ReadFileInput,
         allocator,
         tool_call.function.arguments,
         .{ .allocate = .alloc_always },
     );
     defer parsed.deinit();
 
-    const bash_output = bash_tool.executeBash(allocator, parsed.value) catch |err| {
-        logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
-        const err_str = "Error executing command";
+    const read_opts = read_file_mod.ReadFileOptions{
+        .offset = parsed.value.offset,
+        .limit = parsed.value.limit,
+    };
+
+    const read_result = read_file_mod.read_file(allocator, parsed.value.path, read_opts) catch |err| {
+        logger.errFmt("Error reading file: {s}", .{@errorName(err)}) catch {};
+        const err_str = try std.fmt.allocPrint(allocator, "Error reading file: {s}", .{@errorName(err)});
         const tool_result_msg = agent.AgentMessage{
             .role = .tool,
             .content = err_str,
@@ -45,20 +50,24 @@ pub fn run(
         _ = send_tool_result.run(allocator, conn_fd, logger, err_str, tool_call.id, tool_call.function.name, null);
         return;
     };
-    const res_bash = try bash_tool.bashResultToString(allocator, bash_output);
-    try logger.debugFmt("RESPONSE TOOLS: {s}", .{res_bash});
+    defer read_result.deinit(allocator);
+
+    const res_content = try read_file_mod.readFileToString(allocator, read_result);
+    defer allocator.free(res_content);
+
+    try logger.debugFmt("RESPONSE TOOLS: {s}", .{res_content});
 
     const tool_result_msg = agent.AgentMessage{
         .role = .tool,
-        .content = res_bash,
+        .content = res_content,
         .tool_call_id = try allocator.dupe(u8, tool_call.id),
     };
     _ = try messages_list.append(allocator, tool_result_msg);
-    _ = try save_message.run(allocator, db, session_id, model, cwd, res_bash, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter);
-    _ = send_tool_result.run(allocator, conn_fd, logger, res_bash, tool_call.id, tool_call.function.name, null);
+    _ = try save_message.run(allocator, db, session_id, model, cwd, res_content, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter);
+    _ = send_tool_result.run(allocator, conn_fd, logger, res_content, tool_call.id, tool_call.function.name, null);
     logger.debugFmt("Tool result added to messages", .{}) catch {};
 }
 
 test {
-    _ = @import("handle_bash_tool_test.zig");
+    _ = @import("handle_read_file_tool_test.zig");
 }

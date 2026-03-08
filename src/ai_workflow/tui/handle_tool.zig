@@ -7,6 +7,7 @@ const save_message = @import("save_message.zig");
 const send_response = @import("send_response.zig");
 const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
+const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const loop_detector = tree1_mod.loop_detector;
 
 // Forward declaration for TUIWorkflow
@@ -68,15 +69,13 @@ pub fn run(
 
         // try messages_list.append(allocator, assistant_msg);
 
-        save_message.run(
+        _ = save_message.run(
             allocator, db, session_id, model, cwd,
             null,
             res_dynamic_agent.content,
             if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
             res_dynamic_agent.reasoning_content,
-            agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent.*, session_name, loop_counter) catch |err| {
-            logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
-        };
+            agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent.*, session_name, loop_counter);
 
         // Execute each tool call and add tool result messages
         for (tc) |tool_call| {
@@ -106,8 +105,14 @@ pub fn run(
                 };
             }
 
+            if (std.mem.eql(u8, tool_call.function.name, "read_file")) {
+                _ = handle_read_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                    logger.errFmt("Error handling read_file tool: {s}", .{@errorName(err)}) catch {};
+                };
+            }
+
             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
-                tui_workflow.handleListSkills(allocator, messages_list, tool_call, session_id, model, cwd, conn_fd);
+                _ = tui_workflow.handleListSkills(allocator, messages_list, tool_call, session_id, model, cwd, conn_fd);
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {

@@ -6,6 +6,12 @@ pub const BashInput = struct {
     stdin_data: ?[]const u8 = null, // optional stdin input, null = close stdin
 };
 
+pub const ReadFileInput = struct {
+    path: []const u8,
+    offset: ?usize = null,
+    limit: ?usize = null,
+};
+
 pub const ToolProperty = struct {
     name: []const u8,
     type: []const u8,
@@ -33,4 +39,13 @@ pub const BashResult = struct {
     stdout: []const u8,
     stderr: []const u8,
     exit_code: u32,
+};
+
+pub const BashOutput = struct {
+    command: []const u8,
+    stdout: []const u8,
+    stderr: []const u8,
+    exit_code: i32,
+    truncated: bool,
+    timeout: bool,
 };

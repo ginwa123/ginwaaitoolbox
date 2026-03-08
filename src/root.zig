@@ -20,6 +20,7 @@ pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
 pub const skills = @import("modules/agent/tools/skills.zig");
 pub const config = @import("modules/config/config.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
+pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const session = @import("modules/session/mod.zig");
 
 pub fn bufferedPrint() !void {

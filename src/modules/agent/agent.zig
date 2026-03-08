@@ -690,6 +690,7 @@ pub const Agent = struct {
             return error.BuildRequestFailed;
         };
         self.logFmt(.debug, "[TIMING] JSON build took {}ms ({} bytes)", .{ elapsedMs(json_start), json_body.len });
+        self.logFmt(.debug, "[AGENT_MODULE] JSON body: {s}", .{json_body});
         defer self.allocator.free(json_body);
 
         const connect_start = timestampMs();
@@ -1064,13 +1065,13 @@ const StreamingThreadContext = struct {
 fn streamingThreadFunc(thread_ctx: *StreamingThreadContext) void {
     thread_ctx.mutex.lock();
     defer thread_ctx.mutex.unlock();
-    
+
     const self = thread_ctx.agent;
     const params = thread_ctx.params;
     const ctx = thread_ctx.ctx;
     const callback = thread_ctx.callback;
     const is_cancelled = thread_ctx.is_cancelled;
-    
+
     // Build request
     const json_body: []u8 = self.buildJsonRequest(params, true) catch |err| {
         self.logError("buildJsonRequest", err, null);
@@ -1139,7 +1140,7 @@ fn streamingThreadFunc(thread_ctx: *StreamingThreadContext) void {
         const stream = conn.stream_reader.getStream();
         const handle = stream.handle;
         thread_ctx.socket_fd.store(handle, .seq_cst);
-        
+
         const timeout = std.posix.timeval{
             .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
             .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
@@ -1223,7 +1224,7 @@ fn streamingThreadFunc(thread_ctx: *StreamingThreadContext) void {
                 break;
             }
         }
-        
+
         const bytes_read = reader.readSliceShort(&read_buf) catch |err| {
             if (err == error.EndOfStream) {
                 stream_ended_cleanly = true;

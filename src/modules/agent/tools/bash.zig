@@ -1,12 +1,13 @@
 const std = @import("std");
 const posix = std.posix;
 const BashInput = @import("models.zig").BashInput;
+const BashOutput = @import("models.zig").BashOutput;
 const ToolProperty = @import("models.zig").ToolProperty;
 const ToolParameters = @import("models.zig").ToolParameters;
 const AgentToolFunction = @import("models.zig").AgentToolFunction;
 const AgentTool = @import("models.zig").AgentTool;
 
-pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) ![]const u8 {
+pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     const max_output = input.max_output orelse 1024 * 1024;
     const timeout_sec = input.timeout orelse 30;
 
@@ -150,7 +151,19 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) ![]const u8 {
         break :blk trunc_buf[0..53];
     } else input.command;
 
-    const output = try std.fmt.allocPrint(allocator,
+    // Return structured BashOutput instead of XML string
+    return BashOutput{
+        .command = truncated_command,
+        .stdout = if (stdout_data.items.len == 0) "No output produced." else stdout_data.items,
+        .stderr = if (stderr_data.items.len == 0) "No errors." else stderr_data.items,
+        .exit_code = exit_code,
+        .truncated = was_truncated,
+        .timeout = timeout_hit,
+    };
+}
+
+pub fn bashResultToString(allocator: std.mem.Allocator, result: BashOutput) ![]const u8 {
+    return try std.fmt.allocPrint(allocator,
         \\<command>{s}</command>
         \\<stdout>{s}</stdout>
         \\<stderr>{s}</stderr>
@@ -158,18 +171,13 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) ![]const u8 {
         \\<truncated>{}</truncated>
         \\<timeout>{}</timeout>
     , .{
-        truncated_command,
-        if (stdout_data.items.len == 0) "No output produced." else stdout_data.items,
-        if (stderr_data.items.len == 0) "No errors." else stderr_data.items,
-        exit_code,
-        was_truncated,
-        timeout_hit,
+        result.command,
+        result.stdout,
+        result.stderr,
+        result.exit_code,
+        result.truncated,
+        result.timeout,
     });
-
-    stdout_data.deinit(allocator);
-    stderr_data.deinit(allocator);
-
-    return output;
 }
 
 pub const bashTool = AgentTool{
@@ -189,29 +197,15 @@ pub const bashTool = AgentTool{
         \\- limit output using `| head -n <N>`
         \\- avoid commands that produce unbounded output
         \\
-        \\Commands violating these rules will be rejected.
+        \\## Preferred Use
+        \\Use bash for: build, run, test, git, search (rg).
+        \\Use read_file to read files — not cat or sed.
         \\
         \\## Preferred Tools
-        \\Use tools that allow controlled output:
-        \\- `rg`        → code search (preferred over grep)
-        \\- `wc -l`     → check file size before reading
-        \\- `cat`       → read small files only
-        \\- `stat`      → file metadata
-        \\- `jq`        → JSON processing
-        \\- `yq`        → YAML processing
-        \\- `awk`       → structured text filtering
-        \\
-        \\## Reading Files
-        \\Always check size first:
-        \\`timeout 10 wc -l <file>`
-        \\
-        \\Recommended strategy:
-        \\- <=300 lines → `timeout 10 cat <file> | head -n 300`
-        \\- larger files → use `rg` to extract relevant sections
-        \\
-        \\## Output Limits
-        \\Keep output small and focused.
-        \\If output is truncated, refine the query instead of increasing limits.
+        \\- `rg`  → code search (preferred over grep)
+        \\- `jq`  → JSON processing
+        \\- `yq`  → YAML processing
+        \\- `awk` → structured text filtering
         \\
         \\## Safety
         \\Avoid destructive or system-modifying commands.
@@ -225,41 +219,29 @@ pub const bashTool = AgentTool{
                     .type = "string",
                     .description =
                     \\Command to execute.
-                    \\Required format:
-                    \\`timeout <seconds> <command> | head -n <N>`
+                    \\Required format: `timeout <seconds> <command> | head -n <N>`
                     \\
-                    \\Examples:
-                    \\GOOD: `timeout 10 wc -l src/main.zig`
-                    \\GOOD: `timeout 10 cat src/main.zig | head -n 200`
+                    \\GOOD: `timeout 10 zig build 2>&1 | head -n 50`
                     \\GOOD: `timeout 10 rg 'MyStruct' src/ | head -n 50`
-                    \\
-                    \\BAD: `tree -R`
-                    \\BAD: `cat bigfile`
-                    \\BAD: `ls -R`
-                    \\BAD: commands without timeout or output cap
+                    \\BAD:  `cat src/main.zig`  ← use read_file instead
+                    \\BAD:  `sed -n '10,20p'`   ← use read_file instead
+                    \\BAD:  commands without timeout or output cap
                     ,
                 },
                 .{
                     .name = "cwd",
                     .type = "string",
-                    .description =
-                    \\Absolute working directory. Always set explicitly.
-                    ,
+                    .description = "Absolute working directory. Always set explicitly.",
                 },
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description =
-                    \\Maximum stdout+stderr bytes.
-                    \\Default: 10000.
-                    ,
+                    .description = "Maximum stdout+stderr bytes. Default: 10000.",
                 },
                 .{
                     .name = "stdin_data",
                     .type = "string",
-                    .description =
-                    \\Optional stdin input for the command.
-                    ,
+                    .description = "Optional stdin input for the command.",
                 },
             },
             .required = &.{ "command", "cwd" },

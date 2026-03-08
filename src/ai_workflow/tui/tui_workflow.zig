@@ -6,6 +6,7 @@ const prompt = tree1_mod.prompt;
 const context = @import("models.zig").ContextIPCTui;
 const sqlite = tree1_mod.sqlite;
 const bash_tool = tree1_mod.bash_tool;
+const read_file_tool = tree1_mod.read_file;
 const tool_models = tree1_mod.tool_models;
 const change_agent_tool = tree1_mod.change_agent_tool;
 const list_skills_tool = tree1_mod.list_skills_tool;
@@ -205,13 +206,7 @@ pub const TUIWorkflow = struct {
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
                     _ = send_response.run(allocator, conn_fd, self.logger, res_dynamic_agent, "user_choice");
-                    _ = try save_message.run(
-                        allocator, self.db, session_id, model, cwd,
-                        null,
-                        res_dynamic_agent.content,
-                        if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
-                        res_dynamic_agent.reasoning_content,
-                        agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter);
+                    _ = try save_message.run(allocator, self.db, session_id, model, cwd, null, res_dynamic_agent.content, if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null, res_dynamic_agent.reasoning_content, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter);
                     self.logger.infoFmt("FINISH REASON STOPPP", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
@@ -248,7 +243,7 @@ pub const TUIWorkflow = struct {
         conn_fd: std.posix.fd_t,
         session_id: []const u8,
     ) !agent.CallResponse {
-        const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool };
+        const tools: []const tool_models.AgentTool = &.{ bash_tool.bashTool, read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool };
 
         var dynamic_agent = try agent.Agent.init(allocator, self.logger);
         dynamic_agent.apiKey = api_key;
