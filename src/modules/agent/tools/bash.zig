@@ -8,6 +8,66 @@ const AgentToolFunction = @import("models.zig").AgentToolFunction;
 const AgentTool = @import("models.zig").AgentTool;
 
 pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
+    // --- Background mode ---
+    if (input.background) {
+        const ts = std.time.milliTimestamp();
+        const log_path = try std.fmt.allocPrint(
+            allocator,
+            "/tmp/bg_{d}.log",
+            .{ts},
+        );
+        defer allocator.free(log_path);
+
+        const bg_command = try std.fmt.allocPrint(
+            allocator,
+            "nohup {s} > {s} 2>&1 & echo $!",
+            .{ input.command, log_path },
+        );
+        defer allocator.free(bg_command);
+
+        var child = std.process.Child.init(&.{ "bash", "-c", bg_command }, allocator);
+        if (input.cwd) |cwd| child.cwd = cwd;
+        child.stdin_behavior = .Close;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Ignore;
+        try child.spawn();
+
+        // Read PID from stdout
+        var pid_buf: [32]u8 = undefined;
+        const pid_len = child.stdout.?.read(&pid_buf) catch 0;
+        const pid_str = std.mem.trimRight(u8, pid_buf[0..pid_len], "\n\r ");
+
+        _ = child.wait() catch {};
+
+        const stdout_msg = try std.fmt.allocPrint(
+            allocator,
+            "PID: {s}\nLog: {s}",
+            .{ pid_str, log_path },
+        );
+        errdefer allocator.free(stdout_msg);
+
+        const stderr_msg = try allocator.dupe(u8, "No errors.");
+        errdefer allocator.free(stderr_msg);
+
+        var trunc_buf: [53]u8 = undefined;
+        const truncated_command = if (input.command.len > 50) blk: {
+            trunc_buf[0..50].* = input.command[0..50].*;
+            trunc_buf[50..53].* = "...".*;
+            break :blk trunc_buf[0..53];
+        } else input.command;
+
+        // Return with the allocated stdout_msg as the stdout
+        return BashOutput{
+            .command = truncated_command,
+            .stdout = stdout_msg,
+            .stderr = stderr_msg,
+            .exit_code = 0,
+            .truncated = false,
+            .timeout = false,
+        };
+    }
+
+    // --- Foreground mode ---
     const max_output = input.max_output orelse 1024 * 1024;
     const timeout_sec = input.timeout orelse 30;
 
@@ -35,7 +95,7 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     const ArrayList = std.ArrayList;
     var stdout_data: ArrayList(u8) = .empty;
     var stderr_data: ArrayList(u8) = .empty;
-    errdefer {
+    defer {
         stdout_data.deinit(allocator);
         stderr_data.deinit(allocator);
     }
@@ -152,10 +212,23 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     } else input.command;
 
     // Return structured BashOutput instead of XML string
+    // Duplicate the strings so they outlive the ArrayLists
+    const stdout_copy = if (stdout_data.items.len == 0)
+        try allocator.dupe(u8, "No output produced.")
+    else
+        try allocator.dupe(u8, stdout_data.items);
+    errdefer allocator.free(stdout_copy);
+
+    const stderr_copy = if (stderr_data.items.len == 0)
+        try allocator.dupe(u8, "No errors.")
+    else
+        try allocator.dupe(u8, stderr_data.items);
+    errdefer allocator.free(stderr_copy);
+
     return BashOutput{
         .command = truncated_command,
-        .stdout = if (stdout_data.items.len == 0) "No output produced." else stdout_data.items,
-        .stderr = if (stderr_data.items.len == 0) "No errors." else stderr_data.items,
+        .stdout = stdout_copy,
+        .stderr = stderr_copy,
         .exit_code = exit_code,
         .truncated = was_truncated,
         .timeout = timeout_hit,
@@ -241,6 +314,16 @@ pub const bashTool = AgentTool{
                     .name = "stdin_data",
                     .type = "string",
                     .description = "Optional stdin input for the command.",
+                },
+                .{
+                    .name = "background",
+                    .type = "boolean",
+                    .description =
+                    \\Run command in background using nohup.
+                    \\Returns PID and log path in stdout.
+                    \\Example stdout: "PID: 12345\nLog: /tmp/bg_1234567890.log"
+                    \\Use PID to check status (ps -p <PID>) or kill (kill <PID>).
+                    ,
                 },
             },
             .required = &.{ "command", "cwd" },

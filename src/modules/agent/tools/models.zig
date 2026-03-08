@@ -4,6 +4,7 @@ pub const BashInput = struct {
     cwd: ?[]const u8 = null,
     max_output: ?usize = 1024 * 1024, // default 1MB
     stdin_data: ?[]const u8 = null, // optional stdin input, null = close stdin
+    background: bool = false, // run in background using nohup
 };
 
 pub const ReadFileInput = struct {

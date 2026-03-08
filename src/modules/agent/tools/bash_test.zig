@@ -1,6 +1,7 @@
 const std = @import("std");
 const bashMod = @import("bash.zig");
 const BashInput = @import("models.zig").BashInput;
+const BashOutput = @import("models.zig").BashOutput;
 
 test "bash execute helloworld" {
     const allocator = std.testing.allocator;
@@ -11,11 +12,12 @@ test "bash execute helloworld" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "<stdout>hello world") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>false</timeout>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "hello world") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
+    try std.testing.expectEqual(r.timeout, false);
 }
 
 test "bash execute non-zero exit code" {
@@ -27,10 +29,11 @@ test "bash execute non-zero exit code" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>42</exit_code>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>false</timeout>") != null);
+    try std.testing.expectEqual(r.exit_code, 42);
+    try std.testing.expectEqual(r.timeout, false);
 }
 
 test "bash execute long command truncated in output" {
@@ -44,10 +47,11 @@ test "bash execute long command truncated in output" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(r.len > 203);
-    try std.testing.expect(std.mem.indexOf(u8, r, "...") != null);
+    try std.testing.expect(r.command.len > 53);
+    try std.testing.expect(std.mem.indexOf(u8, r.command, "...") != null);
 }
 
 test "bash execute bun --version" {
@@ -59,10 +63,11 @@ test "bash execute bun --version" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<stdout>") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
+    try std.testing.expect(r.stdout.len > 0);
 }
 
 test "bash execute python3 print" {
@@ -74,10 +79,11 @@ test "bash execute python3 print" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "hello from python") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "hello from python") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
 }
 
 test "bash execute node --version" {
@@ -89,10 +95,11 @@ test "bash execute node --version" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "v") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "v") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
 }
 
 test "bash execute python error" {
@@ -104,10 +111,11 @@ test "bash execute python error" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "test error") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>1</exit_code>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "test error") != null);
+    try std.testing.expectEqual(r.exit_code, 1);
 }
 
 test "bash execute sleep command" {
@@ -119,10 +127,11 @@ test "bash execute sleep command" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "done") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "done") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
 }
 
 test "bash timeout test" {
@@ -134,10 +143,11 @@ test "bash timeout test" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>") != null);
+    try std.testing.expectEqual(r.timeout, true);
+    try std.testing.expect(r.exit_code != 0);
 }
 
 test "bash timeout with python sleep" {
@@ -149,9 +159,10 @@ test "bash timeout with python sleep" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
+    try std.testing.expectEqual(r.timeout, true);
 }
 
 test "bash stdin closed" {
@@ -163,10 +174,10 @@ test "bash stdin closed" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>1</exit_code>") != null or
-        std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+    try std.testing.expect(r.exit_code != 0);
 }
 
 test "bash stdin with data" {
@@ -179,10 +190,11 @@ test "bash stdin with data" {
         .stdin_data = "hello world",
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "got: hello world") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "got: hello world") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
 }
 
 test "bash pipe with multiple stages" {
@@ -194,10 +206,11 @@ test "bash pipe with multiple stages" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
-    try std.testing.expect(std.mem.indexOf(u8, r, "3") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r, "<exit_code>0</exit_code>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "3") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
 }
 
 test "bash pipe with slow producer respects timeout" {
@@ -211,10 +224,11 @@ test "bash pipe with slow producer respects timeout" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
     // Should timeout before completing all 5 iterations
-    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
+    try std.testing.expectEqual(r.timeout, true);
 }
 
 test "bash timeout with complex pipe command" {
@@ -228,10 +242,11 @@ test "bash timeout with complex pipe command" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
     // Should timeout before completing all 100 iterations (would take ~10s)
-    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
+    try std.testing.expectEqual(r.timeout, true);
 }
 
 test "bash timeout with continuous output and pipe" {
@@ -245,10 +260,11 @@ test "bash timeout with continuous output and pipe" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
     // Should timeout - the full command would take ~100 seconds
-    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
+    try std.testing.expectEqual(r.timeout, true);
 }
 
 test "bash timeout with stderr redirect and pipe" {
@@ -261,8 +277,72 @@ test "bash timeout with stderr redirect and pipe" {
         .max_output = null,
     };
     const r = try bashMod.executeBash(allocator, input);
-    defer allocator.free(r);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
 
     // Should timeout before completing
-    try std.testing.expect(std.mem.indexOf(u8, r, "<timeout>true</timeout>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "stdout") != null or std.mem.indexOf(u8, r.stderr, "stdout") != null);
+    try std.testing.expect(r.timeout == true);
+}
+
+test "bash background basic" {
+    const allocator = std.testing.allocator;
+    const input = BashInput{
+        .command = "sleep 5 && echo done",
+        .cwd = "/tmp",
+        .background = true,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+
+    // Should return PID and log path
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "PID:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "Log:") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
+    try std.testing.expectEqual(r.timeout, false);
+}
+
+test "bash background log file" {
+    const allocator = std.testing.allocator;
+    const input = BashInput{
+        .command = "echo hello_from_background",
+        .cwd = "/tmp",
+        .background = true,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+
+    // Extract log path from stdout - find "Log: " and extract everything after it
+    const log_start = std.mem.indexOf(u8, r.stdout, "Log: ") orelse return error.TestExpectedFound;
+    const log_path = std.mem.trim(u8, r.stdout[log_start + 5..], " \n\r");
+
+    // Give a moment for the file to be written
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    // Read log file and verify content
+    const log_file = try std.fs.openFileAbsolute(log_path, .{});
+    defer log_file.close();
+    const log_content = try log_file.readToEndAlloc(allocator, 4096);
+    defer allocator.free(log_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, log_content, "hello_from_background") != null);
+}
+
+test "bash background long running" {
+    const allocator = std.testing.allocator;
+    // Start a long-running background process
+    const input = BashInput{
+        .command = "for i in 1 2 3 4 5; do echo \"count $i\"; sleep 1; done",
+        .cwd = "/tmp",
+        .background = true,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r.stdout);
+    defer allocator.free(r.stderr);
+
+    // Should return immediately with PID
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "PID:") != null);
+    try std.testing.expectEqual(r.exit_code, 0);
 }
