@@ -21,6 +21,7 @@ pub const skills = @import("modules/agent/tools/skills.zig");
 pub const config = @import("modules/config/config.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
+pub const write_file = @import("modules/agent/tools/write_file.zig");
 pub const session = @import("modules/session/mod.zig");
 
 pub fn bufferedPrint() !void {
@@ -66,4 +67,6 @@ test {
     _ = @import("ai_workflow/tui/transform_llm_history_to_agent_messages.zig");
     _ = @import("ai_workflow/tui/tui_workflow.zig");
     _ = @import("modules/session/session_monitor.zig");
+    _ = @import("modules/agent/tools/write_file.zig");
+    _ = @import("modules/agent/tools/write_file_test.zig");
 }

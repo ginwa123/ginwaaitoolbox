@@ -199,7 +199,6 @@ pub const bashTool = AgentTool{
         \\
         \\## Preferred Use
         \\Use bash for: build, run, test, git, search (rg).
-        \\Use read_file to read files — not cat or sed.
         \\
         \\## Preferred Tools
         \\- `rg`  → code search (preferred over grep)

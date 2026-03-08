@@ -69,7 +69,7 @@ pub fn run(
 
         // try messages_list.append(allocator, assistant_msg);
 
-        _ = save_message.run(
+        _ = try save_message.run(
             allocator, db, session_id, model, cwd,
             null,
             res_dynamic_agent.content,

@@ -1190,7 +1190,35 @@ fn streamingThreadFunc(thread_ctx: *StreamingThreadContext) void {
         return;
     };
 
-    self.logFmt(.info, "[STREAM START] Response headers received in {}ms", .{elapsedMs(stream_start)});
+    self.logFmt(.info, "[STREAM START] Response headers received in {}ms (status={d})", .{elapsedMs(stream_start), response.head.status});
+
+    // Check if response has a body - some status codes don't (204, 304, etc.)
+    if (!response.request.method.responseHasBody()) {
+        self.logMsg(.info, "[STREAM] Response has no body (status code)");
+        thread_ctx.result = CallResponse{
+            .allocator = self.allocator,
+            .content = "",
+            .tool_calls = null,
+            .finish_reason = null,
+        };
+        thread_ctx.completed.store(true, .seq_cst);
+        thread_ctx.cond.broadcast();
+        return;
+    }
+
+    // Also check content-length header explicitly
+    if (response.head.content_length == null and response.head.transfer_encoding != .chunked) {
+        self.logMsg(.info, "[STREAM] Response has no body (no content-length, not chunked)");
+        thread_ctx.result = CallResponse{
+            .allocator = self.allocator,
+            .content = "",
+            .tool_calls = null,
+            .finish_reason = null,
+        };
+        thread_ctx.completed.store(true, .seq_cst);
+        thread_ctx.cond.broadcast();
+        return;
+    }
 
     var aggregator = StreamingAggregator.init(self.allocator);
     defer aggregator.deinit();

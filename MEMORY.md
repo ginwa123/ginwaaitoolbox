@@ -1,16 +1,32 @@
+# ExecutingAgent Memory
 
-## 2026-03-08 save_message.run refactoring
+<!-- Existing entries may be updated if a better fix or more accurate root cause is found. -->
 
-**Problem:** Pre-existing bug in tui_workflow.zig line 199 - errFmt used `{s}` format string for error type which doesn't work in Zig
-**Root cause:** The format string `{s}` expects a string type, but `@errorName(err)` returns `[]u8` which needs to be wrapped in a tuple
-**Fix:** Changed from `.{err}` to `.{@errorName(err)}`
-**Reuse signal:** When encountering "invalid format string" errors for error types, use `@errorName()` to convert to string first
+## Language & Environment Facts
 
-- [2026-03-08] No issues encountered.
+<!-- Known API changes, syntax rules, and environment behaviors for this codebase. -->
+<!-- Format: - [lang@version] <fact in one sentence> -->
 
-## 2026-03-08 read_file tool integration
+- [zig@0.15] `{s}` format string requires `[]u8` — use `@errorName(err)` to convert error types to string
+- [zig@0.15] ArrayList API changed: `.init` → `.empty`, all of `.appendSlice`, `.deinit`, `.toOwnedSlice` now require allocator as first arg
+- [zig@0.15] `std.fs.File.createFile` replaces `writeFile` for creating/overwriting files
+- [zig@0.15] `ArrayList.deinit` requires allocator parameter
+- [zig@0.15] Line collection must include newlines explicitly when building strings
 
-**Problem:** Pre-existing bugs in read_file.zig - ArrayList API incompatible with Zig 0.15
-**Root cause:** Zig 0.15 changed ArrayList API: .init → .empty, .appendSlice requires allocator, .deinit requires allocator, .toOwnedSlice requires allocator
-**Fix:** Changed all ArrayList calls to use new API: .empty, .appendSlice(allocator, slice), .deinit(allocator), .toOwnedSlice(allocator)
-**Reuse signal:** When migrating to Zig 0.15+, check all ArrayList usages for these API changes
+## Resolved Issues
+
+<!-- Issues encountered and fixed during runs. -->
+
+## [2026-03-08] save_message.run error format string
+
+**Problem:** `errFmt` in tui_workflow.zig used `{s}` with a raw error value which Zig rejects
+**Root cause:** `{s}` expects `[]u8` but error types are not strings — must be converted first
+**Fix:** Changed `.{err}` to `.{@errorName(err)}`
+**Reuse signal:** Any time a format string fails on an error type, wrap with `@errorName()`
+
+## [2026-03-08] write_file tool implementation
+
+**Problem:** Multiple failures during write_file tool implementation — corrupted test file from heredoc and Zig 0.15 API mismatches
+**Root cause:** heredoc produced malformed test file content; implementation assumed old Zig API
+**Fix:** Rewrote test files directly without heredoc; adapted all API calls to Zig 0.15 conventions
+**Reuse signal:** Never use heredoc to write Zig source files — write directly; always verify Zig 0.15 API before implementing new tools
