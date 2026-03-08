@@ -8,6 +8,8 @@ const send_response = @import("send_response.zig");
 const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
+const handle_search_tool = @import("handle_search_tool.zig");
+const handle_write_file_tool = @import("handle_write_file_tool.zig");
 const loop_detector = tree1_mod.loop_detector;
 
 // Forward declaration for TUIWorkflow
@@ -43,31 +45,6 @@ pub fn run(
                 },
             };
         }
-
-        // Merge reasoning_content into content of the tool call assistant message
-        // const reasoningContent: ?[]u8 = if (res_dynamic_agent.reasoning_content) |rc|
-        //     try allocator.dupe(u8, rc)
-        // else
-        //     null;
-
-        // const contentNormal: []const u8 = if (res_dynamic_agent.content) |c|
-        //     try allocator.dupe(u8, c)
-        // else
-        //     "";
-
-        // const mergedContent: ?[]u8 = if (reasoningContent != null or contentNormal != null) blk: {
-        //     const r = reasoningContent orelse "";
-        //     const c = contentNormal orelse "";
-        //     break :blk try std.mem.concat(allocator, u8, &.{ r, c });
-        // } else null;
-
-        // const assistant_msg = agent.AgentMessage{
-        //     .role = .assistant,
-        //     .content = "",
-        //     .tool_calls = assistant_tool_calls,
-        // };
-
-        // try messages_list.append(allocator, assistant_msg);
 
         _ = try save_message.run(
             allocator, db, session_id, model, cwd,
@@ -108,6 +85,18 @@ pub fn run(
             if (std.mem.eql(u8, tool_call.function.name, "read_file")) {
                 _ = handle_read_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling read_file tool: {s}", .{@errorName(err)}) catch {};
+                };
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "search")) {
+                _ = handle_search_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                    logger.errFmt("Error handling search tool: {s}", .{@errorName(err)}) catch {};
+                };
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "write_file")) {
+                _ = handle_write_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                    logger.errFmt("Error handling write_file tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 

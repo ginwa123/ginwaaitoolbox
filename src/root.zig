@@ -22,6 +22,7 @@ pub const config = @import("modules/config/config.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");
+pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const session = @import("modules/session/mod.zig");
 
 pub fn bufferedPrint() !void {
@@ -57,6 +58,8 @@ test {
     _ = @import("ai_workflow/tui/handle_change_agent_tool.zig");
     _ = @import("ai_workflow/tui/handle_content_filter.zig");
     _ = @import("ai_workflow/tui/handle_tool.zig");
+    _ = @import("ai_workflow/tui/handle_search_tool.zig");
+    _ = @import("ai_workflow/tui/handle_write_file_tool.zig");
     _ = @import("ai_workflow/tui/mark_message_not_for_llm.zig");
     _ = @import("ai_workflow/tui/models.zig");
     _ = @import("ai_workflow/tui/run_agentic_loop.zig");
@@ -69,4 +72,6 @@ test {
     _ = @import("modules/session/session_monitor.zig");
     _ = @import("modules/agent/tools/write_file.zig");
     _ = @import("modules/agent/tools/write_file_test.zig");
+    _ = @import("modules/agent/tools/search.zig");
+    _ = @import("modules/agent/tools/search_test.zig");
 }

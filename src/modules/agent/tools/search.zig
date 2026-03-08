@@ -200,6 +200,36 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
     };
 }
 
+/// Convert SearchResult to XML string format
+pub fn searchResultToString(allocator: std.mem.Allocator, result: SearchResult) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    try output.appendSlice(allocator, "<results>\n");
+
+    for (result.matches.items) |m| {
+        const match_xml = try std.fmt.allocPrint(allocator,
+            \\<match>
+            \\<file>{s}</file>
+            \\<line_number>{d}</line_number>
+            \\<file_total_lines>{d}</file_total_lines>
+            \\<snippet>{s}</snippet>
+            \\</match>
+        , .{
+            m.file,
+            m.line_number,
+            m.file_total_lines,
+            m.snippet,
+        });
+        try output.appendSlice(allocator, match_xml);
+        allocator.free(match_xml);
+    }
+
+    try output.appendSlice(allocator, "</results>");
+
+    return try output.toOwnedSlice(allocator);
+}
+
 pub const searchTool = AgentTool{
     .type = "function",
     .function = .{
