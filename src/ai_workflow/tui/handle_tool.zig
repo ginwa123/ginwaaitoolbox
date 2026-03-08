@@ -96,7 +96,7 @@ pub fn run(
                 try handle_change_agent_tool.run(allocator, parent_allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature, isThinking, current_agent);
             }
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                handle_bash_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                _ = handle_bash_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling bash tool: {s}", .{@errorName(err)}) catch {};
                 };
             }

@@ -35,13 +35,18 @@ pub const ParsedFrontmatter = struct {
 ///
 /// Returns ParsedFrontmatter with allocated strings, or null if no valid frontmatter found.
 /// Caller owns the returned memory and must free name and description.
+/// Parse YAML frontmatter from skill file content
+/// Expected format:
+/// ---
+/// name: skill-name
+/// description: "Skill description text"
+/// ---
+/// # Skill content follows...
+///
+/// Returns allocated ParsedFrontmatter with owned name and description strings
+/// Caller owns the returned memory and must free name and description.
 fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
-    // Check for frontmatter start marker
-    if (!std.mem.startsWith(u8, content, "---")) {
-        return null;
-    }
-
-    // Find the end of the first line (the opening ---)
+    // Find the first --- marker
     const first_newline = std.mem.indexOf(u8, content, "\n") orelse return null;
     const after_first_line = content[first_newline + 1 ..];
 
@@ -66,32 +71,30 @@ fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?Pars
         // Parse "name:" or "description:" lines
         if (std.mem.startsWith(u8, line, "name:")) {
             const value = std.mem.trim(u8, line[5..], " \t");
-            // Remove quotes if present
+            // Remove quotes if present, then allocate
             if (value.len >= 2 and ((value[0] == '"' and value[value.len - 1] == '"') or (value[0] == '\'' and value[value.len - 1] == '\''))) {
-                name = value[1 .. value.len - 1];
+                name = allocator.dupe(u8, value[1 .. value.len - 1]) catch return null;
             } else {
-                name = value;
+                name = allocator.dupe(u8, value) catch return null;
             }
         } else if (std.mem.startsWith(u8, line, "description:")) {
             const value = std.mem.trim(u8, line[12..], " \t");
-            // Remove quotes if present
+            // Remove quotes if present, then allocate
             if (value.len >= 2 and ((value[0] == '"' and value[value.len - 1] == '"') or (value[0] == '\'' and value[value.len - 1] == '\''))) {
-                description = value[1 .. value.len - 1];
+                description = allocator.dupe(u8, value[1 .. value.len - 1]) catch return null;
             } else {
-                description = value;
+                description = allocator.dupe(u8, value) catch return null;
             }
         }
 
         line_start += line_end + 1;
     }
-
-    // Name is required, description defaults to empty string
     const parsed_name = name orelse return null;
     const parsed_desc = description orelse "";
 
     return .{
-        .name = allocator.dupe(u8, parsed_name) catch return null,
-        .description = allocator.dupe(u8, parsed_desc) catch return null,
+        .name = parsed_name,
+        .description = parsed_desc,
     };
 }
 

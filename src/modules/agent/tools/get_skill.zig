@@ -62,28 +62,29 @@ pub fn executeGetSkill(allocator: std.mem.Allocator, input: GetSkillInput) ![]co
         const skills_list = skills.listSkills(allocator);
         defer skills.freeSkillsList(allocator, skills_list);
 
-        // Build available skills array
-        var available: std.ArrayList([]const u8) = .empty;
-        defer {
-            for (available.items) |item| allocator.free(item);
-        }
-        defer available.deinit(allocator);
-
-        for (skills_list) |skill| {
-            const formatted = try std.fmt.allocPrint(allocator, "\"{s}\"", .{skill.name});
-            errdefer allocator.free(formatted);
-            try available.append(allocator, formatted);
-        }
-
-        // Build JSON array string
+        // Build JSON array string directly from skills_list
+        // We don't need a separate ArrayList - just use skill names directly
         var available_str: std.ArrayList(u8) = .empty;
         defer available_str.deinit(allocator);
+        
         try available_str.append(allocator, '[');
-        for (available.items, 0..) |item, i| {
+        for (skills_list, 0..) |skill, i| {
             if (i > 0) {
                 try available_str.appendSlice(allocator, ", ");
             }
-            try available_str.appendSlice(allocator, item);
+            // Directly format each skill name as JSON string
+            try available_str.append(allocator, '"');
+            for (skill.name) |c| {
+                switch (c) {
+                    '"' => try available_str.appendSlice(allocator, "\\\""),
+                    '\\' => try available_str.appendSlice(allocator, "\\\\"),
+                    '\n' => try available_str.appendSlice(allocator, "\\n"),
+                    '\r' => try available_str.appendSlice(allocator, "\\r"),
+                    '\t' => try available_str.appendSlice(allocator, "\\t"),
+                    else => try available_str.append(allocator, c),
+                }
+            }
+            try available_str.append(allocator, '"');
         }
         try available_str.append(allocator, ']');
 

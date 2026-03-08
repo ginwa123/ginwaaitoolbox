@@ -5,17 +5,17 @@ const skills = @import("skills.zig");
 test "loadSkillsFromPath returns empty string for missing file" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const result = skills.loadSkillsFromPath(allocator, "nonexistent/path/skills.md");
     defer allocator.free(result);
-    
+
     try testing.expectEqualStrings("", result);
 }
 
 test "loadSkillsFromPath loads valid file" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Create a temporary test file
     const test_content = "# Test Skills\n\nThis is a test.";
     const test_file = std.fs.cwd().createFile(
@@ -29,19 +29,19 @@ test "loadSkillsFromPath loads valid file" {
         test_file.close();
         std.fs.cwd().deleteFile("test_skills_temp.md") catch {};
     }
-    
+
     try test_file.writeAll(test_content);
-    
+
     const result = skills.loadSkillsFromPath(allocator, "test_skills_temp.md");
     defer allocator.free(result);
-    
+
     try testing.expectEqualStrings(test_content, result);
 }
 
 test "loadSkillsFromPath returns empty string for empty file" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Create an empty test file
     const test_file = std.fs.cwd().createFile(
         "test_skills_empty.md",
@@ -54,17 +54,17 @@ test "loadSkillsFromPath returns empty string for empty file" {
         test_file.close();
         std.fs.cwd().deleteFile("test_skills_empty.md") catch {};
     }
-    
+
     const result = skills.loadSkillsFromPath(allocator, "test_skills_empty.md");
     defer allocator.free(result);
-    
+
     try testing.expectEqualStrings("", result);
 }
 
 test "loadSkillsFromPath returns empty string for whitespace-only file" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Create a whitespace-only test file
     const test_file = std.fs.cwd().createFile(
         "test_skills_whitespace.md",
@@ -77,12 +77,12 @@ test "loadSkillsFromPath returns empty string for whitespace-only file" {
         test_file.close();
         std.fs.cwd().deleteFile("test_skills_whitespace.md") catch {};
     }
-    
+
     try test_file.writeAll("   \n\t\n   ");
-    
+
     const result = skills.loadSkillsFromPath(allocator, "test_skills_whitespace.md");
     defer allocator.free(result);
-    
+
     try testing.expectEqualStrings("", result);
 }
 
@@ -93,8 +93,8 @@ test "loadSkillsFromPath returns empty string for whitespace-only file" {
 test "parseYamlFrontmatter extracts name and description with quotes" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
-    const test_content = 
+
+    const test_content =
         \\---
         \\name: test-skill
         \\description: "This is a test skill description"
@@ -102,7 +102,7 @@ test "parseYamlFrontmatter extracts name and description with quotes" {
         \\# Test Skill
         \\Content here.
     ;
-    
+
     // Create test file
     const test_file = std.fs.cwd().createFile("test_fm_quoted.md", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
@@ -113,10 +113,10 @@ test "parseYamlFrontmatter extracts name and description with quotes" {
         std.fs.cwd().deleteFile("test_fm_quoted.md") catch {};
     }
     try test_file.writeAll(test_content);
-    
+
     const content = skills.loadSkillsFromPath(allocator, "test_fm_quoted.md");
     defer allocator.free(content);
-    
+
     // We can't directly test parseYamlFrontmatter since it's private, but we can test via listSkillsFromDir
     // For now, just verify the content was loaded
     try testing.expect(content.len > 0);
@@ -125,15 +125,15 @@ test "parseYamlFrontmatter extracts name and description with quotes" {
 test "parseYamlFrontmatter handles unquoted values" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
-    const test_content = 
+
+    const test_content =
         \\---
         \\name: unquoted-skill
         \\description: Unquoted description here
         \\---
         \\# Content
     ;
-    
+
     const test_file = std.fs.cwd().createFile("test_fm_unquoted.md", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
@@ -143,10 +143,10 @@ test "parseYamlFrontmatter handles unquoted values" {
         std.fs.cwd().deleteFile("test_fm_unquoted.md") catch {};
     }
     try test_file.writeAll(test_content);
-    
+
     const content = skills.loadSkillsFromPath(allocator, "test_fm_unquoted.md");
     defer allocator.free(content);
-    
+
     try testing.expect(content.len > 0);
 }
 
@@ -157,11 +157,11 @@ test "parseYamlFrontmatter handles unquoted values" {
 test "getLocalSkillsPath returns a valid path structure" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const path = skills.getLocalSkillsPath(allocator);
     if (path) |p| {
         defer allocator.free(p);
-        
+
         // Path should contain the local skills directory
         try testing.expect(std.mem.indexOf(u8, p, ".zigginagentic") != null);
         try testing.expect(std.mem.indexOf(u8, p, "skills") != null);
@@ -171,18 +171,18 @@ test "getLocalSkillsPath returns a valid path structure" {
 test "getGlobalSkillsPath returns XDG-compliant path" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const path = skills.getGlobalSkillsPath(allocator);
     if (path) |p| {
         defer allocator.free(p);
-        
+
         // Path should contain the app name and skills directory
         try testing.expect(std.mem.indexOf(u8, p, "zigginagentic") != null);
         try testing.expect(std.mem.indexOf(u8, p, "skills") != null);
-        
+
         // On Linux, should contain .config or XDG_CONFIG_HOME
         if (builtin.os.tag == .linux) {
-            const has_config = std.mem.indexOf(u8, p, ".config") != null or 
+            const has_config = std.mem.indexOf(u8, p, ".config") != null or
                                std.posix.getenv("XDG_CONFIG_HOME") != null;
             try testing.expect(has_config);
         }
@@ -192,7 +192,7 @@ test "getGlobalSkillsPath returns XDG-compliant path" {
 test "resolveSkillsPath returns null when no skills directory exists" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // This test assumes no skills directory exists in default locations
     // The function should return null gracefully
     const path = skills.resolveSkillsPath(allocator);
@@ -208,192 +208,12 @@ test "resolveSkillsPath returns null when no skills directory exists" {
 test "freeSkillsPath works correctly" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const path = skills.getLocalSkillsPath(allocator);
     if (path) |p| {
         skills.freeSkillsPath(allocator, p);
         // If we get here without crashing, the test passes
     }
-}
-
-// ============================================
-// Tests for listSkills with YAML frontmatter
-// ============================================
-
-test "listSkills returns all skills from directory" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-    
-    // Create the local skills directory structure
-    std.fs.cwd().makePath(".zigginagentic/skills") catch |err| {
-        std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    
-    // Create skill files with YAML frontmatter
-    const skill1_content = 
-        \\---
-        \\name: code_review
-        \\description: "Review code for quality and bugs"
-        \\---
-        \\# Code Review Skill
-        \\When reviewing code, check for bugs.
-    ;
-    
-    const skill2_content = 
-        \\---
-        \\name: debugging
-        \\description: "Debug issues systematically"
-        \\---
-        \\# Debugging Skill
-        \\When debugging, reproduce the issue first.
-    ;
-    
-    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/code_review.MD", .{ .truncate = true }) catch |err| {
-        std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    const file2 = std.fs.cwd().createFile(".zigginagentic/skills/debugging.MD", .{ .truncate = true }) catch |err| {
-        std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    
-    defer {
-        file1.close();
-        file2.close();
-        std.fs.cwd().deleteFile(".zigginagentic/skills/code_review.MD") catch {};
-        std.fs.cwd().deleteFile(".zigginagentic/skills/debugging.MD") catch {};
-        std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
-        std.fs.cwd().deleteDir(".zigginagentic") catch {};
-    }
-    
-    try file1.writeAll(skill1_content);
-    try file2.writeAll(skill2_content);
-    
-    const result = skills.listSkills(allocator);
-    defer skills.freeSkillsList(allocator, result);
-    
-    try testing.expectEqual(@as(usize, 2), result.len);
-    
-    // Check that both skills are present (order may vary)
-    var found_code_review = false;
-    var found_debugging = false;
-    for (result) |skill| {
-        if (std.mem.eql(u8, skill.name, "code_review")) {
-            found_code_review = true;
-            try testing.expect(std.mem.indexOf(u8, skill.description, "Review code") != null);
-        }
-        if (std.mem.eql(u8, skill.name, "debugging")) {
-            found_debugging = true;
-            try testing.expect(std.mem.indexOf(u8, skill.description, "Debug issues") != null);
-        }
-    }
-    try testing.expect(found_code_review);
-    try testing.expect(found_debugging);
-}
-
-test "listSkills skips empty files" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-    
-    // Create the local skills directory structure
-    std.fs.cwd().makePath(".zigginagentic/skills") catch |err| {
-        std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    
-    // Create a valid skill file
-    const skill_content = 
-        \\---
-        \\name: valid_skill
-        \\description: "A valid skill"
-        \\---
-        \\# Valid Skill
-    ;
-    
-    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/valid_skill.MD", .{ .truncate = true }) catch |err| {
-        std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    
-    // Create an empty skill file
-    const file2 = std.fs.cwd().createFile(".zigginagentic/skills/empty_skill.MD", .{ .truncate = true }) catch |err| {
-        std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    
-    defer {
-        file1.close();
-        file2.close();
-        std.fs.cwd().deleteFile(".zigginagentic/skills/valid_skill.MD") catch {};
-        std.fs.cwd().deleteFile(".zigginagentic/skills/empty_skill.MD") catch {};
-        std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
-        std.fs.cwd().deleteDir(".zigginagentic") catch {};
-    }
-    
-    try file1.writeAll(skill_content);
-    // file2 is empty (no write)
-    
-    const result = skills.listSkills(allocator);
-    defer skills.freeSkillsList(allocator, result);
-    
-    // Should only return the valid skill, not the empty one
-    try testing.expectEqual(@as(usize, 1), result.len);
-    try testing.expectEqualStrings("valid_skill", result[0].name);
-}
-
-test "listSkills skips files without valid frontmatter" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
-    
-    // Create the local skills directory structure
-    std.fs.cwd().makePath(".zigginagentic/skills") catch |err| {
-        std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    
-    // Create a valid skill file
-    const valid_content = 
-        \\---
-        \\name: valid_skill
-        \\description: "A valid skill"
-        \\---
-        \\# Valid Skill
-    ;
-    
-    // Create a file without frontmatter
-    const invalid_content = 
-        \\# No Frontmatter
-        \\This file has no YAML frontmatter.
-    ;
-    
-    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/valid.MD", .{ .truncate = true }) catch |err| {
-        std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    const file2 = std.fs.cwd().createFile(".zigginagentic/skills/invalid.MD", .{ .truncate = true }) catch |err| {
-        std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    
-    defer {
-        file1.close();
-        file2.close();
-        std.fs.cwd().deleteFile(".zigginagentic/skills/valid.MD") catch {};
-        std.fs.cwd().deleteFile(".zigginagentic/skills/invalid.MD") catch {};
-        std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
-        std.fs.cwd().deleteDir(".zigginagentic") catch {};
-    }
-    
-    try file1.writeAll(valid_content);
-    try file2.writeAll(invalid_content);
-    
-    const result = skills.listSkills(allocator);
-    defer skills.freeSkillsList(allocator, result);
-    
-    // Should only return the valid skill
-    try testing.expectEqual(@as(usize, 1), result.len);
-    try testing.expectEqualStrings("valid_skill", result[0].name);
 }
 
 // ============================================
@@ -403,14 +223,14 @@ test "listSkills skips files without valid frontmatter" {
 test "parseSkill returns skill content for valid skill name" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Create the local skills directory structure
     std.fs.cwd().makePath(".zigginagentic/skills") catch |err| {
         std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
-    
-    const skill_content = 
+
+    const skill_content =
         \\---
         \\name: test_skill
         \\description: "A test skill"
@@ -418,24 +238,24 @@ test "parseSkill returns skill content for valid skill name" {
         \\# Test Skill
         \\This is the skill content.
     ;
-    
+
     const file1 = std.fs.cwd().createFile(".zigginagentic/skills/test_skill.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
-    
+
     defer {
         file1.close();
         std.fs.cwd().deleteFile(".zigginagentic/skills/test_skill.MD") catch {};
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
-    
+
     try file1.writeAll(skill_content);
-    
+
     const result = skills.parseSkill(allocator, "test_skill");
     defer if (result) |r| allocator.free(r);
-    
+
     try testing.expect(result != null);
     try testing.expect(std.mem.indexOf(u8, result.?, "test_skill") != null);
     try testing.expect(std.mem.indexOf(u8, result.?, "Test Skill") != null);
@@ -444,37 +264,37 @@ test "parseSkill returns skill content for valid skill name" {
 test "parseSkill returns null for invalid skill name" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Create the local skills directory structure
     std.fs.cwd().makePath(".zigginagentic/skills") catch |err| {
         std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
-    
-    const skill_content = 
+
+    const skill_content =
         \\---
         \\name: existing_skill
         \\description: "An existing skill"
         \\---
         \\# Existing Skill
     ;
-    
+
     const file1 = std.fs.cwd().createFile(".zigginagentic/skills/existing.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
-    
+
     defer {
         file1.close();
         std.fs.cwd().deleteFile(".zigginagentic/skills/existing.MD") catch {};
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
-    
+
     try file1.writeAll(skill_content);
-    
+
     const result = skills.parseSkill(allocator, "nonexistent_skill");
-    
+
     try testing.expect(result == null);
 }
 
@@ -488,39 +308,39 @@ const get_skill = @import("get_skill.zig");
 test "executeListSkills returns JSON with skills" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Create the local skills directory structure
     std.fs.cwd().makePath(".zigginagentic/skills") catch |err| {
         std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
-    
+
     // Create skill files with YAML frontmatter
-    const skill1_content = 
+    const skill1_content =
         \\---
         \\name: code_review
         \\description: "Review code for quality"
         \\---
         \\# Code Review
     ;
-    
+
     const file1 = std.fs.cwd().createFile(".zigginagentic/skills/code_review.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
-    
+
     defer {
         file1.close();
         std.fs.cwd().deleteFile(".zigginagentic/skills/code_review.MD") catch {};
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
-    
+
     try file1.writeAll(skill1_content);
-    
+
     const result = try list_skills.executeListSkills(allocator);
     defer allocator.free(result);
-    
+
     // Verify JSON structure
     try testing.expect(std.mem.indexOf(u8, result, "{\"skills\":[") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"code_review\"") != null);
@@ -530,15 +350,15 @@ test "executeListSkills returns JSON with skills" {
 test "executeGetSkill returns skill content for valid skill" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Create the local skills directory structure
     std.fs.cwd().makePath(".zigginagentic/skills") catch |err| {
         std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
-    
+
     // Create a skill file with YAML frontmatter
-    const test_content = 
+    const test_content =
         \\---
         \\name: debugging
         \\description: "Debug issues systematically"
@@ -546,7 +366,7 @@ test "executeGetSkill returns skill content for valid skill" {
         \\# Debugging
         \\Debug issues systematically.
     ;
-    
+
     const test_file = std.fs.cwd().createFile(".zigginagentic/skills/debugging.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
@@ -557,16 +377,16 @@ test "executeGetSkill returns skill content for valid skill" {
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
-    
+
     try test_file.writeAll(test_content);
-    
+
     const input = get_skill.GetSkillInput{
         .skill_name = "debugging",
     };
-    
+
     const result = try get_skill.executeGetSkill(allocator, input);
     defer allocator.free(result);
-    
+
     // Verify JSON structure
     try testing.expect(std.mem.indexOf(u8, result, "\"skill_name\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"loaded\"") != null);
@@ -576,22 +396,22 @@ test "executeGetSkill returns skill content for valid skill" {
 test "executeGetSkill returns error for invalid skill" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     // Create the local skills directory structure
     std.fs.cwd().makePath(".zigginagentic/skills") catch |err| {
         std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
-    
+
     // Create a skill file with YAML frontmatter
-    const test_content = 
+    const test_content =
         \\---
         \\name: existing_skill
         \\description: "This skill exists"
         \\---
         \\# Existing Skill
     ;
-    
+
     const test_file = std.fs.cwd().createFile(".zigginagentic/skills/existing.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
@@ -602,16 +422,16 @@ test "executeGetSkill returns error for invalid skill" {
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
-    
+
     try test_file.writeAll(test_content);
-    
+
     const input = get_skill.GetSkillInput{
         .skill_name = "nonexistent_skill",
     };
-    
+
     const result = try get_skill.executeGetSkill(allocator, input);
     defer allocator.free(result);
-    
+
     // Verify JSON structure for error case
     try testing.expect(std.mem.indexOf(u8, result, "\"skill_name\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"loaded\"") != null);

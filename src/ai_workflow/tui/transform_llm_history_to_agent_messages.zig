@@ -21,11 +21,14 @@ pub fn run(allocator: std.mem.Allocator, message: TUIHistory) ![]agent.AgentMess
         return messages.toOwnedSlice(allocator);
     }
 
-    // Handle assistant/user/system messages
+    // Handle assistant/user/system messages - always create a message if role is valid
+    // (but not tool role which is handled above)
     const finishReason = agent.FinishReason.fromStr(message.finish_reason);
     const isToolCalls = finishReason == .tool_calls;
 
-    if (message.response_content.len > 0 or isToolCalls) {
+    // For assistant/user/system roles, always create a message (even if content is empty)
+    // Tool role is handled separately above
+    if (role != .tool) {
         var tool_calls: ?[]agent.ToolCall = null;
         const toolSource = if (message.tools.len > 0) message.tools else message.response_content;
         const tcParsed = json.parseFromSlice(json.Value, allocator, toolSource, .{}) catch null;

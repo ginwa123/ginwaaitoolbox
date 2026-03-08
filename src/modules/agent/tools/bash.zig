@@ -179,64 +179,91 @@ pub const bashTool = AgentTool{
         .description =
         \\Execute a bash command. Returns stdout, stderr, exit_code, truncated, timeout flags.
         \\
+        \\⚠ Commands are validated before execution. Banned or malformed commands return
+        \\exit_code=1 with a rejection message and suggested alternative. Fix and retry.
+        \\
         \\## EXPLORATION (strict order — do not skip steps)
         \\  1. `du -sh <dir>`                                          — size gate first
-        \\  2. `tree -I 'node_modules|.git|dist|build|*.lock' --max-depth 3` — structure
-        \\  3. `rg -n <pattern> <path> --max-count 20`                 — targeted search
-        \\  4. `sed -n 'X,Yp' <file>`                                  — read only needed range
-        \\  NEVER: ls -laR, cat on unknown files, find without -maxdepth, unscoped globs
+        \\  2. `tree -I 'node_modules|.git|dist|build|*.lock' --max-depth 3 | head -n 80`
+        \\  3. `wc -l <file>`                                         — line count before ANY file read
+        \\  4. Read strategy based on line count:
+        \\       <= 300 lines  → `cat <file> | head -n 300`           — read full file
+        \\       300-1000      → `rg -A 80 '<construct>' <file> | head -n 100`
+        \\       > 1000 lines  → `rg -A 50 '<construct>' <file> | head -n 100`
+        \\  5. If rg returns zero matches:
+        \\       → `grep -n '<partial_name>' <file> | head -n 20`     — partial name fallback
+        \\       → if still no match: `cat <file> | head -n 300`      (files <= 1000 lines only)
+        \\       → if file > 1000 lines and no match: report gap — do not read the full file
+        \\  ALWAYS: re-read after any write to verify the change landed correctly
+        \\  ALWAYS: re-read if the file may have changed since your last read
         \\
         \\## PREFERRED TOOLS
-        \\  `rg`        — regex search (always prefer over grep)
-        \\  `grep -n`   — line-numbered fallback only
-        \\  `sed -n`    — line range extraction only (never sed -i without rg confirm first)
-        \\  `jq`        — all JSON reads and writes (never sed/awk on JSON)
-        \\  `yq`        — all YAML reads and writes (never sed/awk on YAML)
-        \\  `wc -l`     — line count before reading any file
+        \\  `rg`        — regex search and construct extraction (always prefer over grep)
+        \\  `grep -n`   — fallback only when rg returns zero matches
+        \\  `cat`       — full file read for files <= 300 lines only
+        \\  `rg -A <N>` — construct extraction for all files > 300 lines
+        \\  `jq`        — all JSON reads and writes (see JQ WRITE PATTERN below)
+        \\  `yq`        — all YAML reads and writes (never awk on YAML)
+        \\  `wc -l`     — ALWAYS run before reading any file
         \\  `stat`      — file metadata (never cat for metadata)
         \\  `awk`       — field/row filtering on plain text only
         \\
+        \\## JQ WRITE PATTERN (mandatory)
+        \\  ALWAYS use temp-file-and-move:
+        \\    `jq '<filter>' <file> > <file>.tmp && mv <file>.tmp <file>`
+        \\  NEVER: `jq '<filter>' <file> > <file>`    ← truncates file to zero bytes
+        \\  After every jq write: `jq '.' <file>`     — confirm valid JSON
+        \\
         \\## EDIT WORKFLOW (always follow this order)
-        \\  1. rg — find target line number
-        \\  2. sed -n 'X,Yp' — verify surrounding context
-        \\  3. sed -i — make the edit
-        \\  4. rg — confirm the change landed correctly
-        \\  5. ast-check / typecheck — verify no new errors introduced
-        \\  NEVER skip step 4 or 5. An unverified edit is a failed edit.
+        \\  1. `rg -n '<construct_name>' <file> | head -n 20` — locate anchor
+        \\     If zero matches: `grep -n '<partial>' <file> | head -n 20`
+        \\  2. Write full replacement construct using verbatim current code from tasklist
+        \\     Never use line numbers — named constructs only
+        \\  3. `rg -A <N> '<construct_name>' <file> | head -n 100` — verify change landed
+        \\  4. `ast-check / typecheck` the edited file
+        \\  5. If a type definition changed: `rg -l '<type_name>' <src_dir> | head -n 50`
+        \\     then typecheck every dependent file found
+        \\  NEVER skip steps 3, 4, 5. An unverified edit is a failed edit.
         \\
-        \\## LANGUAGE CHECKS (run before any build)
-        \\  Zig:       `zig ast-check <file>`
-        \\  TypeScript:`tsc --noEmit 2>&1 | head -n 50`
-        \\  Rust:      `cargo check 2>&1 | head -n 100`
-        \\  Go:        `go vet ./... 2>&1 | head -n 50`
-        \\  Always check the SPECIFIC file edited, not the whole project, when possible.
+        \\## TRUNCATION RECOVERY
+        \\  If truncated=true after `rg -A <N>`:
+        \\  - Step 1: double -A once → `rg -A <2N> '<construct>' <file> | head -n 200`
+        \\  - Step 2: if still truncated → split:
+        \\      `rg -A <N> '<construct_start>' <file> | head -n 100`
+        \\      `rg -A <N> '<construct_end>'   <file> | head -n 100`
+        \\  - Step 3: if still truncated → report gap: "construct <name> exceeds extractable size"
+        \\  NEVER raise max_output as a response to truncation
         \\
-        \\## ERROR HANDLING (critical — prevents loops)
-        \\  After a failed command:
+        \\## DONE SIGNAL
+        \\  Stop editing when ALL hold:
+        \\  - typecheck / ast-check passes with 0 errors on all edited files
+        \\  - all dependent files typecheck cleanly
+        \\  - tasklist Subtask acceptance criteria are met
+        \\  Do NOT make further edits after this point — report DONE, let ReviewAgent decide.
+        \\
+        \\## LANGUAGE CHECKS
+        \\  Zig:        `zig ast-check <file> | head -n 50`
+        \\  TypeScript: `tsc --noEmit 2>&1 | head -n 50`
+        \\  Rust:       `cargo check 2>&1 | head -n 100`
+        \\  Go:         `go vet ./... 2>&1 | head -n 50`
+        \\  Check the SPECIFIC file edited — not the whole project — when possible.
+        \\
+        \\## ERROR HANDLING
         \\  - Read the FULL error before acting
-        \\  - If the error points to a type/interface definition: read that file first
-        \\  - Never re-apply the same fix twice — if it failed once, change strategy
+        \\  - If error points to a type definition: read that file first
+        \\  - Never re-apply the same fix twice — change strategy
+        \\  - If the same error appears after your fix: problem is UPSTREAM
+        \\    → fix the source definition, not the call site
         \\  - `as unknown as X` casts are never a valid fix for a type mismatch
-        \\  - If the same error appears after your fix: the problem is UPSTREAM
-        \\    → find and fix the source definition, not the call site
         \\
-        \\## OUTPUT CAP (mandatory — no exceptions)
-        \\  rg/grep/sed   → head -n 50   (max_output: 10000)
-        \\  ast-check     → head -n 50   (max_output: 20000)
-        \\  builds        → head -n 200  (max_output: 50000)
-        \\  JSON dumps    → head -n 500  (max_output: 200000)
-        \\  If truncated=true: STOP — narrow scope with sed ranges, do NOT raise max_output
-        \\
-        \\## HARD RULES (violations break the task)
-        \\  1. `timeout <N>` is REQUIRED on every command — bare commands are rejected
-        \\  2. NO sudo / su / doas / pkexec
-        \\  3. NO full-file cat — use head / tail / sed -n ranges only
-        \\  4. NO unbounded output — every pipeline needs an explicit cap
-        \\  5. NO sed/awk on JSON or YAML — use jq/yq only
-        \\  6. NO find without -maxdepth and path exclusions
-        \\  7. NO sed -i without rg confirmation afterward
-        \\  8. NO re-applying an identical fix after it already failed
-        \\  9. ALWAYS set cwd explicitly — never assume working directory
+        \\## OUTPUT CAP (mandatory — enforced by validator)
+        \\  rg/grep     → head -n 50   / 10000 bytes
+        \\  cat         → head -n 300  / 50000 bytes  (files <= 300 lines only)
+        \\  rg -A       → head -n 100  / 20000 bytes
+        \\  ast-check   → head -n 50   / 20000 bytes
+        \\  builds      → head -n 200  / 50000 bytes
+        \\  JSON        → head -n 500  / 200000 bytes
+        \\  If truncated=true: follow TRUNCATION RECOVERY — never raise max_output
         ,
         .parameters = .{
             .type = "object",
@@ -246,6 +273,7 @@ pub const bashTool = AgentTool{
                     .type = "string",
                     .description =
                     \\REQUIRED format: `timeout <N> <cmd> | head -n <N>`
+                    \\Commands missing timeout or head -n cap will be rejected with exit_code=1.
                     \\
                     \\Timeout by type:
                     \\  reads/search = 10s
@@ -254,23 +282,30 @@ pub const bashTool = AgentTool{
                     \\  network      = 60s
                     \\  builds       = 120s
                     \\
-                    \\Output cap by type:
-                    \\  rg/grep/sed  = 50 lines
-                    \\  ast-check    = 50 lines
-                    \\  builds       = 200 lines
-                    \\  JSON         = 500 lines
+                    \\Read strategy (always wc -l first):
+                    \\  <= 300 lines  → `timeout 10 cat <file> | head -n 300`
+                    \\  300-1000      → `timeout 10 rg -A 80 '<construct>' <file> | head -n 100`
+                    \\  > 1000 lines  → `timeout 10 rg -A 50 '<construct>' <file> | head -n 100`
+                    \\  zero matches  → `timeout 10 grep -n '<partial>' <file> | head -n 20`
                     \\
-                    \\GOOD: `timeout 10 tree . -I 'node_modules|.git' --max-depth 3 | head -n 80`
-                    \\GOOD: `timeout 10 rg -n 'createSystemMessage' src/ --max-count 20 | head -n 50`
-                    \\GOOD: `timeout 10 sed -n '120,140p' src/store/messageStore.ts`
-                    \\GOOD: `timeout 10 wc -l src/types/index.ts`
-                    \\GOOD: `timeout 30 tsc --noEmit 2>&1 | head -n 50`
+                    \\GOOD: `timeout 10 wc -l src/get_skill.zig`
+                    \\GOOD: `timeout 10 cat src/small_file.zig | head -n 300`
+                    \\GOOD: `timeout 10 rg -A 50 'pub fn executeGetSkill' src/get_skill.zig | head -n 100`
+                    \\GOOD: `timeout 10 grep -n 'executeGet' src/get_skill.zig | head -n 20`
+                    \\GOOD: `timeout 10 rg -A 30 'pub fn executeGetSkill' src/get_skill.zig | head -n 50`
+                    \\      (re-read after write — verification)
+                    \\GOOD: `jq '.key = "val"' f.json > f.json.tmp && mv f.json.tmp f.json`
+                    \\GOOD: `timeout 10 rg -l 'MyStruct' src/ | head -n 50`
                     \\
-                    \\BAD: `ls -laR`                         ← unbounded output
-                    \\BAD: `cat src/main.zig`                ← full file read
-                    \\BAD: `find . -name '*.ts'`             ← missing -maxdepth and filter
-                    \\BAD: `sed -i 's/x/y/g' file.ts`       ← edit without rg confirm after
-                    \\BAD: same fix command run twice        ← loop, change strategy instead
+                    \\BAD: `ls -laR`                               ← REJECTED — unbounded output
+                    \\BAD: `sed -n '60,75p' src/main.zig`         ← REJECTED — sed -n banned
+                    \\BAD: `sed -i 's/old/new/g' file.zig`        ← REJECTED — sed -i banned
+                    \\BAD: `find . -name '*.ts'`                   ← REJECTED — missing -maxdepth
+                    \\BAD: `cat src/main.zig`                      ← REJECTED — no timeout, no cap
+                    \\BAD: `sudo apt install`                      ← REJECTED — sudo banned
+                    \\BAD: `rm -rf node_modules`                   ← REJECTED — destructive delete
+                    \\BAD: `jq '.' file.json > file.json`         ← REJECTED — truncates to zero
+                    \\BAD: same fix command run twice              ← change strategy instead
                     ,
                 },
                 .{
@@ -278,7 +313,7 @@ pub const bashTool = AgentTool{
                     .type = "string",
                     .description =
                     \\Absolute working directory. REQUIRED — always set explicitly.
-                    \\Never assume CWD. Verify with `pwd` if uncertain.
+                    \\Never assume CWD. Verify with `timeout 10 pwd` if uncertain.
                     ,
                 },
                 .{
@@ -286,12 +321,13 @@ pub const bashTool = AgentTool{
                     .type = "number",
                     .description =
                     \\Max stdout+stderr bytes. Default: 10000. Max: 1048576.
-                    \\  rg/grep/sed  = 10000
+                    \\  rg/grep      = 10000
+                    \\  cat          = 50000
+                    \\  rg -A        = 20000
                     \\  ast-check    = 20000
                     \\  builds       = 50000
                     \\  JSON         = 200000
-                    \\If truncated=true: narrow your command scope with sed ranges.
-                    \\Do NOT raise this limit as a first response to truncation.
+                    \\If truncated=true: follow TRUNCATION RECOVERY — never raise this limit.
                     ,
                 },
                 .{
@@ -307,41 +343,6 @@ pub const bashTool = AgentTool{
         },
     },
 };
-
-// example how to use this tool
-// const bashTool = AgentTool{
-//     .type = "function",
-//     .function = .{
-//         .name = "bash",
-//         .description = "Execute a bash command and return stdout and stderr output",
-//         .parameters = .{
-//             .type = "object",
-//             .properties = &.{
-//                 .{
-//                     .name = "command",
-//                     .type = "string",
-//                     .description = "The bash command to execute",
-//                 },
-//                 .{
-//                     .name = "timeout",
-//                     .type = "number",
-//                     .description = "Timeout in seconds, default 30",
-//                 },
-//                 .{
-//                     .name = "cwd",
-//                     .type = "string",
-//                     .description = "Working directory to run the command in",
-//                 },
-//                 .{
-//                     .name = "max_output",
-//                     .type = "number",
-//                     .description = "Max output size in bytes, default 1048576 (1MB). Increase if output is truncated",
-//                 },
-//             },
-//             .required = &.{"command"},
-//         },
-//     },
-// };
 
 test {
     _ = @import("bash_test.zig");
