@@ -37,7 +37,7 @@ pub fn write_file(
     if (opts.start_line != null and opts.end_line != null) {
         return try write_file_replace_lines(allocator, path, opts);
     }
-    
+
     // Otherwise, overwrite entire file
     return try write_file_overwrite(allocator, path, opts);
 }
@@ -52,7 +52,7 @@ fn write_file_overwrite(
             // Try to create parent directories
             var path_copy = try allocator.dupe(u8, path);
             defer allocator.free(path_copy);
-            
+
             // Find the directory part
             const last_slash = std.mem.lastIndexOf(u8, path_copy, "/");
             if (last_slash) |idx| {
@@ -60,9 +60,9 @@ fn write_file_overwrite(
                 try std.fs.cwd().makeDir(dir_path);
                 const file = try std.fs.cwd().createFile(path, .{});
                 defer file.close();
-                
+
                 try file.writeAll(opts.content);
-                
+
                 const lines_written = countLines(opts.content);
                 return WriteFileResult{
                     .path = try allocator.dupe(u8, path),
@@ -95,25 +95,25 @@ fn write_file_replace_lines(
 ) !WriteFileResult {
     const start_line = opts.start_line.?;
     const end_line = opts.end_line.?;
-    
+
     if (start_line > end_line) {
         return error.InvalidRange;
     }
-    
+
     // Read existing file
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
-    
+
     const raw = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(raw);
-    
+
     // Collect all lines (including newline characters)
     var lines = std.ArrayList([]u8).empty;
     errdefer {
         for (lines.items) |line| allocator.free(line);
         lines.deinit(allocator);
     }
-    
+
     var start_idx: usize = 0;
     var i: usize = 0;
     while (i < raw.len) : (i += 1) {
@@ -129,21 +129,21 @@ fn write_file_replace_lines(
         const line_content = raw[start_idx..raw.len];
         try lines.append(allocator, try allocator.dupe(u8, line_content));
     }
-    
+
     // Validate line range
     if (start_line >= lines.items.len or end_line >= lines.items.len) {
         return error.LineRangeOutOfBounds;
     }
-    
+
     // Build new content
     var new_content = std.ArrayList(u8).empty;
     defer new_content.deinit(allocator);
-    
+
     // Add lines before the range
     for (0..start_line) |j| {
         try new_content.appendSlice(allocator, lines.items[j]);
     }
-    
+
     // Add replacement content (ensure it ends with newline if original did)
     try new_content.appendSlice(allocator, opts.content);
     // If replacement doesn't end with newline but original last replaced line did, add newline
@@ -152,25 +152,25 @@ fn write_file_replace_lines(
     if (last_replaced_has_newline and !replacement_has_newline) {
         try new_content.appendSlice(allocator, "\n");
     }
-    
+
     // Add lines after the range
     for ((end_line + 1)..lines.items.len) |j| {
         try new_content.appendSlice(allocator, lines.items[j]);
     }
-    
+
     // Free the lines we duplicated
     for (lines.items) |line| allocator.free(line);
     lines.deinit(allocator);
-    
+
     // Write back to file
     const file_write = try std.fs.cwd().createFile(path, .{});
     defer file_write.close();
-    
+
     try file_write.writeAll(new_content.items);
-    
+
     // Count lines in result
     const total_lines = countLines(new_content.items);
-    
+
     return WriteFileResult{
         .path = try allocator.dupe(u8, path),
         .bytes_written = new_content.items.len,
@@ -221,7 +221,7 @@ pub const writeFileTool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "Absolute or relative path to the file.",
+                    .description = "Absolute path to the file.",
                 },
                 .{
                     .name = "content",
