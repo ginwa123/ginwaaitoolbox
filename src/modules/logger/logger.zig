@@ -81,7 +81,7 @@ pub const Logger = struct {
                 .include_timestamp = config.include_timestamp,
                 .include_request_id = config.include_request_id,
                 .include_location = config.include_location,
-            }},
+            } },
             .request_id = null,
         };
     }
@@ -108,7 +108,7 @@ pub const Logger = struct {
                 .include_request_id = config.include_request_id,
                 .color_by_level = true,
                 .include_location = config.include_location,
-            }},
+            } },
             .request_id = null,
         };
     }
@@ -305,13 +305,15 @@ pub const Logger = struct {
 
         // Handle file output if configured
         if (self.config.log_file_path != null and
-            (self.config.output_mode == .file or self.config.output_mode == .both)) {
+            (self.config.output_mode == .file or self.config.output_mode == .both))
+        {
             // Ensure file is open
             try self.ensureLogFileOpen();
 
             // Check if rotation is needed
             if (self.config.enable_auto_rotation and
-                self.current_file_size >= self.config.max_file_size_bytes) {
+                self.current_file_size >= self.config.max_file_size_bytes)
+            {
                 try self.rotateLogFile();
             }
 
@@ -324,7 +326,7 @@ pub const Logger = struct {
 
         // Handle stdout output if configured
         if (self.config.output_mode == .stdout or self.config.output_mode == .both) {
-            const stdout_file = self.config.output orelse std.fs.File.stdout();
+            const stdout_file = self.config.output orelse std.fs.File.stderr();
             try stdout_file.writeAll(output);
         }
     }
