@@ -31,6 +31,7 @@ const send_stream_chunk_reasoning = @import("send_stream_chunk_reasoning.zig");
 const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_call_delta.zig");
 const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
+const build_memory_for_agent = @import("build_memory_for_agent.zig");
 
 const handle_content_filter = @import("handle_content_filter.zig");
 pub const cancellation_registry = @import("../../modules/session/cancellation_registry.zig");
@@ -195,11 +196,8 @@ pub const TUIWorkflow = struct {
             const allocator = arena_allocator_while_loop.allocator();
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
-            const skills = try self.buildSkillsContent(allocator);
-            self.logger.debugFmt("[SKILLS] Skills content: {s}", .{skills}) catch {};
 
-            defer allocator.free(skills);
-            const initial_messages = try build_messages.run(allocator, self.cwd, "", try get_messages.run(allocator, self.db, self.session_id), skills);
+            const initial_messages = try build_messages.run(allocator, self.cwd, "", try get_messages.run(allocator, self.db, self.session_id), try self.build_skill_content(allocator), try build_memory_for_agent.run(allocator, self.cwd));
 
             try messages_list.appendSlice(allocator, initial_messages);
 
@@ -454,6 +452,7 @@ pub const TUIWorkflow = struct {
         send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
     }
 
+    // this code need to be refactored later
     pub fn handleGetSkill(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall) !void {
         // Parse arguments JSON to GetSkillInput
         const parsed = std.json.parseFromSlice(
@@ -524,72 +523,19 @@ pub const TUIWorkflow = struct {
                     self.logger.errFmt("Failed to save skill to database: {s}", .{@errorName(err)}) catch {};
                 };
                 // Send updated skills list to TUI
-                self.sendSkillsList(allocator);
-                // Send updated skills list to TUI
-                self.sendSkillsList(allocator);
-                // Rebuild system message with all loaded skills
-                const current_agent = get_current_agent_by_session_id.run(allocator, self.db, self.session_id) catch return;
-
-                // Get agent prompt based on current agent
-                const agent_prompt: []const u8 = if (std.mem.eql(u8, current_agent, "GeneralAgent"))
-                    prompt.GeneralAgent
-                else if (std.mem.eql(u8, current_agent, "ExplorationAgent"))
-                    prompt.ExplorationAgent
-                else if (std.mem.eql(u8, current_agent, "PlanningAgent"))
-                    prompt.PlanningAgent
-                else if (std.mem.eql(u8, current_agent, "ExecutingAgent"))
-                    prompt.ExecutingAgent
-                else if (std.mem.eql(u8, current_agent, "KnowledgeAgent"))
-                    prompt.KnowledgeAgent
-                else
-                    prompt.GeneralAgent;
-
-                const newSystemContent = self.buildSystemMessageWithSkills(allocator, agent_prompt) catch |err| {
-                    self.logger.errFmt("Failed to build system message with skills: {s}", .{@errorName(err)}) catch {};
-                    return;
-                };
-                defer allocator.free(newSystemContent);
-
-                // Replace system message in messages_list
-                var system_replaced = false;
-                for (messages_list.items) |*msg| {
-                    if (msg.role == .system) {
-                        // Free old content and replace with new
-                        if (msg.content) |old_content| {
-                            allocator.free(old_content);
-                        }
-                        msg.content = allocator.dupe(u8, newSystemContent) catch return;
-                        system_replaced = true;
-                        break;
-                    }
-                }
-                if (!system_replaced) {
-                    // Insert new system message at beginning
-                    messages_list.insert(allocator, 0, agent.AgentMessage{
-                        .role = .system,
-                        .content = allocator.dupe(u8, newSystemContent) catch return,
-                    }) catch return;
-                }
+                self.send_skill(allocator);
             } else {
                 self.logger.debugFmt("Skill '{s}' already loaded, skipping duplicate", .{skill_result.skill_name}) catch {};
             }
         }
 
-        // Send tool result (use original result before deinit)
-        const tool_result_msg = agent.AgentMessage{
-            .role = .tool,
-            .content = result,
-            .tool_call_id = allocator.dupe(u8, tool_call.id) catch return,
-        };
-        messages_list.append(allocator, tool_result_msg) catch return;
-
         const current_agent_final = try get_current_agent_by_session_id.run(allocator, self.db, self.session_id);
-        save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
-        send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
+        _ = save_message.run(allocator, self.db, self.session_id, self.model, self.cwd, result, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
+        _ = send_tool_result.run(allocator, self.conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
     }
 
     /// Build skills content string from loaded skills
-    fn buildSkillsContent(self: *TUIWorkflow, allocator: std.mem.Allocator) ![]const u8 {
+    fn build_skill_content(self: *TUIWorkflow, allocator: std.mem.Allocator) ![]const u8 {
         if (self.loaded_skills.items.len == 0) {
             return allocator.dupe(u8, "");
         }
@@ -606,6 +552,7 @@ pub const TUIWorkflow = struct {
 
         return try skillsBuilder.toOwnedSlice(allocator);
     }
+
 
     /// Build system message content with loaded skills injected
     fn buildSystemMessageWithSkills(self: *TUIWorkflow, allocator: std.mem.Allocator, agent_prompt: []const u8) ![]const u8 {
@@ -690,7 +637,7 @@ pub const TUIWorkflow = struct {
     }
 
     /// Send skills list to TUI via IPC
-    pub fn sendSkillsList(self: *TUIWorkflow, allocator: std.mem.Allocator) void {
+    pub fn send_skill(self: *TUIWorkflow, allocator: std.mem.Allocator) void {
         if (self.conn_fd < 0) return;
 
         var buf: std.ArrayList(u8) = .empty;

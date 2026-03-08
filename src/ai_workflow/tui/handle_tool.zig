@@ -45,29 +45,29 @@ pub fn run(
         }
 
         // Merge reasoning_content into content of the tool call assistant message
-        const reasoningContent: ?[]u8 = if (res_dynamic_agent.reasoning_content) |rc|
-            try allocator.dupe(u8, rc)
-        else
-            null;
+        // const reasoningContent: ?[]u8 = if (res_dynamic_agent.reasoning_content) |rc|
+        //     try allocator.dupe(u8, rc)
+        // else
+        //     null;
 
-        const contentNormal: ?[]u8 = if (res_dynamic_agent.content) |c|
-            try allocator.dupe(u8, c)
-        else
-            null;
+        // const contentNormal: []const u8 = if (res_dynamic_agent.content) |c|
+        //     try allocator.dupe(u8, c)
+        // else
+        //     "";
 
-        const mergedContent: ?[]u8 = if (reasoningContent != null or contentNormal != null) blk: {
-            const r = reasoningContent orelse "";
-            const c = contentNormal orelse "";
-            break :blk try std.mem.concat(allocator, u8, &.{ r, c });
-        } else null;
+        // const mergedContent: ?[]u8 = if (reasoningContent != null or contentNormal != null) blk: {
+        //     const r = reasoningContent orelse "";
+        //     const c = contentNormal orelse "";
+        //     break :blk try std.mem.concat(allocator, u8, &.{ r, c });
+        // } else null;
 
-        const assistant_msg = agent.AgentMessage{
-            .role = .assistant,
-            .content = mergedContent,
-            .tool_calls = assistant_tool_calls,
-        };
+        // const assistant_msg = agent.AgentMessage{
+        //     .role = .assistant,
+        //     .content = "",
+        //     .tool_calls = assistant_tool_calls,
+        // };
 
-        try messages_list.append(allocator, assistant_msg);
+        // try messages_list.append(allocator, assistant_msg);
 
         save_message.run(allocator, db, session_id, model, cwd, null, res_dynamic_agent, agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent.*, session_name, loop_counter) catch |err| {
             logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};

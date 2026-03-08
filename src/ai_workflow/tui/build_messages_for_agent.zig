@@ -13,6 +13,7 @@ pub fn run(
     tree_dir: []const u8,
     historyMessages: []TUIHistory,
     skills: []const u8,
+    memoryMd: []const u8,
 ) ![]agent.AgentMessage {
 
     // Determine the agent to use from the latest message in history
@@ -35,9 +36,9 @@ pub fn run(
     else if (std.mem.eql(u8, agent_to_use, "KnowledgeAgent"))
         prompt.KnowledgeAgent
     else
-        prompt.GeneralAgent;
+        return error.UnknownAgent;
 
-    const systemContent = try prompt.agenticCodingWithCwd(allocator, cwd, agent_prompt, tree_dir, skills);
+    const systemContent = try prompt.agenticCodingWithCwd(allocator, cwd, agent_prompt, tree_dir, skills, memoryMd);
 
     const systemMessage = agent.AgentMessage{
         .role = .system,

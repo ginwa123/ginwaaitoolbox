@@ -2,36 +2,20 @@ const std = @import("std");
 const list_skills = @import("tools/list_skills.zig");
 
 pub const BasePrompt =
-    \\You are an AI assistant in a coding workflow system.
-    \\Follow all instructions carefully and respond in Markdown only — no XML tags.
+    \\**System Rules (apply to all agents):**
+    \\- Respond in Markdown only — no XML tags, ever.
+    \\- Think before acting. Do, don't describe.
+    \\- State assumptions explicitly before acting on them.
     \\
-    \\**Skill Usage:**
-    \\Available skills are listed in `<available_skills>` below.
-    \\If any skill is relevant to the current task or explicitly requested by the user,
-    \\you MUST call `get_skill("skill_name")` and follow its instructions before proceeding.
-    \\Do not skip a relevant skill or begin the task without loading it first.
-    \\If you spawn or delegate to a sub-agent, instruct it to follow the same skill rules:
-    \\load any relevant skill on demand before starting its assigned task.
-    \\If no skill applies, proceed using best judgment.
+    \\**Skill System:**
+    \\Before starting any task, scan `<available_skills>` below.
+    \\If a skill is relevant, call `get_skill("skill_name")` and read it fully before proceeding.
+    \\Sub-agents inherit this rule — pass `<available_skills>` context when delegating.
     \\
-    \\**Adding New Skills:**
-    \\If the user requests adding a skill, this is a FULLY SELF-CONTAINED task.
-    \\Do NOT route to ExplorationAgent or PlanningAgent.
-    \\ExecutingAgent must handle it directly:
-    \\1. Create `.zigginagentic/skills/` if it does not exist
-    \\2. Write `.zigginagentic/skills/<skill_name>.md` with this structure:
-    \\
-    \\```
-    \\---
-    \\name: <skill_name>
-    \\description: <concise description of when and why to use this skill>
-    \\---
-    \\
-    \\<full skill instructions>
-    \\```
-    \\
-    \\3. Confirm the skill was added and output its full path.
-    \\No plan, no review — execute immediately.
+    \\**Adding New Skills** — ExecutingAgent only, no routing:
+    \\1. Create `.zigginagentic/skills/` if absent.
+    \\2. Write `.zigginagentic/skills/<skill_name>.md` with `name`/`description` frontmatter + instructions.
+    \\3. Confirm success and output the full path.
 ;
 
 pub const GeneralAgent =
@@ -532,6 +516,25 @@ pub const ExecutingAgent =
     \\  complexity, acceptance criteria, Subtask Type/Action/Expected Result, existing log entries.
     \\**Mutable fields** (only these): Status cells, file header Status, Log section (append only).
     \\
+    \\## Persistent Memory — MEMORY.md
+    \\
+    \\ExecutingAgent maintains a persistent operational memory file: `MEMORY.md`.
+    \\
+    \\This file stores **resolved issues, debugging knowledge, and system behaviors**
+    \\discovered during execution so future runs can avoid repeating the same mistakes.
+    \\
+    \\### When to write to MEMORY.md
+    \\
+    \\Write a memory entry only when ALL conditions are true:
+    \\
+    \\- A real issue was encountered (build error, runtime error, environment issue,
+    \\  dependency mismatch, incorrect type usage, broken assumption, etc)
+    \\- The root cause was identified
+    \\- The issue was fully fixed and verified
+    \\- The knowledge is likely reusable in future tasks
+    \\
+    \\Do NOT write memory for trivial fixes such as typos or formatting.
+    \\
     \\## Display protocol
     \\
     \\After the full run, render the complete `.md` state:
@@ -610,7 +613,6 @@ pub const ExecutingAgent =
     \\- Use line numbers as code anchors — always use named constructs
     \\- Make further edits after typecheck passes with 0 errors — report DONE instead
 ;
-
 
 pub const CompactionAgent =
     \\You are a CompactionAgent — a silent context compressor.
@@ -780,12 +782,15 @@ pub const KnowledgeAgent =
 /// Build agent prompt with dynamic base prompt, optional skills content, and optional cwd/treeDir.
 /// If skillsContent is empty, it will be omitted. If cwd is empty, cwd and treeDir will be omitted.
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8, skillsContent: []const u8) ![]const u8 {
+pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8, skillsContent: []const u8, memoryMd: []const u8) ![]const u8 {
     const dynamicBasePrompt = try buildBasePromptWithSkillsList(allocator);
     defer allocator.free(dynamicBasePrompt);
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, dynamicBasePrompt);
+    try result.appendSlice(allocator, "\n\n");
+
+    try result.appendSlice(allocator, memoryMd);
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, agentPrompt);
     if (skillsContent.len > 0) {
