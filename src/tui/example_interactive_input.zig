@@ -43,7 +43,7 @@ pub fn main() !void {
     var running = true;
     while (running) {
         const char = try readByte();
-        
+
         switch (char) {
             13, 10 => {
                 running = false;
@@ -150,14 +150,14 @@ fn readNextByte() !u8 {
         .events = std.posix.POLL.IN,
         .revents = 0,
     }};
-    
+
     const timeout = 100;
     const result = std.posix.poll(&fds, timeout) catch 0;
-    
+
     if (result > 0 and fds[0].revents & std.posix.POLL.IN != 0) {
         return readByte();
     }
-    
+
     return error.Timeout;
 }
 
@@ -179,7 +179,7 @@ fn moveCursorToInput(inp: *Input, row: u16) !void {
 fn submitInput(inp: *Input) !void {
     std.debug.print("\x1b[15;1H", .{});
     std.debug.print("\x1b[2K", .{});
-    
+
     const text = inp.getText();
     if (text.len > 0) {
         std.debug.print("{s}✓ Input submitted:{s}\n", .{ green, reset });
@@ -187,7 +187,7 @@ fn submitInput(inp: *Input) !void {
     } else {
         std.debug.print("{s}⚠ Empty input submitted{s}\n", .{ yellow, reset });
     }
-    
+
     std.debug.print("\nPress any key to exit...\n", .{});
     _ = try readByte();
 }
