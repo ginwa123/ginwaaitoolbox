@@ -6,7 +6,7 @@ pub fn run(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
     defer memoryMd.deinit(allocator);
 
     // get current cwd and get the MEMORY.MD file if not exist create if found just return the content
-    const memory_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, "MEMORY.MD" });
+    const memory_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, "MEMORY.md" });
     defer allocator.free(memory_path);
 
     // Try to open the file - if it doesn't exist, create it
