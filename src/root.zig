@@ -27,6 +27,7 @@ pub const text_replace = @import("modules/agent/tools/text_replace.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
+pub const lsp_client = @import("modules/agent/tools/lsp_client.zig");
 
 
 

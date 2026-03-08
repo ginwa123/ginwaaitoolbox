@@ -96,10 +96,11 @@ pub const textReplaceTool = AgentTool{
         .description =
         \\Replace a unique string in a file with new content.
         \\
-        \\- old_str must match the file content exactly (whitespace included).
-        \\- old_str must appear exactly once — errors if not found or ambiguous.
+        \\- old_str must match file content exactly (whitespace included).
+        \\- old_str must appear exactly once — error if not found or ambiguous.
+        \\- new_str can be any length, multiline, or empty (empty = delete).
         \\- Always read_file first to confirm the exact string to match.
-        \\- Prefer over write_file for editing existing files to avoid line drift.
+        \\- Prefer over write_file for editing existing files.
         ,
         .parameters = .{
             .type = "object",
@@ -112,12 +113,12 @@ pub const textReplaceTool = AgentTool{
                 .{
                     .name = "old_str",
                     .type = "string",
-                    .description = "Exact string to find. Must appear exactly once in the file.",
+                    .description = "Exact string to find. Must appear exactly once.",
                 },
                 .{
                     .name = "new_str",
                     .type = "string",
-                    .description = "String to replace old_str with.",
+                    .description = "Replacement string. Can be shorter, longer, multiline, or empty to delete.",
                 },
             },
             .required = &.{ "path", "old_str", "new_str" },

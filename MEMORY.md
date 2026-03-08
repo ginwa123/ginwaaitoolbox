@@ -12,6 +12,15 @@
 - [zig@0.15] `std.fs.File.createFile` replaces `writeFile` for creating/overwriting files
 - [zig@0.15] `ArrayList.deinit` requires allocator parameter
 - [zig@0.15] Line collection must include newlines explicitly when building strings
+- [zig@0.15] `std.fs.accessableAbsolute` doesn't exist — use `std.fs.openFileAbsolute` with try/catch
+- [zig@0.15] `ArrayList.init(allocator)` → `ArrayList.empty` 
+- [zig@0.15] `ArrayList.writer()` → `ArrayList.writer(allocator)` 
+- [zig@0.15] `std.os.pid` doesn't exist — use literal 0 for processId in LSP init
+- [zig@0.15] `std.fs.File.flush()` doesn't exist — not needed, write is immediate
+- [zig@0.15] `std.fs.File.readByte()` doesn't exist — use `file.read()` instead
+- [zig@0.15] `json.Value.get()` doesn't exist — use `.object.get()` for object values
+- [zig@0.15] `process.Child.kill()` returns `Term`, not void — use `_ = ` to discard
+- [zig@0.15] `allocator.dupeZ()` returns `[:0]u8` but argv needs `[:0]const u8` — use stack buffer approach
 
 ## Resolved Issues
 
@@ -19,6 +28,20 @@
 
 - [2026-03-08] No issues encountered.
 - [2026-03-09] Agent system restructured — GeneralAgent and KnowledgeAgent removed, ExplorationAgent enhanced with classification logic
+
+## [2026-03-09] LSP Client Implementation
+
+**Problem:** Multiple Zig 0.15 API changes broke LSP client implementation
+**Root cause:** ArrayList, std.fs, std.process APIs changed significantly in Zig 0.15
+**Fix:** 
+- Used `ArrayList.empty` instead of `ArrayList.init(allocator)`
+- Used `ArrayList.writer(allocator)` instead of `ArrayList.writer()`
+- Used `std.fs.openFileAbsolute` with try/catch instead of `accessableAbsolute`
+- Used `file.read()` instead of `file.readByte()` 
+- Used `json.Value.object.get()` instead of `json.Value.get()`
+- Used `_ = child.kill()` to discard Term return value
+- Used stack buffer for dupeZ since it returns mutable `[:0]u8` but argv needs `[:0]const u8`
+**Reuse signal:** When implementing process spawning in Zig 0.15, test each API call individually; use stack buffers for null-terminated strings to avoid ownership issues
 
 ## [2026-03-08] save_message.run error format string
 
@@ -54,3 +77,36 @@
 **Root cause:** The test expected OldStrNotUnique error but the search string "const x = 0;" appeared only once in the file since "const y = 0;" was a different string
 **Fix:** Changed test file content to use identical strings: "const x = 0;\nconst x = 0;\n" so the search string appears twice and correctly triggers OldStrNotUnique
 **Reuse signal:** When testing for duplicate string detection, always use IDENTICAL strings in the test file, not similar ones - the uniqueness check uses exact string matching
+
+## [2026-03-09] LSP Definition and References Tools
+
+**Problem:** Needed to add lsp_definition and lsp_references tools to complete the LSP tool system
+**Root cause:** Original implementation only had start, stop, diagnostics, and hover tools
+**Fix:** Added lsp_definition (textDocument/definition) and lsp_references (textDocument/references) following the same pattern as lsp_hover
+**Reuse signal:** When adding new LSP tools, use existing tool patterns (Input/Output structs, execute function, ToString function, AgentTool definition)
+
+## [2026-03-09] LSP Client Module Split
+
+**Problem:** Monolithic lsp_client.zig file (~1200 lines) needed to be split for maintainability
+**Root cause:** All LSP functionality was in one file
+**Fix:** Split into modular files:
+- lsp_types.zig - shared types and errors
+- lsp_client_core.zig - core client
+- lsp_start.zig, lsp_stop.zig, lsp_diagnostics.zig, lsp_hover.zig, lsp_definition.zig, lsp_references.zig
+- lsp_client.zig - re-exports for backward compatibility
+**Reuse signal:** When refactoring large files, use explicit re-exports instead of `pub usingnamespace` at top level (not allowed in Zig 0.15)
+
+## [2026-03-09] LSP TDD Test Cases
+
+**Problem:** Needed TDD test cases for each LSP module file
+**Root cause:** User requested tests for the newly split LSP files
+**Fix:** Created test files for all 8 LSP modules:
+- lsp_types_test.zig (12 tests)
+- lsp_client_core_test.zig (6 tests)
+- lsp_start_test.zig (5 tests)
+- lsp_stop_test.zig (6 tests)
+- lsp_diagnostics_test.zig (5 tests)
+- lsp_hover_test.zig (6 tests)
+- lsp_definition_test.zig (6 tests)
+- lsp_references_test.zig (6 tests)
+**Reuse signal:** When writing tests, remember ArrayList.append() requires allocator arg in Zig 0.15; json.Value needs explicit handling for optionals
