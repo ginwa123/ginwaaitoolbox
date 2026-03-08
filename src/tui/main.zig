@@ -602,6 +602,18 @@ fn displayTextReplaceResult(result_xml: []const u8, tool_name: []const u8) void 
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{
         cyan, tool_name, reset, replaced_at_byte, path
     });
+
+    // Show before (old_str - red) and after (new_str - green)
+    if (extractTag(result_xml, "old_str")) |old_str| {
+        if (!std.mem.eql(u8, old_str, "")) {
+            std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, old_str });
+        }
+    }
+    if (extractTag(result_xml, "new_str")) |new_str| {
+        if (!std.mem.eql(u8, new_str, "")) {
+            std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, new_str });
+        }
+    }
 }
 
 // ─── Response streaming ──────────────────────────────────────────────────────
