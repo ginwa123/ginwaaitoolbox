@@ -33,15 +33,16 @@ pub const SessionMonitor = struct {
 
             // Check registry status
             const registry = cancellation_registry.getGlobalRegistry();
-            if (registry == null) {
-                std.log.info("SessionMonitor: No registry found, exiting process", .{});
-                std.posix.exit(0);
-            }
-
-            if (!registry.?.hasSessions()) {
-                std.log.info("SessionMonitor: No active sessions, exiting process", .{});
-                std.posix.exit(0);
-            }
+            // for now we will disabled this
+            // if (registry == null) {
+            //     std.log.info("SessionMonitor: No registry found, exiting process", .{});
+            //     std.posix.exit(0);
+            // }
+            //
+            // if (!registry.?.hasSessions()) {
+            //     std.log.info("SessionMonitor: No active sessions, exiting process", .{});
+            //     std.posix.exit(0);
+            // }
 
             std.log.debug("SessionMonitor: {d} active session(s), continuing", .{registry.?.sessionCount()});
         }

@@ -239,7 +239,7 @@ pub const bashTool = AgentTool{
         \\  - typecheck / ast-check passes with 0 errors on all edited files
         \\  - all dependent files typecheck cleanly
         \\  - tasklist Subtask acceptance criteria are met
-        \\  Do NOT make further edits after this point — report DONE, let ReviewAgent decide.
+    \\
         \\
         \\## LANGUAGE CHECKS
         \\  Zig:        `zig ast-check <file> | head -n 50`
