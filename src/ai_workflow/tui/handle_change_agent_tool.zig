@@ -11,7 +11,6 @@ const get_tree_dir = @import("get_tree_dir.zig");
 
 pub fn run(
     allocator: std.mem.Allocator,
-    parent_allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
     conn_fd: std.posix.fd_t,
@@ -67,7 +66,7 @@ pub fn run(
     send_tool_result.run(allocator, conn_fd, logger, contentChangeAgent, tool_call.id, tool_call.function.name, null);
 
     // Update the loop-persistent current_agent variable
-    current_agent.* = try parent_allocator.dupe(u8, agent_name);
+    current_agent.* = try allocator.dupe(u8, agent_name);
 
     logger.infoFmt("Switched to agent: {s}", .{agent_name}) catch {};
 }
