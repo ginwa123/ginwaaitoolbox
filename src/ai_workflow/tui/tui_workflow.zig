@@ -34,7 +34,7 @@ const handle_bash_tool = @import("handle_bash_tool.zig");
 const build_memory_for_agent = @import("build_memory_for_agent.zig");
 
 const handle_content_filter = @import("handle_content_filter.zig");
-pub const cancellation_registry = @import("../../modules/session/cancellation_registry.zig");
+pub const cancellation_registry = tree1_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -185,6 +185,8 @@ pub const TUIWorkflow = struct {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
 
+
+        // this variable is used to track the number of times the agent has been retried
         var retryCount: usize = 0;
         var agent_temperature: f32 = 0.2;
         var isThinking: bool = false;
@@ -227,7 +229,7 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool.run(allocator, parent_allocator, self, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, &current_agent, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking);
+                    try handle_tool.run(allocator, self, self.db, self.logger, self.conn_fd, self.session_id, self.model, self.cwd, &current_agent, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};

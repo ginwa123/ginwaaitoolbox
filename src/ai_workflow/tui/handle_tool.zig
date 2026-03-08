@@ -14,7 +14,6 @@ const TUIWorkflow = @import("tui_workflow.zig").TUIWorkflow;
 
 pub fn run(
     allocator: std.mem.Allocator,
-    parent_allocator: std.mem.Allocator,
     tui_workflow: *TUIWorkflow,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
@@ -93,7 +92,7 @@ pub fn run(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
-                try handle_change_agent_tool.run(allocator, parent_allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature, isThinking, current_agent);
+                try handle_change_agent_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature, isThinking, current_agent);
             }
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
                 _ = handle_bash_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
