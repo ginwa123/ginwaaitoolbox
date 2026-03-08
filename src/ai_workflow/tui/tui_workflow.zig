@@ -38,6 +38,9 @@ const search_tool = root_mod.search_tool;
 const text_replace_tool = root_mod.text_replace_tool;
 
 const handle_content_filter = @import("handle_content_filter.zig");
+const build_skill_content_mod = @import("build_skill_content.zig");
+const save_skill_mod = @import("save_skill.zig");
+const send_skill_mod = @import("send_skill.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
@@ -109,24 +112,12 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
         stream_ctx.chunk_index += 1;
     }
 }
-/// Loaded skill tracking for system context injection
-pub const LoadedSkill = struct {
-    skill_name: []const u8,
-    content: []const u8,
-
-    pub fn deinit(self: *const LoadedSkill, allocator: std.mem.Allocator) void {
-        allocator.free(self.skill_name);
-        allocator.free(self.content);
-    }
-};
-
 pub const TUIWorkflow = struct {
     // allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
 
     loop_detector: loop_detector.LoopDetector = .{},
-    loaded_skills: std.ArrayList(LoadedSkill) = .{},
 
     pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
         const log_ptr = try allocator.create(logger_mod.Logger);
@@ -141,7 +132,6 @@ pub const TUIWorkflow = struct {
         return .{
             .db = db,
             .logger = log_ptr,
-            .loaded_skills = .{},
         };
     }
 
@@ -185,7 +175,7 @@ pub const TUIWorkflow = struct {
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
 
-            const initial_messages = try build_messages.run(allocator, cwd, "", try get_messages.run(allocator, self.db, session_id), try self.build_skill_content(allocator), try build_memory_for_agent.run(allocator, cwd));
+            const initial_messages = try build_messages.run(allocator, cwd, "", try get_messages.run(allocator, self.db, session_id), try build_skill_content_mod.run(allocator, self.db, session_id), try build_memory_for_agent.run(allocator, cwd));
 
             try messages_list.appendSlice(allocator, initial_messages);
 
@@ -507,29 +497,14 @@ pub const TUIWorkflow = struct {
 
         // Only inject if skill was successfully loaded and not already loaded
         if (skill_result.loaded and skill_result.content.len > 0) {
-            if (!self.isSkillLoaded(skill_result.skill_name)) {
-                // Add to loaded skills list
-                const skill_name_copy = allocator.dupe(u8, skill_result.skill_name) catch return;
-                const content_copy = allocator.dupe(u8, skill_result.content) catch {
-                    return;
-                };
-                const loaded_skill = LoadedSkill{
-                    .skill_name = skill_name_copy,
-                    .content = content_copy,
-                };
-                self.loaded_skills.append(allocator, loaded_skill) catch {
-                    loaded_skill.deinit(allocator);
-                    return;
-                };
-
-                self.logger.debugFmt("Skill '{s}' loaded and added to system context", .{skill_result.skill_name}) catch {};
-
+            const already_loaded = save_skill_mod.isLoaded(allocator, self.db, session_id, skill_result.skill_name) catch false;
+            if (!already_loaded) {
                 // Save skill to database for persistence
-                self.saveSkillToDB(allocator, session_id, skill_name_copy, content_copy) catch |err| {
+                save_skill_mod.run(allocator, self.db, self.logger, session_id, skill_result.skill_name, skill_result.content) catch |err| {
                     self.logger.errFmt("Failed to save skill to database: {s}", .{@errorName(err)}) catch {};
                 };
                 // Send updated skills list to TUI
-                self.send_skill(allocator, conn_fd);
+                send_skill_mod.run(allocator, self.db, self.logger, conn_fd, session_id);
             } else {
                 self.logger.debugFmt("Skill '{s}' already loaded, skipping duplicate", .{skill_result.skill_name}) catch {};
             }
@@ -540,70 +515,6 @@ pub const TUIWorkflow = struct {
         _ = send_tool_result.run(allocator, conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
     }
 
-    /// Build skills content string from loaded skills
-    fn build_skill_content(self: *TUIWorkflow, allocator: std.mem.Allocator) ![]const u8 {
-        if (self.loaded_skills.items.len == 0) {
-            return allocator.dupe(u8, "");
-        }
-
-        var skillsBuilder: std.ArrayList(u8) = .empty;
-        try skillsBuilder.appendSlice(allocator, "\n\n## Loaded Skills\n\n");
-        for (self.loaded_skills.items) |skill| {
-            try skillsBuilder.appendSlice(allocator, "### ");
-            try skillsBuilder.appendSlice(allocator, skill.skill_name);
-            try skillsBuilder.appendSlice(allocator, "\n\n");
-            try skillsBuilder.appendSlice(allocator, skill.content);
-            try skillsBuilder.appendSlice(allocator, "\n\n");
-        }
-
-        return try skillsBuilder.toOwnedSlice(allocator);
-    }
-
-    /// Check if a skill is already loaded
-    fn isSkillLoaded(self: *TUIWorkflow, skill_name: []const u8) bool {
-        for (self.loaded_skills.items) |skill| {
-            if (std.mem.eql(u8, skill.skill_name, skill_name)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// Save a loaded skill to the database for persistence
-    fn saveSkillToDB(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, skill_name: []const u8, content: []const u8) !void {
-        // Skip if session_id is empty
-        if (session_id.len == 0) return;
-
-        const sql = "INSERT OR REPLACE INTO session_skills (session_id, skill_name, content, loaded_at) VALUES (?, ?, ?, strftime('%s', 'now'))";
-        try self.db.exec(allocator, sql, &.{ session_id, skill_name, content });
-        self.logger.debugFmt("Skill '{s}' saved to database for session {s}", .{ skill_name, session_id }) catch {};
-    }
-
-    /// Send skills list to TUI via IPC
-    pub fn send_skill(self: *TUIWorkflow, allocator: std.mem.Allocator, conn_fd: std.posix.fd_t) void {
-        if (conn_fd < 0) return;
-
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        var w = buf.writer(allocator);
-
-        w.writeAll("<response><type>skills</type><skills>") catch return;
-        for (self.loaded_skills.items) |skill| {
-            w.writeAll("<skill><name>") catch return;
-            w.writeAll(skill.skill_name) catch return;
-            w.writeAll("</name></skill>") catch return;
-        }
-        w.writeAll("</skills></response>") catch return;
-
-        self.logger.debugFmt("SEND SKILLS XML: {s}", .{buf.items}) catch {};
-
-        _ = std.posix.write(conn_fd, buf.items) catch |err| {
-            if (err != error.BrokenPipe) {
-                self.logger.errFmt("Send Skills response error {s}", .{@errorName(err)}) catch {};
-            }
-        };
-        _ = std.posix.write(conn_fd, "\n") catch {};
-    }
 };
 
 test {
