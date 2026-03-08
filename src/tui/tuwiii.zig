@@ -65,9 +65,10 @@ pub const MouseAction = enum {
 /// Model interface - the core of the TUI application
 /// Implement this trait for your application state
 pub const Model = struct {
-    /// Reference to the implementing type
-    vtable: *const VTable,
+    /// Pointer to the implementing type
+    ptr: *anyopaque,
     allocator: std.mem.Allocator,
+    vtable: *const VTable,
 
     pub const VTable = struct {
         /// Handle incoming messages and return commands
@@ -82,25 +83,25 @@ pub const Model = struct {
 
     /// Update the model with a message and return commands
     pub fn update(self: *Model, msg: Msg) anyerror!Cmd {
-        return self.vtable.update(self, msg);
+        return self.vtable.update(self.ptr, msg);
     }
 
     /// View the current model state
     pub fn view(self: *Model, allocator: std.mem.Allocator) anyerror![]const u8 {
-        return self.vtable.view(self, allocator);
+        return self.vtable.view(self.ptr, allocator);
     }
 
     /// Initialize the model
     pub fn initModel(self: *Model) anyerror!void {
         if (self.vtable.init) |init_fn| {
-            return init_fn(self, self.allocator);
+            return init_fn(self.ptr, self.allocator);
         }
     }
 
     /// Cleanup the model
     pub fn deinitModel(self: *Model) void {
         if (self.vtable.deinit) |deinit_fn| {
-            deinit_fn(self);
+            deinit_fn(self.ptr);
         }
     }
 };
@@ -311,11 +312,11 @@ pub const Program = struct {
     }
 
     pub fn deinit(self: *Program) void {
-        self.commands.deinit();
+        self.commands.deinit(self.allocator);
         for (self.batch_queue.items) |batch| {
             self.allocator.free(batch);
         }
-        self.batch_queue.deinit();
+        self.batch_queue.deinit(self.allocator);
         self.model.deinitModel();
     }
 };
@@ -400,6 +401,7 @@ const Terminal = struct {
     fn render(self: *Terminal, content: []const u8) !void {
         _ = self;
         const stdout = std.fs.File.stdout();
+        // Just write content - the initial clearScreen in run() should position cursor at top
         _ = try stdout.write(content);
     }
 
@@ -455,18 +457,18 @@ const Terminal = struct {
 
     fn readEvent(self: *Terminal, timeout_ms: u64) !?Msg {
         _ = self;
-        const stdin = std.io.getStdIn();
+        const stdin = std.fs.File.stdin();
 
-        var poll_fd = [1]std.os.pollfd{.{
+        var poll_fd = [1]std.posix.pollfd{.{
             .fd = stdin.handle,
-            .events = std.os.POLLIN,
+            .events = std.posix.POLL.IN,
             .revents = 0,
         }};
 
-        const result = std.os.poll(&poll_fd, timeout_ms);
-        if (result == 0) return null;
+        const poll_result = std.posix.poll(&poll_fd, @intCast(timeout_ms)) catch return null;
+        if (poll_result == 0) return null;
 
-        if (poll_fd[0].revents & std.os.POLLIN != 0) {
+        if (poll_fd[0].revents & std.posix.POLL.IN != 0) {
             var buf: [10]u8 = undefined;
             const n = try stdin.read(&buf);
 

@@ -171,7 +171,6 @@ const App = struct {
         try buffer.append(allocator, '\n');
 
         // Status bar
-        try buffer.appendSlice(allocator, "\x1b[2K"); // Clear line
         try buffer.appendSlice(allocator, "\x1b[1;36m"); // Bold cyan
         try buffer.appendSlice(allocator, "Status: ");
         if (self.focused_input) {
@@ -179,7 +178,7 @@ const App = struct {
         } else {
             try buffer.appendSlice(allocator, "Navigation mode");
         }
-        try buffer.appendSlice(allocator, " | tuwiii is running\x1b[0m");
+        try buffer.appendSlice(allocator, " | tuwiii is running\x1b[0m\n");
 
         return buffer.toOwnedSlice(allocator);
     }
@@ -250,8 +249,9 @@ const App = struct {
         // Create model wrapper
         const model = try allocator.create(tuwiii.Model);
         model.* = .{
-            .vtable = &Self.vtable,
+            .ptr = app,
             .allocator = allocator,
+            .vtable = &Self.vtable,
         };
 
         return model;
@@ -296,7 +296,7 @@ pub fn main() !void {
     try program.run();
 
     // Cleanup
-    const app_ptr: *App = @ptrCast(@alignCast(model));
+    const app_ptr: *App = @ptrCast(@alignCast(model.ptr));
     app_ptr.deinit();
     allocator.destroy(model);
 }
