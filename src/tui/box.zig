@@ -159,17 +159,17 @@ pub const Position = struct {
 // ============================================================================
 
 pub const BoxChars = struct {
-    top_left: u8 = 0x250C,
-    top_right: u8 = 0x2510,
-    bottom_left: u8 = 0x2514,
-    bottom_right: u8 = 0x2518,
-    horizontal: u8 = 0x2500,
-    vertical: u8 = 0x2502,
-    top_t: u8 = 0x252C,
-    bottom_t: u8 = 0x2534,
-    left_t: u8 = 0x251C,
-    right_t: u8 = 0x2524,
-    cross: u8 = 0x253C,
+    top_left: []const u8 = "┌",
+    top_right: []const u8 = "┐",
+    bottom_left: []const u8 = "└",
+    bottom_right: []const u8 = "┘",
+    horizontal: []const u8 = "─",
+    vertical: []const u8 = "│",
+    top_t: []const u8 = "┬",
+    bottom_t: []const u8 = "┴",
+    left_t: []const u8 = "├",
+    right_t: []const u8 = "┤",
+    cross: []const u8 = "┼",
 };
 
 /// Options for configuring a Box
@@ -201,7 +201,7 @@ pub const Box = struct {
     allocator: std.mem.Allocator,
     options: BoxOptions,
     /// Render function that returns the content to display inside this Box
-    children: fn () RenderedContent,
+    children: *const fn () RenderedContent,
     /// Computed inner dimensions (after border and padding)
     inner_width: u16 = 0,
     /// Computed inner dimensions (after border and padding)
@@ -212,7 +212,7 @@ pub const Box = struct {
     scroll_y: u16 = 0,
 
     /// Create a new Box with the given options and children render function
-    pub fn init(allocator: std.mem.Allocator, options: BoxOptions, children: fn () RenderedContent) !*Box {
+    pub fn init(allocator: std.mem.Allocator, options: BoxOptions, children: *const fn () RenderedContent) !*Box {
         const box = try allocator.create(Box);
         box.* = .{
             .allocator = allocator,
@@ -395,18 +395,29 @@ pub const Box = struct {
         const content_size = box.measureContent(content);
 
         const inner_start_y = border_w + box.options.padding.top();
-        const inner_width = if (width > border_w * 2) width - border_w * 2 else 0;
-        const inner_height = if (height > border_w * 2) height - border_w * 2 else 0;
+        const pad_h = box.paddingHorizontal();
+        const pad_v = box.paddingVertical();
+        const inner_width = if (width > border_w * 2 + pad_h) width - border_w * 2 - pad_h else 0;
+        const inner_height = if (height > border_w * 2 + pad_v) height - border_w * 2 - pad_v else 0;
 
+        const chars = BoxChars{};
         // Render each line
         var y: u16 = 0;
         while (y < height) : (y += 1) {
-            var line = try std.ArrayList(u8).init(box.allocator);
-            errdefer line.deinit();
+            var line = std.ArrayList(u8){};
+            errdefer line.deinit(box.allocator);
 
             // Left border
             if (box.options.border) {
-                try line.append('│');
+                try line.appendSlice(box.allocator, chars.vertical);
+            }
+
+            // Padding (need both left and right for calculations below)
+            const pad_left = box.options.padding.left();
+            const pad_right = box.options.padding.right();
+            
+            if (pad_left > 0) {
+                try line.appendNTimes(box.allocator, ' ', pad_left);
             }
 
             // Fill or render content
@@ -419,22 +430,28 @@ pub const Box = struct {
 
                 if (is_content_line) {
                     // Render the content line
-                    try box.renderContentLine(content, content_y, fill_width, &line);
+                    try box.renderContentLine(content, content_y, fill_width, box.allocator, &line);
                 } else {
                     // Empty padding area
-                    try line.appendNTimes(' ', fill_width);
+                    try line.appendNTimes(box.allocator, ' ', fill_width);
                 }
-            } else if (!box.options.border) {
-                // No border, just empty lines
-                try line.appendNTimes(' ', width);
+            } else {
+                // Fill the space between left padding and right border
+                const border_adjustment: u16 = if (box.options.border) 1 else 0; const middle_space = width - pad_left - pad_right - border_w - border_adjustment;
+                try line.appendNTimes(box.allocator, ' ', middle_space);
+            }
+
+            // Right padding
+            if (pad_right > 0) {
+                try line.appendNTimes(box.allocator, ' ', pad_right);
             }
 
             // Right border
             if (box.options.border) {
-                try line.append('│');
+                try line.appendSlice(box.allocator, chars.vertical);
             }
 
-            try out.append(try line.toOwnedSlice());
+            try out.append(box.allocator, try line.toOwnedSlice(box.allocator));
         }
 
         // Draw bottom border
@@ -445,13 +462,13 @@ pub const Box = struct {
 
     /// Render top border line with optional title
     fn renderTopBorder(box: *Box, width: u16, out: *std.ArrayList([]u8)) !void {
-        var line = std.ArrayList(u8).init(box.allocator);
-        errdefer line.deinit();
+        var line = std.ArrayList(u8){};
+        errdefer line.deinit(box.allocator);
 
         const chars = BoxChars{};
 
         // Top-left corner
-        try line.append(chars.top_left);
+        try line.appendSlice(box.allocator, chars.top_left);
 
         if (box.options.title) |title| {
             // Title takes position after top-left corner
@@ -461,44 +478,52 @@ pub const Box = struct {
             const right_half = remaining - left_half;
 
             // Left horizontal
-            try line.appendNTimes(chars.horizontal, left_half);
+            for (0..left_half) |_| {
+                try line.appendSlice(box.allocator, chars.horizontal);
+            }
 
             // Title
-            try line.appendSlice(title);
+            try line.appendSlice(box.allocator, title);
 
             // Right horizontal
-            try line.appendNTimes(chars.horizontal, right_half);
+            for (0..right_half) |_| {
+                try line.appendSlice(box.allocator, chars.horizontal);
+            }
         } else {
             // Full horizontal line
             if (width > 2) {
-                try line.appendNTimes(chars.horizontal, width - 2);
+                for (0..width - 2) |_| {
+                    try line.appendSlice(box.allocator, chars.horizontal);
+                }
             }
         }
 
         // Top-right corner
-        try line.append(chars.top_right);
+        try line.appendSlice(box.allocator, chars.top_right);
 
-        try out.append(try line.toOwnedSlice());
+        try out.append(box.allocator, try line.toOwnedSlice(box.allocator));
     }
 
     /// Render bottom border line
     fn renderBottomBorder(box: *Box, width: u16, out: *std.ArrayList([]u8)) !void {
-        var line = std.ArrayList(u8).init(box.allocator);
-        errdefer line.deinit();
+        var line = std.ArrayList(u8){};
+        errdefer line.deinit(box.allocator);
 
         const chars = BoxChars{};
 
-        try line.append(chars.bottom_left);
+        try line.appendSlice(box.allocator, chars.bottom_left);
         if (width > 2) {
-            try line.appendNTimes(chars.horizontal, width - 2);
+            for (0..width - 2) |_| {
+                try line.appendSlice(box.allocator, chars.horizontal);
+            }
         }
-        try line.append(chars.bottom_right);
+        try line.appendSlice(box.allocator, chars.bottom_right);
 
-        try out.append(try line.toOwnedSlice());
+        try out.append(box.allocator, try line.toOwnedSlice(box.allocator));
     }
 
     /// Render a single line of content within the available width
-    fn renderContentLine(box: *Box, content: RenderedContent, line_idx: u16, available_width: u16, out: *std.ArrayList(u8)) !void {
+    fn renderContentLine(box: *Box, content: RenderedContent, line_idx: u16, available_width: u16, allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
         switch (content) {
             .text => |text| {
                 // Find the specific line in the text
@@ -512,11 +537,11 @@ pub const Box = struct {
                             const line_len = i - line_start;
                             const copy_len = @min(line_len, available_width);
                             if (copy_len > 0) {
-                                try out.appendSlice(text[line_start..line_start + copy_len]);
+                                try out.appendSlice(allocator, text[line_start..line_start + copy_len]);
                             }
                             // Pad remaining space
                             if (copy_len < available_width) {
-                                try out.appendNTimes(' ', available_width - copy_len);
+                                try out.appendNTimes(allocator, ' ', available_width - copy_len);
                             }
                             return;
                         }
@@ -525,12 +550,12 @@ pub const Box = struct {
                     }
                 }
                 // Line not found, fill with spaces
-                try out.appendNTimes(' ', available_width);
+                try out.appendNTimes(allocator, ' ', available_width);
             },
             .box => |child_box| {
                 // Render child box (simplified - just render its content)
                 _ = child_box;
-                try out.appendNTimes(' ', available_width);
+                try out.appendNTimes(allocator, ' ', available_width);
             },
             .list => |list| {
                 // Render list of items
@@ -538,14 +563,14 @@ pub const Box = struct {
                 for (list) |item| {
                     const item_size = box.measureContent(item);
                     if (line_idx < item_size.height) {
-                        try box.renderContentLine(item, line_idx, @min(item_size.width, available_width - x_offset), out);
+                        try box.renderContentLine(item, line_idx, @min(item_size.width, available_width - x_offset), box.allocator, out);
                     }
                     x_offset += item_size.width;
                     if (x_offset >= available_width) break;
                 }
                 // Fill remaining
                 if (x_offset < available_width) {
-                    try out.appendNTimes(' ', available_width - x_offset);
+                    try out.appendNTimes(allocator, ' ', available_width - x_offset);
                 }
             },
         }
@@ -553,12 +578,12 @@ pub const Box = struct {
 
     /// Quick helper to render a box and get the output string
     pub fn renderToString(box: *Box) ![]u8 {
-        var lines = std.ArrayList([]u8).init(box.allocator);
+        var lines = std.ArrayList([]u8){};
         errdefer {
             for (lines.items) |line| {
                 box.allocator.free(line);
             }
-            lines.deinit();
+            lines.deinit(box.allocator);
         }
 
         try box.render(&lines);
@@ -577,6 +602,12 @@ pub const Box = struct {
             result[pos] = '\n';
             pos += 1;
         }
+
+        // Free the lines array after building result
+        for (lines.items) |line| {
+            box.allocator.free(line);
+        }
+        lines.deinit(box.allocator);
 
         return result;
     }
