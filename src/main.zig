@@ -292,22 +292,13 @@ pub fn main() !void {
                     std.debug.print("Failed to init workflow: {}\n", .{err});
                     return;
                 };
-                workflowAsk.conn_fd = conn_fd;
-                workflowAsk.api_key = ctxTui.llm_config.api_key;
-                workflowAsk.model = ctxTui.llm_config.model;
-                workflowAsk.base_url = ctxTui.llm_config.base_url;
-                workflowAsk.message = t.message;
-                workflowAsk.session_id = t.session_id;
-                workflowAsk.cwd = t.cwd_session;
-
-
 
                 // Load previously saved skills for this session
                 // workflowAsk.loadSkillsFromDB(allocator) catch |err| {
                 //     std.debug.print("Failed to load skills from database: {s}\n", .{@errorName(err)});
                 // };
                 if (std.mem.eql(u8, t.command_type, "run_llm")) {
-                    workflowAsk.run(allocator);
+                    workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, conn_fd);
                 }
                 if (std.mem.eql(u8, t.command_type, "get_sessions")) {
                     // todo rework
