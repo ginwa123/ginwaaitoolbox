@@ -25,6 +25,9 @@ pub const write_file = @import("modules/agent/tools/write_file.zig");
 pub const text_replace = @import("modules/agent/tools/text_replace.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const session = @import("modules/session/mod.zig");
+pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
+
+
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you

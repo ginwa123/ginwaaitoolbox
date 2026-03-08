@@ -489,6 +489,121 @@ fn extractToolResults(allocator: std.mem.Allocator, xml: []const u8) !std.ArrayL
     return results;
 }
 
+// ─── Tool Result Display Helpers ───────────────────────────────────────────────
+
+fn displayBashResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
+    const std_out = std.mem.trim(u8, extractTag(result_xml, "stdout") orelse "", &std.ascii.whitespace);
+    const cmd = extractTag(result_xml, "command");
+
+    if (std.mem.eql(u8, std_out, "") == false) {
+        const stderr = extractTag(result_xml, "stderr");
+        const truncated = std_out.len > max_result_len;
+        const display = if (truncated) std_out[0..max_result_len] else std_out;
+        const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
+        const color = if (is_error) "\x1b[31m" else "";
+        if (cmd) |c| {
+            std.debug.print("\r\x1b[2K\n{s}[{s}]{s} $ {s}\n", .{ cyan, tool_name, reset, c });
+        } else {
+            std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, tool_name, reset });
+        }
+
+        var lines = std.mem.splitScalar(u8, display, '\n');
+        while (lines.next()) |line| {
+            std.debug.print("{s}  {s}{s}\n", .{ color, line, if (is_error) reset else "" });
+        }
+        if (truncated) std.debug.print("  {s}[truncated...]{s}\n", .{ cyan, reset });
+    }
+}
+
+fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
+    _ = max_result_len;
+    const results = extractTag(result_xml, "results") orelse "";
+    if (std.mem.eql(u8, results, "")) return;
+
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, tool_name, reset });
+
+    var remaining = results;
+    var total_shown: usize = 0;
+    while (total_shown < 20) {
+        // Extract next <match> block
+        const match_start = std.mem.indexOf(u8, remaining, "<match>") orelse break;
+        const match_end = std.mem.indexOf(u8, remaining, "</match>") orelse break;
+        const match_block = remaining[match_start..match_end + "</match>".len];
+        remaining = remaining[match_end + "</match>".len..];
+
+        const file = extractTag(match_block, "file") orelse "";
+        const line_num = extractTag(match_block, "line_number") orelse "0";
+        const snippet = extractTag(match_block, "snippet") orelse "";
+
+        std.debug.print("  {s}:{s}:{s}\n", .{ file, line_num, snippet });
+        total_shown += 1;
+    }
+
+    if (std.mem.indexOf(u8, remaining, "<match>") != null) {
+        std.debug.print("  {s}[more matches...]{s}\n", .{ cyan, reset });
+    }
+}
+
+fn displayReadFileResult(result_xml: []const u8, tool_name: []const u8) void {
+    const content = extractTag(result_xml, "content") orelse "";
+    const total_lines = extractTag(result_xml, "total_lines") orelse "?";
+    const start_line = extractTag(result_xml, "start_line") orelse "0";
+    const end_line = extractTag(result_xml, "end_line") orelse "?";
+
+    if (std.mem.eql(u8, content, "")) return;
+
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} lines {s}-{s}/{s}\n", .{
+        cyan, tool_name, reset, start_line, end_line, total_lines
+    });
+
+    const max_lines: usize = 20;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| {
+        if (count >= max_lines) {
+            std.debug.print("  {s}[...]{s}\n", .{ cyan, reset });
+            break;
+        }
+        std.debug.print("  {s}\n", .{line});
+        count += 1;
+    }
+}
+
+fn displayWriteFileResult(result_xml: []const u8, tool_name: []const u8) void {
+    const path = extractTag(result_xml, "path") orelse "";
+    const bytes_written = extractTag(result_xml, "bytes_written") orelse "0";
+    const lines_written = extractTag(result_xml, "lines_written") orelse "0";
+
+    if (std.mem.eql(u8, path, "")) return;
+
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} wrote {s} bytes ({s} lines) → {s}\n", .{
+        cyan, tool_name, reset, bytes_written, lines_written, path
+    });
+
+    // Optionally show before/after snippets if present
+    if (extractTag(result_xml, "before")) |before| {
+        if (!std.mem.eql(u8, before, "")) {
+            std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, before });
+        }
+    }
+    if (extractTag(result_xml, "after")) |after| {
+        if (!std.mem.eql(u8, after, "")) {
+            std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, after });
+        }
+    }
+}
+
+fn displayTextReplaceResult(result_xml: []const u8, tool_name: []const u8) void {
+    const path = extractTag(result_xml, "path") orelse "";
+    const replaced_at_byte = extractTag(result_xml, "replaced_at_byte") orelse "?";
+
+    if (std.mem.eql(u8, path, "")) return;
+
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{
+        cyan, tool_name, reset, replaced_at_byte, path
+    });
+}
+
 // ─── Response streaming ──────────────────────────────────────────────────────
 
 /// Check stdin for ESC key and detect double ESC within time window
@@ -631,28 +746,19 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
 
                 if (!already_displayed) {
                     const max_result_len: usize = 500;
-                    const std_out = std.mem.trim(u8, extractTag(result.result, "stdout") orelse "", &std.ascii.whitespace);
-                    const cmd = extractTag(result.result, "command");
                     const change_agent_tool = extractTag(result.result, "change_agent_tool");
 
-                    if (std.mem.eql(u8, std_out, "") == false) {
-                        const stderr = extractTag(result.result, "stderr");
-                        const truncated = std_out.len > max_result_len;
-                        const display = if (truncated) std_out[0..max_result_len] else std_out;
-                        const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
-                        const color = if (is_error) "\x1b[31m" else "";
-                        if (cmd) |c| {
-                            std.debug.print("\r\x1b[2K\n{s}[{s}]{s} $ {s}\n", .{ cyan, result.name, reset, c });
-                        } else {
-                            std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, result.name, reset });
-                        }
-
-                        // indent each line
-                        var lines = std.mem.splitScalar(u8, display, '\n');
-                        while (lines.next()) |line| {
-                            std.debug.print("{s}  {s}{s}\n", .{ color, line, if (is_error) reset else "" });
-                        }
-                        if (truncated) std.debug.print("  {s}[truncated...]{s}\n", .{ cyan, reset });
+                    // Dispatch to tool-specific display
+                    if (std.mem.eql(u8, result.name, "bash")) {
+                        displayBashResult(result.result, result.name, max_result_len);
+                    } else if (std.mem.eql(u8, result.name, "search")) {
+                        displaySearchResult(result.result, result.name, max_result_len);
+                    } else if (std.mem.eql(u8, result.name, "read_file")) {
+                        displayReadFileResult(result.result, result.name);
+                    } else if (std.mem.eql(u8, result.name, "write_file")) {
+                        displayWriteFileResult(result.result, result.name);
+                    } else if (std.mem.eql(u8, result.name, "text_replace")) {
+                        displayTextReplaceResult(result.result, result.name);
                     }
 
                     if (change_agent_tool) |_| {
