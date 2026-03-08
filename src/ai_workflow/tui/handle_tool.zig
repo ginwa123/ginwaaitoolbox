@@ -114,6 +114,10 @@ pub fn run(
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
                 _ = try tui_workflow.handleGetSkill(allocator, messages_list, tool_call, session_id, model, cwd, conn_fd);
             }
+
+            if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
+                _ = try tui_workflow.handleRemoveSkill(allocator, messages_list, tool_call, session_id, model, cwd, conn_fd);
+            }
         }
         logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
     } else {

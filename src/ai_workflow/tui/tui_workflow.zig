@@ -11,6 +11,7 @@ const tool_models = root_mod.tool_models;
 const change_agent_tool = root_mod.change_agent_tool;
 const list_skills_tool = root_mod.list_skills_tool;
 const get_skill_tool = root_mod.get_skill_tool;
+const remove_skill_tool = root_mod.remove_skill_tool;
 const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
 const get_tree_dir = @import("get_tree_dir.zig");
@@ -237,7 +238,7 @@ pub const TUIWorkflow = struct {
         session_id: []const u8,
     ) !agent.CallResponse {
         const tools: []const tool_models.AgentTool = &.{
-            bash_tool.bashTool,     read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool,
+            bash_tool.bashTool,     read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool, remove_skill_tool.removeSkillTool,
 
             // write_file_tool.writeFileTool,
             text_replace_tool.textReplaceTool,
@@ -509,6 +510,50 @@ pub const TUIWorkflow = struct {
                 self.logger.debugFmt("Skill '{s}' already loaded, skipping duplicate", .{skill_result.skill_name}) catch {};
             }
         }
+
+        const current_agent_final = try get_current_agent_by_session_id.run(allocator, self.db, session_id);
+        _ = save_message.run(allocator, self.db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
+        _ = send_tool_result.run(allocator, conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
+    }
+
+    /// Handle remove_skill tool call
+    pub fn handleRemoveSkill(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall, session_id: []const u8, model: []const u8, cwd: []const u8, conn_fd: std.posix.fd_t) !void {
+        _ = messages_list;
+
+        // Parse arguments JSON to RemoveSkillInput
+        const parsed = std.json.parseFromSlice(
+            remove_skill_tool.RemoveSkillInput,
+            allocator,
+            tool_call.function.arguments,
+            .{ .allocate = .alloc_always },
+        ) catch |err| {
+            self.logger.errFmt("Failed to parse remove_skill arguments: {s}", .{@errorName(err)}) catch {};
+            return;
+        };
+        defer parsed.deinit();
+
+        const result = remove_skill_tool.executeRemoveSkill(allocator, parsed.value) catch |err| blk: {
+            self.logger.errFmt("Error executing remove_skill: {s}", .{@errorName(err)}) catch {};
+            break :blk try std.fmt.allocPrint(allocator,
+                \\{{
+                \\"skill_name": "{s}",
+                \\"removed": false,
+                \\"error": "{s}"
+                \\}}
+            , .{ parsed.value.skill_name, @errorName(err) });
+        };
+        defer allocator.free(result);
+
+        // Execute SQL to remove skill from database
+        const sql = "DELETE FROM session_skills WHERE session_id = ? AND skill_name = ?";
+        self.db.exec(allocator, sql, &.{ session_id, parsed.value.skill_name }) catch |err| {
+            self.logger.errFmt("Failed to remove skill from database: {s}", .{@errorName(err)}) catch {};
+        };
+
+        self.logger.debugFmt("REMOVE_SKILL RESULT: {s}", .{result}) catch {};
+
+        // Send updated skills list to TUI after removal
+        send_skill_mod.run(allocator, self.db, self.logger, conn_fd, session_id);
 
         const current_agent_final = try get_current_agent_by_session_id.run(allocator, self.db, session_id);
         _ = save_message.run(allocator, self.db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_final, null, 0) catch {};
