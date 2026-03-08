@@ -44,3 +44,10 @@
 **Root cause:** Manual process management with polling was error-prone and didn't properly handle process lifecycle
 **Fix:** Refactored to use std.process.Child.run for simpler process execution; added proper memory management with arena allocator for JSON parsing and owned strings for SearchMatch; fixed JSON field extraction for ripgrep --json output (nested "text" objects); fixed file_total_lines tracking using a two-pass approach to capture "end" events after matches
 **Reuse signal:** When child process tests hang, prefer std.process.Child.run over manual process management; use arena allocator for JSON parsing to avoid per-line allocation; always duplicate JSON string values before parsed value is freed
+
+## [2026-03-08] text_replace OldStrNotUnique test fix
+
+**Problem:** TDD test for OldStrNotUnique failed - test used similar but non-identical strings ("const x = 0;" vs "const y = 0;") which didn't trigger the error correctly
+**Root cause:** The test expected OldStrNotUnique error but the search string "const x = 0;" appeared only once in the file since "const y = 0;" was a different string
+**Fix:** Changed test file content to use identical strings: "const x = 0;\nconst x = 0;\n" so the search string appears twice and correctly triggers OldStrNotUnique
+**Reuse signal:** When testing for duplicate string detection, always use IDENTICAL strings in the test file, not similar ones - the uniqueness check uses exact string matching

@@ -1,20 +1,20 @@
 const std = @import("std");
 const json = std.json;
-const tree1_mod = @import("nalarcore");
-const agent = tree1_mod.agent;
-const prompt = tree1_mod.prompt;
+const root_mod = @import("nalarcore");
+const agent = root_mod.agent;
+const prompt = root_mod.prompt;
 const context = @import("models.zig").ContextIPCTui;
-const sqlite = tree1_mod.sqlite;
-const bash_tool = tree1_mod.bash_tool;
-const read_file_tool = tree1_mod.read_file;
-const tool_models = tree1_mod.tool_models;
-const change_agent_tool = tree1_mod.change_agent_tool;
-const list_skills_tool = tree1_mod.list_skills_tool;
-const get_skill_tool = tree1_mod.get_skill_tool;
-const loop_detector = tree1_mod.loop_detector;
-const bash_helper = tree1_mod.helperTool;
+const sqlite = root_mod.sqlite;
+const bash_tool = root_mod.bash_tool;
+const read_file_tool = root_mod.read_file;
+const tool_models = root_mod.tool_models;
+const change_agent_tool = root_mod.change_agent_tool;
+const list_skills_tool = root_mod.list_skills_tool;
+const get_skill_tool = root_mod.get_skill_tool;
+const loop_detector = root_mod.loop_detector;
+const bash_helper = root_mod.helperTool;
 const get_tree_dir = @import("get_tree_dir.zig");
-const logger_mod = tree1_mod.logger;
+const logger_mod = root_mod.logger;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
@@ -33,11 +33,12 @@ const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_
 const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const build_memory_for_agent = @import("build_memory_for_agent.zig");
-const write_file_tool = tree1_mod.write_file;
-const search_tool = tree1_mod.search_tool;
+const write_file_tool = root_mod.write_file;
+const search_tool = root_mod.search_tool;
+const text_replace_tool = root_mod.text_replace_tool;
 
 const handle_content_filter = @import("handle_content_filter.zig");
-pub const cancellation_registry = tree1_mod.session.cancellation_registry;
+pub const cancellation_registry = root_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -249,7 +250,7 @@ pub const TUIWorkflow = struct {
             bash_tool.bashTool,     read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool,
 
             // write_file_tool.writeFileTool,
-
+            text_replace_tool.textReplaceTool,
             search_tool.searchTool,
         };
 

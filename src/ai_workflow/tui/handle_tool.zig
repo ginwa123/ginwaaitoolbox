@@ -10,6 +10,7 @@ const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
 const handle_write_file_tool = @import("handle_write_file_tool.zig");
+const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
 const loop_detector = tree1_mod.loop_detector;
 
 // Forward declaration for TUIWorkflow
@@ -97,6 +98,12 @@ pub fn run(
             if (std.mem.eql(u8, tool_call.function.name, "write_file")) {
                 _ = handle_write_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling write_file tool: {s}", .{@errorName(err)}) catch {};
+                };
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
+                _ = handle_text_replace_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                    logger.errFmt("Error handling text_replace tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 

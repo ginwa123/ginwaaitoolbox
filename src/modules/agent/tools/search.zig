@@ -107,7 +107,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
 
         if (line.len > 0) {
             const parsed = std.json.parseFromSlice(std.json.Value, arena_allocator, line, .{}) catch continue;
-            
+
             if (parsed.value.object.get("type")) |type_val| {
                 if (type_val == .string and std.mem.eql(u8, type_val.string, "begin")) {
                     if (parsed.value.object.get("data")) |data| {
@@ -143,7 +143,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
                             if (has_required) {
                                 const owned_file = try allocator.dupe(u8, match_file);
                                 errdefer allocator.free(owned_file);
-                                
+
                                 const owned_snippet = try allocator.dupe(u8, match_snippet);
                                 errdefer allocator.free(owned_snippet);
 
@@ -236,10 +236,10 @@ pub const searchTool = AgentTool{
         .name = "search",
         .description =
         \\Search for a pattern in files using ripgrep.
-        \\Returns: file, line_number, file_total_lines, snippet for each match.
+        \\Returns: file, line_number, file_matched_lines, snippet for each match.
         \\
         \\- Use this to locate symbols, functions, or types before reading.
-        \\- file_total_lines tells you if pagination is needed in read_file.
+        \\- file_matched_lines is the number of matching lines in that file, not its total line count.
         \\- Prefer this over bash+rg for code navigation.
         ,
         .parameters = .{
@@ -265,7 +265,6 @@ pub const searchTool = AgentTool{
         },
     },
 };
-
 
 test {
     _ = @import("search_test.zig");

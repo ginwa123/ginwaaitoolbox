@@ -22,6 +22,7 @@ pub const config = @import("modules/config/config.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");
+pub const text_replace = @import("modules/agent/tools/text_replace.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const session = @import("modules/session/mod.zig");
 
@@ -60,6 +61,7 @@ test {
     _ = @import("ai_workflow/tui/handle_tool.zig");
     _ = @import("ai_workflow/tui/handle_search_tool.zig");
     _ = @import("ai_workflow/tui/handle_write_file_tool.zig");
+    _ = @import("ai_workflow/tui/handle_text_replace_tool.zig");
     _ = @import("ai_workflow/tui/mark_message_not_for_llm.zig");
     _ = @import("ai_workflow/tui/models.zig");
     _ = @import("ai_workflow/tui/run_agentic_loop.zig");
@@ -72,6 +74,8 @@ test {
     _ = @import("modules/session/session_monitor.zig");
     _ = @import("modules/agent/tools/write_file.zig");
     _ = @import("modules/agent/tools/write_file_test.zig");
+    _ = @import("modules/agent/tools/text_replace.zig");
+    _ = @import("modules/agent/tools/text_replace_test.zig");
     _ = @import("modules/agent/tools/search.zig");
     _ = @import("modules/agent/tools/search_test.zig");
 }
