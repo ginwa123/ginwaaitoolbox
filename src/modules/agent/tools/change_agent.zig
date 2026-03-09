@@ -41,10 +41,9 @@ pub const ChangeAgentTool = AgentTool{
                 .{
                     .name = "is_thinking",
                     .type = "boolean",
-                    .description = "Dynamically enables or disables deep reasoning for the next agent. " ++
-                        "true: multi-step logic, architecture decisions, tradeoff analysis, ambiguity resolution, multi-file changes. " ++
-                        "false: simple routing, direct lookups, mechanical or single-step execution. " ++
-                        "PlanningAgent: always true. Default: false.",
+                    .description = "Enables deep reasoning for the next agent. " ++
+                        "Use true for multi-step logic, architecture decisions, tradeoff analysis, ambiguity resolution, or multi-file changes. " ++
+                        "Use false for simple routing, direct lookups, or single-step mechanical execution.",
                 },
             },
             .required = &.{ "agent", "message", "temperature" },

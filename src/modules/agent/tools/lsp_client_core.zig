@@ -199,14 +199,57 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
 
     std.debug.print("spawnLsp: spawned process, pid={d}\n", .{child.id});
 
-    // Create client immediately
+    // Get stdin/stdout immediately
+    const stdin = child.stdin.?;
+    const stdout = child.stdout.?;
+
+    // Create client
     const client = try allocator.create(LspClient);
     client.* = try LspClient.init(allocator, session_id, workspace_uri);
     client.process = child;
-    client.stdin = child.stdin.?;
-    client.stdout = child.stdout.?;
+    client.stdin = stdin;
+    client.stdout = stdout;
 
-    std.debug.print("spawnLsp: client created, stdin={any}, stdout={any}\n", .{ client.stdin, client.stdout });
+    std.debug.print("spawnLsp: client created\n", .{});
+
+    // Immediately send initialize request - zls exits if stdin is empty
+    const request_id = client.next_request_id;
+    client.next_request_id += 1;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const client_info = InitializeRequestParams.ClientInfoJson{
+        .name = "zigaagentic",
+        .version = "0.1.0",
+    };
+
+    const params = InitializeRequestParams{
+        .processId = 12345,
+        .clientInfo = client_info,
+        .rootUri = client.workspace_uri,
+        .capabilities = .{},
+    };
+
+    const request = InitializeRequest{
+        .id = request_id,
+        .params = params,
+    };
+
+    const json_slice = std.json.Stringify.valueAlloc(arena_alloc, request, .{}) catch {
+        // Continue without sending
+        // Store in global sessions
+        const sessions_ptr = getSessions();
+        try sessions_ptr.put(try allocator.dupe(u8, session_id), client);
+        return client;
+    };
+    defer arena_alloc.free(json_slice);
+
+    writeMessage(client.stdin, json_slice) catch |e| {
+        std.debug.print("spawnLsp: immediate initialize failed: {}\n", .{e});
+        // Continue anyway
+    };
 
     // Store in global sessions
     const sessions_ptr = getSessions();
