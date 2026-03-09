@@ -237,11 +237,10 @@ pub const TUIWorkflow = struct {
         session_id: []const u8,
     ) !agent.CallResponse {
         const tools: []const tool_models.AgentTool = &.{
-            bash_tool.bashTool,     read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool, remove_skill_tool.removeSkillTool,
+            bash_tool.bashTool,                read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool, remove_skill_tool.removeSkillTool,
 
             // write_file_tool.writeFileTool,
-            text_replace_tool.textReplaceTool,
-            search_tool.searchTool,
+            text_replace_tool.textReplaceTool, search_tool.searchTool,
         };
 
         var dynamic_agent = try agent.Agent.init(allocator, self.logger);
@@ -391,9 +390,9 @@ pub const TUIWorkflow = struct {
         const summary_content = try summary.toOwnedSlice(allocator);
 
         // Save the compacted summary to the database with is_feed_to_llm = 1
-        const id = try std.fmt.allocPrint(allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
+        const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
         defer allocator.free(id);
-        const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.timestamp()});
+        const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
         defer allocator.free(created_at);
 
         const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)";
@@ -427,9 +426,6 @@ pub const TUIWorkflow = struct {
 
         self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len }) catch {};
     }
-
-
-
 };
 
 test {

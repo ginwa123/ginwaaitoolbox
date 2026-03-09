@@ -16,7 +16,6 @@ pub fn run(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-
     content: ?[]const u8,
     response_content: ?[]const u8,
     response_finish_reason: ?[]const u8,
@@ -29,11 +28,10 @@ pub fn run(
     session_name: ?[]const u8,
     loop_index: u32,
 ) !void {
-    const id = try std.fmt.allocPrint(allocator, "{}-{}", .{ std.time.timestamp(), std.crypto.random.int(u64) });
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
     defer allocator.free(id);
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.timestamp()});
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
     defer allocator.free(created_at);
-
 
     var contentStr = content orelse "";
     const finishReasonStr = finish_reason orelse

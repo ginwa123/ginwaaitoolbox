@@ -10,7 +10,7 @@ pub fn run(
 ) ![]SessionInfo {
     var results: std.ArrayList(SessionInfo) = .empty;
 
-    const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created_at) as created_at FROM llm_history WHERE session_dir = ?  GROUP BY session_id ORDER BY created_at DESC LIMIT 10";
+    const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created_at) as created_at FROM llm_history WHERE session_dir = ?  GROUP BY session_id ORDER BY id DESC LIMIT 10";
     var rows = try db.query(allocator, sql, &[_][]const u8{session_dir});
     defer rows.deinit();
 
