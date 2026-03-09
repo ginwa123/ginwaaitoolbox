@@ -199,9 +199,7 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
 
     std.debug.print("spawnLsp: spawned process, pid={d}\n", .{child.id});
 
-    // Give the process more time to start up - zls needs time to initialize
-    std.Thread.sleep(500 * std.time.ns_per_ms);
-
+    // Create client immediately
     const client = try allocator.create(LspClient);
     client.* = try LspClient.init(allocator, session_id, workspace_uri);
     client.process = child;
@@ -254,16 +252,19 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
     var response_json: ?[]u8 = null;
     defer if (response_json) |r| allocator.free(r);
 
-    // Try to read up to 5 messages to find the initialize response
+    // Try to read up to 10 messages to find the initialize response
     var msg_attempts: usize = 0;
-    while (msg_attempts < 5) : (msg_attempts += 1) {
+    while (msg_attempts < 10) : (msg_attempts += 1) {
+        std.debug.print("initialize: reading message {d}...\n", .{msg_attempts});
         const msg = readMessage(client.stdout, allocator) catch |e| {
             std.debug.print("initialize: readMessage error: {}\n", .{e});
             return LspError.InvalidResponse;
         };
+        std.debug.print("initialize: got message ({d} bytes): {s}\n", .{ msg.len, msg[0..@min(msg.len, 200)] });
 
         // Try to parse as JSON to check if it's the initialize response (has "id" field)
-        var temp_parsed = json.parseFromSlice(json.Value, allocator, msg, .{}) catch {
+        var temp_parsed = json.parseFromSlice(json.Value, allocator, msg, .{}) catch |e| {
+            std.debug.print("initialize: failed to parse JSON: {}\n", .{e});
             allocator.free(msg);
             continue;
         };
@@ -272,8 +273,11 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
         if (temp_parsed.value == .object) {
             // Check if this is the initialize response (has "id" matching our request)
             if (temp_parsed.value.object.get("id")) |_| {
+                std.debug.print("initialize: found response with id\n", .{});
                 response_json = msg;
                 break;
+            } else {
+                std.debug.print("initialize: message has no id (probably notification)\n", .{});
             }
         }
         // Not the response we're looking for, free and continue
@@ -305,69 +309,110 @@ pub fn writeMessage(writer: std.fs.File, json_str: []const u8) !void {
     const content_length = json_str.len;
     var header_buf: [64]u8 = undefined;
     const header = try std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{content_length});
-    try writer.writeAll(header);
-    try writer.writeAll(json_str);
-    // Flush to ensure the message is sent immediately
-    // Note: std.fs.File doesn't have flush(), writeAll is synchronous
+    std.debug.print("writeMessage: sending header: {s}", .{header});
+    std.debug.print("writeMessage: sending body ({d} bytes): {s}\n", .{ json_str.len, json_str[0..@min(json_str.len, 200)] });
+    writer.writeAll(header) catch |e| {
+        std.debug.print("writeMessage: failed to write header: {}\n", .{e});
+        return e;
+    };
+    writer.writeAll(json_str) catch |e| {
+        std.debug.print("writeMessage: failed to write body: {}\n", .{e});
+        return e;
+    };
+    std.debug.print("writeMessage: message sent successfully\n", .{});
+}
+
+// Buffered reader for LSP messages - stores leftover data between calls
+var lsp_read_buffer: ?std.ArrayList(u8) = null;
+
+pub fn getLspReadBuffer(allocator: std.mem.Allocator) *std.ArrayList(u8) {
+    if (lsp_read_buffer == null) {
+        lsp_read_buffer = std.ArrayList(u8).empty;
+        lsp_read_buffer.?.ensureTotalCapacity(allocator, 4096) catch {};
+    }
+    return &lsp_read_buffer.?;
 }
 
 pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
-    // Read header line by line until empty line
-    var header_buf: [4096]u8 = undefined;
-    var header_len: usize = 0;
+    const buffer = getLspReadBuffer(allocator);
+    
+    // Look for header end (\r\n\r\n) in existing buffer
+    var header_end_pos: usize = 0;
     var found_empty_line = false;
+    
+    // Check if we already have a complete header in the buffer
+    if (buffer.items.len >= 4) {
+        var i: usize = 0;
+        while (i < buffer.items.len - 3) : (i += 1) {
+            if (buffer.items[i] == '\r' and buffer.items[i + 1] == '\n' and
+                buffer.items[i + 2] == '\r' and buffer.items[i + 3] == '\n')
+            {
+                found_empty_line = true;
+                header_end_pos = i + 4;
+                break;
+            }
+        }
+    }
+    
+    // If not found, read more data until we find it or timeout
     var timeout_counter: usize = 0;
-    const max_timeout = 1000; // Increased timeout for slower LSP servers
-
-    // Use read() instead of readByte()
-    while (header_len < header_buf.len and timeout_counter < max_timeout) {
-        const bytes_read = reader.read(header_buf[header_len..header_buf.len]) catch |e| {
+    const max_timeout = 500; // 5 seconds timeout
+    
+    while (!found_empty_line and timeout_counter < max_timeout) {
+        // Read more data
+        var read_buf: [4096]u8 = undefined;
+        const bytes_read = reader.read(&read_buf) catch |e| {
             std.debug.print("readMessage: read error: {}\n", .{e});
             return error.JsonParseError;
         };
+        
         if (bytes_read == 0) {
+            // EOF - pipe closed
             timeout_counter += 1;
-            std.Thread.sleep(10 * std.time.ns_per_ms); // Small delay before retry
+            if (timeout_counter >= max_timeout) {
+                std.debug.print("readMessage: EOF reached, LSP server may have exited\n", .{});
+                return error.EndOfStream;
+            }
+            std.Thread.sleep(10 * std.time.ns_per_ms);
             continue;
         }
-        header_len += bytes_read;
-
-        // Check if we have a complete header (double CRLF)
-        if (header_len >= 4) {
-            // Find the end of headers ( CRLF CRLF)
-            var i: usize = 0;
-            while (i < header_len - 3) : (i += 1) {
-                if (header_buf[i] == '\r' and header_buf[i + 1] == '\n' and
-                    header_buf[i + 2] == '\r' and header_buf[i + 3] == '\n')
+        
+        // Append to buffer
+        buffer.appendSlice(allocator, read_buf[0..bytes_read]) catch {
+            return error.OutOfMemory;
+        };
+        
+        // Check for header end
+        if (buffer.items.len >= 4) {
+            var i: usize = if (buffer.items.len > bytes_read) buffer.items.len - bytes_read - 3 else 0;
+            while (i < buffer.items.len - 3) : (i += 1) {
+                if (buffer.items[i] == '\r' and buffer.items[i + 1] == '\n' and
+                    buffer.items[i + 2] == '\r' and buffer.items[i + 3] == '\n')
                 {
                     found_empty_line = true;
-                    header_len = i + 4;
+                    header_end_pos = i + 4;
                     break;
                 }
             }
-            if (found_empty_line) break;
         }
     }
-
+    
     if (!found_empty_line) {
-        std.debug.print("readMessage: did not find empty line, header_len={d}\n", .{header_len});
-        if (header_len > 0) {
-            std.debug.print("readMessage: header content: {s}\n", .{header_buf[0..@min(header_len, 200)]});
-        }
+        std.debug.print("readMessage: did not find empty line after timeout\n", .{});
         return error.JsonParseError;
     }
-
+    
     // Parse Content-Length from headers
     var content_length: usize = 0;
     var pos: usize = 0;
-    while (pos < header_len) {
+    while (pos < header_end_pos) {
         const line_start = pos;
-        while (pos < header_len and header_buf[pos] != '\n') : (pos += 1) {}
-        const line = header_buf[line_start..pos];
+        while (pos < header_end_pos and buffer.items[pos] != '\n') : (pos += 1) {}
+        const line = buffer.items[line_start..pos];
         pos += 1;
-
+        
         if (std.mem.startsWith(u8, line, "Content-Length:")) {
-            const val = std.mem.trim(u8, line[15..], " \r");
+            const val = std.mem.trim(u8, line[16..], " \r");
             content_length = std.fmt.parseInt(usize, val, 10) catch {
                 std.debug.print("readMessage: failed to parse Content-Length: {s}\n", .{val});
                 return error.JsonParseError;
@@ -375,66 +420,76 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
             break;
         }
     }
-
+    
     if (content_length == 0) {
         std.debug.print("readMessage: Content-Length is 0\n", .{});
         return error.JsonParseError;
     }
-
-    // Read body - may already have some data in header_buf after the headers
+    
+    // Calculate how much of the body we already have
+    const body_start = header_end_pos;
+    const body_available = if (buffer.items.len > body_start) buffer.items.len - body_start else 0;
+    
+    // Allocate body
     const body = try allocator.alloc(u8, content_length);
     errdefer allocator.free(body);
-
-    // Check if we already have some body data in the buffer (after the \r\n\r\n)
+    
+    // Copy what we already have
     var body_offset: usize = 0;
-    if (header_len < header_buf.len) {
-        // Calculate how much body data we already have
-        // header_len is the position after \r\n\r\n
-        // We need to find where the actual body starts in the buffer
-        // The buffer contains: headers + \r\n\r\n + [possible body data]
-        var header_end_pos: usize = 0;
-        var i: usize = 0;
-        while (i < header_len - 3) : (i += 1) {
-            if (header_buf[i] == '\r' and header_buf[i + 1] == '\n' and
-                header_buf[i + 2] == '\r' and header_buf[i + 3] == '\n')
-            {
-                header_end_pos = i + 4;
-                break;
-            }
-        }
-
-        const already_read = header_len - header_end_pos;
-        if (already_read > 0) {
-            const to_copy = @min(already_read, content_length);
-            @memcpy(body[0..to_copy], header_buf[header_end_pos..header_end_pos + to_copy]);
-            body_offset = to_copy;
-        }
+    if (body_available > 0) {
+        const to_copy = @min(body_available, content_length);
+        @memcpy(body[0..to_copy], buffer.items[body_start..body_start + to_copy]);
+        body_offset = to_copy;
     }
-
+    
+    // Read remaining body
     var remaining = content_length - body_offset;
     var body_timeout: usize = 0;
-    while (remaining > 0 and body_timeout < max_timeout) {
-        const bytes_read = reader.read(body[body_offset..]) catch |e| {
+    const body_max_timeout = 500; // 5 seconds
+    
+    while (remaining > 0 and body_timeout < body_max_timeout) {
+        var read_buf: [4096]u8 = undefined;
+        const to_read = @min(read_buf.len, remaining);
+        const bytes_read = reader.read(read_buf[0..to_read]) catch |e| {
             std.debug.print("readMessage: body read error: {}\n", .{e});
             allocator.free(body);
             return error.JsonParseError;
         };
+        
         if (bytes_read == 0) {
             body_timeout += 1;
+            if (body_timeout >= body_max_timeout) {
+                std.debug.print("readMessage: EOF while reading body\n", .{});
+                allocator.free(body);
+                return error.EndOfStream;
+            }
             std.Thread.sleep(10 * std.time.ns_per_ms);
             continue;
         }
+        
+        @memcpy(body[body_offset..body_offset + bytes_read], read_buf[0..bytes_read]);
         body_offset += bytes_read;
         remaining -= bytes_read;
     }
-
+    
     if (remaining > 0) {
-        std.debug.print("readMessage: incomplete body, expected {d} bytes, got {d}\n", .{ content_length, body_offset });
+        std.debug.print("readMessage: incomplete body\n", .{});
         allocator.free(body);
         return error.JsonParseError;
     }
-
-    return body[0..body_offset];
+    
+    // Remove consumed data from buffer (header + body)
+    const consumed = body_start + content_length;
+    if (buffer.items.len > consumed) {
+        // Move remaining data to front
+        const leftover = buffer.items.len - consumed;
+        std.mem.copyForwards(u8, buffer.items[0..leftover], buffer.items[consumed..]);
+        buffer.shrinkAndFree(allocator, leftover);
+    } else {
+        buffer.clearRetainingCapacity();
+    }
+    
+    return body;
 }
 
 test {

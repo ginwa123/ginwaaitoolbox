@@ -17,12 +17,17 @@ pub const LspStartOutput = struct {
 pub fn executeLspStart(allocator: std.mem.Allocator, input: LspStartInput) !LspStartOutput {
     const client = try lsp_client_core.spawnLsp(allocator, input.session_id, input.binary_name, input.workspace_uri);
 
-    // Await initialization - give the LSP server time to start up before sending initialize
-    std.Thread.sleep(200 * std.time.ns_per_ms);
-
-    // Try to initialize
+    // Try to initialize immediately - zls expects the initialize request right after spawn
     _ = lsp_client_core.initialize(allocator, client) catch |e| {
         std.debug.print("Warning: LSP initialize failed: {}\n", .{e});
+        // Cleanup the client since initialization failed
+        const sessions_ptr = lsp_client_core.getSessions();
+        if (sessions_ptr.fetchRemove(input.session_id)) |kv| {
+            allocator.free(kv.key);
+        }
+        client.deinit();
+        allocator.destroy(client);
+        return lsp_client_core.LspError.HandshakeFailed;
     };
 
     // Find binary path for output
