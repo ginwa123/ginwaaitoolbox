@@ -165,6 +165,8 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
     const binary_path = try findBinary(allocator, binary_name);
     defer allocator.free(binary_path);
 
+    std.debug.print("spawnLsp: found binary at {s}\n", .{binary_path});
+
     // Parse workspace path from URI (strip "file://")
     var workspace_path: []u8 = undefined;
     if (std.mem.startsWith(u8, workspace_uri, "file://")) {
@@ -173,6 +175,16 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
         workspace_path = try allocator.dupe(u8, workspace_uri);
     }
     defer allocator.free(workspace_path);
+
+    std.debug.print("spawnLsp: workspace path: {s}\n", .{workspace_path});
+
+    // Ensure workspace directory exists
+    std.fs.makeDirAbsolute(workspace_path) catch |e| {
+        if (e != error.PathAlreadyExists) {
+            std.debug.print("spawnLsp: failed to create workspace dir: {}\n", .{e});
+            return LspError.ProcessSpawnFailed;
+        }
+    };
 
     var child_argv: [1][:0]const u8 = undefined;
     child_argv[0] = try allocator.dupeZ(u8, binary_path);
@@ -185,11 +197,18 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
 
     try child.spawn();
 
+    std.debug.print("spawnLsp: spawned process, pid={d}\n", .{child.id});
+
+    // Give the process a moment to start up
+    std.Thread.sleep(200 * std.time.ns_per_ms);
+
     const client = try allocator.create(LspClient);
     client.* = try LspClient.init(allocator, session_id, workspace_uri);
     client.process = child;
     client.stdin = child.stdin.?;
     client.stdout = child.stdout.?;
+
+    std.debug.print("spawnLsp: client created, stdin={any}, stdout={any}\n", .{ client.stdin, client.stdout });
 
     // Store in global sessions
     const sessions_ptr = getSessions();
@@ -268,11 +287,20 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
     var header_buf: [4096]u8 = undefined;
     var header_len: usize = 0;
     var found_empty_line = false;
+    var timeout_counter: usize = 0;
+    const max_timeout = 100; // Prevent infinite loops
 
     // Use read() instead of readByte()
-    while (header_len < header_buf.len) {
-        const bytes_read = reader.read(header_buf[header_len..header_buf.len]) catch return error.JsonParseError;
-        if (bytes_read == 0) break;
+    while (header_len < header_buf.len and timeout_counter < max_timeout) {
+        const bytes_read = reader.read(header_buf[header_len..header_buf.len]) catch |e| {
+            std.debug.print("readMessage: read error: {}\n", .{e});
+            return error.JsonParseError;
+        };
+        if (bytes_read == 0) {
+            timeout_counter += 1;
+            std.Thread.sleep(10 * std.time.ns_per_ms); // Small delay before retry
+            continue;
+        }
         header_len += bytes_read;
 
         // Check if we have a complete header (double CRLF)
@@ -280,8 +308,9 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
             // Find the end of headers ( CRLF CRLF)
             var i: usize = 0;
             while (i < header_len - 3) : (i += 1) {
-                if (header_buf[i] == '\r' and header_buf[i+1] == '\n' and
-                    header_buf[i+2] == '\r' and header_buf[i+3] == '\n') {
+                if (header_buf[i] == '\r' and header_buf[i + 1] == '\n' and
+                    header_buf[i + 2] == '\r' and header_buf[i + 3] == '\n')
+                {
                     found_empty_line = true;
                     header_len = i + 4;
                     break;
@@ -292,6 +321,10 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
     }
 
     if (!found_empty_line) {
+        std.debug.print("readMessage: did not find empty line, header_len={d}\n", .{header_len});
+        if (header_len > 0) {
+            std.debug.print("readMessage: header content: {s}\n", .{header_buf[0..@min(header_len, 200)]});
+        }
         return error.JsonParseError;
     }
 
@@ -306,12 +339,18 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
 
         if (std.mem.startsWith(u8, line, "Content-Length:")) {
             const val = std.mem.trim(u8, line[15..], " \r");
-            content_length = try std.fmt.parseInt(usize, val, 10);
+            content_length = std.fmt.parseInt(usize, val, 10) catch {
+                std.debug.print("readMessage: failed to parse Content-Length: {s}\n", .{val});
+                return error.JsonParseError;
+            };
             break;
         }
     }
 
-    if (content_length == 0) return error.JsonParseError;
+    if (content_length == 0) {
+        std.debug.print("readMessage: Content-Length is 0\n", .{});
+        return error.JsonParseError;
+    }
 
     // Read body
     const body = try allocator.alloc(u8, content_length);
@@ -319,21 +358,31 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
 
     var remaining = content_length;
     var offset: usize = 0;
-    while (remaining > 0) {
-        const bytes_read = reader.read(body[offset..]) catch {
+    var body_timeout: usize = 0;
+    while (remaining > 0 and body_timeout < max_timeout) {
+        const bytes_read = reader.read(body[offset..]) catch |e| {
+            std.debug.print("readMessage: body read error: {}\n", .{e});
             allocator.free(body);
             return error.JsonParseError;
         };
-        if (bytes_read == 0) break;
+        if (bytes_read == 0) {
+            body_timeout += 1;
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+            continue;
+        }
         offset += bytes_read;
         remaining -= bytes_read;
+    }
+
+    if (remaining > 0) {
+        std.debug.print("readMessage: incomplete body, expected {d} bytes, got {d}\n", .{ content_length, offset });
+        allocator.free(body);
+        return error.JsonParseError;
     }
 
     return body[0..offset];
 }
 
-
 test {
     _ = @import("lsp_client_core_test.zig");
 }
-
