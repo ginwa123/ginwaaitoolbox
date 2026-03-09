@@ -175,7 +175,7 @@ test "integration: lsp_hover returns hover information from pylsp" {
 
     const start_input = lsp_start.LspStartInput{
         .session_id = session_id,
-        .binary_name = "pylsp",
+        .binary_name = "python3",
         .workspace_uri = workspace_uri,
     };
 

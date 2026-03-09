@@ -189,10 +189,20 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
         }
     };
 
-    var child_argv: [1][:0]const u8 = undefined;
-    child_argv[0] = try allocator.dupeZ(u8, binary_path);
-    defer allocator.free(child_argv[0]);
-    var child = std.process.Child.init(&child_argv, allocator);
+    // Build argv - if binary is python3, use -m pylsp
+    var child_argv: [3][:0]const u8 = undefined;
+    var arg_count: usize = 1;
+    
+    if (std.mem.eql(u8, binary_path, "python3") or std.mem.endsWith(u8, binary_path, "/python3")) {
+        child_argv[0] = binary_path;
+        child_argv[1] = "-m";
+        child_argv[2] = "pylsp";
+        arg_count = 3;
+    } else {
+        child_argv[0] = binary_path;
+    }
+    
+    var child = std.process.Child.init(child_argv[0..arg_count], allocator);
     child.stdin_behavior = .Pipe;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore; // Ignore stderr to avoid blocking

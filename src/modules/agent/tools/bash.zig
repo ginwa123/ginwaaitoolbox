@@ -270,6 +270,7 @@ pub const bashTool = AgentTool{
         \\## Safety
         \\Avoid destructive or system-modifying commands.
         \\Never assume the working directory.
+        \\Never use commands that produce unbounded output (e.g. `ls -R`, `find /`, `cat <large-file>`).
         ,
         .parameters = .{
             .type = "object",
