@@ -118,3 +118,70 @@ test "search: returns matched_lines for file" {
         try std.testing.expectEqual(@as(usize, 5), result.matches.items[0].file_total_lines);
     }
 }
+
+test "searchResultToString: returns compressed XML format" {
+    const allocator = std.testing.allocator;
+
+    // Create a SearchResult with test matches
+    var matches = std.ArrayList(searchMod.SearchMatch).empty;
+    defer matches.deinit(allocator);
+
+    const file1 = try allocator.dupe(u8, "test1.zig");
+    errdefer allocator.free(file1);
+    const snippet1 = try allocator.dupe(u8, "const x = 5;");
+    errdefer allocator.free(snippet1);
+    try matches.append(allocator, .{
+        .file = file1,
+        .line_number = 10,
+        .file_total_lines = 100,
+        .snippet = snippet1,
+    });
+
+    const file2 = try allocator.dupe(u8, "test2.zig");
+    errdefer allocator.free(file2);
+    const snippet2 = try allocator.dupe(u8, "fn main() void {}");
+    errdefer allocator.free(snippet2);
+    try matches.append(allocator, .{
+        .file = file2,
+        .line_number = 25,
+        .file_total_lines = 50,
+        .snippet = snippet2,
+    });
+
+    const result = searchMod.SearchResult{
+        .matches = matches,
+        .content = try allocator.dupe(u8, "test content"),
+    };
+    defer {
+        // Free the match strings since SearchResult.deinit doesn't free them
+        for (result.matches.items) |m| {
+            allocator.free(m.file);
+            allocator.free(m.snippet);
+        }
+        allocator.free(result.content);
+    }
+
+    const xml_output = try searchMod.searchResultToString(allocator, result);
+    defer allocator.free(xml_output);
+
+    // Verify compressed format is used
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<m>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "</m>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<f>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<l>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<t>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<s>") != null);
+
+    // Verify old verbose format is NOT used
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<match>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<file>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<line_number>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<file_total_lines>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "<snippet>") == null);
+
+    // Verify content is present
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "test1.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "test2.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "const x = 5;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml_output, "fn main() void {}") != null);
+}

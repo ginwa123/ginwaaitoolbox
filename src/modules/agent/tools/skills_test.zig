@@ -384,16 +384,16 @@ test "executeGetSkill returns skill content for valid skill" {
         .skill_name = "debugging",
     };
 
-    const result = try get_skill.executeGetSkill(allocator, input);
+    const result = try get_skill.executeGetSkillToString(allocator, input);
     defer allocator.free(result);
 
-    // Verify JSON structure
-    try testing.expect(std.mem.indexOf(u8, result, "\"skill_name\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"loaded\"") != null);
+    // Verify XML structure
+    try testing.expect(std.mem.indexOf(u8, result, "<skill_name>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<loaded>") != null);
     try testing.expect(std.mem.indexOf(u8, result, "Debug issues systematically") != null);
 }
 
-test "executeGetSkill returns error for invalid skill" {
+test "executeGetSkillToString returns error for invalid skill" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -429,11 +429,11 @@ test "executeGetSkill returns error for invalid skill" {
         .skill_name = "nonexistent_skill",
     };
 
-    const result = try get_skill.executeGetSkill(allocator, input);
+    const result = try get_skill.executeGetSkillToString(allocator, input);
     defer allocator.free(result);
 
-    // Verify JSON structure for error case
-    try testing.expect(std.mem.indexOf(u8, result, "\"skill_name\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"loaded\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"error\"") != null);
+    // Verify XML structure for error case
+    try testing.expect(std.mem.indexOf(u8, result, "<skill_name>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<loaded>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
 }

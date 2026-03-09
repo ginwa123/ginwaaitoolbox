@@ -200,21 +200,19 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
     };
 }
 
-/// Convert SearchResult to XML string format
+/// Convert SearchResult to compressed XML string format
 pub fn searchResultToString(allocator: std.mem.Allocator, result: SearchResult) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
-    try output.appendSlice(allocator, "<results>\n");
-
     for (result.matches.items) |m| {
         const match_xml = try std.fmt.allocPrint(allocator,
-            \\<match>
-            \\<file>{s}</file>
-            \\<line_number>{d}</line_number>
-            \\<file_total_lines>{d}</file_total_lines>
-            \\<snippet>{s}</snippet>
-            \\</match>
+            \\<m>
+            \\  <f>{s}</f>
+            \\  <l>{d}</l>
+            \\  <t>{d}</t>
+            \\  <s>{s}</s>
+            \\</m>
         , .{
             m.file,
             m.line_number,
@@ -225,8 +223,6 @@ pub fn searchResultToString(allocator: std.mem.Allocator, result: SearchResult) 
         allocator.free(match_xml);
     }
 
-    try output.appendSlice(allocator, "</results>");
-
     return try output.toOwnedSlice(allocator);
 }
 
@@ -236,10 +232,10 @@ pub const searchTool = AgentTool{
         .name = "search",
         .description =
         \\Search for a pattern in files using ripgrep.
-        \\Returns: file, line_number, file_matched_lines, snippet for each match.
+        \\Returns: f=file, l=line_number, t=file_total_lines, s=snippet for each match.
         \\
         \\- Use this to locate symbols, functions, or types before reading.
-        \\- file_matched_lines is the number of matching lines in that file, not its total line count.
+        \\- t is the total line count of the file, not the number of matches.
         \\- Prefer this over bash+rg for code navigation.
         ,
         .parameters = .{

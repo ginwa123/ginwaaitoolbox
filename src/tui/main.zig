@@ -525,21 +525,21 @@ fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_result
     var remaining = results;
     var total_shown: usize = 0;
     while (total_shown < 20) {
-        // Extract next <match> block
-        const match_start = std.mem.indexOf(u8, remaining, "<match>") orelse break;
-        const match_end = std.mem.indexOf(u8, remaining, "</match>") orelse break;
-        const match_block = remaining[match_start..match_end + "</match>".len];
-        remaining = remaining[match_end + "</match>".len..];
+        // Extract next <m> block
+        const match_start = std.mem.indexOf(u8, remaining, "<m>") orelse break;
+        const match_end = std.mem.indexOf(u8, remaining, "</m>") orelse break;
+        const match_block = remaining[match_start..match_end + "</m>".len];
+        remaining = remaining[match_end + "</m>".len..];
 
-        const file = extractTag(match_block, "file") orelse "";
-        const line_num = extractTag(match_block, "line_number") orelse "0";
-        const snippet = extractTag(match_block, "snippet") orelse "";
+        const file = extractTag(match_block, "f") orelse "";
+        const line_num = extractTag(match_block, "l") orelse "0";
+        const snippet = extractTag(match_block, "s") orelse "";
 
         std.debug.print("  {s}:{s}:{s}\n", .{ file, line_num, snippet });
         total_shown += 1;
     }
 
-    if (std.mem.indexOf(u8, remaining, "<match>") != null) {
+    if (std.mem.indexOf(u8, remaining, "<m>") != null) {
         std.debug.print("  {s}[more matches...]{s}\n", .{ cyan, reset });
     }
 }
