@@ -397,7 +397,12 @@ test "integration: lsp_definition returns real definitions from zls" {
             });
         }
     }
-    std.debug.print("result lsp definition {s}\n", .{def_output});
+    std.debug.print("result lsp definition: file_uri={s}, line={d}, char={d}, definitions={d}\n", .{
+        def_output.file_uri,
+        def_output.line,
+        def_output.character,
+        def_output.definitions.len,
+    });
 
     // Verify the definition points to the function declaration (line 2, where "pub fn add" is)
     // The definition should be at line 2 (0-indexed) where add is defined

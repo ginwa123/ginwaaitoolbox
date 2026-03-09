@@ -199,8 +199,8 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
 
     std.debug.print("spawnLsp: spawned process, pid={d}\n", .{child.id});
 
-    // Give the process a moment to start up
-    std.Thread.sleep(200 * std.time.ns_per_ms);
+    // Give the process more time to start up - zls needs time to initialize
+    std.Thread.sleep(500 * std.time.ns_per_ms);
 
     const client = try allocator.create(LspClient);
     client.* = try LspClient.init(allocator, session_id, workspace_uri);
@@ -244,19 +244,48 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
         .params = params,
     };
 
-    // Serialize to JSON string
-    var aw: std.io.Writer.Allocating = .init(arena_alloc);
-    try aw.writer.print("{f}", .{std.json.fmt(request, .{})});
-    const json_str = try aw.toOwnedSlice();
-    defer arena_alloc.free(json_str);
+    // Serialize to JSON string using Stringify.valueAlloc
+    const json_slice = try std.json.Stringify.valueAlloc(arena_alloc, request, .{});
+    defer arena_alloc.free(json_slice);
 
-    try writeMessage(client.stdin, json_str);
+    try writeMessage(client.stdin, json_slice);
 
-    // Read response
-    const response_json = try readMessage(client.stdout, allocator);
-    defer allocator.free(response_json);
+    // Read response - zls may send multiple messages (logMessage notifications before the initialize response)
+    var response_json: ?[]u8 = null;
+    defer if (response_json) |r| allocator.free(r);
 
-    var parsed = json.parseFromSlice(json.Value, allocator, response_json, .{}) catch {
+    // Try to read up to 5 messages to find the initialize response
+    var msg_attempts: usize = 0;
+    while (msg_attempts < 5) : (msg_attempts += 1) {
+        const msg = readMessage(client.stdout, allocator) catch |e| {
+            std.debug.print("initialize: readMessage error: {}\n", .{e});
+            return LspError.InvalidResponse;
+        };
+
+        // Try to parse as JSON to check if it's the initialize response (has "id" field)
+        var temp_parsed = json.parseFromSlice(json.Value, allocator, msg, .{}) catch {
+            allocator.free(msg);
+            continue;
+        };
+        defer temp_parsed.deinit();
+
+        if (temp_parsed.value == .object) {
+            // Check if this is the initialize response (has "id" matching our request)
+            if (temp_parsed.value.object.get("id")) |_| {
+                response_json = msg;
+                break;
+            }
+        }
+        // Not the response we're looking for, free and continue
+        allocator.free(msg);
+    }
+
+    if (response_json == null) {
+        std.debug.print("initialize: could not find initialize response after {d} messages\n", .{msg_attempts});
+        return LspError.InvalidResponse;
+    }
+
+    var parsed = json.parseFromSlice(json.Value, allocator, response_json.?, .{}) catch {
         return LspError.InvalidResponse;
     };
     defer parsed.deinit();
@@ -288,7 +317,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
     var header_len: usize = 0;
     var found_empty_line = false;
     var timeout_counter: usize = 0;
-    const max_timeout = 100; // Prevent infinite loops
+    const max_timeout = 1000; // Increased timeout for slower LSP servers
 
     // Use read() instead of readByte()
     while (header_len < header_buf.len and timeout_counter < max_timeout) {
@@ -352,15 +381,40 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         return error.JsonParseError;
     }
 
-    // Read body
+    // Read body - may already have some data in header_buf after the headers
     const body = try allocator.alloc(u8, content_length);
     errdefer allocator.free(body);
 
-    var remaining = content_length;
-    var offset: usize = 0;
+    // Check if we already have some body data in the buffer (after the \r\n\r\n)
+    var body_offset: usize = 0;
+    if (header_len < header_buf.len) {
+        // Calculate how much body data we already have
+        // header_len is the position after \r\n\r\n
+        // We need to find where the actual body starts in the buffer
+        // The buffer contains: headers + \r\n\r\n + [possible body data]
+        var header_end_pos: usize = 0;
+        var i: usize = 0;
+        while (i < header_len - 3) : (i += 1) {
+            if (header_buf[i] == '\r' and header_buf[i + 1] == '\n' and
+                header_buf[i + 2] == '\r' and header_buf[i + 3] == '\n')
+            {
+                header_end_pos = i + 4;
+                break;
+            }
+        }
+
+        const already_read = header_len - header_end_pos;
+        if (already_read > 0) {
+            const to_copy = @min(already_read, content_length);
+            @memcpy(body[0..to_copy], header_buf[header_end_pos..header_end_pos + to_copy]);
+            body_offset = to_copy;
+        }
+    }
+
+    var remaining = content_length - body_offset;
     var body_timeout: usize = 0;
     while (remaining > 0 and body_timeout < max_timeout) {
-        const bytes_read = reader.read(body[offset..]) catch |e| {
+        const bytes_read = reader.read(body[body_offset..]) catch |e| {
             std.debug.print("readMessage: body read error: {}\n", .{e});
             allocator.free(body);
             return error.JsonParseError;
@@ -370,17 +424,17 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
             std.Thread.sleep(10 * std.time.ns_per_ms);
             continue;
         }
-        offset += bytes_read;
+        body_offset += bytes_read;
         remaining -= bytes_read;
     }
 
     if (remaining > 0) {
-        std.debug.print("readMessage: incomplete body, expected {d} bytes, got {d}\n", .{ content_length, offset });
+        std.debug.print("readMessage: incomplete body, expected {d} bytes, got {d}\n", .{ content_length, body_offset });
         allocator.free(body);
         return error.JsonParseError;
     }
 
-    return body[0..offset];
+    return body[0..body_offset];
 }
 
 test {
