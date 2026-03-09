@@ -278,6 +278,14 @@ test "integration: lsp_definition returns real definitions from zls" {
     };
     defer std.fs.deleteTreeAbsolute(temp_path) catch {};
 
+    // Create a build.zig file to make it a valid Zig project
+    const build_zig_path = try std.fs.path.join(allocator, &.{ temp_path, "build.zig" });
+    defer allocator.free(build_zig_path);
+    try std.fs.cwd().writeFile(.{
+        .sub_path = build_zig_path,
+        .data = "const std = @import(\"std\");\npub fn build(b: *std.Build) void { _ = b; }\n",
+    });
+
     // Create a test Zig file with a function definition
     const zig_content =
         \\const std = @import("std");
