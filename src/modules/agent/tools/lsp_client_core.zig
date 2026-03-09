@@ -19,20 +19,20 @@ const InitializeRequestParams = struct {
         name: []const u8,
     };
 
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.beginObject();
-        try stringify.objectField("processId");
-        try stringify.write(self.processId);
-        try stringify.objectField("clientInfo");
-        try stringify.beginObject();
-        try stringify.objectField("name");
-        try stringify.write(self.clientInfo.name);
-        try stringify.objectField("version");
-        try stringify.write(self.clientInfo.version);
-        try stringify.endObject();
-        try stringify.objectField("workspaceFolders");
-        try stringify.write(self.workspaceFolders);
-        try stringify.endObject();
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("processId");
+        try jws.write(self.processId);
+        try jws.objectField("clientInfo");
+        try jws.beginObject();
+        try jws.objectField("name");
+        try jws.write(self.clientInfo.name);
+        try jws.objectField("version");
+        try jws.write(self.clientInfo.version);
+        try jws.endObject();
+        try jws.objectField("workspaceFolders");
+        try jws.write(self.workspaceFolders);
+        try jws.endObject();
     }
 };
 
@@ -42,17 +42,17 @@ const InitializeRequest = struct {
     method: []const u8 = "initialize",
     params: InitializeRequestParams,
 
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.beginObject();
-        try stringify.objectField("jsonrpc");
-        try stringify.write(self.jsonrpc);
-        try stringify.objectField("id");
-        try stringify.write(self.id);
-        try stringify.objectField("method");
-        try stringify.write(self.method);
-        try stringify.objectField("params");
-        try stringify.write(self.params);
-        try stringify.endObject();
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("jsonrpc");
+        try jws.write(self.jsonrpc);
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("method");
+        try jws.write(self.method);
+        try jws.objectField("params");
+        try jws.write(self.params);
+        try jws.endObject();
     }
 };
 
@@ -230,11 +230,12 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
     };
 
     // Serialize to JSON string
-    var req_json = std.ArrayList(u8).empty;
-    try request.jsonStringify(req_json.writer(arena_alloc));
-    defer req_json.deinit(arena_alloc);
+    var aw: std.io.Writer.Allocating = .init(arena_alloc);
+    try aw.writer.print("{f}", .{std.json.fmt(request, .{})});
+    const json_str = try aw.toOwnedSlice();
+    defer arena_alloc.free(json_str);
 
-    try writeMessage(client.stdin, req_json.items);
+    try writeMessage(client.stdin, json_str);
 
     // Read response
     const response_json = try readMessage(client.stdout, allocator);

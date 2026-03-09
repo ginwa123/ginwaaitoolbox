@@ -11,11 +11,11 @@ const HoverRequestParams = struct {
     const TextDocumentIdentifier = struct {
         uri: []const u8,
 
-        pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-            try stringify.beginObject();
-            try stringify.objectField("uri");
-            try stringify.write(self.uri);
-            try stringify.endObject();
+        pub fn jsonStringify(self: @This(), jws: anytype) !void {
+            try jws.beginObject();
+            try jws.objectField("uri");
+            try jws.write(self.uri);
+            try jws.endObject();
         }
     };
 
@@ -23,23 +23,23 @@ const HoverRequestParams = struct {
         line: u32,
         character: u32,
 
-        pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-            try stringify.beginObject();
-            try stringify.objectField("line");
-            try stringify.write(self.line);
-            try stringify.objectField("character");
-            try stringify.write(self.character);
-            try stringify.endObject();
+        pub fn jsonStringify(self: @This(), jws: anytype) !void {
+            try jws.beginObject();
+            try jws.objectField("line");
+            try jws.write(self.line);
+            try jws.objectField("character");
+            try jws.write(self.character);
+            try jws.endObject();
         }
     };
 
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.beginObject();
-        try stringify.objectField("textDocument");
-        try stringify.write(self.textDocument);
-        try stringify.objectField("position");
-        try stringify.write(self.position);
-        try stringify.endObject();
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("textDocument");
+        try jws.write(self.textDocument);
+        try jws.objectField("position");
+        try jws.write(self.position);
+        try jws.endObject();
     }
 };
 
@@ -49,17 +49,17 @@ const HoverRequest = struct {
     method: []const u8 = "textDocument/hover",
     params: HoverRequestParams,
 
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.beginObject();
-        try stringify.objectField("jsonrpc");
-        try stringify.write(self.jsonrpc);
-        try stringify.objectField("id");
-        try stringify.write(self.id);
-        try stringify.objectField("method");
-        try stringify.write(self.method);
-        try stringify.objectField("params");
-        try stringify.write(self.params);
-        try stringify.endObject();
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("jsonrpc");
+        try jws.write(self.jsonrpc);
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("method");
+        try jws.write(self.method);
+        try jws.objectField("params");
+        try jws.write(self.params);
+        try jws.endObject();
     }
 };
 
@@ -103,11 +103,12 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
     };
 
     // Serialize to JSON string
-    var req_json = std.ArrayList(u8).empty;
-    try request.jsonStringify(req_json.writer(arena_alloc));
-    defer req_json.deinit(arena_alloc);
+    var aw: std.io.Writer.Allocating = .init(arena_alloc);
+    try aw.writer.print("{f}", .{std.json.fmt(request, .{})});
+    const json_str = try aw.toOwnedSlice();
+    defer arena_alloc.free(json_str);
 
-    try lsp_client_core.writeMessage(client.stdin, req_json.items);
+    try lsp_client_core.writeMessage(client.stdin, json_str);
 
     // Read response
     const response = lsp_client_core.readMessage(client.stdout, allocator) catch return lsp_client_core.LspError.InvalidResponse;

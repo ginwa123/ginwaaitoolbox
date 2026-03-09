@@ -8,19 +8,18 @@ const ShutdownRequest = struct {
     jsonrpc: []const u8 = "2.0",
     id: i32,
     method: []const u8 = "shutdown",
-    params: ?void = null,
 
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.beginObject();
-        try stringify.objectField("jsonrpc");
-        try stringify.write(self.jsonrpc);
-        try stringify.objectField("id");
-        try stringify.write(self.id);
-        try stringify.objectField("method");
-        try stringify.write(self.method);
-        try stringify.objectField("params");
-        try stringify.write(self.params);
-        try stringify.endObject();
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("jsonrpc");
+        try jws.write(self.jsonrpc);
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("method");
+        try jws.write(self.method);
+        try jws.objectField("params");
+        try jws.write(null);
+        try jws.endObject();
     }
 };
 
@@ -28,17 +27,16 @@ const ShutdownRequest = struct {
 const ExitNotification = struct {
     jsonrpc: []const u8 = "2.0",
     method: []const u8 = "exit",
-    params: ?void = null,
 
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.beginObject();
-        try stringify.objectField("jsonrpc");
-        try stringify.write(self.jsonrpc);
-        try stringify.objectField("method");
-        try stringify.write(self.method);
-        try stringify.objectField("params");
-        try stringify.write(self.params);
-        try stringify.endObject();
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("jsonrpc");
+        try jws.write(self.jsonrpc);
+        try jws.objectField("method");
+        try jws.write(self.method);
+        try jws.objectField("params");
+        try jws.write(null);
+        try jws.endObject();
     }
 };
 
@@ -68,11 +66,12 @@ pub fn executeLspStop(allocator: std.mem.Allocator, input: LspStopInput) !LspSto
         // Build shutdown request using the struct with jsonStringify
         const request = ShutdownRequest{ .id = request_id };
 
-        var req_json = std.ArrayList(u8).empty;
-        try request.jsonStringify(req_json.writer(arena_alloc));
-        defer req_json.deinit(arena_alloc);
+        var aw: std.io.Writer.Allocating = .init(arena_alloc);
+        try aw.writer.print("{f}", .{std.json.fmt(request, .{})});
+        const json_str = try aw.toOwnedSlice();
+        defer arena_alloc.free(json_str);
 
-        lsp_client_core.writeMessage(client.stdin, req_json.items) catch {};
+        lsp_client_core.writeMessage(client.stdin, json_str) catch {};
         _ = lsp_client_core.readMessage(client.stdout, allocator) catch {};
     }
 
@@ -82,11 +81,12 @@ pub fn executeLspStop(allocator: std.mem.Allocator, input: LspStopInput) !LspSto
     const arena_alloc = arena.allocator();
 
     const exit_notification = ExitNotification{};
-    var exit_json = std.ArrayList(u8).empty;
-    try exit_notification.jsonStringify(exit_json.writer(arena_alloc));
-    defer exit_json.deinit(arena_alloc);
+    var aw: std.io.Writer.Allocating = .init(arena_alloc);
+    try aw.writer.print("{f}", .{std.json.fmt(exit_notification, .{})});
+    const json_str = try aw.toOwnedSlice();
+    defer arena_alloc.free(json_str);
 
-    lsp_client_core.writeMessage(client.stdin, exit_json.items) catch {};
+    lsp_client_core.writeMessage(client.stdin, json_str) catch {};
 
     // Kill process if still alive
     _ = client.process.kill() catch {};

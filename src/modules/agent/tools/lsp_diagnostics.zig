@@ -13,25 +13,25 @@ const DidOpenTextDocumentParams = struct {
         version: i32 = 1,
         text: []const u8,
 
-        pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-            try stringify.beginObject();
-            try stringify.objectField("uri");
-            try stringify.write(self.uri);
-            try stringify.objectField("languageId");
-            try stringify.write(self.languageId);
-            try stringify.objectField("version");
-            try stringify.write(self.version);
-            try stringify.objectField("text");
-            try stringify.write(self.text);
-            try stringify.endObject();
+        pub fn jsonStringify(self: @This(), jws: anytype) !void {
+            try jws.beginObject();
+            try jws.objectField("uri");
+            try jws.write(self.uri);
+            try jws.objectField("languageId");
+            try jws.write(self.languageId);
+            try jws.objectField("version");
+            try jws.write(self.version);
+            try jws.objectField("text");
+            try jws.write(self.text);
+            try jws.endObject();
         }
     };
 
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.beginObject();
-        try stringify.objectField("textDocument");
-        try stringify.write(self.textDocument);
-        try stringify.endObject();
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("textDocument");
+        try jws.write(self.textDocument);
+        try jws.endObject();
     }
 };
 
@@ -40,15 +40,15 @@ const DidOpenNotification = struct {
     method: []const u8 = "textDocument/didOpen",
     params: DidOpenTextDocumentParams,
 
-    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
-        try stringify.beginObject();
-        try stringify.objectField("jsonrpc");
-        try stringify.write(self.jsonrpc);
-        try stringify.objectField("method");
-        try stringify.write(self.method);
-        try stringify.objectField("params");
-        try stringify.write(self.params);
-        try stringify.endObject();
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("jsonrpc");
+        try jws.write(self.jsonrpc);
+        try jws.objectField("method");
+        try jws.write(self.method);
+        try jws.objectField("params");
+        try jws.write(self.params);
+        try jws.endObject();
     }
 };
 
@@ -84,8 +84,7 @@ pub fn executeLspDiagnostics(allocator: std.mem.Allocator, input: LspDiagnostics
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // Build didOpen notification using the struct with jsonStringify
-    // std.json.stringify will handle escaping automatically
+    // Build didOpen notification using std.json.fmt
     const text_document_item = DidOpenTextDocumentParams.TextDocumentItem{
         .uri = input.file_uri,
         .text = file_content,
@@ -97,11 +96,12 @@ pub fn executeLspDiagnostics(allocator: std.mem.Allocator, input: LspDiagnostics
         .params = params,
     };
 
-    var did_open = std.ArrayList(u8).empty;
-    try notification.jsonStringify(did_open.writer(arena_alloc));
-    defer did_open.deinit(arena_alloc);
+    var aw: std.io.Writer.Allocating = .init(arena_alloc);
+    try aw.writer.print("{f}", .{std.json.fmt(notification, .{})});
+    const json_str = try aw.toOwnedSlice();
+    defer arena_alloc.free(json_str);
 
-    try lsp_client_core.writeMessage(client.stdin, did_open.items);
+    try lsp_client_core.writeMessage(client.stdin, json_str);
 
     // Wait for diagnostics notification
     var diagnostics = std.ArrayList(lsp_client_core.Diagnostic).empty;
