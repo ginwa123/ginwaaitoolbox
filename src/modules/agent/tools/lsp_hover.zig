@@ -3,6 +3,66 @@ const json = std.json;
 const lsp_client_core = @import("lsp_client_core.zig");
 const AgentTool = @import("models.zig").AgentTool;
 
+// JSON-RPC hover request with custom serialization
+const HoverRequestParams = struct {
+    textDocument: TextDocumentIdentifier,
+    position: Position,
+
+    const TextDocumentIdentifier = struct {
+        uri: []const u8,
+
+        pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+            try stringify.beginObject();
+            try stringify.objectField("uri");
+            try stringify.write(self.uri);
+            try stringify.endObject();
+        }
+    };
+
+    const Position = struct {
+        line: u32,
+        character: u32,
+
+        pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+            try stringify.beginObject();
+            try stringify.objectField("line");
+            try stringify.write(self.line);
+            try stringify.objectField("character");
+            try stringify.write(self.character);
+            try stringify.endObject();
+        }
+    };
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("textDocument");
+        try stringify.write(self.textDocument);
+        try stringify.objectField("position");
+        try stringify.write(self.position);
+        try stringify.endObject();
+    }
+};
+
+const HoverRequest = struct {
+    jsonrpc: []const u8 = "2.0",
+    id: i32,
+    method: []const u8 = "textDocument/hover",
+    params: HoverRequestParams,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("jsonrpc");
+        try stringify.write(self.jsonrpc);
+        try stringify.objectField("id");
+        try stringify.write(self.id);
+        try stringify.objectField("method");
+        try stringify.write(self.method);
+        try stringify.objectField("params");
+        try stringify.write(self.params);
+        try stringify.endObject();
+    }
+};
+
 pub const LspHoverInput = struct {
     session_id: []const u8,
     file_uri: []const u8,
@@ -20,45 +80,52 @@ pub const LspHoverOutput = struct {
 pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspHoverOutput {
     const sessions_ptr = lsp_client_core.getSessions();
     const client = sessions_ptr.get(input.session_id) orelse return lsp_client_core.LspError.SessionNotFound;
-    
+
     if (!client.initialized) return lsp_client_core.LspError.NotInitialized;
-    
+
     const request_id = client.next_request_id;
     client.next_request_id += 1;
-    
-    // Build hover request
+
+    // Use arena allocator for JSON building
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    // Build hover request using the struct with jsonStringify
+    const params = HoverRequestParams{
+        .textDocument = .{ .uri = input.file_uri },
+        .position = .{ .line = input.line, .character = input.character },
+    };
+
+    const request = HoverRequest{
+        .id = request_id,
+        .params = params,
+    };
+
+    // Serialize to JSON string
     var req_json = std.ArrayList(u8).empty;
-    defer req_json.deinit(allocator);
-    
-    try req_json.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
-    try req_json.writer(allocator).print("{d}", .{request_id});
-    try req_json.appendSlice(allocator, ",\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"");
-    try req_json.appendSlice(allocator, input.file_uri);
-    try req_json.appendSlice(allocator, "\"},\"position\":{\"line\":");
-    try req_json.writer(allocator).print("{d}", .{input.line});
-    try req_json.appendSlice(allocator, ",\"character\":");
-    try req_json.writer(allocator).print("{d}", .{input.character});
-    try req_json.appendSlice(allocator, "}}}");
-    
+    try request.jsonStringify(req_json.writer(arena_alloc));
+    defer req_json.deinit(arena_alloc);
+
     try lsp_client_core.writeMessage(client.stdin, req_json.items);
-    
+
     // Read response
     const response = lsp_client_core.readMessage(client.stdout, allocator) catch return lsp_client_core.LspError.InvalidResponse;
     defer allocator.free(response);
-    
+
     var parsed = json.parseFromSlice(json.Value, allocator, response, .{}) catch {
         return lsp_client_core.LspError.InvalidResponse;
     };
     defer parsed.deinit();
-    
+
     var contents: []u8 = try allocator.dupe(u8, "");
-    
+
     if (parsed.value == .object) {
         const result_val = parsed.value.object.get("result") orelse return lsp_client_core.LspError.InvalidResponse;
-        
+
         if (result_val == .object) {
             const contents_val = result_val.object.get("contents") orelse return lsp_client_core.LspError.InvalidResponse;
-            
+
             if (contents_val == .string) {
                 contents = try allocator.dupe(u8, contents_val.string);
             } else if (contents_val == .object) {
@@ -69,7 +136,7 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
             }
         }
     }
-    
+
     return .{
         .file_uri = try allocator.dupe(u8, input.file_uri),
         .line = input.line,
@@ -125,3 +192,7 @@ pub const lspHoverTool = AgentTool{
         },
     },
 };
+
+test {
+    _ = @import("lsp_hover_test.zig");
+}

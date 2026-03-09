@@ -3,6 +3,59 @@ const json = std.json;
 const lsp_types = @import("lsp_types.zig");
 const AgentTool = @import("models.zig").AgentTool;
 
+// JSON-RPC initialize request with custom serialization
+const InitializeRequestParams = struct {
+    processId: i32,
+    clientInfo: ClientInfoJson,
+    workspaceFolders: []const WorkspaceFolderJson,
+
+    const ClientInfoJson = struct {
+        name: []const u8,
+        version: []const u8,
+    };
+
+    const WorkspaceFolderJson = struct {
+        uri: []const u8,
+        name: []const u8,
+    };
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("processId");
+        try stringify.write(self.processId);
+        try stringify.objectField("clientInfo");
+        try stringify.beginObject();
+        try stringify.objectField("name");
+        try stringify.write(self.clientInfo.name);
+        try stringify.objectField("version");
+        try stringify.write(self.clientInfo.version);
+        try stringify.endObject();
+        try stringify.objectField("workspaceFolders");
+        try stringify.write(self.workspaceFolders);
+        try stringify.endObject();
+    }
+};
+
+const InitializeRequest = struct {
+    jsonrpc: []const u8 = "2.0",
+    id: i32,
+    method: []const u8 = "initialize",
+    params: InitializeRequestParams,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("jsonrpc");
+        try stringify.write(self.jsonrpc);
+        try stringify.objectField("id");
+        try stringify.write(self.id);
+        try stringify.objectField("method");
+        try stringify.write(self.method);
+        try stringify.objectField("params");
+        try stringify.write(self.params);
+        try stringify.endObject();
+    }
+};
+
 // Re-export types for convenience
 pub const LspError = lsp_types.LspError;
 pub const InitializeParams = lsp_types.InitializeParams;
@@ -67,7 +120,7 @@ pub fn findBinary(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     var name_buf: [256]u8 = undefined;
     @memcpy(name_buf[0..name.len], name);
     name_buf[name.len] = 0;
-    
+
     var which_argv: [2][:0]const u8 = undefined;
     which_argv[0] = "which";
     which_argv[1] = name_buf[0..name.len :0];
@@ -148,18 +201,38 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
     const request_id = client.next_request_id;
     client.next_request_id += 1;
 
-    // Build JSON-RPC request manually
-    var req_json = std.ArrayList(u8).empty;
-    defer req_json.deinit(allocator);
+    // Use arena allocator for JSON building
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
 
-    try req_json.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
-    try req_json.writer(allocator).print("{d}", .{request_id});
-    try req_json.appendSlice(allocator, ",\"method\":\"initialize\",\"params\":{");
-    try req_json.appendSlice(allocator, "\"processId\":");
-    try req_json.writer(allocator).print("{}", .{0}); // process ID
-    try req_json.appendSlice(allocator, ",\"clientInfo\":{\"name\":\"zigaagentic\",\"version\":\"0.1.0\"},\"workspaceFolders\":[{\"uri\":\"");
-    try req_json.appendSlice(allocator, client.workspace_uri);
-    try req_json.appendSlice(allocator, "\",\"name\":\"workspace\"}]}}");
+    // Build JSON-RPC initialize request using the struct with jsonStringify
+    const workspace_folders = try arena_alloc.alloc(InitializeRequestParams.WorkspaceFolderJson, 1);
+    workspace_folders[0] = .{
+        .uri = client.workspace_uri,
+        .name = "workspace",
+    };
+
+    const client_info = InitializeRequestParams.ClientInfoJson{
+        .name = "zigaagentic",
+        .version = "0.1.0",
+    };
+
+    const params = InitializeRequestParams{
+        .processId = 0,
+        .clientInfo = client_info,
+        .workspaceFolders = workspace_folders,
+    };
+
+    const request = InitializeRequest{
+        .id = request_id,
+        .params = params,
+    };
+
+    // Serialize to JSON string
+    var req_json = std.ArrayList(u8).empty;
+    try request.jsonStringify(req_json.writer(arena_alloc));
+    defer req_json.deinit(arena_alloc);
 
     try writeMessage(client.stdin, req_json.items);
 
@@ -202,13 +275,13 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         const bytes_read = reader.read(header_buf[header_len..header_buf.len]) catch return error.JsonParseError;
         if (bytes_read == 0) break;
         header_len += bytes_read;
-        
+
         // Check if we have a complete header (double CRLF)
         if (header_len >= 4) {
             // Find the end of headers ( CRLF CRLF)
             var i: usize = 0;
             while (i < header_len - 3) : (i += 1) {
-                if (header_buf[i] == '\r' and header_buf[i+1] == '\n' and 
+                if (header_buf[i] == '\r' and header_buf[i+1] == '\n' and
                     header_buf[i+2] == '\r' and header_buf[i+3] == '\n') {
                     found_empty_line = true;
                     header_len = i + 4;
@@ -259,3 +332,9 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
 
     return body[0..offset];
 }
+
+
+test {
+    _ = @import("lsp_client_core_test.zig");
+}
+

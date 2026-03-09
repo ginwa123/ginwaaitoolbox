@@ -16,7 +16,7 @@ pub const LspStartOutput = struct {
 
 pub fn executeLspStart(allocator: std.mem.Allocator, input: LspStartInput) !LspStartOutput {
     const client = try lsp_client_core.spawnLsp(allocator, input.session_id, input.binary_name, input.workspace_uri);
-    
+
     // Try to initialize
     _ = lsp_client_core.initialize(allocator, client) catch |e| {
         std.debug.print("Warning: LSP initialize failed: {}\n", .{e});
@@ -74,3 +74,8 @@ pub const lspStartTool = AgentTool{
         },
     },
 };
+
+
+test {
+    _ = @import("lsp_start_test.zig");
+}

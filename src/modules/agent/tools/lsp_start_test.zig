@@ -24,7 +24,7 @@ test "LspStartOutput can be instantiated" {
         allocator.free(output.binary_path);
         allocator.free(output.status);
     }
-    
+
     try std.testing.expect(std.mem.eql(u8, output.status, "started"));
 }
 
@@ -35,18 +35,18 @@ test "lspStartTool has correct name" {
 test "lspStartTool has required parameters" {
     const params = lsp_start.lspStartTool.function.parameters;
     try std.testing.expect(params.properties.len == 3);
-    
+
     // Check required fields
     var has_session_id = false;
     var has_binary_name = false;
     var has_workspace_uri = false;
-    
+
     for (params.properties) |prop| {
         if (std.mem.eql(u8, prop.name, "session_id")) has_session_id = true;
         if (std.mem.eql(u8, prop.name, "binary_name")) has_binary_name = true;
         if (std.mem.eql(u8, prop.name, "workspace_uri")) has_workspace_uri = true;
     }
-    
+
     try std.testing.expect(has_session_id);
     try std.testing.expect(has_binary_name);
     try std.testing.expect(has_workspace_uri);

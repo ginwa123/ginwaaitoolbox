@@ -3,6 +3,55 @@ const json = std.json;
 const lsp_client_core = @import("lsp_client_core.zig");
 const AgentTool = @import("models.zig").AgentTool;
 
+// JSON-RPC didOpen notification with custom serialization
+const DidOpenTextDocumentParams = struct {
+    textDocument: TextDocumentItem,
+
+    const TextDocumentItem = struct {
+        uri: []const u8,
+        languageId: []const u8 = "zig",
+        version: i32 = 1,
+        text: []const u8,
+
+        pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+            try stringify.beginObject();
+            try stringify.objectField("uri");
+            try stringify.write(self.uri);
+            try stringify.objectField("languageId");
+            try stringify.write(self.languageId);
+            try stringify.objectField("version");
+            try stringify.write(self.version);
+            try stringify.objectField("text");
+            try stringify.write(self.text);
+            try stringify.endObject();
+        }
+    };
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("textDocument");
+        try stringify.write(self.textDocument);
+        try stringify.endObject();
+    }
+};
+
+const DidOpenNotification = struct {
+    jsonrpc: []const u8 = "2.0",
+    method: []const u8 = "textDocument/didOpen",
+    params: DidOpenTextDocumentParams,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("jsonrpc");
+        try stringify.write(self.jsonrpc);
+        try stringify.objectField("method");
+        try stringify.write(self.method);
+        try stringify.objectField("params");
+        try stringify.write(self.params);
+        try stringify.endObject();
+    }
+};
+
 pub const LspDiagnosticsInput = struct {
     session_id: []const u8,
     file_uri: []const u8,
@@ -16,42 +65,44 @@ pub const LspDiagnosticsOutput = struct {
 pub fn executeLspDiagnostics(allocator: std.mem.Allocator, input: LspDiagnosticsInput) !LspDiagnosticsOutput {
     const sessions_ptr = lsp_client_core.getSessions();
     const client = sessions_ptr.get(input.session_id) orelse return lsp_client_core.LspError.SessionNotFound;
-    
+
     if (!client.initialized) return lsp_client_core.LspError.NotInitialized;
-    
+
     // Read the file content
     const file_path = if (std.mem.startsWith(u8, input.file_uri, "file://"))
         input.file_uri[7..]
     else
         input.file_uri;
-    
+
     const file_content = std.fs.cwd().readFileAlloc(allocator, file_path, std.math.maxInt(usize)) catch {
         return lsp_client_core.LspError.InvalidResponse;
     };
     defer allocator.free(file_content);
-    
-    // Send didOpen notification
+
+    // Use arena allocator for JSON building
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    // Build didOpen notification using the struct with jsonStringify
+    // std.json.stringify will handle escaping automatically
+    const text_document_item = DidOpenTextDocumentParams.TextDocumentItem{
+        .uri = input.file_uri,
+        .text = file_content,
+    };
+    const params = DidOpenTextDocumentParams{
+        .textDocument = text_document_item,
+    };
+    const notification = DidOpenNotification{
+        .params = params,
+    };
+
     var did_open = std.ArrayList(u8).empty;
-    defer did_open.deinit(allocator);
-    
-    try did_open.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"");
-    try did_open.appendSlice(allocator, input.file_uri);
-    try did_open.appendSlice(allocator, "\",\"languageId\":\"zig\",\"version\":1,\"text\":\"");
-    // Escape the text content
-    for (file_content) |c| {
-        switch (c) {
-            '"' => try did_open.appendSlice(allocator, "\\\""),
-            '\\' => try did_open.appendSlice(allocator, "\\\\"),
-            '\n' => try did_open.appendSlice(allocator, "\\n"),
-            '\r' => try did_open.appendSlice(allocator, "\\r"),
-            '\t' => try did_open.appendSlice(allocator, "\\t"),
-            else => try did_open.append(allocator, c),
-        }
-    }
-    try did_open.appendSlice(allocator, "\"}}}");
-    
+    try notification.jsonStringify(did_open.writer(arena_alloc));
+    defer did_open.deinit(arena_alloc);
+
     try lsp_client_core.writeMessage(client.stdin, did_open.items);
-    
+
     // Wait for diagnostics notification
     var diagnostics = std.ArrayList(lsp_client_core.Diagnostic).empty;
     errdefer {
@@ -60,19 +111,19 @@ pub fn executeLspDiagnostics(allocator: std.mem.Allocator, input: LspDiagnostics
         }
         diagnostics.deinit(allocator);
     }
-    
+
     // Read messages until we get diagnostics or timeout
     var timeout: usize = 0;
     while (timeout < 30) {
         const response = lsp_client_core.readMessage(client.stdout, allocator) catch break;
         defer allocator.free(response);
-        
+
         var parsed = json.parseFromSlice(json.Value, allocator, response, .{}) catch {
             timeout += 1;
             continue;
         };
         defer parsed.deinit();
-        
+
         // Check for method field
         if (parsed.value == .object) {
             const method_opt = parsed.value.object.get("method");
@@ -85,23 +136,23 @@ pub fn executeLspDiagnostics(allocator: std.mem.Allocator, input: LspDiagnostics
                             if (diags_val == .array) {
                                 for (diags_val.array.items) |diag_val| {
                                     if (diag_val != .object) continue;
-                                    
+
                                     const msg_opt = diag_val.object.get("message");
                                     if (msg_opt == null or msg_opt.? != .string) continue;
                                     const msg = try allocator.dupe(u8, msg_opt.?.string);
-                                    
+
                                     var severity: i32 = 1;
                                     const sev_opt = diag_val.object.get("severity");
                                     if (sev_opt) |sev| {
                                         if (sev == .integer) severity = @intCast(sev.integer);
                                     }
-                                    
+
                                     const range_opt = diag_val.object.get("range");
                                     var start_line: u32 = 0;
                                     var start_char: u32 = 0;
                                     var end_line: u32 = 0;
                                     var end_char: u32 = 0;
-                                    
+
                                     if (range_opt) |range_val| {
                                         if (range_val == .object) {
                                             const start_opt = range_val.object.get("start");
@@ -124,7 +175,7 @@ pub fn executeLspDiagnostics(allocator: std.mem.Allocator, input: LspDiagnostics
                                             }
                                         }
                                     }
-                                    
+
                                     try diagnostics.append(allocator, .{
                                         .severity = severity,
                                         .message = msg,
@@ -143,7 +194,7 @@ pub fn executeLspDiagnostics(allocator: std.mem.Allocator, input: LspDiagnostics
         }
         timeout += 1;
     }
-    
+
     return .{
         .file_uri = try allocator.dupe(u8, input.file_uri),
         .diagnostics = diagnostics.items,
@@ -153,11 +204,11 @@ pub fn executeLspDiagnostics(allocator: std.mem.Allocator, input: LspDiagnostics
 pub fn lspDiagnosticsToString(allocator: std.mem.Allocator, result: LspDiagnosticsOutput) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
-    
+
     try output.appendSlice(allocator, "<file_uri>");
     try output.appendSlice(allocator, result.file_uri);
     try output.appendSlice(allocator, "</file_uri>\n<diagnostics>");
-    
+
     for (result.diagnostics) |d| {
         try output.appendSlice(allocator, "<diagnostic>");
         try output.appendSlice(allocator, "<severity>");
@@ -173,7 +224,7 @@ pub fn lspDiagnosticsToString(allocator: std.mem.Allocator, result: LspDiagnosti
         try output.appendSlice(allocator, "</range>");
         try output.appendSlice(allocator, "</diagnostic>");
     }
-    
+
     try output.appendSlice(allocator, "</diagnostics>");
     return try allocator.dupe(u8, output.items);
 }
@@ -201,3 +252,7 @@ pub const lspDiagnosticsTool = AgentTool{
         },
     },
 };
+
+test {
+    _ = @import("lsp_definition_test.zig");
+}

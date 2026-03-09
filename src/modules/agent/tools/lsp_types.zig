@@ -71,3 +71,7 @@ pub const common_binary_paths = [_][]const u8{
     "/home/ginwa/.local/bin",
     "/home/ginwa/.local/share/nvim/mason/bin",
 };
+
+test {
+    _ = @import("lsp_types_test.zig");
+}

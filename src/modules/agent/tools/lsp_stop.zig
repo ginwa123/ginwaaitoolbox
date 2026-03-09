@@ -1,6 +1,46 @@
 const std = @import("std");
+const json = std.json;
 const lsp_client_core = @import("lsp_client_core.zig");
 const AgentTool = @import("models.zig").AgentTool;
+
+// JSON-RPC shutdown request with custom serialization
+const ShutdownRequest = struct {
+    jsonrpc: []const u8 = "2.0",
+    id: i32,
+    method: []const u8 = "shutdown",
+    params: ?void = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("jsonrpc");
+        try stringify.write(self.jsonrpc);
+        try stringify.objectField("id");
+        try stringify.write(self.id);
+        try stringify.objectField("method");
+        try stringify.write(self.method);
+        try stringify.objectField("params");
+        try stringify.write(self.params);
+        try stringify.endObject();
+    }
+};
+
+// JSON-RPC exit notification (no id)
+const ExitNotification = struct {
+    jsonrpc: []const u8 = "2.0",
+    method: []const u8 = "exit",
+    params: ?void = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("jsonrpc");
+        try stringify.write(self.jsonrpc);
+        try stringify.objectField("method");
+        try stringify.write(self.method);
+        try stringify.objectField("params");
+        try stringify.write(self.params);
+        try stringify.endObject();
+    }
+};
 
 pub const LspStopInput = struct {
     session_id: []const u8,
@@ -14,27 +54,38 @@ pub const LspStopOutput = struct {
 pub fn executeLspStop(allocator: std.mem.Allocator, input: LspStopInput) !LspStopOutput {
     const sessions_ptr = lsp_client_core.getSessions();
     const client = sessions_ptr.get(input.session_id) orelse return lsp_client_core.LspError.SessionNotFound;
-    
+
     // Send shutdown request if initialized
     if (client.initialized) {
         const request_id = client.next_request_id;
         client.next_request_id += 1;
 
-        var req_json = std.ArrayList(u8).empty;
-        defer req_json.deinit(allocator);
+        // Use arena allocator for JSON building
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
 
-        try req_json.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
-        try req_json.writer(allocator).print("{d}", .{request_id});
-        try req_json.appendSlice(allocator, ",\"method\":\"shutdown\",\"params\":null}");
+        // Build shutdown request using the struct with jsonStringify
+        const request = ShutdownRequest{ .id = request_id };
+
+        var req_json = std.ArrayList(u8).empty;
+        try request.jsonStringify(req_json.writer(arena_alloc));
+        defer req_json.deinit(arena_alloc);
 
         lsp_client_core.writeMessage(client.stdin, req_json.items) catch {};
         _ = lsp_client_core.readMessage(client.stdout, allocator) catch {};
     }
 
     // Send exit notification
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const exit_notification = ExitNotification{};
     var exit_json = std.ArrayList(u8).empty;
-    defer exit_json.deinit(allocator);
-    try exit_json.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}");
+    try exit_notification.jsonStringify(exit_json.writer(arena_alloc));
+    defer exit_json.deinit(arena_alloc);
+
     lsp_client_core.writeMessage(client.stdin, exit_json.items) catch {};
 
     // Kill process if still alive
@@ -47,7 +98,7 @@ pub fn executeLspStop(allocator: std.mem.Allocator, input: LspStopInput) !LspSto
     _ = sessions_ptr.remove(input.session_id);
     client.deinit();
     allocator.destroy(client);
-    
+
     return .{
         .session_id = try allocator.dupe(u8, input.session_id),
         .status = try allocator.dupe(u8, "stopped"),
@@ -82,3 +133,7 @@ pub const lspStopTool = AgentTool{
         },
     },
 };
+
+test {
+    _ = @import("lsp_stop_test.zig");
+}
