@@ -17,6 +17,9 @@ pub const LspStartOutput = struct {
 pub fn executeLspStart(allocator: std.mem.Allocator, input: LspStartInput) !LspStartOutput {
     const client = try lsp_client_core.spawnLsp(allocator, input.session_id, input.binary_name, input.workspace_uri);
 
+    // Await initialization - give the LSP server time to start up before sending initialize
+    std.Thread.sleep(200 * std.time.ns_per_ms);
+
     // Try to initialize
     _ = lsp_client_core.initialize(allocator, client) catch |e| {
         std.debug.print("Warning: LSP initialize failed: {}\n", .{e});

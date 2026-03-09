@@ -1,5 +1,6 @@
 const std = @import("std");
 const lsp_start = @import("lsp_start.zig");
+const lsp_stop = @import("lsp_stop.zig");
 
 test "LspStartInput can be instantiated" {
     const input = lsp_start.LspStartInput{
@@ -54,9 +55,41 @@ test "lspStartTool has required parameters" {
 
 // Integration test - requires zls to be installed and working
 // To run: zig test src/modules/agent/tools/lsp_start_test.zig
-// Note: This test is skipped by default as it requires a running LSP server
 test "integration: lsp_start spawns zls" {
-    // Skip this test if zls is not available - integration test placeholder
-    // In a real integration test, we would spawn zls and verify it starts
-    try std.testing.expect(true);
+    const allocator = std.testing.allocator;
+
+    const input = lsp_start.LspStartInput{
+        .session_id = "test-integration-session",
+        .binary_name = "zls",
+        .workspace_uri = "file:///tmp/test-workspace",
+    };
+
+    const output = try lsp_start.executeLspStart(allocator, input);
+    defer {
+        allocator.free(output.session_id);
+        allocator.free(output.binary_path);
+        allocator.free(output.status);
+    }
+
+    // Verify the session_id matches input
+    try std.testing.expect(std.mem.eql(u8, output.session_id, "test-integration-session"));
+
+    // Verify the status is "started"
+    try std.testing.expect(std.mem.eql(u8, output.status, "started"));
+
+    // Verify the binary_path contains "zls"
+    try std.testing.expect(std.mem.indexOf(u8, output.binary_path, "zls") != null);
+
+    // Stop the LSP session to clean up resources and avoid memory leaks
+    const stop_input = lsp_stop.LspStopInput{
+        .session_id = "test-integration-session",
+    };
+    const stop_output = try lsp_stop.executeLspStop(allocator, stop_input);
+    defer {
+        allocator.free(stop_output.session_id);
+        allocator.free(stop_output.status);
+    }
+
+    // Verify the session was stopped
+    try std.testing.expect(std.mem.eql(u8, stop_output.status, "stopped"));
 }

@@ -7,17 +7,15 @@ const AgentTool = @import("models.zig").AgentTool;
 const InitializeRequestParams = struct {
     processId: i32,
     clientInfo: ClientInfoJson,
-    workspaceFolders: []const WorkspaceFolderJson,
+    rootUri: ?[]const u8,
+    capabilities: CapabilitiesJson,
 
     const ClientInfoJson = struct {
         name: []const u8,
         version: []const u8,
     };
 
-    const WorkspaceFolderJson = struct {
-        uri: []const u8,
-        name: []const u8,
-    };
+    const CapabilitiesJson = struct {};
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -30,8 +28,10 @@ const InitializeRequestParams = struct {
         try jws.objectField("version");
         try jws.write(self.clientInfo.version);
         try jws.endObject();
-        try jws.objectField("workspaceFolders");
-        try jws.write(self.workspaceFolders);
+        try jws.objectField("rootUri");
+        try jws.write(self.rootUri);
+        try jws.objectField("capabilities");
+        try jws.write(self.capabilities);
         try jws.endObject();
     }
 };
@@ -176,10 +176,11 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
 
     var child_argv: [1][:0]const u8 = undefined;
     child_argv[0] = try allocator.dupeZ(u8, binary_path);
+    defer allocator.free(child_argv[0]);
     var child = std.process.Child.init(&child_argv, allocator);
     child.stdin_behavior = .Pipe;
     child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    child.stderr_behavior = .Ignore; // Ignore stderr to avoid blocking
     child.cwd = workspace_path;
 
     try child.spawn();
@@ -207,21 +208,16 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
     const arena_alloc = arena.allocator();
 
     // Build JSON-RPC initialize request using the struct with jsonStringify
-    const workspace_folders = try arena_alloc.alloc(InitializeRequestParams.WorkspaceFolderJson, 1);
-    workspace_folders[0] = .{
-        .uri = client.workspace_uri,
-        .name = "workspace",
-    };
-
     const client_info = InitializeRequestParams.ClientInfoJson{
         .name = "zigaagentic",
         .version = "0.1.0",
     };
 
     const params = InitializeRequestParams{
-        .processId = 0,
+        .processId = 12345,
         .clientInfo = client_info,
-        .workspaceFolders = workspace_folders,
+        .rootUri = client.workspace_uri,
+        .capabilities = .{},
     };
 
     const request = InitializeRequest{
@@ -263,6 +259,8 @@ pub fn writeMessage(writer: std.fs.File, json_str: []const u8) !void {
     const header = try std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{content_length});
     try writer.writeAll(header);
     try writer.writeAll(json_str);
+    // Flush to ensure the message is sent immediately
+    // Note: std.fs.File doesn't have flush(), writeAll is synchronous
 }
 
 pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {

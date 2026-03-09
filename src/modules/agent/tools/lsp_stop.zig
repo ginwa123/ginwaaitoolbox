@@ -94,8 +94,10 @@ pub fn executeLspStop(allocator: std.mem.Allocator, input: LspStopInput) !LspSto
     // Wait for process to exit
     _ = client.process.wait() catch {};
 
-    // Remove from sessions
-    _ = sessions_ptr.remove(input.session_id);
+    // Remove from sessions and free the session_id key that was duplicated in spawnLsp
+    if (sessions_ptr.fetchRemove(input.session_id)) |kv| {
+        allocator.free(kv.key);
+    }
     client.deinit();
     allocator.destroy(client);
 
