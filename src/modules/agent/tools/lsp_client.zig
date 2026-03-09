@@ -12,3 +12,15 @@ pub const lsp_diagnostics = @import("lsp_diagnostics.zig");
 pub const lsp_hover = @import("lsp_hover.zig");
 pub const lsp_definition = @import("lsp_definition.zig");
 pub const lsp_references = @import("lsp_references.zig");
+
+
+test {
+    _ = lsp_references;
+    _ = lsp_definition;
+    _ = lsp_hover;
+    _ = lsp_diagnostics;
+    _ = lsp_stop;
+    _ = lsp_start;
+    _ = lsp_client_core;
+    _ = lsp_types;
+}
