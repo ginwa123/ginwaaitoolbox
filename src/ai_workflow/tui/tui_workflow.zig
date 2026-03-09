@@ -120,19 +120,10 @@ pub const TUIWorkflow = struct {
 
     loop_detector: loop_detector.LoopDetector = .{},
 
-    pub fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !TUIWorkflow {
-        const log_ptr = try allocator.create(logger_mod.Logger);
-        log_ptr.* = logger_mod.Logger.initColor(allocator, .{
-            .min_level = .debug,
-            .output_mode = .file,
-            .log_file_path = "/var/tmp/agentic_coding.log",
-            .include_location = true,
-            .include_request_id = true,
-            .include_timestamp = true,
-        });
+    pub fn init(db: *sqlite.SqliteBackend, logger: *logger_mod.Logger) TUIWorkflow {
         return .{
             .db = db,
-            .logger = log_ptr,
+            .logger = logger,
         };
     }
 

@@ -1,11 +1,12 @@
 const sqlite = @import("nalarcore").sqlite;
 const config = @import("nalarcore").config;
+const logger = @import("nalarcore").logger;
 const std = @import("std");
 
 pub const ContextIPCTui = struct {
     db: *sqlite.SqliteBackend,
     llm_config: *const config.LlmConfig,
-    // Cancellation is now handled per-session via CancellationRegistry
+    logger: *logger.Logger,
 };
 
 pub const TUIHistory = struct {

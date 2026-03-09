@@ -241,11 +241,30 @@ pub fn main() !void {
     });
     try migrationManager.runMigrations();
 
+    // Get platform-appropriate temp directory
+    const tmp_path = if (std.posix.getenv("TMPDIR")) |p| p else if (std.posix.getenv("TEMP")) |p| p else if (std.posix.getenv("TMP")) |p| p else if (std.posix.getenv("HOME")) |p| p else "/tmp";
+    const log_file_path = try std.fs.path.join(parentAllocator, &.{ tmp_path, "agentic_coding.log" });
+    defer parentAllocator.free(log_file_path);
+
+    // Initialize global logger
+    tree1.logger.initGlobalColor(parentAllocator, .{
+        .min_level = .debug,
+        .output_mode = .file,
+        .log_file_path = log_file_path,
+        .include_location = true,
+        .include_request_id = true,
+        .include_timestamp = true,
+    });
+    defer tree1.logger.deinitGlobal();
+
+    const global_logger_ptr = tree1.logger.getGlobal().?;
+
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
     defer parentAllocator.destroy(ctxParent);
     ctxParent.* = ai_workflow_mod.ContextIPCTui{
         .db = &dbSqlite,
         .llm_config = &llm_config,
+        .logger = global_logger_ptr,
     };
 
     // Initialize global cancellation registry
@@ -288,10 +307,7 @@ pub fn main() !void {
                             return;
                         };
                     }
-                var workflowAsk = ai_workflow.TUIWorkflow.init(allocator, ctxTui.db) catch |err| {
-                    std.debug.print("Failed to init workflow: {}\n", .{err});
-                    return;
-                };
+                var workflowAsk = ai_workflow.TUIWorkflow.init(ctxTui.db, ctxTui.logger);
 
                 // Load previously saved skills for this session
                 // workflowAsk.loadSkillsFromDB(allocator) catch |err| {
