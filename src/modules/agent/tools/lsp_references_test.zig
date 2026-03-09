@@ -211,7 +211,7 @@ test "integration: lsp_references returns all references from pylsp" {
         .session_id = session_id,
         .file_uri = file_uri,
         .line = 6,
-        .character = 12,
+        .character = 13, // Position of "add" in "result = add(1, 2)"
     };
 
     const references_output = lsp_references.executeLspReferences(allocator, references_input) catch |e| {
