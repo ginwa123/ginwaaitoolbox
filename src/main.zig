@@ -239,6 +239,11 @@ pub fn main() !void {
         .name = migrations.Migration009RemoveCreatedColumn.name,
         .up = migrations.Migration009RemoveCreatedColumn.up,
     });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration011AddTemperatureAndThinking.version,
+        .name = migrations.Migration011AddTemperatureAndThinking.name,
+        .up = migrations.Migration011AddTemperatureAndThinking.up,
+    });
     try migrationManager.runMigrations();
 
     // Get platform-appropriate temp directory
