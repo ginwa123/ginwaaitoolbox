@@ -40,83 +40,42 @@ pub const getSkillTool = AgentTool{
 };
 
 /// Execute the get_skill tool
-/// Returns a JSON string with the skill content or error message
+/// Returns an XML string with the skill content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeGetSkill(allocator: std.mem.Allocator, input: GetSkillInput) ![]const u8 {
+pub fn executeGetSkillToString(allocator: std.mem.Allocator, input: GetSkillInput) ![]const u8 {
     // Try to parse the skill
     if (skills.parseSkill(allocator, input.skill_name)) |content| {
         defer allocator.free(content);
         // Success - return the skill content
-        const escaped = escapeJsonString(allocator, content);
-        defer allocator.free(escaped);
         const result = try std.fmt.allocPrint(allocator,
-            \\{{
-            \\"skill_name": "{s}",
-            \\"content": "{s}",
-            \\"loaded": true
-            \\}}
-        , .{ input.skill_name, escaped });
+            \\<skill_name>{s}</skill_name>
+            \\<content>{s}</content>
+            \\<loaded>true</loaded>
+        , .{ input.skill_name, content });
         return result;
     } else {
         // Skill not found - list available skills
         const skills_list = skills.listSkills(allocator);
         defer skills.freeSkillsList(allocator, skills_list);
 
-        // Build JSON array string directly from skills_list
-        // We don't need a separate ArrayList - just use skill names directly
+        // Build XML string for available skills
         var available_str: std.ArrayList(u8) = .empty;
         defer available_str.deinit(allocator);
         
-        try available_str.append(allocator, '[');
-        for (skills_list, 0..) |skill, i| {
-            if (i > 0) {
-                try available_str.appendSlice(allocator, ", ");
-            }
-            // Directly format each skill name as JSON string
-            try available_str.append(allocator, '"');
-            for (skill.name) |c| {
-                switch (c) {
-                    '"' => try available_str.appendSlice(allocator, "\\\""),
-                    '\\' => try available_str.appendSlice(allocator, "\\\\"),
-                    '\n' => try available_str.appendSlice(allocator, "\\n"),
-                    '\r' => try available_str.appendSlice(allocator, "\\r"),
-                    '\t' => try available_str.appendSlice(allocator, "\\t"),
-                    else => try available_str.append(allocator, c),
-                }
-            }
-            try available_str.append(allocator, '"');
+        for (skills_list) |skill| {
+            try available_str.appendSlice(allocator, "<skill>");
+            try available_str.appendSlice(allocator, skill.name);
+            try available_str.appendSlice(allocator, "</skill>");
         }
-        try available_str.append(allocator, ']');
 
         const result = try std.fmt.allocPrint(allocator,
-            \\{{
-            \\"skill_name": "{s}",
-            \\"content": "",
-            \\"loaded": false,
-            \\"error": "Skill not found",
-            \\"available_skills": {s}
-            \\}}
+            \\<skill_name>{s}</skill_name>
+            \\<content></content>
+            \\<loaded>false</loaded>
+            \\<error>Skill not found</error>
+            \\<available_skills>{s}</available_skills>
         , .{ input.skill_name, available_str.items });
 
         return result;
     }
-}
-
-/// Escape a string for JSON output
-fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
-    var result: std.ArrayList(u8) = .empty;
-    defer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '"' => result.appendSlice(allocator, "\\\"") catch return "",
-            '\\' => result.appendSlice(allocator, "\\\\") catch return "",
-            '\n' => result.appendSlice(allocator, "\\n") catch return "",
-            '\r' => result.appendSlice(allocator, "\\r") catch return "",
-            '\t' => result.appendSlice(allocator, "\\t") catch return "",
-            else => result.append(allocator, c) catch return "",
-        }
-    }
-
-    return allocator.dupe(u8, result.items) catch "";
 }

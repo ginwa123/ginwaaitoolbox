@@ -12,6 +12,7 @@ const change_agent_tool = root_mod.change_agent_tool;
 const list_skills_tool = root_mod.list_skills_tool;
 const get_skill_tool = root_mod.get_skill_tool;
 const remove_skill_tool = root_mod.remove_skill_tool;
+const skills = root_mod.skills;
 const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
 const get_tree_dir = @import("get_tree_dir.zig");
@@ -442,6 +443,7 @@ pub const TUIWorkflow = struct {
 
     // this code need to be refactored later
     pub fn handleGetSkill(self: *TUIWorkflow, allocator: std.mem.Allocator, messages_list: *std.ArrayList(agent.AgentMessage), tool_call: agent.ToolCall, session_id: []const u8, model: []const u8, cwd: []const u8, conn_fd: std.posix.fd_t) !void {
+        _ = messages_list;
         // Parse arguments JSON to GetSkillInput
         const parsed = std.json.parseFromSlice(
             get_skill_tool.GetSkillInput,
@@ -454,51 +456,30 @@ pub const TUIWorkflow = struct {
         };
         defer parsed.deinit();
 
-        const result = get_skill_tool.executeGetSkill(allocator, parsed.value) catch |err| blk: {
+        const result = get_skill_tool.executeGetSkillToString(allocator, parsed.value) catch |err| blk: {
             self.logger.errFmt("Error executing get_skill: {s}", .{@errorName(err)}) catch {};
-            break :blk "{\"error\": \"Failed to get skill\"}";
+            break :blk "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>";
         };
         defer allocator.free(result);
 
         self.logger.debugFmt("GET_SKILL RESULT: {s}", .{result}) catch {};
 
-        // Parse the result JSON to extract skill info
-        const resultParsed = std.json.parseFromSlice(
-            get_skill_tool.GetSkillResult,
-            allocator,
-            result,
-            .{ .allocate = .alloc_always },
-        ) catch |err| {
-            self.logger.errFmt("Failed to parse get_skill result: {s}", .{@errorName(err)}) catch {};
-            // Still send tool result even if parsing fails
-            const tool_result_msg = agent.AgentMessage{
-                .role = .tool,
-                .content = result,
-                .tool_call_id = allocator.dupe(u8, tool_call.id) catch return,
-            };
-            messages_list.append(allocator, tool_result_msg) catch return;
-            const current_agent = get_current_agent_by_session_id.run(allocator, self.db, session_id) catch return;
+        // Save skill to database for persistence (tool validates and returns content)
+        // Extract skill_name from parsed.value since it's already validated
+        const content = skills.parseSkill(allocator, parsed.value.skill_name);
+        defer if (content) |c| allocator.free(c);
 
-            _ = try save_message.run(allocator, self.db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent, null, 0);
-            send_tool_result.run(allocator, conn_fd, self.logger, result, tool_call.id, tool_call.function.name, null);
-            return;
-        };
-        defer resultParsed.deinit();
-
-        const skill_result = resultParsed.value;
-
-        // Only inject if skill was successfully loaded and not already loaded
-        if (skill_result.loaded and skill_result.content.len > 0) {
-            const already_loaded = save_skill_mod.isLoaded(allocator, self.db, session_id, skill_result.skill_name) catch false;
+        if (content != null) {
+            const already_loaded = save_skill_mod.isLoaded(allocator, self.db, session_id, parsed.value.skill_name) catch false;
             if (!already_loaded) {
                 // Save skill to database for persistence
-                save_skill_mod.run(allocator, self.db, self.logger, session_id, skill_result.skill_name, skill_result.content) catch |err| {
+                save_skill_mod.run(allocator, self.db, self.logger, session_id, parsed.value.skill_name, content.?) catch |err| {
                     self.logger.errFmt("Failed to save skill to database: {s}", .{@errorName(err)}) catch {};
                 };
                 // Send updated skills list to TUI
                 send_skill_mod.run(allocator, self.db, self.logger, conn_fd, session_id);
             } else {
-                self.logger.debugFmt("Skill '{s}' already loaded, skipping duplicate", .{skill_result.skill_name}) catch {};
+                self.logger.debugFmt("Skill '{s}' already loaded, skipping duplicate", .{parsed.value.skill_name}) catch {};
             }
         }
 
@@ -523,14 +504,12 @@ pub const TUIWorkflow = struct {
         };
         defer parsed.deinit();
 
-        const result = remove_skill_tool.executeRemoveSkill(allocator, parsed.value) catch |err| blk: {
+        const result = remove_skill_tool.executeRemoveSkillToString(allocator, parsed.value) catch |err| blk: {
             self.logger.errFmt("Error executing remove_skill: {s}", .{@errorName(err)}) catch {};
             break :blk try std.fmt.allocPrint(allocator,
-                \\{{
-                \\"skill_name": "{s}",
-                \\"removed": false,
-                \\"error": "{s}"
-                \\}}
+                \\<skill_name>{s}</skill_name>
+                \\<removed>false</removed>
+                \\<error>{s}</error>
             , .{ parsed.value.skill_name, @errorName(err) });
         };
         defer allocator.free(result);

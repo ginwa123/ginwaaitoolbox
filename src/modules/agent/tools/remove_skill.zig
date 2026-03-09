@@ -44,41 +44,35 @@ pub const removeSkillTool = AgentTool{
 
 /// Execute the remove_skill tool - validation only
 /// Actual database removal is handled in tui_workflow.zig
-/// Returns a JSON string with validation result
+/// Returns an XML string with result
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeRemoveSkill(
+pub fn executeRemoveSkillToString(
     allocator: std.mem.Allocator,
     input: RemoveSkillInput,
 ) ![]const u8 {
     // Validate input
     if (input.skill_name.len == 0) {
         const result = try std.fmt.allocPrint(allocator,
-            \\{{
-            \\"skill_name": "",
-            \\"removed": false,
-            \\"error": "skill_name cannot be empty"
-            \\}}
+            \\<skill_name></skill_name>
+            \\<removed>false</removed>
+            \\<error>skill_name cannot be empty</error>
         , .{});
         return result;
     }
 
     if (input.session_id.len == 0) {
         const result = try std.fmt.allocPrint(allocator,
-            \\{{
-            \\"skill_name": "{s}",
-            \\"removed": false,
-            \\"error": "session_id cannot be empty"
-            \\}}
+            \\<skill_name>{s}</skill_name>
+            \\<removed>false</removed>
+            \\<error>session_id cannot be empty</error>
         , .{input.skill_name});
         return result;
     }
 
     // Return success - actual removal done in tui_workflow.zig
     const result = try std.fmt.allocPrint(allocator,
-        \\{{
-        \\"skill_name": "{s}",
-        \\"removed": true
-        \\}}
+        \\<skill_name>{s}</skill_name>
+        \\<removed>true</removed>
     , .{input.skill_name});
 
     return result;
