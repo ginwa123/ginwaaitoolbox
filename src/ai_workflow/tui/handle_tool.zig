@@ -11,6 +11,9 @@ const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
 const handle_write_file_tool = @import("handle_write_file_tool.zig");
 const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
+const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
+const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
+const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const loop_detector = tree1_mod.loop_detector;
 
 // Forward declaration for TUIWorkflow
@@ -108,15 +111,15 @@ pub fn run(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
-                _ = tui_workflow.handleListSkills(allocator, messages_list, tool_call, session_id, model, cwd, conn_fd);
+                handle_list_skills_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call);
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
-                _ = try tui_workflow.handleGetSkill(allocator, messages_list, tool_call, session_id, model, cwd, conn_fd);
+                _ = try handle_get_skill_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call);
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
-                _ = try tui_workflow.handleRemoveSkill(allocator, messages_list, tool_call, session_id, model, cwd, conn_fd);
+                _ = try handle_remove_skill_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call);
             }
         }
         logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
