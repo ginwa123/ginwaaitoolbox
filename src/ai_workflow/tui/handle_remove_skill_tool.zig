@@ -23,6 +23,8 @@ pub fn run(
     loop_counter: u32,
     messages_list: *std.ArrayList(agent.AgentMessage),
     tool_call: agent.ToolCall,
+    agent_temperature: f32,
+    is_thinking: bool,
 ) !void {
     _ = messages_list;
 
@@ -59,7 +61,8 @@ pub fn run(
     // Send updated skills list to TUI after removal
     send_skill_mod.run(allocator, db, logger, conn_fd, session_id);
 
-    const current_agent_final = try get_current_agent_by_session_id.run(allocator, db, session_id);
-    _ = save_message.run(allocator, db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_final, session_name, loop_counter) catch {};
+    const current_agent_state = try get_current_agent_by_session_id.run(allocator, db, session_id);
+    const current_agent_final = current_agent_state.agent;
+    _ = save_message.run(allocator, db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_final, session_name, loop_counter, agent_temperature, is_thinking) catch {};
     _ = send_tool_result.run(allocator, conn_fd, logger, result, tool_call.id, tool_call.function.name, null);
 }

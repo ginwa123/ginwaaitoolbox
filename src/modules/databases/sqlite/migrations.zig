@@ -121,7 +121,9 @@ pub const Migration009RemoveCreatedColumn = struct {
             \\    is_feed_to_llm INTEGER DEFAULT 1,
             \\    agent TEXT DEFAULT 'ExplorationAgent',
             \\    session_name TEXT,
-            \\    loop_index INTEGER DEFAULT 0
+            \\    loop_index INTEGER DEFAULT 0,
+            \\    temperature REAL DEFAULT 0.2,
+            \\    is_thinking INTEGER DEFAULT 0
             \\)
         , &[_][]const u8{});
 
@@ -129,13 +131,13 @@ pub const Migration009RemoveCreatedColumn = struct {
         try db.exec(allocator,
             \\INSERT INTO llm_history (id, session_id, model, response_content, tool_calls_json,
             \\    tool_results_json, finish_reason, usage_json, created_at, role,
-            \\    reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index)
+            \\    reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking)
             \\SELECT id, session_id, model, response_content, tool_calls_json,
             \\    tool_results_json, finish_reason, usage_json,
             \\    datetime(CAST(created AS INTEGER), 'unixepoch'),
             \\    COALESCE(role, 'assistant'), reasoning_content, session_dir,
             \\    COALESCE(is_feed_to_llm, 1), COALESCE(agent, 'ExplorationAgent'),
-            \\    session_name, COALESCE(loop_index, 0)
+            \\    session_name, COALESCE(loop_index, 0), 0.2, 0
             \\FROM llm_history_old
         , &[_][]const u8{});
 
@@ -144,6 +146,16 @@ pub const Migration009RemoveCreatedColumn = struct {
 
         // Drop old table
         try db.exec(allocator, "DROP TABLE llm_history_old", &[_][]const u8{});
+    }
+};
+
+pub const Migration011AddTemperatureAndThinking = struct {
+    pub const version: u32 = 11;
+    pub const name = "add_temperature_and_thinking";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN temperature REAL DEFAULT 0.2", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN is_thinking INTEGER DEFAULT 0", &[_][]const u8{});
     }
 };
 

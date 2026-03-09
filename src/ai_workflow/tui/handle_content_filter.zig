@@ -19,13 +19,16 @@ pub fn run(
     session_name: ?[]const u8,
     loop_counter: u32,
     res_dynamic_agent: agent.CallResponse,
+    agent_temperature: f32,
+    is_thinking: bool,
 ) !bool {
     // Fetch current agent from DB
-    const current_agent = try get_current_agent_by_session_id.run(
+    const current_agent_state = try get_current_agent_by_session_id.run(
         allocator,
         db,
         session_id,
     );
+    const current_agent = current_agent_state.agent;
     logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
     // Save the filtered response to history
@@ -35,7 +38,7 @@ pub fn run(
         res_dynamic_agent.content,
         if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
         res_dynamic_agent.reasoning_content,
-        agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter) catch |err| {
+        agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter, agent_temperature, is_thinking) catch |err| {
         logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
     };
 

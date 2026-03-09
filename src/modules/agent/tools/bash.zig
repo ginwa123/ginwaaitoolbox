@@ -261,23 +261,11 @@ pub const bashTool = AgentTool{
         \\Execute a bash command and return:
         \\stdout, stderr, exit_code, truncated, timeout flags.
         \\
-        \\All commands are validated before execution. Unsafe or malformed
-        \\commands are rejected with exit_code=1 and must be retried.
-        \\
         \\## Command Rules
         \\Every command MUST:
         \\- start with `timeout <seconds>`
         \\- limit output using `| head -n <N>`
         \\- avoid commands that produce unbounded output
-        \\
-        \\## Preferred Use
-        \\Use bash for: build, run, test, git, search (rg).
-        \\
-        \\## Preferred Tools
-        \\- `rg`  → code search (preferred over grep)
-        \\- `jq`  → JSON processing
-        \\- `yq`  → YAML processing
-        \\- `awk` → structured text filtering
         \\
         \\## Safety
         \\Avoid destructive or system-modifying commands.

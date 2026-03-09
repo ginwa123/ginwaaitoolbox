@@ -143,22 +143,24 @@ pub const TUIWorkflow = struct {
         }
         const session_name = message;
         // Fetch initial agent for the first save_message call
-        const initial_agent = try get_current_agent_by_session_id.run(
+        const initial_agent_state = try get_current_agent_by_session_id.run(
             parent_allocator,
             self.db,
             session_id,
         );
-        save_message.run(parent_allocator, self.db, session_id, model, cwd, message, null, null, null, "user", "null", null, null, initial_agent, session_name, 0) catch |err| {
+        const initial_agent = initial_agent_state.agent;
+        save_message.run(parent_allocator, self.db, session_id, model, cwd, message, null, null, null, "user", "null", null, null, initial_agent, session_name, 0, 0.2, false) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
 
         // this variable is used to track the number of times the agent has been retried
         var retryCount: usize = 0;
-        var agent_temperature: f32 = 0.2;
-        var isThinking: bool = false;
         var current_max_tokens: usize = 8000;
         var loop_counter: u32 = 0;
         while (true) {
+            var agent_temperature: f32 = 0.2;
+            var isThinking: bool = false;
+
             var arena_allocator_while_loop = std.heap.ArenaAllocator.init(parent_allocator);
             defer arena_allocator_while_loop.deinit();
             const allocator = arena_allocator_while_loop.allocator();
@@ -167,11 +169,14 @@ pub const TUIWorkflow = struct {
             if (retryCount > 10) return error.TooManyRetries;
 
             // Fetch current agent fresh from DB each iteration
-            const current_agent = try get_current_agent_by_session_id.run(
+            const current_agent_state = try get_current_agent_by_session_id.run(
                 allocator,
                 self.db,
                 session_id,
             );
+            const current_agent = current_agent_state.agent;
+            agent_temperature = current_agent_state.temperature;
+            isThinking = current_agent_state.is_thinking;
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
 
@@ -199,7 +204,7 @@ pub const TUIWorkflow = struct {
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
                     _ = send_response.run(allocator, conn_fd, self.logger, res_dynamic_agent, "user_choice");
-                    _ = try save_message.run(allocator, self.db, session_id, model, cwd, null, res_dynamic_agent.content, if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null, res_dynamic_agent.reasoning_content, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter);
+                    _ = try save_message.run(allocator, self.db, session_id, model, cwd, null, res_dynamic_agent.content, if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null, res_dynamic_agent.reasoning_content, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter, agent_temperature, isThinking);
                     self.logger.infoFmt("FINISH REASON STOPPP", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {

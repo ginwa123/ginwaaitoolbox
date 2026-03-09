@@ -21,13 +21,16 @@ pub fn run(
     loop_counter: u32,
     messages_list: *std.ArrayList(agent.AgentMessage),
     tool_call: agent.ToolCall,
+    agent_temperature: f32,
+    is_thinking: bool,
 ) !void {
     // Fetch current agent from DB
-    const current_agent = try get_current_agent_by_session_id.run(
+    const current_agent_state = try get_current_agent_by_session_id.run(
         allocator,
         db,
         session_id,
     );
+    const current_agent = current_agent_state.agent;
     // Parse arguments JSON to SearchInput
     const parsed = try std.json.parseFromSlice(
         search_tool.SearchInput,
@@ -47,7 +50,7 @@ pub fn run(
             .tool_call_id = try allocator.dupe(u8, tool_call.id),
         };
         _ = try messages_list.append(allocator, tool_result_msg);
-        _ = try save_message.run(allocator, db, session_id, model, cwd, err_str, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter);
+        _ = try save_message.run(allocator, db, session_id, model, cwd, err_str, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter, agent_temperature, is_thinking);
         _ = send_tool_result.run(allocator, conn_fd, logger, err_str, tool_call.id, tool_call.function.name, null);
         return;
     };
@@ -65,7 +68,7 @@ pub fn run(
         .tool_call_id = try allocator.dupe(u8, tool_call.id),
     };
     _ = try messages_list.append(allocator, tool_result_msg);
-    _ = try save_message.run(allocator, db, session_id, model, cwd, res_search, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter);
+    _ = try save_message.run(allocator, db, session_id, model, cwd, res_search, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter, agent_temperature, is_thinking);
     _ = send_tool_result.run(allocator, conn_fd, logger, res_search, tool_call.id, tool_call.function.name, null);
     logger.debugFmt("Search tool result added to messages", .{}) catch {};
 }

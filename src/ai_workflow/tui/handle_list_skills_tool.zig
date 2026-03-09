@@ -21,6 +21,8 @@ pub fn run(
     loop_counter: u32,
     messages_list: *std.ArrayList(agent.AgentMessage),
     tool_call: agent.ToolCall,
+    agent_temperature: f32,
+    is_thinking: bool,
 ) void {
     const result = list_skills_tool.executeListSkills(allocator) catch |err| blk: {
         logger.errFmt("Error executing list_skills: {s}", .{@errorName(err)}) catch {};
@@ -35,8 +37,9 @@ pub fn run(
         .tool_call_id = allocator.dupe(u8, tool_call.id) catch return,
     };
     messages_list.append(allocator, tool_result_msg) catch return;
-    const current_agent_res = get_current_agent_by_session_id.run(allocator, db, session_id) catch return;
+    const current_agent_state = get_current_agent_by_session_id.run(allocator, db, session_id) catch return;
+    const current_agent_res = current_agent_state.agent;
 
-    save_message.run(allocator, db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_res, session_name, loop_counter) catch {};
+    save_message.run(allocator, db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_res, session_name, loop_counter, agent_temperature, is_thinking) catch {};
     send_tool_result.run(allocator, conn_fd, logger, result, tool_call.id, tool_call.function.name, null);
 }

@@ -11,7 +11,7 @@ pub fn run(
 ) ![]TUIHistory {
     var results: std.ArrayList(TUIHistory) = .empty;
 
-    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'ExplorationAgent'), COALESCE(session_name, ''), COALESCE(loop_index, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY id ASC";
+    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'ExplorationAgent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at ASC";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 

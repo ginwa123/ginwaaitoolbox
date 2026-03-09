@@ -27,6 +27,8 @@ pub fn run(
     agent_name: ?[]const u8,
     session_name: ?[]const u8,
     loop_index: u32,
+    temperature: f32,
+    is_thinking: bool,
 ) !void {
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
     defer allocator.free(id);
@@ -57,7 +59,7 @@ pub fn run(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
 
     const copy_session_id = try allocator.dupe(u8, session_id);
     defer allocator.free(copy_session_id);
@@ -81,7 +83,10 @@ pub fn run(
     defer allocator.free(copy_session_name);
     const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{loop_index});
     defer allocator.free(loop_index_str);
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, created_at };
+    const temperature_str = try std.fmt.allocPrint(allocator, "{d:.2}", .{temperature});
+    defer allocator.free(temperature_str);
+    const is_thinking_str = if (is_thinking) "1" else "0";
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at };
 
     try db.exec(allocator, sql, sqlArgs);
 }

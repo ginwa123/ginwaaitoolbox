@@ -10,6 +10,7 @@ const Migration003AddReasoningContent = tree1_mod.migrations.Migration003AddReas
 const Migration005AddIsFeedToLLM = tree1_mod.migrations.Migration005AddIsFeedToLLM;
 const Migration006AddAgent = tree1_mod.migrations.Migration006AddAgent;
 const Migration007AddSessionTracking = tree1_mod.migrations.Migration007AddSessionTracking;
+const Migration011AddTemperatureAndThinking = tree1_mod.migrations.Migration011AddTemperatureAndThinking;
 
 test "get_messages returns empty array when no messages exist" {
     const allocator = std.testing.allocator;
@@ -48,6 +49,11 @@ test "get_messages returns empty array when no messages exist" {
         .version = 7,
         .name = "add_session_tracking",
         .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
     });
     try mgr.runMigrations();
 
@@ -99,6 +105,11 @@ test "get_messages returns messages for a session" {
         .version = 7,
         .name = "add_session_tracking",
         .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
     });
     try mgr.runMigrations();
 
@@ -159,6 +170,11 @@ test "get_messages filters out messages with is_feed_to_llm = 0" {
         .name = "add_session_tracking",
         .up = Migration007AddSessionTracking.up,
     });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
     try mgr.runMigrations();
 
     try db.exec(allocator,
@@ -218,6 +234,11 @@ test "get_messages respects ORDER BY created_at ASC" {
         .version = 7,
         .name = "add_session_tracking",
         .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
     });
     try mgr.runMigrations();
 
@@ -280,6 +301,11 @@ test "get_messages handles NULL role with default 'assistant'" {
         .name = "add_session_tracking",
         .up = Migration007AddSessionTracking.up,
     });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
     try mgr.runMigrations();
 
     try db.exec(allocator,
@@ -336,6 +362,11 @@ test "get_messages handles reasoning_content correctly" {
         .version = 7,
         .name = "add_session_tracking",
         .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
     });
     try mgr.runMigrations();
 
@@ -397,6 +428,11 @@ test "get_messages handles agent and session tracking fields" {
         .name = "add_session_tracking",
         .up = Migration007AddSessionTracking.up,
     });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
     try mgr.runMigrations();
 
     try db.exec(allocator,
@@ -455,6 +491,11 @@ test "get_messages returns empty array for non-existent session" {
         .version = 7,
         .name = "add_session_tracking",
         .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
     });
     try mgr.runMigrations();
 
