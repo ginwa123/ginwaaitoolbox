@@ -322,19 +322,11 @@ pub fn writeMessage(writer: std.fs.File, json_str: []const u8) !void {
     std.debug.print("writeMessage: message sent successfully\n", .{});
 }
 
-// Buffered reader for LSP messages - stores leftover data between calls
-var lsp_read_buffer: ?std.ArrayList(u8) = null;
-
-pub fn getLspReadBuffer(allocator: std.mem.Allocator) *std.ArrayList(u8) {
-    if (lsp_read_buffer == null) {
-        lsp_read_buffer = std.ArrayList(u8).empty;
-        lsp_read_buffer.?.ensureTotalCapacity(allocator, 4096) catch {};
-    }
-    return &lsp_read_buffer.?;
-}
-
 pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
-    const buffer = getLspReadBuffer(allocator);
+    // Use local buffer instead of global to avoid memory leaks and allocator mismatches
+    var buffer = std.ArrayList(u8).empty;
+    defer buffer.deinit(allocator);
+    try buffer.ensureTotalCapacity(allocator, 4096);
     
     // Look for header end (\r\n\r\n) in existing buffer
     var header_end_pos: usize = 0;
@@ -378,9 +370,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         }
         
         // Append to buffer
-        buffer.appendSlice(allocator, read_buf[0..bytes_read]) catch {
-            return error.OutOfMemory;
-        };
+        try buffer.appendSlice(allocator, read_buf[0..bytes_read]);
         
         // Check for header end
         if (buffer.items.len >= 4) {
@@ -478,16 +468,8 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         return error.JsonParseError;
     }
     
-    // Remove consumed data from buffer (header + body)
-    const consumed = body_start + content_length;
-    if (buffer.items.len > consumed) {
-        // Move remaining data to front
-        const leftover = buffer.items.len - consumed;
-        std.mem.copyForwards(u8, buffer.items[0..leftover], buffer.items[consumed..]);
-        buffer.shrinkAndFree(allocator, leftover);
-    } else {
-        buffer.clearRetainingCapacity();
-    }
+    // Local buffer is automatically cleaned up by defer
+    // Any leftover data in the buffer is discarded since we return the complete body
     
     return body;
 }

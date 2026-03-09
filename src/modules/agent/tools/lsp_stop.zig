@@ -72,7 +72,8 @@ pub fn executeLspStop(allocator: std.mem.Allocator, input: LspStopInput) !LspSto
         defer arena_alloc.free(json_str);
 
         lsp_client_core.writeMessage(client.stdin, json_str) catch {};
-        _ = lsp_client_core.readMessage(client.stdout, allocator) catch {};
+        const response = lsp_client_core.readMessage(client.stdout, allocator) catch null;
+        if (response) |r| allocator.free(r);
     }
 
     // Send exit notification
