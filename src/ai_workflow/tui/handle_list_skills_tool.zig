@@ -17,7 +17,6 @@ pub fn run(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    _: []const u8,
     session_name: ?[]const u8,
     loop_counter: u32,
     messages_list: *std.ArrayList(agent.AgentMessage),

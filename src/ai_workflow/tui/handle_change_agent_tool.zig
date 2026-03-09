@@ -23,7 +23,6 @@ pub fn run(
     tool_call: agent.ToolCall,
     agent_temperature: *f32,
     isThinking: *bool,
-    current_agent: *[]const u8,
 ) !void {
     const parsed = try std.json.parseFromSlice(
         change_agent_tool.ChangeAgentToolResult,
@@ -64,9 +63,6 @@ pub fn run(
         logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
     };
     send_tool_result.run(allocator, conn_fd, logger, contentChangeAgent, tool_call.id, tool_call.function.name, null);
-
-    // Update the loop-persistent current_agent variable
-    current_agent.* = try allocator.dupe(u8, agent_name);
 
     logger.infoFmt("Switched to agent: {s}", .{agent_name}) catch {};
 }

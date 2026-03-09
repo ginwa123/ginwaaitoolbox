@@ -15,6 +15,7 @@ const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
 const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const loop_detector = tree1_mod.loop_detector;
+const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 
 // Forward declaration for TUIWorkflow
 const TUIWorkflow = @import("tui_workflow.zig").TUIWorkflow;
@@ -28,7 +29,6 @@ pub fn run(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    current_agent: *[]const u8,
     session_name: ?[]const u8,
     loop_counter: u32,
     messages_list: *std.ArrayList(agent.AgentMessage),
@@ -50,13 +50,20 @@ pub fn run(
             };
         }
 
+        // Fetch current agent from DB for save_message
+        const current_agent_for_save = try get_current_agent_by_session_id.run(
+            allocator,
+            db,
+            session_id,
+        );
+
         _ = try save_message.run(
             allocator, db, session_id, model, cwd,
             null,
             res_dynamic_agent.content,
             if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
             res_dynamic_agent.reasoning_content,
-            agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent.*, session_name, loop_counter);
+            agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent_for_save, session_name, loop_counter);
 
         // Execute each tool call and add tool result messages
         for (tc) |tool_call| {
@@ -78,48 +85,48 @@ pub fn run(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
-                try handle_change_agent_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature, isThinking, current_agent);
+                try handle_change_agent_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature, isThinking);
             }
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                _ = handle_bash_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                _ = handle_bash_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling bash tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "read_file")) {
-                _ = handle_read_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                _ = handle_read_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling read_file tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "search")) {
-                _ = handle_search_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                _ = handle_search_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling search tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "write_file")) {
-                _ = handle_write_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                _ = handle_write_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling write_file tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
-                _ = handle_text_replace_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call) catch |err| {
+                _ = handle_text_replace_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call) catch |err| {
                     logger.errFmt("Error handling text_replace tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
-                handle_list_skills_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call);
+                handle_list_skills_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call);
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
-                _ = try handle_get_skill_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call);
+                _ = try handle_get_skill_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call);
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
-                _ = try handle_remove_skill_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, current_agent.*, session_name, loop_counter, messages_list, tool_call);
+                _ = try handle_remove_skill_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call);
             }
         }
         logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};

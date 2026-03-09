@@ -6,6 +6,7 @@ const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const save_message = @import("save_message.zig");
 const send_tool_result = @import("send_tool_result.zig");
+const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 
 pub fn run(
     allocator: std.mem.Allocator,
@@ -15,12 +16,17 @@ pub fn run(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    current_agent: []const u8,
     session_name: ?[]const u8,
     loop_counter: u32,
     messages_list: *std.ArrayList(agent.AgentMessage),
     tool_call: agent.ToolCall,
 ) !void {
+    // Fetch current agent from DB
+    const current_agent = try get_current_agent_by_session_id.run(
+        allocator,
+        db,
+        session_id,
+    );
     // Parse arguments JSON to WriteFileInput
     const parsed = try std.json.parseFromSlice(
         write_file_tool.WriteFileInput,

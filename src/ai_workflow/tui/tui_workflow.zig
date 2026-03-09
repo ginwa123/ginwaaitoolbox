@@ -141,14 +141,14 @@ pub const TUIWorkflow = struct {
         if (cancellation_registry.getGlobalRegistry()) |registry| {
             try registry.register(session_id);
         }
+        const session_name = message;
+        // Fetch initial agent for the first save_message call
         const initial_agent = try get_current_agent_by_session_id.run(
             parent_allocator,
             self.db,
             session_id,
         );
-        var current_agent: []const u8 = initial_agent;
-        const session_name = message;
-        save_message.run(parent_allocator, self.db, session_id, model, cwd, message, null, null, null, "user", "null", null, null, current_agent, session_name, 0) catch |err| {
+        save_message.run(parent_allocator, self.db, session_id, model, cwd, message, null, null, null, "user", "null", null, null, initial_agent, session_name, 0) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
 
@@ -165,6 +165,13 @@ pub const TUIWorkflow = struct {
 
             loop_counter += 1;
             if (retryCount > 10) return error.TooManyRetries;
+
+            // Fetch current agent fresh from DB each iteration
+            const current_agent = try get_current_agent_by_session_id.run(
+                allocator,
+                self.db,
+                session_id,
+            );
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
 
@@ -199,7 +206,7 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool.run(allocator, self, self.db, self.logger, conn_fd, session_id, model, cwd, &current_agent, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking);
+                    try handle_tool.run(allocator, self, self.db, self.logger, conn_fd, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};

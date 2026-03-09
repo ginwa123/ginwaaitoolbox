@@ -6,6 +6,7 @@ const sqlite = tree1_mod.sqlite;
 const save_message = @import("save_message.zig");
 const send_response = @import("send_response.zig");
 const send_error = @import("send_error.zig");
+const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 
 pub fn run(
     allocator: std.mem.Allocator,
@@ -15,11 +16,16 @@ pub fn run(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    current_agent: []const u8,
     session_name: ?[]const u8,
     loop_counter: u32,
     res_dynamic_agent: agent.CallResponse,
 ) !bool {
+    // Fetch current agent from DB
+    const current_agent = try get_current_agent_by_session_id.run(
+        allocator,
+        db,
+        session_id,
+    );
     logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
     // Save the filtered response to history
