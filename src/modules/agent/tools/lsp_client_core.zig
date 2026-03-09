@@ -190,16 +190,25 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
     };
 
     // Build argv - if binary is python3, use -m pylsp
+    // We need null-terminated strings for argv
+    const argv0 = try allocator.dupeZ(u8, binary_path);
+    defer allocator.free(argv0);
+    
     var child_argv: [3][:0]const u8 = undefined;
     var arg_count: usize = 1;
     
-    if (std.mem.eql(u8, binary_path, "python3") or std.mem.endsWith(u8, binary_path, "/python3")) {
-        child_argv[0] = binary_path;
+    // Check if the binary name (not path) is python3
+    // We need to get the basename of the binary path
+    const binary_basename = std.fs.path.basename(binary_path);
+    if (enable_lsp_debug) std.debug.print("spawnLsp: binary basename: {s}\n", .{binary_basename});
+    if (std.mem.eql(u8, binary_basename, "python3")) {
+        if (enable_lsp_debug) std.debug.print("spawnLsp: detected python3, adding -m pylsp\n", .{});
+        child_argv[0] = argv0;
         child_argv[1] = "-m";
         child_argv[2] = "pylsp";
         arg_count = 3;
     } else {
-        child_argv[0] = binary_path;
+        child_argv[0] = argv0;
     }
     
     var child = std.process.Child.init(child_argv[0..arg_count], allocator);
@@ -210,9 +219,16 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
 
     try child.spawn();
 
-    if (enable_lsp_debug) std.debug.print("spawnLsp: spawned process, pid={d}\n", .{child.id});
+    // Give the process time to start up (important for slower interpreters like Python)
+    // This is especially critical for python3 -m pylsp which needs to import modules
+    // Check if we're spawning python3 - use a longer delay for that
+    const startup_delay: usize = if (std.mem.eql(u8, binary_basename, "python3")) 3000 else 500;
+    std.Thread.sleep(startup_delay * std.time.ns_per_ms);
 
-    // Get stdin/stdout immediately
+    if (enable_lsp_debug) std.debug.print("spawnLsp: spawned process, pid={d}, startup_delay={d}ms\n", .{child.id, startup_delay});
+
+    // Get stdin/stdout after a delay to allow the process to initialize
+    // Some LSP servers (especially Python) need time to set up their I/O
     const stdin = child.stdin.?;
     const stdout = child.stdout.?;
 
