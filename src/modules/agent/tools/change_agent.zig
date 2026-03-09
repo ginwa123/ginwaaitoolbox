@@ -16,38 +16,35 @@ pub const ChangeAgentTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "change_agent_tool",
-        .description = "Transfer the current task to another specialized agent. Available agents: ExplorationAgent, PlanningAgent, ExecutingAgent. Set temperature based on your confidence — low confidence = higher temperature. return agent, message, temperature, is_thinking",
+        .description = "Transfer the current task to another agent and dynamically configure its runtime behavior — including reasoning depth (is_thinking) and output temperature. Use this to hand off work and tune how the next agent thinks.",
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "agent",
                     .type = "string",
-                    .description = "Target agent. Must be one of: ExplorationAgent, PlanningAgent, ExecutingAgent",
+                    .description = "The agent to hand off to. One of: ExplorationAgent, PlanningAgent, ExecutingAgent.",
                 },
                 .{
                     .name = "message",
                     .type = "string",
-                    .description = "Full context and handoff payload to pass to the target agent.",
+                    .description = "Full context, state, and instructions to pass to the next agent. Include everything it needs — do not assume shared memory.",
                 },
                 .{
                     .name = "temperature",
                     .type = "number",
-                    .description = "Temperature for the next agent (0.0 - 1.0). " ++
-                        "Use LOW (0.0-0.2) when the task is factual or deterministic, you have high confidence, or the agent is routing or verifying — precision matters more than creativity. " ++
-                        "Use MEDIUM (0.3-0.5) when the task requires reasoning or judgment, you have medium confidence, or the agent is planning a solution. " ++
-                        "Use HIGH (0.6-1.0) when you have low confidence, the current approach is not working, a previous attempt failed, or the problem is ambiguous with no clear single solution.",
+                    .description = "Dynamically sets output randomness for the next agent (0.0–1.0). " ++
+                        "LOW (0.0–0.2): high confidence, deterministic task, routing or verification. " ++
+                        "MEDIUM (0.3–0.5): moderate confidence, planning or judgment required. " ++
+                        "HIGH (0.6–1.0): low confidence, prior attempt failed, problem is ambiguous or open-ended.",
                 },
                 .{
                     .name = "is_thinking",
                     .type = "boolean",
-                    .description = "Enable adaptive deep reasoning for this agent call. " ++
-                        "Use true when the task requires multi-step logic, architectural decisions, " ++
-                        "tradeoff analysis, ambiguity resolution, or multi-file changes. " ++
-                        "Use false for simple routing, direct lookups, mechanical transformations, " ++
-                        "file reading, or straightforward single-step execution. " ++
-                        "PlanningAgent: always true. " ++
-                        "Default: false.",
+                    .description = "Dynamically enables or disables deep reasoning for the next agent. " ++
+                        "true: multi-step logic, architecture decisions, tradeoff analysis, ambiguity resolution, multi-file changes. " ++
+                        "false: simple routing, direct lookups, mechanical or single-step execution. " ++
+                        "PlanningAgent: always true. Default: false.",
                 },
             },
             .required = &.{ "agent", "message", "temperature" },

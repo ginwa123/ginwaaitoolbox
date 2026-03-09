@@ -39,3 +39,8 @@ pub fn run(
     try db.exec(allocator, sql, &.{ session_id, skill_name, content });
     logger.debugFmt("Skill '{s}' saved to database for session {s}", .{ skill_name, session_id }) catch {};
 }
+
+
+test {
+    _ = @import("save_skill_test.zig");
+}

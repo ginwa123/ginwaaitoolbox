@@ -72,3 +72,7 @@ pub fn run(
     _ = save_message.run(allocator, db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_final, session_name, loop_counter, agent_temperature, is_thinking) catch {};
     _ = send_tool_result.run(allocator, conn_fd, logger, result, tool_call.id, tool_call.function.name, null);
 }
+
+test {
+    _ = @import("handle_get_skill_tool_test.zig");
+}

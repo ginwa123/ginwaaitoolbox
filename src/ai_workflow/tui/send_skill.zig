@@ -44,3 +44,7 @@ pub fn run(
     };
     _ = std.posix.write(conn_fd, "\n") catch {};
 }
+
+test {
+    _ = @import("send_skill_test.zig");
+}

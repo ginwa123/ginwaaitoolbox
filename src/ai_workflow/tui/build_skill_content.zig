@@ -43,3 +43,7 @@ pub fn run(
     @memcpy(result[header.len..], skillsBuilder.items);
     return result;
 }
+
+test {
+    _ = @import("build_skill_content_test.zig");
+}
