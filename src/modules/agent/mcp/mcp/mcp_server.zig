@@ -19,6 +19,170 @@ pub const ToolExecutor = fn (
     arguments: ?std.json.Value,
 ) anyerror!std.json.Value;
 
+// ============ JSON Response Types with jsonStringify ============
+
+/// Initialize result response
+const InitializeResult = struct {
+    protocolVersion: []const u8,
+    capabilities: InitializeCapabilities,
+    serverInfo: ServerInfo,
+
+    const InitializeCapabilities = struct {
+        tools: ?ToolsCapability = null,
+        resources: ?ResourcesCapability = null,
+    };
+
+    const ToolsCapability = struct {
+        listChanged: bool = false,
+    };
+
+    const ResourcesCapability = struct {
+        subscribe: bool = false,
+        listChanged: bool = false,
+    };
+
+    const ServerInfo = struct {
+        name: []const u8,
+        version: []const u8,
+    };
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("protocolVersion");
+        try jws.write(self.protocolVersion);
+        try jws.objectField("capabilities");
+        try jws.write(self.capabilities);
+        try jws.objectField("serverInfo");
+        try jws.write(self.serverInfo);
+        try jws.endObject();
+    }
+};
+
+/// List tools response
+const ListToolsResult = struct {
+    tools: []const mcp_types.McpTool,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("tools");
+        try jws.write(self.tools);
+        try jws.endObject();
+    }
+};
+
+/// List resources response
+const ListResourcesResult = struct {
+    resources: []const mcp_types.Resource,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("resources");
+        try jws.write(self.resources);
+        try jws.endObject();
+    }
+};
+
+/// Read resource result
+const ReadResourceResult = struct {
+    contents: []const mcp_types.ResourceContents,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("contents");
+        try jws.write(self.contents);
+        try jws.endObject();
+    }
+};
+
+/// Call tool result
+const CallToolResult = struct {
+    content: []const ContentBlock,
+    isError: bool = false,
+
+    const ContentBlock = struct {
+        @"type": []const u8,
+        text: ?[]const u8 = null,
+
+        pub fn jsonStringify(self: @This(), jws: anytype) !void {
+            try jws.beginObject();
+            try jws.objectField("type");
+            try jws.write(self.@"type");
+            if (self.text) |t| {
+                try jws.objectField("text");
+                try jws.write(t);
+            }
+            try jws.endObject();
+        }
+    };
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("content");
+        try jws.write(self.content);
+        try jws.objectField("isError");
+        try jws.write(self.isError);
+        try jws.endObject();
+    }
+};
+
+/// JSON-RPC response
+const JsonRpcResponse = struct {
+    jsonrpc: []const u8 = "2.0",
+    id: ?json.Value,
+    result: ?json.Value = null,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("jsonrpc");
+        try jws.write(self.jsonrpc);
+        if (self.id) |i| {
+            try jws.objectField("id");
+            try jws.write(i);
+        }
+        if (self.result) |r| {
+            try jws.objectField("result");
+            try jws.write(r);
+        }
+        try jws.endObject();
+    }
+};
+
+/// JSON-RPC error response
+const JsonRpcErrorResponse = struct {
+    jsonrpc: []const u8 = "2.0",
+    error: JsonRpcError,
+    id: ?json.Value = null,
+
+    const JsonRpcError = struct {
+        code: i32,
+        message: []const u8,
+
+        pub fn jsonStringify(self: @This(), jws: anytype) !void {
+            try jws.beginObject();
+            try jws.objectField("code");
+            try jws.write(self.code);
+            try jws.objectField("message");
+            try jws.write(self.message);
+            try jws.endObject();
+        }
+    };
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("jsonrpc");
+        try jws.write(self.jsonrpc);
+        try jws.objectField("error");
+        try jws.write(self.error);
+        if (self.id) |i| {
+            try jws.objectField("id");
+            try jws.write(i);
+        }
+        try jws.endObject();
+    }
+};
+
+// ============ MCP Server Implementation ============
+
 /// MCP Server
 pub const McpServer = struct {
     allocator: std.mem.Allocator,
@@ -122,7 +286,6 @@ pub const McpServer = struct {
         if (params) |p| {
             if (p.object) |params_obj| {
                 if (params_obj.get("capabilities")) |caps| {
-                    // Store client capabilities if needed
                     _ = caps;
                 }
                 if (params_obj.get("clientInfo")) |ci| {
@@ -131,52 +294,38 @@ pub const McpServer = struct {
             }
         }
 
-        // Send response
-        const result = try self.buildInitializeResult();
+        // Build response using struct with jsonStringify
+        const result = InitializeResult{
+            .protocolVersion = self.protocolVersion,
+            .capabilities = .{
+                .tools = .{ .listChanged = false },
+                .resources = null,
+            },
+            .serverInfo = .{
+                .name = "nalarcore-mcp",
+                .version = "0.0.1",
+            },
+        };
+
         try self.sendResponse(id, result);
     }
 
-    fn buildInitializeResult(self: *Self) ![]u8 {
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
-
-        try buf.appendSlice(
-            \\{"protocolVersion":"2024-11-05","capabilities":{"tools":
-        );
-        try buf.appendSlice(if (self.capabilities.tools != null) "{\"listChanged\":false}" else "null");
-        try buf.appendSlice(
-            \\},"serverInfo":{"name":"nalarcore-mcp","version":"0.0.1"}}
-        );
-
-        return try buf.toOwnedSlice();
-    }
-
     fn handleToolsList(self: *Self, id: ?json.Value) !void {
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
-
-        try buf.appendSlice(
-            \\{"tools":[}
-        );
+        // Collect tools into a slice
+        var tools_list = std.ArrayList(mcp_types.McpTool).init(self.allocator);
+        defer tools_list.deinit();
 
         var iter = self.tools.iterator();
-        var first = true;
         while (iter.next()) |entry| {
-            const tool = entry.value_ptr.*;
-            if (!first) try buf.appendSlice(",");
-            first = false;
-
-            // Simplified tool serialization
-            try buf.appendSlice("{\"name\":\"");
-            try buf.appendSlice(tool.name);
-            try buf.appendSlice("\",\"description\":\"");
-            try buf.appendSlice(tool.description);
-            try buf.appendSlice("\",\"inputSchema\":{\"type\":\"object\"}}");
+            try tools_list.append(entry.value_ptr.*);
         }
 
-        try buf.appendSlice("]}");
+        const result = ListToolsResult{
+            .tools = try tools_list.toOwnedSlice(),
+        };
+        errdefer self.allocator.free(result.tools);
 
-        try self.sendResponse(id, try buf.toOwnedSlice());
+        try self.sendResponse(id, result);
     }
 
     fn handleToolsCall(self: *Self, id: ?json.Value, params: ?json.Value) !void {
@@ -194,77 +343,84 @@ pub const McpServer = struct {
         const arguments = params_obj.get("arguments");
 
         // Call the tool
-        const result = try self.toolExecutor.?(self.allocator, name_field.string, arguments);
+        const tool_result = try self.toolExecutor.?(self.allocator, name_field.string, arguments);
 
-        // Build response
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
+        // Build response - convert JSON value to string for content
+        var content_text: []u8 = undefined;
+        {
+            var aw: std.io.Writer.Allocating = .init(self.allocator);
+            try aw.writer.print("{f}", .{std.json.fmt(tool_result, .{})});
+            content_text = try aw.toOwnedSlice();
+        }
+        errdefer self.allocator.free(content_text);
 
-        try buf.appendSlice(
-            \\{"content":[{"type":"text","text":"
-        );
-
-        // Serialize result as JSON string
-        json.stringifyFree(
-            result,
-            buf.writer(),
-            .{},
-        ) catch |e| {
-            return self.sendError(id, .InternalError, @errorName(e));
+        const content_block = CallToolResult.ContentBlock{
+            .@"type" = "text",
+            .text = content_text,
         };
 
-        try buf.appendSlice("\"}]}");
+        const result = CallToolResult{
+            .content = &.{content_block},
+            .isError = false,
+        };
 
-        try self.sendResponse(id, try buf.toOwnedSlice());
+        try self.sendResponse(id, result);
     }
 
     fn handleResourcesList(self: *Self, id: ?json.Value) !void {
-        // Empty resources for now
-        try self.sendResponse(id, "{\"resources\":[]}");
+        const result = ListResourcesResult{
+            .resources = &.{},
+        };
+        try self.sendResponse(id, result);
     }
 
     fn handleResourcesRead(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         _ = params;
-        try self.sendResponse(id, "{\"contents\":[]}");
+        const result = ReadResourceResult{
+            .contents = &.{},
+        };
+        try self.sendResponse(id, result);
     }
 
-    fn sendResponse(self: *Self, id: ?json.Value, result: []const u8) !void {
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
+    fn sendResponse(self: *Self, id: ?json.Value, result: anytype) !void {
+        // Use arena for JSON construction
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
 
-        try buf.appendSlice("{\"jsonrpc\":\"2.0\"");
-        
-        if (id) |i| {
-            try buf.appendSlice(",\"id\":");
-            try json.stringifyFree(i, buf.writer(), .{});
-        }
-        
-        try buf.appendSlice(",\"result\":");
-        try buf.appendSlice(result);
-        
-        try buf.append('}');
+        const response = JsonRpcResponse{
+            .id = id,
+            .result = result,
+        };
 
-        try self.transport.writeMessage(try buf.toOwnedSlice());
+        var aw: std.io.Writer.Allocating = .init(arena_alloc);
+        try aw.writer.print("{f}", .{std.json.fmt(response, .{})});
+        const message = try aw.toOwnedSlice();
+        errdefer arena_alloc.free(message);
+
+        try self.transport.writeMessage(try self.allocator.dupe(u8, message));
     }
 
     fn sendError(self: *Self, id: ?json.Value, code: mcp_types.ErrorCode, message: []const u8) !void {
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
+        // Use arena for JSON construction
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
 
-        try buf.appendSlice("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":");
-        try buf.appendInt(@intFromEnum(code));
-        try buf.appendSlice(",\"message\":\"");
-        try buf.appendSlice(message);
-        try buf.appendSlice("\"}");
+        const error_resp = JsonRpcErrorResponse{
+            .error = .{
+                .code = @intFromEnum(code),
+                .message = message,
+            },
+            .id = id,
+        };
 
-        if (id) |i| {
-            try buf.appendSlice(",\"id\":");
-            try json.stringifyFree(i, buf.writer(), .{});
-        }
+        var aw: std.io.Writer.Allocating = .init(arena_alloc);
+        try aw.writer.print("{f}", .{std.json.fmt(error_resp, .{})});
+        const json_str = try aw.toOwnedSlice();
+        errdefer arena_alloc.free(json_str);
 
-        try buf.append('}');
-
-        try self.transport.writeMessage(try buf.toOwnedSlice());
+        try self.transport.writeMessage(try self.allocator.dupe(u8, json_str));
     }
 };
 

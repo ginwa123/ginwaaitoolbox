@@ -180,6 +180,18 @@
 **Fix:** Added an integration test that starts a pylsp session, opens a Python file with a function that has multiple references, executes a references request on a function call, and verifies the references array contains at least one location. The test follows the same pattern as lsp_hover_test.zig, including proper error handling with `error.SkipZigTest` when pylsp is unavailable.
 **Reuse signal:** When adding integration tests for LSP tools, use pylsp as the LSP server for reliability, create temporary workspaces, send didOpen notifications before requests, and return SkipZigTest on failures.
 
+## [2026-03-10] MCP Server Implementation
+
+**Problem:** Needed MCP (Model Context Protocol) server implementation for Zig agent system
+**Root cause:** MCP is a standard protocol used by Claude Code, ChatGPT, and other AI tools
+**Fix:** Implemented complete MCP server with stdio transport:
+- mcp_types.zig - JSON-RPC 2.0 types and MCP types (McpTool, ServerCapabilities, etc.)
+- mcp_transport.zig - Stdio transport with Content-Length framing
+- mcp_server.zig - Server handling initialize, tools/list, tools/call, resources/list, resources/read
+- mcp_tools.zig - ToolAdapter to convert AgentTool to MCP tool schema
+- mcp_test.zig - Tests for types, server init, tool registration
+**Reuse signal:** Use stdio transport for MCP (like Claude Code/ChatGPT), follow JSON-RPC 2.0 format
+
 
 
 
