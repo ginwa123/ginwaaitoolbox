@@ -868,15 +868,21 @@ fn handleInput(app: *App) !bool {
         return false;
     }
     const c = buf[0];
-
     if (c == @intFromEnum(KEYBINDING.CTRL_C)) return true;
 
     if (c == 0x1b) {
-        clearCompletions(app);
         var esc: [16]u8 = undefined;
         const len = try readEscapeSequence(&esc);
         const seq = esc[0..len];
-        if (std.mem.eql(u8, seq, "\x1b[200~")) app.pasting = true else if (std.mem.eql(u8, seq, "\x1b[201~")) app.pasting = false;
+
+        if (std.mem.eql(u8, seq, "\x1b[200~")) {
+            app.pasting = true;
+        } else if (std.mem.eql(u8, seq, "\x1b[201~")) {
+            app.pasting = false;
+        } else {
+            // Only clear completions for non-paste escape sequences
+            clearCompletions(app);
+        }
         return false;
     }
 
@@ -886,36 +892,41 @@ fn handleInput(app: *App) !bool {
             std.debug.print("\x08 \x08", .{});
         }
     } else if (c == '\t') {
-        _ = try handleCompletion(app);
+        if (!app.pasting) {
+            _ = try handleCompletion(app);
+        } else {
+            // Treat tab as spaces during paste
+            try app.input.append(app.allocator, ' ');
+            std.debug.print(" ", .{});
+        }
     } else if (c == @intFromEnum(KEYBINDING.ENTER) or c == 10) {
         if (app.pasting) {
-            try app.input.append(app.allocator, '\n');
-            std.debug.print("\r\n", .{});
-        } else {
-            if (app.input.items.len > 0) {
-                if (std.mem.eql(u8, app.input.items, "/sessions")) {
-                    std.debug.print("\r\n", .{});
-                    const response = readResponseAndStreamGetSessions(app) catch "";
-                    if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
-                    app.input.clearRetainingCapacity();
-                    std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
-                    return false;
-                }
-                if (std.mem.eql(u8, app.input.items, "/exit")) return true;
-
-                std.debug.print("\r\n\r\n", .{});
-                const response = readResponseAndStreamRunLLM(app, app.input.items) catch "";
+            // During paste, newlines become spaces instead of submitting
+            try app.input.append(app.allocator, ' ');
+            std.debug.print(" ", .{});
+            return false;
+        }
+        if (app.input.items.len > 0) {
+            if (std.mem.eql(u8, app.input.items, "/sessions")) {
+                std.debug.print("\r\n", .{});
+                const response = readResponseAndStreamGetSessions(app) catch "";
                 if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
                 app.input.clearRetainingCapacity();
+                std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
+                return false;
             }
-            std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
+            if (std.mem.eql(u8, app.input.items, "/exit")) return true;
+            std.debug.print("\r\n\r\n", .{});
+            const response = readResponseAndStreamRunLLM(app, app.input.items) catch "";
+            if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
+            app.input.clearRetainingCapacity();
         }
+        std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
     } else if (c >= 32) {
-        clearCompletions(app);
+        if (!app.pasting) clearCompletions(app);
         try app.input.append(app.allocator, c);
         std.debug.print("{c}", .{c});
     }
-
     return false;
 }
 
