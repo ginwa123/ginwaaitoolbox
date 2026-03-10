@@ -537,6 +537,8 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         displayed_tool_ids.deinit(app.allocator);
     }
     var last_printed_chunk_index: usize = 0;
+    // Track last processed XML length to avoid O(n²) re-processing
+    var last_decoded_len: usize = 0;
 
     while (true) {
         const ready = std.posix.poll(&poll_fds, 50) catch 0;
@@ -562,10 +564,17 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                     if (extractSseData(app.allocator, decoded)) |xml| {
                         defer app.allocator.free(xml);
 
+                        // Only process new XML content since last decode
+                        const xml_to_process = if (xml.len > last_decoded_len)
+                            xml[last_decoded_len..]
+                        else
+                            xml[0..0];
+                        last_decoded_len = xml.len;
+
                         var chunk_pos: usize = 0;
-                        while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
-                            const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
-                            const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
+                        while (std.mem.indexOfPos(u8, xml_to_process, chunk_pos, "<chunk")) |chunk_start| {
+                            const chunk_end = std.mem.indexOfPos(u8, xml_to_process, chunk_start, "</chunk>") orelse break;
+                            const chunk_block = xml_to_process[chunk_start .. chunk_end + "</chunk>".len];
                             chunk_pos = chunk_end + "</chunk>".len;
 
                             var chunk_index: usize = 0;
@@ -590,7 +599,8 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                             }
                         }
 
-                        if (extractToolResults(app.allocator, xml)) |tool_results_val| {
+                        // Only search for tool results in new XML content
+                        if (extractToolResults(app.allocator, xml_to_process)) |tool_results_val| {
                             var tool_results = tool_results_val;
                             defer tool_results.deinit(app.allocator);
 
@@ -911,6 +921,7 @@ fn handleInput(app: *App) !bool {
             if (std.mem.eql(u8, app.input.items, "/sessions")) {
                 std.debug.print("\r\n", .{});
                 const response = readResponseAndStreamGetSessions(app) catch "";
+                defer app.allocator.free(response);
                 if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
                 app.input.clearRetainingCapacity();
                 std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
@@ -919,6 +930,7 @@ fn handleInput(app: *App) !bool {
             if (std.mem.eql(u8, app.input.items, "/exit")) return true;
             std.debug.print("\r\n\r\n", .{});
             const response = readResponseAndStreamRunLLM(app, app.input.items) catch "";
+            defer app.allocator.free(response);
             if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
             app.input.clearRetainingCapacity();
         }

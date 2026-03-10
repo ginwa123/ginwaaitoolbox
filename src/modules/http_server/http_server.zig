@@ -91,8 +91,6 @@ pub const SseConnectionManager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        std.log.info("SSE sendEvent: session_id={s}, event_type={s}, connections_count={d}", .{ session_id, event.event_type, self.connections.count() });
-
         const stream = self.connections.get(session_id) orelse {
             std.log.err("SSE sendEvent: session not found: {s}", .{session_id});
             return error.SessionNotFound;
@@ -106,8 +104,6 @@ pub const SseConnectionManager = struct {
             std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(err)});
             return error.WriteFailed;
         };
-
-        std.log.info("SSE sendEvent: SUCCESS, session_id={s}, bytes_written={d}", .{session_id, formatted.len});
     }
 
     /// Check if a session exists

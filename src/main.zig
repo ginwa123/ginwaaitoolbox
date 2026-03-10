@@ -273,7 +273,7 @@ pub fn main() !void {
 
     // Initialize global logger
     tree1.logger.initGlobalColor(parentAllocator, .{
-        .min_level = .debug,
+        .min_level = .info,
         .output_mode = .file,
         .log_file_path = log_file_path,
         .include_location = true,
