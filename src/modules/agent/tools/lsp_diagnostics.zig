@@ -254,5 +254,5 @@ pub const lspDiagnosticsTool = AgentTool{
 };
 
 test {
-    _ = @import("lsp_definition_test.zig");
+    _ = @import("lsp_diagnostics_test.zig");
 }

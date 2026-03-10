@@ -3,6 +3,9 @@ const json = std.json;
 const lsp_types = @import("lsp_types.zig");
 const AgentTool = @import("models.zig").AgentTool;
 
+// Conditional debug flag - set to true to enable verbose LSP output
+const enable_lsp_debug = false;
+
 // JSON-RPC initialize request with custom serialization
 const InitializeRequestParams = struct {
     processId: i32,
@@ -165,7 +168,7 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
     const binary_path = try findBinary(allocator, binary_name);
     defer allocator.free(binary_path);
 
-    std.debug.print("spawnLsp: found binary at {s}\n", .{binary_path});
+    if (enable_lsp_debug) std.debug.print("spawnLsp: found binary at {s}\n", .{binary_path});
 
     // Parse workspace path from URI (strip "file://")
     var workspace_path: []u8 = undefined;
@@ -176,20 +179,39 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
     }
     defer allocator.free(workspace_path);
 
-    std.debug.print("spawnLsp: workspace path: {s}\n", .{workspace_path});
+    if (enable_lsp_debug) std.debug.print("spawnLsp: workspace path: {s}\n", .{workspace_path});
 
     // Ensure workspace directory exists
     std.fs.makeDirAbsolute(workspace_path) catch |e| {
         if (e != error.PathAlreadyExists) {
-            std.debug.print("spawnLsp: failed to create workspace dir: {}\n", .{e});
+            if (enable_lsp_debug) std.debug.print("spawnLsp: failed to create workspace dir: {}\n", .{e});
             return LspError.ProcessSpawnFailed;
         }
     };
 
-    var child_argv: [1][:0]const u8 = undefined;
-    child_argv[0] = try allocator.dupeZ(u8, binary_path);
-    defer allocator.free(child_argv[0]);
-    var child = std.process.Child.init(&child_argv, allocator);
+    // Build argv - if binary is python3, use -m pylsp
+    // We need null-terminated strings for argv
+    const argv0 = try allocator.dupeZ(u8, binary_path);
+    defer allocator.free(argv0);
+    
+    var child_argv: [3][:0]const u8 = undefined;
+    var arg_count: usize = 1;
+    
+    // Check if the binary name (not path) is python3
+    // We need to get the basename of the binary path
+    const binary_basename = std.fs.path.basename(binary_path);
+    if (enable_lsp_debug) std.debug.print("spawnLsp: binary basename: {s}\n", .{binary_basename});
+    if (std.mem.eql(u8, binary_basename, "python3")) {
+        if (enable_lsp_debug) std.debug.print("spawnLsp: detected python3, adding -m pylsp\n", .{});
+        child_argv[0] = argv0;
+        child_argv[1] = "-m";
+        child_argv[2] = "pylsp";
+        arg_count = 3;
+    } else {
+        child_argv[0] = argv0;
+    }
+    
+    var child = std.process.Child.init(child_argv[0..arg_count], allocator);
     child.stdin_behavior = .Pipe;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore; // Ignore stderr to avoid blocking
@@ -197,16 +219,66 @@ pub fn spawnLsp(allocator: std.mem.Allocator, session_id: []const u8, binary_nam
 
     try child.spawn();
 
-    std.debug.print("spawnLsp: spawned process, pid={d}\n", .{child.id});
+    // Give the process time to start up (important for slower interpreters like Python)
+    // This is especially critical for python3 -m pylsp which needs to import modules
+    // Check if we're spawning python3 - use a longer delay for that
+    const startup_delay: usize = if (std.mem.eql(u8, binary_basename, "python3")) 3000 else 500;
+    std.Thread.sleep(startup_delay * std.time.ns_per_ms);
 
-    // Create client immediately
+    if (enable_lsp_debug) std.debug.print("spawnLsp: spawned process, pid={d}, startup_delay={d}ms\n", .{child.id, startup_delay});
+
+    // Get stdin/stdout after a delay to allow the process to initialize
+    // Some LSP servers (especially Python) need time to set up their I/O
+    const stdin = child.stdin.?;
+    const stdout = child.stdout.?;
+
+    // Create client
     const client = try allocator.create(LspClient);
     client.* = try LspClient.init(allocator, session_id, workspace_uri);
     client.process = child;
-    client.stdin = child.stdin.?;
-    client.stdout = child.stdout.?;
+    client.stdin = stdin;
+    client.stdout = stdout;
 
-    std.debug.print("spawnLsp: client created, stdin={any}, stdout={any}\n", .{ client.stdin, client.stdout });
+    if (enable_lsp_debug) std.debug.print("spawnLsp: client created\n", .{});
+
+    // Immediately send initialize request - zls exits if stdin is empty
+    const request_id = client.next_request_id;
+    client.next_request_id += 1;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const client_info = InitializeRequestParams.ClientInfoJson{
+        .name = "zigaagentic",
+        .version = "0.1.0",
+    };
+
+    const params = InitializeRequestParams{
+        .processId = 12345,
+        .clientInfo = client_info,
+        .rootUri = client.workspace_uri,
+        .capabilities = .{},
+    };
+
+    const request = InitializeRequest{
+        .id = request_id,
+        .params = params,
+    };
+
+    const json_slice = std.json.Stringify.valueAlloc(arena_alloc, request, .{}) catch {
+        // Continue without sending
+        // Store in global sessions
+        const sessions_ptr = getSessions();
+        try sessions_ptr.put(try allocator.dupe(u8, session_id), client);
+        return client;
+    };
+    defer arena_alloc.free(json_slice);
+
+    writeMessage(client.stdin, json_slice) catch |e| {
+        if (enable_lsp_debug) std.debug.print("spawnLsp: immediate initialize failed: {}\n", .{e});
+        // Continue anyway
+    };
 
     // Store in global sessions
     const sessions_ptr = getSessions();
@@ -242,8 +314,10 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
         .params = params,
     };
 
-    // Serialize to JSON string using Stringify.valueAlloc
-    const json_slice = try std.json.Stringify.valueAlloc(arena_alloc, request, .{});
+    // Serialize to JSON string
+    var aw: std.io.Writer.Allocating = .init(arena_alloc);
+    try aw.writer.print("{f}", .{std.json.fmt(request, .{})});
+    const json_slice = try aw.toOwnedSlice();
     defer arena_alloc.free(json_slice);
 
     try writeMessage(client.stdin, json_slice);
@@ -255,16 +329,16 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
     // Try to read up to 10 messages to find the initialize response
     var msg_attempts: usize = 0;
     while (msg_attempts < 10) : (msg_attempts += 1) {
-        std.debug.print("initialize: reading message {d}...\n", .{msg_attempts});
+        if (enable_lsp_debug) std.debug.print("initialize: reading message {d}...\n", .{msg_attempts});
         const msg = readMessage(client.stdout, allocator) catch |e| {
-            std.debug.print("initialize: readMessage error: {}\n", .{e});
+            if (enable_lsp_debug) std.debug.print("initialize: readMessage error: {}\n", .{e});
             return LspError.InvalidResponse;
         };
-        std.debug.print("initialize: got message ({d} bytes): {s}\n", .{ msg.len, msg[0..@min(msg.len, 200)] });
+        if (enable_lsp_debug) std.debug.print("initialize: got message ({d} bytes)): {s}\n", .{ msg.len, msg[0..@min(msg.len, 200)] });
 
         // Try to parse as JSON to check if it's the initialize response (has "id" field)
         var temp_parsed = json.parseFromSlice(json.Value, allocator, msg, .{}) catch |e| {
-            std.debug.print("initialize: failed to parse JSON: {}\n", .{e});
+            if (enable_lsp_debug) std.debug.print("initialize: failed to parse JSON: {}\n", .{e});
             allocator.free(msg);
             continue;
         };
@@ -273,11 +347,11 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
         if (temp_parsed.value == .object) {
             // Check if this is the initialize response (has "id" matching our request)
             if (temp_parsed.value.object.get("id")) |_| {
-                std.debug.print("initialize: found response with id\n", .{});
+                if (enable_lsp_debug) std.debug.print("initialize: found response with id\n", .{});
                 response_json = msg;
                 break;
             } else {
-                std.debug.print("initialize: message has no id (probably notification)\n", .{});
+                if (enable_lsp_debug) std.debug.print("initialize: message has no id (probably notification))\n", .{});
             }
         }
         // Not the response we're looking for, free and continue
@@ -285,7 +359,7 @@ pub fn initialize(allocator: std.mem.Allocator, client: *LspClient) !InitializeR
     }
 
     if (response_json == null) {
-        std.debug.print("initialize: could not find initialize response after {d} messages\n", .{msg_attempts});
+        if (enable_lsp_debug) std.debug.print("initialize: could not find initialize response after {d} messages\n", .{msg_attempts});
         return LspError.InvalidResponse;
     }
 
@@ -309,32 +383,24 @@ pub fn writeMessage(writer: std.fs.File, json_str: []const u8) !void {
     const content_length = json_str.len;
     var header_buf: [64]u8 = undefined;
     const header = try std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{content_length});
-    std.debug.print("writeMessage: sending header: {s}", .{header});
-    std.debug.print("writeMessage: sending body ({d} bytes): {s}\n", .{ json_str.len, json_str[0..@min(json_str.len, 200)] });
+    if (enable_lsp_debug) std.debug.print("writeMessage: sending header: {s}", .{header});
+    if (enable_lsp_debug) std.debug.print("writeMessage: sending body ({d} bytes)): {s}\n", .{ json_str.len, json_str[0..@min(json_str.len, 200)] });
     writer.writeAll(header) catch |e| {
-        std.debug.print("writeMessage: failed to write header: {}\n", .{e});
+        if (enable_lsp_debug) std.debug.print("writeMessage: failed to write header: {}\n", .{e});
         return e;
     };
     writer.writeAll(json_str) catch |e| {
-        std.debug.print("writeMessage: failed to write body: {}\n", .{e});
+        if (enable_lsp_debug) std.debug.print("writeMessage: failed to write body: {}\n", .{e});
         return e;
     };
-    std.debug.print("writeMessage: message sent successfully\n", .{});
-}
-
-// Buffered reader for LSP messages - stores leftover data between calls
-var lsp_read_buffer: ?std.ArrayList(u8) = null;
-
-pub fn getLspReadBuffer(allocator: std.mem.Allocator) *std.ArrayList(u8) {
-    if (lsp_read_buffer == null) {
-        lsp_read_buffer = std.ArrayList(u8).empty;
-        lsp_read_buffer.?.ensureTotalCapacity(allocator, 4096) catch {};
-    }
-    return &lsp_read_buffer.?;
+    if (enable_lsp_debug) std.debug.print("writeMessage: message sent successfully\n", .{});
 }
 
 pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
-    const buffer = getLspReadBuffer(allocator);
+    // Use local buffer instead of global to avoid memory leaks and allocator mismatches
+    var buffer = std.ArrayList(u8).empty;
+    defer buffer.deinit(allocator);
+    try buffer.ensureTotalCapacity(allocator, 4096);
     
     // Look for header end (\r\n\r\n) in existing buffer
     var header_end_pos: usize = 0;
@@ -362,7 +428,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         // Read more data
         var read_buf: [4096]u8 = undefined;
         const bytes_read = reader.read(&read_buf) catch |e| {
-            std.debug.print("readMessage: read error: {}\n", .{e});
+            if (enable_lsp_debug) std.debug.print("readMessage: read error: {}\n", .{e});
             return error.JsonParseError;
         };
         
@@ -370,7 +436,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
             // EOF - pipe closed
             timeout_counter += 1;
             if (timeout_counter >= max_timeout) {
-                std.debug.print("readMessage: EOF reached, LSP server may have exited\n", .{});
+                if (enable_lsp_debug) std.debug.print("readMessage: EOF reached, LSP server may have exited\n", .{});
                 return error.EndOfStream;
             }
             std.Thread.sleep(10 * std.time.ns_per_ms);
@@ -378,9 +444,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         }
         
         // Append to buffer
-        buffer.appendSlice(allocator, read_buf[0..bytes_read]) catch {
-            return error.OutOfMemory;
-        };
+        try buffer.appendSlice(allocator, read_buf[0..bytes_read]);
         
         // Check for header end
         if (buffer.items.len >= 4) {
@@ -398,7 +462,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
     }
     
     if (!found_empty_line) {
-        std.debug.print("readMessage: did not find empty line after timeout\n", .{});
+        if (enable_lsp_debug) std.debug.print("readMessage: did not find empty line after timeout\n", .{});
         return error.JsonParseError;
     }
     
@@ -414,7 +478,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         if (std.mem.startsWith(u8, line, "Content-Length:")) {
             const val = std.mem.trim(u8, line[16..], " \r");
             content_length = std.fmt.parseInt(usize, val, 10) catch {
-                std.debug.print("readMessage: failed to parse Content-Length: {s}\n", .{val});
+                if (enable_lsp_debug) std.debug.print("readMessage: failed to parse Content-Length: {s}\n", .{val});
                 return error.JsonParseError;
             };
             break;
@@ -422,7 +486,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
     }
     
     if (content_length == 0) {
-        std.debug.print("readMessage: Content-Length is 0\n", .{});
+        if (enable_lsp_debug) std.debug.print("readMessage: Content-Length is 0\n", .{});
         return error.JsonParseError;
     }
     
@@ -451,7 +515,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         var read_buf: [4096]u8 = undefined;
         const to_read = @min(read_buf.len, remaining);
         const bytes_read = reader.read(read_buf[0..to_read]) catch |e| {
-            std.debug.print("readMessage: body read error: {}\n", .{e});
+            if (enable_lsp_debug) std.debug.print("readMessage: body read error: {}\n", .{e});
             allocator.free(body);
             return error.JsonParseError;
         };
@@ -459,7 +523,7 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
         if (bytes_read == 0) {
             body_timeout += 1;
             if (body_timeout >= body_max_timeout) {
-                std.debug.print("readMessage: EOF while reading body\n", .{});
+                if (enable_lsp_debug) std.debug.print("readMessage: EOF while reading body\n", .{});
                 allocator.free(body);
                 return error.EndOfStream;
             }
@@ -473,21 +537,13 @@ pub fn readMessage(reader: std.fs.File, allocator: std.mem.Allocator) ![]u8 {
     }
     
     if (remaining > 0) {
-        std.debug.print("readMessage: incomplete body\n", .{});
+        if (enable_lsp_debug) std.debug.print("readMessage: incomplete body\n", .{});
         allocator.free(body);
         return error.JsonParseError;
     }
     
-    // Remove consumed data from buffer (header + body)
-    const consumed = body_start + content_length;
-    if (buffer.items.len > consumed) {
-        // Move remaining data to front
-        const leftover = buffer.items.len - consumed;
-        std.mem.copyForwards(u8, buffer.items[0..leftover], buffer.items[consumed..]);
-        buffer.shrinkAndFree(allocator, leftover);
-    } else {
-        buffer.clearRetainingCapacity();
-    }
+    // Local buffer is automatically cleaned up by defer
+    // Any leftover data in the buffer is discarded since we return the complete body
     
     return body;
 }
