@@ -41,7 +41,7 @@ pub fn run(
         .event_type = "skills",
         .data = buf.items,
     };
-    sse_manager.sendEvent(session_id, event, allocator) catch |err| {
+    sse_manager.sendEvent(session_id, event) catch |err| {
         logger.errFmt("SSE send skills: {s}", .{@errorName(err)}) catch {};
     };
 }

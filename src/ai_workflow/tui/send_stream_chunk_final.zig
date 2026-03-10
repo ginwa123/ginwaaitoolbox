@@ -21,5 +21,5 @@ pub fn run(allocator: std.mem.Allocator, session_id: []const u8, index: usize, u
         .event_type = "chunk_final",
         .data = buf.items,
     };
-    sse_manager.sendEvent(session_id, event, allocator) catch {};
+    sse_manager.sendEvent(session_id, event) catch {};
 }

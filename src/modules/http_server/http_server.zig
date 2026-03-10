@@ -19,6 +19,48 @@ pub const SseEvent = struct {
     event_type: []const u8,
     data: []const u8,
 
+    /// Maximum size for SSE event formatting (16KB - should be enough for any chunk)
+    pub const MAX_SSE_SIZE = 16384;
+
+    /// Format SSE event into a provided buffer (stack-allocated, no heap allocations)
+    /// Returns the formatted bytes or error.BufferTooSmall if buffer is insufficient
+    pub fn formatInto(self: SseEvent, buf: []u8) error{BufferTooSmall}![]u8 {
+        var pos: usize = 0;
+
+        // Write event type: "event: <type>\n"
+        const event_prefix = "event: ";
+        const needed_for_event = event_prefix.len + self.event_type.len + 1;
+        if (pos + needed_for_event > buf.len) return error.BufferTooSmall;
+        @memcpy(buf[pos..][0..event_prefix.len], event_prefix);
+        pos += event_prefix.len;
+        @memcpy(buf[pos..][0..self.event_type.len], self.event_type);
+        pos += self.event_type.len;
+        buf[pos] = '\n';
+        pos += 1;
+
+        // Write data lines: "data: <line>\n" for each line
+        var iter = std.mem.splitScalar(u8, self.data, '\n');
+        while (iter.next()) |line| {
+            if (line.len == 0) continue; // Skip empty lines from split
+            const data_prefix = "data: ";
+            const needed_for_line = data_prefix.len + line.len + 1;
+            if (pos + needed_for_line > buf.len) return error.BufferTooSmall;
+            @memcpy(buf[pos..][0..data_prefix.len], data_prefix);
+            pos += data_prefix.len;
+            @memcpy(buf[pos..][0..line.len], line);
+            pos += line.len;
+            buf[pos] = '\n';
+            pos += 1;
+        }
+
+        // Final newline to end the event
+        if (pos + 1 > buf.len) return error.BufferTooSmall;
+        buf[pos] = '\n';
+        pos += 1;
+
+        return buf[0..pos];
+    }
+
     pub fn format(self: SseEvent, allocator: std.mem.Allocator) ![]const u8 {
         var result = std.ArrayList(u8).empty;
         errdefer result.deinit(allocator);
@@ -86,8 +128,8 @@ pub const SseConnectionManager = struct {
         }
     }
 
-    /// Send an event to a specific session
-    pub fn sendEvent(self: *Self, session_id: []const u8, event: SseEvent, allocator: std.mem.Allocator) !void {
+    /// Send an event to a specific session (uses stack buffer, no heap allocations)
+    pub fn sendEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -96,10 +138,14 @@ pub const SseConnectionManager = struct {
             return error.SessionNotFound;
         };
 
-        const formatted = try event.format(allocator);
-        defer allocator.free(formatted);
+        // Use stack buffer for SSE formatting - no heap allocations
+        var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
+        const formatted = event.formatInto(&stack_buf) catch {
+            std.log.err("SSE sendEvent: event too large for stack buffer (max {} bytes)", .{SseEvent.MAX_SSE_SIZE});
+            return error.BufferTooSmall;
+        };
 
-        // Write directly to stream - this is the key fix
+        // Write directly to stream
         stream.writeAll(formatted) catch |err| {
             std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(err)});
             return error.WriteFailed;
@@ -236,6 +282,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
         // Check every 100ms if session still exists
         var i: usize = 0;
         while (i < 300 and ctx.server.sse_manager.hasSession(ctx.session_id)) : (i += 1) {
+            // std.debug.print("SSE stream handler: session_id={s}, i={}\n", .{ ctx.session_id, i });
             std.Thread.sleep(100_000_000); // 100ms
         }
     }

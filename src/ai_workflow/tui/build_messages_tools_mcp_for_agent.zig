@@ -72,7 +72,7 @@ pub fn run(allocator: std.mem.Allocator) ![]AgentTool {
             .object => |obj| obj,
             else => continue,
         };
-        
+
         // Get URL
         const url_value = server_obj.get("url") orelse continue;
         const url = url_value.string;
@@ -197,6 +197,7 @@ fn fetchToolsFromServer(
         return &[_]AgentTool{};
     };
     defer parsed.deinit();
+    std.debug.print("MCP response: {s}\n", .{body});
 
     // Extract tools from result
     const root = switch (parsed.value) {

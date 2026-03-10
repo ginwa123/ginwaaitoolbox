@@ -1047,281 +1047,7 @@ pub const Agent = struct {
 
         return chunk;
     }
-/// Context for streaming HTTP operations in a separate thread
-const StreamingThreadContext = struct {
-    agent: *Agent,
-    params: AgentCall,
-    ctx: ?*anyopaque,
-    callback: StreamCallback,
-    is_cancelled: ?*const fn (?*anyopaque) bool,
-    result: CallError!CallResponse,
-    completed: std.atomic.Value(bool),
-    socket_fd: std.atomic.Value(i32), // -1 = not set yet, -2 = error/complete
-    mutex: std.Thread.Mutex,
-    cond: std.Thread.Condition,
-};
-
-/// Thread function that performs the actual HTTP streaming
-fn streamingThreadFunc(thread_ctx: *StreamingThreadContext) void {
-    thread_ctx.mutex.lock();
-    defer thread_ctx.mutex.unlock();
-
-    const self = thread_ctx.agent;
-    const params = thread_ctx.params;
-    const ctx = thread_ctx.ctx;
-    const callback = thread_ctx.callback;
-    const is_cancelled = thread_ctx.is_cancelled;
-
-    // Build request
-    const json_body: []u8 = self.buildJsonRequest(params, true) catch |err| {
-        self.logError("buildJsonRequest", err, null);
-        thread_ctx.result = error.BuildRequestFailed;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-    defer self.allocator.free(json_body);
-
-    const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
-        self.logError("concat URI", err, null);
-        thread_ctx.result = error.OutOfMemory;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-    defer self.allocator.free(uri_str);
-
-    const uri = std.Uri.parse(uri_str) catch |err| {
-        self.logFmt(.err, "Failed to parse URI '{s}': {s}", .{ uri_str, @errorName(err) });
-        thread_ctx.result = error.InvalidUri;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-
-    const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
-        self.logError("concat auth", err, null);
-        thread_ctx.result = error.OutOfMemory;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-    defer self.allocator.free(auth_value);
-
-    // Check cancellation before connection
-    if (is_cancelled) |check| {
-        if (check(ctx)) {
-            self.logMsg(.info, "[STREAM] Cancelled by user before connection");
-            thread_ctx.result = error.Cancelled;
-            thread_ctx.completed.store(true, .seq_cst);
-            thread_ctx.cond.broadcast();
-            return;
-        }
-    }
-
-    var req = self.httpClient.request(.POST, uri, .{
-        .version = .@"HTTP/1.1",
-        .headers = .{
-            .authorization = .{ .override = auth_value },
-            .content_type = .{ .override = "application/json" },
-            .accept_encoding = .{ .override = "identity" },
-        },
-    }) catch |err| {
-        self.logFmt(.err, "HTTP streaming request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
-        thread_ctx.result = error.HttpRequestFailed;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-    defer req.deinit();
-
-    // Store socket fd for cancellation
-    if (req.connection) |conn| {
-        const stream = conn.stream_reader.getStream();
-        const handle = stream.handle;
-        thread_ctx.socket_fd.store(handle, .seq_cst);
-
-        const timeout = std.posix.timeval{
-            .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
-            .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
-        };
-        std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
-        std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
-        std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&@as(u32, 1))) catch {};
-    }
-
-    // Check cancellation before sending body
-    if (is_cancelled) |check| {
-        if (check(ctx)) {
-            self.logMsg(.info, "[STREAM] Cancelled by user before sending body");
-            thread_ctx.result = error.Cancelled;
-            thread_ctx.completed.store(true, .seq_cst);
-            thread_ctx.cond.broadcast();
-            return;
-        }
-    }
-
-    req.sendBodyComplete(json_body) catch |err| {
-        self.logError("sendBodyComplete", err, null);
-        thread_ctx.result = error.SendBodyFailed;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-
-    // Check cancellation before receiving headers
-    if (is_cancelled) |check| {
-        if (check(ctx)) {
-            self.logMsg(.info, "[STREAM] Cancelled by user before receiving headers");
-            thread_ctx.result = error.Cancelled;
-            thread_ctx.completed.store(true, .seq_cst);
-            thread_ctx.cond.broadcast();
-            return;
-        }
-    }
-
-    const stream_start = timestampMs();
-    var redirect_buffer: [8192]u8 = undefined;
-    var response = req.receiveHead(&redirect_buffer) catch |err| {
-        self.logFmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(stream_start), @errorName(err) });
-        thread_ctx.result = error.ReceiveFailed;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-
-    self.logFmt(.info, "[STREAM START] Response headers received in {}ms (status={d})", .{elapsedMs(stream_start), response.head.status});
-
-    // Check if response has a body - some status codes don't (204, 304, etc.)
-    if (!response.request.method.responseHasBody()) {
-        self.logMsg(.info, "[STREAM] Response has no body (status code)");
-        thread_ctx.result = CallResponse{
-            .allocator = self.allocator,
-            .content = "",
-            .tool_calls = null,
-            .finish_reason = null,
-        };
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    }
-
-    // Also check content-length header explicitly
-    if (response.head.content_length == null and response.head.transfer_encoding != .chunked) {
-        self.logMsg(.info, "[STREAM] Response has no body (no content-length, not chunked)");
-        thread_ctx.result = CallResponse{
-            .allocator = self.allocator,
-            .content = "",
-            .tool_calls = null,
-            .finish_reason = null,
-        };
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    }
-
-    var aggregator = StreamingAggregator.init(self.allocator);
-    defer aggregator.deinit();
-
-    const transfer_buffer = self.allocator.alloc(u8, self.httpOptions.response_buffer_size) catch |err| {
-        self.logError("alloc transfer_buffer", err, null);
-        thread_ctx.result = error.OutOfMemory;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-    defer self.allocator.free(transfer_buffer);
-
-    var reader = response.reader(transfer_buffer[0..]);
-    var line_buffer: std.ArrayList(u8) = .empty;
-    defer line_buffer.deinit(self.allocator);
-
-    var chunk_count: usize = 0;
-    var parse_failure_count: usize = 0;
-    var stream_ended_cleanly = false;
-    var total_bytes_read: usize = 0;
-    var last_chunk_time = timestampMs();
-    var read_buf: [4096]u8 = undefined;
-
-    while (true) {
-        // Check cancellation
-        if (is_cancelled) |check| {
-            if (check(ctx)) {
-                self.logMsg(.info, "[STREAM] Cancelled by user");
-                stream_ended_cleanly = false;
-                break;
-            }
-        }
-
-        const bytes_read = reader.readSliceShort(&read_buf) catch |err| {
-            if (err == error.EndOfStream) {
-                stream_ended_cleanly = true;
-                break;
-            }
-            break;
-        };
-
-        if (bytes_read == 0) {
-            stream_ended_cleanly = true;
-            break;
-        }
-
-        total_bytes_read += bytes_read;
-        last_chunk_time = timestampMs();
-
-        for (read_buf[0..bytes_read]) |byte| {
-            if (byte == '\n') {
-                if (line_buffer.items.len > 0) {
-                    const line = line_buffer.items;
-                    if (self.parseSseLine(line)) |data| {
-                        var chunk_arena = std.heap.ArenaAllocator.init(self.allocator);
-                        defer chunk_arena.deinit();
-
-                        if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
-                            chunk_count += 1;
-                            callback(ctx, chunk);
-                            aggregator.processChunk(chunk) catch {};
-                        } else {
-                            parse_failure_count += 1;
-                        }
-                    }
-                    line_buffer.clearRetainingCapacity();
-                }
-            } else if (byte != '\r') {
-                line_buffer.append(self.allocator, byte) catch {};
-            }
-        }
-    }
-
-    // Process remaining line
-    if (line_buffer.items.len > 0) {
-        if (self.parseSseLine(line_buffer.items)) |data| {
-            var chunk_arena = std.heap.ArenaAllocator.init(self.allocator);
-            defer chunk_arena.deinit();
-            if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
-                callback(ctx, chunk);
-                aggregator.processChunk(chunk) catch {};
-            }
-        }
-    }
-
-    callback(ctx, .{ .done = true });
-
-    const result = aggregator.finalize() catch |err| {
-        self.logError("finalize streaming response", err, null);
-        thread_ctx.result = error.AllocFailed;
-        thread_ctx.completed.store(true, .seq_cst);
-        thread_ctx.cond.broadcast();
-        return;
-    };
-
-    thread_ctx.result = result;
-    thread_ctx.completed.store(true, .seq_cst);
-    thread_ctx.cond.broadcast();
-}
-
-
-    /// Streaming call with callback for each chunk - uses thread for cancellable I/O
+/// Streaming call with callback for each chunk - synchronous, no thread needed
     pub fn callStreaming(
         self: *Agent,
         params: AgentCall,
@@ -1339,69 +1065,200 @@ fn streamingThreadFunc(thread_ctx: *StreamingThreadContext) void {
             }
         }
 
-        // Allocate thread context on heap (must outlive the thread)
-        const thread_ctx = self.allocator.create(StreamingThreadContext) catch |err| {
-            self.logError("alloc thread context", err, null);
+        // Build request
+        const json_body = self.buildJsonRequest(params, true) catch |err| {
+            self.logError("buildJsonRequest", err, null);
+            return error.BuildRequestFailed;
+        };
+        defer self.allocator.free(json_body);
+
+        const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
+            self.logError("concat URI", err, null);
             return error.OutOfMemory;
         };
-        defer self.allocator.destroy(thread_ctx);
+        defer self.allocator.free(uri_str);
 
-        // Initialize thread context
-        thread_ctx.* = .{
-            .agent = self,
-            .params = params,
-            .ctx = ctx,
-            .callback = callback,
-            .is_cancelled = is_cancelled,
-            .result = undefined, // Will be set by thread
-            .completed = std.atomic.Value(bool).init(false),
-            .socket_fd = std.atomic.Value(i32).init(-1),
-            .mutex = .{},
-            .cond = .{},
+        const uri = std.Uri.parse(uri_str) catch |err| {
+            self.logFmt(.err, "Failed to parse URI '{s}': {s}", .{ uri_str, @errorName(err) });
+            return error.InvalidUri;
         };
 
-        // Spawn the HTTP thread
-        const thread = std.Thread.spawn(.{}, streamingThreadFunc, .{thread_ctx}) catch |err| {
-            self.logError("spawn streaming thread", err, null);
+        const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
+            self.logError("concat auth", err, null);
+            return error.OutOfMemory;
+        };
+        defer self.allocator.free(auth_value);
+
+        // Check cancellation before connection
+        if (is_cancelled) |check| {
+            if (check(ctx)) {
+                self.logMsg(.info, "[STREAM] Cancelled by user before connection");
+                return error.Cancelled;
+            }
+        }
+
+        var req = self.httpClient.request(.POST, uri, .{
+            .version = .@"HTTP/1.1",
+            .headers = .{
+                .authorization = .{ .override = auth_value },
+                .content_type = .{ .override = "application/json" },
+                .accept_encoding = .{ .override = "identity" },
+            },
+        }) catch |err| {
+            self.logFmt(.err, "HTTP streaming request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
             return error.HttpRequestFailed;
         };
+        defer req.deinit();
 
-        // Poll for cancellation while thread is running
-        const poll_interval_ms = 50;
-        var was_cancelled = false;
+        // Set socket timeouts for responsive cancellation
+        if (req.connection) |conn| {
+            const stream = conn.stream_reader.getStream();
+            const handle = stream.handle;
+            const timeout = std.posix.timeval{
+                .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
+                .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
+            };
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
+            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&@as(u32, 1))) catch {};
+        }
+
+        // Check cancellation before sending body
+        if (is_cancelled) |check| {
+            if (check(ctx)) {
+                self.logMsg(.info, "[STREAM] Cancelled by user before sending body");
+                return error.Cancelled;
+            }
+        }
+
+        req.sendBodyComplete(json_body) catch |err| {
+            self.logError("sendBodyComplete", err, null);
+            return error.SendBodyFailed;
+        };
+
+        // Check cancellation before receiving headers
+        if (is_cancelled) |check| {
+            if (check(ctx)) {
+                self.logMsg(.info, "[STREAM] Cancelled by user before receiving headers");
+                return error.Cancelled;
+            }
+        }
+
+        const stream_start = timestampMs();
+        var redirect_buffer: [8192]u8 = undefined;
+        var response = req.receiveHead(&redirect_buffer) catch |err| {
+            self.logFmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(stream_start), @errorName(err) });
+            return error.ReceiveFailed;
+        };
+
+        self.logFmt(.info, "[STREAM START] Response headers received in {}ms (status={d})", .{elapsedMs(stream_start), response.head.status});
+
+        // Check if response has a body
+        if (!response.request.method.responseHasBody()) {
+            self.logMsg(.info, "[STREAM] Response has no body (status code)");
+            return CallResponse{
+                .allocator = self.allocator,
+                .content = "",
+                .tool_calls = null,
+                .finish_reason = null,
+            };
+        }
+
+        if (response.head.content_length == null and response.head.transfer_encoding != .chunked) {
+            self.logMsg(.info, "[STREAM] Response has no body (no content-length, not chunked)");
+            return CallResponse{
+                .allocator = self.allocator,
+                .content = "",
+                .tool_calls = null,
+                .finish_reason = null,
+            };
+        }
+
+        var aggregator = StreamingAggregator.init(self.allocator);
+        defer aggregator.deinit();
+
+        const transfer_buffer = self.allocator.alloc(u8, self.httpOptions.response_buffer_size) catch |err| {
+            self.logError("alloc transfer_buffer", err, null);
+            return error.OutOfMemory;
+        };
+        defer self.allocator.free(transfer_buffer);
+
+        var reader = response.reader(transfer_buffer[0..]);
+        var line_buffer: std.ArrayList(u8) = .empty;
+        defer line_buffer.deinit(self.allocator);
+
+        // Reuse arena across all chunks
+        var chunk_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer chunk_arena.deinit();
+
+        var chunk_count: usize = 0;
+        var stream_ended_cleanly = false;
+        var total_bytes_read: usize = 0;
+        var read_buf: [4096]u8 = undefined;
 
         while (true) {
-            // Check if thread completed
-            if (thread_ctx.completed.load(.seq_cst)) {
-                break;
-            }
-
-            // Check for cancellation
+            // Check cancellation
             if (is_cancelled) |check| {
                 if (check(ctx)) {
-                    was_cancelled = true;
-                    self.logMsg(.info, "[STREAM] Cancellation requested, closing socket...");
-                    const fd = thread_ctx.socket_fd.load(.seq_cst);
-                    if (fd >= 0) {
-                        std.posix.close(fd);
-                    }
-                    break;
+                    self.logMsg(.info, "[STREAM] Cancelled by user");
+                    stream_ended_cleanly = false;
+                    return error.Cancelled;
                 }
             }
 
-            // Sleep before next check
-            std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+            const bytes_read = reader.readSliceShort(&read_buf) catch |err| {
+                if (err == error.EndOfStream) {
+                    stream_ended_cleanly = true;
+                    break;
+                }
+                break;
+            };
+
+            if (bytes_read == 0) {
+                stream_ended_cleanly = true;
+                break;
+            }
+
+            total_bytes_read += bytes_read;
+
+            for (read_buf[0..bytes_read]) |byte| {
+                if (byte == '\n') {
+                    if (line_buffer.items.len > 0) {
+                        const line = line_buffer.items;
+                        if (self.parseSseLine(line)) |data| {
+                            _ = chunk_arena.reset(.retain_capacity);
+
+                            if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
+                                chunk_count += 1;
+                                callback(ctx, chunk);
+                                aggregator.processChunk(chunk) catch {};
+                            }
+                        }
+                        line_buffer.clearRetainingCapacity();
+                    }
+                } else if (byte != '\r') {
+                    line_buffer.append(self.allocator, byte) catch {};
+                }
+            }
         }
 
-        // Wait for thread to complete (it should exit quickly after socket close)
-        thread.join();
-
-        // Return result or error
-        if (was_cancelled) {
-            return error.Cancelled;
+        // Process remaining line
+        if (line_buffer.items.len > 0) {
+            if (self.parseSseLine(line_buffer.items)) |data| {
+                _ = chunk_arena.reset(.retain_capacity);
+                if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
+                    callback(ctx, chunk);
+                    aggregator.processChunk(chunk) catch {};
+                }
+            }
         }
 
-        return thread_ctx.result;
+        callback(ctx, .{ .done = true });
+
+        return aggregator.finalize() catch |err| {
+            self.logError("finalize streaming response", err, null);
+            return error.AllocFailed;
+        };
     }
 
     pub fn deinit(self: *Agent) void {

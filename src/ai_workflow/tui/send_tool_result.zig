@@ -34,7 +34,7 @@ pub fn run(allocator: std.mem.Allocator, session_id: []const u8, logger: *logger
         .event_type = "tool_result",
         .data = buf.items,
     };
-    sse_manager.sendEvent(session_id, event, allocator) catch |err| {
+    sse_manager.sendEvent(session_id, event) catch |err| {
         logger.errFmt("SSE send tool result: {s}", .{@errorName(err)}) catch {};
     };
 }
