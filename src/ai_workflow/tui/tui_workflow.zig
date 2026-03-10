@@ -137,7 +137,13 @@ pub const TUIWorkflow = struct {
 
     fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8) !void {
         self.logger.infoFmt("WORKFLOW START: session_id={s}, message={s}", .{session_id, message}) catch {};
-        defer { self.logger.infoFmt("WORKFLOW END: session_id={s}", .{session_id}) catch {}; }
+        defer { 
+            self.logger.infoFmt("WORKFLOW END: session_id={s}", .{session_id}) catch {}; 
+            // Unregister session from cancellation registry
+            if (cancellation_registry.getGlobalRegistry()) |registry| {
+                registry.unregister(session_id);
+            }
+        }
         
         // Register this session for cancellation tracking
         if (cancellation_registry.getGlobalRegistry()) |registry| {
@@ -160,6 +166,14 @@ pub const TUIWorkflow = struct {
         var current_max_tokens: usize = 8000;
         var loop_counter: u32 = 0;
         while (true) {
+            // Check for cancellation at the start of each iteration
+            if (cancellation_registry.getGlobalRegistry()) |registry| {
+                if (registry.isCancelled(session_id)) {
+                    self.logger.infoFmt("WORKFLOW CANCELLED: session_id={s}", .{session_id}) catch {};
+                    break;
+                }
+            }
+
             var agent_temperature: f32 = 0.2;
             var isThinking: bool = false;
 
@@ -196,6 +210,10 @@ pub const TUIWorkflow = struct {
             }
 
             const res_dynamic_agent = self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id) catch |err| {
+                if (err == error.Cancelled) {
+                    self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
+                    break;
+                }
                 retryCount += 1;
                 self.logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)}) catch {};
                 continue;
