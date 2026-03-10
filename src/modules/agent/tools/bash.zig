@@ -266,6 +266,7 @@ pub const bashTool = AgentTool{
         \\- start with `timeout <seconds>`
         \\- limit output using `| head -n <N>`
         \\- avoid commands that produce unbounded output
+        \\- using rtk if the lib is installed
         \\
         \\## Safety
         \\Avoid destructive or system-modifying commands.

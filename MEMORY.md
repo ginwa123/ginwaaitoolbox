@@ -28,7 +28,11 @@ If you do zig build run, or zig build run:tui, it will kill yourself process, so
 
 ## Resolved Issues
 
-<!-- Issues encountered and fixed during runs. -->
+### [2025-01-21] TUI Memory Leak - Arena Never Reset
+**Problem:** TUI application was using 200MB+ memory because the ArenaAllocator was never reset during the application's lifetime. All temporary allocations (HTTP requests, JSON payloads, etc.) accumulated indefinitely.
+**Root cause:** The `App` struct's `arena` field was initialized once in `App.init` and only deinitialized in `App.deinit` at application exit. All message handling functions used `app.arena.allocator()` for temporary allocations without ever resetting the arena.
+**Fix:** Added `app.arena.reset(.retain_capacity)` at the end of `readResponseAndStreamRunLLM` and `readResponseAndStreamGetSessions` functions to free temporary allocations after each message operation completes.
+**Reuse signal:** When using ArenaAllocator for temporary allocations in long-running loops, always reset the arena periodically to prevent memory accumulation.
 
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands

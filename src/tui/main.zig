@@ -707,6 +707,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     }
 
     std.debug.print("\r\n", .{});
+    _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
 
@@ -781,6 +782,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
         }
     }
 
+    _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
 
