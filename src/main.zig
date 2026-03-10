@@ -72,7 +72,7 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMess
     // Try JSON first (HTTP format)
     if (std.json.parseFromSlice(std.json.Value, allocator, data, .{})) |parsed| {
         defer parsed.deinit();
-        
+
         const root = parsed.value.object;
         var msg: CommandMessage = .{};
 
@@ -88,7 +88,7 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMess
         if (root.get("cwd_session")) |v| {
             msg.cwd_session = try allocator.dupe(u8, v.string);
         }
-        
+
         return msg;
     } else |_| {
         // Fall back to XML parsing (IPC format)
@@ -316,19 +316,6 @@ pub fn main() !void {
                 return;
             };
 
-            if (std.mem.eql(u8, t.command_type, "cancel")) {
-                if (ai_workflow.cancellation_registry.getGlobalRegistry()) |registry| {
-                    registry.cancel(t.session_id);
-                }
-                return;
-            }
-            // Register/reset session for cancellation tracking
-            if (ai_workflow.cancellation_registry.getGlobalRegistry()) |registry| {
-                registry.register(t.session_id) catch |err| {
-                    std.debug.print("Failed to register session: {}\n", .{err});
-                    return;
-                };
-            }
             var workflowAsk = ai_workflow.TUIWorkflow.init(ctxTui.db, ctxTui.logger);
 
             // Load previously saved skills for this session
@@ -338,7 +325,9 @@ pub fn main() !void {
             if (std.mem.eql(u8, t.command_type, "run_llm")) {
                 std.debug.print("COMMAND: run_llm with session_id={s}, message={s}\n", .{ t.session_id, t.message });
                 // Pass 0 as conn_fd - HTTP mode doesn't use socket
+                std.debug.print("LAUNCHING WORKFLOW for session_id={s}...\n", .{t.session_id});
                 workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url);
+                std.debug.print("WORKFLOW RETURNED for session_id={s}\n", .{t.session_id});
             }
             if (std.mem.eql(u8, t.command_type, "get_sessions")) {
                 // todo rework

@@ -13,28 +13,18 @@ const cyan = "\x1b[36m";
 const yellow = "\x1b[33m";
 const green = "\x1b[32m";
 
-// Double ESC detection window in milliseconds
 const DOUBLE_ESC_WINDOW_MS: i64 = 500;
 
-// ─── Platform-specific stdin bytes available check ─────────────────────────────
-
-/// Check how many bytes are available to read from stdin without blocking.
-/// Returns 0 on Windows or if the operation is not supported.
 fn stdinBytesAvailable() c_int {
     if (builtin.os.tag == .windows) {
-        // On Windows, we would need to use PeekConsoleInput or similar.
-        // For now, return 0 to indicate no data available (non-blocking behavior).
-        // This effectively disables double-ESC detection on Windows.
         return 0;
     } else {
-        // Linux and macOS support FIONREAD via ioctl
         var bytes_available: c_int = 0;
         const result = std.posix.system.ioctl(std.posix.STDIN_FILENO, std.posix.system.T.FIONREAD, @intFromPtr(&bytes_available));
         return if (result == 0) bytes_available else 0;
     }
 }
 
-// ─── App struct ──────────────────────────────────────────────────────────────
 pub const CompletionState = struct {
     last_match_count: usize = 0,
     visible: bool = false,
@@ -46,59 +36,35 @@ pub const COMMANDS = [_][]const u8{
     "/sessions",
     "/exit",
     "/help",
-    // add more commands here
 };
 
 const App = struct {
-    // HTTP connection
     http_client: std.http.Client,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
-
-    // terminal
     original_termios: std.posix.termios,
-
-    // session
     session_id: []u8,
-
-    // input
     input: std.ArrayList(u8),
     pasting: bool,
-
-    // double ESC detection
     last_esc_time: ?i64 = null,
-
-    // agent name buffer (fixed size to avoid memory issues)
     agent_name_buf: [64]u8 = [_]u8{0} ** 64,
-
-    // runtime-configurable keybindings
     keybindings: keybindings.Keybindings,
-
-    // verbose mode for backend debug output
     verbose: bool = false,
-
     state: CompletionState = CompletionState{ .matches = .empty },
 
     pub fn init(allocator: std.mem.Allocator, verbose: bool) !App {
         try spawnBackend(verbose);
         std.log.info("Spawned backend", .{});
-
-        // Wait for HTTP server to be ready
         try waitForHttpServer(10000);
         std.log.info("HTTP server ready", .{});
-
         const original_termios = try enableRawMode();
         std.log.info("Raw mode enabled", .{});
         const session_id = try std.fmt.allocPrint(allocator, "session_{}", .{std.time.timestamp()});
         const kb = try keybindings.loadKeybindings(allocator);
-
         std.log.info("Session ID: {s}", .{session_id});
-
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
-
         const http_client = std.http.Client{ .allocator = arena.allocator() };
-
         return App{
             .http_client = http_client,
             .arena = arena,
@@ -146,20 +112,14 @@ fn disableRawMode(original: std.posix.termios) void {
     std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, original) catch {};
 }
 
-// ─── Backend / HTTP ───────────────────────────────────────────────────────────
-fn spawnBackend(_: bool) !void {
-    // Simply spawn the backend - if it's already running, that's fine
-    // waitForHttpServer will handle waiting for it
+// ─── Backend ─────────────────────────────────────────────────────────────────
 
+fn spawnBackend(_: bool) !void {
     const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/zigginagentic");
     defer std.heap.page_allocator.free(backend_path);
     var child = std.process.Child.init(&.{backend_path}, std.heap.page_allocator);
-
-    // Redirect stdout and stderr to /dev/null to prevent backend debug output
-    // from interfering with the TUI display (unless --verbose is set)
     child.stdout_behavior = .Close;
     child.stderr_behavior = .Close;
-
     child.spawn() catch |err| {
         std.debug.print("{s}Warning: failed to spawn backend: {s}{s}\n", .{ yellow, @errorName(err), reset });
         return;
@@ -170,9 +130,7 @@ fn spawnBackend(_: bool) !void {
 fn waitForHttpServer(timeout_ms: u64) !void {
     const start = std.time.milliTimestamp();
     while (true) {
-        if (std.time.milliTimestamp() - start > timeout_ms) {
-            return error.Timeout;
-        }
+        if (std.time.milliTimestamp() - start > timeout_ms) return error.Timeout;
         const socket_fd = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch {
             std.Thread.sleep(50_000_000);
             continue;
@@ -180,14 +138,113 @@ fn waitForHttpServer(timeout_ms: u64) !void {
         defer std.posix.close(socket_fd);
         var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
         if (std.posix.connect(socket_fd, &addr.any, @sizeOf(std.net.Address))) {
-            return; // connected!
+            return;
         } else |_| {
-            std.Thread.sleep(50_000_000); // 50ms
+            std.Thread.sleep(50_000_000);
         }
     }
 }
 
-// ─── Messaging ─────────────────────────────────────────────────────────────
+// ─── Chunked transfer encoding decoder ───────────────────────────────────────
+//
+// HTTP/1.1 chunked format:
+//   <hex size>\r\n
+//   <data>\r\n
+//   0\r\n\r\n   <- end
+//
+// Strips HTTP headers and chunk size lines, returns raw SSE text.
+
+fn decodeChunked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    // Skip HTTP response headers if present
+    const header_end = std.mem.indexOf(u8, raw, "\r\n\r\n");
+    var pos: usize = if (header_end) |end| end + 4 else 0;
+
+    // Check if this looks like chunked encoding (starts with hex number)
+    const maybe_chunked = pos < raw.len and
+        (std.ascii.isHex(raw[pos]) or raw[pos] == '\r' or raw[pos] == '\n');
+
+    if (maybe_chunked and header_end != null) {
+        // Parse chunked encoding
+        while (pos < raw.len) {
+            // Find end of chunk size line
+            const size_end = std.mem.indexOfPos(u8, raw, pos, "\r\n") orelse break;
+            const size_str = std.mem.trim(u8, raw[pos..size_end], " \t");
+            if (size_str.len == 0) {
+                pos = size_end + 2;
+                continue;
+            }
+
+            // Parse hex chunk size
+            const chunk_size = std.fmt.parseInt(usize, size_str, 16) catch {
+                pos = size_end + 2;
+                continue;
+            };
+
+            if (chunk_size == 0) break; // end of chunked stream
+
+            pos = size_end + 2;
+            if (pos + chunk_size > raw.len) break; // incomplete, wait for more data
+
+            try out.appendSlice(allocator, raw[pos .. pos + chunk_size]);
+            pos += chunk_size;
+
+            // Skip trailing \r\n after chunk data
+            if (pos + 2 <= raw.len and raw[pos] == '\r' and raw[pos + 1] == '\n') {
+                pos += 2;
+            }
+        }
+    } else {
+        // No chunked encoding - just return body (or entire input if no headers)
+        try out.appendSlice(allocator, raw[pos..]);
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+// ─── SSE parser ──────────────────────────────────────────────────────────────
+//
+// After chunked decode, SSE lines look like:
+//   data: {"event":"chunk","data":"<xml escaped>"}\n\n
+//   : keepalive\n\n
+//
+// This extracts and unescapes the "data" JSON field value from each data: line,
+// concatenating all of them into one XML string.
+
+fn extractSseData(allocator: std.mem.Allocator, sse_text: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, sse_text, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, "\r");
+
+        // Skip empty lines (SSE event boundaries)
+        if (trimmed.len == 0) continue;
+
+        // Skip comment lines (keepalive, etc.)
+        if (std.mem.startsWith(u8, trimmed, ":")) continue;
+
+        // Skip event type lines - we just want the data
+        if (std.mem.startsWith(u8, trimmed, "event:")) continue;
+
+        // Extract data lines
+        if (std.mem.startsWith(u8, trimmed, "data:")) {
+            const payload = trimmed["data:".len..];
+            // Add newline separator between data lines (SSE spec)
+            if (out.items.len > 0) {
+                try out.append(allocator, '\n');
+            }
+            try out.appendSlice(allocator, payload);
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 pub fn trim(s: []const u8) []const u8 {
     var start: usize = 0;
@@ -197,51 +254,66 @@ pub fn trim(s: []const u8) []const u8 {
     return s[start..end];
 }
 
+pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
+    const close_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
+    defer std.heap.page_allocator.free(close_tag);
+    const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
+    defer std.heap.page_allocator.free(open_tag);
+    const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
+    const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
+    return xml[open_pos + open_tag.len .. close_pos];
+}
+
+// ─── SSE Connection Sync ─────────────────────────────────────────────────────
+
+/// Wait for SSE "connected" event from server
+/// Returns true if connected event received, false on timeout/error
+fn waitForSseConnected(socket: std.posix.fd_t, timeout_ms: u64) bool {
+    var buf: [4096]u8 = undefined;
+    const start = std.time.milliTimestamp();
+
+    while (true) {
+        if (std.time.milliTimestamp() - start > timeout_ms) return false;
+
+        var poll_fd = [1]std.posix.pollfd{
+            .{ .fd = socket, .events = std.posix.POLL.IN, .revents = 0 },
+        };
+
+        const ready = std.posix.poll(&poll_fd, 100) catch 0;
+        if (ready > 0 and (poll_fd[0].revents & std.posix.POLL.IN != 0)) {
+            const n = std.posix.read(socket, &buf) catch return false;
+            if (n == 0) return false;
+            if (std.mem.indexOf(u8, buf[0..n], "event: connected") != null) {
+                return true;
+            }
+        }
+    }
+}
+
 // ─── Messaging ───────────────────────────────────────────────────────────────
 
 fn sendMessage(app: *App, message: []const u8) !void {
     const cwd = std.process.getCwdAlloc(app.arena.allocator()) catch "";
-    defer app.arena.allocator().free(cwd);
-
-    // Build JSON payload
     const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
         \\{{"app_type":"tui","command_type":"run_llm","session_id":"{s}","content":"{s}","cwd_session":"{s}"}}
     , .{ app.session_id, message, cwd });
-    defer app.arena.allocator().free(json_payload);
-
-    // Send HTTP POST using raw socket
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
-
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-
-    const request = try std.fmt.allocPrint(app.arena.allocator(),
-        "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
-        .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
-    defer app.arena.allocator().free(request);
-
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
 
 fn sendCancelCommand(app: *App) !void {
     const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
         \\{{"app_type":"tui","command_type":"cancel","session_id":"{s}"}}
-    , .{ app.session_id });
-    defer app.arena.allocator().free(json_payload);
-
-    // Send HTTP POST using raw socket
+    , .{app.session_id});
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
-
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-
-    const request = try std.fmt.allocPrint(app.arena.allocator(),
-        "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
-        .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
-    defer app.arena.allocator().free(request);
-
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
 
@@ -249,277 +321,99 @@ fn sendSessionsCommand(app: *App) !void {
     const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
         \\{{"app_type":"tui","command_type":"get_sessions"}}
     , .{});
-    defer app.arena.allocator().free(json_payload);
-
-    // Send HTTP POST using raw socket
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
-
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-
-    const request = try std.fmt.allocPrint(app.arena.allocator(),
-        "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
-        .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
-    defer app.arena.allocator().free(request);
-
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
 
 // ─── Response formatting ─────────────────────────────────────────────────────
 
 fn printFormattedResponse(content: []const u8) void {
-    const agent_name = extractTag(content, "agent") orelse "unknown";
+    const agent_name = extractTag(content, "agent") orelse "assistant";
     std.debug.print("{s}━━ {s} ━━{s}\n", .{ cyan, agent_name, reset });
-
     if (extractTag(content, "markdown")) |md| {
         const trimmed = trim(md);
         if (trimmed.len > 0) {
             std.debug.print("\n{s}{s}{s}\n", .{ bold, trimmed, reset });
         } else {
-            // Empty markdown tag - print raw content as fallback
             std.debug.print("\n{s}{s}{s}\n", .{ bold, content, reset });
         }
     } else {
-        // No markdown tag found - print content directly as fallback
         std.debug.print("\n{s}{s}{s}\n", .{ bold, content, reset });
     }
-
-    // printAllTags(content, &.{ "agent", "markdown" }, 0);
-}
-
-fn isNestedElsewhere(xml: []const u8, tag: []const u8, tag_content: []const u8) bool {
-    const tag_content_ptr = @intFromPtr(tag_content.ptr);
-    var pos: usize = 0;
-    while (pos < xml.len) {
-        const open_start = std.mem.indexOfPos(u8, xml, pos, "<") orelse break;
-        const open_end = std.mem.indexOfPos(u8, xml, open_start + 1, ">") orelse break;
-        const other_tag = xml[open_start + 1 .. open_end];
-        pos = open_end + 1;
-
-        if (other_tag.len == 0 or other_tag[0] == '/' or std.mem.indexOfScalar(u8, other_tag, ' ') != null) continue;
-        if (std.mem.eql(u8, other_tag, tag)) continue;
-
-        const other_content = extractTag(xml, other_tag) orelse continue;
-        const other_ptr = @intFromPtr(other_content.ptr);
-        const other_end = other_ptr + other_content.len;
-
-        if (tag_content_ptr >= other_ptr and tag_content_ptr + tag_content.len <= other_end) {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn printAllTags(content: []const u8, skip: []const []const u8, depth: usize) void {
-    var pos: usize = 0;
-    var printed_buf: [64][]const u8 = undefined;
-    var printed_len: usize = 0;
-
-    while (pos < content.len) {
-        const open_start = std.mem.indexOfPos(u8, content, pos, "<") orelse break;
-        const open_end = std.mem.indexOfPos(u8, content, open_start + 1, ">") orelse break;
-        const tag = content[open_start + 1 .. open_end];
-        pos = open_end + 1;
-
-        if (tag.len == 0 or tag[0] == '/' or std.mem.indexOfScalar(u8, tag, ' ') != null) continue;
-
-        const should_skip = for (skip) |s| {
-            if (std.mem.eql(u8, s, tag)) break true;
-        } else false;
-        if (should_skip) continue;
-
-        const already_printed = for (printed_buf[0..printed_len]) |p| {
-            if (std.mem.eql(u8, p, tag)) break true;
-        } else false;
-        if (already_printed) continue;
-
-        const tag_content = extractTag(content, tag) orelse continue;
-
-        if (isNestedElsewhere(content, tag, tag_content)) continue;
-
-        if (printed_len < printed_buf.len) {
-            printed_buf[printed_len] = tag;
-            printed_len += 1;
-        }
-
-        printTagBox(tag, tag_content, depth);
-    }
-}
-
-fn printTagBox(tag: []const u8, content: []const u8, depth: usize) void {
-    const colors = [_][]const u8{ cyan, green, yellow, dim };
-    var hash: usize = 0;
-    for (tag) |c| hash = hash *% 31 +% c;
-    const color = colors[hash % colors.len];
-
-    const indent_base = "                "; // 16 spaces
-    const indent_str = indent_base[0..@min(depth * 2, indent_base.len)];
-
-    var label_buf: [64]u8 = undefined;
-    const label = blk: {
-        const n = @min(tag.len, label_buf.len);
-        @memcpy(label_buf[0..n], tag[0..n]);
-        if (label_buf[0] >= 'a' and label_buf[0] <= 'z') label_buf[0] -= 32;
-        for (label_buf[0..n]) |*c| if (c.* == '_') {
-            c.* = ' ';
-        };
-        break :blk label_buf[0..n];
-    };
-
-    var border_buf: [256]u8 = undefined;
-    var border_len: usize = 0;
-    const dash = "─";
-    const dash_count = label.len + 4;
-    for (0..dash_count) |_| {
-        if (border_len + dash.len <= border_buf.len) {
-            @memcpy(border_buf[border_len..][0..dash.len], dash);
-            border_len += dash.len;
-        }
-    }
-    const border = border_buf[0..border_len];
-
-    const trimmed = trim(content);
-    const has_children = std.mem.indexOf(u8, trimmed, "<") != null;
-
-    std.debug.print("{s}{s}┌─ {s} ─{s}\n", .{ indent_str, color, label, reset });
-
-    if (has_children) {
-        printAllTags(content, &.{}, depth + 1);
-    } else if (trimmed.len > 0) {
-        std.debug.print("{s}{s}│{s} {s}\n", .{ indent_str, color, reset, trimmed });
-    }
-
-    std.debug.print("{s}{s}└{s}{s}\n", .{ indent_str, color, border, reset });
-}
-
-pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
-    const close_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
-    defer std.heap.page_allocator.free(close_tag);
-    const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
-    defer std.heap.page_allocator.free(open_tag);
-
-    // For <content>, find it inside the final <message> block (not streaming chunks)
-    // Streaming chunks have: <response><chunk><content>...</content></chunk></response>
-    // Final response has: <response><choices><choice><message><content>...</content></message>...
-    if (std.mem.eql(u8, tag, "content")) {
-        // Find <message> tag first
-        if (std.mem.lastIndexOf(u8, xml, "</message>")) |msg_end| {
-            if (std.mem.lastIndexOf(u8, xml[0..msg_end], "<message>")) |msg_start| {
-                const message_content = xml[msg_start .. msg_end + "</message>".len];
-                // Now find <content> inside this message block
-                if (std.mem.indexOf(u8, message_content, open_tag)) |open_pos| {
-                    const content_start = open_pos + open_tag.len;
-                    if (std.mem.indexOf(u8, message_content[content_start..], close_tag)) |close_offset| {
-                        return message_content[content_start .. content_start + close_offset];
-                    }
-                }
-            }
-        }
-        return null;
-    }
-
-    // Default: find last complete tag pair
-    const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
-    const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
-    return xml[open_pos + open_tag.len .. close_pos];
 }
 
 // ─── Tool Result Extraction ─────────────────────────────────────────────────
 
-/// Struct to hold extracted tool result data
 const ToolResult = struct {
     id: []const u8,
     name: []const u8,
     result: []const u8,
 };
 
-/// Extract all tool_result blocks from XML buffer
-/// Returns an ArrayList of ToolResult structs (caller owns the memory)
 fn extractToolResults(allocator: std.mem.Allocator, xml: []const u8) !std.ArrayList(ToolResult) {
     var results = std.ArrayList(ToolResult).empty;
     errdefer results.deinit(allocator);
-
     var pos: usize = 0;
     while (pos < xml.len) {
-        // Find next <tool_result> tag
         const tool_result_start = std.mem.indexOfPos(u8, xml, pos, "<tool_result>") orelse break;
         const tool_result_end = std.mem.indexOfPos(u8, xml, tool_result_start, "</tool_result>") orelse break;
-
         const tool_result_block = xml[tool_result_start .. tool_result_end + "</tool_result>".len];
         pos = tool_result_end + "</tool_result>".len;
-
-        // Extract tool_call_id
         const id = if (extractTag(tool_result_block, "tool_call_id")) |v| v else "";
-
-        // Extract tool_name
         const name = if (extractTag(tool_result_block, "tool_name")) |v| v else "";
-
-        // Extract result
         const result = if (extractTag(tool_result_block, "result")) |v| v else "";
-
         if (id.len > 0) {
-            try results.append(allocator, .{
-                .id = id,
-                .name = name,
-                .result = result,
-            });
+            try results.append(allocator, .{ .id = id, .name = name, .result = result });
         }
     }
-
     return results;
 }
 
-// ─── Tool Result Display Helpers ───────────────────────────────────────────────
+// ─── Tool display ─────────────────────────────────────────────────────────────
 
 fn displayBashResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
     const std_out = std.mem.trim(u8, extractTag(result_xml, "stdout") orelse "", &std.ascii.whitespace);
     const cmd = extractTag(result_xml, "command");
-
-    if (std.mem.eql(u8, std_out, "") == false) {
-        const stderr = extractTag(result_xml, "stderr");
-        const truncated = std_out.len > max_result_len;
-        const display = if (truncated) std_out[0..max_result_len] else std_out;
-        const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
-        const color = if (is_error) "\x1b[31m" else "";
-        if (cmd) |c| {
-            std.debug.print("\r\x1b[2K\n{s}[{s}]{s} $ {s}\n", .{ cyan, tool_name, reset, c });
-        } else {
-            std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, tool_name, reset });
-        }
-
-        var lines = std.mem.splitScalar(u8, display, '\n');
-        while (lines.next()) |line| {
-            std.debug.print("{s}  {s}{s}\n", .{ color, line, if (is_error) reset else "" });
-        }
-        if (truncated) std.debug.print("  {s}[truncated...]{s}\n", .{ cyan, reset });
+    if (std.mem.eql(u8, std_out, "")) return;
+    const stderr = extractTag(result_xml, "stderr");
+    const truncated = std_out.len > max_result_len;
+    const display = if (truncated) std_out[0..max_result_len] else std_out;
+    const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
+    const color = if (is_error) "\x1b[31m" else "";
+    if (cmd) |c| {
+        std.debug.print("\r\x1b[2K\n{s}[{s}]{s} $ {s}\n", .{ cyan, tool_name, reset, c });
+    } else {
+        std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, tool_name, reset });
     }
+    var lines = std.mem.splitScalar(u8, display, '\n');
+    while (lines.next()) |line| {
+        std.debug.print("{s}  {s}{s}\n", .{ color, line, if (is_error) reset else "" });
+    }
+    if (truncated) std.debug.print("  {s}[truncated...]{s}\n", .{ cyan, reset });
 }
 
 fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
     _ = max_result_len;
     const results = extractTag(result_xml, "results") orelse "";
     if (std.mem.eql(u8, results, "")) return;
-
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, tool_name, reset });
-
     var remaining = results;
     var total_shown: usize = 0;
     while (total_shown < 20) {
-        // Extract next <m> block
         const match_start = std.mem.indexOf(u8, remaining, "<m>") orelse break;
         const match_end = std.mem.indexOf(u8, remaining, "</m>") orelse break;
-        const match_block = remaining[match_start..match_end + "</m>".len];
-        remaining = remaining[match_end + "</m>".len..];
-
+        const match_block = remaining[match_start .. match_end + "</m>".len];
+        remaining = remaining[match_end + "</m>".len ..];
         const file = extractTag(match_block, "f") orelse "";
         const line_num = extractTag(match_block, "l") orelse "0";
         const snippet = extractTag(match_block, "s") orelse "";
-
         std.debug.print("  {s}:{s}:{s}\n", .{ file, line_num, snippet });
         total_shown += 1;
     }
-
     if (std.mem.indexOf(u8, remaining, "<m>") != null) {
         std.debug.print("  {s}[more matches...]{s}\n", .{ cyan, reset });
     }
@@ -530,13 +424,8 @@ fn displayReadFileResult(result_xml: []const u8, tool_name: []const u8) void {
     const total_lines = extractTag(result_xml, "total_lines") orelse "?";
     const start_line = extractTag(result_xml, "start_line") orelse "0";
     const end_line = extractTag(result_xml, "end_line") orelse "?";
-
     if (std.mem.eql(u8, content, "")) return;
-
-    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} lines {s}-{s}/{s}\n", .{
-        cyan, tool_name, reset, start_line, end_line, total_lines
-    });
-
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} lines {s}-{s}/{s}\n", .{ cyan, tool_name, reset, start_line, end_line, total_lines });
     const max_lines: usize = 20;
     var lines = std.mem.splitScalar(u8, content, '\n');
     var count: usize = 0;
@@ -554,136 +443,103 @@ fn displayWriteFileResult(result_xml: []const u8, tool_name: []const u8) void {
     const path = extractTag(result_xml, "path") orelse "";
     const bytes_written = extractTag(result_xml, "bytes_written") orelse "0";
     const lines_written = extractTag(result_xml, "lines_written") orelse "0";
-
     if (std.mem.eql(u8, path, "")) return;
-
-    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} wrote {s} bytes ({s} lines) → {s}\n", .{
-        cyan, tool_name, reset, bytes_written, lines_written, path
-    });
-
-    // Optionally show before/after snippets if present
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} wrote {s} bytes ({s} lines) → {s}\n", .{ cyan, tool_name, reset, bytes_written, lines_written, path });
     if (extractTag(result_xml, "before")) |before| {
-        if (!std.mem.eql(u8, before, "")) {
-            std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, before });
-        }
+        if (!std.mem.eql(u8, before, "")) std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, before });
     }
     if (extractTag(result_xml, "after")) |after| {
-        if (!std.mem.eql(u8, after, "")) {
-            std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, after });
-        }
+        if (!std.mem.eql(u8, after, "")) std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, after });
     }
 }
 
 fn displayTextReplaceResult(result_xml: []const u8, tool_name: []const u8) void {
     const path = extractTag(result_xml, "path") orelse "";
     const replaced_at_byte = extractTag(result_xml, "replaced_at_byte") orelse "?";
-
     if (std.mem.eql(u8, path, "")) return;
-
-    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{
-        cyan, tool_name, reset, replaced_at_byte, path
-    });
-
-    // Show before (old_str - red) and after (new_str - green)
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{ cyan, tool_name, reset, replaced_at_byte, path });
     if (extractTag(result_xml, "old_str")) |old_str| {
-        if (!std.mem.eql(u8, old_str, "")) {
-            std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, old_str });
-        }
+        if (!std.mem.eql(u8, old_str, "")) std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, old_str });
     }
     if (extractTag(result_xml, "new_str")) |new_str| {
-        if (!std.mem.eql(u8, new_str, "")) {
-            std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, new_str });
-        }
+        if (!std.mem.eql(u8, new_str, "")) std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, new_str });
     }
 }
 
-// ─── Response streaming ──────────────────────────────────────────────────────
+// ─── Double ESC ───────────────────────────────────────────────────────────────
 
-/// Check stdin for ESC key and detect double ESC within time window
-/// Returns true if double ESC detected (stream should be interrupted)
 fn checkStdinForDoubleEscape(app: *App) bool {
-    // Use platform-agnostic stdin bytes available check
     const bytes_available = stdinBytesAvailable();
-
     if (bytes_available == 0) return false;
-
-    // Read the byte(s) available
     var buf: [16]u8 = undefined;
     const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return false;
     if (n == 0) return false;
-
-    // Check if it's an escape sequence or standalone ESC
     const first_byte = buf[0];
-
-    // If it's ESC (0x1b), check for double ESC
     if (first_byte == 0x1b) {
-        // Check if this is a bracketed paste sequence
         if (n >= 6 and std.mem.eql(u8, buf[0..6], "\x1b[200~")) {
-            // Start of bracketed paste - reset ESC tracking
             app.last_esc_time = null;
             return false;
         }
         if (n >= 6 and std.mem.eql(u8, buf[0..6], "\x1b[201~")) {
-            // End of bracketed paste - reset ESC tracking
             app.last_esc_time = null;
             return false;
         }
-
-        // Standalone ESC - check for double press
         const now = std.time.milliTimestamp();
         if (app.last_esc_time) |last| {
             if (now - last < DOUBLE_ESC_WINDOW_MS) {
-                // Double ESC detected!
                 app.last_esc_time = null;
                 return true;
             }
         }
-        // Record this ESC press
         app.last_esc_time = now;
         return false;
     }
-
     return false;
 }
 
-fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
-    var buffer = std.ArrayList(u8).empty;
-    errdefer buffer.deinit(app.allocator);
+// ─── Response streaming ──────────────────────────────────────────────────────
+
+fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
+    var raw_buffer = std.ArrayList(u8).empty;
+    errdefer raw_buffer.deinit(app.allocator);
+
     var buf: [4096]u8 = undefined;
     var spinner_timer: usize = 0;
     const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     var last_tick = std.time.milliTimestamp();
-
     var retry_count: usize = 0;
 
-    // Create socket for SSE stream
-    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try buffer.toOwnedSlice(app.allocator);
+    // Step 1: open SSE stream FIRST
+    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
-    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try buffer.toOwnedSlice(app.allocator);
+    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
 
-    // Send HTTP GET request for SSE
-    const request_str = try std.fmt.allocPrint(app.arena.allocator(),
-        "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n",
-        .{ app.session_id, HTTP_HOST, HTTP_PORT });
-    defer app.arena.allocator().free(request_str);
-    _ = try std.posix.write(stream_socket, request_str);
+    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, HTTP_PORT });
+    _ = try std.posix.write(stream_socket, stream_request);
 
-    // Read response headers first (simple approach - just start reading body)
-    // Set up poll for both stream socket and stdin
+    // Step 2: Wait for "connected" event BEFORE sending command
+    // This prevents race condition where command is processed before stream registration
+    if (!waitForSseConnected(stream_socket, 5000)) {
+        std.debug.print("{s}Warning: SSE connection timeout{s}\n", .{ yellow, reset });
+        // Fall through - still try to send command
+    }
+    try sendMessage(app, message);
+
+    // Step 3: poll and read
     var poll_fds = [2]std.posix.pollfd{
         .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
         .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
     };
 
     var stream_interrupted = false;
-    var thought: []const u8 = "";
     var displayed_tool_ids = std.ArrayList([]const u8).empty;
     defer {
         for (displayed_tool_ids.items) |id| app.allocator.free(id);
         displayed_tool_ids.deinit(app.allocator);
     }
+    var last_printed_chunk_index: usize = 0;
 
     while (true) {
         const ready = std.posix.poll(&poll_fds, 50) catch 0;
@@ -693,7 +549,6 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
                 if (checkStdinForDoubleEscape(app)) {
                     sendCancelCommand(app) catch {};
                     stream_interrupted = true;
-                    std.debug.print("stream interrupted\n", .{});
                     break;
                 }
                 poll_fds[1].revents = 0;
@@ -701,205 +556,218 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
 
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
                 const n = std.posix.read(stream_socket, &buf) catch break;
-                if (n == 0) {
-                    std.debug.print("stream closed\n", .{});
-                    break;
-                }
-                try buffer.appendSlice(app.allocator, buf[0..n]);
+                if (n == 0) break;
+                try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
+
+                // Try to display tool results immediately
+                if (decodeChunked(app.allocator, raw_buffer.items)) |decoded| {
+                    defer app.allocator.free(decoded);
+                    if (extractSseData(app.allocator, decoded)) |xml| {
+                        defer app.allocator.free(xml);
+
+                        // Print response chunks in realtime (only new ones)
+                        var chunk_pos: usize = 0;
+                        while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
+                            const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
+                            const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
+                            chunk_pos = chunk_end + "</chunk>".len;
+
+                            // Extract index from chunk tag: <chunk index="N">
+                            var chunk_index: usize = 0;
+                            if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
+                                const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
+                                const idx_str = chunk_block[idx_start + 7 .. idx_end];
+                                chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
+                            }
+
+                            // Only print if this is a new chunk
+                            if (chunk_index >= last_printed_chunk_index) {
+                                last_printed_chunk_index = chunk_index + 1;
+                                if (extractTag(chunk_block, "content")) |content| {
+                                    if (content.len > 0) {
+                                        std.debug.print("{s}", .{content});
+                                    }
+                                }
+                            }
+                        }
+
+                        // Display tool results in realtime
+                        if (extractToolResults(app.allocator, xml)) |tool_results_val| {
+                            var tool_results = tool_results_val;
+                            defer tool_results.deinit(app.allocator);
+
+                            for (tool_results.items) |result| {
+                                var already_displayed = false;
+                                for (displayed_tool_ids.items) |id| {
+                                    if (std.mem.eql(u8, id, result.id)) {
+                                        already_displayed = true;
+                                        break;
+                                    }
+                                }
+                                if (!already_displayed) {
+                                    const max_result_len: usize = 500;
+                                    if (std.mem.eql(u8, result.name, "bash")) {
+                                        displayBashResult(result.result, result.name, max_result_len);
+                                    } else if (std.mem.eql(u8, result.name, "search")) {
+                                        displaySearchResult(result.result, result.name, max_result_len);
+                                    } else if (std.mem.eql(u8, result.name, "read_file")) {
+                                        displayReadFileResult(result.result, result.name);
+                                    } else if (std.mem.eql(u8, result.name, "write_file")) {
+                                        displayWriteFileResult(result.result, result.name);
+                                    } else if (std.mem.eql(u8, result.name, "text_replace")) {
+                                        displayTextReplaceResult(result.result, result.name);
+                                    }
+                                    if (extractTag(result.result, "change_agent_tool")) |_| {
+                                        const agent_name = extractTag(result.result, "agent") orelse "unknown";
+                                        std.debug.print("\r\x1b[2K\n{s}[agent]{s} → {s}\n", .{ cyan, reset, agent_name });
+                                    }
+                                    const id_copy = app.allocator.dupe(u8, result.id) catch continue;
+                                    displayed_tool_ids.append(app.allocator, id_copy) catch {
+                                        app.allocator.free(id_copy);
+                                        continue;
+                                    };
+                                }
+                            }
+                        } else |_| {}
+                    } else |_| {}
+                } else |_| {}
+
+                // Check for finish_reason directly in raw buffer
+                if (std.mem.indexOf(u8, raw_buffer.items, "</finish_reason>") != null) {
+                    if (extractTag(raw_buffer.items, "finish_reason")) |fr| {
+                        if (std.mem.eql(u8, fr, "notification_error")) {
+                            retry_count += 1;
+                            continue;
+                        }
+                        if (std.mem.eql(u8, fr, "cancelled")) {
+                            std.debug.print("\n{s}Task cancelled{s}\n", .{ yellow, reset });
+                            break;
+                        }
+                        if (std.mem.eql(u8, fr, "user_choice")) {
+                            break;
+                        }
+                        if (std.mem.eql(u8, fr, "stop")) {
+                            break;
+                        }
+                    }
+                }
             }
 
-            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-                std.debug.print("stream error\n", .{});
-                break;
-            }
+            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         }
 
-        std.debug.print("tick {s}\n", .{buffer.items});
-
+        // Spinner tick every 100ms - only show before content starts
         const now = std.time.milliTimestamp();
-        if (now - last_tick >= 100) {
+        if (now - last_tick >= 100 and last_printed_chunk_index == 0) {
             last_tick = now;
             const spin = spinners[spinner_timer % spinners.len];
             spinner_timer += 1;
 
-            if (extractTag(buffer.items, "content")) |raw_content| {
-                var clean: [100]u8 = undefined;
-                var len: usize = 0;
-                for (raw_content) |ch| {
-                    if (len >= clean.len - 1) break;
-                    clean[len] = if (ch == '\n' or ch == '\r') ' ' else ch;
-                    len += 1;
-                }
-                const fr = clean[0..len];
-                const max_len: usize = 6;
-                thought = if (fr.len > max_len)
-                    try std.fmt.allocPrint(app.allocator, "{s}...", .{fr[0..max_len]})
-                else
-                    fr;
-            }
-
-            var tool_results = extractToolResults(app.allocator, buffer.items) catch continue;
-            defer tool_results.deinit(app.allocator);
-
-            for (tool_results.items) |result| {
-                var already_displayed = false;
-                for (displayed_tool_ids.items) |id| {
-                    if (std.mem.eql(u8, id, result.id)) {
-                        already_displayed = true;
-                    }
-                }
-
-                if (!already_displayed) {
-                    const max_result_len: usize = 500;
-                    const change_agent_tool = extractTag(result.result, "change_agent_tool");
-
-                    // Dispatch to tool-specific display
-                    if (std.mem.eql(u8, result.name, "bash")) {
-                        displayBashResult(result.result, result.name, max_result_len);
-                    } else if (std.mem.eql(u8, result.name, "search")) {
-                        displaySearchResult(result.result, result.name, max_result_len);
-                    } else if (std.mem.eql(u8, result.name, "read_file")) {
-                        displayReadFileResult(result.result, result.name);
-                    } else if (std.mem.eql(u8, result.name, "write_file")) {
-                        displayWriteFileResult(result.result, result.name);
-                    } else if (std.mem.eql(u8, result.name, "text_replace")) {
-                        displayTextReplaceResult(result.result, result.name);
-                    }
-
-                    if (change_agent_tool) |_| {
-                        const agent_name = extractTag(result.result, "agent") orelse "unknown";
-                        std.debug.print("\r\x1b[2K\n{s}[agent]{s} → {s}\n", .{ cyan, reset, agent_name });
-                    }
-
-                    const id_copy = app.allocator.dupe(u8, result.id) catch continue;
-                    displayed_tool_ids.append(app.allocator, id_copy) catch {
-                        app.allocator.free(id_copy);
-                        continue;
-                    };
-                }
-            }
-
-            std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes) Retry count: {d} thought: {s}", .{ yellow, spin, reset, buffer.items.len, retry_count, thought });
-        }
-
-        if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
-
-        if (extractTag(buffer.items, "finish_reason")) |fr| {
-            if (std.mem.eql(u8, fr, "user_choice")) {
-                std.debug.print("\n Your input \n", .{});
-                break;
-            }
-
-            if (std.mem.eql(u8, fr, "notification_error")) {
-                retry_count += 1;
-            }
-
-            if (std.mem.eql(u8, fr, "cancelled")) {
-                std.debug.print("\n{s}Task cancelled by user{s}\n", .{ yellow, reset });
-                break;
-            }
+            std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
+                yellow, spin, reset, raw_buffer.items.len,
+            });
         }
     }
 
-    // Clear spinner and print clean response
     std.debug.print("\r\x1b[2K", .{});
-
     if (stream_interrupted) {
-        std.debug.print("\n{s}Stream interrupted by user (double ESC){s}\n", .{ yellow, reset });
-    } else {
-        std.debug.print("\n", .{});
+        std.debug.print("\n{s}Interrupted (double ESC){s}\n", .{ yellow, reset });
     }
 
-    // Extract and display the valuable content
-    if (extractTag(buffer.items, "content")) |content| {
+    // Debug: show raw buffer
+    std.debug.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ dim, raw_buffer.items.len, reset });
+
+    // Final display - decode and extract content
+    const final_decoded = decodeChunked(app.allocator, raw_buffer.items) catch "";
+    defer app.allocator.free(final_decoded);
+
+    std.debug.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ dim, final_decoded.len, reset });
+
+    const final_xml = extractSseData(app.allocator, final_decoded) catch "";
+    defer app.allocator.free(final_xml);
+
+    std.debug.print("{s}[DEBUG] XML size: {d}{s}\n", .{ dim, final_xml.len, reset });
+    if (final_xml.len > 0) {
+        std.debug.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ dim, final_xml[0..@min(final_xml.len, 200)], reset });
+    }
+
+    // Display content
+    if (extractTag(final_xml, "content")) |content| {
         printFormattedResponse(content);
+    } else if (final_xml.len > 0) {
+        // Try to extract from response structure
+        if (extractTag(final_xml, "message")) |msg| {
+            printFormattedResponse(msg);
+        } else {
+            std.debug.print("{s}\n", .{final_xml});
+        }
     } else {
-        // Fallback: just print the raw buffer
-        std.debug.print("{s}", .{buffer.items});
+        std.debug.print("{s}(no response){s}\n", .{ dim, reset });
     }
 
     std.debug.print("\r\n", .{});
-    return try buffer.toOwnedSlice(app.allocator);
+    return try raw_buffer.toOwnedSlice(app.allocator);
 }
 
 fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
-    var buffer = std.ArrayList(u8).empty;
-    errdefer buffer.deinit(app.allocator);
+    var raw_buffer = std.ArrayList(u8).empty;
+    errdefer raw_buffer.deinit(app.allocator);
     var buf: [4096]u8 = undefined;
 
-    // Create socket for SSE stream
-    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try buffer.toOwnedSlice(app.allocator);
+    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
-    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try buffer.toOwnedSlice(app.allocator);
+    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
 
-    // Send HTTP GET request for SSE
-    const request_str = try std.fmt.allocPrint(app.arena.allocator(),
-        "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n",
-        .{ app.session_id, HTTP_HOST, HTTP_PORT });
-    defer app.arena.allocator().free(request_str);
-    _ = try std.posix.write(stream_socket, request_str);
+    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, HTTP_PORT });
+    _ = try std.posix.write(stream_socket, stream_request);
 
-    // Set up poll for both stream socket and stdin
+    // Wait for "connected" event BEFORE sending command
+    if (!waitForSseConnected(stream_socket, 5000)) {
+        std.debug.print("{s}Warning: SSE connection timeout{s}\n", .{ yellow, reset });
+    }
+    try sendSessionsCommand(app);
+
     var poll_fds = [2]std.posix.pollfd{
         .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
         .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
     };
 
-    var stream_interrupted = false;
-
     while (true) {
-        // Poll with 50ms timeout to allow checking for ESC
         const ready = std.posix.poll(&poll_fds, 50) catch 0;
-
         if (ready > 0) {
-            // Check stdin first for double ESC
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
-                if (checkStdinForDoubleEscape(app)) {
-                    stream_interrupted = true;
-                    break;
-                }
                 poll_fds[1].revents = 0;
             }
-
-            // Then check socket for data
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
                 const n = std.posix.read(stream_socket, &buf) catch break;
                 if (n == 0) break;
-                try buffer.appendSlice(app.allocator, buf[0..n]);
+                try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
             }
-
-            // Check for socket hangup or error
-            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-                break;
-            }
+            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         }
 
-        if (std.mem.indexOf(u8, buffer.items, "</finish_reason>") == null) continue;
+        const decoded = decodeChunked(app.allocator, raw_buffer.items) catch continue;
+        defer app.allocator.free(decoded);
+        const xml = extractSseData(app.allocator, decoded) catch continue;
 
-        if (extractTag(buffer.items, "finish_reason")) |fr| {
-            if (std.mem.eql(u8, fr, "user_choice")) {
-                std.debug.print("\n Your input \n", .{});
-                break;
-            }
-        }
+        std.debug.print("\r\nXML len={d}: {s}\r\nEND_XML\r\n", .{ xml.len, xml[0..@min(xml.len, 200)] });
+        defer app.allocator.free(xml);
+        if (std.mem.indexOf(u8, xml, "</finish_reason>") != null) break;
     }
 
-    // Clear spinner and print clean response
-    std.debug.print("\r\x1b[2K", .{});
+    std.debug.print("\r\x1b[2K\n", .{});
 
-    if (stream_interrupted) {
-        std.debug.print("\n{s}Stream interrupted by user (double ESC){s}\n", .{ yellow, reset });
-    } else {
-        std.debug.print("\n", .{});
-    }
+    const final_decoded = decodeChunked(app.allocator, raw_buffer.items) catch "";
+    defer app.allocator.free(final_decoded);
+    const final_xml = extractSseData(app.allocator, final_decoded) catch "";
+    defer app.allocator.free(final_xml);
 
-    if (extractTag(buffer.items, "sessions")) |md| {
+    if (extractTag(final_xml, "sessions")) |md| {
         const trimmed = trim(md);
-        std.debug.print("> /sessions\n Your input\n\n", .{});
         std.debug.print("{s}Session ID           Directory                        Created{s}\n", .{ bold, reset });
         std.debug.print("─────────────────────────────────────────────────────────────────────\n", .{});
         var rest = trimmed;
@@ -913,8 +781,9 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
         }
     }
 
-    return try buffer.toOwnedSlice(app.allocator);
+    return try raw_buffer.toOwnedSlice(app.allocator);
 }
+
 // ─── Input handling ──────────────────────────────────────────────────────────
 
 pub const KEYBINDING = enum(u8) {
@@ -940,37 +809,25 @@ fn readEscapeSequence(buf: *[16]u8) !usize {
 
 fn clearCompletions(app: *App) void {
     if (app.state.last_match_count == 0) return;
-
-    // Move down to the first completion line, clear each line
     var i: usize = 0;
     while (i < app.state.last_match_count) : (i += 1) {
-        std.debug.print("\x1b[1B", .{}); // move down one line
-        std.debug.print("\x1b[2K", .{}); // clear the line
+        std.debug.print("\x1b[1B", .{});
+        std.debug.print("\x1b[2K", .{});
     }
-
-    // Move back up to original position
     std.debug.print("\x1b[{}A", .{app.state.last_match_count});
-
-    // Reset state
     app.state.visible = false;
     app.state.last_match_count = 0;
 }
 
 fn handleCompletion(app: *App) !bool {
     const input = app.input.items;
-
-    // If completions are visible, cycle through matches
     if (app.state.visible and app.state.matches.items.len > 0) {
         app.state.selected = (app.state.selected + 1) % app.state.matches.items.len;
         renderCompletions(app);
         return true;
     }
-
-    // Clear any previous matches
     app.state.matches.clearRetainingCapacity();
     app.state.selected = 0;
-
-    // Only complete if input is empty or starts with '/'
     if (input.len == 0 or input[0] == '/') {
         for (COMMANDS) |cmd| {
             if (std.mem.startsWith(u8, cmd, input)) {
@@ -978,57 +835,39 @@ fn handleCompletion(app: *App) !bool {
             }
         }
     }
-
-    if (app.state.matches.items.len == 0) {
-        // No matches, nothing to do
-        return true;
-    }
-
+    if (app.state.matches.items.len == 0) return true;
     if (app.state.matches.items.len == 1) {
-        // Single match — auto-complete immediately
         app.input.clearRetainingCapacity();
         try app.input.appendSlice(app.allocator, app.state.matches.items[0]);
         app.state.visible = false;
         app.state.last_match_count = 0;
         std.debug.print("\r\x1b[2K{s}>{s} {s}", .{ bold, reset, app.input.items });
     } else {
-        // Multiple matches — display them
         app.state.visible = true;
         renderCompletions(app);
     }
-
     return true;
 }
 
 fn renderCompletions(app: *App) void {
-    // Clear any previous completions first
     if (app.state.last_match_count > 0) {
         var i: usize = 0;
         while (i < app.state.last_match_count) : (i += 1) {
-            std.debug.print("\x1b[1B", .{}); // move down one line
-            std.debug.print("\x1b[2K", .{}); // clear the line
+            std.debug.print("\x1b[1B", .{});
+            std.debug.print("\x1b[2K", .{});
         }
-        std.debug.print("\x1b[{}A", .{app.state.last_match_count}); // move back up
+        std.debug.print("\x1b[{}A", .{app.state.last_match_count});
     }
-
-    // Save cursor position
     std.debug.print("\x1b[s", .{});
-
-    // Print completions below the prompt
     for (app.state.matches.items, 0..) |cmd, i| {
-        std.debug.print("\x1b[1E", .{}); // move to beginning of next line
+        std.debug.print("\x1b[1E", .{});
         if (i == app.state.selected) {
-            // Highlighted row
             std.debug.print("  \x1b[7m {s} \x1b[0m", .{cmd});
         } else {
             std.debug.print("    {s}", .{cmd});
         }
     }
-
-    // Track how many lines we printed
     app.state.last_match_count = app.state.matches.items.len;
-
-    // Restore cursor position
     std.debug.print("\x1b[u", .{});
 }
 
@@ -1041,7 +880,7 @@ fn handleInput(app: *App) !bool {
     }
     const c = buf[0];
 
-    if (c == @intFromEnum(KEYBINDING.CTRL_C)) return true; // signal exit
+    if (c == @intFromEnum(KEYBINDING.CTRL_C)) return true;
 
     if (c == 0x1b) {
         clearCompletions(app);
@@ -1060,31 +899,23 @@ fn handleInput(app: *App) !bool {
     } else if (c == '\t') {
         _ = try handleCompletion(app);
     } else if (c == @intFromEnum(KEYBINDING.ENTER) or c == 10) {
-        // const arena_allocator = std.heap.ArenaAllocator.init(app.allocator);
-        // defer arena_allocator.deinit();
         if (app.pasting) {
             try app.input.append(app.allocator, '\n');
             std.debug.print("\r\n", .{});
         } else {
             if (app.input.items.len > 0) {
-                // Check for /sessions command
                 if (std.mem.eql(u8, app.input.items, "/sessions")) {
                     std.debug.print("\r\n", .{});
-                    try sendSessionsCommand(app);
                     const response = readResponseAndStreamGetSessions(app) catch "";
                     if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
                     app.input.clearRetainingCapacity();
                     std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
                     return false;
                 }
-
-                if (std.mem.eql(u8, app.input.items, "/exit")) {
-                    return true;
-                }
+                if (std.mem.eql(u8, app.input.items, "/exit")) return true;
 
                 std.debug.print("\r\n\r\n", .{});
-                try sendMessage(app, app.input.items);
-                const response = readResponseAndStreamRunLLM(app) catch "";
+                const response = readResponseAndStreamRunLLM(app, app.input.items) catch "";
                 if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
                 app.input.clearRetainingCapacity();
             }
@@ -1106,10 +937,8 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     var arena_allocator = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena_allocator.deinit();
-
     const allocator = arena_allocator.allocator();
 
-    // Parse command-line arguments for --verbose
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
@@ -1118,11 +947,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
             verbose = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            std.debug.print("zigginagentic-tui - Terminal UI for AI agent\n\n", .{});
-            std.debug.print("Usage: zigginagentic-tui [options]\n\n", .{});
-            std.debug.print("Options:\n", .{});
-            std.debug.print("  -v, --verbose    Show backend debug output\n", .{});
-            std.debug.print("  -h, --help       Show this help message\n", .{});
+            std.debug.print("zigginagentic-tui - Terminal UI for AI agent\n\nUsage: zigginagentic-tui [options]\n\nOptions:\n  -v, --verbose    Show backend debug output\n  -h, --help       Show this help message\n", .{});
             return;
         }
     }
@@ -1130,12 +955,9 @@ pub fn main() !void {
     var app = try App.init(allocator, verbose);
     defer app.deinit();
 
-    // std.debug.print("{s}Connected!{s}\r\n", .{ green, reset });
     std.debug.print("Type message and press Enter. Ctrl+C to exit.\r\n\r\n", .{});
-
-    std.debug.print("\x1b[?2004h", .{}); // enable bracketed paste
+    std.debug.print("\x1b[?2004h", .{});
     defer std.debug.print("\x1b[?2004l", .{});
-
     std.debug.print("{s}>{s} ", .{ bold, reset });
 
     while (true) {

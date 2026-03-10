@@ -16,11 +16,11 @@ test "send_error with valid inputs" {
     });
     defer logger.deinit();
     
-    // Test with invalid fd (should return early without error)
-    send_error.run(allocator, -1, &logger, "Test error message", "stop");
+    // Test with invalid session_id (should return early without error)
+    send_error.run(allocator, "invalid-session", &logger, "Test error message", "stop");
     
     // Test with null finish reason
-    send_error.run(allocator, -1, &logger, "Another error", null);
+    send_error.run(allocator, "invalid-session", &logger, "Another error", null);
 }
 
 test "send_tool_result" {
@@ -33,10 +33,10 @@ test "send_tool_result" {
     });
     defer logger.deinit();
     
-    send_tool_result.run(allocator, -1, &logger, "Command output", "call_123", "bash", "ls -la");
+    send_tool_result.run(allocator, "invalid-session", &logger, "Command output", "call_123", "bash", "ls -la");
     
     // Test without command
-    send_tool_result.run(allocator, -1, &logger, "Output", "call_456", "list_skills", null);
+    send_tool_result.run(allocator, "invalid-session", &logger, "Output", "call_456", "list_skills", null);
 }
 
 test "send_user_choice" {
@@ -49,5 +49,5 @@ test "send_user_choice" {
     });
     defer logger.deinit();
     
-    try send_user_choice.run(allocator, -1, &logger);
+    try send_user_choice.run(allocator, "invalid-session", &logger);
 }

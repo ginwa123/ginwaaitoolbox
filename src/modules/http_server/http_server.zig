@@ -24,7 +24,7 @@ pub const SseEvent = struct {
         errdefer result.deinit(allocator);
 
         try result.writer(allocator).print("event: {s}\n", .{self.event_type});
-        
+
         // Split data by newlines and prefix each with "data: "
         var iter = std.mem.splitScalar(u8, self.data, '\n');
         while (iter.next()) |line| {
@@ -37,17 +37,19 @@ pub const SseEvent = struct {
 };
 
 /// Thread-safe manager for SSE connections
+/// Thread-safe manager for SSE connections using direct stream writing
 pub const SseConnectionManager = struct {
     const Self = @This();
-    
+
     allocator: std.mem.Allocator,
-    connections: std.StringHashMap(*std.ArrayList(u8)),
+    /// Map from session_id to stream - stream is owned by httpz's startEventStream
+    connections: std.StringHashMap(std.net.Stream),
     mutex: std.Thread.Mutex,
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .connections = std.StringHashMap(*std.ArrayList(u8)).init(allocator),
+            .connections = std.StringHashMap(std.net.Stream).init(allocator),
             .mutex = .{},
         };
     }
@@ -56,65 +58,59 @@ pub const SseConnectionManager = struct {
         var iter = self.connections.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            entry.value_ptr.*.deinit(self.allocator);
-            self.allocator.destroy(entry.value_ptr.*);
+            // Note: we don't close the stream here - httpz manages that
         }
         self.connections.deinit();
     }
 
-    pub fn register(self: *Self, session_id: []const u8, writer: *std.ArrayList(u8)) !void {
+    /// Register a new SSE connection
+    pub fn register(self: *Self, session_id: []const u8, stream: std.net.Stream) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         const key = try self.allocator.dupe(u8, session_id);
-        
-        // Create a new buffer for this connection
-        const buf = try self.allocator.create(std.ArrayList(u8));
-        buf.* = std.ArrayList(u8).empty;
-        
-        // Copy initial content if any
-        if (writer.items.len > 0) {
-            try buf.appendSlice(self.allocator, writer.items);
-        }
-        
-        try self.connections.put(key, buf);
+        errdefer self.allocator.free(key);
+
+        try self.connections.put(key, stream);
+        std.log.info("SSE registered: session_id={s}", .{session_id});
     }
 
-    pub fn get(self: *Self, session_id: []const u8) ?*std.ArrayList(u8) {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.connections.get(session_id);
-    }
-
+    /// Remove a connection (called when client disconnects)
     pub fn remove(self: *Self, session_id: []const u8) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        
+
         if (self.connections.fetchRemove(session_id)) |entry| {
             self.allocator.free(entry.key);
-            entry.value.deinit(self.allocator);
-            self.allocator.destroy(entry.value);
+            std.log.info("SSE removed: session_id={s}", .{session_id});
         }
     }
 
+    /// Send an event to a specific session
     pub fn sendEvent(self: *Self, session_id: []const u8, event: SseEvent, allocator: std.mem.Allocator) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         std.log.info("SSE sendEvent: session_id={s}, event_type={s}, connections_count={d}", .{ session_id, event.event_type, self.connections.count() });
-        
-        const writer = self.connections.get(session_id) orelse {
+
+        const stream = self.connections.get(session_id) orelse {
             std.log.err("SSE sendEvent: session not found: {s}", .{session_id});
             return error.SessionNotFound;
         };
-        
+
         const formatted = try event.format(allocator);
         defer allocator.free(formatted);
-        
-        try writer.appendSlice(allocator, formatted);
+
+        // Write directly to stream - this is the key fix
+        stream.writeAll(formatted) catch |err| {
+            std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(err)});
+            return error.WriteFailed;
+        };
+
         std.log.info("SSE sendEvent: SUCCESS, session_id={s}, bytes_written={d}", .{session_id, formatted.len});
     }
 
+    /// Check if a session exists
     pub fn hasSession(self: *Self, session_id: []const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -174,10 +170,10 @@ pub const HttpServer = struct {
         std.log.info("HTTP server listening on http://127.0.0.1:{d}/", .{self.port});
 
         var router = try server.router(.{});
-        
+
         // Command endpoint
         router.post("/api/command", commandHandler, .{});
-        
+
         // SSE stream endpoint
         router.get("/api/stream/:session_id", streamHandler, .{});
 
@@ -187,7 +183,7 @@ pub const HttpServer = struct {
 
 fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const body = req.body() orelse "";
-    
+
     if (global_server) |server| {
         if (server.message_handler) |msg_handler| {
             var arena = std.heap.ArenaAllocator.init(server.allocator);
@@ -200,76 +196,85 @@ fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.body = "ok";
 }
 
+/// Context for SSE stream handler
+const SseStreamCtx = struct {
+    server: *HttpServer,
+    session_id: []const u8,
+};
+
+/// SSE stream handler - called by httpz on a dedicated thread
+fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
+    std.log.info("SSE stream handler started: session_id={s}", .{ctx.session_id});
+
+    // Register this connection with the stream
+    ctx.server.sse_manager.register(ctx.session_id, stream) catch {
+        std.log.err("SSE: Failed to register stream for session: {s}", .{ctx.session_id});
+        return;
+    };
+
+    // Send initial connected event directly
+    const connected_data = std.fmt.allocPrint(ctx.server.allocator, "event: connected\ndata: {{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id}) catch {
+        std.log.err("SSE: Failed to format connected event", .{});
+        ctx.server.sse_manager.remove(ctx.session_id);
+        return;
+    };
+    defer ctx.server.allocator.free(connected_data);
+
+    stream.writeAll(connected_data) catch |err| {
+        std.log.err("SSE: Failed to write connected event: {s}", .{@errorName(err)});
+        ctx.server.sse_manager.remove(ctx.session_id);
+        return;
+    };
+
+    std.log.info("SSE: Connected event sent for session: {s}", .{ctx.session_id});
+
+    // Keep connection alive with periodic keepalives
+    // The actual events are sent via sendEvent which writes directly to the stream
+    while (ctx.server.sse_manager.hasSession(ctx.session_id)) {
+        // Send keepalive comment every 30 seconds to prevent timeouts
+        stream.writeAll(": keepalive\n\n") catch |err| {
+            std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
+            break;
+        };
+
+        // Check every 100ms if session still exists
+        var i: usize = 0;
+        while (i < 300 and ctx.server.sse_manager.hasSession(ctx.session_id)) : (i += 1) {
+            std.Thread.sleep(100_000_000); // 100ms
+        }
+    }
+
+    std.log.info("SSE stream handler ending: session_id={s}", .{ctx.session_id});
+    ctx.server.sse_manager.remove(ctx.session_id);
+    // Free the session_id that was allocated in streamHandler
+    ctx.server.allocator.free(ctx.session_id);
+}
+
 fn streamHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const session_id = req.param("session_id");
-    
-    if (session_id == null) {
+    const session_id_param = req.param("session_id");
+
+    if (session_id_param == null) {
         res.status = 400;
         res.body = "Missing session_id";
         return;
     }
 
     if (global_server) |server| {
-        std.log.info("SSE STREAM CONNECTED: session_id={s}", .{session_id.?});
+        const session_id = session_id_param.?;
+        std.log.info("SSE STREAM CONNECTED: session_id={s}", .{session_id});
 
-        // Set SSE headers
-        res.status = 200;
-        res.content_type = .EVENTS;
-        res.header("Cache-Control", "no-cache");
-        res.header("Connection", "keep-alive");
-        res.header("Access-Control-Allow-Origin", "*");
+        // Duplicate session_id for the context (it must outlive this function)
+        const session_id_copy = try server.allocator.dupe(u8, session_id);
+        errdefer server.allocator.free(session_id_copy);
 
-        // Create a buffer to capture SSE events for this session
-        var buf = std.ArrayList(u8).empty;
-        defer buf.deinit(server.allocator);
-        
-        // Register this connection
-        server.sse_manager.register(session_id.?, &buf) catch {
-            res.status = 500;
-            res.body = "Failed to register session";
-            return;
+        const ctx = SseStreamCtx{
+            .server = server,
+            .session_id = session_id_copy,
         };
 
-        // Send initial connected event
-        const connected_event = SseEvent{
-            .event_type = "connected",
-            .data = try std.fmt.allocPrint(server.allocator, "{{\"session_id\":\"{s}\"}}", .{session_id.?}),
-        };
-        defer server.allocator.free(connected_event.data);
-        
-        try server.sse_manager.sendEvent(session_id.?, connected_event, server.allocator);
-        std.log.info("SSE: Connected event sent for session: {s}", .{session_id.?});
-
-        // Send initial event to client
-        try res.chunk(buf.items);
-        std.log.info("SSE: Initial chunk sent, buf len: {}", .{buf.items.len});
-        buf.clearRetainingCapacity();
-
-        // Keep connection open and stream events
-        // Poll buffer for new events every 100ms
-        var last_len: usize = 0;
-        while (true) {
-            std.Thread.sleep(100_000_000); // 100ms
-
-            // Check if new data in buffer
-            if (buf.items.len > last_len) {
-                try res.chunk(buf.items[last_len..]);
-                buf.clearRetainingCapacity();
-                last_len = 0;
-            } else {
-                // Send keepalive comment to prevent timeout
-                try res.chunk(": keepalive\n\n");
-            }
-
-            // Check if session still exists (removed = client disconnected)
-            if (!server.sse_manager.hasSession(session_id.?)) {
-                std.log.info("SSE client disconnected for session: {s}", .{session_id.?});
-                break;
-            }
-        }
-        
-        // Cleanup
-        server.sse_manager.remove(session_id.?);
+        // startEventStream sets SSE headers and spawns a thread calling sseStreamHandler
+        // Note: session_id_copy is now owned by the spawned thread and will be freed in sseStreamHandler
+        try res.startEventStream(ctx, sseStreamHandler);
     } else {
         res.status = 500;
         res.body = "Server not available";
@@ -282,24 +287,24 @@ pub fn parseCommand(allocator: std.mem.Allocator, json: []const u8) !Command {
 
     const root = parsed.value.object;
 
-    const command_type = if (root.get("command_type")) |v| 
-        try allocator.dupe(u8, v.string) 
-    else 
+    const command_type = if (root.get("command_type")) |v|
+        try allocator.dupe(u8, v.string)
+    else
         try allocator.dupe(u8, "");
 
-    const session_id = if (root.get("session_id")) |v| 
-        try allocator.dupe(u8, v.string) 
-    else 
+    const session_id = if (root.get("session_id")) |v|
+        try allocator.dupe(u8, v.string)
+    else
         try allocator.dupe(u8, "");
 
-    const content = if (root.get("content")) |v| 
-        try allocator.dupe(u8, v.string) 
-    else 
+    const content = if (root.get("content")) |v|
+        try allocator.dupe(u8, v.string)
+    else
         try allocator.dupe(u8, "");
 
-    const cwd_session = if (root.get("cwd_session")) |v| 
-        try allocator.dupe(u8, v.string) 
-    else 
+    const cwd_session = if (root.get("cwd_session")) |v|
+        try allocator.dupe(u8, v.string)
+    else
         try allocator.dupe(u8, "");
 
     return Command{

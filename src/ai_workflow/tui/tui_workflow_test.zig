@@ -59,7 +59,6 @@ test "isCancelledWithContext correctly interprets StreamingContext" {
     var stream_ctx = StreamingContext{
         .allocator = allocator,
         .workflow = &dummy_workflow,
-        .conn_fd = -1,
         .chunk_index = 0,
         .session_id = "test-session-123",
     };
@@ -85,7 +84,6 @@ test "isCancelledWithContext returns false when no global registry" {
     var stream_ctx = StreamingContext{
         .allocator = allocator,
         .workflow = &dummy_workflow,
-        .conn_fd = -1,
         .chunk_index = 0,
         .session_id = "no-registry-session",
     };
@@ -115,14 +113,12 @@ test "isCancelledWithContext isolates different sessions" {
     var ctx_a = StreamingContext{
         .allocator = allocator,
         .workflow = &dummy_workflow,
-        .conn_fd = -1,
         .chunk_index = 0,
         .session_id = "session-a",
     };
     var ctx_b = StreamingContext{
         .allocator = allocator,
         .workflow = &dummy_workflow,
-        .conn_fd = -1,
         .chunk_index = 0,
         .session_id = "session-b",
     };
