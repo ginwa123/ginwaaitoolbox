@@ -117,14 +117,54 @@ fn disableRawMode(original: std.posix.termios) void {
 fn spawnBackend(_: bool) !void {
     const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/zigginagentic");
     defer std.heap.page_allocator.free(backend_path);
-    var child = std.process.Child.init(&.{backend_path}, std.heap.page_allocator);
-    child.stdout_behavior = .Close;
-    child.stderr_behavior = .Close;
-    child.spawn() catch |err| {
-        std.debug.print("{s}Warning: failed to spawn backend: {s}{s}\n", .{ yellow, @errorName(err), reset });
+
+    // First fork - create child process
+    const pid1 = std.posix.fork() catch |err| {
+        std.debug.print("{s}Warning: failed to fork: {s}{s}\n", .{ yellow, @errorName(err), reset });
         return;
     };
-    std.debug.print("{s}Backend started in background{s}\n", .{ green, reset });
+
+    if (pid1 > 0) {
+        // Parent process: wait for first child to exit (it will exit immediately after second fork)
+        _ = std.posix.waitpid(pid1, 0);
+        std.debug.print("{s}Backend started in background{s}\n", .{ green, reset });
+        return;
+    }
+
+    // First child process: create new session and detach from terminal
+    _ = std.posix.setsid() catch |err| {
+        std.debug.print("{s}Warning: failed to setsid: {s}{s}\n", .{ yellow, @errorName(err), reset });
+        std.posix.exit(1);
+    };
+
+    // Ignore SIGHUP to survive terminal disconnect
+    var sa: std.posix.Sigaction = undefined;
+    sa.handler = .{ .handler = std.posix.SIG.IGN };
+    sa.mask = std.posix.sigemptyset();
+    sa.flags = 0;
+    std.posix.sigaction(std.posix.SIG.HUP, &sa, null);
+
+    // Second fork - prevent reacquiring controlling terminal
+    const pid2 = std.posix.fork() catch |err| {
+        std.debug.print("{s}Warning: failed to second fork: {s}{s}\n", .{ yellow, @errorName(err), reset });
+        std.posix.exit(1);
+    };
+
+    if (pid2 > 0) {
+        // First child exits, leaving grandchild to be reparented to init
+        std.posix.exit(0);
+    }
+
+    // Grandchild (daemon) process: exec the backend
+    // Need to create a null-terminated copy of the path for execveZ
+    const path_z = std.heap.page_allocator.dupeZ(u8, backend_path) catch {
+        std.posix.exit(1);
+    };
+    const argv = [_:null]?[*:0]const u8{ path_z.ptr, null };
+    const envp = [_:null]?[*:0]const u8{null};
+    std.posix.execveZ(path_z.ptr, &argv, &envp) catch {
+        std.posix.exit(1);
+    };
 }
 
 fn waitForHttpServer(timeout_ms: u64) !void {
