@@ -43,6 +43,101 @@ pub const ClientInfo = struct {
 pub const ServerCapabilities = struct {
     tools: ?ToolsCapability = null,
     resources: ?ResourcesCapability = null,
+    prompts: ?PromptsCapability = null,
+    completions: ?CompletionsCapability = null,
+    logging: ?LoggingCapability = null,
+};
+
+pub const PromptsCapability = struct {
+    listChanged: bool = false,
+};
+
+pub const CompletionsCapability = struct {};
+
+pub const LoggingCapability = struct {};
+
+/// MCP Prompt definition
+pub const Prompt = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    arguments: ?[]const PromptArgument = null,
+};
+
+pub const PromptArgument = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    required: ?bool = null,
+};
+
+/// MCP Prompts list result
+pub const ListPromptsResult = struct {
+    prompts: []const Prompt,
+};
+
+/// MCP Get prompt params
+pub const GetPromptParams = struct {
+    name: []const u8,
+    arguments: ?std.json.Value = null,
+};
+
+/// MCP Get prompt result
+pub const GetPromptResult = struct {
+    description: ?[]const u8 = null,
+    messages: []const PromptMessage,
+};
+
+pub const PromptMessage = struct {
+    role: []const u8,
+    content: PromptContent,
+};
+
+pub const PromptContent = union(enum) {
+    text: []const u8,
+    image: ImageContent,
+    resource: ResourceContent,
+};
+
+pub const ImageContent = struct {
+    data: []const u8,
+    mimeType: []const u8,
+};
+
+pub const ResourceContent = struct {
+    uri: []const u8,
+    mimeType: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+};
+
+/// MCP Completion params
+pub const CompleteParams = struct {
+    ref: CompletionReference,
+    argument: CompletionArgument,
+};
+
+pub const CompletionReference = union(enum) {
+    type: []const u8,
+    name: []const u8,
+};
+
+pub const CompletionArgument = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+/// MCP Completion result
+pub const CompleteResult = struct {
+    completion: Completion,
+};
+
+pub const Completion = struct {
+    values: []const []const u8,
+    total: ?i32 = null,
+    hasMore: ?bool = null,
+};
+
+/// MCP Set level params
+pub const SetLevelParams = struct {
+    level: []const u8,
 };
 
 pub const ToolsCapability = struct {

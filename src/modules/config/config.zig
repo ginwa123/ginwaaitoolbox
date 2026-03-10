@@ -9,6 +9,7 @@ pub const LlmConfig = struct {
     model: []const u8,
     base_url: []const u8,
     model_compaction_size_kb: usize,
+    mcpServers: ?std.json.Value,
 
     /// Errors that can occur during config loading
     pub const LoadError = error{
@@ -27,6 +28,7 @@ pub const LlmConfig = struct {
         model: []const u8 = "",
         base_url: []const u8 = "",
         model_compaction_size_kb: usize = 100,
+        mcpServers: ?std.json.Value = null,
     };
 
     /// Load config from JSON file
@@ -63,13 +65,43 @@ pub const LlmConfig = struct {
         const config_json = parsed.value;
 
         // Build LlmConfig with owned strings
-        return LlmConfig{
+        var config = LlmConfig{
             .allocator = allocator,
             .api_key = try allocator.dupe(u8, config_json.api_key),
             .model = try allocator.dupe(u8, config_json.model),
             .base_url = try allocator.dupe(u8, config_json.base_url),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
+            .mcpServers = null,
         };
+
+        // Clone mcpServers if present
+        if (config_json.mcpServers) |mcp| {
+            // Re-serialize and re-parse to get an owned copy
+            var mcp_str: std.ArrayList(u8) = .empty;
+            defer mcp_str.deinit(allocator);
+            
+            // Use std.json.fmt for serialization
+            var aw: std.io.Writer.Allocating = .init(allocator);
+            aw.writer.print("{f}", .{std.json.fmt(mcp, .{})}) catch |err| {
+                std.log.err("Failed to serialize mcpServers: {s}", .{@errorName(err)});
+                return error.ConfigFileReadError;
+            };
+            const mcp_str_owned = aw.toOwnedSlice() catch |err| {
+                std.log.err("Failed to get owned slice: {s}", .{@errorName(err)});
+                return error.OutOfMemory;
+            };
+            defer allocator.free(mcp_str_owned);
+            
+            const reparsed = json.parseFromSlice(json.Value, allocator, mcp_str_owned, .{
+                .ignore_unknown_fields = true,
+            }) catch |err| {
+                std.log.err("Failed to parse mcpServers: {s}", .{@errorName(err)});
+                return error.InvalidJson;
+            };
+            config.mcpServers = reparsed.value;
+        }
+
+        return config;
     }
 
     /// Free all allocated memory
@@ -77,6 +109,8 @@ pub const LlmConfig = struct {
         self.allocator.free(self.api_key);
         self.allocator.free(self.model);
         self.allocator.free(self.base_url);
+        // mcpServers is owned by the parser that created it, no explicit deinit needed
+        // The memory will be freed when the arena is reset
     }
 
     /// Validate required fields are present

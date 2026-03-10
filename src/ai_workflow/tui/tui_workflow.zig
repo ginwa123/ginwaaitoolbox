@@ -43,6 +43,7 @@ const handle_content_filter = @import("handle_content_filter.zig");
 const build_skill_content_mod = @import("build_skill_content.zig");
 const save_skill_mod = @import("save_skill.zig");
 const send_skill_mod = @import("send_skill.zig");
+const build_mcp_tools = @import("build_messages_tools_mcp_for_agent.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
@@ -261,12 +262,25 @@ pub const TUIWorkflow = struct {
         base_url: []const u8,
         session_id: []const u8,
     ) !agent.CallResponse {
-        const tools: []const tool_models.AgentTool = &.{
+        // Fetch MCP tools from configured servers
+        const mcp_tools = build_mcp_tools.run(allocator) catch |err| blk: {
+            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
+            break :blk &[_]tool_models.AgentTool{};
+        };
+        // Note: mcp_tools memory is managed by the arena allocator
+
+        const base_tools: []const tool_models.AgentTool = &.{
             bash_tool.bashTool,                read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool, remove_skill_tool.removeSkillTool,
 
             // write_file_tool.writeFileTool,
             text_replace_tool.textReplaceTool, search_tool.searchTool,
         };
+
+        // Merge base tools with MCP tools
+        var all_tools: std.ArrayList(tool_models.AgentTool) = .empty;
+        try all_tools.appendSlice(allocator, base_tools);
+        try all_tools.appendSlice(allocator, mcp_tools);
+        const tools = try all_tools.toOwnedSlice(allocator);
 
         var dynamic_agent = try agent.Agent.init(allocator, self.logger);
         dynamic_agent.apiKey = api_key;

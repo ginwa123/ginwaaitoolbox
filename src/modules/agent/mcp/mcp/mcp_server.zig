@@ -266,6 +266,10 @@ pub const McpServer = struct {
         // Handle methods
         if (std.mem.eql(u8, method_str, "initialize")) {
             try self.handleInitialize(id, obj.get("params"));
+        } else if (std.mem.eql(u8, method_str, "initialized")) {
+            // Notification: client confirms initialization complete, no response
+        } else if (std.mem.eql(u8, method_str, "ping")) {
+            try self.handlePing(id);
         } else if (std.mem.eql(u8, method_str, "tools/list")) {
             try self.handleToolsList(id);
         } else if (std.mem.eql(u8, method_str, "tools/call")) {
@@ -274,6 +278,18 @@ pub const McpServer = struct {
             try self.handleResourcesList(id);
         } else if (std.mem.eql(u8, method_str, "resources/read")) {
             try self.handleResourcesRead(id, obj.get("params"));
+        } else if (std.mem.eql(u8, method_str, "resources/subscribe")) {
+            try self.handleResourcesSubscribe(id, obj.get("params"));
+        } else if (std.mem.eql(u8, method_str, "resources/unsubscribe")) {
+            try self.handleResourcesUnsubscribe(id, obj.get("params"));
+        } else if (std.mem.eql(u8, method_str, "prompts/list")) {
+            try self.handlePromptsList(id);
+        } else if (std.mem.eql(u8, method_str, "prompts/get")) {
+            try self.handlePromptsGet(id, obj.get("params"));
+        } else if (std.mem.eql(u8, method_str, "completion/complete")) {
+            try self.handleCompletionComplete(id, obj.get("params"));
+        } else if (std.mem.eql(u8, method_str, "logging/setLevel")) {
+            try self.handleLoggingSetLevel(id, obj.get("params"));
         } else if (std.mem.startsWith(u8, method_str, "notifications/")) {
             // Notifications don't get responses
         } else {
@@ -300,6 +316,9 @@ pub const McpServer = struct {
             .capabilities = .{
                 .tools = .{ .listChanged = false },
                 .resources = null,
+                .prompts = .{ .listChanged = false },
+                .completions = .{},
+                .logging = .{},
             },
             .serverInfo = .{
                 .name = "nalarcore-mcp",
@@ -380,6 +399,113 @@ pub const McpServer = struct {
             .contents = &.{},
         };
         try self.sendResponse(id, result);
+    }
+
+    fn handlePing(self: *Self, id: ?json.Value) !void {
+        // Ping returns an empty result object
+        const EmptyResult = struct {};
+        try self.sendResponse(id, EmptyResult{});
+    }
+
+    fn handleResourcesSubscribe(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+        _ = params;
+        // Acknowledge subscription (actual subscription tracking not implemented)
+        const EmptyResult = struct {};
+        try self.sendResponse(id, EmptyResult{});
+    }
+
+    fn handleResourcesUnsubscribe(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+        _ = params;
+        // Acknowledge unsubscription (actual subscription tracking not implemented)
+        const EmptyResult = struct {};
+        try self.sendResponse(id, EmptyResult{});
+    }
+
+    fn handlePromptsList(self: *Self, id: ?json.Value) !void {
+        const ListPromptsResult = struct {
+            prompts: []const mcp_types.Prompt,
+
+            pub fn jsonStringify(self: @This(), jws: anytype) !void {
+                try jws.beginObject();
+                try jws.objectField("prompts");
+                try jws.write(self.prompts);
+                try jws.endObject();
+            }
+        };
+        const result = ListPromptsResult{
+            .prompts = &.{},
+        };
+        try self.sendResponse(id, result);
+    }
+
+    fn handlePromptsGet(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+        _ = params;
+        // Prompts not yet implemented - return empty result for now
+        const GetPromptResult = struct {
+            description: ?[]const u8 = null,
+            messages: []const struct {} = &.{},
+
+            pub fn jsonStringify(self: @This(), jws: anytype) !void {
+                try jws.beginObject();
+                if (self.description) |d| {
+                    try jws.objectField("description");
+                    try jws.write(d);
+                }
+                try jws.objectField("messages");
+                try jws.write(self.messages);
+                try jws.endObject();
+            }
+        };
+        const result = GetPromptResult{};
+        try self.sendResponse(id, result);
+    }
+
+    fn handleCompletionComplete(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+        _ = params;
+        const CompleteResult = struct {
+            completion: struct {
+                values: []const []const u8,
+                total: ?i32 = null,
+                hasMore: ?bool = null,
+
+                pub fn jsonStringify(self: @This(), jws: anytype) !void {
+                    try jws.beginObject();
+                    try jws.objectField("values");
+                    try jws.write(self.values);
+                    if (self.total) |t| {
+                        try jws.objectField("total");
+                        try jws.write(t);
+                    }
+                    if (self.hasMore) |h| {
+                        try jws.objectField("hasMore");
+                        try jws.write(h);
+                    }
+                    try jws.endObject();
+                }
+            },
+
+            pub fn jsonStringify(self: @This(), jws: anytype) !void {
+                try jws.beginObject();
+                try jws.objectField("completion");
+                try jws.write(self.completion);
+                try jws.endObject();
+            }
+        };
+        const result = CompleteResult{
+            .completion = .{
+                .values = &.{},
+                .total = 0,
+                .hasMore = false,
+            },
+        };
+        try self.sendResponse(id, result);
+    }
+
+    fn handleLoggingSetLevel(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+        _ = params;
+        // Log level stored but not yet used (logging infrastructure not implemented)
+        const EmptyResult = struct {};
+        try self.sendResponse(id, EmptyResult{});
     }
 
     fn sendResponse(self: *Self, id: ?json.Value, result: anytype) !void {

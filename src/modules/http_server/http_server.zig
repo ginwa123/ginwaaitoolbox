@@ -107,7 +107,7 @@ pub const SseConnectionManager = struct {
             return error.WriteFailed;
         };
 
-        // std.log.info("SSE sendEvent: SUCCESS, session_id={s}, bytes_written={d}", .{session_id, formatted.len});
+        std.log.info("SSE sendEvent: SUCCESS, session_id={s}, bytes_written={d}", .{session_id, formatted.len});
     }
 
     /// Check if a session exists

@@ -24,9 +24,24 @@ If you do zig build run, or zig build run:tui, it will kill yourself process, so
 - [zig@0.15] `std.fs.File.readByte()` doesn't exist — use `file.read()` instead
 - [zig@0.15] `json.Value.get()` doesn't exist — use `.object.get()` for object values
 - [zig@0.15] `process.Child.kill()` returns `Term`, not void — use `_ = ` to discard
-- [zig@0.15] `allocator.dupeZ()` returns `[:0]u8` but argv needs `[:0]const u8` — use stack buffer approach
+- [zig@0.15] `allocator.dupeZ()` returns `[:0]u8` but argv needs `[::0]const u8` — use stack buffer approach
+- [zig@0.15] `std.posix.Sigaction` is not a struct literal type — initialize fields individually
+- [zig@0.15] `std.posix.sigaction()` returns `void`, not error union — no `catch` needed
+- [zig@0.15] `std.posix.execveZ()` returns error union directly — use `catch` without `|err|`
+- [zig@0.15] `std.posix.sigemptyset()` returns `sigset_t` for signal mask initialization
 
 ## Resolved Issues
+
+### [2025-03-11] Backend Process Killed on Terminal Session Change
+**Problem:** When starting `zigginagentic-tui`, the backend process was killed if the user opened another terminal session. This happened because the backend was not properly daemonized - it remained attached to the TUI's terminal session and received SIGHUP when the terminal session changed.
+**Root cause:** The `spawnBackend` function used `std.process.Child` which kept the backend attached to the parent's terminal session. When a new terminal was opened, the old session sent SIGHUP to all its processes.
+**Fix:** Implemented Unix double-fork daemonization technique in `spawnBackend`:
+1. First fork creates a child process
+2. `setsid()` creates a new session and detaches from the controlling terminal
+3. Ignore SIGHUP signal to survive terminal disconnect
+4. Second fork prevents reacquiring a controlling terminal
+5. The grandchild process `execveZ`s the backend binary
+**Reuse signal:** When spawning long-running background processes from a TUI/CLI, always use double-fork daemonization to ensure the process survives terminal session changes.
 
 ### [2025-01-21] TUI Memory Leak - Arena Never Reset
 **Problem:** TUI application was using 200MB+ memory because the ArenaAllocator was never reset during the application's lifetime. All temporary allocations (HTTP requests, JSON payloads, etc.) accumulated indefinitely.
