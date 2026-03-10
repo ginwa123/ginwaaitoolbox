@@ -1,13 +1,14 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const logger_mod = tree1_mod.logger;
+const http_server = @import("nalarcore").http_server;
 
 pub fn run(
     allocator: std.mem.Allocator,
-    conn_fd: std.posix.fd_t,
+    session_id: []const u8,
     logger: *logger_mod.Logger,
 ) !void {
-    if (conn_fd < 0) return;
+    const sse_manager = http_server.getGlobalSseManager() orelse return;
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -18,10 +19,11 @@ pub fn run(
 
     logger.traceFmt("SEND SESSIONS XML: {s}", .{buf.items}) catch {};
 
-    _ = std.posix.write(conn_fd, buf.items) catch |err| {
-        if (err != error.BrokenPipe) {
-            logger.errFmt("Send Sessions response error {s}", .{@errorName(err)}) catch {};
-        }
+    const event = http_server.SseEvent{
+        .event_type = "user_choice",
+        .data = buf.items,
     };
-    _ = std.posix.write(conn_fd, "\n") catch {};
+    sse_manager.sendEvent(session_id, event, allocator) catch |err| {
+        logger.errFmt("SSE send user choice: {s}", .{@errorName(err)}) catch {};
+    };
 }

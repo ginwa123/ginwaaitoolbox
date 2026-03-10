@@ -2,7 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const keybindings = @import("keybindings.zig");
 
-const SOCKET_PATH = "/tmp/agent.sock";
+// HTTP SSE configuration
+const HTTP_HOST = "127.0.0.1";
+const HTTP_PORT: u16 = 8080;
 
 const reset = "\x1b[0m";
 const bold = "\x1b[1m";
@@ -10,11 +12,6 @@ const dim = "\x1b[2m";
 const cyan = "\x1b[36m";
 const yellow = "\x1b[33m";
 const green = "\x1b[32m";
-
-const sockaddr_un = if (builtin.os.tag != .windows)
-    extern struct { sun_family: c_ushort, sun_path: [108]u8 }
-else
-    void;
 
 // Double ESC detection window in milliseconds
 const DOUBLE_ESC_WINDOW_MS: i64 = 500;
@@ -53,15 +50,16 @@ pub const COMMANDS = [_][]const u8{
 };
 
 const App = struct {
-    // connection
-    socket_fd: std.posix.fd_t,
+    // HTTP connection
+    http_client: std.http.Client,
+    arena: std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
 
     // terminal
     original_termios: std.posix.termios,
 
     // session
     session_id: []u8,
-    allocator: std.mem.Allocator,
 
     // input
     input: std.ArrayList(u8),
@@ -84,11 +82,11 @@ const App = struct {
     pub fn init(allocator: std.mem.Allocator, verbose: bool) !App {
         try spawnBackend(verbose);
         std.log.info("Spawned backend", .{});
-        try waitForSocket(10000);
-        std.log.info("Waiting for socket", .{});
 
-        const socket_fd = try connectToSocket();
-        std.log.info("Connected to socket", .{});
+        // Wait for HTTP server to be ready
+        try waitForHttpServer(10000);
+        std.log.info("HTTP server ready", .{});
+
         const original_termios = try enableRawMode();
         std.log.info("Raw mode enabled", .{});
         const session_id = try std.fmt.allocPrint(allocator, "session_{}", .{std.time.timestamp()});
@@ -96,11 +94,17 @@ const App = struct {
 
         std.log.info("Session ID: {s}", .{session_id});
 
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+
+        const http_client = std.http.Client{ .allocator = arena.allocator() };
+
         return App{
-            .socket_fd = socket_fd,
+            .http_client = http_client,
+            .arena = arena,
+            .allocator = allocator,
             .original_termios = original_termios,
             .session_id = session_id,
-            .allocator = allocator,
             .input = std.ArrayList(u8).empty,
             .pasting = false,
             .last_esc_time = null,
@@ -118,7 +122,8 @@ const App = struct {
         app.allocator.free(app.session_id);
         app.input.deinit(app.allocator);
         app.state.matches.deinit(app.allocator);
-        std.posix.close(app.socket_fd);
+        app.http_client.deinit();
+        app.arena.deinit();
     }
 };
 
@@ -141,24 +146,10 @@ fn disableRawMode(original: std.posix.termios) void {
     std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, original) catch {};
 }
 
-// ─── Backend / Socket ────────────────────────────────────────────────────────
-fn spawnBackend(verbose: bool) !void {
-    // Remove stale socket file if it exists but nothing is listening
-    if (std.fs.accessAbsolute(SOCKET_PATH, .{})) |_| {
-        // Try connecting — if it works, backend is alive, skip spawn
-        const test_fd = std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0) catch null;
-        if (test_fd) |fd| {
-            defer std.posix.close(fd);
-            var addr = std.mem.zeroInit(sockaddr_un, .{});
-            addr.sun_family = std.posix.AF.UNIX;
-            @memcpy(addr.sun_path[0..SOCKET_PATH.len], SOCKET_PATH);
-            if (std.posix.connect(fd, @as(*std.posix.sockaddr, @ptrCast(&addr)), @sizeOf(sockaddr_un))) {
-                return; // already running
-            } else |_| {}
-        }
-        // Stale socket — remove it
-        std.fs.deleteFileAbsolute(SOCKET_PATH) catch {};
-    } else |_| {}
+// ─── Backend / HTTP ───────────────────────────────────────────────────────────
+fn spawnBackend(_: bool) !void {
+    // Simply spawn the backend - if it's already running, that's fine
+    // waitForHttpServer will handle waiting for it
 
     const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/zigginagentic");
     defer std.heap.page_allocator.free(backend_path);
@@ -166,10 +157,6 @@ fn spawnBackend(verbose: bool) !void {
 
     // Redirect stdout and stderr to /dev/null to prevent backend debug output
     // from interfering with the TUI display (unless --verbose is set)
-    if (!verbose) {
-        child.stdout_behavior = .Close;
-        child.stderr_behavior = .Close;
-    }
     child.stdout_behavior = .Close;
     child.stderr_behavior = .Close;
 
@@ -179,21 +166,20 @@ fn spawnBackend(verbose: bool) !void {
     };
     std.debug.print("{s}Backend started in background{s}\n", .{ green, reset });
 }
-fn waitForSocket(timeout_ms: u64) !void {
+
+fn waitForHttpServer(timeout_ms: u64) !void {
     const start = std.time.milliTimestamp();
     while (true) {
         if (std.time.milliTimestamp() - start > timeout_ms) {
             return error.Timeout;
         }
-        const socket_fd = std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0) catch {
+        const socket_fd = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch {
             std.Thread.sleep(50_000_000);
             continue;
         };
         defer std.posix.close(socket_fd);
-        var addr = std.mem.zeroInit(sockaddr_un, .{});
-        addr.sun_family = std.posix.AF.UNIX;
-        @memcpy(addr.sun_path[0..SOCKET_PATH.len], SOCKET_PATH);
-        if (std.posix.connect(socket_fd, @as(*std.posix.sockaddr, @ptrCast(&addr)), @sizeOf(sockaddr_un))) {
+        var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+        if (std.posix.connect(socket_fd, &addr.any, @sizeOf(std.net.Address))) {
             return; // connected!
         } else |_| {
             std.Thread.sleep(50_000_000); // 50ms
@@ -201,33 +187,7 @@ fn waitForSocket(timeout_ms: u64) !void {
     }
 }
 
-fn connectToSocket() !std.posix.fd_t {
-    const socket_fd = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
-    errdefer std.posix.close(socket_fd);
-    var addr = std.mem.zeroInit(sockaddr_un, .{});
-    addr.sun_family = std.posix.AF.UNIX;
-    @memcpy(addr.sun_path[0..SOCKET_PATH.len], SOCKET_PATH);
-    try std.posix.connect(socket_fd, @as(*std.posix.sockaddr, @ptrCast(&addr)), @sizeOf(sockaddr_un));
-    return socket_fd;
-}
-
-// ─── XML helpers ─────────────────────────────────────────────────────────────
-
-fn escapeXmlString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-    for (s) |c| {
-        switch (c) {
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-    return result.toOwnedSlice(allocator);
-}
+// ─── Messaging ─────────────────────────────────────────────────────────────
 
 pub fn trim(s: []const u8) []const u8 {
     var start: usize = 0;
@@ -240,49 +200,70 @@ pub fn trim(s: []const u8) []const u8 {
 // ─── Messaging ───────────────────────────────────────────────────────────────
 
 fn sendMessage(app: *App, message: []const u8) !void {
-    var xml_buf = std.ArrayList(u8).empty;
-    defer xml_buf.deinit(app.allocator);
+    const cwd = std.process.getCwdAlloc(app.arena.allocator()) catch "";
+    defer app.arena.allocator().free(cwd);
 
-    const cwd = std.process.getCwdAlloc(app.allocator) catch "";
-    defer app.allocator.free(cwd);
+    // Build JSON payload
+    const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
+        \\{{"app_type":"tui","command_type":"run_llm","session_id":"{s}","content":"{s}","cwd_session":"{s}"}}
+    , .{ app.session_id, message, cwd });
+    defer app.arena.allocator().free(json_payload);
 
-    const escaped_message = try escapeXmlString(app.allocator, message);
-    defer app.allocator.free(escaped_message);
-    const escaped_session_id = try escapeXmlString(app.allocator, app.session_id);
-    defer app.allocator.free(escaped_session_id);
-    const escaped_cwd = try escapeXmlString(app.allocator, cwd);
-    defer app.allocator.free(escaped_cwd);
+    // Send HTTP POST using raw socket
+    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+    defer std.posix.close(sock);
 
-    try xml_buf.writer(app.allocator).print(
-        "<message><app_type>tui</app_type><command_type>run_llm</command_type><session_id>{s}</session_id><content>{s}</content><cwd_session>{s}</cwd_session></message>",
-        .{ escaped_session_id, escaped_message, escaped_cwd },
-    );
-    _ = try std.posix.write(app.socket_fd, xml_buf.items);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+
+    const request = try std.fmt.allocPrint(app.arena.allocator(),
+        "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
+        .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
+    defer app.arena.allocator().free(request);
+
+    _ = try std.posix.write(sock, request);
 }
 
 fn sendCancelCommand(app: *App) !void {
-    var xml_buf = std.ArrayList(u8).empty;
-    defer xml_buf.deinit(app.allocator);
+    const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
+        \\{{"app_type":"tui","command_type":"cancel","session_id":"{s}"}}
+    , .{ app.session_id });
+    defer app.arena.allocator().free(json_payload);
 
-    const escaped_session_id = try escapeXmlString(app.allocator, app.session_id);
-    defer app.allocator.free(escaped_session_id);
+    // Send HTTP POST using raw socket
+    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+    defer std.posix.close(sock);
 
-    try xml_buf.writer(app.allocator).print(
-        "<message><app_type>tui</app_type><command_type>cancel</command_type><session_id>{s}</session_id></message>",
-        .{escaped_session_id},
-    );
-    _ = try std.posix.write(app.socket_fd, xml_buf.items);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+
+    const request = try std.fmt.allocPrint(app.arena.allocator(),
+        "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
+        .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
+    defer app.arena.allocator().free(request);
+
+    _ = try std.posix.write(sock, request);
 }
 
 fn sendSessionsCommand(app: *App) !void {
-    var xml_buf = std.ArrayList(u8).empty;
-    defer xml_buf.deinit(app.allocator);
+    const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
+        \\{{"app_type":"tui","command_type":"get_sessions"}}
+    , .{});
+    defer app.arena.allocator().free(json_payload);
 
-    try xml_buf.writer(app.allocator).print(
-        "<message><app_type>tui</app_type><command_type>get_sessions</command_type></message>",
-        .{},
-    );
-    _ = try std.posix.write(app.socket_fd, xml_buf.items);
+    // Send HTTP POST using raw socket
+    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+    defer std.posix.close(sock);
+
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+
+    const request = try std.fmt.allocPrint(app.arena.allocator(),
+        "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
+        .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
+    defer app.arena.allocator().free(request);
+
+    _ = try std.posix.write(sock, request);
 }
 
 // ─── Response formatting ─────────────────────────────────────────────────────
@@ -672,13 +653,27 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
     var spinner_timer: usize = 0;
     const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     var last_tick = std.time.milliTimestamp();
-    // var last_displayed_len: usize = 0; // track what we've already printed
 
     var retry_count: usize = 0;
 
-    // Set up poll for both socket and stdin
+    // Create socket for SSE stream
+    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try buffer.toOwnedSlice(app.allocator);
+    defer std.posix.close(stream_socket);
+
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try buffer.toOwnedSlice(app.allocator);
+
+    // Send HTTP GET request for SSE
+    const request_str = try std.fmt.allocPrint(app.arena.allocator(),
+        "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n",
+        .{ app.session_id, HTTP_HOST, HTTP_PORT });
+    defer app.arena.allocator().free(request_str);
+    _ = try std.posix.write(stream_socket, request_str);
+
+    // Read response headers first (simple approach - just start reading body)
+    // Set up poll for both stream socket and stdin
     var poll_fds = [2]std.posix.pollfd{
-        .{ .fd = app.socket_fd, .events = std.posix.POLL.IN, .revents = 0 },
+        .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
         .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
     };
 
@@ -690,15 +685,12 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
         displayed_tool_ids.deinit(app.allocator);
     }
 
-    // std.debug.print("Your sessions {s}\r\n\n", .{app.session_id});
-
     while (true) {
         const ready = std.posix.poll(&poll_fds, 50) catch 0;
 
         if (ready > 0) {
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
-                    // Send cancel command to backend
                     sendCancelCommand(app) catch {};
                     stream_interrupted = true;
                     std.debug.print("stream interrupted\n", .{});
@@ -708,9 +700,9 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
             }
 
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
-                const n = std.posix.read(app.socket_fd, &buf) catch break;
+                const n = std.posix.read(stream_socket, &buf) catch break;
                 if (n == 0) {
-                    std.debug.print("socket closed\n", .{});
+                    std.debug.print("stream closed\n", .{});
                     break;
                 }
                 try buffer.appendSlice(app.allocator, buf[0..n]);
@@ -718,10 +710,12 @@ fn readResponseAndStreamRunLLM(app: *App) ![]u8 {
             }
 
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-                std.debug.print("socket error\n", .{});
+                std.debug.print("stream error\n", .{});
                 break;
             }
         }
+
+        std.debug.print("tick {s}\n", .{buffer.items});
 
         const now = std.time.milliTimestamp();
         if (now - last_tick >= 100) {
@@ -834,9 +828,23 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     errdefer buffer.deinit(app.allocator);
     var buf: [4096]u8 = undefined;
 
-    // Set up poll for both socket and stdin
+    // Create socket for SSE stream
+    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try buffer.toOwnedSlice(app.allocator);
+    defer std.posix.close(stream_socket);
+
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try buffer.toOwnedSlice(app.allocator);
+
+    // Send HTTP GET request for SSE
+    const request_str = try std.fmt.allocPrint(app.arena.allocator(),
+        "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n",
+        .{ app.session_id, HTTP_HOST, HTTP_PORT });
+    defer app.arena.allocator().free(request_str);
+    _ = try std.posix.write(stream_socket, request_str);
+
+    // Set up poll for both stream socket and stdin
     var poll_fds = [2]std.posix.pollfd{
-        .{ .fd = app.socket_fd, .events = std.posix.POLL.IN, .revents = 0 },
+        .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
         .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
     };
 
@@ -858,7 +866,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
             // Then check socket for data
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
-                const n = std.posix.read(app.socket_fd, &buf) catch break;
+                const n = std.posix.read(stream_socket, &buf) catch break;
                 if (n == 0) break;
                 try buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
@@ -889,14 +897,6 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
         std.debug.print("\n", .{});
     }
 
-    // // Extract and display the valuable content
-    // if (extractTag(buffer.items, "content")) |content| {
-    //     printFormattedResponse(content);
-    // } else {
-    //     // Fallback: just print the raw buffer
-    //     std.debug.print("{s}", .{buffer.items});
-    // }
-
     if (extractTag(buffer.items, "sessions")) |md| {
         const trimmed = trim(md);
         std.debug.print("> /sessions\n Your input\n\n", .{});
@@ -913,9 +913,6 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
         }
     }
 
-    // printAllTags(content, &.{ "agent", "markdown" }, 0);
-    //
-    // std.debug.print("\r\n", .{});
     return try buffer.toOwnedSlice(app.allocator);
 }
 // ─── Input handling ──────────────────────────────────────────────────────────

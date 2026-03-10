@@ -16,7 +16,6 @@ pub fn run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
-    conn_fd: std.posix.fd_t,
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -61,7 +60,7 @@ pub fn run(
                 logger.errFmt("Failed to save skill to database: {s}", .{@errorName(err)}) catch {};
             };
             // Send updated skills list to TUI
-            send_skill_mod.run(allocator, db, logger, conn_fd, session_id);
+            send_skill_mod.run(allocator, db, logger, session_id);
         } else {
             logger.debugFmt("Skill '{s}' already loaded, skipping duplicate", .{parsed.value.skill_name}) catch {};
         }
@@ -70,7 +69,7 @@ pub fn run(
     const current_agent_state = try get_current_agent_by_session_id.run(allocator, db, session_id);
     const current_agent_final = current_agent_state.agent;
     _ = save_message.run(allocator, db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_final, session_name, loop_counter, agent_temperature, is_thinking) catch {};
-    _ = send_tool_result.run(allocator, conn_fd, logger, result, tool_call.id, tool_call.function.name, null);
+    _ = send_tool_result.run(allocator, session_id, logger, result, tool_call.id, tool_call.function.name, null);
 }
 
 test {

@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1 = @import("nalarcore");
 const agentMod = tree1.agent;
-const ipc = tree1.ipc;
+const http_server = tree1.http_server;
 const agent = tree1.agent;
 const ai_workflow = tree1.ai_workflow;
 const session_monitor = tree1.session_monitor;
@@ -10,8 +10,7 @@ const ai_workflow_mod = tree1.ai_workflow_models;
 const sqlite = tree1.sqlite;
 const migrations = tree1.migrations;
 
-pub const IPCMessage = struct {
-    app_type: []const u8 = "",
+pub const CommandMessage = struct {
     command_type: []const u8 = "",
     session_id: []const u8 = "",
     message: []const u8 = "",
@@ -68,27 +67,48 @@ pub fn decodeXmlEntities(allocator: std.mem.Allocator, s: []const u8) ![]const u
     return result.toOwnedSlice(allocator);
 }
 
-/// Parse XML message into IPCMessage struct
-pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !IPCMessage {
-    var msg: IPCMessage = .{};
+/// Parse message (JSON or XML) into CommandMessage struct
+pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMessage {
+    // Try JSON first (HTTP format)
+    if (std.json.parseFromSlice(std.json.Value, allocator, data, .{})) |parsed| {
+        defer parsed.deinit();
+        
+        const root = parsed.value.object;
+        var msg: CommandMessage = .{};
 
-    if (extractTag(data, "command_type", allocator)) |val| {
-        msg.command_type = try decodeXmlEntities(allocator, val);
-    }
-    if (extractTag(data, "session_id", allocator)) |val| {
-        msg.session_id = try decodeXmlEntities(allocator, val);
-    }
-    if (extractTag(data, "content", allocator)) |val| {
-        msg.message = try decodeXmlEntities(allocator, val);
-    }
-    if (extractTag(data, "cwd_session", allocator)) |val| {
-        msg.cwd_session = try decodeXmlEntities(allocator, val);
-    }
-    if (extractTag(data, "app_type", allocator)) |val| {
-        msg.app_type = try decodeXmlEntities(allocator, val);
-    }
+        if (root.get("command_type")) |v| {
+            msg.command_type = try allocator.dupe(u8, v.string);
+        }
+        if (root.get("session_id")) |v| {
+            msg.session_id = try allocator.dupe(u8, v.string);
+        }
+        if (root.get("content")) |v| {
+            msg.message = try allocator.dupe(u8, v.string);
+        }
+        if (root.get("cwd_session")) |v| {
+            msg.cwd_session = try allocator.dupe(u8, v.string);
+        }
+        
+        return msg;
+    } else |_| {
+        // Fall back to XML parsing (IPC format)
+        var msg: CommandMessage = .{};
 
-    return msg;
+        if (extractTag(data, "command_type", allocator)) |val| {
+            msg.command_type = try decodeXmlEntities(allocator, val);
+        }
+        if (extractTag(data, "session_id", allocator)) |val| {
+            msg.session_id = try decodeXmlEntities(allocator, val);
+        }
+        if (extractTag(data, "content", allocator)) |val| {
+            msg.message = try decodeXmlEntities(allocator, val);
+        }
+        if (extractTag(data, "cwd_session", allocator)) |val| {
+            msg.cwd_session = try decodeXmlEntities(allocator, val);
+        }
+
+        return msg;
+    }
 }
 
 fn killExistingProcess() void {
@@ -283,10 +303,10 @@ pub fn main() !void {
     };
     defer monitor.stop();
 
-    var server = ipc.IpcServer.init(parentAllocator, ctxParent);
+    var server = http_server.HttpServer.init(parentAllocator, ctxParent, 0);
 
-    server.messageIncoming(struct {
-        fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque, conn_fd: std.posix.fd_t) void {
+    server.setMessageHandler(struct {
+        fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
             std.debug.print("message incoming {s}\n", .{data});
 
             const ctxTui = @as(*ai_workflow_mod.ContextIPCTui, @ptrCast(@alignCast(ctx)));
@@ -296,40 +316,32 @@ pub fn main() !void {
                 return;
             };
 
-            if (std.mem.eql(u8, t.app_type, "tui")) {
-
-                // Handle cancel command first
-                if (std.mem.eql(u8, t.command_type, "cancel")) {
-                    if (ai_workflow.cancellation_registry.getGlobalRegistry()) |registry| {
-                        registry.cancel(t.session_id);
-                    }
-                    return;
-                }
-                // Register/reset session for cancellation tracking
+            if (std.mem.eql(u8, t.command_type, "cancel")) {
                 if (ai_workflow.cancellation_registry.getGlobalRegistry()) |registry| {
-                        registry.register(t.session_id) catch |err| {
-                            std.debug.print("Failed to register session: {}\n", .{err});
-                            return;
-                        };
-                    }
-                var workflowAsk = ai_workflow.TUIWorkflow.init(ctxTui.db, ctxTui.logger);
+                    registry.cancel(t.session_id);
+                }
+                return;
+            }
+            // Register/reset session for cancellation tracking
+            if (ai_workflow.cancellation_registry.getGlobalRegistry()) |registry| {
+                registry.register(t.session_id) catch |err| {
+                    std.debug.print("Failed to register session: {}\n", .{err});
+                    return;
+                };
+            }
+            var workflowAsk = ai_workflow.TUIWorkflow.init(ctxTui.db, ctxTui.logger);
 
-                // Load previously saved skills for this session
-                // workflowAsk.loadSkillsFromDB(allocator) catch |err| {
-                //     std.debug.print("Failed to load skills from database: {s}\n", .{@errorName(err)});
-                // };
-                if (std.mem.eql(u8, t.command_type, "run_llm")) {
-                    workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, conn_fd);
-                }
-                if (std.mem.eql(u8, t.command_type, "get_sessions")) {
-                    // todo rework
-                    // const sessions = workflowAsk.get_session_by_dir(allocator) catch |err| {
-                    //     std.debug.print("Failed to get sessions: {}\n", .{err});
-                    //     return;
-                    // };
-                    // workflowAsk.sendSessionsResponse(allocator, sessions);
-                    // _ = try workflowAsk.sendUserChoice(allocator);
-                }
+            // Load previously saved skills for this session
+            // workflowAsk.loadSkillsFromDB(allocator) catch |err| {
+            //     std.debug.print("Failed to load skills from database: {s}\n", .{@errorName(err)});
+            // };
+            if (std.mem.eql(u8, t.command_type, "run_llm")) {
+                std.debug.print("COMMAND: run_llm with session_id={s}, message={s}\n", .{ t.session_id, t.message });
+                // Pass 0 as conn_fd - HTTP mode doesn't use socket
+                workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url);
+            }
+            if (std.mem.eql(u8, t.command_type, "get_sessions")) {
+                // todo rework
             }
 
             std.debug.print("Received: {s}\n", .{data});

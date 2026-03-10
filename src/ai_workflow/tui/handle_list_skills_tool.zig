@@ -13,7 +13,6 @@ pub fn run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
-    conn_fd: std.posix.fd_t,
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -41,5 +40,5 @@ pub fn run(
     const current_agent_res = current_agent_state.agent;
 
     save_message.run(allocator, db, session_id, model, cwd, result, null, null, null, "tool", "tool", null, tool_call.id, current_agent_res, session_name, loop_counter, agent_temperature, is_thinking) catch {};
-    send_tool_result.run(allocator, conn_fd, logger, result, tool_call.id, tool_call.function.name, null);
+    send_tool_result.run(allocator, session_id, logger, result, tool_call.id, tool_call.function.name, null);
 }

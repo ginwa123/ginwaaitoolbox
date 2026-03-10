@@ -1,9 +1,10 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
+const http_server = @import("nalarcore").http_server;
 
-pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, index: usize, deltas: []const agent.ToolCallDelta) void {
-    if (conn_fd < 0) return;
+pub fn run(allocator: std.mem.Allocator, session_id: []const u8, index: usize, deltas: []const agent.ToolCallDelta) void {
+    const sse_manager = http_server.getGlobalSseManager() orelse return;
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -24,8 +25,10 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, index: usize, 
         w.writeAll("</delta>") catch return;
     }
     w.writeAll("</tool_calls_delta></chunk></response>") catch return;
-    // std.debug.print("chunk tool_calls_delta {s}\n", .{buf.items});
 
-    _ = std.posix.write(conn_fd, buf.items) catch return;
-    _ = std.posix.write(conn_fd, "\n") catch return;
+    const event = http_server.SseEvent{
+        .event_type = "tool_call_delta",
+        .data = buf.items,
+    };
+    sse_manager.sendEvent(session_id, event, allocator) catch {};
 }

@@ -13,7 +13,6 @@ pub fn run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
-    conn_fd: std.posix.fd_t,
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -62,7 +61,7 @@ pub fn run(
     _ = save_message.run(allocator, db, session_id, model, cwd, contentChangeAgent, null, null, null, "tool", "tool", null, tool_call.id, agent_name, session_name, loop_counter, agent_temperature.*, isThinking.*) catch |err| {
         logger.errFmt("saveMessageAsTool error: {s}", .{@errorName(err)}) catch {};
     };
-    send_tool_result.run(allocator, conn_fd, logger, contentChangeAgent, tool_call.id, tool_call.function.name, null);
+    send_tool_result.run(allocator, session_id, logger, contentChangeAgent, tool_call.id, tool_call.function.name, null);
 
     logger.infoFmt("Switched to agent: {s}", .{agent_name}) catch {};
 }

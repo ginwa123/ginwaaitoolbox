@@ -2,16 +2,16 @@ const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
 const logger_mod = tree1_mod.logger;
+const http_server = @import("nalarcore").http_server;
 
-/// Send skills list to TUI via IPC
+/// Send skills list to TUI via SSE
 pub fn run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
-    conn_fd: std.posix.fd_t,
     session_id: []const u8,
 ) void {
-    if (conn_fd < 0) return;
+    const sse_manager = http_server.getGlobalSseManager() orelse return;
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -37,12 +37,13 @@ pub fn run(
 
     logger.debugFmt("SEND SKILLS XML: {s}", .{buf.items}) catch {};
 
-    _ = std.posix.write(conn_fd, buf.items) catch |err| {
-        if (err != error.BrokenPipe) {
-            logger.errFmt("Send Skills response error {s}", .{@errorName(err)}) catch {};
-        }
+    const event = http_server.SseEvent{
+        .event_type = "skills",
+        .data = buf.items,
     };
-    _ = std.posix.write(conn_fd, "\n") catch {};
+    sse_manager.sendEvent(session_id, event, allocator) catch |err| {
+        logger.errFmt("SSE send skills: {s}", .{@errorName(err)}) catch {};
+    };
 }
 
 test {

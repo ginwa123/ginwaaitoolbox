@@ -66,9 +66,8 @@ pub const SessionInfo = struct {
 pub const StreamingContext = struct {
     allocator: std.mem.Allocator,
     workflow: *TUIWorkflow,
-    conn_fd: std.posix.fd_t,
-    chunk_index: usize = 0,
     session_id: []const u8 = "",
+    chunk_index: usize = 0,
 };
 
 /// Context-aware cancellation check for use with callStreaming
@@ -89,28 +88,28 @@ pub fn isCancelledWithContext(ctx: ?*anyopaque) bool {
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
     const allocator = stream_ctx.allocator;
-    const conn_fd = stream_ctx.conn_fd;
+    const session_id = stream_ctx.session_id;
 
     if (chunk.done) {
-        send_stream_chunk_final.run(allocator, conn_fd, stream_ctx.chunk_index, chunk.usage);
+        send_stream_chunk_final.run(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
         return;
     }
 
     // Send content chunk
     if (chunk.content) |content| {
-        send_steam_chunk_content.run(allocator, conn_fd, stream_ctx.chunk_index, content);
+        send_steam_chunk_content.run(allocator, session_id, stream_ctx.chunk_index, content);
         stream_ctx.chunk_index += 1;
     }
 
     // Send reasoning content chunk
     if (chunk.reasoning_content) |rc| {
-        send_stream_chunk_reasoning.run(allocator, conn_fd, stream_ctx.chunk_index, rc);
+        send_stream_chunk_reasoning.run(allocator, session_id, stream_ctx.chunk_index, rc);
         stream_ctx.chunk_index += 1;
     }
 
     // Handle tool calls delta - we'll aggregate these
     if (chunk.tool_calls_delta) |deltas| {
-        send_stream_to_chunk_tool_call_delta.run(allocator, conn_fd, stream_ctx.chunk_index, deltas);
+        send_stream_to_chunk_tool_call_delta.run(allocator, session_id, stream_ctx.chunk_index, deltas);
         stream_ctx.chunk_index += 1;
     }
 }
@@ -128,15 +127,18 @@ pub const TUIWorkflow = struct {
         };
     }
 
-    pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, conn_fd: std.posix.fd_t) void {
-        self.run_internal(allocator, session_id, message, cwd, api_key, model, base_url, conn_fd) catch |err| {
+    pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8) void {
+        self.run_internal(allocator, session_id, message, cwd, api_key, model, base_url) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
             defer allocator.free(err_msg);
-            send_error.run(allocator, conn_fd, self.logger, err_msg, "user_choice");
+            send_error.run(allocator, session_id, self.logger, err_msg, "user_choice");
         };
     }
 
-    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, conn_fd: std.posix.fd_t) !void {
+    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8) !void {
+        self.logger.infoFmt("WORKFLOW START: session_id={s}, message={s}", .{session_id, message}) catch {};
+        defer { self.logger.infoFmt("WORKFLOW END: session_id={s}", .{session_id}) catch {}; }
+        
         // Register this session for cancellation tracking
         if (cancellation_registry.getGlobalRegistry()) |registry| {
             try registry.register(session_id);
@@ -193,7 +195,7 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, conn_fd, session_id) catch |err| {
+            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id) catch |err| {
                 retryCount += 1;
                 self.logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)}) catch {};
                 continue;
@@ -203,21 +205,22 @@ pub const TUIWorkflow = struct {
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    _ = send_response.run(allocator, conn_fd, self.logger, res_dynamic_agent, "user_choice");
+                    self.logger.infoFmt("FINISH REASON STOP - calling send_response", .{}) catch {};
+                    _ = send_response.run(allocator, session_id, self.logger, res_dynamic_agent, "user_choice");
                     _ = try save_message.run(allocator, self.db, session_id, model, cwd, null, res_dynamic_agent.content, if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null, res_dynamic_agent.reasoning_content, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter, agent_temperature, isThinking);
-                    self.logger.infoFmt("FINISH REASON STOPPP", .{}) catch {};
+                    self.logger.infoFmt("FINISH REASON STOP - complete", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool.run(allocator, self, self.db, self.logger, conn_fd, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking);
+                    try handle_tool.run(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
                     _ = try send_user_choice.run(
                         allocator,
-                        conn_fd,
+                        session_id,
                         self.logger,
                     );
                     break;
@@ -238,7 +241,6 @@ pub const TUIWorkflow = struct {
         api_key: []const u8,
         model: []const u8,
         base_url: []const u8,
-        conn_fd: std.posix.fd_t,
         session_id: []const u8,
     ) !agent.CallResponse {
         const tools: []const tool_models.AgentTool = &.{
@@ -259,9 +261,8 @@ pub const TUIWorkflow = struct {
         var stream_ctx = StreamingContext{
             .allocator = allocator,
             .workflow = self,
-            .chunk_index = 0,
-            .conn_fd = conn_fd,
             .session_id = session_id,
+            .chunk_index = 0,
         };
         const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback, isCancelledWithContext);
 

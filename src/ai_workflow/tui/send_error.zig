@@ -1,9 +1,10 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const logger_mod = tree1_mod.logger;
+const http_server = @import("nalarcore").http_server;
 
-pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logger_mod.Logger, err_msg: []const u8, finish_reason: ?[]const u8) void {
-    if (conn_fd < 0) return;
+pub fn run(allocator: std.mem.Allocator, session_id: []const u8, logger: *logger_mod.Logger, err_msg: []const u8, finish_reason: ?[]const u8) void {
+    const sse_manager = http_server.getGlobalSseManager() orelse return;
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -19,12 +20,13 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logge
 
     logger.traceFmt("SEND ERROR XML: {s}", .{buf.items}) catch {};
 
-    _ = std.posix.write(conn_fd, buf.items) catch |err| {
-        if (err != error.BrokenPipe) {
-            logger.errFmt("Send Error response error {s}", .{@errorName(err)}) catch {};
-        }
+    const event = http_server.SseEvent{
+        .event_type = "error",
+        .data = buf.items,
     };
-    _ = std.posix.write(conn_fd, "\n") catch {};
+    sse_manager.sendEvent(session_id, event, allocator) catch |err| {
+        logger.errFmt("SSE send error: {s}", .{@errorName(err)}) catch {};
+    };
 }
 
 test {

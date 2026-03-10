@@ -26,12 +26,18 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const http_dep = b.dependency("http", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
 
     mod.addImport("nalarcore", mod);
+    mod.addImport("httpz", http_dep.module("httpz"));
     mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
 
     const exe = b.addExecutable(.{

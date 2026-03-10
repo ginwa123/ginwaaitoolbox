@@ -12,7 +12,6 @@ pub fn run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
-    conn_fd: std.posix.fd_t,
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -47,14 +46,14 @@ pub fn run(
     if (res_dynamic_agent.content) |c| {
         if (c.len > 0) {
             // Send the partial content with content_filter finish reason
-            send_response.run(allocator, conn_fd, logger, res_dynamic_agent, "content_filter");
+            send_response.run(allocator, session_id, logger, res_dynamic_agent, "content_filter");
         } else {
             // No content, send error message
-            send_error.run(allocator, conn_fd, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
+            send_error.run(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
         }
     } else {
         // No content, send error message
-        send_error.run(allocator, conn_fd, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
+        send_error.run(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
     }
     
     return true; // Signal caller to break the loop

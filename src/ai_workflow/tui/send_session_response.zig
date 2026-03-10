@@ -2,11 +2,12 @@ const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const tui_workflow = @import("tui_workflow.zig");
 const logger_mod = tree1_mod.logger;
+const http_server = @import("nalarcore").http_server;
 
 /// Get the current agent from the last message itree1_mod.tui_workflow;n the database.
 /// Returns "ExplorationAgent" if no messages exist for this session.
-pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logger_mod.Logger, sessions: []tui_workflow.SessionInfo) void {
-    if (conn_fd < 0) return;
+pub fn run(allocator: std.mem.Allocator, session_id: []const u8, logger: *logger_mod.Logger, sessions: []tui_workflow.SessionInfo) void {
+    const sse_manager = http_server.getGlobalSseManager() orelse return;
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -26,12 +27,13 @@ pub fn run(allocator: std.mem.Allocator, conn_fd: std.posix.fd_t, logger: *logge
 
     logger.traceFmt("SEND SESSIONS XML: {s}", .{buf.items}) catch {};
 
-    _ = std.posix.write(conn_fd, buf.items) catch |err| {
-        if (err != error.BrokenPipe) {
-            logger.errFmt("Send Sessions response error {s}", .{@errorName(err)}) catch {};
-        }
+    const event = http_server.SseEvent{
+        .event_type = "sessions",
+        .data = buf.items,
     };
-    _ = std.posix.write(conn_fd, "\n") catch {};
+    sse_manager.sendEvent(session_id, event, allocator) catch |err| {
+        logger.errFmt("SSE send sessions: {s}", .{@errorName(err)}) catch {};
+    };
 }
 
 test {

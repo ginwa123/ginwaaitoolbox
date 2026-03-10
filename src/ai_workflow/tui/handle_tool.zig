@@ -25,7 +25,6 @@ pub fn run(
     tui_workflow: *TUIWorkflow,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
-    conn_fd: std.posix.fd_t,
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -36,7 +35,7 @@ pub fn run(
     agent_temperature: *f32,
     isThinking: *bool,
 ) !void {
-    send_response.run(allocator, conn_fd, logger, res_dynamic_agent, null);
+    send_response.run(allocator, session_id, logger, res_dynamic_agent, null);
     if (res_dynamic_agent.tool_calls) |tc| {
         // Add assistant message with tool_calls to history
         var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
@@ -86,48 +85,48 @@ pub fn run(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
-                try handle_change_agent_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature, isThinking);
+                try handle_change_agent_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature, isThinking);
             }
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                _ = handle_bash_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
+                _ = handle_bash_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
                     logger.errFmt("Error handling bash tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "read_file")) {
-                _ = handle_read_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
+                _ = handle_read_file_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
                     logger.errFmt("Error handling read_file tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "search")) {
-                _ = handle_search_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
+                _ = handle_search_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
                     logger.errFmt("Error handling search tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "write_file")) {
-                _ = handle_write_file_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
+                _ = handle_write_file_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
                     logger.errFmt("Error handling write_file tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
-                _ = handle_text_replace_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
+                _ = handle_text_replace_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
                     logger.errFmt("Error handling text_replace tool: {s}", .{@errorName(err)}) catch {};
                 };
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
-                handle_list_skills_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
+                handle_list_skills_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
-                _ = try handle_get_skill_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
+                _ = try handle_get_skill_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
-                _ = try handle_remove_skill_tool.run(allocator, db, logger, conn_fd, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
+                _ = try handle_remove_skill_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
             }
         }
         logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
