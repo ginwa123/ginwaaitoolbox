@@ -508,8 +508,8 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     var last_tick = std.time.milliTimestamp();
     var retry_count: usize = 0;
+    var streaming_started = false;
 
-    // Step 1: open SSE stream FIRST
     const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
@@ -519,15 +519,11 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, HTTP_PORT });
     _ = try std.posix.write(stream_socket, stream_request);
 
-    // Step 2: Wait for "connected" event BEFORE sending command
-    // This prevents race condition where command is processed before stream registration
     if (!waitForSseConnected(stream_socket, 5000)) {
         std.debug.print("{s}Warning: SSE connection timeout{s}\n", .{ yellow, reset });
-        // Fall through - still try to send command
     }
     try sendMessage(app, message);
 
-    // Step 3: poll and read
     var poll_fds = [2]std.posix.pollfd{
         .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
         .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
@@ -560,20 +556,17 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
 
-                // Try to display tool results immediately
                 if (decodeChunked(app.allocator, raw_buffer.items)) |decoded| {
                     defer app.allocator.free(decoded);
                     if (extractSseData(app.allocator, decoded)) |xml| {
                         defer app.allocator.free(xml);
 
-                        // Print response chunks in realtime (only new ones)
                         var chunk_pos: usize = 0;
                         while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
                             const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
                             const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
                             chunk_pos = chunk_end + "</chunk>".len;
 
-                            // Extract index from chunk tag: <chunk index="N">
                             var chunk_index: usize = 0;
                             if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
                                 const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
@@ -581,18 +574,21 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                                 chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
                             }
 
-                            // Only print if this is a new chunk
                             if (chunk_index >= last_printed_chunk_index) {
                                 last_printed_chunk_index = chunk_index + 1;
                                 if (extractTag(chunk_block, "content")) |content| {
                                     if (content.len > 0) {
-                                        std.debug.print("{s}", .{content});
+                                        if (!streaming_started) {
+                                            // First chunk - clear the spinner line
+                                            std.debug.print("\r\x1b[2K", .{});
+                                            streaming_started = true;
+                                        }
+                                        std.debug.print("{s}", .{content}); // just print, no cursor tricks
                                     }
                                 }
                             }
                         }
 
-                        // Display tool results in realtime
                         if (extractToolResults(app.allocator, xml)) |tool_results_val| {
                             var tool_results = tool_results_val;
                             defer tool_results.deinit(app.allocator);
@@ -606,6 +602,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                                     }
                                 }
                                 if (!already_displayed) {
+                                    std.debug.print("\r\x1b[2K", .{}); // clear spinner before tool result
                                     const max_result_len: usize = 500;
                                     if (std.mem.eql(u8, result.name, "bash")) {
                                         displayBashResult(result.result, result.name, max_result_len);
@@ -620,7 +617,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                                     }
                                     if (extractTag(result.result, "change_agent_tool")) |_| {
                                         const agent_name = extractTag(result.result, "agent") orelse "unknown";
-                                        std.debug.print("\r\x1b[2K\n{s}[agent]{s} → {s}\n", .{ cyan, reset, agent_name });
+                                        std.debug.print("\n{s}[agent]{s} → {s}\n", .{ cyan, reset, agent_name });
                                     }
                                     const id_copy = app.allocator.dupe(u8, result.id) catch continue;
                                     displayed_tool_ids.append(app.allocator, id_copy) catch {
@@ -633,7 +630,6 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                     } else |_| {}
                 } else |_| {}
 
-                // Check for finish_reason directly in raw buffer
                 if (std.mem.indexOf(u8, raw_buffer.items, "</finish_reason>") != null) {
                     if (extractTag(raw_buffer.items, "finish_reason")) |fr| {
                         if (std.mem.eql(u8, fr, "notification_error")) {
@@ -641,15 +637,11 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                             continue;
                         }
                         if (std.mem.eql(u8, fr, "cancelled")) {
-                            std.debug.print("\n{s}Task cancelled{s}\n", .{ yellow, reset });
+                            std.debug.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ yellow, reset });
                             break;
                         }
-                        if (std.mem.eql(u8, fr, "user_choice")) {
-                            break;
-                        }
-                        if (std.mem.eql(u8, fr, "stop")) {
-                            break;
-                        }
+                        if (std.mem.eql(u8, fr, "user_choice")) break;
+                        if (std.mem.eql(u8, fr, "stop")) break;
                     }
                 }
             }
@@ -657,46 +649,41 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         }
 
-        // Spinner tick every 100ms - only show before content starts
         const now = std.time.milliTimestamp();
-        if (now - last_tick >= 100 and last_printed_chunk_index == 0) {
+        if (now - last_tick >= 100) {
             last_tick = now;
-            const spin = spinners[spinner_timer % spinners.len];
-            spinner_timer += 1;
-
-            std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
-                yellow, spin, reset, raw_buffer.items.len,
-            });
+            if (!streaming_started) { // only show spinner before first chunk
+                const spin = spinners[spinner_timer % spinners.len];
+                spinner_timer += 1;
+                std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
+                    yellow, spin, reset, raw_buffer.items.len,
+                });
+            }
         }
     }
 
-    std.debug.print("\r\x1b[2K", .{});
+    std.debug.print("\r\x1b[2K", .{}); // clear spinner on exit
     if (stream_interrupted) {
         std.debug.print("\n{s}Interrupted (double ESC){s}\n", .{ yellow, reset });
     }
 
-    // Debug: show raw buffer
+    // remove debug prints if you want, keeping them for now
     std.debug.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ dim, raw_buffer.items.len, reset });
 
-    // Final display - decode and extract content
     const final_decoded = decodeChunked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
-
     std.debug.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ dim, final_decoded.len, reset });
 
     const final_xml = extractSseData(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);
-
     std.debug.print("{s}[DEBUG] XML size: {d}{s}\n", .{ dim, final_xml.len, reset });
     if (final_xml.len > 0) {
         std.debug.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ dim, final_xml[0..@min(final_xml.len, 200)], reset });
     }
 
-    // Display content
     if (extractTag(final_xml, "content")) |content| {
         printFormattedResponse(content);
     } else if (final_xml.len > 0) {
-        // Try to extract from response structure
         if (extractTag(final_xml, "message")) |msg| {
             printFormattedResponse(msg);
         } else {
