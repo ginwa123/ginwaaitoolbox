@@ -777,6 +777,17 @@ pub const Agent = struct {
             return error.ReceiveFailed;
         };
 
+        // Handle zero content-length to avoid union field access panic
+        if (response.head.content_length != null and response.head.content_length.? == 0) {
+            self.logMsg(.info, "[RESPONSE] Response has empty body (content-length=0)");
+            return CallResponse{
+                .allocator = self.allocator,
+                .content = "",
+                .tool_calls = null,
+                .finish_reason = null,
+            };
+        }
+
         const body = response.reader(transfer_buffer[0..]).allocRemaining(self.allocator, .unlimited) catch |err| {
             self.logFmt(.err, "[ERROR] Failed to read body after {}ms: {s}", .{ elapsedMs(receive_start), @errorName(err) });
             return error.ReceiveFailed;
@@ -1166,6 +1177,17 @@ pub const Agent = struct {
 
         if (response.head.content_length == null and response.head.transfer_encoding != .chunked) {
             self.logMsg(.info, "[STREAM] Response has no body (no content-length, not chunked)");
+            return CallResponse{
+                .allocator = self.allocator,
+                .content = "",
+                .tool_calls = null,
+                .finish_reason = null,
+            };
+        }
+
+        // Handle zero content-length to avoid union field access panic
+        if (response.head.content_length != null and response.head.content_length.? == 0) {
+            self.logMsg(.info, "[STREAM] Response has empty body (content-length=0)");
             return CallResponse{
                 .allocator = self.allocator,
                 .content = "",
