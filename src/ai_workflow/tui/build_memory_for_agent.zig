@@ -1,31 +1,44 @@
 const std = @import("std");
 
+const memory_files = [_][]const u8{ "MEMORY.md", "AGENT.md", "CLAUDE.md" };
 
 pub fn run(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
-    var memoryMd: std.ArrayList(u8) = .empty;
-    defer memoryMd.deinit(allocator);
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
 
-    // get current cwd and get the MEMORY.MD file if not exist create if found just return the content
-    const memory_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, "MEMORY.md" });
-    defer allocator.free(memory_path);
+    for (memory_files) |filename| {
+        // Build the full path for this file
+        const file_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, filename });
+        defer allocator.free(file_path);
 
-    // Try to open the file - if it doesn't exist, create it
-    const file = std.fs.openFileAbsolute(memory_path, .{
-        .mode = .read_write,
-    }) catch |err| {
-        if (err == error.FileNotFound) {
-            // Create the file with empty content
-            const new_file = try std.fs.createFileAbsolute(memory_path, .{});
-            defer new_file.close();
-            return try memoryMd.toOwnedSlice(allocator);
+        // Try to open the file - if it doesn't exist, create it
+        const file = std.fs.openFileAbsolute(file_path, .{
+            .mode = .read_write,
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                // Create the file with empty content
+                const new_file = try std.fs.createFileAbsolute(file_path, .{});
+                new_file.close();
+                continue;
+            }
+            return err;
+        };
+        defer file.close();
+
+        // Read the file contents
+        const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+        defer allocator.free(content);
+
+        // Append content to result
+        try result.appendSlice(allocator, content);
+
+        // Add a newline separator between files if content doesn't end with one
+        if (content.len > 0 and content[content.len - 1] != '\n') {
+            try result.append(allocator, '\n');
         }
-        return err;
-    };
-    defer file.close();
+    }
 
-    // Read the file contents
-    const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
-    return content;
+    return try result.toOwnedSlice(allocator);
 }
 
 

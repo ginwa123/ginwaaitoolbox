@@ -101,10 +101,12 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const allocator = stream_ctx.allocator;
     const session_id = stream_ctx.session_id;
 
-    if (chunk.done) {
-        send_stream_chunk_final.run(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
-        return;
-    }
+
+    // we disable final chunk for now
+    // if (chunk.done) {
+    //     send_stream_chunk_final.run(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
+    //     return;
+    // }
 
     // Send content chunk
     if (chunk.content) |content| {
@@ -118,11 +120,12 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
         stream_ctx.chunk_index += 1;
     }
 
+    // we disable tool calls delta for now
     // Handle tool calls delta - we'll aggregate these
-    if (chunk.tool_calls_delta) |deltas| {
-        send_stream_to_chunk_tool_call_delta.run(allocator, session_id, stream_ctx.chunk_index, deltas);
-        stream_ctx.chunk_index += 1;
-    }
+    // if (chunk.tool_calls_delta) |deltas| {
+    //     send_stream_to_chunk_tool_call_delta.run(allocator, session_id, stream_ctx.chunk_index, deltas);
+    //     stream_ctx.chunk_index += 1;
+    // }
 }
 pub const TUIWorkflow = struct {
     // allocator: std.mem.Allocator,
@@ -148,14 +151,14 @@ pub const TUIWorkflow = struct {
 
     fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
         self.logger.infoFmt("WORKFLOW START: session_id={s}, message={s}", .{session_id, message}) catch {};
-        defer { 
-            self.logger.infoFmt("WORKFLOW END: session_id={s}", .{session_id}) catch {}; 
+        defer {
+            self.logger.infoFmt("WORKFLOW END: session_id={s}", .{session_id}) catch {};
             // Unregister session from cancellation registry
             if (cancellation_registry.getGlobalRegistry()) |registry| {
                 registry.unregister(session_id);
             }
         }
-        
+
         // Register this session for cancellation tracking
         if (cancellation_registry.getGlobalRegistry()) |registry| {
             try registry.register(session_id);
