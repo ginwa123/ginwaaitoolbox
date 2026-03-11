@@ -3,5 +3,6 @@ zig-out
 test_main
 .plans
 .zigginagentic
+.worktrees
 /src/apps/kerjabot/node_modules
 /src/apps/kerjabot/dist
