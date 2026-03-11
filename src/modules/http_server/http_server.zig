@@ -129,27 +129,45 @@ pub const SseConnectionManager = struct {
     }
 
     /// Send an event to a specific session (uses stack buffer, no heap allocations)
+    /// Includes retry logic for race conditions where session isn't registered yet
     pub fn sendEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        // Retry up to 3 times with 50ms delay to handle race condition where
+        // SSE stream handler hasn't registered the session yet
+        const max_retries = 3;
+        const retry_delay_ms = 50;
 
-        const stream = self.connections.get(session_id) orelse {
-            std.log.err("SSE sendEvent: session not found: {s}", .{session_id});
-            return error.SessionNotFound;
-        };
+        for (0..max_retries) |attempt| {
+            self.mutex.lock();
+            if (self.connections.get(session_id)) |stream| {
+                // Use stack buffer for SSE formatting - no heap allocations
+                var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
+                const formatted = event.formatInto(&stack_buf) catch {
+                    self.mutex.unlock();
+                    std.log.err("SSE sendEvent: event too large for stack buffer (max {} bytes)", .{SseEvent.MAX_SSE_SIZE});
+                    return error.BufferTooSmall;
+                };
 
-        // Use stack buffer for SSE formatting - no heap allocations
-        var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
-        const formatted = event.formatInto(&stack_buf) catch {
-            std.log.err("SSE sendEvent: event too large for stack buffer (max {} bytes)", .{SseEvent.MAX_SSE_SIZE});
-            return error.BufferTooSmall;
-        };
+                // Write directly to stream
+                stream.writeAll(formatted) catch |err| {
+                    self.mutex.unlock();
+                    std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(err)});
+                    return error.WriteFailed;
+                };
+                self.mutex.unlock();
+                return; // Success
+            }
+            self.mutex.unlock();
 
-        // Write directly to stream
-        stream.writeAll(formatted) catch |err| {
-            std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(err)});
-            return error.WriteFailed;
-        };
+            // Session not found - retry after short delay
+            if (attempt < max_retries - 1) {
+                std.log.warn("SSE sendEvent: session {s} not found, retrying ({}/{})...", .{ session_id, attempt + 1, max_retries });
+                std.Thread.sleep(retry_delay_ms * 1_000_000);
+            }
+        }
+
+        // All retries exhausted
+        std.log.err("SSE sendEvent: session not found after {} retries: {s}", .{ max_retries, session_id });
+        return error.SessionNotFound;
     }
 
     /// Check if a session exists
