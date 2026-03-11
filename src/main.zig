@@ -70,27 +70,7 @@ pub fn decodeXmlEntities(allocator: std.mem.Allocator, s: []const u8) ![]const u
 /// Parse message (JSON or XML) into CommandMessage struct
 pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMessage {
     // Try JSON first (HTTP format)
-    if (std.json.parseFromSlice(std.json.Value, allocator, data, .{})) |parsed| {
-        defer parsed.deinit();
-
-        const root = parsed.value.object;
-        var msg: CommandMessage = .{};
-
-        if (root.get("command_type")) |v| {
-            msg.command_type = try allocator.dupe(u8, v.string);
-        }
-        if (root.get("session_id")) |v| {
-            msg.session_id = try allocator.dupe(u8, v.string);
-        }
-        if (root.get("content")) |v| {
-            msg.message = try allocator.dupe(u8, v.string);
-        }
-        if (root.get("cwd_session")) |v| {
-            msg.cwd_session = try allocator.dupe(u8, v.string);
-        }
-
-        return msg;
-    } else |_| {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch {
         // Fall back to XML parsing (IPC format)
         var msg: CommandMessage = .{};
 
@@ -108,7 +88,27 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMess
         }
 
         return msg;
+    };
+    // Don't deinit parsed - let the caller's arena handle cleanup
+    // The parsed arena is a child of the caller's allocator
+
+    const root = parsed.value.object;
+    var msg: CommandMessage = .{};
+
+    if (root.get("command_type")) |v| {
+        msg.command_type = try allocator.dupe(u8, v.string);
     }
+    if (root.get("session_id")) |v| {
+        msg.session_id = try allocator.dupe(u8, v.string);
+    }
+    if (root.get("content")) |v| {
+        msg.message = try allocator.dupe(u8, v.string);
+    }
+    if (root.get("cwd_session")) |v| {
+        msg.cwd_session = try allocator.dupe(u8, v.string);
+    }
+
+    return msg;
 }
 
 fn killExistingProcess() void {

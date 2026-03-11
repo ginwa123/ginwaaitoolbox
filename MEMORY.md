@@ -49,6 +49,12 @@ If you do zig build run, or zig build run:tui, it will kill yourself process, so
 **Fix:** Added `app.arena.reset(.retain_capacity)` at the end of `readResponseAndStreamRunLLM` and `readResponseAndStreamGetSessions` functions to free temporary allocations after each message operation completes.
 **Reuse signal:** When using ArenaAllocator for temporary allocations in long-running loops, always reset the arena periodically to prevent memory accumulation.
 
+### [2025-01-21] TUI Busy Loop - 100% CPU Usage
+**Problem:** TUI application was consuming 100% CPU on one core while waiting for SSE/streaming data from the backend.
+**Root cause:** The polling loops in `readResponseAndStreamRunLLM` and `readResponseAndStreamGetSessions` used `poll()` with timeouts but continued immediately when no data was available, creating a busy-wait loop.
+**Fix:** Added `std.Thread.sleep(10_000_000)` (10ms) when `poll()` returns 0 (no data available) in both functions. Also removed the redundant `std.Thread.sleep(5_000_000)` that was only executed when data arrived.
+**Reuse signal:** When using poll() in a loop to wait for I/O, always add a sleep when poll returns 0 to prevent busy-waiting. The sleep should be short enough to maintain responsiveness (10-20ms) but long enough to reduce CPU usage.
+
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
 

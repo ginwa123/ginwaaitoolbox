@@ -65,18 +65,18 @@ pub const ToolAdapter = struct {
         const adapter = self;
         return struct {
             fn exec(
-                allocator: std.mem.Allocator,
+                _: std.mem.Allocator,
                 name: []const u8,
                 arguments: ?json.Value,
             ) anyerror!json.Value {
                 const tool = adapter.tools.get(name) orelse {
                     return error.ToolNotFound;
                 };
-                
+
                 // TODO: Parse arguments and call tool
                 _ = arguments;
                 _ = tool;
-                
+
                 return .{ .string = "not implemented" };
             }
         }.exec;

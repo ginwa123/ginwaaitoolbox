@@ -15,7 +15,7 @@ pub const JsonRpcResponse = struct {
     jsonrpc: []const u8 = "2.0",
     id: ?[]const u8,
     result: ?[]const u8 = null,
-    error: ?JsonRpcError = null,
+    @"error": ?JsonRpcError = null,
 };
 
 /// JSON-RPC 2.0 error

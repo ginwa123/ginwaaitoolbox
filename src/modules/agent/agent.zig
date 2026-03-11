@@ -1211,12 +1211,20 @@ pub const Agent = struct {
                     stream_ended_cleanly = true;
                     break;
                 }
-                break;
+                // Add small backoff on transient errors to prevent CPU spinning
+                std.Thread.sleep(1_000_000); // 1ms
+                continue;
             };
 
             if (bytes_read == 0) {
                 stream_ended_cleanly = true;
                 break;
+            }
+
+            // Add small yield to prevent tight CPU spinning during streaming
+            // This ensures we don't monopolize CPU when reading small chunks rapidly
+            if (bytes_read < 64) {
+                std.Thread.sleep(100_000); // 100 microseconds for small reads
             }
 
             total_bytes_read += bytes_read;

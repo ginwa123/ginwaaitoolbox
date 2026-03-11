@@ -71,7 +71,6 @@ pub const McpTransport = struct {
         }
         
         // Read body
-        const body_start = header_end_pos;
         const body_available = if (buf.len >= header_end_pos) buf.len - header_end_pos else 0;
         
         const body = try self.allocator.alloc(u8, content_length);
@@ -85,8 +84,7 @@ pub const McpTransport = struct {
         }
         
         while (body_offset < content_length) {
-            const remaining = body_offset..content_length;
-            const bytes_read = reader.read(body[remaining]) catch |e| {
+            const bytes_read = reader.read(body[body_offset..]) catch |e| {
                 self.allocator.free(body);
                 return e;
             };

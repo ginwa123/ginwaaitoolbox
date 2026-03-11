@@ -150,7 +150,7 @@ const JsonRpcResponse = struct {
 /// JSON-RPC error response
 const JsonRpcErrorResponse = struct {
     jsonrpc: []const u8 = "2.0",
-    error: JsonRpcError,
+    @"error": JsonRpcError,
     id: ?json.Value = null,
 
     const JsonRpcError = struct {
@@ -172,7 +172,7 @@ const JsonRpcErrorResponse = struct {
         try jws.objectField("jsonrpc");
         try jws.write(self.jsonrpc);
         try jws.objectField("error");
-        try jws.write(self.error);
+        try jws.write(self.@"error");
         if (self.id) |i| {
             try jws.objectField("id");
             try jws.write(i);
@@ -425,10 +425,10 @@ pub const McpServer = struct {
         const ListPromptsResult = struct {
             prompts: []const mcp_types.Prompt,
 
-            pub fn jsonStringify(self: @This(), jws: anytype) !void {
+            pub fn jsonStringify(s: @This(), jws: anytype) !void {
                 try jws.beginObject();
                 try jws.objectField("prompts");
-                try jws.write(self.prompts);
+                try jws.write(s.prompts);
                 try jws.endObject();
             }
         };
@@ -445,14 +445,14 @@ pub const McpServer = struct {
             description: ?[]const u8 = null,
             messages: []const struct {} = &.{},
 
-            pub fn jsonStringify(self: @This(), jws: anytype) !void {
+            pub fn jsonStringify(s: @This(), jws: anytype) !void {
                 try jws.beginObject();
-                if (self.description) |d| {
+                if (s.description) |d| {
                     try jws.objectField("description");
                     try jws.write(d);
                 }
                 try jws.objectField("messages");
-                try jws.write(self.messages);
+                try jws.write(s.messages);
                 try jws.endObject();
             }
         };
@@ -468,15 +468,15 @@ pub const McpServer = struct {
                 total: ?i32 = null,
                 hasMore: ?bool = null,
 
-                pub fn jsonStringify(self: @This(), jws: anytype) !void {
+                pub fn jsonStringify(s: @This(), jws: anytype) !void {
                     try jws.beginObject();
                     try jws.objectField("values");
-                    try jws.write(self.values);
-                    if (self.total) |t| {
+                    try jws.write(s.values);
+                    if (s.total) |t| {
                         try jws.objectField("total");
                         try jws.write(t);
                     }
-                    if (self.hasMore) |h| {
+                    if (s.hasMore) |h| {
                         try jws.objectField("hasMore");
                         try jws.write(h);
                     }
@@ -484,10 +484,10 @@ pub const McpServer = struct {
                 }
             },
 
-            pub fn jsonStringify(self: @This(), jws: anytype) !void {
+            pub fn jsonStringify(s: @This(), jws: anytype) !void {
                 try jws.beginObject();
                 try jws.objectField("completion");
-                try jws.write(self.completion);
+                try jws.write(s.completion);
                 try jws.endObject();
             }
         };
@@ -534,7 +534,7 @@ pub const McpServer = struct {
         const arena_alloc = arena.allocator();
 
         const error_resp = JsonRpcErrorResponse{
-            .error = .{
+            .@"error" = .{
                 .code = @intFromEnum(code),
                 .message = message,
             },

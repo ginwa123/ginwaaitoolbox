@@ -114,7 +114,6 @@ fn disableRawMode(original: std.posix.termios) void {
 
 // ─── Backend ─────────────────────────────────────────────────────────────────
 
-
 fn spawnBackend(_: bool) !void {
     const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/zigginagentic");
     defer std.heap.page_allocator.free(backend_path);
@@ -256,10 +255,13 @@ pub fn trim(s: []const u8) []const u8 {
 }
 
 pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
-    const close_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag}) catch return null;
-    defer std.heap.page_allocator.free(close_tag);
-    const open_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag}) catch return null;
-    defer std.heap.page_allocator.free(open_tag);
+    // Use stack buffer instead of heap allocation for better performance
+    var close_tag_buf: [128]u8 = undefined;
+    var open_tag_buf: [128]u8 = undefined;
+
+    const close_tag = std.fmt.bufPrint(&close_tag_buf, "</{s}>", .{tag}) catch return null;
+    const open_tag = std.fmt.bufPrint(&open_tag_buf, "<{s}>", .{tag}) catch return null;
+
     const close_pos = std.mem.lastIndexOf(u8, xml, close_tag) orelse return null;
     const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
     return xml[open_pos + open_tag.len .. close_pos];
@@ -538,10 +540,14 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     }
     var last_printed_chunk_index: usize = 0;
     // Track last processed XML length to avoid O(n²) re-processing
-    var last_decoded_len: usize = 0;
+    // Track last searched position for finish_reason to avoid O(n²) searches
+    var last_finish_search_pos: usize = 0;
+
+    var raw_buffer_processed_len: usize = 0;
 
     while (true) {
-        const ready = std.posix.poll(&poll_fds, 50) catch 0;
+        const ready = std.posix.poll(&poll_fds, 200) catch 0;
+        var new_data = false;
 
         if (ready > 0) {
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
@@ -558,112 +564,120 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 if (n == 0) break;
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
-
-                if (decodeChunked(app.allocator, raw_buffer.items)) |decoded| {
-                    defer app.allocator.free(decoded);
-                    if (extractSseData(app.allocator, decoded)) |xml| {
-                        defer app.allocator.free(xml);
-
-                        // Only process new XML content since last decode
-                        const xml_to_process = if (xml.len > last_decoded_len)
-                            xml[last_decoded_len..]
-                        else
-                            xml[0..0];
-                        last_decoded_len = xml.len;
-
-                        var chunk_pos: usize = 0;
-                        while (std.mem.indexOfPos(u8, xml_to_process, chunk_pos, "<chunk")) |chunk_start| {
-                            const chunk_end = std.mem.indexOfPos(u8, xml_to_process, chunk_start, "</chunk>") orelse break;
-                            const chunk_block = xml_to_process[chunk_start .. chunk_end + "</chunk>".len];
-                            chunk_pos = chunk_end + "</chunk>".len;
-
-                            var chunk_index: usize = 0;
-                            if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
-                                const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
-                                const idx_str = chunk_block[idx_start + 7 .. idx_end];
-                                chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                            }
-
-                            if (chunk_index >= last_printed_chunk_index) {
-                                last_printed_chunk_index = chunk_index + 1;
-                                if (extractTag(chunk_block, "content")) |content| {
-                                    if (content.len > 0) {
-                                        if (!streaming_started) {
-                                            // First chunk - clear the spinner line
-                                            std.debug.print("\r\x1b[2K", .{});
-                                            streaming_started = true;
-                                        }
-                                        std.debug.print("{s}", .{content}); // just print, no cursor tricks
-                                    }
-                                }
-                            }
-                        }
-
-                        // Only search for tool results in new XML content
-                        if (extractToolResults(app.allocator, xml_to_process)) |tool_results_val| {
-                            var tool_results = tool_results_val;
-                            defer tool_results.deinit(app.allocator);
-
-                            for (tool_results.items) |result| {
-                                var already_displayed = false;
-                                for (displayed_tool_ids.items) |id| {
-                                    if (std.mem.eql(u8, id, result.id)) {
-                                        already_displayed = true;
-                                        break;
-                                    }
-                                }
-                                if (!already_displayed) {
-                                    std.debug.print("\r\x1b[2K", .{}); // clear spinner before tool result
-                                    const max_result_len: usize = 500;
-                                    if (std.mem.eql(u8, result.name, "bash")) {
-                                        displayBashResult(result.result, result.name, max_result_len);
-                                    } else if (std.mem.eql(u8, result.name, "search")) {
-                                        displaySearchResult(result.result, result.name, max_result_len);
-                                    } else if (std.mem.eql(u8, result.name, "read_file")) {
-                                        displayReadFileResult(result.result, result.name);
-                                    } else if (std.mem.eql(u8, result.name, "write_file")) {
-                                        displayWriteFileResult(result.result, result.name);
-                                    } else if (std.mem.eql(u8, result.name, "text_replace")) {
-                                        displayTextReplaceResult(result.result, result.name);
-                                    }
-                                    if (extractTag(result.result, "change_agent_tool")) |_| {
-                                        const agent_name = extractTag(result.result, "agent") orelse "unknown";
-                                        std.debug.print("\n{s}[agent]{s} → {s}\n", .{ cyan, reset, agent_name });
-                                    }
-                                    const id_copy = app.allocator.dupe(u8, result.id) catch continue;
-                                    displayed_tool_ids.append(app.allocator, id_copy) catch {
-                                        app.allocator.free(id_copy);
-                                        continue;
-                                    };
-                                }
-                            }
-                        } else |_| {}
-                    } else |_| {}
-                } else |_| {}
-
-                if (std.mem.indexOf(u8, raw_buffer.items, "</finish_reason>") != null) {
-                    if (extractTag(raw_buffer.items, "finish_reason")) |fr| {
-                        if (std.mem.eql(u8, fr, "notification_error")) {
-                            retry_count += 1;
-                            continue;
-                        }
-                        if (std.mem.eql(u8, fr, "cancelled")) {
-                            std.debug.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ yellow, reset });
-                            break;
-                        }
-                        if (std.mem.eql(u8, fr, "user_choice")) break;
-                        if (std.mem.eql(u8, fr, "stop")) break;
-                    }
-                }
+                new_data = true;
             }
 
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
+        } else {
+            // No data available - sleep to prevent busy-waiting
+            std.Thread.sleep(10_000_000); // 10ms
         }
 
+        if (new_data) {
+            // ✅ KEY FIX: only decode NEW bytes, not entire buffer
+            const new_raw = raw_buffer.items[raw_buffer_processed_len..];
+            if (new_raw.len == 0) continue; // nothing new to process
+
+            if (decodeChunked(app.allocator, new_raw)) |decoded| {
+                defer app.allocator.free(decoded);
+                raw_buffer_processed_len = raw_buffer.items.len; // advance cursor
+
+                if (extractSseData(app.allocator, decoded)) |xml| {
+                    defer app.allocator.free(xml);
+
+                    // xml is already only new content — no offset needed
+                    var chunk_pos: usize = 0;
+                    while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
+                        const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
+                        const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
+                        chunk_pos = chunk_end + "</chunk>".len;
+
+                        var chunk_index: usize = 0;
+                        if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
+                            const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
+                            const idx_str = chunk_block[idx_start + 7 .. idx_end];
+                            chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
+                        }
+
+                        if (chunk_index >= last_printed_chunk_index) {
+                            last_printed_chunk_index = chunk_index + 1;
+                            if (extractTag(chunk_block, "content")) |content| {
+                                if (content.len > 0) {
+                                    if (!streaming_started) {
+                                        std.debug.print("\r\x1b[2K", .{});
+                                        streaming_started = true;
+                                    }
+                                    std.debug.print("{s}", .{content});
+                                }
+                            }
+                        }
+                    }
+
+                    if (extractToolResults(app.allocator, xml)) |tool_results_val| {
+                        var tool_results = tool_results_val;
+                        defer tool_results.deinit(app.allocator);
+
+                        for (tool_results.items) |result| {
+                            var already_displayed = false;
+                            for (displayed_tool_ids.items) |id| {
+                                if (std.mem.eql(u8, id, result.id)) {
+                                    already_displayed = true;
+                                    break;
+                                }
+                            }
+                            if (!already_displayed) {
+                                std.debug.print("\r\x1b[2K", .{});
+                                const max_result_len: usize = 500;
+                                if (std.mem.eql(u8, result.name, "bash")) {
+                                    displayBashResult(result.result, result.name, max_result_len);
+                                } else if (std.mem.eql(u8, result.name, "search")) {
+                                    displaySearchResult(result.result, result.name, max_result_len);
+                                } else if (std.mem.eql(u8, result.name, "read_file")) {
+                                    displayReadFileResult(result.result, result.name);
+                                } else if (std.mem.eql(u8, result.name, "write_file")) {
+                                    displayWriteFileResult(result.result, result.name);
+                                } else if (std.mem.eql(u8, result.name, "text_replace")) {
+                                    displayTextReplaceResult(result.result, result.name);
+                                }
+                                if (extractTag(result.result, "change_agent_tool")) |_| {
+                                    const agent_name = extractTag(result.result, "agent") orelse "unknown";
+                                    std.debug.print("\n{s}[agent]{s} → {s}\n", .{ cyan, reset, agent_name });
+                                }
+                                const id_copy = app.allocator.dupe(u8, result.id) catch continue;
+                                displayed_tool_ids.append(app.allocator, id_copy) catch {
+                                    app.allocator.free(id_copy);
+                                    continue;
+                                };
+                            }
+                        }
+                    } else |_| {}
+                } else |_| {}
+            } else |_| {}
+
+            // finish_reason — O(1) amortized, already correct
+            const search_start = @min(last_finish_search_pos, raw_buffer.items.len);
+            if (std.mem.indexOfPos(u8, raw_buffer.items, search_start, "</finish_reason>")) |_| {
+                last_finish_search_pos = raw_buffer.items.len;
+                if (extractTag(raw_buffer.items, "finish_reason")) |fr| {
+                    if (std.mem.eql(u8, fr, "notification_error")) {
+                        retry_count += 1;
+                        continue;
+                    }
+                    if (std.mem.eql(u8, fr, "cancelled")) {
+                        std.debug.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ yellow, reset });
+                        break;
+                    }
+                    if (std.mem.eql(u8, fr, "user_choice")) break;
+                    if (std.mem.eql(u8, fr, "stop")) break;
+                }
+            }
+        }
+
+        // Spinner
         const now = std.time.milliTimestamp();
         if (now - last_tick >= 100) {
             last_tick = now;
-            if (!streaming_started) { // only show spinner before first chunk
+            if (!streaming_started) {
                 const spin = spinners[spinner_timer % spinners.len];
                 spinner_timer += 1;
                 std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
@@ -736,6 +750,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
     while (true) {
         const ready = std.posix.poll(&poll_fds, 50) catch 0;
+        var new_data = false;
         if (ready > 0) {
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 poll_fds[1].revents = 0;
@@ -745,8 +760,15 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
                 if (n == 0) break;
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
+                new_data = true;
             }
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
+        }
+
+        if (!new_data) {
+            // No data available - sleep to prevent busy-waiting
+            std.Thread.sleep(10_000_000); // 10ms
+            continue;
         }
 
         const decoded = decodeChunked(app.allocator, raw_buffer.items) catch continue;
