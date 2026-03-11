@@ -295,11 +295,32 @@ fn waitForSseConnected(socket: std.posix.fd_t, timeout_ms: u64) bool {
 
 // ─── Messaging ───────────────────────────────────────────────────────────────
 
+/// Escape a string for JSON output
+fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
+
+    for (s) |c| {
+        switch (c) {
+            '"' => result.appendSlice(allocator, "\\\"") catch return "",
+            '\\' => result.appendSlice(allocator, "\\\\") catch return "",
+            '\n' => result.appendSlice(allocator, "\\n") catch return "",
+            '\r' => result.appendSlice(allocator, "\\r") catch return "",
+            '\t' => result.appendSlice(allocator, "\\t") catch return "",
+            else => result.append(allocator, c) catch return "",
+        }
+    }
+
+    return allocator.dupe(u8, result.items) catch "";
+}
+
 fn sendMessage(app: *App, message: []const u8) !void {
     const cwd = std.process.getCwdAlloc(app.arena.allocator()) catch "";
+    const escaped_msg = escapeJsonString(app.arena.allocator(), message);
+    const escaped_cwd = escapeJsonString(app.arena.allocator(), cwd);
     const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
         \\{{"app_type":"tui","command_type":"run_llm","session_id":"{s}","content":"{s}","cwd_session":"{s}"}}
-    , .{ app.session_id, message, cwd });
+    , .{ app.session_id, escaped_msg, escaped_cwd });
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
