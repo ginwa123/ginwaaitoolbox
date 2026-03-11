@@ -5,10 +5,7 @@
 
 /** Available agent types in the system */
 export enum AgentType {
-  Exploration = 'ExplorationAgent',
-  Planning = 'PlanningAgent',
-  Executing = 'ExecutingAgent',
-  Review = 'ReviewAgent',
+  Agent = 'Agent',
   Compaction = 'CompactionAgent',
 }
 

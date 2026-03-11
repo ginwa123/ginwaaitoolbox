@@ -48,7 +48,7 @@ test "build messages preserves agent from history" {
             .finish_reason = try allocator.dupe(u8, "stop"),
             .role = try allocator.dupe(u8, "assistant"),
             .tools = try allocator.dupe(u8, ""),
-            .agent = try allocator.dupe(u8, "PlanningAgent"),
+            .agent = try allocator.dupe(u8, "Agent"),
             .session_name = try allocator.dupe(u8, ""),
             .loop_index = 0,
         },

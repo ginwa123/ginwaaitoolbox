@@ -5,7 +5,7 @@ const logger_mod = tree1_mod.logger;
 const http_server = @import("nalarcore").http_server;
 
 /// Get the current agent from the last message itree1_mod.tui_workflow;n the database.
-/// Returns "ExplorationAgent" if no messages exist for this session.
+/// Returns "Agent" if no messages exist for this session.
 pub fn run(allocator: std.mem.Allocator, session_id: []const u8, logger: *logger_mod.Logger, sessions: []tui_workflow.SessionInfo) void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
 

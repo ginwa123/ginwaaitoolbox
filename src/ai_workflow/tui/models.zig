@@ -19,7 +19,7 @@ pub const TUIHistory = struct {
     role: []const u8,
     tools: []const u8,
     reasoning_content: ?[]const u8 = null,
-    agent: []const u8 = "ExplorationAgent",
+    agent: []const u8 = "Agent",
     session_name: []const u8 = "",
     loop_index: u32 = 0,
 

@@ -116,7 +116,7 @@ test "get_messages returns messages for a session" {
     try db.exec(allocator,
         \\INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role, agent, session_name, loop_index) VALUES 
         \\('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'Hello', 'stop', 'assistant', 'GeneralAgent', 'Test Session', 0),
-        \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'World', 'stop', 'user', 'ExecutingAgent', 'Test Session', 1)
+        \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'World', 'stop', 'user', 'Agent', 'Test Session', 1)
     , &[_][]const u8{});
 
     const result = try get_messages.run(allocator, &db, "test-session");
@@ -436,7 +436,7 @@ test "get_messages handles agent and session tracking fields" {
     try mgr.runMigrations();
 
     try db.exec(allocator,
-        "INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role, agent, session_name, loop_index) VALUES ('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'Response', 'stop', 'assistant', 'PlanningAgent', 'Plan A', 5)",
+        "INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role, agent, session_name, loop_index) VALUES ('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'Response', 'stop', 'assistant', 'Agent', 'Plan A', 5)",
         &[_][]const u8{}
     );
 
@@ -449,7 +449,7 @@ test "get_messages handles agent and session tracking fields" {
     }
 
     try std.testing.expectEqual(@as(usize, 1), result.len);
-    try std.testing.expectEqualStrings("PlanningAgent", result[0].agent);
+    try std.testing.expectEqualStrings("Agent", result[0].agent);
     try std.testing.expectEqualStrings("Plan A", result[0].session_name);
     try std.testing.expectEqual(@as(u32, 5), result[0].loop_index);
 }

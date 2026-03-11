@@ -73,7 +73,7 @@ pub const Migration006AddAgent = struct {
     pub const name = "add_agent";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN agent TEXT DEFAULT 'ExplorationAgent'", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN agent TEXT DEFAULT 'Agent'", &[_][]const u8{});
     }
 };
 pub const Migration007AddSessionTracking = struct {
@@ -119,7 +119,7 @@ pub const Migration009RemoveCreatedColumn = struct {
             \\    reasoning_content TEXT,
             \\    session_dir TEXT,
             \\    is_feed_to_llm INTEGER DEFAULT 1,
-            \\    agent TEXT DEFAULT 'ExplorationAgent',
+            \\    agent TEXT DEFAULT 'Agent',
             \\    session_name TEXT,
             \\    loop_index INTEGER DEFAULT 0,
             \\    temperature REAL DEFAULT 0.2,
@@ -136,7 +136,7 @@ pub const Migration009RemoveCreatedColumn = struct {
             \\    tool_results_json, finish_reason, usage_json,
             \\    datetime(CAST(created AS INTEGER), 'unixepoch'),
             \\    COALESCE(role, 'assistant'), reasoning_content, session_dir,
-            \\    COALESCE(is_feed_to_llm, 1), COALESCE(agent, 'ExplorationAgent'),
+            \\    COALESCE(is_feed_to_llm, 1), COALESCE(agent, 'Agent'),
             \\    session_name, COALESCE(loop_index, 0), 0.2, 0
             \\FROM llm_history_old
         , &[_][]const u8{});

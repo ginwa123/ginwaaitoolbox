@@ -88,7 +88,7 @@ test "StreamingAggregator - multiple tool calls" {
     try aggregator.processChunk(.{ .tool_calls_delta = @as([]const agent.ToolCallDelta, &deltas3) });
 
     const deltas4 = [_]agent.ToolCallDelta{
-        .{ .index = 1, .function_arguments = "{\"agent\":\"PlanningAgent\"}" },
+        .{ .index = 1, .function_arguments = "{\"agent\":\"Agent\"}" },
     };
     try aggregator.processChunk(.{ .tool_calls_delta = @as([]const agent.ToolCallDelta, &deltas4) });
 

@@ -2,7 +2,7 @@
 
 If you do zig build run, or zig build run:tui, it will kill yourself process, so dont do that.
 
-# ExecutingAgent Memory
+# Agent Memory
 
 <!-- Existing entries may be updated if a better fix or more accurate root cause is found. -->
 
@@ -31,6 +31,17 @@ If you do zig build run, or zig build run:tui, it will kill yourself process, so
 - [zig@0.15] `std.posix.sigemptyset()` returns `sigset_t` for signal mask initialization
 
 ## Resolved Issues
+
+### [2026-03-11] Agent System Simplified
+**Problem:** The system used three separate agents (ExplorationAgent, PlanningAgent, ExecutingAgent) which added complexity and required routing between agents.
+**Root cause:** Over-engineered agent architecture that fragmented the workflow across multiple specialized agents.
+**Fix:** Replaced all three agents with a single unified "Agent" that handles all workflows:
+- Exploration, planning, and execution all in one agent
+- Removed all `change_agent_tool` calls from prompts
+- Updated all default agent strings from "ExplorationAgent" to "Agent"
+- Removed agent type switching logic
+- Only CompactionAgent remains as a separate agent (auto-triggered)
+**Reuse signal:** When agents require complex handoff protocols, consider a unified agent approach first.
 
 ### [2025-03-11] Backend Process Killed on Terminal Session Change
 **Problem:** When starting `zigginagentic-tui`, the backend process was killed if the user opened another terminal session. This happened because the backend was not properly daemonized - it remained attached to the TUI's terminal session and received SIGHUP when the terminal session changed.

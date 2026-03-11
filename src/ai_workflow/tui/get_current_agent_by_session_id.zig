@@ -11,7 +11,7 @@ pub const AgentState = struct {
 pub fn run(allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8) !AgentState {
-    const sql = "SELECT COALESCE(agent, 'ExplorationAgent'), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0) FROM llm_history WHERE session_id = ? ORDER BY id DESC LIMIT 1";
+    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0) FROM llm_history WHERE session_id = ? ORDER BY id DESC LIMIT 1";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -26,7 +26,7 @@ pub fn run(allocator: std.mem.Allocator,
         };
     } else {
         return AgentState{
-            .agent = try allocator.dupe(u8, "ExplorationAgent"),
+            .agent = try allocator.dupe(u8, "Agent"),
             .temperature = 0.2,
             .is_thinking = false,
         };

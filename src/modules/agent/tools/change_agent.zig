@@ -23,7 +23,7 @@ pub const ChangeAgentTool = AgentTool{
                 .{
                     .name = "agent",
                     .type = "string",
-                    .description = "The agent to hand off to. One of: ExplorationAgent, PlanningAgent, ExecutingAgent.",
+                    .description = "The agent to hand off to. Only option: Agent. (CompactionAgent is auto-triggered).",
                 },
                 .{
                     .name = "message",

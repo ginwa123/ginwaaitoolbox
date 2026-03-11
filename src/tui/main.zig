@@ -578,7 +578,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     const SSE_TIMEOUT_MS: i64 = 30000; // 30 seconds
     var last_data_received_ms: i64 = std.time.milliTimestamp();
     var reconnection_attempts: u32 = 0;
-    const MAX_RECONNECTION_ATTEMPTS: u32 = 3;
+    const MAX_RECONNECTION_ATTEMPTS: u32 = 100;
 
     var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);

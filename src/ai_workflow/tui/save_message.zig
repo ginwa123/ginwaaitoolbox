@@ -40,7 +40,7 @@ pub fn run(
         (response_finish_reason orelse "null");
     const roleStr = role orelse "assistant";
     const reasoningStr = response_reasoning_content orelse "";
-    const agentStr = agent_name orelse "ExplorationAgent";
+    const agentStr = agent_name orelse "Agent";
 
     if (response_content) |c| {
         contentStr = c;
