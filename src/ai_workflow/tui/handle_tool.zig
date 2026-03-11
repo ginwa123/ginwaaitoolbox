@@ -14,6 +14,7 @@ const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
 const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
 const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
+const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
 const loop_detector = tree1_mod.loop_detector;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 
@@ -34,6 +35,8 @@ pub fn run(
     res_dynamic_agent: agent.CallResponse,
     agent_temperature: *f32,
     isThinking: *bool,
+    api_key: []const u8,
+    base_url: []const u8,
 ) !void {
     send_response.run(allocator, session_id, logger, res_dynamic_agent, null);
     if (res_dynamic_agent.tool_calls) |tc| {
@@ -127,6 +130,10 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
                 _ = try handle_remove_skill_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent")) {
+                try handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, api_key, base_url);
             }
         }
         logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
