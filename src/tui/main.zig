@@ -293,6 +293,41 @@ fn waitForSseConnected(socket: std.posix.fd_t, timeout_ms: u64) bool {
     }
 }
 
+/// Reconnect to SSE stream for the given session
+/// Returns new socket fd on success, -1 on failure
+fn reconnectSseStream(app: *App, current_socket: std.posix.fd_t) std.posix.fd_t {
+    // Close old socket
+    std.posix.close(current_socket);
+
+    // Create new socket
+    const new_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return -1;
+
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    std.posix.connect(new_socket, &addr.any, @sizeOf(std.net.Address)) catch {
+        std.posix.close(new_socket);
+        return -1;
+    };
+
+    // Send stream request
+    const stream_request = std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, HTTP_PORT }) catch {
+        std.posix.close(new_socket);
+        return -1;
+    };
+
+    _ = std.posix.write(new_socket, stream_request) catch {
+        std.posix.close(new_socket);
+        return -1;
+    };
+
+    // Wait for connected event
+    if (!waitForSseConnected(new_socket, 5000)) {
+        std.posix.close(new_socket);
+        return -1;
+    }
+
+    return new_socket;
+}
+
 // ─── Messaging ───────────────────────────────────────────────────────────────
 
 /// Escape a string for JSON output
@@ -534,7 +569,13 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var retry_count: usize = 0;
     var streaming_started = false;
 
-    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
+    // Timeout detection for SSE reconnection
+    const SSE_TIMEOUT_MS: i64 = 30000; // 30 seconds
+    var last_data_received_ms: i64 = std.time.milliTimestamp();
+    var reconnection_attempts: u32 = 0;
+    const MAX_RECONNECTION_ATTEMPTS: u32 = 3;
+
+    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
@@ -586,11 +627,42 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
                 new_data = true;
+                // Update last data received timestamp
+                last_data_received_ms = std.time.milliTimestamp();
             }
 
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         } else {
-            // No data available - sleep to prevent busy-waiting
+            // No data available - check for timeout
+            const now = std.time.milliTimestamp();
+            if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
+                // Timeout detected - attempt reconnection
+                if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
+                    std.debug.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
+                    break;
+                }
+
+                reconnection_attempts += 1;
+                std.debug.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, reset });
+
+                const new_socket = reconnectSseStream(app, stream_socket);
+                if (new_socket < 0) {
+                    std.debug.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
+                    // Continue trying until max attempts
+                    last_data_received_ms = now; // Reset timer to avoid immediate retry
+                    std.Thread.sleep(1_000_000_000); // Wait 1 second before next attempt
+                    continue;
+                }
+
+                // Reconnection successful
+                stream_socket = new_socket;
+                poll_fds[0].fd = stream_socket;
+                last_data_received_ms = std.time.milliTimestamp();
+                std.debug.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
+                continue;
+            }
+
+            // Sleep to prevent busy-waiting
             std.Thread.sleep(10_000_000); // 10ms
         }
 
@@ -749,7 +821,13 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     errdefer raw_buffer.deinit(app.allocator);
     var buf: [4096]u8 = undefined;
 
-    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
+    // Timeout detection for SSE reconnection
+    const SSE_TIMEOUT_MS: i64 = 30000; // 30 seconds
+    var last_data_received_ms: i64 = std.time.milliTimestamp();
+    var reconnection_attempts: u32 = 0;
+    const MAX_RECONNECTION_ATTEMPTS: u32 = 3;
+
+    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
@@ -782,12 +860,42 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
                 new_data = true;
+                // Update last data received timestamp
+                last_data_received_ms = std.time.milliTimestamp();
             }
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         }
 
         if (!new_data) {
-            // No data available - sleep to prevent busy-waiting
+            // No data available - check for timeout
+            const now = std.time.milliTimestamp();
+            if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
+                // Timeout detected - attempt reconnection
+                if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
+                    std.debug.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
+                    break;
+                }
+
+                reconnection_attempts += 1;
+                std.debug.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, reset });
+
+                const new_socket = reconnectSseStream(app, stream_socket);
+                if (new_socket < 0) {
+                    std.debug.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
+                    last_data_received_ms = now;
+                    std.Thread.sleep(1_000_000_000);
+                    continue;
+                }
+
+                // Reconnection successful
+                stream_socket = new_socket;
+                poll_fds[0].fd = stream_socket;
+                last_data_received_ms = std.time.milliTimestamp();
+                std.debug.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
+                continue;
+            }
+
+            // Sleep to prevent busy-waiting
             std.Thread.sleep(10_000_000); // 10ms
             continue;
         }
