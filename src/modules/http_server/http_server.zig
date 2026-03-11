@@ -228,9 +228,31 @@ fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
 
     if (global_server) |server| {
         if (server.message_handler) |msg_handler| {
-            var arena = std.heap.ArenaAllocator.init(server.allocator);
-            defer arena.deinit();
-            msg_handler(arena.allocator(), body, server.ctx);
+            const HandlerArgs = struct {
+                allocator: std.mem.Allocator,
+                body: []const u8,
+                handler: *const fn (std.mem.Allocator, []const u8, ?*anyopaque) void,
+                ctx: ?*anyopaque,
+            };
+
+            const args = try server.allocator.create(HandlerArgs);
+            args.* = .{
+                .allocator = server.allocator,
+                .body = try server.allocator.dupe(u8, body),
+                .handler = msg_handler,
+                .ctx = server.ctx,
+            };
+
+            const thread = try std.Thread.spawn(.{}, struct {
+                fn run(a: *HandlerArgs) void {
+                    defer a.allocator.free(a.body);
+                    defer a.allocator.destroy(a);
+                    var arena = std.heap.ArenaAllocator.init(a.allocator);
+                    defer arena.deinit();
+                    a.handler(arena.allocator(), a.body, a.ctx);
+                }
+            }.run, .{args});
+            thread.detach(); // fire and forget
         }
     }
 
@@ -273,6 +295,8 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
     // Keep connection alive with periodic keepalives
     // The actual events are sent via sendEvent which writes directly to the stream
     while (ctx.server.sse_manager.hasSession(ctx.session_id)) {
+        std.Thread.sleep(30_000_000_000);
+
         // Send keepalive comment every 30 seconds to prevent timeouts
         stream.writeAll(": keepalive\n\n") catch |err| {
             std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });

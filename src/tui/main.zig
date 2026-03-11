@@ -570,7 +570,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var buf: [4096]u8 = undefined;
     var spinner_timer: usize = 0;
     const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-    var last_tick = std.time.milliTimestamp();
+    var last_tick: i64 = 0;
     var retry_count: usize = 0;
     var streaming_started = false;
 
@@ -606,14 +606,17 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         displayed_tool_ids.deinit(app.allocator);
     }
     var last_printed_chunk_index: usize = 0;
-    // Track last processed XML length to avoid O(n²) re-processing
-    // Track last searched position for finish_reason to avoid O(n²) searches
     var last_finish_search_pos: usize = 0;
-
     var raw_buffer_processed_len: usize = 0;
 
     while (true) {
-        const ready = std.posix.poll(&poll_fds, 200) catch 0;
+        // Cache timestamp once per loop — avoids redundant syscalls
+        const now = std.time.milliTimestamp();
+
+        // poll() blocks up to 100ms waiting for data — this replaces busy-waiting.
+        // Using a longer timeout here is the primary CPU fix: instead of polling
+        // every ~10ms (50ms poll + 10ms sleep), we just let poll() do the waiting.
+        const ready = std.posix.poll(&poll_fds, 100) catch 0;
         var new_data = false;
 
         if (ready > 0) {
@@ -632,16 +635,15 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
                 new_data = true;
-                // Update last data received timestamp
-                last_data_received_ms = std.time.milliTimestamp();
+                last_data_received_ms = now;
             }
 
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         } else {
-            // No data available - check for timeout
-            const now = std.time.milliTimestamp();
+            // poll() timed out — no data arrived in the last 100ms.
+            // No need for an extra Thread.sleep() here; poll() already waited.
+
             if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
-                // Timeout detected - attempt reconnection
                 if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
                     std.debug.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
                     break;
@@ -653,13 +655,11 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 const new_socket = reconnectSseStream(app, stream_socket);
                 if (new_socket < 0) {
                     std.debug.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
-                    // Continue trying until max attempts
-                    last_data_received_ms = now; // Reset timer to avoid immediate retry
-                    std.Thread.sleep(1_000_000_000); // Wait 1 second before next attempt
+                    last_data_received_ms = now;
+                    // No explicit sleep needed — poll() in next iteration will wait 100ms
                     continue;
                 }
 
-                // Reconnection successful
                 stream_socket = new_socket;
                 poll_fds[0].fd = stream_socket;
                 last_data_received_ms = std.time.milliTimestamp();
@@ -667,23 +667,29 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 continue;
             }
 
-            // Sleep to prevent busy-waiting
-            std.Thread.sleep(10_000_000); // 10ms
+            // Spinner — only updated when idle (no streaming yet), and only in
+            // the no-data branch so it doesn't run on every data-processing iteration.
+            if (!streaming_started and now - last_tick >= 100) {
+                last_tick = now;
+                const spin = spinners[spinner_timer % spinners.len];
+                spinner_timer += 1;
+                std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
+                    yellow, spin, reset, raw_buffer.items.len,
+                });
+            }
         }
 
         if (new_data) {
-            // ✅ KEY FIX: only decode NEW bytes, not entire buffer
             const new_raw = raw_buffer.items[raw_buffer_processed_len..];
-            if (new_raw.len == 0) continue; // nothing new to process
+            if (new_raw.len == 0) continue;
 
             if (decodeChunked(app.allocator, new_raw)) |decoded| {
                 defer app.allocator.free(decoded);
-                raw_buffer_processed_len = raw_buffer.items.len; // advance cursor
+                raw_buffer_processed_len = raw_buffer.items.len;
 
                 if (extractSseData(app.allocator, decoded)) |xml| {
                     defer app.allocator.free(xml);
 
-                    // xml is already only new content — no offset needed
                     var chunk_pos: usize = 0;
                     while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
                         const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
@@ -752,7 +758,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 } else |_| {}
             } else |_| {}
 
-            // finish_reason — O(1) amortized, already correct
+            // finish_reason — O(1) amortized
             const search_start = @min(last_finish_search_pos, raw_buffer.items.len);
             if (std.mem.indexOfPos(u8, raw_buffer.items, search_start, "</finish_reason>")) |_| {
                 last_finish_search_pos = raw_buffer.items.len;
@@ -770,27 +776,13 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 }
             }
         }
-
-        // Spinner
-        const now = std.time.milliTimestamp();
-        if (now - last_tick >= 100) {
-            last_tick = now;
-            if (!streaming_started) {
-                const spin = spinners[spinner_timer % spinners.len];
-                spinner_timer += 1;
-                std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
-                    yellow, spin, reset, raw_buffer.items.len,
-                });
-            }
-        }
     }
 
-    std.debug.print("\r\x1b[2K", .{}); // clear spinner on exit
+    std.debug.print("\r\x1b[2K", .{});
     if (stream_interrupted) {
         std.debug.print("\n{s}Interrupted (double ESC){s}\n", .{ yellow, reset });
     }
 
-    // remove debug prints if you want, keeping them for now
     std.debug.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ dim, raw_buffer.items.len, reset });
 
     const final_decoded = decodeChunked(app.allocator, raw_buffer.items) catch "";
