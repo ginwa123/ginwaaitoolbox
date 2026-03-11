@@ -120,7 +120,6 @@ fn fetchToolsFromServer(
     _headers: []const McpHeader,
     server_name: []const u8,
 ) ![]AgentTool {
-    _ = _headers; // Headers parameter unused for now
     // Build full URL for tools/list
     const tools_url = try std.fmt.allocPrint(allocator, "{s}/tools/list", .{url});
     defer allocator.free(tools_url);
@@ -139,21 +138,30 @@ fn fetchToolsFromServer(
         return &[_]AgentTool{};
     };
 
+    // Prepare extra headers (including custom headers from config)
+    var extra_headers: std.ArrayList(std.http.Header) = .empty;
+    defer extra_headers.deinit(allocator);
+
+    // Add Accept header required by MCP server
+    try extra_headers.append(allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
+
+    // Add custom headers from config
+    for (_headers) |header| {
+        try extra_headers.append(allocator, .{ .name = header.key, .value = header.value });
+    }
+
     // Build request
     var req = client.request(.POST, uri, .{
         .version = .@"HTTP/1.1",
         .headers = .{
             .content_type = .{ .override = "application/json" },
         },
+        .extra_headers = extra_headers.items,
     }) catch |err| {
         std.log.warn("Failed to create HTTP request for MCP server {s}: {s}", .{ server_name, @errorName(err) });
         return &[_]AgentTool{};
     };
     defer req.deinit();
-
-    // Add custom headers using extra_headers in request options
-    // Note: Custom headers need to be added before request is made
-    // For now, we'll skip custom headers and use a simpler approach
 
     // Send request body
     req.sendBodyComplete(request_body) catch |err| {
