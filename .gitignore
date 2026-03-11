@@ -4,3 +4,4 @@ test_main
 .plans
 /src/apps/kerjabot/node_modules
 /src/apps/kerjabot/dist
+/.worktrees
