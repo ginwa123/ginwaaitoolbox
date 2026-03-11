@@ -1,6 +1,11 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
 
+// Enable TLS support for HTTP client
+pub const std_options: std.Options = .{
+    .http_disable_tls = false,
+};
+
 // Module exports - these are available via @import("nalarcore")
 pub const agent = @import("modules/agent/agent.zig");
 pub const prompt = @import("modules/agent/prompt.zig");

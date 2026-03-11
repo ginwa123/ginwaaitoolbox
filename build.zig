@@ -18,6 +18,8 @@ fn createPlatformExe(
         }),
     });
     exe.linkSystemLibrary("sqlite3");
+    exe.linkSystemLibrary("ssl");
+    exe.linkSystemLibrary("crypto");
     exe.linkLibC();
     return exe;
 }
@@ -55,6 +57,8 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     exe.linkSystemLibrary("sqlite3");
+    exe.linkSystemLibrary("ssl");
+    exe.linkSystemLibrary("crypto");
     exe.linkLibC();
 
     const run_step = b.step("run", "Run the app");
@@ -68,6 +72,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    tui_exe.linkSystemLibrary("ssl");
+    tui_exe.linkSystemLibrary("crypto");
     tui_exe.linkLibC();
     b.installArtifact(tui_exe);
 
@@ -90,6 +96,8 @@ pub fn build(b: *std.Build) void {
     });
     mod_tests.linkLibC();
     mod_tests.linkSystemLibrary("sqlite3");
+    mod_tests.linkSystemLibrary("ssl");
+    mod_tests.linkSystemLibrary("crypto");
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
@@ -161,6 +169,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    tui_linux_exe.linkSystemLibrary("ssl");
+    tui_linux_exe.linkSystemLibrary("crypto");
     tui_linux_exe.linkLibC();
     const install_tui_linux_system = b.addInstallArtifact(tui_linux_exe, .{});
     tui_linux_system_step.dependOn(&install_tui_linux_system.step);

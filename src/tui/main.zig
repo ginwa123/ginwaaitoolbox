@@ -2,6 +2,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const keybindings = @import("keybindings.zig");
 
+// Enable TLS support for HTTP client
+pub const std_options: std.Options = .{
+    .http_disable_tls = false,
+};
+
 // HTTP SSE configuration
 const HTTP_HOST = "127.0.0.1";
 const HTTP_PORT: u16 = 8080;
