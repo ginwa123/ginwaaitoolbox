@@ -83,4 +83,5 @@ test {
     _ = @import("modules/agent/tools/text_replace_test.zig");
     _ = @import("modules/agent/tools/search.zig");
     _ = @import("modules/agent/tools/search_test.zig");
+    _ = @import("modules/agent/mcp/mcp/mcp_server.zig");
 }
