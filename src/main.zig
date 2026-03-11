@@ -326,7 +326,7 @@ pub fn main() !void {
                 std.debug.print("COMMAND: run_llm with session_id={s}, message={s}\n", .{ t.session_id, t.message });
                 // Pass 0 as conn_fd - HTTP mode doesn't use socket
                 std.debug.print("LAUNCHING WORKFLOW for session_id={s}...\n", .{t.session_id});
-                workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url);
+                workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config);
                 std.debug.print("WORKFLOW RETURNED for session_id={s}\n", .{t.session_id});
             }
             if (std.mem.eql(u8, t.command_type, "get_sessions")) {

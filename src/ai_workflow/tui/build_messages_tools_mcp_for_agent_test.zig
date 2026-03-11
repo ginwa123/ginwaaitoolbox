@@ -1,5 +1,6 @@
 const std = @import("std");
 const build_mcp_tools = @import("build_messages_tools_mcp_for_agent.zig");
+const config_mod = @import("../../modules/config/config.zig");
 
 test "parseProperties extracts tool properties" {
     const allocator = std.testing.allocator;
@@ -34,9 +35,18 @@ test "parseProperties extracts tool properties" {
 test "run returns empty array when no mcpServers configured" {
     const allocator = std.testing.allocator;
     
-    // This test assumes no config file exists or has no mcpServers
-    // In practice, this would need a mock config
-    const tools = try build_mcp_tools.run(allocator);
+    // Create a mock config with no mcpServers
+    var config = config_mod.LlmConfig{
+        .allocator = allocator,
+        .api_key = "test",
+        .model = "test",
+        .base_url = "test",
+        .model_compaction_size_kb = 100,
+        .mcpServers = null,
+    };
+    
+    // This test uses a mock config with no mcpServers
+    const tools = try build_mcp_tools.run(allocator, &config);
     defer {
         for (tools) |*tool| {
             allocator.free(tool.function.name);

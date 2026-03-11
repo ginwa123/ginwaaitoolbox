@@ -40,14 +40,7 @@ const ListToolsResult = struct {
 };
 
 /// Fetch MCP tools from all configured servers
-pub fn run(allocator: std.mem.Allocator) ![]AgentTool {
-    // Load config to get MCP servers
-    var config = config_mod.LlmConfig.init(allocator, null) catch |err| {
-        std.log.warn("Failed to load config for MCP tools: {s}", .{@errorName(err)});
-        return &[_]AgentTool{};
-    };
-    defer config.deinit();
-
+pub fn run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) ![]AgentTool {
     // Check if mcpServers is configured
     if (config.mcpServers == null) {
         return &[_]AgentTool{};

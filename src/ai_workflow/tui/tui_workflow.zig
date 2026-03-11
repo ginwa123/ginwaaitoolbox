@@ -44,6 +44,7 @@ const build_skill_content_mod = @import("build_skill_content.zig");
 const save_skill_mod = @import("save_skill.zig");
 const send_skill_mod = @import("send_skill.zig");
 const build_mcp_tools = @import("build_messages_tools_mcp_for_agent.zig");
+const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig");
 /// Compaction configuration constants
@@ -137,15 +138,15 @@ pub const TUIWorkflow = struct {
         };
     }
 
-    pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8) void {
-        self.run_internal(allocator, session_id, message, cwd, api_key, model, base_url) catch |err| {
+    pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) void {
+        self.run_internal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
             defer allocator.free(err_msg);
             send_error.run(allocator, session_id, self.logger, err_msg, "user_choice");
         };
     }
 
-    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8) !void {
+    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
         self.logger.infoFmt("WORKFLOW START: session_id={s}, message={s}", .{session_id, message}) catch {};
         defer { 
             self.logger.infoFmt("WORKFLOW END: session_id={s}", .{session_id}) catch {}; 
@@ -219,7 +220,7 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id) catch |err| {
+            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -270,9 +271,10 @@ pub const TUIWorkflow = struct {
         model: []const u8,
         base_url: []const u8,
         session_id: []const u8,
+        config: *const config_mod.LlmConfig,
     ) !agent.CallResponse {
         // Fetch MCP tools from configured servers
-        const mcp_tools = build_mcp_tools.run(allocator) catch |err| blk: {
+        const mcp_tools = build_mcp_tools.run(allocator, config) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
             break :blk &[_]tool_models.AgentTool{};
         };
