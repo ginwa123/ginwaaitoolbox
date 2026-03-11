@@ -266,12 +266,21 @@ pub const bashTool = AgentTool{
         \\- start with `timeout <seconds>`
         \\- limit output using `| head -n <N>`
         \\- avoid commands that produce unbounded output
-        \\- MANDATORY, using rtk if the lib is installed
+        \\- use ripgrep (rg) instead of grep/find when available
+        \\
+        \\## FORBIDDEN Commands
+        \\NEVER use any of the following — they produce unbounded output:
+        \\- `ls -R`, `ls -lR`, `ls -laR`, `ls -alR`, or any recursive `ls` variant
+        \\- `find /`, `find .` without `-maxdepth`
+        \\- `cat <file>` for large files — use read_file tool instead
+        \\- `grep -r` without scoping to a specific directory with depth limits
+        \\- `sed -n '...'` for reading file ranges — use read_file tool instead
+        \\- Any command without an explicit `timeout` prefix
+        \\- Any command without `| head -n <N>` output cap
         \\
         \\## Safety
         \\Avoid destructive or system-modifying commands.
-        \\Never assume the working directory.
-        \\Never use commands that produce unbounded output (e.g. `ls -R`, `find /`, `cat <large-file>`).
+        \\Never assume the working directory — always set cwd explicitly.
         ,
         .parameters = .{
             .type = "object",
@@ -285,6 +294,11 @@ pub const bashTool = AgentTool{
                     \\
                     \\GOOD: `timeout 10 zig build 2>&1 | head -n 50`
                     \\GOOD: `timeout 10 rg 'MyStruct' src/ | head -n 50`
+                    \\GOOD: `timeout 5 ls -la /some/dir | head -n 30`
+                    \\BAD:  `ls -R`         ← FORBIDDEN, unbounded recursive listing
+                    \\BAD:  `ls -laR`       ← FORBIDDEN, unbounded recursive listing
+                    \\BAD:  `ls -alR`       ← FORBIDDEN, unbounded recursive listing
+                    \\BAD:  `find / -name`  ← FORBIDDEN, use rg or scope with -maxdepth
                     \\BAD:  `cat src/main.zig`  ← use read_file instead
                     \\BAD:  `sed -n '10,20p'`   ← use read_file instead
                     \\BAD:  commands without timeout or output cap
