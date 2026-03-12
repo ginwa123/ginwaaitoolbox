@@ -30,94 +30,77 @@ pub const spawnSubAgentTool = AgentTool{
         \\Each sub-agent receives only its specific instruction (no parent context).
         \\Results are returned as separate tool result messages.
         \\
-        \\Input format (XML):
-        \\<sub_agents>
-        \\  <sub_agent>
-        \\    <name>agent1</name>
-        \\    <instruction>task description</instruction>
-        \\  </sub_agent>
-        \\</sub_agents>
+        \\Input format (JSON string):
+        \\{"sub_agents": [{"name": "agent1", "instruction": "task"}, ...]}
         ,
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
-                    .name = "xml_input",
+                    .name = "json_input",
                     .type = "string",
                     .description =
-                    \\XML-formatted sub-agent specifications.
+                    \\JSON-formatted sub-agent specifications as a string.
                     \\Max 20 sub-agents allowed.
-                    \\Format: <sub_agents><sub_agent><name>...</name><instruction>...</instruction></sub_agent></sub_agents>
+                    \\Format: {"sub_agents": [{"name": "...", "instruction": "..."}, ...]}
                     ,
                 },
             },
-            .required = &.{"xml_input"},
+            .required = &.{"json_input"},
         },
     },
 };
 
-/// Parse XML input to extract sub-agents
-/// Returns error if XML is invalid or more than max_agents
+/// Parse JSON input to extract sub-agents
+/// Returns error if JSON is invalid or more than max_agents
 pub fn parseSubAgents(
     allocator: std.mem.Allocator,
-    xml_input: []const u8,
+    input_json: []const u8,
     max_agents: usize,
 ) !SubAgentsInput {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, input_json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    const root_obj = root.object.get("sub_agents") orelse {
+        return error.MissingSubAgentsField;
+    };
+    const agents_array = root_obj.array;
+
+    if (agents_array.items.len == 0) {
+        return error.NoSubAgents;
+    }
+    if (agents_array.items.len > max_agents) {
+        return error.TooManySubAgents;
+    }
+
     var sub_agents_list = std.ArrayList(SubAgentInput).empty;
-
-    // Find all <sub_agent> blocks
-    var remaining = xml_input;
-    var count: usize = 0;
-    while (true) {
-        // Check max limit before parsing
-        if (count >= max_agents) {
-            sub_agents_list.deinit(allocator);
-            return error.TooManySubAgents;
+    errdefer {
+        for (sub_agents_list.items) |sa| {
+            allocator.free(sa.name);
+            allocator.free(sa.instruction);
         }
-        
-        const agent_start = std.mem.indexOf(u8, remaining, "<sub_agent>") orelse break;
-        const agent_content_start = agent_start + "<sub_agent>".len;
-        const agent_end = std.mem.indexOf(u8, remaining[agent_content_start..], "</sub_agent>") orelse {
-            sub_agents_list.deinit(allocator);
-            return error.InvalidSubAgentFormat;
-        };
-        const agent_content = remaining[agent_content_start..agent_content_start + agent_end];
+        sub_agents_list.deinit(allocator);
+    }
 
-        // Extract name
-        const name_start = std.mem.indexOf(u8, agent_content, "<name>") orelse {
-            sub_agents_list.deinit(allocator);
+    for (agents_array.items) |agent_val| {
+        const agent_obj = agent_val.object;
+        const name_val = agent_obj.get("name") orelse {
             return error.MissingSubAgentName;
         };
-        const name_content_start = name_start + "<name>".len;
-        const name_end = std.mem.indexOf(u8, agent_content[name_content_start..], "</name>") orelse {
-            sub_agents_list.deinit(allocator);
-            return error.MissingSubAgentName;
+        const instr_val = agent_obj.get("instruction") orelse {
+            return error.MissingSubAgentInstruction;
         };
-        const name = try allocator.dupe(u8, agent_content[name_content_start..name_content_start + name_end]);
 
-        // Extract instruction
-        const instr_start = std.mem.indexOf(u8, agent_content, "<instruction>") orelse {
-            sub_agents_list.deinit(allocator);
-            return error.MissingSubAgentInstruction;
-        };
-        const instr_content_start = instr_start + "<instruction>".len;
-        const instr_end = std.mem.indexOf(u8, agent_content[instr_content_start..], "</instruction>") orelse {
-            sub_agents_list.deinit(allocator);
-            return error.MissingSubAgentInstruction;
-        };
-        const instruction = try allocator.dupe(u8, agent_content[instr_content_start..instr_content_start + instr_end]);
+        const name = try allocator.dupe(u8, name_val.string);
+        const instruction = try allocator.dupe(u8, instr_val.string);
 
         try sub_agents_list.append(allocator, .{
             .name = name,
             .instruction = instruction,
         });
-        
-        count += 1;
-        remaining = remaining[agent_content_start + agent_end + "</sub_agent>".len..];
-    }
-
-    if (count == 0) {
-        return error.NoSubAgents;
     }
 
     return SubAgentsInput{

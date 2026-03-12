@@ -43,7 +43,7 @@ const handle_content_filter = @import("handle_content_filter.zig");
 const build_skill_content_mod = @import("build_skill_content.zig");
 const save_skill_mod = @import("save_skill.zig");
 const send_skill_mod = @import("send_skill.zig");
-const build_mcp_tools = @import("build_messages_tools_mcp_for_agent.zig");
+const buildMcpTools = @import("build_messages_tools_mcp_for_agent.zig");
 const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig");
@@ -287,7 +287,7 @@ pub const TUIWorkflow = struct {
         config: *const config_mod.LlmConfig,
     ) !agent.CallResponse {
         // Fetch MCP tools from configured servers
-        const mcp_tools = build_mcp_tools.run(allocator, config) catch |err| blk: {
+        const mcp_tools = buildMcpTools.run(allocator, config) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
             break :blk &[_]tool_models.AgentTool{};
         };

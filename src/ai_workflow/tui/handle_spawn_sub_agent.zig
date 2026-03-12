@@ -5,54 +5,312 @@ const tool_models = tree1_mod.tool_models;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
+const bash_tool = @import("../../modules/agent/tools/bash.zig");
+const read_file_tool = @import("../../modules/agent/tools/read_file.zig");
+const write_file_tool = @import("../../modules/agent/tools/write_file.zig");
+const search_tool = @import("../../modules/agent/tools/search.zig");
+const text_replace_tool = @import("../../modules/agent/tools/text_replace.zig");
+const config_mod = @import("../../modules/config/config.zig");
 const save_message = @import("save_message.zig");
 const send_tool_result = @import("send_tool_result.zig");
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
+const handle_tool = @import("handle_tool.zig");
+const loop_detector = tree1_mod.loop_detector;
 
 const MAX_SUB_AGENTS = 20;
+const MAX_TOOL_CALLS = 100; // Max tool calls per sub-agent to prevent infinite loops
 
-/// Run a single sub-agent with the given instruction
+// Import BashInput from models (not exported in bash.zig)
+const BashInput = @import("../../modules/agent/tools/models.zig").BashInput;
+
+/// Run a single sub-agent with basic tools (but no spawn_sub_agent or change_agent_tool)
 fn runSubAgent(
     allocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
+    // db kept for future use
+    db: *sqlite.SqliteBackend,
+    cwd: []const u8,
     instruction: []const u8,
     api_key: []const u8,
     model: []const u8,
     base_url: []const u8,
+    // config kept for future use (e.g., MCP tools)
+    config: *const config_mod.LlmConfig,
 ) ![]const u8 {
-    // Create a simple agent with no tools - just pure LLM response
+    _ = db; // reserved for future use
+    _ = cwd; // reserved for future use
+    _ = config; // reserved for future use
+    // Basic tools for sub-agents (no spawn_sub_agent, no change_agent_tool)
+    const sub_agent_tools: []const tool_models.AgentTool = &.{
+        bash_tool.bashTool,
+        read_file_tool.readFileTool,
+        write_file_tool.writeFileTool,
+        text_replace_tool.textReplaceTool,
+        search_tool.searchTool,
+    };
+
     var sub_agent = try agent.Agent.init(allocator, logger);
     defer sub_agent.deinit();
-    
+
     sub_agent.apiKey = api_key;
     sub_agent.model = model;
     sub_agent.baseUrl = base_url;
-    
+    sub_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
+
     // Build messages: empty system + user instruction
-    const messages = try allocator.alloc(agent.AgentMessage, 1);
-    messages[0] = .{
+    var messages: std.ArrayList(agent.AgentMessage) = .empty;
+    defer messages.deinit(allocator);
+
+    try messages.append(allocator, .{
         .role = .user,
         .content = instruction,
-    };
-    
-    const params = agent.AgentCall{
-        .tools = &[_]tool_models.AgentTool{},
-        .messages = messages,
-        .temperature = 0.3,
-        .max_tokens = 4000,
-    };
-    
-    const response = try sub_agent.call(params);
-    defer response.deinit();
-    
-    if (response.content) |content| {
-        return try allocator.dupe(u8, content);
+    });
+
+    var tool_call_count: usize = 0;
+    var last_response: ?agent.CallResponse = null;
+
+    while (tool_call_count < MAX_TOOL_CALLS) {
+        const params = agent.AgentCall{
+            .tools = sub_agent_tools,
+            .messages = messages.items,
+            .temperature = 0.3,
+            .max_tokens = 4000,
+        };
+
+        last_response = try sub_agent.call(params);
+        const response = last_response.?;
+
+        // Check finish_reason
+        if (response.finish_reason) |fr| {
+            if (fr == .stop) {
+                // Agent finished with stop - return the content
+                if (response.content) |content| {
+                    return try allocator.dupe(u8, content);
+                }
+                return try allocator.dupe(u8, "(empty response)");
+            } else if (fr == .tool_calls) {
+                // Process tool calls
+                tool_call_count += 1;
+
+                if (response.tool_calls) |tcs| {
+                    for (tcs) |tc| {
+                        logger.infoFmt("[SUB_AGENT] Tool: '{s}'", .{tc.function.name}) catch {};
+
+                        // Execute basic tools inline (no spawn_sub_agent or change_agent_tool)
+                        var tool_result: []const u8 = undefined;
+
+                        if (std.mem.eql(u8, tc.function.name, "bash")) {
+                            const result = try bash_tool.executeBash(allocator, try parseBashInput(allocator, tc.function.arguments));
+                            tool_result = try bash_tool.bashResultToString(allocator, result);
+                        } else if (std.mem.eql(u8, tc.function.name, "read_file")) {
+                            tool_result = try handleReadFile(allocator, tc.function.arguments);
+                        } else if (std.mem.eql(u8, tc.function.name, "search")) {
+                            tool_result = try handleSearch(allocator, tc.function.arguments);
+                        } else if (std.mem.eql(u8, tc.function.name, "text_replace")) {
+                            tool_result = try handleTextReplace(allocator, tc.function.arguments);
+                        } else {
+                            tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
+                        }
+
+                        // Add assistant message with tool_calls
+                        const tc_slice = try allocator.alloc(agent.ToolCall, 1);
+                        tc_slice[0] = .{
+                            .id = try allocator.dupe(u8, tc.id),
+                            .function = .{
+                                .name = try allocator.dupe(u8, tc.function.name),
+                                .arguments = try allocator.dupe(u8, tc.function.arguments),
+                            },
+                        };
+                        try messages.append(allocator, .{
+                            .role = .assistant,
+                            .content = null,
+                            .tool_calls = tc_slice,
+                        });
+
+                        // Add tool result message
+                        try messages.append(allocator, .{
+                            .role = .tool,
+                            .content = tool_result,
+                            .tool_call_id = try allocator.dupe(u8, tc.id),
+                        });
+                    }
+                }
+            } else {
+                // Other finish reasons (length, etc.)
+                if (response.content) |content| {
+                    return try allocator.dupe(u8, content);
+                }
+                break;
+            }
+        } else {
+            break;
+        }
     }
-    
-    return try allocator.dupe(u8, "(empty response)");
+
+    // Max tool calls reached
+    if (last_response) |response| {
+        if (response.content) |content| {
+            return try allocator.dupe(u8, content);
+        }
+    }
+    return try allocator.dupe(u8, "(max tool calls reached)");
 }
 
-/// Parse XML input and run spawn_sub_agent handler
+/// Parse bash input from JSON arguments
+fn parseBashInput(allocator: std.mem.Allocator, args: []const u8) !BashInput {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, args, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    const obj = root.object;
+
+    const command = obj.get("command") orelse return error.MissingCommand;
+    const cwd = obj.get("cwd");
+    const timeout = obj.get("timeout");
+    const max_output = obj.get("max_output");
+    const stdin_data = obj.get("stdin_data");
+    const background = obj.get("background");
+
+    return .{
+        .command = try allocator.dupe(u8, command.string),
+        .cwd = if (cwd) |v| try allocator.dupe(u8, v.string) else null,
+        .timeout = if (timeout) |v| @as(u32, @intCast(v.integer)) else null,
+        .max_output = if (max_output) |v| @as(usize, @intCast(v.integer)) else null,
+        .stdin_data = if (stdin_data) |v| try allocator.dupe(u8, v.string) else null,
+        .background = if (background) |v| v.bool else false,
+    };
+}
+
+/// Handle read_file tool
+fn handleReadFile(allocator: std.mem.Allocator, args: []const u8) ![]const u8 {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, args, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    const obj = root.object;
+
+    const path = obj.get("path") orelse return error.MissingPath;
+    const offset = obj.get("offset");
+    const limit = obj.get("limit");
+
+    const file = try std.fs.openFileAbsolute(path.string, .{});
+    defer file.close();
+
+    const stat = try file.stat();
+    const file_size = stat.size;
+
+    const read_offset: usize = if (offset) |v| @as(usize, @intCast(v.integer)) else 0;
+    var read_limit: usize = if (limit) |v| @as(usize, @intCast(v.integer)) else file_size;
+
+    if (read_offset >= file_size) {
+        return try allocator.dupe(u8, "(empty - offset beyond file size)");
+    }
+
+    if (read_offset + read_limit > file_size) {
+        read_limit = file_size - read_offset;
+    }
+
+    try file.seekTo(read_offset);
+    const buffer = try allocator.alloc(u8, read_limit);
+    defer allocator.free(buffer);
+
+    const bytes_read = try file.read(buffer);
+    return buffer[0..bytes_read];
+}
+
+/// Handle search tool
+fn handleSearch(allocator: std.mem.Allocator, args: []const u8) ![]const u8 {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, args, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    const obj = root.object;
+
+    const path = obj.get("path") orelse return error.MissingPath;
+    const pattern = obj.get("pattern") orelse return error.MissingPattern;
+
+    // Run ripgrep
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "rg", "--json", "-n", pattern.string, path.string },
+    });
+
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    if (result.term.Exited == 0) {
+        return result.stdout;
+    }
+    return result.stderr;
+}
+
+/// Handle text_replace tool
+fn handleTextReplace(allocator: std.mem.Allocator, args: []const u8) ![]const u8 {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, args, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    const obj = root.object;
+
+    const path = obj.get("path") orelse return error.MissingPath;
+    const old_str = obj.get("old_str") orelse return error.MissingOldStr;
+    const new_str = obj.get("new_str") orelse return error.MissingNewStr;
+
+    const file_content = try std.fs.openFileAbsolute(path.string, .{});
+    defer file_content.close();
+
+    const stat = try file_content.stat();
+    const file_bytes = try allocator.alloc(u8, stat.size);
+    defer allocator.free(file_bytes);
+
+    _ = try file_content.read(file_bytes);
+
+    // Simple string replace - allocate new buffer
+    const old_slice = old_str.string;
+    const new_slice = new_str.string;
+
+    var count: usize = 0;
+    var start: usize = 0;
+    while (std.mem.indexOf(u8, file_bytes[start..], old_slice)) |idx| {
+        count += 1;
+        start += idx + old_slice.len;
+    }
+
+    if (count == 0) {
+        return try allocator.dupe(u8, "ERROR: String not found");
+    }
+
+    // Calculate new size
+    const diff = new_slice.len - old_slice.len;
+    const new_size = stat.size + count * diff;
+    const new_buffer = try allocator.alloc(u8, new_size);
+    errdefer allocator.free(new_buffer);
+
+    // Perform replacement
+    var new_idx: usize = 0;
+    var old_idx: usize = 0;
+    while (std.mem.indexOf(u8, file_bytes[old_idx..], old_slice)) |idx| {
+        const found_start = old_idx + idx;
+        @memcpy(new_buffer[new_idx .. new_idx + found_start - old_idx], file_bytes[old_idx..found_start]);
+        new_idx += found_start - old_idx;
+        @memcpy(new_buffer[new_idx .. new_idx + new_slice.len], new_slice);
+        new_idx += new_slice.len;
+        old_idx = found_start + old_slice.len;
+    }
+    // Copy remaining
+    @memcpy(new_buffer[new_idx..], file_bytes[old_idx..]);
+
+    // Re-open the file and write the new content
+    const out_file = try std.fs.createFileAbsolute(path.string, .{});
+    defer out_file.close();
+    try out_file.writeAll(new_buffer);
+
+    return try std.fmt.allocPrint(allocator, "Replaced {} occurrence(s)", .{count});
+}
+
+/// Parse JSON input and run spawn_sub_agent handler
 pub fn run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -68,24 +326,25 @@ pub fn run(
     is_thinking: bool,
     api_key: []const u8,
     base_url: []const u8,
+    config: *const config_mod.LlmConfig,
 ) !void {
-    // Parse the XML input from function.arguments
+    // Parse the JSON input from function.arguments
     const parsed = try spawn_sub_agent_tool.parseSubAgents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
     defer parsed.deinit(allocator);
-    
+
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
-    
+
     // Run each sub-agent and collect results
     var results: std.ArrayList([]const u8) = .empty;
     defer {
         for (results.items) |r| allocator.free(r);
         results.deinit(allocator);
     }
-    
+
     for (parsed.sub_agents) |sub_agent| {
         logger.infoFmt("spawn_sub_agent: running agent '{s}' with instruction: {s}", .{ sub_agent.name, sub_agent.instruction }) catch {};
-        
-        const result = runSubAgent(allocator, logger, sub_agent.instruction, api_key, model, base_url) catch |err| {
+
+        const result = runSubAgent(allocator, logger, db, cwd, sub_agent.instruction, api_key, model, base_url, config) catch |err| {
             logger.errFmt("spawn_sub_agent: agent '{s}' failed: {s}", .{ sub_agent.name, @errorName(err) }) catch {};
             const err_msg = try std.fmt.allocPrint(allocator, "ERROR: {s}", .{@errorName(err)});
             defer allocator.free(err_msg);
@@ -94,12 +353,12 @@ pub fn run(
         };
         try results.append(allocator, result);
     }
-    
+
     // Build combined result message
     var combined_result = std.ArrayList(u8).empty;
     defer combined_result.deinit(allocator);
     var w = combined_result.writer(allocator);
-    
+
     try w.writeAll("<sub_agent_results>\n");
     for (parsed.sub_agents, 0..) |sub_agent, i| {
         try w.print("  <result name=\"{s}\">\n", .{sub_agent.name});
@@ -120,9 +379,9 @@ pub fn run(
         try w.writeAll("\n  </result>\n");
     }
     try w.writeAll("</sub_agent_results>");
-    
+
     const result_msg = try combined_result.toOwnedSlice(allocator);
-    
+
     // Fetch current agent from DB
     const current_agent_state = try get_current_agent_by_session_id.run(
         allocator,
@@ -130,22 +389,19 @@ pub fn run(
         session_id,
     );
     const current_agent = current_agent_state.agent;
-    
+
     const tool_result_msg = agent.AgentMessage{
         .role = .tool,
         .content = result_msg,
         .tool_call_id = try allocator.dupe(u8, tool_call.id),
     };
     try messages_list.append(allocator, tool_result_msg);
-    
+
     // Save to DB
-    _ = try save_message.run(
-        allocator, db, session_id, model, cwd,
-        result_msg, null, null, null, "tool", "tool", null, tool_call.id,
-        current_agent, session_name, loop_counter, agent_temperature, is_thinking);
-    
+    _ = try save_message.run(allocator, db, session_id, model, cwd, result_msg, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter, agent_temperature, is_thinking);
+
     _ = send_tool_result.run(allocator, session_id, logger, result_msg, tool_call.id, "spawn_sub_agent", null);
-    
+
     logger.infoFmt("spawn_sub_agent: completed {} sub-agents", .{parsed.sub_agents.len}) catch {};
 }
 
