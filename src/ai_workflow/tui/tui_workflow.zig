@@ -47,6 +47,7 @@ const build_mcp_tools = @import("build_messages_tools_mcp_for_agent.zig");
 const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig");
+const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
@@ -249,7 +250,7 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool.run(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking);
+                    try handle_tool.run(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
@@ -291,6 +292,7 @@ pub const TUIWorkflow = struct {
 
             // write_file_tool.writeFileTool,
             text_replace_tool.textReplaceTool, search_tool.searchTool,
+            spawn_sub_agent_tool.spawnSubAgentTool,
         };
 
         // Merge base tools with MCP tools
