@@ -5,6 +5,7 @@ const AgentToolFunction = @import("nalarcore").tool_models.AgentToolFunction;
 const ToolParameters = @import("nalarcore").tool_models.ToolParameters;
 const ToolProperty = @import("nalarcore").tool_models.ToolProperty;
 const config_mod = @import("../../modules/config/config.zig");
+const http_client = @import("../../modules/http/http_client.zig");
 
 /// Error types for MCP tool fetching
 pub const McpToolError = error{
@@ -123,81 +124,48 @@ fn fetchToolsFromServer(
     // Use the URL directly - MCP servers use /mcp endpoint, not /tools/list
     const tools_url = url;
 
-    // Create HTTP client
-    var client = std.http.Client{ .allocator = allocator };
+    // Create HTTP client using our new http_client module
+    var client = http_client.HttpClient.init(allocator);
     defer client.deinit();
 
     // Build request body (JSON-RPC)
     const request_body = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{}}");
     defer allocator.free(request_body);
 
-    // Parse URI
-    const uri = std.Uri.parse(tools_url) catch |err| {
-        std.log.warn("Failed to parse MCP server URL {s}: {s}", .{ tools_url, @errorName(err) });
-        return &[_]AgentTool{};
-    };
-
-    // Prepare extra headers (including custom headers from config)
-    var extra_headers: std.ArrayList(std.http.Header) = .empty;
-    defer extra_headers.deinit(allocator);
+    // Prepare headers (including custom headers from config)
+    var headers_hash = std.StringHashMap([]const u8).init(allocator);
+    defer headers_hash.deinit();
 
     // Add Accept header required by MCP server
-    try extra_headers.append(allocator, .{ .name = "Accept", .value = "application/json, text/event-stream" });
+    try headers_hash.put("Accept", "application/json, text/event-stream");
 
     // Add custom headers from config
     for (_headers) |header| {
-        try extra_headers.append(allocator, .{ .name = header.key, .value = header.value });
+        try headers_hash.put(header.key, header.value);
     }
 
-    // Build request
-    var req = client.request(.POST, uri, .{
-        .version = .@"HTTP/1.1",
-        .headers = .{
-            .content_type = .{ .override = "application/json" },
-        },
-        .extra_headers = extra_headers.items,
-    }) catch |err| {
-        std.log.warn("Failed to create HTTP request for MCP server {s}: {s}", .{ server_name, @errorName(err) });
+    // Make HTTP request using our http_client (which has curl fallback)
+    const result = client.post(tools_url, request_body, headers_hash) catch |err| {
+        std.log.warn("Failed to fetch MCP tools from {s}: {s}", .{ server_name, @errorName(err) });
         return &[_]AgentTool{};
     };
-    defer req.deinit();
-
-    // Send request body
-    req.sendBodyComplete(request_body) catch |err| {
-        std.log.warn("Failed to send request to MCP server {s}: {s}", .{ server_name, @errorName(err) });
-        return &[_]AgentTool{};
-    };
-
-    // Receive response
-    var redirect_buffer: [8192]u8 = undefined;
-    var response = req.receiveHead(&redirect_buffer) catch |err| {
-        std.log.warn("Failed to receive response from MCP server {s}: {s}", .{ server_name, @errorName(err) });
-        return &[_]AgentTool{};
-    };
-
-    // Read response body
-    var transfer_buffer: [64 * 1024]u8 = undefined;
-    const body = response.reader(&transfer_buffer).allocRemaining(allocator, .unlimited) catch |err| {
-        std.log.warn("Failed to read response body from MCP server {s}: {s}", .{ server_name, @errorName(err) });
-        return &[_]AgentTool{};
-    };
-    defer allocator.free(body);
+    defer allocator.free(result.body);
 
     // Check status
-    if (response.head.status != .ok) {
-        std.log.warn("MCP server {s} returned status {d}", .{ server_name, @intFromEnum(response.head.status) });
+    if (result.status_code != 200) {
+        std.log.warn("MCP server {s} returned status {d}", .{ server_name, result.status_code });
         return &[_]AgentTool{};
     }
 
     // Parse JSON response
-    const parsed = json.parseFromSlice(json.Value, allocator, body, .{
+    const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{
         .ignore_unknown_fields = true,
     }) catch |err| {
         std.log.warn("Failed to parse MCP response from {s}: {s}", .{ server_name, @errorName(err) });
         return &[_]AgentTool{};
     };
     defer parsed.deinit();
-    std.debug.print("MCP response: {s}\n", .{body});
+    std.debug.print("MCP response: {s}\n", .{result.body});
 
     // Extract tools from result
     const root = switch (parsed.value) {

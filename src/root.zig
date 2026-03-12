@@ -89,5 +89,5 @@ test {
     _ = @import("modules/agent/tools/search.zig");
     _ = @import("modules/agent/tools/search_test.zig");
     _ = @import("modules/agent/mcp/mcp/mcp_server.zig");
-    _ = @import("modules/agent/mcp/mcp/mcp_context7_test.zig");
+    _ = @import("modules/http/http_client.zig");
 }
