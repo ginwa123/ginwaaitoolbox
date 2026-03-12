@@ -315,6 +315,10 @@ fn waitForSseConnected(socket: std.posix.fd_t, timeout_ms: u64) bool {
     var buf: [4096]u8 = undefined;
     const start = std.time.milliTimestamp();
 
+    // Enable TCP keepalive to detect connection drops
+    var enable: u32 = 1;
+    std.posix.setsockopt(socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
+
     while (true) {
         if (std.time.milliTimestamp() - start > timeout_ms) return false;
 
@@ -610,13 +614,18 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var streaming_started = false;
 
     // Timeout detection for SSE reconnection
-    const SSE_TIMEOUT_MS: i64 = 30000; // 30 seconds
+    // Keepalive is sent every 30s, so use 90s (3x) to avoid false timeouts
+    const SSE_TIMEOUT_MS: i64 = 90000; // 90 seconds
     var last_data_received_ms: i64 = std.time.milliTimestamp();
     var reconnection_attempts: u32 = 0;
     const MAX_RECONNECTION_ATTEMPTS: u32 = 100;
 
     var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
+
+    // Enable TCP keepalive to detect connection drops
+    var enable: u32 = 1;
+    std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
     std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
@@ -855,13 +864,18 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     var buf: [4096]u8 = undefined;
 
     // Timeout detection for SSE reconnection
-    const SSE_TIMEOUT_MS: i64 = 30000; // 30 seconds
+    // Keepalive is sent every 30s, so use 90s (3x) to avoid false timeouts
+    const SSE_TIMEOUT_MS: i64 = 90000; // 90 seconds
     var last_data_received_ms: i64 = std.time.milliTimestamp();
     var reconnection_attempts: u32 = 0;
     const MAX_RECONNECTION_ATTEMPTS: u32 = 3;
 
     var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
+
+    // Enable TCP keepalive to detect connection drops
+    var enable: u32 = 1;
+    std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
     std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
