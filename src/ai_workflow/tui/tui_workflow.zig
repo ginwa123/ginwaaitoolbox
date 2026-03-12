@@ -332,7 +332,7 @@ pub const TUIWorkflow = struct {
 
             write_file_tool.writeFileTool,
             text_replace_tool.textReplaceTool, search_tool.searchTool,
-            // spawn_sub_agent_tool.spawnSubAgentTool,
+            spawn_sub_agent_tool.spawnSubAgentTool,
         };
 
         // Merge base tools with MCP tools

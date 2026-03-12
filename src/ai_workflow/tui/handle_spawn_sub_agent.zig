@@ -264,6 +264,8 @@ pub fn run(
     parent_id: []const u8,
 ) !void {
     // Parse the JSON input from function.arguments
+    logger.infoFmt("spawn_sub_agent: parsing JSON input", .{}) catch {};
+    logger.debugFmt("spawn_sub_agent: JSON input: {s}", .{tool_call.function.arguments}) catch {};
     const parsed = try spawn_sub_agent_tool.parseSubAgents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
     defer parsed.deinit(allocator);
 
