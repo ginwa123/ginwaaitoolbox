@@ -330,7 +330,7 @@ pub const TUIWorkflow = struct {
         const base_tools: []const tool_models.AgentTool = &.{
             bash_tool.bashTool,                read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool, remove_skill_tool.removeSkillTool,
 
-            // write_file_tool.writeFileTool,
+            write_file_tool.writeFileTool,
             text_replace_tool.textReplaceTool, search_tool.searchTool,
             // spawn_sub_agent_tool.spawnSubAgentTool,
         };

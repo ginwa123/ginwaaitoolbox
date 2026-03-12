@@ -15,6 +15,10 @@ const save_message = @import("save_message.zig");
 const send_tool_result = @import("send_tool_result.zig");
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 const handle_tool = @import("handle_tool.zig");
+const handle_read_file_tool = @import("handle_read_file_tool.zig");
+const handle_search_tool = @import("handle_search_tool.zig");
+const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
+const handle_write_file_tool = @import("handle_write_file_tool.zig");
 const loop_detector = tree1_mod.loop_detector;
 
 const MAX_SUB_AGENTS = 20;
@@ -103,11 +107,13 @@ fn runSubAgent(
                             const result = try bash_tool.executeBash(allocator, try parseBashInput(allocator, tc.function.arguments));
                             tool_result = try bash_tool.bashResultToString(allocator, result);
                         } else if (std.mem.eql(u8, tc.function.name, "read_file")) {
-                            tool_result = try handleReadFile(allocator, tc.function.arguments);
+                            tool_result = try handle_read_file_tool.run(allocator, tc);
                         } else if (std.mem.eql(u8, tc.function.name, "search")) {
-                            tool_result = try handleSearch(allocator, tc.function.arguments);
+                            tool_result = try handle_search_tool.run(allocator, tc);
                         } else if (std.mem.eql(u8, tc.function.name, "text_replace")) {
-                            tool_result = try handleTextReplace(allocator, tc.function.arguments);
+                            tool_result = try handle_text_replace_tool.run(allocator, tc);
+                        } else if (std.mem.eql(u8, tc.function.name, "write_file")) {
+                            tool_result = try handle_write_file_tool.run(allocator, tc);
                         } else {
                             tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
                         }
@@ -179,135 +185,6 @@ fn parseBashInput(allocator: std.mem.Allocator, args: []const u8) !BashInput {
         .stdin_data = if (stdin_data) |v| try allocator.dupe(u8, v.string) else null,
         .background = if (background) |v| v.bool else false,
     };
-}
-
-/// Handle read_file tool
-fn handleReadFile(allocator: std.mem.Allocator, args: []const u8) ![]const u8 {
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, args, .{});
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    const obj = root.object;
-
-    const path = obj.get("path") orelse return error.MissingPath;
-    const offset = obj.get("offset");
-    const limit = obj.get("limit");
-
-    const file = try std.fs.openFileAbsolute(path.string, .{});
-    defer file.close();
-
-    const stat = try file.stat();
-    const file_size = stat.size;
-
-    const read_offset: usize = if (offset) |v| @as(usize, @intCast(v.integer)) else 0;
-    var read_limit: usize = if (limit) |v| @as(usize, @intCast(v.integer)) else file_size;
-
-    if (read_offset >= file_size) {
-        return try allocator.dupe(u8, "(empty - offset beyond file size)");
-    }
-
-    if (read_offset + read_limit > file_size) {
-        read_limit = file_size - read_offset;
-    }
-
-    try file.seekTo(read_offset);
-    const buffer = try allocator.alloc(u8, read_limit);
-    defer allocator.free(buffer);
-
-    const bytes_read = try file.read(buffer);
-    return buffer[0..bytes_read];
-}
-
-/// Handle search tool
-fn handleSearch(allocator: std.mem.Allocator, args: []const u8) ![]const u8 {
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, args, .{});
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    const obj = root.object;
-
-    const path = obj.get("path") orelse return error.MissingPath;
-    const pattern = obj.get("pattern") orelse return error.MissingPattern;
-
-    // Run ripgrep
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "rg", "--json", "-n", pattern.string, path.string },
-    });
-
-    defer {
-        allocator.free(result.stdout);
-        allocator.free(result.stderr);
-    }
-
-    if (result.term.Exited == 0) {
-        return result.stdout;
-    }
-    return result.stderr;
-}
-
-/// Handle text_replace tool
-fn handleTextReplace(allocator: std.mem.Allocator, args: []const u8) ![]const u8 {
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, args, .{});
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    const obj = root.object;
-
-    const path = obj.get("path") orelse return error.MissingPath;
-    const old_str = obj.get("old_str") orelse return error.MissingOldStr;
-    const new_str = obj.get("new_str") orelse return error.MissingNewStr;
-
-    const file_content = try std.fs.openFileAbsolute(path.string, .{});
-    defer file_content.close();
-
-    const stat = try file_content.stat();
-    const file_bytes = try allocator.alloc(u8, stat.size);
-    defer allocator.free(file_bytes);
-
-    _ = try file_content.read(file_bytes);
-
-    // Simple string replace - allocate new buffer
-    const old_slice = old_str.string;
-    const new_slice = new_str.string;
-
-    var count: usize = 0;
-    var start: usize = 0;
-    while (std.mem.indexOf(u8, file_bytes[start..], old_slice)) |idx| {
-        count += 1;
-        start += idx + old_slice.len;
-    }
-
-    if (count == 0) {
-        return try allocator.dupe(u8, "ERROR: String not found");
-    }
-
-    // Calculate new size
-    const diff = new_slice.len - old_slice.len;
-    const new_size = stat.size + count * diff;
-    const new_buffer = try allocator.alloc(u8, new_size);
-    errdefer allocator.free(new_buffer);
-
-    // Perform replacement
-    var new_idx: usize = 0;
-    var old_idx: usize = 0;
-    while (std.mem.indexOf(u8, file_bytes[old_idx..], old_slice)) |idx| {
-        const found_start = old_idx + idx;
-        @memcpy(new_buffer[new_idx .. new_idx + found_start - old_idx], file_bytes[old_idx..found_start]);
-        new_idx += found_start - old_idx;
-        @memcpy(new_buffer[new_idx .. new_idx + new_slice.len], new_slice);
-        new_idx += new_slice.len;
-        old_idx = found_start + old_slice.len;
-    }
-    // Copy remaining
-    @memcpy(new_buffer[new_idx..], file_bytes[old_idx..]);
-
-    // Re-open the file and write the new content
-    const out_file = try std.fs.createFileAbsolute(path.string, .{});
-    defer out_file.close();
-    try out_file.writeAll(new_buffer);
-
-    return try std.fmt.allocPrint(allocator, "Replaced {} occurrence(s)", .{count});
 }
 
 /// Parse JSON input and run spawn_sub_agent handler
