@@ -2,8 +2,66 @@
 const std = @import("std");
 
 // Enable TLS support for HTTP client
+/// Early panic log file path - set before main() runs
+/// This allows panic handler to write to log file even before logger is initialized
+var panic_log_path: ?[]const u8 = null;
+
+pub fn getPanicLogPath() ?[]const u8 {
+    return panic_log_path;
+}
+
+pub fn setPanicLogPath(path: []const u8) void {
+    panic_log_path = path;
+}
+
+/// Panic handler that logs to file and notifies SSE clients
+fn panicHandler(comptime message: []const u8, _: ?*std.builtin.StackTrace) noreturn {
+    // Get stack trace if available
+    var stack_buffer: [64]std.builtin.StackTrace = undefined;
+    var captured_stack: ?*std.builtin.StackTrace = null;
+
+    // Try to capture current stack trace
+    if (std.debug.getStackTrace(&stack_buffer)) |stack| {
+        captured_stack = stack;
+    }
+
+    // Build panic log message
+    var panic_buf: std.ArrayList(u8) = std.ArrayList(u8).init(std.heap.page_allocator);
+    defer panic_buf.deinit();
+
+    panic_buf.writer().print("=== PANIC ===\n", .{}) catch {};
+    panic_buf.writer().print("Message: {s}\n", .{message}) catch {};
+
+    if (captured_stack) |stack| {
+        panic_buf.writer().print("Stack trace:\n", .{}) catch {};
+        std.debug.formatStackTrace(stack, std.heap.page_allocator, panic_buf.writer()) catch {};
+    }
+    panic_buf.writer().print("=============\n", .{}) catch {};
+
+    const panic_log: []const u8 = panic_buf.items;
+
+    // Write to panic log file if path is set
+    if (panic_log_path) |path| {
+        const file = std.fs.openFileAbsolute(path, .{ .mode = .append_to_file }) catch null;
+        if (file) |f| {
+            f.writeAll(panic_log) catch {};
+            f.close();
+        }
+    }
+
+    // Also write to stderr for visibility
+    std.debug.print("{s}", .{panic_log});
+
+    // Broadcast panic to all connected TUI clients via SSE
+    http_server.broadcastPanic(panic_log);
+
+    // Exit with error code
+    std.process.exit(1);
+}
+
 pub const std_options: std.Options = .{
     .http_disable_tls = false,
+    .panic = panicHandler,
 };
 
 // Module exports - these are available via @import("nalarcore")

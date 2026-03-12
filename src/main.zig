@@ -277,6 +277,9 @@ pub fn main() !void {
     const log_file_path = try std.fs.path.join(parentAllocator, &.{ tmp_path, "agentic_coding.log" });
     defer parentAllocator.free(log_file_path);
 
+    // SET PANIC LOG PATH EARLY - before any code that could panic
+    tree1.setPanicLogPath(log_file_path);
+
     // Initialize global logger
     tree1.logger.initGlobalColor(parentAllocator, .{
         .min_level = .info,

@@ -176,6 +176,25 @@ pub const SseConnectionManager = struct {
         defer self.mutex.unlock();
         return self.connections.contains(session_id);
     }
+
+    /// Send an event to ALL connected sessions (broadcast)
+    pub fn broadcast(self: *Self, event: SseEvent) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
+        const formatted = event.formatInto(&stack_buf) catch {
+            std.log.err("SSE broadcast: event too large for stack buffer", .{});
+            return;
+        };
+
+        var iter = self.connections.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.writeAll(formatted) catch {
+                std.log.warn("SSE broadcast: failed to write to session {s}", .{entry.key_ptr.*});
+            };
+        }
+    }
 };
 
 pub const MessageHandler = *const fn (allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void;
@@ -189,6 +208,17 @@ pub fn getGlobalSseManager() ?*SseConnectionManager {
         return &server.sse_manager;
     }
     return null;
+}
+
+/// Broadcast a panic event to all connected SSE clients
+pub fn broadcastPanic(panic_info: []const u8) void {
+    if (global_server) |server| {
+        const event = SseEvent{
+            .event_type = "panic",
+            .data = panic_info,
+        };
+        server.sse_manager.broadcast(event);
+    }
 }
 
 pub const HttpServer = struct {
