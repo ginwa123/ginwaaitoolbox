@@ -89,8 +89,7 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMess
 
         return msg;
     };
-    // Don't deinit parsed - let the caller's arena handle cleanup
-    // The parsed arena is a child of the caller's allocator
+    defer parsed.deinit();
 
     const root = parsed.value.object;
     var msg: CommandMessage = .{};
@@ -107,6 +106,9 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMess
     if (root.get("cwd_session")) |v| {
         msg.cwd_session = try allocator.dupe(u8, v.string);
     }
+
+    // MUST deinit parsed AFTER we've dupe'd all needed strings
+    parsed.deinit();
 
     return msg;
 }

@@ -670,6 +670,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
                 new_data = true;
+                // Update last data received timestamp (includes keepalive events)
                 last_data_received_ms = now;
             }
 
@@ -880,6 +881,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     };
 
     while (true) {
+        const now = std.time.milliTimestamp();
         const ready = std.posix.poll(&poll_fds, 50) catch 0;
         var new_data = false;
         if (ready > 0) {
@@ -892,15 +894,14 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
                 new_data = true;
-                // Update last data received timestamp
-                last_data_received_ms = std.time.milliTimestamp();
+                // Update last data received timestamp (includes keepalive events)
+                last_data_received_ms = now;
             }
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         }
 
         if (!new_data) {
             // No data available - check for timeout
-            const now = std.time.milliTimestamp();
             if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
                 // Timeout detected - attempt reconnection
                 if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
@@ -922,7 +923,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
                 // Reconnection successful
                 stream_socket = new_socket;
                 poll_fds[0].fd = stream_socket;
-                last_data_received_ms = std.time.milliTimestamp();
+                last_data_received_ms = now;
                 std.debug.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
                 continue;
             }
