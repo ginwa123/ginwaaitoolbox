@@ -92,21 +92,10 @@ pub fn run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) ![
         }
 
         // Fetch tools from this server
+        // Note: Ownership of the allocated tool strings is transferred to all_tools
+        // via toOwnedSlice() at the end of run(). The caller is responsible for
+        // freeing the tools when done.
         const tools = try fetchToolsFromServer(allocator, url, headers.items, server_name);
-        defer {
-            for (tools) |*tool| {
-                allocator.free(tool.function.name);
-                allocator.free(tool.function.description);
-                for (tool.function.parameters.properties) |*prop| {
-                    allocator.free(prop.name);
-                    allocator.free(prop.type);
-                    allocator.free(prop.description);
-                }
-                allocator.free(tool.function.parameters.properties);
-                allocator.free(tool.function.parameters.required);
-            }
-            allocator.free(tools);
-        }
 
         try all_tools.appendSlice(allocator, tools);
     }

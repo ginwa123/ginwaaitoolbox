@@ -267,7 +267,11 @@ pub fn main() !void {
     try migrationManager.runMigrations();
 
     // Get platform-appropriate temp directory
-    const tmp_path = if (std.posix.getenv("TMPDIR")) |p| p else if (std.posix.getenv("TEMP")) |p| p else if (std.posix.getenv("TMP")) |p| p else if (std.posix.getenv("HOME")) |p| p else "/tmp";
+    // Use /tmp as fallback (more predictable than HOME)
+    const tmp_path = std.posix.getenv("TMPDIR") orelse
+        std.posix.getenv("TEMP") orelse
+        std.posix.getenv("TMP") orelse
+        "/tmp";
     const log_file_path = try std.fs.path.join(parentAllocator, &.{ tmp_path, "agentic_coding.log" });
     defer parentAllocator.free(log_file_path);
 

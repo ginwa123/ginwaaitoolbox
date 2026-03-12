@@ -240,6 +240,7 @@ pub const TUIWorkflow = struct {
             retryCount = 0;
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
+                self.logger.infoFmt("WORKFLOW: finish_reason = {s}", .{finish_reason.toStr()}) catch {};
                 if (finish_reason == .stop) {
                     self.logger.infoFmt("FINISH REASON STOP - calling send_response", .{}) catch {};
                     _ = send_response.run(allocator, session_id, self.logger, res_dynamic_agent, "user_choice");
@@ -250,7 +251,7 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool.run(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url);
+                    try handle_tool.run(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
@@ -264,6 +265,11 @@ pub const TUIWorkflow = struct {
                 }
 
                 retryCount = 0;
+            }
+
+            // Log if finish_reason is null
+            if (res_dynamic_agent.finish_reason == null) {
+                self.logger.warnFmt("WORKFLOW: finish_reason is NULL!", .{}) catch {};
             }
         }
     }

@@ -107,12 +107,20 @@ pub const HttpClient = struct {
         try child.spawn();
 
         // Read stdout BEFORE waiting - important for capturing output!
-        var buffer: [65536]u8 = undefined;
-        var stdout: []u8 = &.{};
+        // Use a loop to read all data since network responses may arrive in multiple chunks
+        var stdout_list: std.ArrayList(u8) = .empty;
+        errdefer stdout_list.deinit(self.allocator);
+
         if (child.stdout) |out| {
-            const bytes_read = out.read(&buffer) catch 0;
-            stdout = try self.allocator.dupe(u8, buffer[0..bytes_read]);
+            var buf: [4096]u8 = undefined;
+            while (true) {
+                const bytes_read = out.read(&buf) catch 0;
+                if (bytes_read == 0) break;
+                try stdout_list.appendSlice(self.allocator, buf[0..bytes_read]);
+            }
         }
+
+        const stdout = try stdout_list.toOwnedSlice(self.allocator);
 
         const term = try child.wait();
 
@@ -256,6 +264,47 @@ test "call mcp initialize" {
     const root = parsed.value.object;
     try testing.expectEqualStrings("2.0", root.get("jsonrpc").?.string);
     try testing.expect(root.contains("result"));
+}
+
+test "postWithCurl handles multi-read responses" {
+    // This test verifies that postWithCurl correctly reads all data
+    // even when the OS delivers it in multiple chunks.
+    // We test with a known large response endpoint.
+
+    const allocator = testing.allocator;
+    var client = HttpClient.init(allocator);
+    defer client.deinit();
+
+    // Use httpbin to get a response large enough to potentially
+    // trigger multiple reads (JSON with repeated data)
+    const large_body = "{\"data\":\"" ++ "x" ** 8192 ++ "\"}";
+
+    const result = client.post(
+        "https://httpbin.org/post",
+        large_body,
+        null,
+    ) catch |err| {
+        if (err == error.FileNotFound or err == error.ConnectionRefused) {
+            std.debug.print("SKIP: curl or network not available\n", .{});
+            return error.SkipZigTest;
+        }
+        return err;
+    };
+    defer allocator.free(result.body);
+
+    try testing.expect(result.status_code == 200);
+
+    // Parse the response - this would fail with UnexpectedEndOf if
+    // the response was truncated due to single read
+    const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{}) catch |err| {
+        std.debug.print("JSON parse error: {s}, body length: {d}\n", .{ @errorName(err), result.body.len });
+        return err;
+    };
+    defer parsed.deinit();
+
+    // Verify we got the full response back
+    const root = parsed.value.object;
+    try testing.expect(root.contains("json"));
 }
 
 test "call mcp invalid method returns error" {
