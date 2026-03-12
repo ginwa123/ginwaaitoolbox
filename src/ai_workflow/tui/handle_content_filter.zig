@@ -32,12 +32,24 @@ pub fn run(
 
     // Save the filtered response to history
     save_message.run(
-        allocator, db, session_id, model, cwd,
-        null,
-        res_dynamic_agent.content,
-        if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
-        res_dynamic_agent.reasoning_content,
-        agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter, agent_temperature, is_thinking) catch |err| {
+        allocator, db, .{
+        .session_id = session_id,
+        .model = model,
+        .cwd = cwd,
+        .content = null,
+        .response_content = res_dynamic_agent.content,
+        .response_finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+        .response_reasoning_content = res_dynamic_agent.reasoning_content,
+        .role = agent.Role.assistant.toStr(),
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = current_agent,
+        .session_name = session_name,
+        .loop_index = loop_counter,
+        .temperature = agent_temperature,
+        .is_thinking = is_thinking,
+    }) catch |err| {
         logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
     };
 

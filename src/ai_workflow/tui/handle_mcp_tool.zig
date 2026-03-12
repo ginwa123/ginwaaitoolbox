@@ -172,22 +172,24 @@ pub fn run(
     logger.infoFmt("[MCP] Tool result appended to messages_list, total messages: {}", .{messages_list.items.len}) catch {};
 
     // Save tool result to database
-    _ = save_message.run(
-        allocator, db, session_id, model, cwd,
-        null,
-        tool_result,
-        null,
-        null,
-        agent.Role.tool.toStr(),
-        null,  // finish_reason - should be null for tool messages
-        null,  // tool_calls
-        tool_call.id,  // tool_call_id - the correct ID
-        tool_call.function.name,  // agent_name - store tool name for debugging
-        session_name,
-        loop_counter,
-        agent_temperature,
-        isThinking
-    ) catch |err| {
+    _ = save_message.run(allocator, db, .{
+        .session_id = session_id,
+        .model = model,
+        .cwd = cwd,
+        .content = null,
+        .response_content = tool_result,
+        .response_finish_reason = null,
+        .response_reasoning_content = null,
+        .role = agent.Role.tool.toStr(),
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = tool_call.id,
+        .agent_name = tool_call.function.name,
+        .session_name = session_name,
+        .loop_index = loop_counter,
+        .temperature = agent_temperature,
+        .is_thinking = isThinking,
+    }) catch |err| {
         logger.errFmt("Failed to save MCP tool result: {s}", .{@errorName(err)}) catch {};
     };
 }

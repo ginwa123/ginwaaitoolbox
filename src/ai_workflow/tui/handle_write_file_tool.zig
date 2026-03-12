@@ -2,33 +2,17 @@ const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const write_file_tool = tree1_mod.write_file;
-const logger_mod = tree1_mod.logger;
-const sqlite = tree1_mod.sqlite;
-const save_message = @import("save_message.zig");
-const send_tool_result = @import("send_tool_result.zig");
-const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 
+/// Stateless write_file tool handler - only handles core logic:
+/// 1. Parse arguments from tool_call.function.arguments
+/// 2. Execute write_file
+/// Returns the write result as string or error.
+/// 
+/// All side effects (DB, logging, socket, message list) must be handled by caller.
 pub fn run(
     allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    logger: *logger_mod.Logger,
-    session_id: []const u8,
-    model: []const u8,
-    cwd: []const u8,
-    session_name: ?[]const u8,
-    loop_counter: u32,
-    messages_list: *std.ArrayList(agent.AgentMessage),
     tool_call: agent.ToolCall,
-    agent_temperature: f32,
-    is_thinking: bool,
-) !void {
-    // Fetch current agent from DB
-    const current_agent_state = try get_current_agent_by_session_id.run(
-        allocator,
-        db,
-        session_id,
-    );
-    const current_agent = current_agent_state.agent;
+) ![]const u8 {
     // Parse arguments JSON to WriteFileInput
     const parsed = try std.json.parseFromSlice(
         write_file_tool.WriteFileInput,
@@ -45,37 +29,14 @@ pub fn run(
         .end_line = parsed.value.end_line,
     };
 
-    const write_result = write_file_tool.write_file(allocator, parsed.value.path, opts) catch |err| {
-        logger.errFmt("Error executing write_file: {s}", .{@errorName(err)}) catch {};
-        const err_str = try std.fmt.allocPrint(allocator, "Error writing file: {s}", .{@errorName(err)});
-        defer allocator.free(err_str);
-        const tool_result_msg = agent.AgentMessage{
-            .role = .tool,
-            .content = err_str,
-            .tool_call_id = try allocator.dupe(u8, tool_call.id),
-        };
-        _ = try messages_list.append(allocator, tool_result_msg);
-        _ = try save_message.run(allocator, db, session_id, model, cwd, err_str, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter, agent_temperature, is_thinking);
-        _ = send_tool_result.run(allocator, session_id, logger, err_str, tool_call.id, tool_call.function.name, null);
-        return;
-    };
+    const write_result = try write_file_tool.write_file(allocator, parsed.value.path, opts);
     
     // Convert write result to string format
     const res_write = try write_file_tool.writeFileToString(allocator, write_result);
-    defer allocator.free(res_write);
+    // Caller is responsible for freeing this returned string
     write_result.deinit(allocator);
     
-    try logger.debugFmt("RESPONSE TOOLS (write_file): {s}", .{res_write});
-
-    const tool_result_msg = agent.AgentMessage{
-        .role = .tool,
-        .content = res_write,
-        .tool_call_id = try allocator.dupe(u8, tool_call.id),
-    };
-    _ = try messages_list.append(allocator, tool_result_msg);
-    _ = try save_message.run(allocator, db, session_id, model, cwd, res_write, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter, agent_temperature, is_thinking);
-    _ = send_tool_result.run(allocator, session_id, logger, res_write, tool_call.id, tool_call.function.name, null);
-    logger.debugFmt("Write file tool result added to messages", .{}) catch {};
+    return res_write;
 }
 
 test {

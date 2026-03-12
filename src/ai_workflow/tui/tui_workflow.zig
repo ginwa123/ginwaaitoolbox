@@ -172,7 +172,24 @@ pub const TUIWorkflow = struct {
             session_id,
         );
         const initial_agent = initial_agent_state.agent;
-        save_message.run(parent_allocator, self.db, session_id, model, cwd, message, null, null, null, "user", "null", null, null, initial_agent, session_name, 0, 0.2, false) catch |err| {
+        save_message.run(parent_allocator, self.db, .{
+            .session_id = session_id,
+            .model = model,
+            .cwd = cwd,
+            .content = message,
+            .response_content = null,
+            .response_finish_reason = null,
+            .response_reasoning_content = null,
+            .role = "user",
+            .finish_reason = "null",
+            .tool_calls = null,
+            .tool_call_id = null,
+            .agent_name = initial_agent,
+            .session_name = session_name,
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+        }) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
 
@@ -244,7 +261,24 @@ pub const TUIWorkflow = struct {
                 if (finish_reason == .stop) {
                     self.logger.infoFmt("FINISH REASON STOP - calling send_response", .{}) catch {};
                     _ = send_response.run(allocator, session_id, self.logger, res_dynamic_agent, "user_choice");
-                    _ = try save_message.run(allocator, self.db, session_id, model, cwd, null, res_dynamic_agent.content, if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null, res_dynamic_agent.reasoning_content, agent.Role.assistant.toStr(), null, null, null, current_agent, session_name, loop_counter, agent_temperature, isThinking);
+                    _ = try save_message.run(allocator, self.db, .{
+                        .session_id = session_id,
+                        .model = model,
+                        .cwd = cwd,
+                        .content = null,
+                        .response_content = res_dynamic_agent.content,
+                        .response_finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+                        .response_reasoning_content = res_dynamic_agent.reasoning_content,
+                        .role = agent.Role.assistant.toStr(),
+                        .finish_reason = null,
+                        .tool_calls = null,
+                        .tool_call_id = null,
+                        .agent_name = current_agent,
+                        .session_name = session_name,
+                        .loop_index = loop_counter,
+                        .temperature = agent_temperature,
+                        .is_thinking = isThinking,
+                    });
                     self.logger.infoFmt("FINISH REASON STOP - complete", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
@@ -298,7 +332,7 @@ pub const TUIWorkflow = struct {
 
             // write_file_tool.writeFileTool,
             text_replace_tool.textReplaceTool, search_tool.searchTool,
-            spawn_sub_agent_tool.spawnSubAgentTool,
+            // spawn_sub_agent_tool.spawnSubAgentTool,
         };
 
         // Merge base tools with MCP tools

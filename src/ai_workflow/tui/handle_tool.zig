@@ -5,6 +5,7 @@ const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const config_mod = @import("../../modules/config/config.zig");
 const save_message = @import("save_message.zig");
+const send_tool_result = @import("send_tool_result.zig");
 const send_response = @import("send_response.zig");
 const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
@@ -69,13 +70,24 @@ pub fn run(
         );
         const current_agent_for_save = current_agent_state.agent;
 
-        _ = try save_message.run(
-            allocator, db, session_id, model, cwd,
-            null,
-            res_dynamic_agent.content,
-            if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
-            res_dynamic_agent.reasoning_content,
-            agent.Role.assistant.toStr(), null, assistant_tool_calls, null, current_agent_for_save, session_name, loop_counter, agent_temperature.*, isThinking.*);
+        _ = try save_message.run(allocator, db, .{
+            .session_id = session_id,
+            .model = model,
+            .cwd = cwd,
+            .content = null,
+            .response_content = res_dynamic_agent.content,
+            .response_finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+            .response_reasoning_content = res_dynamic_agent.reasoning_content,
+            .role = agent.Role.assistant.toStr(),
+            .finish_reason = null,
+            .tool_calls = assistant_tool_calls,
+            .tool_call_id = null,
+            .agent_name = current_agent_for_save,
+            .session_name = session_name,
+            .loop_index = loop_counter,
+            .temperature = agent_temperature.*,
+            .is_thinking = isThinking.*,
+        });
 
         // Execute each tool call and add tool result messages
         for (tc) |tool_call| {
@@ -97,52 +109,480 @@ pub fn run(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
-                try handle_change_agent_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature, isThinking);
-            }
-            if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                _ = handle_bash_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
-                    logger.errFmt("Error handling bash tool: {s}", .{@errorName(err)}) catch {};
+                const change_result = handle_change_agent_tool.run(allocator, tool_call) catch |err| {
+                    logger.errFmt("Error handling change_agent tool: {s}", .{@errorName(err)}) catch {};
+                    continue;
                 };
+                // Apply temperature and is_thinking changes
+                if (change_result.temperature) |temp| {
+                    agent_temperature.* = temp;
+                }
+                if (change_result.is_thinking) |think| {
+                    isThinking.* = think;
+                }
+                // Create tool result message and add to messages_list
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = change_result.arguments,
+                    .tool_call_id = change_result.tool_call_id,
+                };
+                _ = try messages_list.append(allocator, tool_result_msg);
+                // Save to DB
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = change_result.arguments,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = change_result.tool_call_id,
+                    .agent_name = change_result.agent,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
+                logger.infoFmt("Switched to agent: {s}", .{change_result.agent}) catch {};
+                continue;
+            }
+            
+            if (std.mem.eql(u8, tool_call.function.name, "bash")) {
+                const content = handle_bash_tool.run(allocator, tool_call) catch |err| {
+                    logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
+                    const err_str = "Error executing command";
+                    const tool_result_msg = agent.AgentMessage{
+                        .role = .tool,
+                        .content = err_str,
+                        .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                    };
+                    _ = try messages_list.append(allocator, tool_result_msg);
+                    _ = try save_message.run(allocator, db, .{
+                        .session_id = session_id,
+                        .model = model,
+                        .cwd = cwd,
+                        .content = err_str,
+                        .response_content = null,
+                        .response_finish_reason = null,
+                        .response_reasoning_content = null,
+                        .role = "tool",
+                        .finish_reason = "tool",
+                        .tool_calls = null,
+                        .tool_call_id = tool_call.id,
+                        .agent_name = current_agent_for_save,
+                        .session_name = session_name,
+                        .loop_index = loop_counter,
+                        .temperature = agent_temperature.*,
+                        .is_thinking = isThinking.*,
+                    });
+                    send_tool_result.run(allocator, session_id, logger, err_str, tool_call.id, tool_call.function.name, null);
+                    continue;
+                };
+                defer allocator.free(content);
+                
+                try logger.debugFmt("RESPONSE TOOLS: {s}", .{content});
+                
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = content,
+                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                };
+                _ = try messages_list.append(allocator, tool_result_msg);
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = content,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = tool_call.id,
+                    .agent_name = current_agent_for_save,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, content, tool_call.id, tool_call.function.name, null);
+                logger.debugFmt("Tool result added to messages", .{}) catch {};
+                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "read_file")) {
-                _ = handle_read_file_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
-                    logger.errFmt("Error handling read_file tool: {s}", .{@errorName(err)}) catch {};
+                const content = handle_read_file_tool.run(allocator, tool_call) catch |err| {
+                    logger.errFmt("Error reading file: {s}", .{@errorName(err)}) catch {};
+                    const err_str = try std.fmt.allocPrint(allocator, "Error reading file: {s}", .{@errorName(err)});
+                    const tool_result_msg = agent.AgentMessage{
+                        .role = .tool,
+                        .content = err_str,
+                        .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                    };
+                    _ = try messages_list.append(allocator, tool_result_msg);
+                    _ = try save_message.run(allocator, db, .{
+                        .session_id = session_id,
+                        .model = model,
+                        .cwd = cwd,
+                        .content = err_str,
+                        .response_content = null,
+                        .response_finish_reason = null,
+                        .response_reasoning_content = null,
+                        .role = "tool",
+                        .finish_reason = "tool",
+                        .tool_calls = null,
+                        .tool_call_id = tool_call.id,
+                        .agent_name = current_agent_for_save,
+                        .session_name = session_name,
+                        .loop_index = loop_counter,
+                        .temperature = agent_temperature.*,
+                        .is_thinking = isThinking.*,
+                    });
+                    send_tool_result.run(allocator, session_id, logger, err_str, tool_call.id, tool_call.function.name, null);
+                    continue;
                 };
+                defer allocator.free(content);
+
+                try logger.debugFmt("RESPONSE TOOLS: {s}", .{content});
+
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = content,
+                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                };
+                _ = try messages_list.append(allocator, tool_result_msg);
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = content,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = tool_call.id,
+                    .agent_name = current_agent_for_save,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, content, tool_call.id, tool_call.function.name, null);
+                logger.debugFmt("Tool result added to messages", .{}) catch {};
+                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "search")) {
-                _ = handle_search_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
-                    logger.errFmt("Error handling search tool: {s}", .{@errorName(err)}) catch {};
+                const content = handle_search_tool.run(allocator, tool_call) catch |err| {
+                    logger.errFmt("Error executing search: {s}", .{@errorName(err)}) catch {};
+                    const err_str = try std.fmt.allocPrint(allocator, "Error executing search: {s}", .{@errorName(err)});
+                    defer allocator.free(err_str);
+                    const tool_result_msg = agent.AgentMessage{
+                        .role = .tool,
+                        .content = err_str,
+                        .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                    };
+                    _ = try messages_list.append(allocator, tool_result_msg);
+                    _ = try save_message.run(allocator, db, .{
+                        .session_id = session_id,
+                        .model = model,
+                        .cwd = cwd,
+                        .content = err_str,
+                        .response_content = null,
+                        .response_finish_reason = null,
+                        .response_reasoning_content = null,
+                        .role = "tool",
+                        .finish_reason = "tool",
+                        .tool_calls = null,
+                        .tool_call_id = tool_call.id,
+                        .agent_name = current_agent_for_save,
+                        .session_name = session_name,
+                        .loop_index = loop_counter,
+                        .temperature = agent_temperature.*,
+                        .is_thinking = isThinking.*,
+                    });
+                    send_tool_result.run(allocator, session_id, logger, err_str, tool_call.id, tool_call.function.name, null);
+                    continue;
                 };
+                defer allocator.free(content);
+                
+                try logger.debugFmt("RESPONSE TOOLS (search): {s}", .{content});
+
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = content,
+                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                };
+                _ = try messages_list.append(allocator, tool_result_msg);
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = content,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = tool_call.id,
+                    .agent_name = current_agent_for_save,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, content, tool_call.id, tool_call.function.name, null);
+                logger.debugFmt("Search tool result added to messages", .{}) catch {};
+                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "write_file")) {
-                _ = handle_write_file_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
-                    logger.errFmt("Error handling write_file tool: {s}", .{@errorName(err)}) catch {};
+                const content = handle_write_file_tool.run(allocator, tool_call) catch |err| {
+                    logger.errFmt("Error executing write_file: {s}", .{@errorName(err)}) catch {};
+                    const err_str = try std.fmt.allocPrint(allocator, "Error writing file: {s}", .{@errorName(err)});
+                    defer allocator.free(err_str);
+                    const tool_result_msg = agent.AgentMessage{
+                        .role = .tool,
+                        .content = err_str,
+                        .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                    };
+                    _ = try messages_list.append(allocator, tool_result_msg);
+                    _ = try save_message.run(allocator, db, .{
+                        .session_id = session_id,
+                        .model = model,
+                        .cwd = cwd,
+                        .content = err_str,
+                        .response_content = null,
+                        .response_finish_reason = null,
+                        .response_reasoning_content = null,
+                        .role = "tool",
+                        .finish_reason = "tool",
+                        .tool_calls = null,
+                        .tool_call_id = tool_call.id,
+                        .agent_name = current_agent_for_save,
+                        .session_name = session_name,
+                        .loop_index = loop_counter,
+                        .temperature = agent_temperature.*,
+                        .is_thinking = isThinking.*,
+                    });
+                    send_tool_result.run(allocator, session_id, logger, err_str, tool_call.id, tool_call.function.name, null);
+                    continue;
                 };
+                defer allocator.free(content);
+                
+                try logger.debugFmt("RESPONSE TOOLS (write_file): {s}", .{content});
+
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = content,
+                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                };
+                _ = try messages_list.append(allocator, tool_result_msg);
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = content,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = tool_call.id,
+                    .agent_name = current_agent_for_save,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, content, tool_call.id, tool_call.function.name, null);
+                logger.debugFmt("Write file tool result added to messages", .{}) catch {};
+                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
-                _ = handle_text_replace_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*) catch |err| {
-                    logger.errFmt("Error handling text_replace tool: {s}", .{@errorName(err)}) catch {};
+                const content = handle_text_replace_tool.run(allocator, tool_call) catch |err| {
+                    logger.errFmt("Error executing text_replace: {s}", .{@errorName(err)}) catch {};
+                    const err_str = try std.fmt.allocPrint(allocator, "Error replacing text: {s}", .{@errorName(err)});
+                    defer allocator.free(err_str);
+                    const tool_result_msg = agent.AgentMessage{
+                        .role = .tool,
+                        .content = err_str,
+                        .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                    };
+                    _ = try messages_list.append(allocator, tool_result_msg);
+                    _ = try save_message.run(allocator, db, .{
+                        .session_id = session_id,
+                        .model = model,
+                        .cwd = cwd,
+                        .content = err_str,
+                        .response_content = null,
+                        .response_finish_reason = null,
+                        .response_reasoning_content = null,
+                        .role = "tool",
+                        .finish_reason = "tool",
+                        .tool_calls = null,
+                        .tool_call_id = tool_call.id,
+                        .agent_name = current_agent_for_save,
+                        .session_name = session_name,
+                        .loop_index = loop_counter,
+                        .temperature = agent_temperature.*,
+                        .is_thinking = isThinking.*,
+                    });
+                    send_tool_result.run(allocator, session_id, logger, err_str, tool_call.id, tool_call.function.name, null);
+                    continue;
                 };
+                defer allocator.free(content);
+                
+                try logger.debugFmt("RESPONSE TOOLS (text_replace): {s}", .{content});
+
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = content,
+                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                };
+                _ = try messages_list.append(allocator, tool_result_msg);
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = content,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = tool_call.id,
+                    .agent_name = current_agent_for_save,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, content, tool_call.id, tool_call.function.name, null);
+                logger.debugFmt("Text replace tool result added to messages", .{}) catch {};
+                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
-                handle_list_skills_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
+                const result = handle_list_skills_tool.run(allocator);
+                logger.debugFmt("LIST_SKILLS RESULT: {s}", .{result}) catch {};
+
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = result,
+                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                };
+                messages_list.append(allocator, tool_result_msg) catch {};
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = result,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = tool_call.id,
+                    .agent_name = current_agent_for_save,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, result, tool_call.id, tool_call.function.name, null);
+                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
-                _ = try handle_get_skill_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
+                const result = handle_get_skill_tool.run(allocator, tool_call) catch |err| {
+                    logger.errFmt("Error executing get_skill: {s}", .{@errorName(err)}) catch {};
+                    continue;
+                };
+                defer allocator.free(result);
+                
+                logger.debugFmt("GET_SKILL RESULT: {s}", .{result}) catch {};
+
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = result,
+                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                };
+                _ = try messages_list.append(allocator, tool_result_msg);
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = result,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = tool_call.id,
+                    .agent_name = current_agent_for_save,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, result, tool_call.id, tool_call.function.name, null);
+                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
-                _ = try handle_remove_skill_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*);
+                const result = handle_remove_skill_tool.run(allocator, tool_call) catch |err| {
+                    logger.errFmt("Error executing remove_skill: {s}", .{@errorName(err)}) catch {};
+                    continue;
+                };
+                defer allocator.free(result);
+                
+                logger.debugFmt("REMOVE_SKILL RESULT: {s}", .{result}) catch {};
+
+                const tool_result_msg = agent.AgentMessage{
+                    .role = .tool,
+                    .content = result,
+                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
+                };
+                _ = try messages_list.append(allocator, tool_result_msg);
+                _ = try save_message.run(allocator, db, .{
+                    .session_id = session_id,
+                    .model = model,
+                    .cwd = cwd,
+                    .content = result,
+                    .response_content = null,
+                    .response_finish_reason = null,
+                    .response_reasoning_content = null,
+                    .role = "tool",
+                    .finish_reason = "tool",
+                    .tool_calls = null,
+                    .tool_call_id = tool_call.id,
+                    .agent_name = current_agent_for_save,
+                    .session_name = session_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                });
+                send_tool_result.run(allocator, session_id, logger, result, tool_call.id, tool_call.function.name, null);
+                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent")) {
                 try handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, api_key, base_url, config);
+                continue;
             }
 
             // Check if tool has underscore (potential MCP tool)

@@ -398,7 +398,24 @@ pub fn run(
     try messages_list.append(allocator, tool_result_msg);
 
     // Save to DB
-    _ = try save_message.run(allocator, db, session_id, model, cwd, result_msg, null, null, null, "tool", "tool", null, tool_call.id, current_agent, session_name, loop_counter, agent_temperature, is_thinking);
+    _ = try save_message.run(allocator, db, .{
+        .session_id = session_id,
+        .model = model,
+        .cwd = cwd,
+        .content = result_msg,
+        .response_content = null,
+        .response_finish_reason = null,
+        .response_reasoning_content = null,
+        .role = "tool",
+        .finish_reason = "tool",
+        .tool_calls = null,
+        .tool_call_id = tool_call.id,
+        .agent_name = current_agent,
+        .session_name = session_name,
+        .loop_index = loop_counter,
+        .temperature = agent_temperature,
+        .is_thinking = is_thinking,
+    });
 
     _ = send_tool_result.run(allocator, session_id, logger, result_msg, tool_call.id, "spawn_sub_agent", null);
 

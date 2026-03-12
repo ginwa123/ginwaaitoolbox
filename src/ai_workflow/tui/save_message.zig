@@ -10,9 +10,7 @@ pub fn serializeToolCalls(allocator: std.mem.Allocator, tool_calls: []agent.Tool
     return try aw.toOwnedSlice();
 }
 
-pub fn run(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
+pub const SaveMessageInput = struct {
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -29,20 +27,26 @@ pub fn run(
     loop_index: u32,
     temperature: f32,
     is_thinking: bool,
+};
+
+pub fn run(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: SaveMessageInput,
 ) !void {
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
     defer allocator.free(id);
     const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
     defer allocator.free(created_at);
 
-    var contentStr = content orelse "";
-    const finishReasonStr = finish_reason orelse
-        (response_finish_reason orelse "null");
-    const roleStr = role orelse "assistant";
-    const reasoningStr = response_reasoning_content orelse "";
-    const agentStr = agent_name orelse "Agent";
+    var contentStr = input.content orelse "";
+    const finishReasonStr = input.finish_reason orelse
+        (input.response_finish_reason orelse "null");
+    const roleStr = input.role orelse "assistant";
+    const reasoningStr = input.response_reasoning_content orelse "";
+    const agentStr = input.agent_name orelse "Agent";
 
-    if (response_content) |c| {
+    if (input.response_content) |c| {
         contentStr = c;
     }
 
@@ -51,19 +55,19 @@ pub fn run(
     // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
     var toolCallsJson: []const u8 = "";
     var toolCallsOwned: ?[]u8 = null;
-    if (tool_calls) |tc| {
+    if (input.tool_calls) |tc| {
         toolCallsOwned = try serializeToolCalls(allocator, tc);
         toolCallsJson = toolCallsOwned.?;
-    } else if (tool_call_id) |tcid| {
+    } else if (input.tool_call_id) |tcid| {
         toolCallsJson = tcid;
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
     const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
 
-    const copy_session_id = try allocator.dupe(u8, session_id);
+    const copy_session_id = try allocator.dupe(u8, input.session_id);
     defer allocator.free(copy_session_id);
-    const copy_model = try allocator.dupe(u8, model);
+    const copy_model = try allocator.dupe(u8, input.model);
     defer allocator.free(copy_model);
     const copy_content = try allocator.dupe(u8, contentStr);
     defer allocator.free(copy_content);
@@ -75,17 +79,17 @@ pub fn run(
     defer allocator.free(copy_tool_calls);
     const copy_reasoning = try allocator.dupe(u8, reasoningStr);
     defer allocator.free(copy_reasoning);
-    const copy_cwd = try allocator.dupe(u8, cwd);
+    const copy_cwd = try allocator.dupe(u8, input.cwd);
     defer allocator.free(copy_cwd);
     const copy_agent = try allocator.dupe(u8, agentStr);
     defer allocator.free(copy_agent);
-    const copy_session_name = try allocator.dupe(u8, session_name orelse "");
+    const copy_session_name = try allocator.dupe(u8, input.session_name orelse "");
     defer allocator.free(copy_session_name);
-    const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{loop_index});
+    const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{input.loop_index});
     defer allocator.free(loop_index_str);
-    const temperature_str = try std.fmt.allocPrint(allocator, "{d:.2}", .{temperature});
+    const temperature_str = try std.fmt.allocPrint(allocator, "{d:.2}", .{input.temperature});
     defer allocator.free(temperature_str);
-    const is_thinking_str = if (is_thinking) "1" else "0";
+    const is_thinking_str = if (input.is_thinking) "1" else "0";
     const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at };
 
     try db.exec(allocator, sql, sqlArgs);
