@@ -27,6 +27,8 @@ pub const SaveMessageInput = struct {
     loop_index: u32,
     temperature: f32,
     is_thinking: bool,
+    parent_session_id: ?[]const u8 = null,
+    parent_id: ?[]const u8 = null,
 };
 
 pub fn run(
@@ -63,7 +65,7 @@ pub fn run(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     const copy_session_id = try allocator.dupe(u8, input.session_id);
     defer allocator.free(copy_session_id);
@@ -90,7 +92,11 @@ pub fn run(
     const temperature_str = try std.fmt.allocPrint(allocator, "{d:.2}", .{input.temperature});
     defer allocator.free(temperature_str);
     const is_thinking_str = if (input.is_thinking) "1" else "0";
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at };
+    const copy_parent_session_id = try allocator.dupe(u8, input.parent_session_id orelse "");
+    defer allocator.free(copy_parent_session_id);
+    const copy_parent_id = try allocator.dupe(u8, input.parent_id orelse "");
+    defer allocator.free(copy_parent_id);
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id };
 
     try db.exec(allocator, sql, sqlArgs);
 }

@@ -7,6 +7,7 @@ const AgentTool = @import("models.zig").AgentTool;
 pub const SubAgentInput = struct {
     name: []const u8,
     instruction: []const u8,
+    tools: ?[]const []const u8 = null, // optional list of tool names to allow
 };
 
 pub const SubAgentsInput = struct {
@@ -16,6 +17,12 @@ pub const SubAgentsInput = struct {
         for (self.sub_agents) |sa| {
             allocator.free(sa.name);
             allocator.free(sa.instruction);
+            if (sa.tools) |t| {
+                for (t) |tool_name| {
+                    allocator.free(tool_name);
+                }
+                allocator.free(t);
+            }
         }
         allocator.free(self.sub_agents);
     }
@@ -31,7 +38,10 @@ pub const spawnSubAgentTool = AgentTool{
         \\Results are returned as separate tool result messages.
         \\
         \\Input format (JSON string):
-        \\{"sub_agents": [{"name": "agent1", "instruction": "task"}, ...]}
+        \\{"sub_agents": [{"name": "agent1", "instruction": "task", "tools": ["bash", "read_file", ...]}, ...]}
+        \\- "tools" field is optional. If omitted, all default tools are available.
+        \\- If specified, only the listed tools will be available to that sub-agent.
+        \\- Available tools: bash, read_file, write_file, text_replace, search, list_skills, get_skill, remove_skill
         ,
         .parameters = .{
             .type = "object",
@@ -42,7 +52,8 @@ pub const spawnSubAgentTool = AgentTool{
                     .description =
                     \\JSON-formatted sub-agent specifications as a string.
                     \\Max 20 sub-agents allowed.
-                    \\Format: {"sub_agents": [{"name": "...", "instruction": "..."}, ...]}
+                    \\Format: {"sub_agents": [{"name": "...", "instruction": "...", "tools": ["bash", "read_file", ...]}, ...]}
+                    \\- "tools" is optional. If omitted, all default tools are available.
                     ,
                 },
             },
@@ -97,9 +108,26 @@ pub fn parseSubAgents(
         const name = try allocator.dupe(u8, name_val.string);
         const instruction = try allocator.dupe(u8, instr_val.string);
 
+        // Parse optional "tools" field
+        var tools: ?[]const []const u8 = null;
+        if (agent_obj.get("tools")) |tools_val| {
+            const tools_array = tools_val.array;
+            var tools_list = std.ArrayList([]const u8).empty;
+            errdefer {
+                for (tools_list.items) |t| allocator.free(t);
+                tools_list.deinit(allocator);
+            }
+            for (tools_array.items) |tool_val| {
+                const tool_name = try allocator.dupe(u8, tool_val.string);
+                try tools_list.append(allocator, tool_name);
+            }
+            tools = try tools_list.toOwnedSlice(allocator);
+        }
+
         try sub_agents_list.append(allocator, .{
             .name = name,
             .instruction = instruction,
+            .tools = tools,
         });
     }
 

@@ -581,7 +581,7 @@ pub fn run(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent")) {
-                try handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, api_key, base_url, config);
+                try handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, api_key, base_url, config, session_id, tool_call.id);
                 continue;
             }
 

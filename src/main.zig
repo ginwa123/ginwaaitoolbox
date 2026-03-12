@@ -266,6 +266,11 @@ pub fn main() !void {
         .name = migrations.Migration011AddTemperatureAndThinking.name,
         .up = migrations.Migration011AddTemperatureAndThinking.up,
     });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration012AddParentTracking.version,
+        .name = migrations.Migration012AddParentTracking.name,
+        .up = migrations.Migration012AddParentTracking.up,
+    });
     try migrationManager.runMigrations();
 
     // Get platform-appropriate temp directory
