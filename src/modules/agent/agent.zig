@@ -788,7 +788,7 @@ pub const Agent = struct {
             };
         }
 
-        const body = response.reader(transfer_buffer[0..]).allocRemaining(self.allocator, .unlimited) catch |err| {
+        const body = response.request.reader.bodyReader(transfer_buffer[0..], response.head.transfer_encoding, response.head.content_length).allocRemaining(self.allocator, .unlimited) catch |err| {
             self.logFmt(.err, "[ERROR] Failed to read body after {}ms: {s}", .{ elapsedMs(receive_start), @errorName(err) });
             return error.ReceiveFailed;
         };
@@ -1205,7 +1205,7 @@ pub const Agent = struct {
         };
         defer self.allocator.free(transfer_buffer);
 
-        var reader = response.reader(transfer_buffer[0..]);
+        var reader = response.request.reader.bodyReader(transfer_buffer[0..], response.head.transfer_encoding, response.head.content_length);
         var line_buffer: std.ArrayList(u8) = .empty;
         defer line_buffer.deinit(self.allocator);
 
@@ -1252,7 +1252,6 @@ pub const Agent = struct {
             total_bytes_read += bytes_read;
 
             for (read_buf[0..bytes_read]) |byte| {
-                std.Thread.sleep(100_000); // 100 microseconds for small reads
                 if (byte == '\n') {
                     if (line_buffer.items.len > 0) {
                         const line = line_buffer.items;
