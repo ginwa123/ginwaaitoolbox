@@ -120,9 +120,8 @@ fn fetchToolsFromServer(
     _headers: []const McpHeader,
     server_name: []const u8,
 ) ![]AgentTool {
-    // Build full URL for tools/list
-    const tools_url = try std.fmt.allocPrint(allocator, "{s}/tools/list", .{url});
-    defer allocator.free(tools_url);
+    // Use the URL directly - MCP servers use /mcp endpoint, not /tools/list
+    const tools_url = url;
 
     // Create HTTP client
     var client = std.http.Client{ .allocator = allocator };

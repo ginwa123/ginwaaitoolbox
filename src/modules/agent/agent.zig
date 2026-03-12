@@ -1252,11 +1252,12 @@ pub const Agent = struct {
             total_bytes_read += bytes_read;
 
             for (read_buf[0..bytes_read]) |byte| {
+                std.Thread.sleep(100_000); // 100 microseconds for small reads
                 if (byte == '\n') {
                     if (line_buffer.items.len > 0) {
                         const line = line_buffer.items;
                         if (self.parseSseLine(line)) |data| {
-                            _ = chunk_arena.reset(.retain_capacity);
+                            // _ = chunk_arena.reset(.retain_capacity);
 
                             if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
                                 chunk_count += 1;

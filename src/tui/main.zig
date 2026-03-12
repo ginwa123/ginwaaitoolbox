@@ -58,7 +58,7 @@ const App = struct {
     state: CompletionState = CompletionState{ .matches = .empty },
 
     pub fn init(allocator: std.mem.Allocator, verbose: bool) !App {
-        try spawnBackend(verbose);
+        // try spawnBackend(verbose);
         std.log.info("Spawned backend", .{});
         try waitForHttpServer(10000);
         std.log.info("HTTP server ready", .{});
@@ -129,13 +129,13 @@ fn spawnBackend(_: bool) !void {
         return;
     };
     defer std.posix.close(test_socket);
-    
+
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
     var already_running = false;
     std.posix.connect(test_socket, &addr.any, @sizeOf(std.net.Address)) catch {
         already_running = true;
     };
-    
+
     if (already_running) {
         std.debug.print("{s}Backend already running, skipping spawn{s}\n", .{ green, reset });
         return;

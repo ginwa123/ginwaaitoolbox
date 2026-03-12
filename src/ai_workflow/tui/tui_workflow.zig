@@ -223,7 +223,10 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config) catch |err| {
+            var arenaDyanmicAgent = std.heap.ArenaAllocator.init(allocator);
+            defer arenaDyanmicAgent.deinit();
+            const arenaDynAgentAllocator = arenaDyanmicAgent.allocator();
+            const res_dynamic_agent = self.callDynamicAgent(arenaDynAgentAllocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -263,7 +266,7 @@ pub const TUIWorkflow = struct {
             }
         }
     }
-    fn call_dynamic_agent(
+    fn callDynamicAgent(
         self: *TUIWorkflow,
         allocator: std.mem.Allocator,
         messages_list: *std.ArrayList(agent.AgentMessage),
