@@ -241,17 +241,17 @@ pub const HttpServer = struct {
     }
 };
 
-fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const body = req.body() orelse "";
+const HandlerArgs = struct {
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    handler: *const fn (std.mem.Allocator, []const u8, ?*anyopaque) void,
+    ctx: ?*anyopaque,
+};
 
+fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (global_server) |server| {
         if (server.message_handler) |msg_handler| {
-            const HandlerArgs = struct {
-                allocator: std.mem.Allocator,
-                body: []const u8,
-                handler: *const fn (std.mem.Allocator, []const u8, ?*anyopaque) void,
-                ctx: ?*anyopaque,
-            };
+            const body = req.body() orelse "";
 
             const args = try server.allocator.create(HandlerArgs);
             args.* = .{
@@ -263,8 +263,8 @@ fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
 
             const thread = try std.Thread.spawn(.{}, struct {
                 fn run(a: *HandlerArgs) void {
-                    defer a.allocator.free(a.body);
                     defer a.allocator.destroy(a);
+                    defer a.allocator.free(a.body);
                     var arena = std.heap.ArenaAllocator.init(a.allocator);
                     defer arena.deinit();
                     a.handler(arena.allocator(), a.body, a.ctx);
