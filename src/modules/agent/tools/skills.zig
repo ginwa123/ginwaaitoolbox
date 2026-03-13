@@ -10,8 +10,8 @@ const APP_NAME = "zigginagentic";
 /// Local skills directory
 const LOCAL_SKILLS_DIR = ".zigginagentic/skills";
 
-/// Skills file extension (case-insensitive matching)
-const SKILLS_FILE_EXTENSION = ".MD";
+/// Skills file name inside each skill folder
+const SKILL_FILE_NAME = "SKILL.MD";
 
 /// Skill information structure
 pub const SkillInfo = struct {
@@ -127,7 +127,7 @@ pub fn getSkillsDirPath(allocator: std.mem.Allocator) ?[]const u8 {
 }
 
 /// List all skill files in the skills directory
-/// Returns allocated array of file paths that caller must free
+/// Returns allocated array of file paths to SKILL.MD files inside skill folders
 /// Empty files are excluded from the list
 pub fn listSkillFiles(allocator: std.mem.Allocator) ?[][]const u8 {
     const dir_path = getSkillsDirPath(allocator) orelse return null;
@@ -146,38 +146,36 @@ pub fn listSkillFiles(allocator: std.mem.Allocator) ?[][]const u8 {
 
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
-        // Check for .MD extension (case-insensitive)
-        const name = entry.name;
-        const lower_name = std.ascii.allocLowerString(allocator, name) catch continue;
-        defer allocator.free(lower_name);
-
-        if (!std.mem.endsWith(u8, lower_name, ".md")) {
+        // Only process directories
+        if (entry.kind != .directory) {
             continue;
         }
 
-        // Build full path
-        const full_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, name }) catch continue;
+        const folder_name = entry.name;
 
-        // Check if file is non-empty
-        const file = dir.openFile(name, .{}) catch {
-            allocator.free(full_path);
+        // Build path to SKILL.MD inside the folder
+        const skill_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, SKILL_FILE_NAME }) catch continue;
+
+        // Check if SKILL.MD exists and is non-empty
+        const file = std.fs.cwd().openFile(skill_file_path, .{}) catch {
+            allocator.free(skill_file_path);
             continue;
         };
         defer file.close();
 
         const stat = file.stat() catch {
-            allocator.free(full_path);
+            allocator.free(skill_file_path);
             continue;
         };
 
         // Skip empty files
         if (stat.size == 0) {
-            allocator.free(full_path);
+            allocator.free(skill_file_path);
             continue;
         }
 
-        files.append(allocator, full_path) catch {
-            allocator.free(full_path);
+        files.append(allocator, skill_file_path) catch {
+            allocator.free(skill_file_path);
             continue;
         };
     }

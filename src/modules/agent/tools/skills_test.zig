@@ -239,14 +239,21 @@ test "parseSkill returns skill content for valid skill name" {
         \\This is the skill content.
     ;
 
-    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/test_skill.MD", .{ .truncate = true }) catch |err| {
+    // Create folder structure: .zigginagentic/skills/test_skill/SKILL.MD
+    std.fs.cwd().makePath(".zigginagentic/skills/test_skill") catch |err| {
+        std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
+        return error.SkipZigTest;
+    };
+
+    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/test_skill/SKILL.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
 
     defer {
         file1.close();
-        std.fs.cwd().deleteFile(".zigginagentic/skills/test_skill.MD") catch {};
+        std.fs.cwd().deleteFile(".zigginagentic/skills/test_skill/SKILL.MD") catch {};
+        std.fs.cwd().deleteDir(".zigginagentic/skills/test_skill") catch {};
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
@@ -279,14 +286,21 @@ test "parseSkill returns null for invalid skill name" {
         \\# Existing Skill
     ;
 
-    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/existing.MD", .{ .truncate = true }) catch |err| {
+    // Create folder structure: .zigginagentic/skills/existing_skill/SKILL.MD
+    std.fs.cwd().makePath(".zigginagentic/skills/existing_skill") catch |err| {
+        std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
+        return error.SkipZigTest;
+    };
+
+    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/existing_skill/SKILL.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
 
     defer {
         file1.close();
-        std.fs.cwd().deleteFile(".zigginagentic/skills/existing.MD") catch {};
+        std.fs.cwd().deleteFile(".zigginagentic/skills/existing_skill/SKILL.MD") catch {};
+        std.fs.cwd().deleteDir(".zigginagentic/skills/existing_skill") catch {};
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
@@ -324,14 +338,21 @@ test "executeListSkills returns JSON with skills" {
         \\# Code Review
     ;
 
-    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/code_review.MD", .{ .truncate = true }) catch |err| {
+    // Create folder structure: .zigginagentic/skills/code_review/SKILL.MD
+    std.fs.cwd().makePath(".zigginagentic/skills/code_review") catch |err| {
+        std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
+        return error.SkipZigTest;
+    };
+
+    const file1 = std.fs.cwd().createFile(".zigginagentic/skills/code_review/SKILL.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
 
     defer {
         file1.close();
-        std.fs.cwd().deleteFile(".zigginagentic/skills/code_review.MD") catch {};
+        std.fs.cwd().deleteFile(".zigginagentic/skills/code_review/SKILL.MD") catch {};
+        std.fs.cwd().deleteDir(".zigginagentic/skills/code_review") catch {};
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
@@ -367,13 +388,20 @@ test "executeGetSkill returns skill content for valid skill" {
         \\Debug issues systematically.
     ;
 
-    const test_file = std.fs.cwd().createFile(".zigginagentic/skills/debugging.MD", .{ .truncate = true }) catch |err| {
+    // Create folder structure: .zigginagentic/skills/debugging/SKILL.MD
+    std.fs.cwd().makePath(".zigginagentic/skills/debugging") catch |err| {
+        std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
+        return error.SkipZigTest;
+    };
+
+    const test_file = std.fs.cwd().createFile(".zigginagentic/skills/debugging/SKILL.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
     defer {
         test_file.close();
-        std.fs.cwd().deleteFile(".zigginagentic/skills/debugging.MD") catch {};
+        std.fs.cwd().deleteFile(".zigginagentic/skills/debugging/SKILL.MD") catch {};
+        std.fs.cwd().deleteDir(".zigginagentic/skills/debugging") catch {};
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
@@ -412,13 +440,20 @@ test "executeGetSkillToString returns error for invalid skill" {
         \\# Existing Skill
     ;
 
-    const test_file = std.fs.cwd().createFile(".zigginagentic/skills/existing.MD", .{ .truncate = true }) catch |err| {
+    // Create folder structure: .zigginagentic/skills/existing_skill/SKILL.MD
+    std.fs.cwd().makePath(".zigginagentic/skills/existing_skill") catch |err| {
+        std.debug.print("Could not create test directory: {s}\n", .{@errorName(err)});
+        return error.SkipZigTest;
+    };
+
+    const test_file = std.fs.cwd().createFile(".zigginagentic/skills/existing_skill/SKILL.MD", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
     defer {
         test_file.close();
-        std.fs.cwd().deleteFile(".zigginagentic/skills/existing.MD") catch {};
+        std.fs.cwd().deleteFile(".zigginagentic/skills/existing_skill/SKILL.MD") catch {};
+        std.fs.cwd().deleteDir(".zigginagentic/skills/existing_skill") catch {};
         std.fs.cwd().deleteDir(".zigginagentic/skills") catch {};
         std.fs.cwd().deleteDir(".zigginagentic") catch {};
     }
