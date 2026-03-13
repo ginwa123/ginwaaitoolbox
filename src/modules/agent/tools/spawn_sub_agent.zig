@@ -33,15 +33,28 @@ pub const spawnSubAgentTool = AgentTool{
     .function = .{
         .name = "spawn_sub_agent",
         .description =
-        \\Spawn up to 20 parallel sub-agents, each with its own fresh context.
-        \\Each sub-agent receives only its specific instruction (no parent context).
-        \\Results are returned as separate tool result messages.
+        \\Spawn up to 20 parallel sub-agents to complete tasks concurrently.
         \\
-        \\Input format (JSON string):
-        \\{"sub_agents": [{"name": "agent1", "instruction": "task", "tools": ["bash", "read_file", ...]}, ...]}
-        \\- "tools" field is optional. If omitted, all default tools are available.
-        \\- If specified, only the listed tools will be available to that sub-agent.
-        \\- Available tools: bash, read_file, write_file, text_replace, search, list_skills, get_skill, remove_skill
+        \\HOW IT WORKS:
+        \\- Each sub-agent runs independently with its own fresh context window.
+        \\- Sub-agents do NOT inherit any context from the parent agent.
+        \\- You MUST include all necessary context, background, and instructions
+        \\  directly inside each sub-agent's "instruction" field.
+        \\- All sub-agents run in parallel and return results separately.
+        \\
+        \\WHEN TO USE:
+        \\- Use when tasks can be broken down into independent parallel workloads.
+        \\- Use when you need to research multiple topics simultaneously.
+        \\- Use when processing multiple files, URLs, or data sources at once.
+        \\
+        \\TOOL SELECTION GUIDE (optional "tools" field):
+        \\- Omit "tools" to give the sub-agent access to ALL default tools.
+        \\- Specify "tools" to restrict the sub-agent to only those tools (saves tokens, improves focus).
+        \\
+        \\EXAMPLE USE CASES:
+        \\  - Spawn 3 agents: one to browse URL A, one to browse URL B, one to browse URL C
+        \\  - Spawn 5 agents to process 5 different files in parallel
+        \\  - Spawn agents with ["search", "web_browse"] to research multiple topics at once
         ,
         .parameters = .{
             .type = "object",
@@ -50,10 +63,26 @@ pub const spawnSubAgentTool = AgentTool{
                     .name = "json_input",
                     .type = "string",
                     .description =
-                    \\JSON-formatted sub-agent specifications as a string.
-                    \\Max 20 sub-agents allowed.
-                    \\Format: {"sub_agents": [{"name": "...", "instruction": "...", "tools": ["bash", "read_file", ...]}, ...]}
-                    \\- "tools" is optional. If omitted, all default tools are available.
+                    \\A JSON string defining the sub-agents to spawn. Maximum 20 sub-agents.
+                    \\
+                    \\SCHEMA:
+                    \\{
+                    \\  "sub_agents": [
+                    \\    {
+                    \\      "name": "descriptive-agent-name",   // Required. Used to label results.
+                    \\      "instruction": "Full task details", // Required. Must be self-contained —
+                    \\                                          //   include ALL context the agent needs.
+                    \\      "tools": ["bash", "web_browse"]     // Optional. Omit for all tools.
+                    \\    }
+                    \\  ]
+                    \\}
+                    \\
+                    \\GOOD INSTRUCTION EXAMPLE:
+                    \\  "instruction": "Browse https://example.com/pricing and extract all pricing
+                    \\   tiers, their names, prices, and included features. Return as a markdown table."
+                    \\
+                    \\BAD INSTRUCTION EXAMPLE (too vague, no context):
+                    \\  "instruction": "Check the pricing page"  ← agent won't know what site or goal
                     ,
                 },
             },

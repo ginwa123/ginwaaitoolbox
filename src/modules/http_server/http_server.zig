@@ -200,7 +200,7 @@ pub const SseConnectionManager = struct {
 pub const MessageHandler = *const fn (allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void;
 
 // Global server instance for handlers to access
-var global_server: ?*HttpServer = null;
+pub var global_server: ?*HttpServer = null;
 
 /// Get the global SSE connection manager for sending events to clients
 pub fn getGlobalSseManager() ?*SseConnectionManager {

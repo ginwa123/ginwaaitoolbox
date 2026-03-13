@@ -346,6 +346,19 @@ pub fn main() !void {
             if (std.mem.eql(u8, t.command_type, "get_sessions")) {
                 // todo rework
             }
+            if (std.mem.eql(u8, t.command_type, "ping")) {
+                // Ping command - send pong event to confirm session is alive
+                std.debug.print("COMMAND: ping from session_id={s}\n", .{t.session_id});
+                if (http_server.getGlobalSseManager()) |sse_manager| {
+                    const pong_event = http_server.SseEvent{
+                        .event_type = "pong",
+                        .data = "{\"session_id\":\"ping\"}",
+                    };
+                    sse_manager.sendEvent(t.session_id, pong_event) catch |err| {
+                        std.debug.print("Failed to send pong: {s}\n", .{@errorName(err)});
+                    };
+                }
+            }
 
             std.debug.print("Received: {s}\n", .{data});
         }

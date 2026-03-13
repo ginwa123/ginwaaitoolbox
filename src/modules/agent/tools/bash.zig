@@ -267,6 +267,8 @@ pub const bashTool = AgentTool{
         \\- limit output using `| head -n <N>`
         \\- avoid commands that produce unbounded output
         \\- use ripgrep (rg) instead of grep/find when available
+        \\## Web Browsing
+        \\To browse the web or fetch URLs, use the `agent-browser` CLI:
         \\
         \\## FORBIDDEN Commands
         \\NEVER use any of the following — they produce unbounded output:

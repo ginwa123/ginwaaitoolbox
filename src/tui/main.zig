@@ -432,6 +432,21 @@ fn sendSessionsCommand(app: *App) !void {
     _ = try std.posix.write(sock, request);
 }
 
+/// Send a ping command to the server to keep the session alive
+/// This prevents "session not found" errors when the server's SSE stream handler
+/// thread exits while the TUI is still running a long operation
+fn sendPingCommand(app: *App) !void {
+    const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
+        \\{{"app_type":"tui","command_type":"ping","session_id":"{s}"}}
+    , .{app.session_id});
+    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+    defer std.posix.close(sock);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
+    _ = try std.posix.write(sock, request);
+}
+
 // ─── Response formatting ─────────────────────────────────────────────────────
 
 fn printFormattedResponse(content: []const u8) void {
@@ -620,6 +635,10 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var reconnection_attempts: u32 = 0;
     const MAX_RECONNECTION_ATTEMPTS: u32 = 100;
 
+    // Ping interval - send ping every 5 seconds to keep session alive on server
+    const PING_INTERVAL_MS: i64 = 5000;
+    var last_ping_ms: i64 = std.time.milliTimestamp();
+
     var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
@@ -687,6 +706,12 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         } else {
             // poll() timed out — no data arrived in the last 100ms.
             // No need for an extra Thread.sleep() here; poll() already waited.
+
+            // Send periodic ping to keep session alive on server
+            if (now - last_ping_ms > PING_INTERVAL_MS) {
+                sendPingCommand(app) catch {};
+                last_ping_ms = now;
+            }
 
             if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
                 if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
@@ -870,6 +895,10 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     var reconnection_attempts: u32 = 0;
     const MAX_RECONNECTION_ATTEMPTS: u32 = 3;
 
+    // Ping interval - send ping every 5 seconds to keep session alive on server
+    const PING_INTERVAL_MS: i64 = 5000;
+    var last_ping_ms: i64 = std.time.milliTimestamp();
+
     var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
@@ -916,6 +945,12 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
         if (!new_data) {
             // No data available - check for timeout
+            // Send periodic ping to keep session alive on server
+            if (now - last_ping_ms > PING_INTERVAL_MS) {
+                sendPingCommand(app) catch {};
+                last_ping_ms = now;
+            }
+
             if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
                 // Timeout detected - attempt reconnection
                 if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
