@@ -7,7 +7,8 @@ const skills = @import("skills.zig");
 
 /// Input structure for get_skill tool
 pub const GetSkillInput = struct {
-    skill_name: []const u8,
+    skill_name: ?[]const u8 = null,
+    path: ?[]const u8 = null,
 };
 
 /// Result structure for get_skill tool
@@ -15,6 +16,7 @@ pub const GetSkillResult = struct {
     skill_name: []const u8,
     content: []const u8,
     loaded: bool,
+    path: ?[]const u8 = null,
     err_msg: ?[]const u8 = null,
     available_skills: ?[]const []const u8 = null,
 };
@@ -31,10 +33,15 @@ pub const getSkillTool = AgentTool{
                 .{
                     .name = "skill_name",
                     .type = "string",
-                    .description = "The exact name of the skill to load ",
+                    .description = "The exact name of the skill to load",
+                },
+                .{
+                    .name = "path",
+                    .type = "string",
+                    .description = "Load skill from absolute file path",
                 },
             },
-            .required = &.{"skill_name"},
+            .required = &.{},
         },
     },
 };
@@ -43,15 +50,68 @@ pub const getSkillTool = AgentTool{
 /// Returns an XML string with the skill content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn executeGetSkillToString(allocator: std.mem.Allocator, input: GetSkillInput) ![]const u8 {
+    // Check if path is provided - load from file
+    if (input.path) |path| {
+        return loadSkillFromPath(allocator, path);
+    }
+
+    // Otherwise try to parse by skill name
+    if (input.skill_name) |skill_name| {
+        return loadSkillByName(allocator, skill_name);
+    }
+
+    // No skill_name or path provided
+    return error.InvalidInput;
+}
+
+/// Load skill from absolute file path
+fn loadSkillFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const file = std.fs.openFileAbsolute(path, .{}) catch {
+        const result = try std.fmt.allocPrint(allocator,
+            \\<skill_name></skill_name>
+            \\<content></content>
+            \\<loaded>false</loaded>
+            \\<error>Failed to open file</error>
+        , .{});
+        return result;
+    };
+    defer file.close();
+
+    const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch {
+        const result = try std.fmt.allocPrint(allocator,
+            \\<skill_name></skill_name>
+            \\<content></content>
+            \\<loaded>false</loaded>
+            \\<error>Failed to read file</error>
+        , .{});
+        return result;
+    };
+    defer allocator.free(content);
+
+    // Extract filename without extension for skill_name
+    const filename = std.fs.path.basename(path);
+    const ext = std.fs.path.extension(filename);
+    const skill_name = filename[0..filename.len - ext.len];
+
+    const result = try std.fmt.allocPrint(allocator,
+        \\<skill_name>{s}</skill_name>
+        \\<content>{s}</content>
+        \\<loaded>true</loaded>
+    , .{ skill_name, content });
+    return result;
+}
+
+/// Load skill by name from built-in skills
+fn loadSkillByName(allocator: std.mem.Allocator, skill_name: []const u8) ![]const u8 {
     // Try to parse the skill
-    if (skills.parseSkill(allocator, input.skill_name)) |content| {
+    if (skills.parseSkill(allocator, skill_name)) |content| {
         defer allocator.free(content);
         // Success - return the skill content
         const result = try std.fmt.allocPrint(allocator,
             \\<skill_name>{s}</skill_name>
             \\<content>{s}</content>
             \\<loaded>true</loaded>
-        , .{ input.skill_name, content });
+        , .{ skill_name, content });
         return result;
     } else {
         // Skill not found - list available skills
@@ -61,7 +121,7 @@ pub fn executeGetSkillToString(allocator: std.mem.Allocator, input: GetSkillInpu
         // Build XML string for available skills
         var available_str: std.ArrayList(u8) = .empty;
         defer available_str.deinit(allocator);
-        
+
         for (skills_list) |skill| {
             try available_str.appendSlice(allocator, "<skill>");
             try available_str.appendSlice(allocator, skill.name);
@@ -74,8 +134,12 @@ pub fn executeGetSkillToString(allocator: std.mem.Allocator, input: GetSkillInpu
             \\<loaded>false</loaded>
             \\<error>Skill not found</error>
             \\<available_skills>{s}</available_skills>
-        , .{ input.skill_name, available_str.items });
+        , .{ skill_name, available_str.items });
 
         return result;
     }
+}
+
+test {
+    _ = @import("get_skill_test.zig");
 }

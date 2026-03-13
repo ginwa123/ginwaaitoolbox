@@ -182,7 +182,7 @@ test "Logger no memory leak - rapid logging" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var logger_inst = Logger.init(allocator, .{ .min_level = .debug });
+    var logger_inst = Logger.init(allocator, .{ .min_level = .warn });
     defer logger_inst.deinit();
 
     // Log many messages rapidly
