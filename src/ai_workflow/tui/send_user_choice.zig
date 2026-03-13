@@ -24,6 +24,11 @@ pub fn run(
         .data = buf.items,
     };
     sse_manager.sendEvent(session_id, event) catch |err| {
-        logger.errFmt("SSE send user choice: {s}", .{@errorName(err)}) catch {};
+        const err_name = @errorName(err);
+        logger.errFmt("SSE send user choice: {s}", .{err_name}) catch {};
     };
+}
+
+test "send_user_choice" {
+    // Basic compilation test
 }

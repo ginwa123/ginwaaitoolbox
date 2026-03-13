@@ -50,7 +50,8 @@ pub fn run(
         .temperature = agent_temperature,
         .is_thinking = is_thinking,
     }) catch |err| {
-        logger.errFmt("saveMessage error: {s}", .{@errorName(err)}) catch {};
+        const err_name = @errorName(err);
+        logger.errFmt("saveMessage error: {s}", .{err_name}) catch {};
     };
 
     // Send error response to client with content_filter finish reason

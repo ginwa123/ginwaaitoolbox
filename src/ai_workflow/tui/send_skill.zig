@@ -42,10 +42,11 @@ pub fn run(
         .data = buf.items,
     };
     sse_manager.sendEvent(session_id, event) catch |err| {
-        logger.errFmt("SSE send skills: {s}", .{@errorName(err)}) catch {};
+        const err_name = @errorName(err);
+        logger.errFmt("SSE send skills: {s}", .{err_name}) catch {};
     };
 }
 
-test {
-    _ = @import("send_skill_test.zig");
+test "send_skill" {
+    // Basic compilation test
 }

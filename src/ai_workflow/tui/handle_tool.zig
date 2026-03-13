@@ -181,7 +181,8 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
                 const change_result = handle_change_agent_tool.run(allocator, tool_call) catch |err| {
-                    logger.errFmt("Error handling change_agent tool: {s}", .{@errorName(err)}) catch {};
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error handling change_agent tool: {s}", .{err_name}) catch {};
                     continue;
                 };
                 // Apply temperature and is_thinking changes
@@ -224,7 +225,8 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
                 const content = handle_bash_tool.run(allocator, tool_call) catch |err| {
-                    logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error executing bash: {s}", .{err_name}) catch {};
                     try handleToolError(ctx, tool_call, err, "Error executing command");
                     continue;
                 };
@@ -235,7 +237,8 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "read_file")) {
                 const content = handle_read_file_tool.run(allocator, tool_call) catch |err| {
-                    logger.errFmt("Error reading file: {s}", .{@errorName(err)}) catch {};
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error reading file: {s}", .{err_name}) catch {};
                     try handleToolError(ctx, tool_call, err, "Error reading file");
                     continue;
                 };
@@ -246,7 +249,8 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "search")) {
                 const content = handle_search_tool.run(allocator, tool_call) catch |err| {
-                    logger.errFmt("Error executing search: {s}", .{@errorName(err)}) catch {};
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error executing search: {s}", .{err_name}) catch {};
                     try handleToolError(ctx, tool_call, err, "Error executing search");
                     continue;
                 };
@@ -257,7 +261,8 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "write_file")) {
                 const content = handle_write_file_tool.run(allocator, tool_call) catch |err| {
-                    logger.errFmt("Error executing write_file: {s}", .{@errorName(err)}) catch {};
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error executing write_file: {s}", .{err_name}) catch {};
                     try handleToolError(ctx, tool_call, err, "Error writing file");
                     continue;
                 };
@@ -268,7 +273,8 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
                 const content = handle_text_replace_tool.run(allocator, tool_call) catch |err| {
-                    logger.errFmt("Error executing text_replace: {s}", .{@errorName(err)}) catch {};
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error executing text_replace: {s}", .{err_name}) catch {};
                     try handleToolError(ctx, tool_call, err, "Error replacing text");
                     continue;
                 };
@@ -286,7 +292,8 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
                 const result = handle_get_skill_tool.run(allocator, tool_call) catch |err| {
-                    logger.errFmt("Error executing get_skill: {s}", .{@errorName(err)}) catch {};
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error executing get_skill: {s}", .{err_name}) catch {};
                     continue;
                 };
                 defer allocator.free(result);
@@ -296,7 +303,8 @@ pub fn run(
 
             if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
                 const result = handle_remove_skill_tool.run(allocator, tool_call) catch |err| {
-                    logger.errFmt("Error executing remove_skill: {s}", .{@errorName(err)}) catch {};
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error executing remove_skill: {s}", .{err_name}) catch {};
                     continue;
                 };
                 defer allocator.free(result);
@@ -331,7 +339,8 @@ pub fn run(
                 if (!is_builtin) {
                     logger.infoFmt("Treating as MCP tool: {s}", .{tool_call.function.name}) catch {};
                     handle_mcp_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, config) catch |err| {
-                        logger.errFmt("Error handling MCP tool: {s}", .{@errorName(err)}) catch {};
+                        const err_name = @errorName(err);
+                        logger.errFmt("Error handling MCP tool: {s}", .{err_name}) catch {};
                     };
                 }
             }
