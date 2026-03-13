@@ -410,7 +410,7 @@ const Terminal = struct {
         // Clear screen and position cursor at top before each render
         _ = try stdout.write("\x1b[2J\x1b[H");
         _ = try stdout.write(content);
-        stdout.flush() catch {};
+        // No flush needed - writes are immediate in Zig std.fs.File
     }
 
     fn enableAltScreen(self: *Terminal) !void {

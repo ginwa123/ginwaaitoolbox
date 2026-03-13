@@ -124,31 +124,61 @@ const App = struct {
         var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(allocator);
 
-        // Header
-        try buffer.appendSlice(allocator, "\x1b[36m"); // Cyan
-        try buffer.appendSlice(allocator, "╔══════════════════════════════════════════════════════╗\n");
-        try buffer.appendSlice(allocator, "║         tuwiii TUI Framework - Interactive Demo      ║\n");
-        try buffer.appendSlice(allocator, "╚══════════════════════════════════════════════════════╝\x1b[0m\n\n");
+        // Header Box
+        const header_render_fn = struct {
+            fn render() RenderedContent {
+                return .{ .text = "tuwiii TUI Framework - Interactive Demo" };
+            }
+        }.render;
+        const header_box = try box.init(allocator, .{
+            .border = true,
+            .title = "tuwiii",
+            .padding = .{ .individual = .{ .top = 1, .right = 2, .bottom = 1, .left = 2 } },
+            .width = .{ .fixed = 54 },
+        }, header_render_fn);
+        defer header_box.destroy();
 
-        // Instructions
-        try buffer.appendSlice(allocator, "\x1b[33m"); // Yellow
-        try buffer.appendSlice(allocator, "Controls:\n");
-        try buffer.appendSlice(allocator, "  i  - Focus input field\n");
-        try buffer.appendSlice(allocator, "  b  - Focus box (view counter)\n");
-        try buffer.appendSlice(allocator, "  +  - Increment counter\n");
-        try buffer.appendSlice(allocator, "  -  - Decrement counter\n");
-        try buffer.appendSlice(allocator, "  ↑  - Arrow up (increment)\n");
-        try buffer.appendSlice(allocator, "  ↓  - Arrow down (decrement)\n");
-        try buffer.appendSlice(allocator, "  q  - Quit\n");
-        try buffer.appendSlice(allocator, "\x1b[0m\n");
+        const header_output = try header_box.renderToString();
+        defer allocator.free(header_output);
+        try buffer.appendSlice(allocator, header_output);
+        try buffer.append(allocator, '\n');
 
-        // Counter display
-        try buffer.appendSlice(allocator, "Counter: ");
-        try buffer.appendSlice(allocator, "\x1b[32m"); // Green
-        const counter_str = try std.fmt.allocPrint(allocator, "{d}", .{self.counter});
+        // Instructions Box
+        const instructions_render_fn = struct {
+            fn render() RenderedContent {
+                return .{
+                    .text =
+                    \\i  - Focus input field
+                    \\b  - Focus box (view counter)
+                    \\+  - Increment counter
+                    \\-  - Decrement counter
+                    \\↑  - Arrow up (increment)
+                    \\↓  - Arrow down (decrement)
+                    \\q  - Quit
+                    \\
+                };
+            }
+        }.render;
+        const instructions_box = try box.init(allocator, .{
+            .border = true,
+            .title = "Controls",
+            .padding = .{ .all = 1 },
+            .width = .{ .fixed = 45 },
+            .height = .{ .fixed = 10 },
+        }, instructions_render_fn);
+        defer instructions_box.destroy();
+
+        const instructions_output = try instructions_box.renderToString();
+        defer allocator.free(instructions_output);
+        try buffer.appendSlice(allocator, instructions_output);
+        try buffer.append(allocator, '\n');
+
+        // Counter display - simple text rendering
+        const counter_str = try std.fmt.allocPrint(allocator, "\x1b[32mCounter: {d}\x1b[0m", .{self.counter});
         defer allocator.free(counter_str);
         try buffer.appendSlice(allocator, counter_str);
-        try buffer.appendSlice(allocator, "\x1b[0m\n\n");
+        try buffer.append(allocator, '\n');
+        try buffer.append(allocator, '\n');
 
         // Box component
         try buffer.appendSlice(allocator, "\x1b[35mBox Component:\x1b[0m\n");
