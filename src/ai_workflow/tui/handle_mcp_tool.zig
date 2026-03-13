@@ -189,6 +189,10 @@ pub fn run(
         .loop_index = loop_counter,
         .temperature = agent_temperature,
         .is_thinking = isThinking,
+        // Tool results have no LLM token usage
+        .prompt_tokens = 0,
+        .completion_tokens = 0,
+        .total_tokens = 0,
     }) catch |err| {
         logger.errFmt("Failed to save MCP tool result: {s}", .{@errorName(err)}) catch {};
     };

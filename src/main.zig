@@ -271,6 +271,11 @@ pub fn main() !void {
         .name = migrations.Migration012AddParentTracking.name,
         .up = migrations.Migration012AddParentTracking.up,
     });
+    try migrationManager.registerMigration(.{
+        .version = migrations.Migration013AddTokenUsageColumns.version,
+        .name = migrations.Migration013AddTokenUsageColumns.name,
+        .up = migrations.Migration013AddTokenUsageColumns.up,
+    });
     try migrationManager.runMigrations();
 
     // Get platform-appropriate temp directory

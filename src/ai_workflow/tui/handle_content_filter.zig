@@ -49,6 +49,9 @@ pub fn run(
         .loop_index = loop_counter,
         .temperature = agent_temperature,
         .is_thinking = is_thinking,
+        .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+        .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+        .total_tokens = res_dynamic_agent.usage.total_tokens,
     }) catch |err| {
         const err_name = @errorName(err);
         logger.errFmt("saveMessage error: {s}", .{err_name}) catch {};

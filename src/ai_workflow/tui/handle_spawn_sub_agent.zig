@@ -114,6 +114,10 @@ fn runSubAgent(
         .is_thinking = is_thinking,
         .parent_session_id = parent_session_id,
         .parent_id = parent_id,
+        // User messages have no LLM token usage
+        .prompt_tokens = 0,
+        .completion_tokens = 0,
+        .total_tokens = 0,
     });
 
     // Get tools based on allowed_tools (null = all tools)
@@ -185,6 +189,9 @@ fn runSubAgent(
             .is_thinking = is_thinking,
             .parent_session_id = parent_session_id,
             .parent_id = parent_id,
+            .prompt_tokens = response.usage.prompt_tokens,
+            .completion_tokens = response.usage.completion_tokens,
+            .total_tokens = response.usage.total_tokens,
         });
 
         // Check finish_reason
@@ -314,6 +321,10 @@ fn runSubAgent(
                             .is_thinking = is_thinking,
                             .parent_session_id = parent_session_id,
                             .parent_id = parent_id,
+                            // Tool results have no LLM token usage
+                            .prompt_tokens = 0,
+                            .completion_tokens = 0,
+                            .total_tokens = 0,
                         });
 
                         // Add assistant message with tool_calls
@@ -639,6 +650,10 @@ pub fn run(
         .is_thinking = is_thinking,
         // .parent_session_id = parent_session_id,
         // .parent_id = parent_id,
+        // Tool results have no LLM token usage
+        .prompt_tokens = 0,
+        .completion_tokens = 0,
+        .total_tokens = 0,
     });
 
     _ = send_tool_result.run(allocator, session_id, logger, copy_result_msg, tool_call_id_dup, "spawn_sub_agent", null);

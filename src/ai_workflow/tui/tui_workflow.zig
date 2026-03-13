@@ -188,6 +188,10 @@ pub const TUIWorkflow = struct {
             .loop_index = 0,
             .temperature = 0.2,
             .is_thinking = false,
+            // User messages have no LLM token usage
+            .prompt_tokens = 0,
+            .completion_tokens = 0,
+            .total_tokens = 0,
         }) catch |err| {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
@@ -277,6 +281,9 @@ pub const TUIWorkflow = struct {
                         .loop_index = loop_counter,
                         .temperature = agent_temperature,
                         .is_thinking = isThinking,
+                        .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+                        .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+                        .total_tokens = res_dynamic_agent.usage.total_tokens,
                     });
                     self.logger.infoFmt("FINISH REASON STOP - complete", .{}) catch {};
                     break;

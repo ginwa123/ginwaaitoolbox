@@ -66,6 +66,10 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
         .loop_index = ctx.loop_counter,
         .temperature = ctx.agent_temperature,
         .is_thinking = ctx.is_thinking,
+        // Tool results have no LLM token usage
+        .prompt_tokens = 0,
+        .completion_tokens = 0,
+        .total_tokens = 0,
     });
 
     send_tool_result.run(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
@@ -142,6 +146,9 @@ pub fn run(
             .loop_index = loop_counter,
             .temperature = agent_temperature.*,
             .is_thinking = isThinking.*,
+            .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+            .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+            .total_tokens = res_dynamic_agent.usage.total_tokens,
         });
 
         // Build context for tool handling
@@ -217,6 +224,10 @@ pub fn run(
                     .loop_index = loop_counter,
                     .temperature = agent_temperature.*,
                     .is_thinking = isThinking.*,
+                    // Tool results have no LLM token usage
+                    .prompt_tokens = 0,
+                    .completion_tokens = 0,
+                    .total_tokens = 0,
                 });
                 send_tool_result.run(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
                 logger.infoFmt("Switched to agent: {s}", .{change_result.agent}) catch {};
