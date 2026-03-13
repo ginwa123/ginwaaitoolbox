@@ -517,33 +517,19 @@ pub fn run(
     }
     allocator.free(thread_results);
 
-    // Build combined result message
     var combined_result = std.ArrayList(u8).empty;
-    // defer combined_result.deinit(allocator);
     var w = combined_result.writer(allocator);
 
-    try w.writeAll("<sub_agent_results>\n");
     for (parsed.sub_agents, 0..) |sub_agent, i| {
-        try w.print("  <result name=\"{s}\">\n", .{sub_agent.name});
+        try w.print("=== {s} ===\n", .{sub_agent.name});
         if (i < results.items.len) {
-            // Escape XML entities in result
-            const result = results.items[i];
-            for (result) |ch| {
-                switch (ch) {
-                    '&' => try w.writeAll("&amp;"),
-                    '<' => try w.writeAll("&lt;"),
-                    '>' => try w.writeAll("&gt;"),
-                    '"' => try w.writeAll("&quot;"),
-                    '\'' => try w.writeAll("&apos;"),
-                    else => try w.writeByte(ch),
-                }
-            }
+            try w.writeAll(results.items[i]);
         }
-        try w.writeAll("\n  </result>\n");
+        try w.writeByte('\n');
     }
-    try w.writeAll("</sub_agent_results>");
 
     const result_msg = try combined_result.toOwnedSlice(allocator);
+
     const copy_result_msg = try allocator.dupe(u8, result_msg);
 
     // CRITICAL FIX: Duplicate tool_call.id from arena to persistent allocator
