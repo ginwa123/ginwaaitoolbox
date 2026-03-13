@@ -142,7 +142,7 @@ fn runSubAgent(
 
     // Build messages: empty system + user instruction
     var messages: std.ArrayList(agent.AgentMessage) = .empty;
-    // defer messages.deinit(allocator);
+    defer messages.deinit(allocator);
 
     try messages.append(allocator, .{
         .role = .user,
@@ -404,15 +404,16 @@ pub fn run(
                 parent_id: []const u8,
                 thread_res: []ThreadResult,
             ) void {
-                // Each thread gets its own arena allocator
-                // var thread_arena = std.heap.ArenaAllocator.init(alloc);
-                // defer thread_arena.deinit();
-                // const thread_alloc = thread_arena.allocator();
+                // Each thread gets its own arena allocator to prevent memory corruption
+                // when multiple sub-agents run in parallel
+                var thread_arena = std.heap.ArenaAllocator.init(alloc);
+                defer thread_arena.deinit();
+                const thread_alloc = thread_arena.allocator();
 
                 log.infoFmt("spawn_sub_agent[{}]: starting agent '{s}'", .{ idx, name }) catch {};
 
                 const run_result = runSubAgent(
-                    alloc,
+                    thread_alloc,
                     log,
                     database,
                     workdir,
