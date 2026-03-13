@@ -8,7 +8,7 @@ const sqlite = root_mod.sqlite;
 const bash_tool = root_mod.bash_tool;
 const read_file_tool = root_mod.read_file;
 const tool_models = root_mod.tool_models;
-const change_agent_tool = root_mod.change_agent_tool;
+const set_agent_properties = root_mod.set_agent_properties;
 const list_skills_tool = root_mod.list_skills_tool;
 const get_skill_tool = root_mod.get_skill_tool;
 const remove_skill_tool = root_mod.remove_skill_tool;
@@ -32,7 +32,7 @@ const send_stream_chunk_final = @import("send_stream_chunk_final.zig");
 const send_steam_chunk_content = @import("send_stream_chunk_content.zig");
 const send_stream_chunk_reasoning = @import("send_stream_chunk_reasoning.zig");
 const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_call_delta.zig");
-const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
+const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const build_memory_for_agent = @import("build_memory_for_agent.zig");
 const write_file_tool = root_mod.write_file;
@@ -338,7 +338,7 @@ pub const TUIWorkflow = struct {
         const base_tools: []const tool_models.AgentTool = &.{
             bash_tool.bashTool,
             read_file_tool.readFileTool,
-            change_agent_tool.ChangeAgentTool,
+            set_agent_properties.SetAgentPropertiesTool,
             list_skills_tool.listSkillsTool,
             get_skill_tool.getSkillTool,
             remove_skill_tool.removeSkillTool,

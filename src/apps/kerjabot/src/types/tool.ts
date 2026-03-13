@@ -6,7 +6,7 @@
 /** Available tool types */
 export enum ToolType {
   Bash = 'bash',
-  ChangeAgent = 'change_agent',
+  SetAgentProperties = 'set_agent_properties',
   GetSkill = 'get_skill',
   ListSkills = 'list_skills',
   ReadFile = 'read_file',
@@ -66,11 +66,10 @@ export interface BashArguments {
   readonly maxOutput?: number;
 }
 
-/** Change agent tool arguments */
-export interface ChangeAgentArguments {
-  readonly agent: string;
-  readonly message: string;
+/** Set agent properties tool arguments */
+export interface SetAgentPropertiesArguments {
   readonly temperature?: number;
+  readonly is_thinking?: boolean;
 }
 
 /** Get skill tool arguments */

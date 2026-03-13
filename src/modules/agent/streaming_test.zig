@@ -77,7 +77,7 @@ test "StreamingAggregator - multiple tool calls" {
 
     // Process second tool call
     const deltas2 = [_]agent.ToolCallDelta{
-        .{ .index = 1, .id = "call_2", .function_name = "change_agent_tool" },
+        .{ .index = 1, .id = "call_2", .function_name = "set_agent_properties" },
     };
     try aggregator.processChunk(.{ .tool_calls_delta = @as([]const agent.ToolCallDelta, &deltas2) });
 
@@ -88,7 +88,7 @@ test "StreamingAggregator - multiple tool calls" {
     try aggregator.processChunk(.{ .tool_calls_delta = @as([]const agent.ToolCallDelta, &deltas3) });
 
     const deltas4 = [_]agent.ToolCallDelta{
-        .{ .index = 1, .function_arguments = "{\"agent\":\"Agent\"}" },
+        .{ .index = 1, .function_arguments = "{\"temperature\":0.7}" },
     };
     try aggregator.processChunk(.{ .tool_calls_delta = @as([]const agent.ToolCallDelta, &deltas4) });
 
@@ -103,7 +103,7 @@ test "StreamingAggregator - multiple tool calls" {
     try std.testing.expectEqualStrings("call_1", response.tool_calls.?[0].id);
     try std.testing.expectEqualStrings("bash", response.tool_calls.?[0].function.name);
     try std.testing.expectEqualStrings("call_2", response.tool_calls.?[1].id);
-    try std.testing.expectEqualStrings("change_agent_tool", response.tool_calls.?[1].function.name);
+    try std.testing.expectEqualStrings("set_agent_properties", response.tool_calls.?[1].function.name);
 }
 
 test "StreamingAggregator - store finish reason and usage" {

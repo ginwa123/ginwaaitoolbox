@@ -4,5 +4,5 @@
 
 export { ToolCallCard } from './ToolCallCard';
 export { BashToolDisplay } from './BashToolDisplay';
-export { ChangeAgentToolDisplay } from './ChangeAgentToolDisplay';
+export { SetAgentPropertiesToolDisplay } from './SetAgentPropertiesToolDisplay';
 export { SkillToolDisplay } from './SkillToolDisplay';

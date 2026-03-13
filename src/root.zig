@@ -70,7 +70,7 @@ pub const prompt = @import("modules/agent/prompt.zig");
 pub const sqlite = @import("modules/databases/sqlite/sqlite.zig");
 pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const tool_models = @import("modules/agent/tools/models.zig");
-pub const change_agent_tool = @import("modules/agent/tools/change_agent.zig");
+pub const set_agent_properties = @import("modules/agent/tools/change_agent.zig");
 pub const get_skill_tool = @import("modules/agent/tools/get_skill.zig");
 pub const remove_skill_tool = @import("modules/agent/tools/remove_skill.zig");
 pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
@@ -124,7 +124,7 @@ test {
     _ = @import("ai_workflow/tui/get_session_by_dir.zig");
     _ = @import("ai_workflow/tui/get_tree_dir.zig");
     _ = @import("ai_workflow/tui/handle_bash_tool.zig");
-    _ = @import("ai_workflow/tui/handle_change_agent_tool.zig");
+    _ = @import("ai_workflow/tui/handle_set_agent_properties.zig");
     _ = @import("ai_workflow/tui/handle_content_filter.zig");
     _ = @import("ai_workflow/tui/handle_tool.zig");
     _ = @import("ai_workflow/tui/handle_search_tool.zig");

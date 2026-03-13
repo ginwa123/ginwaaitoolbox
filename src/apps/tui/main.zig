@@ -830,9 +830,8 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                                 } else if (std.mem.eql(u8, result.name, "text_replace")) {
                                     displayTextReplaceResult(result.result, result.name);
                                 }
-                                if (extractTag(result.result, "change_agent_tool")) |_| {
-                                    const agent_name = extractTag(result.result, "agent") orelse "unknown";
-                                    std.debug.print("\n{s}[agent]{s} → {s}\n", .{ cyan, reset, agent_name });
+                                if (extractTag(result.result, "set_agent_properties")) |_| {
+                                    std.debug.print("\n{s}[agent properties]{s} → updated\n", .{ cyan, reset });
                                 }
                                 const id_copy = app.allocator.dupe(u8, result.id) catch continue;
                                 displayed_tool_ids.append(app.allocator, id_copy) catch {

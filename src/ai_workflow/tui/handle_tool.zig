@@ -7,7 +7,7 @@ const config_mod = @import("../../modules/config/config.zig");
 const save_message = @import("save_message.zig");
 const send_tool_result = @import("send_tool_result.zig");
 const send_response = @import("send_response.zig");
-const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
+const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
@@ -186,10 +186,10 @@ pub fn run(
                 continue;
             }
 
-            if (std.mem.eql(u8, tool_call.function.name, "change_agent_tool")) {
-                const change_result = handle_change_agent_tool.run(allocator, tool_call) catch |err| {
+            if (std.mem.eql(u8, tool_call.function.name, "set_agent_properties")) {
+                const change_result = handle_set_agent_properties.run(allocator, tool_call) catch |err| {
                     const err_name = @errorName(err);
-                    logger.errFmt("Error handling change_agent tool: {s}", .{err_name}) catch {};
+                    logger.errFmt("Error handling set_agent_properties tool: {s}", .{err_name}) catch {};
                     continue;
                 };
                 // Apply temperature and is_thinking changes
@@ -219,7 +219,7 @@ pub fn run(
                     .finish_reason = "tool",
                     .tool_calls = null,
                     .tool_call_id = change_result.tool_call_id,
-                    .agent_name = change_result.agent,
+                    .agent_name = null,
                     .session_name = session_name,
                     .loop_index = loop_counter,
                     .temperature = agent_temperature.*,
@@ -230,7 +230,7 @@ pub fn run(
                     .total_tokens = 0,
                 });
                 send_tool_result.run(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
-                logger.infoFmt("Switched to agent: {s}", .{change_result.agent}) catch {};
+                logger.infoFmt("Agent properties updated: temp={any}, is_thinking={any}", .{ change_result.temperature, change_result.is_thinking }) catch {};
                 continue;
             }
 
@@ -338,7 +338,7 @@ pub fn run(
             // MCP tools are named like "context7_resolve-library-id"
             if (has_underscore) {
                 // Check if it's not one of the built-in tools
-                const is_builtin = std.mem.eql(u8, tool_call.function.name, "change_agent_tool") or
+                const is_builtin = std.mem.eql(u8, tool_call.function.name, "set_agent_properties") or
                     std.mem.eql(u8, tool_call.function.name, "bash") or
                     std.mem.eql(u8, tool_call.function.name, "read_file") or
                     std.mem.eql(u8, tool_call.function.name, "write_file") or

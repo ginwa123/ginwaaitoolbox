@@ -33,7 +33,7 @@ const MAX_TOOL_CALLS = 100; // Max tool calls per sub-agent to prevent infinite 
 // Import BashInput from models (not exported in bash.zig)
 const BashInput = @import("../../modules/agent/tools/models.zig").BashInput;
 
-/// All available tools for sub-agents (no spawn_sub_agent, no change_agent_tool)
+/// All available tools for sub-agents (no spawn_sub_agent, no set_agent_properties)
 const all_sub_agent_tools: []const tool_models.AgentTool = &.{
     bash_tool.bashTool,
     read_file_tool.readFileTool,
@@ -67,7 +67,7 @@ fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const
     return try result.toOwnedSlice(allocator);
 }
 
-/// Run a single sub-agent with basic tools (but no spawn_sub_agent or change_agent_tool)
+/// Run a single sub-agent with basic tools (but no spawn_sub_agent or set_agent_properties)
 fn runSubAgent(
     allocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
@@ -210,7 +210,7 @@ fn runSubAgent(
                     for (tcs) |tc| {
                         logger.infoFmt("[SUB_AGENT] Tool: '{s}'", .{tc.function.name}) catch {};
 
-                        // Execute basic tools inline (no spawn_sub_agent or change_agent_tool)
+                        // Execute basic tools inline (no spawn_sub_agent or set_agent_properties)
                         var tool_result: []const u8 = undefined;
 
                         if (std.mem.eql(u8, tc.function.name, "bash")) {

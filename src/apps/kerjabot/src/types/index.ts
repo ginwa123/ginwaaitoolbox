@@ -42,7 +42,7 @@ export {
   type ToolDefinition,
   type ToolParameter,
   type BashArguments,
-  type ChangeAgentArguments,
+  type SetAgentPropertiesArguments,
   type GetSkillArguments,
   type FileReadArguments,
   type FileWriteArguments,
