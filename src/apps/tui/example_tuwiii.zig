@@ -295,8 +295,6 @@ pub fn main() !void {
 
     try program.run();
 
-    // Cleanup
-    const app_ptr: *App = @ptrCast(@alignCast(model.ptr));
-    app_ptr.deinit();
-    allocator.destroy(model);
+    // program.deinit() already cleans up the model via deinitModel()
+    // so no additional cleanup needed here
 }

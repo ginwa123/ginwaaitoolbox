@@ -196,6 +196,11 @@ pub const Program = struct {
 
         try term.clearScreen();
 
+        // Initial render
+        var rendered = try self.model.view(self.allocator);
+        defer self.allocator.free(rendered);
+        try term.render(rendered);
+
         while (self.running) {
             // Process batch queue first
             while (self.batch_queue.items.len > 0) {
@@ -209,16 +214,17 @@ pub const Program = struct {
             // Process commands
             try self.processCommands();
 
-            // Render current view
-            const rendered = try self.model.view(self.allocator);
-            defer self.allocator.free(rendered);
-
-            try term.render(rendered);
-
             // Wait for input (non-blocking with small timeout)
             const msg = try term.readEvent(100);
+
+            // Only re-render if there's input to process
             if (msg) |m| {
                 try self.processMessage(m);
+
+                // Re-render after processing the message
+                rendered = try self.model.view(self.allocator);
+                defer self.allocator.free(rendered);
+                try term.render(rendered);
             }
         }
 
@@ -401,8 +407,10 @@ const Terminal = struct {
     fn render(self: *Terminal, content: []const u8) !void {
         _ = self;
         const stdout = std.fs.File.stdout();
-        // Just write content - the initial clearScreen in run() should position cursor at top
+        // Clear screen and position cursor at top before each render
+        _ = try stdout.write("\x1b[2J\x1b[H");
         _ = try stdout.write(content);
+        stdout.flush() catch {};
     }
 
     fn enableAltScreen(self: *Terminal) !void {
@@ -423,8 +431,9 @@ const Terminal = struct {
         if (@import("builtin").os.tag == .linux or @import("builtin").os.tag == .macos) {
             const stdout = std.fs.File.stdout();
 
-            var new_termios = self.original_termios;
+            // Save original termios FIRST
             _ = termios.tcgetattr(stdout.handle, &self.original_termios);
+            var new_termios = self.original_termios;
 
             new_termios.c_lflag &= ~(@as(c_uint, @bitCast(termios.ICANON)) | @as(c_uint, @bitCast(termios.ECHO)));
             new_termios.c_cc[termios.VMIN] = 0;
