@@ -119,6 +119,134 @@ test "search: returns matched_lines for file" {
     }
 }
 
+test "search: head returns first N matches" {
+    const allocator = std.testing.allocator;
+
+    // Create a test file with 10 matching lines
+    const test_content = "line1: match\nline2: match\nline3: match\nline4: match\nline5: match\nline6: match\nline7: match\nline8: match\nline9: match\nline10: match\n";
+    const test_file = try std.fs.cwd().createFile("test_search_head.txt", .{});
+    defer {
+        test_file.close();
+        std.fs.cwd().deleteFile("test_search_head.txt") catch {};
+    }
+    try test_file.writeAll(test_content);
+
+    var result = try searchMod.executeSearch(allocator, .{
+        .pattern = "match",
+        .path = "test_search_head.txt",
+        .max_results = null,
+        .head = 3,
+        .tail = null,
+    });
+    defer result.deinit(allocator);
+
+    // Should return exactly 3 matches (first 3)
+    try std.testing.expectEqual(@as(usize, 3), result.matches.items.len);
+    // First match should be line 1
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
+}
+
+test "search: tail returns last N matches" {
+    const allocator = std.testing.allocator;
+
+    // Create a test file with 10 matching lines
+    const test_content = "line1: match\nline2: match\nline3: match\nline4: match\nline5: match\nline6: match\nline7: match\nline8: match\nline9: match\nline10: match\n";
+    const test_file = try std.fs.cwd().createFile("test_search_tail.txt", .{});
+    defer {
+        test_file.close();
+        std.fs.cwd().deleteFile("test_search_tail.txt") catch {};
+    }
+    try test_file.writeAll(test_content);
+
+    var result = try searchMod.executeSearch(allocator, .{
+        .pattern = "match",
+        .path = "test_search_tail.txt",
+        .max_results = null,
+        .head = null,
+        .tail = 3,
+    });
+    defer result.deinit(allocator);
+
+    // Should return exactly 3 matches (last 3)
+    try std.testing.expectEqual(@as(usize, 3), result.matches.items.len);
+    // Last match should be line 10
+    try std.testing.expectEqual(@as(usize, 10), result.matches.items[2].line_number);
+}
+
+test "search: head and tail mutually exclusive returns error" {
+    const allocator = std.testing.allocator;
+
+    const test_content = "line1: match\nline2: match\n";
+    const test_file = try std.fs.cwd().createFile("test_search_both.txt", .{});
+    defer {
+        test_file.close();
+        std.fs.cwd().deleteFile("test_search_both.txt") catch {};
+    }
+    try test_file.writeAll(test_content);
+
+    const result = searchMod.executeSearch(allocator, .{
+        .pattern = "match",
+        .path = "test_search_both.txt",
+        .max_results = null,
+        .head = 1,
+        .tail = 1,
+    });
+
+    // Should return error
+    try std.testing.expectError(error.HeadAndTailMutuallyExclusive, result);
+}
+
+test "search: head works with max_results" {
+    const allocator = std.testing.allocator;
+
+    const test_content = "line1: match\nline2: match\nline3: match\nline4: match\nline5: match\n";
+    const test_file = try std.fs.cwd().createFile("test_search_head_max.txt", .{});
+    defer {
+        test_file.close();
+        std.fs.cwd().deleteFile("test_search_head_max.txt") catch {};
+    }
+    try test_file.writeAll(test_content);
+
+    var result = try searchMod.executeSearch(allocator, .{
+        .pattern = "match",
+        .path = "test_search_head_max.txt",
+        .max_results = 5,
+        .head = 2,
+        .tail = null,
+    });
+    defer result.deinit(allocator);
+
+    // max_results=5 limits to first 5, then head=2 takes first 2 of those
+    try std.testing.expectEqual(@as(usize, 2), result.matches.items.len);
+}
+
+test "search: tail works with max_results" {
+    const allocator = std.testing.allocator;
+
+    const test_content = "line1: match\nline2: match\nline3: match\nline4: match\nline5: match\n";
+    const test_file = try std.fs.cwd().createFile("test_search_tail_max.txt", .{});
+    defer {
+        test_file.close();
+        std.fs.cwd().deleteFile("test_search_tail_max.txt") catch {};
+    }
+    try test_file.writeAll(test_content);
+
+    var result = try searchMod.executeSearch(allocator, .{
+        .pattern = "match",
+        .path = "test_search_tail_max.txt",
+        .max_results = 5,
+        .head = null,
+        .tail = 2,
+    });
+    defer result.deinit(allocator);
+
+    // max_results=5 limits to first 5, then tail=2 takes last 2 of those
+    try std.testing.expectEqual(@as(usize, 2), result.matches.items.len);
+    // Should be lines 4 and 5 (the last 2 of the first 5)
+    try std.testing.expectEqual(@as(usize, 4), result.matches.items[0].line_number);
+    try std.testing.expectEqual(@as(usize, 5), result.matches.items[1].line_number);
+}
+
 test "searchResultToString: returns compressed XML format" {
     const allocator = std.testing.allocator;
 

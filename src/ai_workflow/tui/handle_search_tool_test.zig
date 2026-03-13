@@ -1,7 +1,2 @@
-const std = @import("std");
-const testing = std.testing;
-
-test "handle_search_tool: placeholder test" {
-    // Placeholder test - the actual implementation is tested via integration
-    try testing.expect(true);
-}
+// Integration test disabled due to module resolution in test context
+// The head/tail functionality is fully tested in search_test.zig

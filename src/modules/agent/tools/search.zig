@@ -15,6 +15,8 @@ pub const SearchInput = struct {
     pattern: []const u8,
     path: []const u8,
     max_results: ?usize = null,
+    head: ?usize = null,
+    tail: ?usize = null,
 };
 
 pub const SearchResult = struct {
@@ -63,6 +65,11 @@ fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
 }
 
 pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchResult {
+    // Validate head/tail are mutually exclusive
+    if (input.head != null and input.tail != null) {
+        return error.HeadAndTailMutuallyExclusive;
+    }
+
     const max_results = input.max_results orelse 50;
 
     const argv = &[_][]const u8{
@@ -180,6 +187,33 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
         }
     }
 
+    // Apply head/tail slicing after max_results limit
+    if (input.head) |head_n| {
+        if (head_n < matches.items.len) {
+            // Keep only first head_n matches
+            const to_remove = matches.items.len - head_n;
+            for (0..to_remove) |i| {
+                const idx = matches.items.len - 1 - i;
+                allocator.free(matches.items[idx].file);
+                allocator.free(matches.items[idx].snippet);
+            }
+            matches.shrinkRetainingCapacity(head_n);
+        }
+    } else if (input.tail) |tail_n| {
+        if (tail_n < matches.items.len) {
+            // Keep only last tail_n matches
+            const start_idx = matches.items.len - tail_n;
+            for (0..start_idx) |i| {
+                allocator.free(matches.items[i].file);
+                allocator.free(matches.items[i].snippet);
+            }
+            // Shift remaining to start
+            const kept = matches.items[start_idx..];
+            matches.shrinkRetainingCapacity(tail_n);
+            @memcpy(matches.items, kept);
+        }
+    }
+
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
@@ -255,6 +289,16 @@ pub const searchTool = AgentTool{
                     .name = "max_results",
                     .type = "number",
                     .description = "Max matches to return. Default: 50.",
+                },
+                .{
+                    .name = "head",
+                    .type = "number",
+                    .description = "Return first N matches from result set.",
+                },
+                .{
+                    .name = "tail",
+                    .type = "number",
+                    .description = "Return last N matches from result set.",
                 },
             },
             .required = &.{ "pattern", "path" },
