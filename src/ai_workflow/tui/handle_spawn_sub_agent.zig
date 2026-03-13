@@ -80,8 +80,8 @@ fn runSubAgent(
     config: *const config_mod.LlmConfig,
     allowed_tools: ?[]const []const u8, // optional list of tool names to allow
     // New parameters for saving messages to DB
-    session_id: []const u8,
-    session_name: ?[]const u8,
+    // session_id: []const u8,
+    // session_name: ?[]const u8,
     loop_index: u32,
     agent_temperature: f32,
     is_thinking: bool,
@@ -90,6 +90,8 @@ fn runSubAgent(
     parent_id: ?[]const u8,
 ) ![]const u8 {
     _ = config; // reserved for future use (e.g., MCP tools)
+    const session_id = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
+    const session_name = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
 
     // Save user instruction message to DB
     _ = try save_message.run(allocator, db, .{
@@ -394,8 +396,6 @@ pub fn run(
                 llm_model: []const u8,
                 url: []const u8,
                 cfg: *const config_mod.LlmConfig,
-                sess_id: []const u8,
-                sess_name: []const u8,
                 loop_idx: u32,
                 temp: f32,
                 think: bool,
@@ -422,8 +422,6 @@ pub fn run(
                     url,
                     cfg,
                     tools,
-                    sess_id,
-                    sess_name,
                     loop_idx,
                     temp,
                     think,
@@ -458,8 +456,6 @@ pub fn run(
             model,
             base_url,
             config,
-            session_id,
-            session_id,
             loop_counter,
             agent_temperature,
             is_thinking,
@@ -498,7 +494,7 @@ pub fn run(
         const result = r.result;
         const err_msg = r.err_msg;
         r.mutex.unlock();
-        
+
         if (err_msg) |em| {
             logger.errFmt("spawn_sub_agent: agent '{s}' failed: {s}", .{ sub_agent.name, em }) catch {};
             try results.append(allocator, em);
