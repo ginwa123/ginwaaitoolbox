@@ -101,7 +101,7 @@ pub const readFileTool = AgentTool{
         \\Read a file by path. Returns content, total_lines, start_line, end_line.
         \\
         \\- Omit offset and limit to read the whole file.
-        \\- Use offset + limit to paginate large files (recommended page: 300 lines).
+        \\- Use offset + limit to paginate large files (recommended page: 500 lines).
         \\- Never guess offsets — check total_lines from a prior call first.
         ,
         .parameters = .{

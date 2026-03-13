@@ -353,14 +353,33 @@ pub fn main() !void {
             }
             if (std.mem.eql(u8, t.command_type, "ping")) {
                 // Ping command - check if session is still connected via SSE
-                // Just log the status - the TUI handles reconnection via SSE stream events
+                // Return JSON response to tell TUI whether to reconnect
                 std.debug.print("COMMAND: ping from session_id={s}\n", .{t.session_id});
+                
+                // Use a fixed-size buffer for the response (max 256 bytes is plenty)
+                var response_buf: [256]u8 = undefined;
+                var response: []const u8 = undefined;
+                
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     if (sse_manager.hasSession(t.session_id)) {
+                        response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"connected\":true}}", .{t.session_id}) catch unreachable;
                         std.debug.print("Pong: session {s} is connected\n", .{t.session_id});
                     } else {
+                        response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{t.session_id}) catch unreachable;
                         std.debug.print("Pong: session {s} not connected, TUI should reconnect SSE\n", .{t.session_id});
                     }
+                } else {
+                    response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{t.session_id}) catch unreachable;
+                }
+                // Send the response back to the TUI via SSE event
+                if (http_server.getGlobalSseManager()) |sse_manager| {
+                    const event = http_server.SseEvent{
+                        .event_type = "pong",
+                        .data = response,
+                    };
+                    sse_manager.sendEvent(t.session_id, event) catch |err| {
+                        std.debug.print("Failed to send pong response: {s}\n", .{@errorName(err)});
+                    };
                 }
             }
 
