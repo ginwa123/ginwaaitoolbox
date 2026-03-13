@@ -128,7 +128,7 @@ pub const SseConnectionManager = struct {
         }
     }
 
-    /// Send an event to a specific session (uses stack buffer, no heap allocations)
+    /// Send an event to a specific session (uses stack buffer, falls back to heap for large events)
     /// Includes retry logic for race conditions where session isn't registered yet
     pub fn sendEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
         // Retry up to 3 times with 50ms delay to handle race condition where
@@ -139,12 +139,27 @@ pub const SseConnectionManager = struct {
         for (0..max_retries) |attempt| {
             self.mutex.lock();
             if (self.connections.get(session_id)) |stream| {
-                // Use stack buffer for SSE formatting - no heap allocations
+                // First try with stack buffer (fast path for small events)
                 var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
-                const formatted = event.formatInto(&stack_buf) catch {
+                const formatted = event.formatInto(&stack_buf) catch |err| {
+                    if (err == error.BufferTooSmall) {
+                        // Stack buffer too small - fall back to heap allocation for large events
+                        const heap_formatted = event.format(self.allocator) catch |heap_err| {
+                            self.mutex.unlock();
+                            std.log.err("SSE sendEvent: heap allocation failed: {s}", .{@errorName(heap_err)});
+                            return error.AllocationFailed;
+                        };
+                        defer self.allocator.free(heap_formatted);
+                        stream.writeAll(heap_formatted) catch |write_err| {
+                            self.mutex.unlock();
+                            std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(write_err)});
+                            return error.WriteFailed;
+                        };
+                        self.mutex.unlock();
+                        return; // Success with heap buffer
+                    }
                     self.mutex.unlock();
-                    std.log.err("SSE sendEvent: event too large for stack buffer (max {} bytes)", .{SseEvent.MAX_SSE_SIZE});
-                    return error.BufferTooSmall;
+                    return err;
                 };
 
                 // Write directly to stream
@@ -177,15 +192,35 @@ pub const SseConnectionManager = struct {
         return self.connections.contains(session_id);
     }
 
-    /// Send an event to ALL connected sessions (broadcast)
+    /// Broadcast an event to ALL connected sessions
+    /// Uses heap allocation for large events when stack buffer is too small
     pub fn broadcast(self: *Self, event: SseEvent) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
-        const formatted = event.formatInto(&stack_buf) catch {
-            std.log.err("SSE broadcast: event too large for stack buffer", .{});
-            return;
+        // First try stack buffer, fall back to heap for large events
+        const formatted = blk: {
+            var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
+            break :blk event.formatInto(&stack_buf) catch |err| {
+                if (err == error.BufferTooSmall) {
+                    // Fall back to heap allocation for large events
+                    const heap_result = event.format(self.allocator) catch {
+                        std.log.err("SSE broadcast: heap allocation failed", .{});
+                        return;
+                    };
+                    defer self.allocator.free(heap_result);
+                    // Write with heap buffer
+                    var iter = self.connections.iterator();
+                    while (iter.next()) |entry| {
+                        entry.value_ptr.writeAll(heap_result) catch {
+                            std.log.warn("SSE broadcast: failed to write to session {s}", .{entry.key_ptr.*});
+                        };
+                    }
+                    return;
+                }
+                std.log.err("SSE broadcast: format failed: {s}", .{@errorName(err)});
+                return;
+            };
         };
 
         var iter = self.connections.iterator();

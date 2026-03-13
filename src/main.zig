@@ -352,16 +352,15 @@ pub fn main() !void {
                 // todo rework
             }
             if (std.mem.eql(u8, t.command_type, "ping")) {
-                // Ping command - send pong event to confirm session is alive
+                // Ping command - check if session is still connected via SSE
+                // Just log the status - the TUI handles reconnection via SSE stream events
                 std.debug.print("COMMAND: ping from session_id={s}\n", .{t.session_id});
                 if (http_server.getGlobalSseManager()) |sse_manager| {
-                    const pong_event = http_server.SseEvent{
-                        .event_type = "pong",
-                        .data = "{\"session_id\":\"ping\"}",
-                    };
-                    sse_manager.sendEvent(t.session_id, pong_event) catch |err| {
-                        std.debug.print("Failed to send pong: {s}\n", .{@errorName(err)});
-                    };
+                    if (sse_manager.hasSession(t.session_id)) {
+                        std.debug.print("Pong: session {s} is connected\n", .{t.session_id});
+                    } else {
+                        std.debug.print("Pong: session {s} not connected, TUI should reconnect SSE\n", .{t.session_id});
+                    }
                 }
             }
 

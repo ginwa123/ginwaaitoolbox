@@ -435,7 +435,8 @@ fn sendSessionsCommand(app: *App) !void {
 /// Send a ping command to the server to keep the session alive
 /// This prevents "session not found" errors when the server's SSE stream handler
 /// thread exits while the TUI is still running a long operation
-fn sendPingCommand(app: *App) !void {
+/// Returns true if reconnect is needed, false otherwise
+fn sendPingCommand(app: *App) !bool {
     const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
         \\{{"app_type":"tui","command_type":"ping","session_id":"{s}"}}
     , .{app.session_id});
@@ -445,6 +446,17 @@ fn sendPingCommand(app: *App) !void {
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
     const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
+    
+    // Read response to check if reconnect is needed
+    var buf: [1024]u8 = undefined;
+    const n = std.posix.read(sock, &buf) catch return false;
+    if (n > 0) {
+        const response = buf[0..n];
+        if (std.mem.indexOf(u8, response, "\"reconnect\":true") != null) {
+            return true; // Need to reconnect
+        }
+    }
+    return false;
 }
 
 // ─── Response formatting ─────────────────────────────────────────────────────
@@ -709,7 +721,12 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
 
             // Send periodic ping to keep session alive on server
             if (now - last_ping_ms > PING_INTERVAL_MS) {
-                sendPingCommand(app) catch {};
+                const needs_reconnect = sendPingCommand(app) catch false;
+                if (needs_reconnect) {
+                    std.debug.print("SSE session expired, reconnecting...\n", .{});
+                    reconnection_attempts += 1;
+                    break; // Will trigger reconnection
+                }
                 last_ping_ms = now;
             }
 
@@ -947,7 +964,12 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
             // No data available - check for timeout
             // Send periodic ping to keep session alive on server
             if (now - last_ping_ms > PING_INTERVAL_MS) {
-                sendPingCommand(app) catch {};
+                const needs_reconnect = sendPingCommand(app) catch false;
+                if (needs_reconnect) {
+                    std.debug.print("SSE session expired, reconnecting...\n", .{});
+                    reconnection_attempts += 1;
+                    break; // Will trigger reconnection
+                }
                 last_ping_ms = now;
             }
 
