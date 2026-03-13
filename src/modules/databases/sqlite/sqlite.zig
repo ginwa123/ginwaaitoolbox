@@ -52,7 +52,8 @@ pub const SqliteBackend = struct {
             }
         }
         if (rc != c.SQLITE_OK) {
-            std.debug.print("sqlite3_prepare_v2 error: {s}\n", .{@errorName(Error.PrepareFailed)});
+            const err_msg = c.sqlite3_errmsg(db);
+            std.debug.print("sqlite3_prepare_v2 error: {s}\n", .{err_msg});
             return Error.PrepareFailed;
         }
 
@@ -64,7 +65,8 @@ pub const SqliteBackend = struct {
                 rc = c.sqlite3_bind_text(stmt, param_idx, arg.ptr, @intCast(arg.len), c.SQLITE_TRANSIENT);
             }
             if (rc != c.SQLITE_OK) {
-                std.debug.print("sqlite3_bind_text error: {s}\n", .{@errorName(Error.BindFailed)});
+                const err_msg = c.sqlite3_errmsg(db);
+                std.debug.print("sqlite3_bind_text error: {s}\n", .{err_msg});
                 return Error.BindFailed;
             }
         }
@@ -76,7 +78,8 @@ pub const SqliteBackend = struct {
             } else if (rc == c.SQLITE_DONE) {
                 break;
             } else {
-                std.debug.print("sqlite3_step error: {s}\n", .{@errorName(Error.ExecuteFailed)});
+                const err_msg = c.sqlite3_errmsg(db);
+                std.debug.print("sqlite3_step error: {s}\n", .{err_msg});
                 return Error.ExecuteFailed;
             }
         }
@@ -106,6 +109,8 @@ pub const SqliteBackend = struct {
 
         const step_rc = c.sqlite3_step(stmt);
         if (step_rc != c.SQLITE_ROW) {
+            const err_msg = c.sqlite3_errmsg(db);
+            std.debug.print("sqlite3_step error (queryRow): {s}\n", .{err_msg});
             return Error.RowNotFound;
         }
 
@@ -142,6 +147,8 @@ pub const SqliteBackend = struct {
                 return null;
             }
             if (rc != c.SQLITE_ROW) {
+                // Note: Can't get err_msg here since stmt is already finalized after this returns
+                std.debug.print("sqlite3_step error (Rows.next): rc={}\n", .{rc});
                 return Error.QueryFailed;
             }
 
@@ -182,12 +189,16 @@ pub const SqliteBackend = struct {
         var stmt: ?*c.sqlite3_stmt = null;
         const prep_rc = c.sqlite3_prepare_v2(db, sql.ptr, @intCast(sql.len), &stmt, null);
         if (prep_rc != c.SQLITE_OK) {
+            const err_msg = c.sqlite3_errmsg(db);
+            std.debug.print("sqlite3_prepare_v2 error (query): {s}\n", .{err_msg});
             return Error.PrepareFailed;
         }
 
         for (argv, 0..) |arg, i| {
             const bind_rc = c.sqlite3_bind_text(stmt, @intCast(i + 1), arg.ptr, @intCast(arg.len), c.SQLITE_TRANSIENT);
             if (bind_rc != c.SQLITE_OK) {
+                const err_msg = c.sqlite3_errmsg(db);
+                std.debug.print("sqlite3_bind_text error (query): {s}\n", .{err_msg});
                 _ = c.sqlite3_finalize(stmt);
                 return Error.BindFailed;
             }
