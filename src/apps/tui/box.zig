@@ -69,6 +69,10 @@ pub const Dim = union(enum) {
     auto: void,
     /// Fixed size in characters
     fixed: u16,
+    /// Match parent size (100% of available space)
+    match_parent: void,
+    /// Fill parent (alias for match_parent)
+    fill_parent: void,
 
     /// Default: auto
     pub fn default() Dim {
@@ -272,7 +276,7 @@ pub const Box = struct {
                 return Size{ .width = max_width, .height = height };
             },
             .box => |b| {
-                return box.calculateSize(b);
+                return box.calculateSize(b, null, null);
             },
             .list => |list| {
                 if (list.len == 0) {
@@ -305,7 +309,7 @@ pub const Box = struct {
     }
 
     /// Calculate the Box's size based on options and content
-    pub fn calculateSize(box: *Box, child: ?*Box) Size {
+    pub fn calculateSize(box: *Box, child: ?*Box, parent_width: ?u16, parent_height: ?u16) Size {
         _ = child; // Reserved for future nested box calculation
         const content = box.children();
         const content_size = box.measureContent(content);
@@ -318,14 +322,21 @@ pub const Box = struct {
         const required_width = content_size.width + pad_h + (border_w * 2);
         const required_height = content_size.height + pad_v + (border_w * 2);
 
+        // Get terminal size as fallback for match_parent
+        const term_size = box.getTerminalSize();
+        const fallback_width = parent_width orelse term_size.cols;
+        const fallback_height = parent_height orelse term_size.rows;
+
         // Apply dimension settings
         const width: u16 = switch (box.options.width) {
             .auto => required_width,
             .fixed => |w| w,
+            .match_parent, .fill_parent => fallback_width,
         };
         const height: u16 = switch (box.options.height) {
             .auto => required_height,
             .fixed => |h| h,
+            .match_parent, .fill_parent => fallback_height,
         };
 
         // Store inner dimensions
@@ -333,6 +344,36 @@ pub const Box = struct {
         box.inner_height = if (height > border_w * 2 + pad_v) height - border_w * 2 - pad_v else 0;
 
         return Size{ .width = width, .height = height };
+    }
+
+    /// Get terminal size, returns default 80x24 if unavailable
+    fn getTerminalSize(box: *Box) struct { rows: u16, cols: u16 } {
+        _ = box;
+        // Try TIOCGWINSZ via direct syscall - try stdout first, then stderr, then stdin
+        const fds = [_]u32{ std.posix.STDOUT_FILENO, std.posix.STDERR_FILENO, std.posix.STDIN_FILENO };
+        for (fds) |fd| {
+            var ws: extern struct { ws_row: u16, ws_col: u16, ws_xpixel: u16, ws_ypixel: u16 } = undefined;
+            const rc = std.os.linux.syscall3(
+                std.os.linux.SYS.ioctl,
+                @as(u64, fd),
+                @as(u64, 0x5413), // TIOCGWINSZ
+                @intFromPtr(&ws),
+            );
+            // Check for success (rc == 0) or -1 (errno) - also check ws values are non-zero
+            if (rc >= 0 and ws.ws_col > 0 and ws.ws_row > 0) {
+                return .{ .rows = ws.ws_row, .cols = ws.ws_col };
+            }
+        }
+        // Fallback to environment
+        if (std.posix.getenv("LINES")) |lines| {
+            if (std.posix.getenv("COLUMNS")) |columns| {
+                const rows = std.fmt.parseInt(u16, lines, 10) catch 24;
+                const cols = std.fmt.parseInt(u16, columns, 10) catch 80;
+                return .{ .rows = rows, .cols = cols };
+            }
+        }
+        // Final fallback
+        return .{ .rows = 24, .cols = 80 };
     }
 
     /// Calculate horizontal position for content based on justify_content
@@ -378,7 +419,7 @@ pub const Box = struct {
     /// Render the box to an output buffer and return lines
     /// Caller owns the returned array list
     pub fn render(box: *Box, out: *std.ArrayList([]u8)) !void {
-        const size = box.calculateSize(null);
+        const size = box.calculateSize(null, null, null);
         const width = size.width;
         const height = size.height;
 

@@ -13,53 +13,6 @@ const RenderedContent = box_module.RenderedContent;
 const Input = input_module.Input;
 
 // ============================================================================
-// Simple Example Without Full Framework
-// ============================================================================
-
-pub fn simpleExample() !void {
-    const allocator = std.heap.page_allocator;
-
-    // Clear screen - use escape sequences directly
-    const clear_screen = "\x1b[2J\x1b[H";
-    std.debug.print("{s}", .{clear_screen});
-
-    // Create and display a box
-    const box_render_fn = struct {
-        fn render() RenderedContent {
-            return .{ .text = "Simple tuwiii example!\nPress any key to quit..." };
-        }
-    }.render;
-
-    const my_box = box.init(allocator, .{
-        .border = true,
-        .title = "tuwiii Demo",
-        .padding = .{ .individual = .{ .top = 2, .right = 4, .bottom = 2, .left = 4 } },
-    }, box_render_fn) catch unreachable;
-    defer my_box.destroy();
-
-    const output = my_box.renderToString() catch unreachable;
-    std.debug.print("{s}\n\n", .{output});
-
-    // Create and display an input
-    const my_input = Input.init(allocator, .{
-        .width = 40,
-        .placeholder = "Type something...",
-        .style = .boxed,
-        .title = "Input Field",
-    }) catch unreachable;
-    defer my_input.destroy();
-
-    // Pre-fill some text
-    try Input.insertSlice(my_input, "Hello tuwiii!");
-    const input_output = my_input.render() catch unreachable;
-    std.debug.print("{s}\n\n", .{input_output});
-
-    std.debug.print("\x1b[32mExample complete! Press Enter to exit...\x1b[0m", .{});
-    var buf: [1]u8 = undefined;
-    _ = try std.posix.read(std.posix.STDIN_FILENO, &buf);
-}
-
-// ============================================================================
 // Example Application Model (Full Framework)
 // ============================================================================
 
@@ -125,62 +78,78 @@ const App = struct {
         errdefer buffer.deinit(allocator);
 
         // Header Box
-        const header_render_fn = struct {
+        // const header_render_fn = struct {
+        //     fn render() RenderedContent {
+        //         return .{ .text = "tuwiii TUI Framework - Interactive Demo" };
+        //     }
+        // }.render;
+        // const header_box = try box.init(allocator, .{
+        //     .border = true,
+        //     .title = "tuwiii",
+        //     .padding = .{ .individual = .{ .top = 1, .right = 2, .bottom = 1, .left = 2 } },
+        //     .width = .{ .fixed = 54 },
+        // }, header_render_fn);
+        // defer header_box.destroy();
+        //
+        // const header_output = try header_box.renderToString();
+        // defer allocator.free(header_output);
+        // try buffer.appendSlice(allocator, header_output);
+        // try buffer.append(allocator, '\n');
+        //
+        // // Instructions Box
+        // const instructions_render_fn = struct {
+        //     fn render() RenderedContent {
+        //         return .{
+        //             .text =
+        //             \\i  - Focus input field
+        //             \\b  - Focus box (view counter)
+        //             \\+  - Increment counter
+        //             \\-  - Decrement counter
+        //             \\↑  - Arrow up (increment)
+        //             \\↓  - Arrow down (decrement)
+        //             \\q  - Quit
+        //             \\
+        //         };
+        //     }
+        // }.render;
+        // const instructions_box = try box.init(allocator, .{
+        //     .border = true,
+        //     .title = "Controls",
+        //     .padding = .{ .all = 1 },
+        //     .width = .{ .fixed = 45 },
+        //     .height = .{ .fixed = 10 },
+        // }, instructions_render_fn);
+        // defer instructions_box.destroy();
+        //
+        // const instructions_output = try instructions_box.renderToString();
+        // defer allocator.free(instructions_output);
+        // try buffer.appendSlice(allocator, instructions_output);
+        // try buffer.append(allocator, '\n');
+        //
+        // // Counter display - simple text rendering
+        // const counter_str = try std.fmt.allocPrint(allocator, "\x1b[32mCounter: {d}\x1b[0m", .{self.counter});
+        // defer allocator.free(counter_str);
+        // try buffer.appendSlice(allocator, counter_str);
+        // try buffer.append(allocator, '\n');
+        // try buffer.append(allocator, '\n');
+        //
+        // // Box component
+        const box_render_fn = struct {
             fn render() RenderedContent {
-                return .{ .text = "tuwiii TUI Framework - Interactive Demo" };
+                return .{ .text = "This is a Box component!\nIt can hold any content.\nUse arrow keys to change the counter.sa dasd asdas dasd asd asdkn asodn asolikdn aslknd lksandkl nas" };
             }
         }.render;
-        const header_box = try box.init(allocator, .{
+
+        const box_instance = try box.init(allocator, .{
             .border = true,
-            .title = "tuwiii",
+            .title = "My Box",
             .padding = .{ .individual = .{ .top = 1, .right = 2, .bottom = 1, .left = 2 } },
-            .width = .{ .fixed = 54 },
-        }, header_render_fn);
-        defer header_box.destroy();
+            .justify_content = .stretch,
+            .width = .match_parent,
+            .height = .match_parent,
+        }, box_render_fn);
+        self.box_component = box_instance;
 
-        const header_output = try header_box.renderToString();
-        defer allocator.free(header_output);
-        try buffer.appendSlice(allocator, header_output);
-        try buffer.append(allocator, '\n');
-
-        // Instructions Box
-        const instructions_render_fn = struct {
-            fn render() RenderedContent {
-                return .{
-                    .text =
-                    \\i  - Focus input field
-                    \\b  - Focus box (view counter)
-                    \\+  - Increment counter
-                    \\-  - Decrement counter
-                    \\↑  - Arrow up (increment)
-                    \\↓  - Arrow down (decrement)
-                    \\q  - Quit
-                    \\
-                };
-            }
-        }.render;
-        const instructions_box = try box.init(allocator, .{
-            .border = true,
-            .title = "Controls",
-            .padding = .{ .all = 1 },
-            .width = .{ .fixed = 45 },
-            .height = .{ .fixed = 10 },
-        }, instructions_render_fn);
-        defer instructions_box.destroy();
-
-        const instructions_output = try instructions_box.renderToString();
-        defer allocator.free(instructions_output);
-        try buffer.appendSlice(allocator, instructions_output);
-        try buffer.append(allocator, '\n');
-
-        // Counter display - simple text rendering
-        const counter_str = try std.fmt.allocPrint(allocator, "\x1b[32mCounter: {d}\x1b[0m", .{self.counter});
-        defer allocator.free(counter_str);
-        try buffer.appendSlice(allocator, counter_str);
-        try buffer.append(allocator, '\n');
-        try buffer.append(allocator, '\n');
-
-        // Box component
         try buffer.appendSlice(allocator, "\x1b[35mBox Component:\x1b[0m\n");
         const box_output = try self.box_component.renderToString();
         defer allocator.free(box_output);
@@ -188,6 +157,13 @@ const App = struct {
         try buffer.append(allocator, '\n');
 
         // Input component
+        // Create input component
+        const input_instance = try Input.init(allocator, .{
+            .style = .plain,
+            .mode = .single_line,
+        });
+        self.input_component = input_instance;
+
         try buffer.appendSlice(allocator, "\x1b[35mInput Component ");
         if (self.focused_input) {
             try buffer.appendSlice(allocator, "[FOCUSED]");
@@ -242,37 +218,15 @@ const App = struct {
 
     pub fn create(allocator: std.mem.Allocator) !*tuwiii.Model {
         // Create box component
-        const box_render_fn = struct {
-            fn render() RenderedContent {
-                return .{ .text = "This is a Box component!\nIt can hold any content.\nUse arrow keys to change the counter." };
-            }
-        }.render;
-
-        const box_instance = try box.init(allocator, .{
-            .border = true,
-            .title = "My Box",
-            .padding = .{ .individual = .{ .top = 1, .right = 2, .bottom = 1, .left = 2 } },
-            .width = .{ .fixed = 50 },
-            .height = .{ .fixed = 6 },
-        }, box_render_fn);
-
-        // Create input component
-        const input_instance = try Input.init(allocator, .{
-            .width = 40,
-            .placeholder = "Type here...",
-            .style = .boxed,
-            .title = "Message",
-            .mode = .single_line,
-        });
 
         // Create app instance
         const app = try allocator.create(Self);
         app.* = .{
             .counter = 0,
+            .box_component = undefined,
             .text = "Hello from tuwiii!",
             .focused_input = false,
-            .box_component = box_instance,
-            .input_component = input_instance,
+            .input_component = undefined,
             .allocator = allocator,
         };
 
@@ -302,11 +256,6 @@ pub fn main() !void {
     // Check for command line arguments
     const args = try std.process.argsAlloc(std.heap.page_allocator);
     defer std.process.argsFree(std.heap.page_allocator, args);
-
-    if (args.len > 1 and std.mem.eql(u8, args[1], "--simple")) {
-        try simpleExample();
-        return;
-    }
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
