@@ -214,60 +214,62 @@ fn runSubAgent(
                         var tool_result: []const u8 = undefined;
 
                         if (std.mem.eql(u8, tc.function.name, "bash")) {
-                            const bash_input = parseBashInput(allocator, tc.function.arguments) catch |err| {
+                            const bash_input_opt = parseBashInput(allocator, tc.function.arguments) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
                                 send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
                                 allocator.free(err_str);
-                                tool_result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
-                                continue; // Skip to next tool
+                                break :blk null;
                             };
-                            const result = bash_tool.executeBash(allocator, bash_input) catch |err| {
-                                const err_str = try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                                send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
-                                allocator.free(err_str);
-                                tool_result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
-                                continue; // Skip to next tool
-                            };
-                            tool_result = try bash_tool.bashResultToString(allocator, result);
+                            if (bash_input_opt) |bash_input| {
+                                const result = bash_tool.executeBash(allocator, bash_input) catch |err| blk: {
+                                    const err_str = try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
+                                    send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
+                                    allocator.free(err_str);
+                                    break :blk null;
+                                };
+                                if (result) |r| {
+                                    tool_result = try bash_tool.bashResultToString(allocator, r);
+                                } else {
+                                    tool_result = "Error: bash execution failed";
+                                }
+                            } else {
+                                tool_result = "Error: bash input parsing failed";
+                            }
                             // Send tool result immediately after execution
                             send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "bash", null);
                         } else if (std.mem.eql(u8, tc.function.name, "read_file")) {
-                            tool_result = handle_read_file_tool.run(allocator, tc) catch |err| {
+                            tool_result = handle_read_file_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: read_file failed: {s}", .{@errorName(err)});
                                 send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "read_file", null);
                                 allocator.free(err_str);
-                                tool_result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
-                                continue;
+                                break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
                             send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "read_file", null);
                         } else if (std.mem.eql(u8, tc.function.name, "search")) {
-                            tool_result = handle_search_tool.run(allocator, tc) catch |err| {
+                            tool_result = handle_search_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: search failed: {s}", .{@errorName(err)});
                                 send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "search", null);
                                 allocator.free(err_str);
-                                tool_result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
-                                continue;
+                                break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
                             send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "search", null);
                         } else if (std.mem.eql(u8, tc.function.name, "text_replace")) {
-                            tool_result = handle_text_replace_tool.run(allocator, tc) catch |err| {
+                            tool_result = handle_text_replace_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: text_replace failed: {s}", .{@errorName(err)});
                                 send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "text_replace", null);
                                 allocator.free(err_str);
-                                tool_result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
-                                continue;
+                                break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
                             send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "text_replace", null);
                         } else if (std.mem.eql(u8, tc.function.name, "write_file")) {
-                            tool_result = handle_write_file_tool.run(allocator, tc) catch |err| {
+                            tool_result = handle_write_file_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: write_file failed: {s}", .{@errorName(err)});
                                 send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "write_file", null);
                                 allocator.free(err_str);
-                                tool_result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
-                                continue;
+                                break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
                             send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "write_file", null);
@@ -276,22 +278,20 @@ fn runSubAgent(
                             // Send tool result immediately after execution
                             send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "list_skills", null);
                         } else if (std.mem.eql(u8, tc.function.name, "get_skill")) {
-                            tool_result = handle_get_skill_tool.run(allocator, tc) catch |err| {
+                            tool_result = handle_get_skill_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: get_skill failed: {s}", .{@errorName(err)});
                                 send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "get_skill", null);
                                 allocator.free(err_str);
-                                tool_result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
-                                continue;
+                                break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
                             send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "get_skill", null);
                         } else if (std.mem.eql(u8, tc.function.name, "remove_skill")) {
-                            tool_result = handle_remove_skill_tool.run(allocator, tc) catch |err| {
+                            tool_result = handle_remove_skill_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: remove_skill failed: {s}", .{@errorName(err)});
                                 send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "remove_skill", null);
                                 allocator.free(err_str);
-                                tool_result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
-                                continue;
+                                break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
                             send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "remove_skill", null);

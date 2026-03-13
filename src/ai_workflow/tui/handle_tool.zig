@@ -305,6 +305,7 @@ pub fn run(
                 const result = handle_get_skill_tool.run(allocator, tool_call) catch |err| {
                     const err_name = @errorName(err);
                     logger.errFmt("Error executing get_skill: {s}", .{err_name}) catch {};
+                    try handleToolError(ctx, tool_call, err, "Error executing get_skill");
                     continue;
                 };
                 defer allocator.free(result);
@@ -316,6 +317,7 @@ pub fn run(
                 const result = handle_remove_skill_tool.run(allocator, tool_call) catch |err| {
                     const err_name = @errorName(err);
                     logger.errFmt("Error executing remove_skill: {s}", .{err_name}) catch {};
+                    try handleToolError(ctx, tool_call, err, "Error executing remove_skill");
                     continue;
                 };
                 defer allocator.free(result);
