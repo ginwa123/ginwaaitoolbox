@@ -136,7 +136,7 @@ fn fetchToolsFromServer(
     // Make HTTP request using our http_client (which has curl fallback)
     const result = client.post(tools_url, request_body, headers_hash) catch |err| {
         std.log.warn("Failed to fetch MCP tools from {s}: {s}", .{ server_name, @errorName(err) });
-        return &[_]AgentTool{};
+        return &[_]AgentTool{}; // this is issue will be fixed in the next release
     };
     defer allocator.free(result.body);
 

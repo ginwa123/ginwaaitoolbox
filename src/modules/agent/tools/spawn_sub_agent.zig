@@ -64,6 +64,7 @@ pub const spawnSubAgentTool = AgentTool{
 
 /// Parse JSON input to extract sub-agents
 /// Returns error if JSON is invalid or more than max_agents
+/// Handles both correct format (json_input as string) and LLM mistake (json_input as object)
 pub fn parseSubAgents(
     allocator: std.mem.Allocator,
     input_json: []const u8,
@@ -75,10 +76,38 @@ pub fn parseSubAgents(
     defer parsed.deinit();
 
     const root = parsed.value;
-    const root_obj = root.object.get("sub_agents") orelse {
+    const root_obj = root.object;
+
+    // Try to get sub_agents - either directly from root or from json_input field
+    if (root_obj.get("sub_agents")) |_| {
+        return parseSubAgentsFromValue(allocator, root_obj, max_agents);
+    } else {
+        // Check if json_input is present
+        if (root_obj.get("json_input")) |json_input_val| {
+            // Case 1: json_input is an object (LLM mistake) containing sub_agents
+            if (json_input_val == .object) {
+                return parseSubAgentsFromValue(allocator, json_input_val.object, max_agents);
+            }
+            // Case 2: json_input is a string (correct format) - parse it recursively
+            if (json_input_val == .string) {
+                // Recursively parse the string content
+                return parseSubAgents(allocator, json_input_val.string, max_agents);
+            }
+        }
+        return error.MissingSubAgentsField;
+    }
+}
+
+/// Parse sub_agents from an already-parsed object
+fn parseSubAgentsFromValue(
+    allocator: std.mem.Allocator,
+    root_obj: std.json.ObjectMap,
+    max_agents: usize,
+) !SubAgentsInput {
+    const agents_val = root_obj.get("sub_agents") orelse {
         return error.MissingSubAgentsField;
     };
-    const agents_array = root_obj.array;
+    const agents_array = agents_val.array;
 
     if (agents_array.items.len == 0) {
         return error.NoSubAgents;

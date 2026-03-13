@@ -102,7 +102,6 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const allocator = stream_ctx.allocator;
     const session_id = stream_ctx.session_id;
 
-
     // we disable final chunk for now
     // if (chunk.done) {
     //     send_stream_chunk_final.run(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
@@ -151,7 +150,7 @@ pub const TUIWorkflow = struct {
     }
 
     fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
-        self.logger.infoFmt("WORKFLOW START: session_id={s}, message={s}", .{session_id, message}) catch {};
+        self.logger.infoFmt("WORKFLOW START: session_id={s}, message={s}", .{ session_id, message }) catch {};
         defer {
             self.logger.infoFmt("WORKFLOW END: session_id={s}", .{session_id}) catch {};
             // Unregister session from cancellation registry
@@ -320,25 +319,32 @@ pub const TUIWorkflow = struct {
         session_id: []const u8,
         config: *const config_mod.LlmConfig,
     ) !agent.CallResponse {
+        _ = config;
         // Fetch MCP tools from configured servers
-        const mcp_tools = buildMcpTools.run(allocator, config) catch |err| blk: {
-            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
-            break :blk &[_]tool_models.AgentTool{};
-        };
+        // const mcp_tools = buildMcpTools.run(allocator, config) catch |err| blk: {
+        //     self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
+        //     break :blk &[_]tool_models.AgentTool{};
+        // };
         // Note: mcp_tools memory is managed by the arena allocator
+        // mcp still isse
 
         const base_tools: []const tool_models.AgentTool = &.{
-            bash_tool.bashTool,                read_file_tool.readFileTool, change_agent_tool.ChangeAgentTool, list_skills_tool.listSkillsTool, get_skill_tool.getSkillTool, remove_skill_tool.removeSkillTool,
-
+            bash_tool.bashTool,
+            read_file_tool.readFileTool,
+            change_agent_tool.ChangeAgentTool,
+            list_skills_tool.listSkillsTool,
+            get_skill_tool.getSkillTool,
+            remove_skill_tool.removeSkillTool,
             write_file_tool.writeFileTool,
-            text_replace_tool.textReplaceTool, search_tool.searchTool,
+            text_replace_tool.textReplaceTool,
+            search_tool.searchTool,
             spawn_sub_agent_tool.spawnSubAgentTool,
         };
 
         // Merge base tools with MCP tools
         var all_tools: std.ArrayList(tool_models.AgentTool) = .empty;
         try all_tools.appendSlice(allocator, base_tools);
-        try all_tools.appendSlice(allocator, mcp_tools);
+        // try all_tools.appendSlice(allocator, mcp_tools); // this is issue will be fixed in the next release
         const tools = try all_tools.toOwnedSlice(allocator);
 
         var dynamic_agent = try agent.Agent.init(allocator, self.logger);

@@ -96,3 +96,51 @@ test "parseSubAgents - missing sub_agents field returns error" {
     const result = spawn_sub_agent.parseSubAgents(allocator, json_input, 20);
     try std.testing.expectError(error.MissingSubAgentsField, result);
 }
+
+test "parseSubAgents - LLM mistake: json_input as object (not string)" {
+    const allocator = std.testing.allocator;
+    // This is the format the LLM was generating incorrectly:
+    // {"json_input": {"sub_agents": [...]}} instead of {"sub_agents": [...]}
+    const json_input =
+        \\{"json_input": {"sub_agents": [
+        \\  {"name": "explore_apps", "instruction": "Explore src/apps", "tools": ["bash", "read_file"]},
+        \\  {"name": "explore_modules", "instruction": "Explore modules/", "tools": ["bash"]}
+        \\]}}
+    ;
+
+    const result = try spawn_sub_agent.parseSubAgents(allocator, json_input, 20);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.sub_agents.len);
+    try std.testing.expectEqualStrings("explore_apps", result.sub_agents[0].name);
+    try std.testing.expectEqualStrings("Explore src/apps", result.sub_agents[0].instruction);
+    try std.testing.expectEqualStrings("explore_modules", result.sub_agents[1].name);
+    try std.testing.expectEqualStrings("Explore modules/", result.sub_agents[1].instruction);
+
+    // Check tools are parsed correctly
+    try std.testing.expect(result.sub_agents[0].tools != null);
+    try std.testing.expectEqual(@as(usize, 2), result.sub_agents[0].tools.?.len);
+    try std.testing.expectEqualStrings("bash", result.sub_agents[0].tools.?[0]);
+    try std.testing.expectEqualStrings("read_file", result.sub_agents[0].tools.?[1]);
+}
+
+test "parseSubAgents - correct format: json_input as string" {
+    const allocator = std.testing.allocator;
+    // This is the CORRECT format as defined in the tool schema:
+    // {"json_input": "{\"sub_agents\": [...]}"}
+    const json_input =
+        \\{"json_input": "{\"sub_agents\": [{\"name\": \"test_agent\", \"instruction\": \"do something\", \"tools\": [\"bash\"]}]}"}
+    ;
+
+    const result = try spawn_sub_agent.parseSubAgents(allocator, json_input, 20);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.sub_agents.len);
+    try std.testing.expectEqualStrings("test_agent", result.sub_agents[0].name);
+    try std.testing.expectEqualStrings("do something", result.sub_agents[0].instruction);
+
+    // Check tools are parsed correctly
+    try std.testing.expect(result.sub_agents[0].tools != null);
+    try std.testing.expectEqual(@as(usize, 1), result.sub_agents[0].tools.?.len);
+    try std.testing.expectEqualStrings("bash", result.sub_agents[0].tools.?[0]);
+}

@@ -150,7 +150,7 @@ pub fn run(
                 logger.infoFmt("Switched to agent: {s}", .{change_result.agent}) catch {};
                 continue;
             }
-            
+
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
                 const content = handle_bash_tool.run(allocator, tool_call) catch |err| {
                     logger.errFmt("Error executing bash: {s}", .{@errorName(err)}) catch {};
@@ -183,9 +183,9 @@ pub fn run(
                     continue;
                 };
                 defer allocator.free(content);
-                
+
                 try logger.debugFmt("RESPONSE TOOLS: {s}", .{content});
-                
+
                 const tool_result_msg = agent.AgentMessage{
                     .role = .tool,
                     .content = content,
@@ -312,7 +312,7 @@ pub fn run(
                     continue;
                 };
                 defer allocator.free(content);
-                
+
                 try logger.debugFmt("RESPONSE TOOLS (search): {s}", .{content});
 
                 const tool_result_msg = agent.AgentMessage{
@@ -377,7 +377,7 @@ pub fn run(
                     continue;
                 };
                 defer allocator.free(content);
-                
+
                 try logger.debugFmt("RESPONSE TOOLS (write_file): {s}", .{content});
 
                 const tool_result_msg = agent.AgentMessage{
@@ -442,7 +442,7 @@ pub fn run(
                     continue;
                 };
                 defer allocator.free(content);
-                
+
                 try logger.debugFmt("RESPONSE TOOLS (text_replace): {s}", .{content});
 
                 const tool_result_msg = agent.AgentMessage{
@@ -512,7 +512,7 @@ pub fn run(
                     continue;
                 };
                 defer allocator.free(result);
-                
+
                 logger.debugFmt("GET_SKILL RESULT: {s}", .{result}) catch {};
 
                 const tool_result_msg = agent.AgentMessage{
@@ -549,7 +549,7 @@ pub fn run(
                     continue;
                 };
                 defer allocator.free(result);
-                
+
                 logger.debugFmt("REMOVE_SKILL RESULT: {s}", .{result}) catch {};
 
                 const tool_result_msg = agent.AgentMessage{
@@ -581,7 +581,7 @@ pub fn run(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent")) {
-                try handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, api_key, base_url, config, session_id, tool_call.id);
+                try handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, api_key, base_url, config);
                 continue;
             }
 

@@ -71,40 +71,67 @@ fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const
 fn runSubAgent(
     allocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
-    // db kept for future use
     db: *sqlite.SqliteBackend,
     cwd: []const u8,
     instruction: []const u8,
     api_key: []const u8,
     model: []const u8,
     base_url: []const u8,
-    // config kept for future use (e.g., MCP tools)
     config: *const config_mod.LlmConfig,
     allowed_tools: ?[]const []const u8, // optional list of tool names to allow
+    // New parameters for saving messages to DB
+    session_id: []const u8,
+    session_name: ?[]const u8,
+    loop_index: u32,
+    agent_temperature: f32,
+    is_thinking: bool,
+    agent_name: []const u8,
+    parent_session_id: ?[]const u8,
+    parent_id: ?[]const u8,
 ) ![]const u8 {
-    _ = db; // reserved for future use
-    _ = cwd; // reserved for future use
-    _ = config; // reserved for future use
+    _ = config; // reserved for future use (e.g., MCP tools)
+
+    // Save user instruction message to DB
+    _ = try save_message.run(allocator, db, .{
+        .session_id = session_id,
+        .model = model,
+        .cwd = cwd,
+        .content = instruction,
+        .response_content = null,
+        .response_finish_reason = null,
+        .response_reasoning_content = null,
+        .role = "user",
+        .finish_reason = "null",
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = agent_name,
+        .session_name = session_name,
+        .loop_index = loop_index,
+        .temperature = agent_temperature,
+        .is_thinking = is_thinking,
+        .parent_session_id = parent_session_id,
+        .parent_id = parent_id,
+    });
 
     // Get tools based on allowed_tools (null = all tools)
     const sub_agent_tools = try getAllowedTools(allocator, allowed_tools);
-    defer {
-        for (sub_agent_tools) |t| {
-            allocator.free(t.function.name);
-            allocator.free(t.function.description);
-            for (t.function.parameters.properties) |p| {
-                allocator.free(p.name);
-                allocator.free(p.type);
-                allocator.free(p.description);
-            }
-            allocator.free(t.function.parameters.properties);
-            allocator.free(t.function.parameters.required);
-        }
-        allocator.free(sub_agent_tools);
-    }
+    // defer {
+    //     for (sub_agent_tools) |t| {
+    //         allocator.free(t.function.name);
+    //         allocator.free(t.function.description);
+    //         for (t.function.parameters.properties) |p| {
+    //             allocator.free(p.name);
+    //             allocator.free(p.type);
+    //             allocator.free(p.description);
+    //         }
+    //         allocator.free(t.function.parameters.properties);
+    //         allocator.free(t.function.parameters.required);
+    //     }
+    //     allocator.free(sub_agent_tools);
+    // }
 
     var sub_agent = try agent.Agent.init(allocator, logger);
-    defer sub_agent.deinit();
+    // defer sub_agent.deinit(); // disable this temporary because free corrupts the memory
 
     sub_agent.apiKey = api_key;
     sub_agent.model = model;
@@ -113,7 +140,7 @@ fn runSubAgent(
 
     // Build messages: empty system + user instruction
     var messages: std.ArrayList(agent.AgentMessage) = .empty;
-    defer messages.deinit(allocator);
+    // defer messages.deinit(allocator);
 
     try messages.append(allocator, .{
         .role = .user,
@@ -133,6 +160,29 @@ fn runSubAgent(
 
         last_response = try sub_agent.call(params);
         const response = last_response.?;
+
+        // Save assistant response to DB
+        const assistant_tool_calls = if (response.tool_calls) |tcs| tcs else null;
+        _ = try save_message.run(allocator, db, .{
+            .session_id = session_id,
+            .model = model,
+            .cwd = cwd,
+            .content = null,
+            .response_content = response.content,
+            .response_finish_reason = if (response.finish_reason) |fr| fr.toStr() else null,
+            .response_reasoning_content = response.reasoning_content,
+            .role = "assistant",
+            .finish_reason = null,
+            .tool_calls = assistant_tool_calls,
+            .tool_call_id = null,
+            .agent_name = agent_name,
+            .session_name = session_name,
+            .loop_index = loop_index,
+            .temperature = agent_temperature,
+            .is_thinking = is_thinking,
+            .parent_session_id = parent_session_id,
+            .parent_id = parent_id,
+        });
 
         // Check finish_reason
         if (response.finish_reason) |fr| {
@@ -173,6 +223,28 @@ fn runSubAgent(
                         } else {
                             tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
                         }
+
+                        // Save tool result to DB
+                        _ = try save_message.run(allocator, db, .{
+                            .session_id = session_id,
+                            .model = model,
+                            .cwd = cwd,
+                            .content = tool_result,
+                            .response_content = null,
+                            .response_finish_reason = null,
+                            .response_reasoning_content = null,
+                            .role = "tool",
+                            .finish_reason = "tool",
+                            .tool_calls = null,
+                            .tool_call_id = tc.id,
+                            .agent_name = agent_name,
+                            .session_name = session_name,
+                            .loop_index = loop_index,
+                            .temperature = agent_temperature,
+                            .is_thinking = is_thinking,
+                            .parent_session_id = parent_session_id,
+                            .parent_id = parent_id,
+                        });
 
                         // Add assistant message with tool_calls
                         const tc_slice = try allocator.alloc(agent.ToolCall, 1);
@@ -260,40 +332,194 @@ pub fn run(
     api_key: []const u8,
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
-    parent_session_id: []const u8,
-    parent_id: []const u8,
 ) !void {
     // Parse the JSON input from function.arguments
     logger.infoFmt("spawn_sub_agent: parsing JSON input", .{}) catch {};
     logger.debugFmt("spawn_sub_agent: JSON input: {s}", .{tool_call.function.arguments}) catch {};
     const parsed = try spawn_sub_agent_tool.parseSubAgents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
-    defer parsed.deinit(allocator);
+    // defer parsed.deinit(allocator);
 
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
 
+    // Fetch current agent from DB (before running sub-agents)
+    const current_agent_state = try get_current_agent_by_session_id.run(
+        allocator,
+        db,
+        session_id,
+    );
+    const current_agent = current_agent_state.agent;
+
     // Run each sub-agent and collect results
     var results: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (results.items) |r| allocator.free(r);
-        results.deinit(allocator);
+    // defer {
+    //     for (results.items) |r| allocator.free(r);
+    //     results.deinit(allocator);
+    // }
+
+    // Run all sub-agents in parallel using threads
+    const num_agents = parsed.sub_agents.len;
+
+    // Allocate result slots for each sub-agent (thread-safe result storage)
+    const ThreadResult = struct {
+        result: ?[]const u8 = null,
+        err_msg: ?[]const u8 = null,
+        completed: bool = false,
+        mutex: std.Thread.Mutex = .{},
+    };
+
+    // Use thread-safe result storage
+    const thread_results = try allocator.alloc(ThreadResult, num_agents);
+    @memset(thread_results, .{});
+
+    // Spawn a thread for each sub-agent
+    for (parsed.sub_agents, 0..) |sub_agent, index| {
+        logger.infoFmt("spawn_sub_agent: spawning parallel agent '{s}' (index {})", .{ sub_agent.name, index }) catch {};
+
+        // Create a local copy of the sub_agent data for the thread
+        const sub_agent_name = try allocator.dupe(u8, sub_agent.name);
+        const sub_agent_instruction = try allocator.dupe(u8, sub_agent.instruction);
+        const sub_agent_tools_copy = if (sub_agent.tools) |tools| try allocator.dupe([]const u8, tools) else null;
+
+        const thread = try std.Thread.spawn(.{}, struct {
+            fn run(
+                idx: usize,
+                name: []const u8,
+                instruction: []const u8,
+                tools: ?[]const []const u8,
+                alloc: std.mem.Allocator,
+                log: *logger_mod.Logger,
+                database: *sqlite.SqliteBackend,
+                workdir: []const u8,
+                llm_api_key: []const u8,
+                llm_model: []const u8,
+                url: []const u8,
+                cfg: *const config_mod.LlmConfig,
+                sess_id: []const u8,
+                sess_name: []const u8,
+                loop_idx: u32,
+                temp: f32,
+                think: bool,
+                agent_nm: []const u8,
+                parent_sess: []const u8,
+                parent_id: []const u8,
+                thread_res: []ThreadResult,
+            ) void {
+                // Each thread gets its own arena allocator
+                var thread_arena = std.heap.ArenaAllocator.init(alloc);
+                defer thread_arena.deinit();
+                const thread_alloc = thread_arena.allocator();
+
+                log.infoFmt("spawn_sub_agent[{}]: starting agent '{s}'", .{ idx, name }) catch {};
+
+                const run_result = runSubAgent(
+                    thread_alloc,
+                    log,
+                    database,
+                    workdir,
+                    instruction,
+                    llm_api_key,
+                    llm_model,
+                    url,
+                    cfg,
+                    tools,
+                    sess_id,
+                    sess_name,
+                    loop_idx,
+                    temp,
+                    think,
+                    agent_nm,
+                    parent_sess,
+                    parent_id,
+                );
+
+                // Store result or error in thread-safe manner
+                thread_res[idx].mutex.lock();
+                defer thread_res[idx].mutex.unlock();
+                thread_res[idx].completed = true;
+                if (run_result) |res| {
+                    // Duplicate to shared allocator since thread arena will be freed
+                    thread_res[idx].result = alloc.dupe(u8, res) catch null;
+                } else |err| {
+                    thread_res[idx].err_msg = alloc.dupe(u8, @errorName(err)) catch null;
+                }
+
+                log.infoFmt("spawn_sub_agent[{}]: agent '{s}' completed", .{ idx, name }) catch {};
+            }
+        }.run, .{
+            index,
+            sub_agent_name,
+            sub_agent_instruction,
+            sub_agent_tools_copy,
+            allocator, // shared allocator for results
+            logger,
+            db,
+            cwd,
+            api_key,
+            model,
+            base_url,
+            config,
+            session_id,
+            session_id,
+            loop_counter,
+            agent_temperature,
+            is_thinking,
+            current_agent,
+            session_id,
+            session_id,
+            thread_results,
+        });
+
+        thread.detach();
     }
 
-    for (parsed.sub_agents) |sub_agent| {
-        logger.infoFmt("spawn_sub_agent: running agent '{s}' with instruction: {s}", .{ sub_agent.name, sub_agent.instruction }) catch {};
-
-        const result = runSubAgent(allocator, logger, db, cwd, sub_agent.instruction, api_key, model, base_url, config, sub_agent.tools) catch |err| {
-            logger.errFmt("spawn_sub_agent: agent '{s}' failed: {s}", .{ sub_agent.name, @errorName(err) }) catch {};
-            const err_msg = try std.fmt.allocPrint(allocator, "ERROR: {s}", .{@errorName(err)});
-            defer allocator.free(err_msg);
-            try results.append(allocator, err_msg);
-            continue;
-        };
-        try results.append(allocator, result);
+    // Wait for all threads to finish by checking completion status
+    logger.infoFmt("spawn_sub_agent: waiting for {} parallel agents to complete", .{num_agents}) catch {};
+    var all_done = false;
+    while (!all_done) {
+        all_done = true;
+        for (thread_results) |*r| {
+            r.mutex.lock();
+            const completed = r.completed;
+            r.mutex.unlock();
+            if (!completed) {
+                all_done = false;
+                break;
+            }
+        }
+        if (!all_done) {
+            std.Thread.sleep(10_000_000); // 10ms
+        }
     }
+
+    // Collect results from all agents
+    for (thread_results, 0..) |*r, i| {
+        const sub_agent = parsed.sub_agents[i];
+        r.mutex.lock();
+        const result = r.result;
+        const err_msg = r.err_msg;
+        r.mutex.unlock();
+        
+        if (err_msg) |em| {
+            logger.errFmt("spawn_sub_agent: agent '{s}' failed: {s}", .{ sub_agent.name, em }) catch {};
+            try results.append(allocator, em);
+        } else if (result) |res| {
+            try results.append(allocator, res);
+        } else {
+            // Shouldn't happen but handle gracefully
+            try results.append(allocator, "ERROR: unknown result");
+        }
+    }
+
+    // Free thread result slots
+    for (thread_results) |*r| {
+        if (r.result) |res| allocator.free(res);
+        if (r.err_msg) |err| allocator.free(err);
+    }
+    allocator.free(thread_results);
 
     // Build combined result message
     var combined_result = std.ArrayList(u8).empty;
-    defer combined_result.deinit(allocator);
+    // defer combined_result.deinit(allocator);
     var w = combined_result.writer(allocator);
 
     try w.writeAll("<sub_agent_results>\n");
@@ -318,14 +544,6 @@ pub fn run(
     try w.writeAll("</sub_agent_results>");
 
     const result_msg = try combined_result.toOwnedSlice(allocator);
-
-    // Fetch current agent from DB
-    const current_agent_state = try get_current_agent_by_session_id.run(
-        allocator,
-        db,
-        session_id,
-    );
-    const current_agent = current_agent_state.agent;
 
     const tool_result_msg = agent.AgentMessage{
         .role = .tool,
@@ -352,8 +570,8 @@ pub fn run(
         .loop_index = loop_counter,
         .temperature = agent_temperature,
         .is_thinking = is_thinking,
-        .parent_session_id = parent_session_id,
-        .parent_id = parent_id,
+        // .parent_session_id = parent_session_id,
+        // .parent_id = parent_id,
     });
 
     _ = send_tool_result.run(allocator, session_id, logger, result_msg, tool_call.id, "spawn_sub_agent", null);
