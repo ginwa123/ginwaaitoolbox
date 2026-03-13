@@ -405,14 +405,14 @@ pub fn run(
                 thread_res: []ThreadResult,
             ) void {
                 // Each thread gets its own arena allocator
-                var thread_arena = std.heap.ArenaAllocator.init(alloc);
-                defer thread_arena.deinit();
-                const thread_alloc = thread_arena.allocator();
+                // var thread_arena = std.heap.ArenaAllocator.init(alloc);
+                // defer thread_arena.deinit();
+                // const thread_alloc = thread_arena.allocator();
 
                 log.infoFmt("spawn_sub_agent[{}]: starting agent '{s}'", .{ idx, name }) catch {};
 
                 const run_result = runSubAgent(
-                    thread_alloc,
+                    alloc,
                     log,
                     database,
                     workdir,
@@ -497,9 +497,13 @@ pub fn run(
 
         if (err_msg) |em| {
             logger.errFmt("spawn_sub_agent: agent '{s}' failed: {s}", .{ sub_agent.name, em }) catch {};
-            try results.append(allocator, em);
+            // CRITICAL FIX: Duplicate the string before thread_results is freed
+            // Without this, the string would be freed below and we'd have a use-after-free
+            try results.append(allocator, try allocator.dupe(u8, em));
         } else if (result) |res| {
-            try results.append(allocator, res);
+            // CRITICAL FIX: Duplicate the string before thread_results is freed
+            // Without this, the string would be freed below and we'd have a use-after-free
+            try results.append(allocator, try allocator.dupe(u8, res));
         } else {
             // Shouldn't happen but handle gracefully
             try results.append(allocator, "ERROR: unknown result");
@@ -540,11 +544,17 @@ pub fn run(
     try w.writeAll("</sub_agent_results>");
 
     const result_msg = try combined_result.toOwnedSlice(allocator);
+    const copy_result_msg = try allocator.dupe(u8, result_msg);
+
+    // CRITICAL FIX: Duplicate tool_call.id from arena to persistent allocator
+    // The tool_call.id was allocated from the workflow's arena which gets reset
+    // between loop iterations, causing garbage in the result
+    const tool_call_id_dup = try allocator.dupe(u8, tool_call.id);
 
     const tool_result_msg = agent.AgentMessage{
         .role = .tool,
         .content = result_msg,
-        .tool_call_id = try allocator.dupe(u8, tool_call.id),
+        .tool_call_id = tool_call_id_dup,
     };
     try messages_list.append(allocator, tool_result_msg);
 
@@ -553,14 +563,14 @@ pub fn run(
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
-        .content = result_msg,
+        .content = copy_result_msg,
         .response_content = null,
         .response_finish_reason = null,
         .response_reasoning_content = null,
         .role = "tool",
         .finish_reason = "tool",
         .tool_calls = null,
-        .tool_call_id = tool_call.id,
+        .tool_call_id = tool_call_id_dup,
         .agent_name = current_agent,
         .session_name = session_name,
         .loop_index = loop_counter,
@@ -570,7 +580,7 @@ pub fn run(
         // .parent_id = parent_id,
     });
 
-    _ = send_tool_result.run(allocator, session_id, logger, result_msg, tool_call.id, "spawn_sub_agent", null);
+    _ = send_tool_result.run(allocator, session_id, logger, copy_result_msg, tool_call_id_dup, "spawn_sub_agent", null);
 
     logger.infoFmt("spawn_sub_agent: completed {} sub-agents", .{parsed.sub_agents.len}) catch {};
 }
