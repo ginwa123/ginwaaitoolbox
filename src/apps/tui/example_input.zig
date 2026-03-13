@@ -1,6 +1,6 @@
 // ============================================================================
 // Example: How to use input.zig
-// Run with: zig run src/tui/example_input.zig
+// Run with: zig run src/apps/tui/example_input.zig
 // ============================================================================
 
 const input = @import("input.zig");

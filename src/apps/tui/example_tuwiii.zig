@@ -1,6 +1,6 @@
 // ============================================================================
 // Example: How to use tuwiii.zig - TUI Framework
-// Run with: zig run -lc src/tui/example_tuwiii.zig
+// Run with: zig run -lc src/apps/tui/example_tuwiii.zig
 // ============================================================================
 
 const std = @import("std");

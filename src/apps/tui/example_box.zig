@@ -1,6 +1,6 @@
 // ============================================================================
 // Example: How to use box.zig
-// Run with: zig run src/tui/example_box.zig
+// Run with: zig run src/apps/tui/example_box.zig
 // ============================================================================
 
 const box = @import("box.zig");
