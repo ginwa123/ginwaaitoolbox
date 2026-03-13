@@ -67,7 +67,7 @@ pub fn build(b: *std.Build) void {
     const tui_exe = b.addExecutable(.{
         .name = "nalarcore-tui",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tui/main.zig"),
+            .root_source_file = b.path("src/apps/tui/main.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -164,7 +164,7 @@ pub fn build(b: *std.Build) void {
     const tui_linux_exe = b.addExecutable(.{
         .name = "zigginagentic-tui",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tui/main.zig"),
+            .root_source_file = b.path("src/apps/tui/main.zig"),
             .target = target,
             .optimize = optimize,
         }),
