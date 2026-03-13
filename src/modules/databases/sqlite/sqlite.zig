@@ -36,6 +36,14 @@ pub const SqliteBackend = struct {
             };
         }
         self.db = db;
+
+        // Enable WAL mode for better concurrent access (crucial for multi-threaded usage)
+        // WAL allows concurrent reads and single writer, preventing "database is locked" errors
+        // Note: Using null for err_msg - we don't need the error details
+        _ = c.sqlite3_exec(db, "PRAGMA journal_mode=WAL;", null, null, null);
+
+        // Also enable busy timeout for better concurrency handling
+        _ = c.sqlite3_exec(db, "PRAGMA busy_timeout=5000;", null, null, null); // 5 second timeout
     }
 
     pub fn exec(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!void {
