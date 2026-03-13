@@ -23,7 +23,7 @@ pub const ChangeAgentTool = AgentTool{
                 .{
                     .name = "agent",
                     .type = "string",
-                    .description = "The agent to hand off to. Only option: Agent. (CompactionAgent is auto-triggered).",
+                    .description = "The agent to hand off to",
                 },
                 .{
                     .name = "message",
@@ -34,9 +34,9 @@ pub const ChangeAgentTool = AgentTool{
                     .name = "temperature",
                     .type = "number",
                     .description = "Dynamically sets output randomness for the next agent (0.0–1.0). " ++
-                        "LOW (0.0–0.2): high confidence, deterministic task, routing or verification. " ++
-                        "MEDIUM (0.3–0.5): moderate confidence, planning or judgment required. " ++
-                        "HIGH (0.6–1.0): low confidence, prior attempt failed, problem is ambiguous or open-ended.",
+                        "LOW (0.0–0.4): high confidence, deterministic task, routing or verification. " ++
+                        "MEDIUM (0.5–0.7): moderate confidence, planning or judgment required. " ++
+                        "HIGH (0.8–1.0): low confidence, prior attempt failed, problem is ambiguous or open-ended.",
                 },
                 .{
                     .name = "is_thinking",

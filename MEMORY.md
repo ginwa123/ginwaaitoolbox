@@ -30,40 +30,6 @@ If you do zig build run, or zig build run:tui, it will kill yourself process, so
 - [zig@0.15] `std.posix.execveZ()` returns error union directly — use `catch` without `|err|`
 - [zig@0.15] `std.posix.sigemptyset()` returns `sigset_t` for signal mask initialization
 
-## Resolved Issues
-
-### [2026-03-11] Agent System Simplified
-**Problem:** The system used three separate agents (ExplorationAgent, PlanningAgent, ExecutingAgent) which added complexity and required routing between agents.
-**Root cause:** Over-engineered agent architecture that fragmented the workflow across multiple specialized agents.
-**Fix:** Replaced all three agents with a single unified "Agent" that handles all workflows:
-- Exploration, planning, and execution all in one agent
-- Removed all `change_agent_tool` calls from prompts
-- Updated all default agent strings from "ExplorationAgent" to "Agent"
-- Removed agent type switching logic
-- Only CompactionAgent remains as a separate agent (auto-triggered)
-**Reuse signal:** When agents require complex handoff protocols, consider a unified agent approach first.
-
-### [2025-03-11] Backend Process Killed on Terminal Session Change
-**Problem:** When starting `zigginagentic-tui`, the backend process was killed if the user opened another terminal session. This happened because the backend was not properly daemonized - it remained attached to the TUI's terminal session and received SIGHUP when the terminal session changed.
-**Root cause:** The `spawnBackend` function used `std.process.Child` which kept the backend attached to the parent's terminal session. When a new terminal was opened, the old session sent SIGHUP to all its processes.
-**Fix:** Implemented Unix daemonization using libc `daemon()` function in `spawnBackend`:
-1. `daemon(1, 0)` creates a new session, changes to root directory, and closes stdin/stdout/stderr
-2. After daemon() returns in the child process, we use `execl` to execute the backend binary
-3. The daemon runs fully detached from the terminal session and survives terminal changes
-**Reuse signal:** When spawning long-running background processes from a TUI/CLI, always use daemonization to ensure the process survives terminal session changes. Use libc daemon() for simplest cross-platform compatible solution.
-
-### [2025-01-21] TUI Memory Leak - Arena Never Reset
-**Problem:** TUI application was using 200MB+ memory because the ArenaAllocator was never reset during the application's lifetime. All temporary allocations (HTTP requests, JSON payloads, etc.) accumulated indefinitely.
-**Root cause:** The `App` struct's `arena` field was initialized once in `App.init` and only deinitialized in `App.deinit` at application exit. All message handling functions used `app.arena.allocator()` for temporary allocations without ever resetting the arena.
-**Fix:** Added `app.arena.reset(.retain_capacity)` at the end of `readResponseAndStreamRunLLM` and `readResponseAndStreamGetSessions` functions to free temporary allocations after each message operation completes.
-**Reuse signal:** When using ArenaAllocator for temporary allocations in long-running loops, always reset the arena periodically to prevent memory accumulation.
-
-### [2025-01-21] TUI Busy Loop - 100% CPU Usage
-**Problem:** TUI application was consuming 100% CPU on one core while waiting for SSE/streaming data from the backend.
-**Root cause:** The polling loops in `readResponseAndStreamRunLLM` and `readResponseAndStreamGetSessions` used `poll()` with timeouts but continued immediately when no data was available, creating a busy-wait loop.
-**Fix:** Added `std.Thread.sleep(10_000_000)` (10ms) when `poll()` returns 0 (no data available) in both functions. Also removed the redundant `std.Thread.sleep(5_000_000)` that was only executed when data arrived.
-**Reuse signal:** When using poll() in a loop to wait for I/O, always add a sleep when poll returns 0 to prevent busy-waiting. The sleep should be short enough to maintain responsiveness (10-20ms) but long enough to reduce CPU usage.
-
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
 

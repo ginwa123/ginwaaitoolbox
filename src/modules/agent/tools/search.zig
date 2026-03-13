@@ -17,6 +17,7 @@ pub const SearchInput = struct {
     max_results: ?usize = null,
     head: ?usize = null,
     tail: ?usize = null,
+    max_output: ?usize = 1024 * 1024, // default 1MB
 };
 
 pub const SearchResult = struct {
@@ -80,9 +81,11 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
         input.path,
     };
 
+    const max_output = input.max_output orelse 1024 * 1024;
     const result = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = argv,
+        .max_output_bytes = max_output,
     });
 
     defer allocator.free(result.stdout);
@@ -299,6 +302,11 @@ pub const searchTool = AgentTool{
                     .name = "tail",
                     .type = "number",
                     .description = "Return last N matches from result set.",
+                },
+                .{
+                    .name = "max_output",
+                    .type = "number",
+                    .description = "Max output size in bytes. Default: 1048576 (1MB). Use larger value if you encounter StdoutStreamTooLong error.",
                 },
             },
             .required = &.{ "pattern", "path" },
