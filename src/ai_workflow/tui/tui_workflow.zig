@@ -186,8 +186,8 @@ pub const TUIWorkflow = struct {
             .agent_name = initial_agent,
             .session_name = session_name,
             .loop_index = 0,
-            .temperature = 0.2,
-            .is_thinking = false,
+            .temperature = initial_agent_state.temperature,
+            .is_thinking = initial_agent_state.is_thinking,
             // User messages have no LLM token usage
             .prompt_tokens = 0,
             .completion_tokens = 0,
@@ -209,8 +209,6 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            var agent_temperature: f32 = 0.2;
-            var isThinking: bool = false;
 
             var arena_allocator_while_loop = std.heap.ArenaAllocator.init(parent_allocator);
             defer arena_allocator_while_loop.deinit();
@@ -226,8 +224,8 @@ pub const TUIWorkflow = struct {
                 session_id,
             );
             const current_agent = current_agent_state.agent;
-            agent_temperature = current_agent_state.temperature;
-            isThinking = current_agent_state.is_thinking;
+            var agent_temperature = current_agent_state.temperature;
+            var isThinking = current_agent_state.is_thinking;
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
 
