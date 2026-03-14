@@ -347,20 +347,20 @@ else if (@import("builtin").os.tag == .macos)
 else
     struct {};
 
-pub const TermOptions = struct {
+const TermOptions = struct {
     enable_raw: bool = true,
     use_alt_screen: bool = true,
     enable_mouse: bool = false,
 };
 
-pub const Terminal = struct {
+const Terminal = struct {
     allocator: std.mem.Allocator,
     original_termios: if (@import("builtin").os.tag == .linux or @import("builtin").os.tag == .macos) termios.termios else void,
     options: TermOptions,
     // Buffer for reading key sequences (reused to avoid allocations)
     key_seq_buf: [32]u8 = undefined,
 
-    pub fn init(allocator: std.mem.Allocator, options: TermOptions) !Terminal {
+    fn init(allocator: std.mem.Allocator, options: TermOptions) !Terminal {
         var self: Terminal = .{
             .allocator = allocator,
             .options = options,
@@ -382,7 +382,7 @@ pub const Terminal = struct {
         return self;
     }
 
-    pub fn deinit(self: *Terminal) void {
+    fn deinit(self: *Terminal) void {
         if (self.options.enable_mouse) {
             self.disableMouse();
         }
@@ -430,7 +430,7 @@ pub const Terminal = struct {
         _ = stdout.write(disable) catch {};
     }
 
-    pub fn enableRawMode(self: *Terminal) void {
+    fn enableRawMode(self: *Terminal) void {
         if (@import("builtin").os.tag == .linux or @import("builtin").os.tag == .macos) {
             const stdout = std.fs.File.stdout();
 
@@ -446,7 +446,7 @@ pub const Terminal = struct {
         }
     }
 
-    pub fn disableRawMode(self: *Terminal) void {
+    fn disableRawMode(self: *Terminal) void {
         if (@import("builtin").os.tag == .linux or @import("builtin").os.tag == .macos) {
             const stdout = std.fs.File.stdout();
             _ = termios.tcsetattr(stdout.handle, termios.TCSAFLUSH, &self.original_termios);
@@ -467,7 +467,7 @@ pub const Terminal = struct {
         _ = stdout.write(disable) catch {};
     }
 
-    pub fn readEvent(self: *Terminal, timeout_ms: u64) !?Msg {
+    fn readEvent(self: *Terminal, timeout_ms: u64) !?Msg {
         const stdin = std.fs.File.stdin();
 
         var poll_fd = [1]std.posix.pollfd{.{
