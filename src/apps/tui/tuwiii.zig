@@ -532,7 +532,7 @@ pub const InputComponent = struct {
             3 => {}, // Ctrl+C - handled by parent
             else => {
                 if (key >= 32 and key <= 126) {
-                    try self.input.insertChar(key);
+                    try self.input.insert(key);
                 }
             },
         }

@@ -219,7 +219,11 @@ pub const Input = struct {
         const display_width = input.getDisplayWidth();
         if (display_width == 0) return;
         
-        const cursor_visible_pos = input.cursor - input.scroll_offset;
+        // Guard against underflow when scroll_offset > cursor
+        const cursor_visible_pos = if (input.cursor >= input.scroll_offset)
+            input.cursor - input.scroll_offset
+        else
+            0;
         
         // Scroll right if cursor is past the right edge
         if (cursor_visible_pos >= display_width) {

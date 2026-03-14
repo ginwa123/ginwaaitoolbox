@@ -446,7 +446,7 @@ fn sendPingCommand(app: *App) !bool {
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
     const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
-    
+
     // Read response to check if reconnect is needed
     var buf: [1024]u8 = undefined;
     const n = std.posix.read(sock, &buf) catch return false;
@@ -642,7 +642,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
 
     // Timeout detection for SSE reconnection
     // Keepalive is sent every 30s, so use 90s (3x) to avoid false timeouts
-    const SSE_TIMEOUT_MS: i64 = 90000; // 90 seconds
+    const SSE_TIMEOUT_MS: i64 = 10000; // 10 seconds
     var last_data_received_ms: i64 = std.time.milliTimestamp();
     var reconnection_attempts: u32 = 0;
     const MAX_RECONNECTION_ATTEMPTS: u32 = 100;

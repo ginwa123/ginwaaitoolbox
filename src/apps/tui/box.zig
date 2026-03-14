@@ -206,6 +206,8 @@ pub const Box = struct {
     options: BoxOptions,
     /// Render function that returns the content to display inside this Box
     children: *const fn () RenderedContent,
+    /// Dynamic content that can be set at runtime (overrides children if set)
+    dynamic_content: ?[]const u8 = null,
     /// Computed inner dimensions (after border and padding)
     inner_width: u16 = 0,
     /// Computed inner dimensions (after border and padding)
@@ -222,6 +224,31 @@ pub const Box = struct {
             .allocator = allocator,
             .options = options,
             .children = children,
+        };
+        return box;
+    }
+
+    /// Set dynamic text content at runtime
+    pub fn setContent(box: *Box, content: []const u8) void {
+        box.dynamic_content = content;
+    }
+
+    /// Get the effective content (dynamic if set, otherwise call children function)
+    fn getContent(box: *Box) RenderedContent {
+        if (box.dynamic_content) |content| {
+            return .{ .text = content };
+        }
+        return box.children();
+    }
+
+    /// Create a new Box with pre-rendered content (no render function needed)
+    /// Content is rendered at box creation time using the provided function
+    pub fn initWithContent(allocator: std.mem.Allocator, options: BoxOptions, comptime content_fn: fn () RenderedContent) !*Box {
+        const box = try allocator.create(Box);
+        box.* = .{
+            .allocator = allocator,
+            .options = options,
+            .children = content_fn,
         };
         return box;
     }
@@ -311,7 +338,7 @@ pub const Box = struct {
     /// Calculate the Box's size based on options and content
     pub fn calculateSize(box: *Box, child: ?*Box, parent_width: ?u16, parent_height: ?u16) Size {
         _ = child; // Reserved for future nested box calculation
-        const content = box.children();
+        const content = box.getContent();
         const content_size = box.measureContent(content);
 
         const border_w = box.borderWidth();
@@ -432,7 +459,7 @@ pub const Box = struct {
         }
 
         // Draw content area
-        const content = box.children();
+        const content = box.getContent();
         const content_size = box.measureContent(content);
 
         const inner_start_y = border_w + box.options.padding.top();

@@ -20,9 +20,10 @@ const App = struct {
     counter: u32 = 0,
     text: []const u8 = "Hello from tuwiii!",
     focused_input: bool = false,
-    box_component: *box_module.Box,
     input_component: *Input,
     allocator: std.mem.Allocator,
+    // Store input history
+    history: std.ArrayList([]const u8),
 
     const Self = @This();
 
@@ -56,7 +57,22 @@ const App = struct {
                     },
                     else => {
                         if (self.focused_input) {
-                            try Input.insert(self.input_component, key);
+                            // Check for Enter key (13 or 10 = carriage return / newline)
+                            if (key == 13 or key == 10) {
+                                // Submit the input - add to history
+                                const input_text = self.input_component.getText();
+                                if (input_text.len > 0) {
+                                    const history_entry = try self.allocator.dupe(u8, input_text);
+                                    try self.history.append(self.allocator, history_entry);
+                                    self.input_component.clear();
+                                }
+                            } else if (key == 127 or key == 8) {
+                                // Backspace key (127 = Delete, 8 = Backspace)
+                                try self.input_component.backspace();
+                            } else if (key >= 32 and key <= 126) {
+                                // Printable characters
+                                try Input.insert(self.input_component, key);
+                            }
                         }
                     },
                 }
@@ -77,101 +93,74 @@ const App = struct {
         var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(allocator);
 
-        // Header Box
-        // const header_render_fn = struct {
-        //     fn render() RenderedContent {
-        //         return .{ .text = "tuwiii TUI Framework - Interactive Demo" };
-        //     }
-        // }.render;
-        // const header_box = try box.init(allocator, .{
-        //     .border = true,
-        //     .title = "tuwiii",
-        //     .padding = .{ .individual = .{ .top = 1, .right = 2, .bottom = 1, .left = 2 } },
-        //     .width = .{ .fixed = 54 },
-        // }, header_render_fn);
-        // defer header_box.destroy();
-        //
-        // const header_output = try header_box.renderToString();
-        // defer allocator.free(header_output);
-        // try buffer.appendSlice(allocator, header_output);
-        // try buffer.append(allocator, '\n');
-        //
-        // // Instructions Box
-        // const instructions_render_fn = struct {
-        //     fn render() RenderedContent {
-        //         return .{
-        //             .text =
-        //             \\i  - Focus input field
-        //             \\b  - Focus box (view counter)
-        //             \\+  - Increment counter
-        //             \\-  - Decrement counter
-        //             \\↑  - Arrow up (increment)
-        //             \\↓  - Arrow down (decrement)
-        //             \\q  - Quit
-        //             \\
-        //         };
-        //     }
-        // }.render;
-        // const instructions_box = try box.init(allocator, .{
-        //     .border = true,
-        //     .title = "Controls",
-        //     .padding = .{ .all = 1 },
-        //     .width = .{ .fixed = 45 },
-        //     .height = .{ .fixed = 10 },
-        // }, instructions_render_fn);
-        // defer instructions_box.destroy();
-        //
-        // const instructions_output = try instructions_box.renderToString();
-        // defer allocator.free(instructions_output);
-        // try buffer.appendSlice(allocator, instructions_output);
-        // try buffer.append(allocator, '\n');
-        //
-        // // Counter display - simple text rendering
-        // const counter_str = try std.fmt.allocPrint(allocator, "\x1b[32mCounter: {d}\x1b[0m", .{self.counter});
-        // defer allocator.free(counter_str);
-        // try buffer.appendSlice(allocator, counter_str);
-        // try buffer.append(allocator, '\n');
-        // try buffer.append(allocator, '\n');
-        //
-        // // Box component
-        const box_render_fn = struct {
+        // Build history content from stored history
+        var history_lines = std.ArrayList(u8).empty;
+        errdefer history_lines.deinit(allocator);
+
+        if (self.history.items.len > 0) {
+            for (self.history.items, 0..) |entry, i| {
+                try history_lines.appendSlice(allocator, "> ");
+                try history_lines.appendSlice(allocator, entry);
+                if (i < self.history.items.len - 1) {
+                    try history_lines.append(allocator, '\n');
+                }
+            }
+        } else {
+            try history_lines.appendSlice(allocator, "History is empty. Type something and press Enter!");
+        }
+
+        const history_text = try history_lines.toOwnedSlice(allocator);
+        defer allocator.free(history_text);
+
+        // Get the input text
+        const input_text = self.input_component.getText();
+        const input_display = if (input_text.len > 0) input_text else "Type here...";
+
+        // Render the container box with history and input inside
+        try buffer.appendSlice(allocator, "\x1b[35mChat Application\x1b[0m\n");
+
+        // Render history box using the Box component
+        const historyRenderFn = struct {
             fn render() RenderedContent {
-                return .{ .text = "This is a Box component!\nIt can hold any content.\nUse arrow keys to change the counter.sa dasd asdas dasd asd asdkn asodn asolikdn aslknd lksandkl nas" };
+                return .{ .text = "" };
             }
         }.render;
 
-        const box_instance = try box.init(allocator, .{
+        var history_box = try box.init(allocator, .{
             .border = true,
-            .title = "My Box",
-            .padding = .{ .individual = .{ .top = 1, .right = 2, .bottom = 1, .left = 2 } },
-            .justify_content = .stretch,
+            .title = "History",
+            .padding = .{ .individual = .{ .top = 1, .right = 1, .bottom = 1, .left = 1 } },
             .width = .match_parent,
-            .height = .match_parent,
-        }, box_render_fn);
-        self.box_component = box_instance;
+            .height = .auto,
+        }, historyRenderFn);
+        // Set dynamic content
+        history_box.setContent(history_text);
+        defer history_box.destroy();
 
-        try buffer.appendSlice(allocator, "\x1b[35mBox Component:\x1b[0m\n");
-        const box_output = try self.box_component.renderToString();
-        defer allocator.free(box_output);
-        try buffer.appendSlice(allocator, box_output);
+        const history_output = try history_box.renderToString();
+        defer allocator.free(history_output);
+        try buffer.appendSlice(allocator, history_output);
         try buffer.append(allocator, '\n');
 
-        // Input component
-        // Create input component
-        const input_instance = try Input.init(allocator, .{
-            .style = .plain,
-            .mode = .single_line,
-        });
-        self.input_component = input_instance;
+        // Render input box using the Box component
+        const inputRenderFn = struct {
+            fn render() RenderedContent {
+                return .{ .text = "" };
+            }
+        }.render;
 
-        try buffer.appendSlice(allocator, "\x1b[35mInput Component ");
-        if (self.focused_input) {
-            try buffer.appendSlice(allocator, "[FOCUSED]");
-        } else {
-            try buffer.appendSlice(allocator, "(press 'i' to focus)");
-        }
-        try buffer.appendSlice(allocator, ":\x1b[0m\n");
-        const input_output = try self.input_component.render();
+        var input_box = try box.init(allocator, .{
+            .border = true,
+            .title = "Input",
+            .padding = .{ .individual = .{ .top = 0, .right = 1, .bottom = 0, .left = 1 } },
+            .width = .match_parent,
+            .height = .{ .fixed = 1 },
+        }, inputRenderFn);
+        // Set dynamic content
+        input_box.setContent(input_display);
+        defer input_box.destroy();
+
+        const input_output = try input_box.renderToString();
         defer allocator.free(input_output);
         try buffer.appendSlice(allocator, input_output);
         try buffer.append(allocator, '\n');
@@ -180,11 +169,11 @@ const App = struct {
         try buffer.appendSlice(allocator, "\x1b[1;36m"); // Bold cyan
         try buffer.appendSlice(allocator, "Status: ");
         if (self.focused_input) {
-            try buffer.appendSlice(allocator, "Typing mode");
+            try buffer.appendSlice(allocator, "Typing mode (press Enter to submit)");
         } else {
-            try buffer.appendSlice(allocator, "Navigation mode");
+            try buffer.appendSlice(allocator, "Navigation mode (press 'i' to type)");
         }
-        try buffer.appendSlice(allocator, " | tuwiii is running\x1b[0m\n");
+        try buffer.appendSlice(allocator, " | Press 'q' to quit\x1b[0m\n");
 
         return buffer.toOwnedSlice(allocator);
     }
@@ -217,17 +206,20 @@ const App = struct {
     }
 
     pub fn create(allocator: std.mem.Allocator) !*tuwiii.Model {
-        // Create box component
+        // Input component (for actual input handling)
+        const input_instance = try Input.init(allocator, .{
+            .style = .plain,
+            .mode = .multi_line,
+        });
 
         // Create app instance
         const app = try allocator.create(Self);
         app.* = .{
-            .counter = 0,
-            .box_component = undefined,
             .text = "Hello from tuwiii!",
             .focused_input = false,
-            .input_component = undefined,
+            .input_component = input_instance,
             .allocator = allocator,
+            .history = std.ArrayList([]const u8).empty,
         };
 
         // Create model wrapper
@@ -242,7 +234,11 @@ const App = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.box_component.destroy();
+        // Free all history entries
+        for (self.history.items) |entry| {
+            self.allocator.free(entry);
+        }
+        self.history.deinit(self.allocator);
         self.input_component.destroy();
         self.allocator.destroy(self);
     }
