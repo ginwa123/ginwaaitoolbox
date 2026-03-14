@@ -14,8 +14,22 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const original_termios = try enableRawMode();
-    defer disableRawMode(original_termios);
+    // Skip TTY check - let it fail gracefully if not a terminal
+    const original_termios = std.posix.tcgetattr(std.posix.STDIN_FILENO) catch {
+        std.debug.print("Error: This program requires a terminal.\n", .{});
+        return;
+    };
+    defer std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, original_termios) catch {};
+
+    // Set raw mode
+    var raw = original_termios;
+    raw.lflag.ECHO = false;
+    raw.lflag.ICANON = false;
+    raw.lflag.ISIG = false;
+    raw.lflag.IEXTEN = false;
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+    std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw) catch {};
 
     std.debug.print("\x1b[2J\x1b[H", .{});
 
@@ -34,17 +48,49 @@ pub fn main() !void {
         .style = .boxed,
         .title = "Enter your message",
         .placeholder = "Start typing...",
+        .cursor_blink_ms = 500, // Cursor blinks every 500ms
     });
     defer text_input.destroy();
+    text_input.setFocus(true);
 
     try renderInput(text_input, 8);
     try moveCursorToInput(text_input, 8);
 
+    // Set up polling for both stdin and a timer
+    const stdin_pfd = std.posix.pollfd{
+        .fd = std.posix.STDIN_FILENO,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    };
+    
     var running = true;
+    var last_render_time: i64 = 0;
+    const render_interval_ms: i64 = 100; // Check for re-render every 100ms
+    
     while (running) {
-        const char = try readByte();
-
-        switch (char) {
+        // Calculate time until next cursor blink should happen
+        const now = std.time.milliTimestamp();
+        
+        // If enough time passed, re-render to update cursor animation
+        if (now - last_render_time >= render_interval_ms or last_render_time == 0) {
+            last_render_time = now;
+            try renderInput(text_input, 8);
+            try moveCursorToInput(text_input, 8);
+        }
+        
+        // Calculate remaining time for poll (ensure non-negative)
+        const elapsed = now - last_render_time;
+        const remaining_ms: i32 = if (elapsed >= render_interval_ms) 0 else @intCast(render_interval_ms - elapsed);
+        
+        // Poll with short timeout to allow periodic re-renders
+        var fds = [_]std.posix.pollfd{stdin_pfd};
+        const poll_result = std.posix.poll(&fds, remaining_ms) catch 0;
+        
+        if (poll_result > 0 and stdin_pfd.revents & std.posix.POLL.IN != 0) {
+            // Input available - read and process it
+            const char = try readByte();
+            
+            switch (char) {
             13, 10 => {
                 running = false;
                 try submitInput(text_input);
@@ -114,6 +160,7 @@ pub fn main() !void {
                 try moveCursorToInput(text_input, 8);
             },
             else => {},
+            }
         }
     }
 
@@ -162,9 +209,10 @@ fn readNextByte() !u8 {
 }
 
 fn renderInput(inp: *Input, row: u16) !void {
+    const timestamp_ms: u64 = @intCast(std.time.milliTimestamp());
     std.debug.print("\x1b[{d};1H", .{row});
     std.debug.print("\x1b[2K", .{});
-    const output = try inp.render();
+    const output = try inp.render(timestamp_ms);
     defer inp.allocator.free(output);
     std.debug.print("{s}", .{output});
 }

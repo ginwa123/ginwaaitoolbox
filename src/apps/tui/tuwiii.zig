@@ -218,17 +218,15 @@ pub const Program = struct {
             // Wait for input (non-blocking with small timeout)
             const msg = try term.readEvent(100);
 
-            // Only re-render if there's input to process
+            // Always re-render to support cursor animation
+            // This ensures the cursor blinks even when idle
+            rendered = try self.model.view(self.allocator);
+            defer self.allocator.free(rendered);
+            try term.render(rendered);
+
+            // Only process message if there is one
             if (msg) |m| {
                 try self.processMessage(m);
-
-                // Re-render after processing the message
-                rendered = try self.model.view(self.allocator);
-                defer self.allocator.free(rendered);
-                try term.render(rendered);
-                
-                // Small sleep to reduce flicker
-                std.Thread.sleep(10 * 1000 * 1000); // 10ms
             }
         }
 

@@ -50,6 +50,8 @@ pub const InputOptions = struct {
     mode: InputMode = .single_line,
     /// Optional title/label for the input
     title: ?[]const u8 = null,
+    /// Cursor blink interval in milliseconds (0 = no animation)
+    cursor_blink_ms: u32 = 500,
 };
 
 /// Unicode box-drawing characters for boxed style
@@ -78,6 +80,12 @@ pub const Input = struct {
     
     /// Whether the input is currently focused (affects rendering)
     focused: bool = false,
+    
+    /// Cursor visibility state (for blinking animation)
+    cursor_visible: bool = true,
+    
+    /// Last time cursor visibility was toggled (in ms)
+    last_cursor_toggle: u64 = 0,
     
     /// Create a new Input component
     pub fn init(allocator: std.mem.Allocator, options: InputOptions) !*Input {
@@ -192,6 +200,9 @@ pub const Input = struct {
             input.cursor -= 1;
             input.updateScrollOffset();
         }
+        // Reset cursor visibility on movement
+        input.cursor_visible = true;
+        input.last_cursor_toggle = 0;
     }
     
     /// Move cursor to the right
@@ -200,6 +211,9 @@ pub const Input = struct {
             input.cursor += 1;
             input.updateScrollOffset();
         }
+        // Reset cursor visibility on movement
+        input.cursor_visible = true;
+        input.last_cursor_toggle = 0;
     }
     
     /// Move cursor to the beginning of the line (home)
@@ -253,7 +267,20 @@ pub const Input = struct {
     
     /// Render the input component to an output buffer
     /// Caller owns the returned string (must be freed)
-    pub fn render(input: *Input) ![]u8 {
+    /// If timestamp_ms is provided, cursor will animate based on blink interval
+    pub fn render(input: *Input, timestamp_ms: ?u64) ![]u8 {
+        // Update cursor blink state if timestamp provided
+        if (timestamp_ms) |ts| {
+            if (input.options.cursor_blink_ms > 0) {
+                if (input.last_cursor_toggle == 0) {
+                    input.last_cursor_toggle = ts;
+                } else if (ts - input.last_cursor_toggle >= input.options.cursor_blink_ms) {
+                    input.cursor_visible = !input.cursor_visible;
+                    input.last_cursor_toggle = ts;
+                }
+            }
+        }
+        
         const display_width = input.getDisplayWidth();
         var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(input.allocator);
@@ -262,13 +289,13 @@ pub const Input = struct {
         
         switch (input.options.style) {
             .plain => {
-                try input.renderPlain(display_width, &buffer);
+                try input.renderPlain(display_width, &buffer, timestamp_ms);
             },
             .boxed => {
-                try input.renderBoxed(chars, display_width, &buffer);
+                try input.renderBoxed(chars, display_width, &buffer, timestamp_ms);
             },
             .underlined => {
-                try input.renderUnderlined(display_width, &buffer);
+                try input.renderUnderlined(display_width, &buffer, timestamp_ms);
             },
         }
         
@@ -276,7 +303,8 @@ pub const Input = struct {
     }
     
     /// Render plain style (no border)
-    fn renderPlain(input: *Input, display_width: u16, buffer: *std.ArrayList(u8)) !void {
+    fn renderPlain(input: *Input, display_width: u16, buffer: *std.ArrayList(u8), timestamp_ms: ?u64) !void {
+        _ = timestamp_ms;
         const text = if (input.isEmpty())
             (input.options.placeholder orelse "")
         else if (input.options.mask_char != null)
@@ -284,7 +312,29 @@ pub const Input = struct {
         else
             input.getVisibleText();
         
-        try buffer.appendSlice(input.allocator, text);
+        // Calculate cursor position relative to visible text
+        const cursor_rel_pos = if (input.cursor >= input.scroll_offset)
+            input.cursor - input.scroll_offset
+        else
+            0;
+        
+        // Render text with cursor
+        if (input.focused and input.cursor_visible) {
+            // Render text before cursor
+            if (cursor_rel_pos < text.len) {
+                try buffer.appendSlice(input.allocator, text[0..cursor_rel_pos]);
+                try buffer.appendSlice(input.allocator, "\x1b[7m"); // Reverse video
+                try buffer.append(input.allocator, text[cursor_rel_pos]);
+                try buffer.appendSlice(input.allocator, "\x1b[0m"); // Reset
+                try buffer.appendSlice(input.allocator, text[cursor_rel_pos + 1 ..]);
+            } else {
+                // Cursor at end
+                try buffer.appendSlice(input.allocator, text);
+                try buffer.appendSlice(input.allocator, "\x1b[7m \x1b[0m"); // Reverse video space
+            }
+        } else {
+            try buffer.appendSlice(input.allocator, text);
+        }
         
         // Pad to display width
         const text_len = text.len;
@@ -296,7 +346,8 @@ pub const Input = struct {
     }
     
     /// Render boxed style (with border)
-    fn renderBoxed(input: *Input, chars: BoxChars, display_width: u16, buffer: *std.ArrayList(u8)) !void {
+    fn renderBoxed(input: *Input, chars: BoxChars, display_width: u16, buffer: *std.ArrayList(u8), timestamp_ms: ?u64) !void {
+        _ = timestamp_ms;
         // Top border with optional title
         try buffer.appendSlice(input.allocator, chars.top_left);
         
@@ -332,7 +383,29 @@ pub const Input = struct {
         else
             input.getVisibleText();
         
-        try buffer.appendSlice(input.allocator, text);
+        // Calculate cursor position relative to visible text
+        const cursor_rel_pos = if (input.cursor >= input.scroll_offset)
+            input.cursor - input.scroll_offset
+        else
+            0;
+        
+        // Render text with cursor
+        if (input.focused and input.cursor_visible) {
+            // Render text before cursor
+            if (cursor_rel_pos < text.len) {
+                try buffer.appendSlice(input.allocator, text[0..cursor_rel_pos]);
+                try buffer.appendSlice(input.allocator, "\x1b[7m"); // Reverse video
+                try buffer.append(input.allocator, text[cursor_rel_pos]);
+                try buffer.appendSlice(input.allocator, "\x1b[0m"); // Reset
+                try buffer.appendSlice(input.allocator, text[cursor_rel_pos + 1 ..]);
+            } else {
+                // Cursor at end
+                try buffer.appendSlice(input.allocator, text);
+                try buffer.appendSlice(input.allocator, "\x1b[7m \x1b[0m"); // Reverse video space
+            }
+        } else {
+            try buffer.appendSlice(input.allocator, text);
+        }
         
         // Pad to display width
         const text_len = if (input.isEmpty() and input.options.placeholder != null)
@@ -358,7 +431,8 @@ pub const Input = struct {
     }
     
     /// Render underlined style
-    fn renderUnderlined(input: *Input, display_width: u16, buffer: *std.ArrayList(u8)) !void {
+    fn renderUnderlined(input: *Input, display_width: u16, buffer: *std.ArrayList(u8), timestamp_ms: ?u64) !void {
+        _ = timestamp_ms;
         const text = if (input.isEmpty())
             (input.options.placeholder orelse "")
         else if (input.options.mask_char) |mask|
@@ -366,7 +440,29 @@ pub const Input = struct {
         else
             input.getVisibleText();
         
-        try buffer.appendSlice(input.allocator, text);
+        // Calculate cursor position relative to visible text
+        const cursor_rel_pos = if (input.cursor >= input.scroll_offset)
+            input.cursor - input.scroll_offset
+        else
+            0;
+        
+        // Render text with cursor
+        if (input.focused and input.cursor_visible) {
+            // Render text before cursor
+            if (cursor_rel_pos < text.len) {
+                try buffer.appendSlice(input.allocator, text[0..cursor_rel_pos]);
+                try buffer.appendSlice(input.allocator, "\x1b[7m"); // Reverse video
+                try buffer.append(input.allocator, text[cursor_rel_pos]);
+                try buffer.appendSlice(input.allocator, "\x1b[0m"); // Reset
+                try buffer.appendSlice(input.allocator, text[cursor_rel_pos + 1 ..]);
+            } else {
+                // Cursor at end
+                try buffer.appendSlice(input.allocator, text);
+                try buffer.appendSlice(input.allocator, "\x1b[7m \x1b[0m"); // Reverse video space
+            }
+        } else {
+            try buffer.appendSlice(input.allocator, text);
+        }
         
         // Pad to display width
         const text_len = if (input.isEmpty() and input.options.placeholder != null)
@@ -412,6 +508,9 @@ pub const Input = struct {
             // Backspace
             8, 127 => {
                 try input.backspace();
+                // Reset cursor visibility on edit
+                input.cursor_visible = true;
+                input.last_cursor_toggle = 0;
             },
             // Escape - could be used for cancel
             27 => {
@@ -421,9 +520,12 @@ pub const Input = struct {
             9 => {
                 // Handled by caller
             },
-            // Printable characters (32-126)
+            // Printable characters (32...126)
             32...126 => {
                 try input.insert(key);
+                // Reset cursor visibility on edit
+                input.cursor_visible = true;
+                input.last_cursor_toggle = 0;
             },
             else => {
                 // Ignore other keys
@@ -434,8 +536,9 @@ pub const Input = struct {
     }
     
     /// Render to stdout with cursor positioning (for interactive use)
-    pub fn display(input: *Input) !void {
-        const output = try input.render();
+    /// Takes current timestamp in milliseconds for cursor animation
+    pub fn display(input: *Input, timestamp_ms: u64) !void {
+        const output = try input.render(timestamp_ms);
         defer input.allocator.free(output);
         
         // Clear previous line and render new content

@@ -101,6 +101,14 @@ const App = struct {
                     if (self.history_scroll < max_scroll) {
                         self.history_scroll += 1;
                     }
+                } else if (std.mem.eql(u8, seq, "\x1b[C")) { // Right arrow
+                    if (self.focused_input) {
+                        self.input_component.moveRight();
+                    }
+                } else if (std.mem.eql(u8, seq, "\x1b[D")) { // Left arrow
+                    if (self.focused_input) {
+                        self.input_component.moveLeft();
+                    }
                 } else if (std.mem.eql(u8, seq, "\x1b[5~")) { // PageUp
                     // Scroll up by page
                     if (self.history.items.len > 0) {
@@ -186,11 +194,18 @@ const App = struct {
         defer allocator.free(history_text);
 
         // Get the input text
-        const input_text = self.input_component.getText();
-        const input_display = if (input_text.len > 0) input_text else "Type here...";
+        _ = self.input_component.getText();
+        
+        // Set focus state for cursor rendering
+        self.input_component.setFocus(self.focused_input);
+        
+        // Render input with cursor animation (using timestamp for blinking)
+        const timestamp_ms: u64 = @intCast(std.time.milliTimestamp());
+        const input_rendered = try self.input_component.render(timestamp_ms);
+        defer self.allocator.free(input_rendered);
 
         // Render the container box with history and input inside
-        try buffer.appendSlice(allocator, "\x1b[35mChat Application\x1b[0m\n");
+        // try buffer.appendSlice(allocator, "\x1b[35mChat Application\x1b[0m\n");
 
         // Render history box using the Box component
         const historyRenderFn = struct {
@@ -200,9 +215,9 @@ const App = struct {
         }.render;
 
         var history_box = try box.init(allocator, .{
-            .border = true,
+            .border = false,
             .title = "History",
-            .padding = .{ .individual = .{ .top = 1, .right = 1, .bottom = 1, .left = 1 } },
+            // .padding = .{ .individual = .{ .top = 1, .right = 1, .bottom = 1, .left = 1 } },
             .width = .match_parent,
             .height = .auto,
         }, historyRenderFn);
@@ -230,7 +245,7 @@ const App = struct {
             .height = .{ .fixed = 3 }, // Need at least 3: top border + content + bottom border
         }, inputRenderFn);
         // Set dynamic content
-        input_box.setContent(input_display);
+        input_box.setContent(input_rendered);
         defer input_box.destroy();
 
         const input_output = try input_box.renderToString();
@@ -316,6 +331,7 @@ const App = struct {
         const input_instance = try Input.init(allocator, .{
             .style = .plain,
             .mode = .multi_line,
+            .cursor_blink_ms = 500, // Enable cursor blinking
         });
 
         // Create app instance
