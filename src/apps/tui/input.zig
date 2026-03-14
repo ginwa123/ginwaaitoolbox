@@ -34,10 +34,27 @@ pub const InputStyle = enum {
     underlined,
 };
 
+/// Dimension configuration (matching box.zig pattern)
+pub const Dim = union(enum) {
+    /// Auto-size based on content
+    auto: void,
+    /// Fixed size in characters
+    fixed: u16,
+    /// Match parent size (100% of available space)
+    match_parent: void,
+    /// Fill parent (alias for match_parent)
+    fill_parent: void,
+
+    /// Default: auto
+    pub fn default() Dim {
+        return .{ .auto = {} };
+    }
+};
+
 /// Input field configuration options
 pub const InputOptions = struct {
-    /// Width of the input field in characters (0 = auto-fit to container)
-    width: u16 = 40,
+    /// Width of the input field (supports auto, fixed, or match_parent)
+    width: Dim = .default(),
     /// Maximum number of characters allowed (0 = unlimited)
     max_length: usize = 0,
     /// Text to display when the field is empty
@@ -86,6 +103,9 @@ pub const Input = struct {
     
     /// Last time cursor visibility was toggled (in ms)
     last_cursor_toggle: u64 = 0,
+    
+    /// Current render width (set during render for internal methods to use)
+    render_width: u16 = 0,
     
     /// Create a new Input component
     pub fn init(allocator: std.mem.Allocator, options: InputOptions) !*Input {
@@ -143,13 +163,37 @@ pub const Input = struct {
     }
     
     /// Get the display width (actual width for rendering)
-    pub fn getDisplayWidth(input: *Input) u16 {
-        const width = input.options.width;
+    /// Takes optional parent_width for match_parent mode
+    pub fn getDisplayWidth(input: *Input, parent_width: ?u16) u16 {
+        const width = switch (input.options.width) {
+            .auto => 40, // default width for auto
+            .fixed => |w| w,
+            .match_parent, .fill_parent => parent_width orelse 40,
+        };
+        
         // Adjust for borders if boxed style
         if (input.options.style == .boxed) {
             return if (width > 2) width - 2 else 0;
         }
         return width;
+    }
+    
+    /// Get the raw width option (before border adjustment)
+    /// Returns the configured width or 0 for auto/match_parent
+    pub fn getRawWidth(input: *Input) u16 {
+        return switch (input.options.width) {
+            .auto => 0,
+            .fixed => |w| w,
+            .match_parent, .fill_parent => 0,
+        };
+    }
+    
+    /// Check if width is match_parent mode
+    pub fn isMatchParent(input: *Input) bool {
+        return switch (input.options.width) {
+            .match_parent, .fill_parent => true,
+            else => false,
+        };
     }
     
     /// Insert a character at the cursor position
@@ -230,7 +274,8 @@ pub const Input = struct {
     
     /// Update scroll offset to ensure cursor is visible
     fn updateScrollOffset(input: *Input) void {
-        const display_width = input.getDisplayWidth();
+        // Use render_width if set, otherwise fall back to getDisplayWidth
+        const display_width = if (input.render_width > 0) input.render_width else input.getDisplayWidth(null);
         if (display_width == 0) return;
         
         // Guard against underflow when scroll_offset > cursor
@@ -252,7 +297,8 @@ pub const Input = struct {
     
     /// Get the visible portion of text (accounting for scroll offset)
     fn getVisibleText(input: *Input) []const u8 {
-        const display_width = input.getDisplayWidth();
+        // Use render_width if set, otherwise fall back to getDisplayWidth
+        const display_width = if (input.render_width > 0) input.render_width else input.getDisplayWidth(null);
         const text = input.text.items;
         
         if (input.scroll_offset >= text.len) {
@@ -268,7 +314,8 @@ pub const Input = struct {
     /// Render the input component to an output buffer
     /// Caller owns the returned string (must be freed)
     /// If timestamp_ms is provided, cursor will animate based on blink interval
-    pub fn render(input: *Input, timestamp_ms: ?u64) ![]u8 {
+    /// If parent_width is provided, it will be used for match_parent width mode
+    pub fn render(input: *Input, timestamp_ms: ?u64, parent_width: ?u16) ![]u8 {
         // Update cursor blink state if timestamp provided
         if (timestamp_ms) |ts| {
             if (input.options.cursor_blink_ms > 0) {
@@ -281,7 +328,10 @@ pub const Input = struct {
             }
         }
         
-        const display_width = input.getDisplayWidth();
+        const display_width = input.getDisplayWidth(parent_width);
+        // Store render_width for internal methods that need it (like scroll offset)
+        input.render_width = display_width;
+        
         var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(input.allocator);
         
@@ -556,7 +606,16 @@ pub const Input = struct {
 /// Create a simple single-line text input
 pub fn createTextInput(allocator: std.mem.Allocator, width: u16) !*Input {
     return Input.init(allocator, .{
-        .width = width,
+        .width = .{ .fixed = width },
+        .mode = .single_line,
+        .style = .boxed,
+    });
+}
+
+/// Create a text input that matches parent container width
+pub fn createTextInputMatchParent(allocator: std.mem.Allocator) !*Input {
+    return Input.init(allocator, .{
+        .width = .match_parent,
         .mode = .single_line,
         .style = .boxed,
     });
@@ -565,7 +624,7 @@ pub fn createTextInput(allocator: std.mem.Allocator, width: u16) !*Input {
 /// Create a password input (masked)
 pub fn createPasswordInput(allocator: std.mem.Allocator, width: u16) !*Input {
     return Input.init(allocator, .{
-        .width = width,
+        .width = .{ .fixed = width },
         .mode = .single_line,
         .style = .boxed,
         .mask_char = '*',
@@ -575,7 +634,7 @@ pub fn createPasswordInput(allocator: std.mem.Allocator, width: u16) !*Input {
 /// Create a multi-line textarea
 pub fn createTextarea(allocator: std.mem.Allocator, width: u16) !*Input {
     return Input.init(allocator, .{
-        .width = width,
+        .width = .{ .fixed = width },
         .mode = .multi_line,
         .style = .boxed,
     });
@@ -591,7 +650,7 @@ test "Input init and destroy" {
     const allocator = gpa.allocator();
     
     const input = try Input.init(allocator, .{
-        .width = 20,
+        .width = .{ .fixed = 20 },
         .mode = .single_line,
     });
     defer input.destroy();
@@ -606,7 +665,7 @@ test "Input insert character" {
     const allocator = gpa.allocator();
     
     const input = try Input.init(allocator, .{
-        .width = 20,
+        .width = .{ .fixed = 20 },
         .mode = .single_line,
     });
     defer input.destroy();
@@ -627,7 +686,7 @@ test "Input backspace" {
     const allocator = gpa.allocator();
     
     const input = try Input.init(allocator, .{
-        .width = 20,
+        .width = .{ .fixed = 20 },
         .mode = .single_line,
     });
     defer input.destroy();
@@ -646,7 +705,7 @@ test "Input cursor movement" {
     const allocator = gpa.allocator();
     
     const input = try Input.init(allocator, .{
-        .width = 20,
+        .width = .{ .fixed = 20 },
         .mode = .single_line,
     });
     defer input.destroy();
@@ -672,7 +731,7 @@ test "Input delete" {
     const allocator = gpa.allocator();
     
     const input = try Input.init(allocator, .{
-        .width = 20,
+        .width = .{ .fixed = 20 },
         .mode = .single_line,
     });
     defer input.destroy();
@@ -692,7 +751,7 @@ test "Input max_length constraint" {
     const allocator = gpa.allocator();
     
     const input = try Input.init(allocator, .{
-        .width = 20,
+        .width = .{ .fixed = 20 },
         .max_length = 5,
         .mode = .single_line,
     });
@@ -710,7 +769,7 @@ test "Input clear" {
     const allocator = gpa.allocator();
     
     const input = try Input.init(allocator, .{
-        .width = 20,
+        .width = .{ .fixed = 20 },
         .mode = .single_line,
     });
     defer input.destroy();
@@ -729,7 +788,7 @@ test "Input setText" {
     const allocator = gpa.allocator();
     
     const input = try Input.init(allocator, .{
-        .width = 20,
+        .width = .{ .fixed = 20 },
         .mode = .single_line,
     });
     defer input.destroy();
@@ -748,7 +807,8 @@ test "createTextInput helper" {
     
     try std.testing.expect(input.options.mode == .single_line);
     try std.testing.expect(input.options.style == .boxed);
-    try std.testing.expect(input.options.width == 30);
+    try std.testing.expect(input.isMatchParent() == false);
+    try std.testing.expect(input.getRawWidth() == 30);
 }
 
 test "createPasswordInput helper" {

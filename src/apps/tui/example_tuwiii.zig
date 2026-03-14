@@ -28,6 +28,8 @@ const App = struct {
     history_scroll: usize = 0,
     // Number of visible lines in history box (set on first render)
     history_visible_lines: usize = 10,
+    // Terminal dimensions (set on init)
+    terminal_cols: u16 = 80,
 
     const Self = @This();
 
@@ -195,13 +197,14 @@ const App = struct {
 
         // Get the input text
         _ = self.input_component.getText();
-        
+
         // Set focus state for cursor rendering
         self.input_component.setFocus(self.focused_input);
-        
+
         // Render input with cursor animation (using timestamp for blinking)
+        // Pass terminal_cols for match_parent width mode
         const timestamp_ms: u64 = @intCast(std.time.milliTimestamp());
-        const input_rendered = try self.input_component.render(timestamp_ms);
+        const input_rendered = try self.input_component.render(timestamp_ms, self.terminal_cols);
         defer self.allocator.free(input_rendered);
 
         // Render the container box with history and input inside
@@ -280,6 +283,8 @@ const App = struct {
         const term_size = getTerminalSize();
         // Subtract some lines for other UI elements (title, input box, status bar)
         self.history_visible_lines = if (term_size.rows > 10) term_size.rows - 10 else 10;
+        // Store terminal columns for input rendering
+        self.terminal_cols = term_size.cols;
     }
 
     /// Get terminal size, returns default 80x24 if unavailable
@@ -332,6 +337,7 @@ const App = struct {
             .style = .plain,
             .mode = .multi_line,
             .cursor_blink_ms = 500, // Enable cursor blinking
+            .width = .match_parent,
         });
 
         // Create app instance
