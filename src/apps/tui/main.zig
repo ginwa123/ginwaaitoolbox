@@ -1,6 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const keybindings = @import("keybindings.zig");
+const tuwiii = @import("tuwiii.zig");
+const box_mod = @import("box.zig");
+const input_mod = @import("input.zig");
 
 // Enable TLS support for HTTP client
 pub const std_options: std.Options = .{
@@ -47,9 +50,8 @@ const App = struct {
     http_client: std.http.Client,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
-    original_termios: std.posix.termios,
     session_id: []u8,
-    input: std.ArrayList(u8),
+    input_field: *input_mod.Input,
     pasting: bool,
     last_esc_time: ?i64 = null,
     agent_name_buf: [64]u8 = [_]u8{0} ** 64,
@@ -62,21 +64,28 @@ const App = struct {
         std.log.info("Spawned backend", .{});
         try waitForHttpServer(10000);
         std.log.info("HTTP server ready", .{});
-        const original_termios = try enableRawMode();
-        std.log.info("Raw mode enabled", .{});
+        // Raw mode is now handled by tuwiii Terminal in main()
         const session_id = try std.fmt.allocPrint(allocator, "session_{}", .{std.time.timestamp()});
         const kb = try keybindings.loadKeybindings(allocator);
         std.log.info("Session ID: {s}", .{session_id});
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const http_client = std.http.Client{ .allocator = arena.allocator() };
+
+        // Create the input field using tuwiii input component
+        const input_field = try input_mod.Input.init(allocator, .{
+            .width = input_mod.Dim.match_parent,
+            .mode = .single_line,
+            .style = .boxed,
+            .placeholder = "Type your message...",
+        });
+
         return App{
             .http_client = http_client,
             .arena = arena,
             .allocator = allocator,
-            .original_termios = original_termios,
             .session_id = session_id,
-            .input = std.ArrayList(u8).empty,
+            .input_field = input_field,
             .pasting = false,
             .last_esc_time = null,
             .keybindings = kb,
@@ -89,83 +98,13 @@ const App = struct {
 
     pub fn deinit(app: *App) void {
         app.keybindings.deinit();
-        disableRawMode(app.original_termios);
         app.allocator.free(app.session_id);
-        app.input.deinit(app.allocator);
         app.state.matches.deinit(app.allocator);
+        app.input_field.destroy();
         app.http_client.deinit();
         app.arena.deinit();
     }
 };
-
-// ─── Terminal ────────────────────────────────────────────────────────────────
-
-fn enableRawMode() !std.posix.termios {
-    const original = try std.posix.tcgetattr(std.posix.STDIN_FILENO);
-    var raw = original;
-    raw.lflag.ECHO = false;
-    raw.lflag.ICANON = false;
-    raw.lflag.ISIG = false;
-    raw.lflag.IEXTEN = false;
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-    try std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw);
-    return original;
-}
-
-fn disableRawMode(original: std.posix.termios) void {
-    std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, original) catch {};
-}
-
-// ─── Backend ─────────────────────────────────────────────────────────────────
-
-fn spawnBackend(_: bool) !void {
-    const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/zigginagentic");
-    defer std.heap.page_allocator.free(backend_path);
-
-    // Check if backend is already running by trying to connect to HTTP port
-    const test_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch {
-        // If we can't create a socket, skip spawning
-        return;
-    };
-    defer std.posix.close(test_socket);
-
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
-    var already_running = false;
-    std.posix.connect(test_socket, &addr.any, @sizeOf(std.net.Address)) catch {
-        already_running = true;
-    };
-
-    if (already_running) {
-        std.debug.print("{s}Backend already running, skipping spawn{s}\n", .{ green, reset });
-        return;
-    }
-
-    // Spawn the backend using daemon() for proper daemonization
-    const c = @cImport({
-        @cInclude("unistd.h");
-    });
-
-    // Convert to null-terminated C string
-    const backend_path_z = try std.heap.page_allocator.dupeZ(u8, backend_path);
-    defer std.heap.page_allocator.free(backend_path_z);
-
-    // daemon(1, 0) - change to / and close stdio
-    // This is the standard Unix daemon() call
-    if (c.daemon(1, 0) != 0) {
-        std.debug.print("{s}Warning: daemon() failed{s}\n", .{ yellow, reset });
-        return;
-    }
-
-    // We're now in the daemon child - execute the backend directly
-    // Use execl which is simpler than execvp
-    // Cast null to proper pointer type for variadic function
-    const null_ptr: [*c]const u8 = null;
-    _ = c.execl(backend_path_z, backend_path_z, null_ptr);
-    // If we get here, exec failed
-    std.debug.print("{s}Warning: failed to exec backend{s}\n", .{ yellow, reset });
-    std.posix.exit(1);
-}
 
 fn waitForHttpServer(timeout_ms: u64) !void {
     const start = std.time.milliTimestamp();
@@ -1074,7 +1013,7 @@ fn clearCompletions(app: *App) void {
 }
 
 fn handleCompletion(app: *App) !bool {
-    const input = app.input.items;
+    const current_input = app.input_field.getText();
     if (app.state.visible and app.state.matches.items.len > 0) {
         app.state.selected = (app.state.selected + 1) % app.state.matches.items.len;
         renderCompletions(app);
@@ -1082,20 +1021,19 @@ fn handleCompletion(app: *App) !bool {
     }
     app.state.matches.clearRetainingCapacity();
     app.state.selected = 0;
-    if (input.len == 0 or input[0] == '/') {
+    if (current_input.len == 0 or current_input[0] == '/') {
         for (COMMANDS) |cmd| {
-            if (std.mem.startsWith(u8, cmd, input)) {
+            if (std.mem.startsWith(u8, cmd, current_input)) {
                 try app.state.matches.append(app.allocator, cmd);
             }
         }
     }
     if (app.state.matches.items.len == 0) return true;
     if (app.state.matches.items.len == 1) {
-        app.input.clearRetainingCapacity();
-        try app.input.appendSlice(app.allocator, app.state.matches.items[0]);
+        try app.input_field.setText(app.state.matches.items[0]);
         app.state.visible = false;
         app.state.last_match_count = 0;
-        std.debug.print("\r\x1b[2K{s}>{s} {s}", .{ bold, reset, app.input.items });
+        std.debug.print("\r\x1b[2K{s}>{s} {s}", .{ bold, reset, app.input_field.getText() });
     } else {
         app.state.visible = true;
         renderCompletions(app);
@@ -1125,80 +1063,6 @@ fn renderCompletions(app: *App) void {
     std.debug.print("\x1b[u", .{});
 }
 
-fn handleInput(app: *App) !bool {
-    var buf: [1]u8 = undefined;
-    const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
-    if (n == 0) {
-        std.Thread.sleep(10000000);
-        return false;
-    }
-    const c = buf[0];
-    if (c == @intFromEnum(KEYBINDING.CTRL_C)) return true;
-
-    if (c == 0x1b) {
-        var esc: [16]u8 = undefined;
-        const len = try readEscapeSequence(&esc);
-        const seq = esc[0..len];
-
-        if (std.mem.eql(u8, seq, "\x1b[200~")) {
-            app.pasting = true;
-        } else if (std.mem.eql(u8, seq, "\x1b[201~")) {
-            app.pasting = false;
-        } else {
-            // Only clear completions for non-paste escape sequences
-            clearCompletions(app);
-        }
-        return false;
-    }
-
-    if (c == 127 or c == 8) {
-        if (!app.pasting and app.input.items.len > 0) {
-            _ = app.input.pop();
-            std.debug.print("\x08 \x08", .{});
-        }
-    } else if (c == '\t') {
-        if (!app.pasting) {
-            _ = try handleCompletion(app);
-        } else {
-            // Treat tab as spaces during paste
-            try app.input.append(app.allocator, ' ');
-            std.debug.print(" ", .{});
-        }
-    } else if (c == @intFromEnum(KEYBINDING.ENTER) or c == 10) {
-        if (app.pasting) {
-            // During paste, newlines become spaces instead of submitting
-            try app.input.append(app.allocator, ' ');
-            std.debug.print(" ", .{});
-            return false;
-        }
-        if (app.input.items.len > 0) {
-            if (std.mem.eql(u8, app.input.items, "/sessions")) {
-                std.debug.print("\r\n", .{});
-                const response = readResponseAndStreamGetSessions(app) catch "";
-                defer app.allocator.free(response);
-                if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
-                app.input.clearRetainingCapacity();
-                std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
-                return false;
-            }
-            if (std.mem.eql(u8, app.input.items, "/exit")) return true;
-            std.debug.print("\r\n\r\n", .{});
-            const response = readResponseAndStreamRunLLM(app, app.input.items) catch "";
-            defer app.allocator.free(response);
-            if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
-            app.input.clearRetainingCapacity();
-        }
-        std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
-    } else if (c >= 32) {
-        if (!app.pasting) clearCompletions(app);
-        try app.input.append(app.allocator, c);
-        std.debug.print("{c}", .{c});
-    }
-    return false;
-}
-
-// ─── Entry point ─────────────────────────────────────────────────────────────
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -1219,6 +1083,7 @@ pub fn main() !void {
         }
     }
 
+    // Create the app with raw mode from tuwiii
     var app = try App.init(allocator, verbose);
     defer app.deinit();
 
@@ -1227,9 +1092,58 @@ pub fn main() !void {
     defer std.debug.print("\x1b[?2004l", .{});
     std.debug.print("{s}>{s} ", .{ bold, reset });
 
+    // Use manual event loop (like before) but with tuwiii Terminal for input
+    var term = try tuwiii.Terminal.init(allocator, .{
+        .enable_raw = true,
+        .use_alt_screen = false,
+        .enable_mouse = false,
+    });
+    defer term.deinit();
+
     while (true) {
-        const should_exit = try handleInput(&app);
-        if (should_exit) break;
+        // Read key event using tuwiii Terminal
+        const msg = try term.readEvent(100);
+
+        if (msg) |m| {
+            switch (m) {
+                .quit => break,
+                .key => |key| {
+                    if (key == 3) break; // Ctrl+C
+                    if (key >= 32) {
+                        try app.input_field.insert(key);
+                        std.debug.print("{c}", .{key});
+                    } else if (key == 127 or key == 8) {
+                        if (app.input_field.getText().len > 0) {
+                            try app.input_field.backspace();
+                            std.debug.print("\x08 \x08", .{});
+                        }
+                    } else if (key == 13 or key == 10) {
+                        const text = app.input_field.getText();
+                        if (text.len > 0) {
+                            if (std.mem.eql(u8, text, "/exit")) break;
+                            std.debug.print("\r\n\r\n", .{});
+                            const response = readResponseAndStreamRunLLM(&app, text) catch "";
+                            defer app.allocator.free(response);
+                            if (response.len == 0) {
+                                std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
+                            }
+                            app.input_field.clear();
+                            std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
+                        }
+                    }
+                },
+                .key_seq => |seq| {
+                    if (seq.len >= 6 and seq[0] == 0x1b) {
+                        if (std.mem.eql(u8, seq[0..6], "\x1b[200~")) {
+                            app.pasting = true;
+                        } else if (std.mem.eql(u8, seq[0..6], "\x1b[201~")) {
+                            app.pasting = false;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     std.debug.print("\r\n{s}Bye!{s}\r\n", .{ dim, reset });
