@@ -154,7 +154,7 @@ const App = struct {
             .title = "Input",
             .padding = .{ .individual = .{ .top = 0, .right = 1, .bottom = 0, .left = 1 } },
             .width = .match_parent,
-            .height = .{ .fixed = 1 },
+            .height = .{ .fixed = 3 }, // Need at least 3: top border + content + bottom border
         }, inputRenderFn);
         // Set dynamic content
         input_box.setContent(input_display);
