@@ -194,9 +194,10 @@ pub const Program = struct {
         });
         defer term.deinit();
 
+        // Initial clear only on first render
         try term.clearScreen();
 
-        // Initial render
+        // Initial render (no clear needed - Terminal.render handles cursor positioning)
         var rendered = try self.model.view(self.allocator);
         defer self.allocator.free(rendered);
         try term.render(rendered);
@@ -225,6 +226,9 @@ pub const Program = struct {
                 rendered = try self.model.view(self.allocator);
                 defer self.allocator.free(rendered);
                 try term.render(rendered);
+                
+                // Small sleep to reduce flicker
+                std.Thread.sleep(10 * 1000 * 1000); // 10ms
             }
         }
 
@@ -407,10 +411,9 @@ const Terminal = struct {
     fn render(self: *Terminal, content: []const u8) !void {
         _ = self;
         const stdout = std.fs.File.stdout();
-        // Clear screen and position cursor at top before each render
+        // Clear screen then position cursor at top
         _ = try stdout.write("\x1b[2J\x1b[H");
         _ = try stdout.write(content);
-        // No flush needed - writes are immediate in Zig std.fs.File
     }
 
     fn enableAltScreen(self: *Terminal) !void {
