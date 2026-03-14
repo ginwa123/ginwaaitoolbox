@@ -89,6 +89,29 @@ pub fn build(b: *std.Build) void {
     tui_step.dependOn(&tui_cmd.step);
     tui_cmd.step.dependOn(b.getInstallStep());
 
+    // CLI executable
+    const cli_exe = b.addExecutable(.{
+        .name = "nalarcore-cli",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/cli/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "nalarcore", .module = mod },
+            },
+        }),
+    });
+    cli_exe.linkSystemLibrary("sqlite3");
+    cli_exe.linkSystemLibrary("ssl");
+    cli_exe.linkSystemLibrary("crypto");
+    cli_exe.linkLibC();
+    b.installArtifact(cli_exe);
+
+    const cli_step = b.step("run:cli", "Run the CLI");
+    const cli_cmd = b.addRunArtifact(cli_exe);
+    cli_step.dependOn(&cli_cmd.step);
+    cli_cmd.step.dependOn(b.getInstallStep());
+
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
