@@ -63,13 +63,20 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
 
-    // TUI executable
+    // TUI executable - first create the tui-text module
+    const tui_text_mod = b.addModule("tui-text", .{
+        .root_source_file = b.path("src/apps/tui/text.zig"),
+    });
+
     const tui_exe = b.addExecutable(.{
         .name = "nalarcore-tui",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/apps/tui/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tui-text", .module = tui_text_mod },
+            },
         }),
     });
     tui_exe.linkSystemLibrary("ssl");

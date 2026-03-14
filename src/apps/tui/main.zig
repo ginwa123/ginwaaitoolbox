@@ -4,6 +4,7 @@ const keybindings = @import("keybindings.zig");
 const tuwiii = @import("tuwiii.zig");
 const box_mod = @import("box.zig");
 const input_mod = @import("input.zig");
+const tui_text = @import("tui-text");
 
 // Enable TLS support for HTTP client
 pub const std_options: std.Options = .{
@@ -14,12 +15,28 @@ pub const std_options: std.Options = .{
 const HTTP_HOST = "127.0.0.1";
 const HTTP_PORT: u16 = 8080;
 
-const reset = "\x1b[0m";
-const bold = "\x1b[1m";
-const dim = "\x1b[2m";
-const cyan = "\x1b[36m";
-const yellow = "\x1b[33m";
-const green = "\x1b[32m";
+// Re-export text module colors for backward compatibility
+const reset = tui_text.ansi.reset;
+const bold = tui_text.ansi.bold;
+const dim = tui_text.ansi.dim;
+const cyan = tui_text.ansi.cyan;
+const yellow = tui_text.ansi.yellow;
+const green = tui_text.ansi.green;
+
+// Re-export terminal escape sequences
+const crlf = tui_text.ansi.crlf;
+const erase_line = tui_text.ansi.erase_line;
+const paste_start = tui_text.ansi.paste_start;
+const paste_end = tui_text.ansi.paste_end;
+const paste_mode_on = tui_text.ansi.paste_mode_on;
+const paste_mode_off = tui_text.ansi.paste_mode_off;
+const cursor_down = tui_text.ansi.cursor_down;
+const save_cursor = tui_text.ansi.save_cursor;
+const cursorUp = tui_text.ansi.cursorUp;
+const reverse_video = tui_text.ansi.reverse_video;
+const cursor_next_line = tui_text.ansi.cursor_next_line;
+const red = tui_text.ansi.red;
+const green_fg = tui_text.ansi.green;
 
 const DOUBLE_ESC_WINDOW_MS: i64 = 500;
 
@@ -454,9 +471,9 @@ fn displayBashResult(result_xml: []const u8, tool_name: []const u8, max_result_l
     const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
     const color = if (is_error) "\x1b[31m" else "";
     if (cmd) |c| {
-        std.debug.print("\r\x1b[2K\n{s}[{s}]{s} $ {s}\n", .{ cyan, tool_name, reset, c });
+        std.debug.print(crlf ++ erase_line ++ "[{s}] $ {s}\n", .{ tool_name, c });
     } else {
-        std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, tool_name, reset });
+        std.debug.print(crlf ++ erase_line ++ "[{s}]\n", .{ tool_name });
     }
     var lines = std.mem.splitScalar(u8, display, '\n');
     while (lines.next()) |line| {
@@ -833,7 +850,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         std.debug.print("{s}(no response){s}\n", .{ dim, reset });
     }
 
-    std.debug.print("\r\n", .{});
+    std.debug.print("\n", .{});
     _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
@@ -1070,6 +1087,9 @@ pub fn main() !void {
     defer arena_allocator.deinit();
     const allocator = arena_allocator.allocator();
 
+    // Initialize the text module's global allocator
+    tui_text.setGlobalAllocator(allocator);
+
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
@@ -1087,9 +1107,9 @@ pub fn main() !void {
     var app = try App.init(allocator, verbose);
     defer app.deinit();
 
-    std.debug.print("Type message and press Enter. Ctrl+C to exit.\r\n\r\n", .{});
-    std.debug.print("\x1b[?2004h", .{});
-    defer std.debug.print("\x1b[?2004l", .{});
+    std.debug.print("Type message and press Enter. Ctrl+C to exit.\n\n", .{});
+    std.debug.print(paste_mode_on, .{});
+    defer std.debug.print(paste_mode_off, .{});
     std.debug.print("{s}>{s} ", .{ bold, reset });
 
     // Use manual event loop (like before) but with tuwiii Terminal for input

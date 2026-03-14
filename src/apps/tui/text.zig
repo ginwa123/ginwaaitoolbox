@@ -3,6 +3,17 @@
 
 const std = @import("std");
 
+/// Global allocator for print functions (use with caution in hot paths)
+var global_allocator: ?std.mem.Allocator = null;
+
+pub fn setGlobalAllocator(allocator: std.mem.Allocator) void {
+    global_allocator = allocator;
+}
+
+pub fn getGlobalAllocator() std.mem.Allocator {
+    return global_allocator orelse std.heap.page_allocator;
+}
+
 /// ANSI escape code sequences
 pub const ansi = struct {
     /// Reset all attributes
@@ -67,6 +78,29 @@ pub const ansi = struct {
     pub const clear_screen: []const u8 = "\x1b[2J";
     pub const clear_line: []const u8 = "\x1b[2K";
 
+    /// Terminal special characters
+    pub const newline: []const u8 = "\n";
+    pub const crlf: []const u8 = "\r\n";
+    pub const carriage_return: []const u8 = "\r";
+    pub const save_cursor: []const u8 = "\x1b[s";
+    pub const restore_cursor: []const u8 = "\x1b[u";
+    pub const erase_display: []const u8 = "\x1b[2K";
+    pub const erase_line: []const u8 = "\x1b[2K";
+    pub const scroll_up: []const u8 = "\x1b[1S";
+    pub const scroll_down: []const u8 = "\x1b[1T";
+
+    /// Bracketed paste mode (for paste detection)
+    pub const paste_start: []const u8 = "\x1b[200~";
+    pub const paste_end: []const u8 = "\x1b[201~";
+
+    /// Enable/disable bracketed paste mode
+    pub const paste_mode_on: []const u8 = "\x1b[?2004h";
+    pub const paste_mode_off: []const u8 = "\x1b[?2004l";
+
+    /// Other useful sequences
+    pub const reverse_video: []const u8 = "\x1b[7m";
+    pub const cursor_next_line: []const u8 = "\x1b[1E";
+
     /// Generate custom color code (256 colors)
     pub fn fg256(r: u8, g: u8, b: u8) [8]u8 {
         var buf: [8]u8 = undefined;
@@ -85,6 +119,20 @@ pub const ansi = struct {
     pub fn color256(index: u8) [9]u8 {
         var buf: [9]u8 = undefined;
         const len = std.fmt.bufPrint(&buf, "\x1b[38;5;{}m", .{index}) catch return "".*;
+        return buf[0..len].*;
+    }
+
+    /// Generate cursor up N lines
+    pub fn cursorUp(n: usize) [8]u8 {
+        var buf: [8]u8 = undefined;
+        const len = std.fmt.bufPrint(&buf, "\x1b[{}A", .{n}) catch return "".*;
+        return buf[0..len].*;
+    }
+
+    /// Generate cursor down N lines
+    pub fn cursorDown(n: usize) [8]u8 {
+        var buf: [8]u8 = undefined;
+        const len = std.fmt.bufPrint(&buf, "\x1b[{}B", .{n}) catch return "".*;
         return buf[0..len].*;
     }
 };
@@ -143,17 +191,17 @@ pub const Style = struct {
     /// Convert style flags to ANSI escape sequence
     pub fn toAnsi(self: Style) []const u8 {
         var buf: [64]u8 = undefined;
-        var list = std.ArrayList([]const u8).init(std.heap.page_allocator);
-        defer list.deinit();
+        var list = std.ArrayList([]const u8).empty;
+        defer list.deinit(std.heap.page_allocator);
 
-        if (self.bold) list.append(ansi.bold) catch {};
-        if (self.dim) list.append(ansi.dim) catch {};
-        if (self.italic) list.append(ansi.italic) catch {};
-        if (self.underline) list.append(ansi.underline) catch {};
-        if (self.blink) list.append(ansi.blink) catch {};
-        if (self.reverse) list.append(ansi.reverse) catch {};
-        if (self.hidden) list.append(ansi.hidden) catch {};
-        if (self.strikethrough) list.append(ansi.strikethrough) catch {};
+        if (self.bold) list.append(std.heap.page_allocator, ansi.bold) catch {};
+        if (self.dim) list.append(std.heap.page_allocator, ansi.dim) catch {};
+        if (self.italic) list.append(std.heap.page_allocator, ansi.italic) catch {};
+        if (self.underline) list.append(std.heap.page_allocator, ansi.underline) catch {};
+        if (self.blink) list.append(std.heap.page_allocator, ansi.blink) catch {};
+        if (self.reverse) list.append(std.heap.page_allocator, ansi.reverse) catch {};
+        if (self.hidden) list.append(std.heap.page_allocator, ansi.hidden) catch {};
+        if (self.strikethrough) list.append(std.heap.page_allocator, ansi.strikethrough) catch {};
 
         if (list.items.len == 0) return "";
 
@@ -179,12 +227,12 @@ pub const TextSegment = struct {
 
     /// Render this segment to a string
     pub fn render(self: TextSegment, allocator: std.mem.Allocator) ![]const u8 {
-        var result = std.ArrayList(u8).init(allocator);
-        errdefer result.deinit();
+        var result = std.ArrayList(u8).empty;
+        errdefer result.deinit(allocator);
 
         // Apply foreground color
         if (self.fg) |c| {
-            try result.appendSlice(switch (c) {
+            try result.appendSlice(allocator, switch (c) {
                 .black => ansi.black,
                 .red => ansi.red,
                 .green => ansi.green,
@@ -206,7 +254,7 @@ pub const TextSegment = struct {
 
         // Apply background color
         if (self.bg) |c| {
-            try result.appendSlice(switch (c) {
+            try result.appendSlice(allocator, switch (c) {
                 .black => ansi.bg_black,
                 .red => ansi.bg_red,
                 .green => ansi.bg_green,
@@ -227,22 +275,22 @@ pub const TextSegment = struct {
         }
 
         // Apply styles
-        if (self.style.bold) try result.appendSlice(ansi.bold);
-        if (self.style.dim) try result.appendSlice(ansi.dim);
-        if (self.style.italic) try result.appendSlice(ansi.italic);
-        if (self.style.underline) try result.appendSlice(ansi.underline);
-        if (self.style.blink) try result.appendSlice(ansi.blink);
-        if (self.style.reverse) try result.appendSlice(ansi.reverse);
-        if (self.style.hidden) try result.appendSlice(ansi.hidden);
-        if (self.style.strikethrough) try result.appendSlice(ansi.strikethrough);
+        if (self.style.bold) try result.appendSlice(allocator, ansi.bold);
+        if (self.style.dim) try result.appendSlice(allocator, ansi.dim);
+        if (self.style.italic) try result.appendSlice(allocator, ansi.italic);
+        if (self.style.underline) try result.appendSlice(allocator, ansi.underline);
+        if (self.style.blink) try result.appendSlice(allocator, ansi.blink);
+        if (self.style.reverse) try result.appendSlice(allocator, ansi.reverse);
+        if (self.style.hidden) try result.appendSlice(allocator, ansi.hidden);
+        if (self.style.strikethrough) try result.appendSlice(allocator, ansi.strikethrough);
 
         // Add text
-        try result.appendSlice(self.text);
+        try result.appendSlice(allocator, self.text);
 
         // Reset
-        try result.appendSlice(ansi.reset);
+        try result.appendSlice(allocator, ansi.reset);
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(allocator);
     }
 };
 
@@ -254,107 +302,107 @@ pub const RichText = struct {
     /// Initialize a new RichText builder
     pub fn init(allocator: std.mem.Allocator) RichText {
         return .{
-            .segments = std.ArrayList(TextSegment).init(allocator),
+            .segments = std.ArrayList(TextSegment).empty,
             .allocator = allocator,
         };
     }
 
     /// Add plain text (no styling)
     pub fn text(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt });
+        try self.segments.append(self.allocator, .{ .text = txt });
         return self;
     }
 
     /// Add styled text segment
     pub fn add(self: *RichText, segment: TextSegment) !*RichText {
-        try self.segments.append(segment);
+        try self.segments.append(self.allocator, segment);
         return self;
     }
 
     /// Add text with foreground color
-    pub fn fg(self: *RichText, txt: []const u8, color: Color) !*RichText {
-        try self.segments.append(.{ .text = txt, .fg = color });
+    pub fn fg(self: *RichText, txt: []const u8, col: Color) !*RichText {
+        try self.segments.append(self.allocator, .{ .text = txt, .fg = col });
         return self;
     }
 
     /// Add text with background color
-    pub fn bg(self: *RichText, txt: []const u8, color: BgColor) !*RichText {
-        try self.segments.append(.{ .text = txt, .bg = color });
+    pub fn bg(self: *RichText, txt: []const u8, col: BgColor) !*RichText {
+        try self.segments.append(self.allocator, .{ .text = txt, .bg = col });
         return self;
     }
 
     /// Add text with both foreground and background
     pub fn color(self: *RichText, txt: []const u8, foreground: Color, background: BgColor) !*RichText {
-        try self.segments.append(.{ .text = txt, .fg = foreground, .bg = background });
+        try self.segments.append(self.allocator, .{ .text = txt, .fg = foreground, .bg = background });
         return self;
     }
 
     /// Add bold text
     pub fn bold(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .style = .{ .bold = true } });
+        try self.segments.append(self.allocator, .{ .text = txt, .style = .{ .bold = true } });
         return self;
     }
 
     /// Add italic text
     pub fn italic(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .style = .{ .italic = true } });
+        try self.segments.append(self.allocator, .{ .text = txt, .style = .{ .italic = true } });
         return self;
     }
 
     /// Add underlined text
     pub fn underline(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .style = .{ .underline = true } });
+        try self.segments.append(self.allocator, .{ .text = txt, .style = .{ .underline = true } });
         return self;
     }
 
     /// Add error styled text (red)
-    pub fn error(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .fg = .red, .style = .{ .bold = true } });
+    pub fn err(self: *RichText, txt: []const u8) !*RichText {
+        try self.segments.append(self.allocator, .{ .text = txt, .fg = .red, .style = .{ .bold = true } });
         return self;
     }
 
     /// Add success styled text (green)
     pub fn success(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .fg = .green });
+        try self.segments.append(self.allocator, .{ .text = txt, .fg = .green });
         return self;
     }
 
     /// Add warning styled text (yellow)
     pub fn warning(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .fg = .yellow });
+        try self.segments.append(self.allocator, .{ .text = txt, .fg = .yellow });
         return self;
     }
 
     /// Add info styled text (cyan)
     pub fn info(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .fg = .cyan });
+        try self.segments.append(self.allocator, .{ .text = txt, .fg = .cyan });
         return self;
     }
 
     /// Add highlighted text (magenta, bold)
     pub fn highlight(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .fg = .magenta, .style = .{ .bold = true } });
+        try self.segments.append(self.allocator, .{ .text = txt, .fg = .magenta, .style = .{ .bold = true } });
         return self;
     }
 
     /// Add dimmed text
     pub fn dim(self: *RichText, txt: []const u8) !*RichText {
-        try self.segments.append(.{ .text = txt, .style = .{ .dim = true } });
+        try self.segments.append(self.allocator, .{ .text = txt, .style = .{ .dim = true } });
         return self;
     }
 
     /// Build and render the rich text
     pub fn render(self: *RichText) ![]const u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
-        errdefer result.deinit();
+        var result = std.ArrayList(u8).empty;
+        errdefer result.deinit(self.allocator);
 
         for (self.segments.items) |segment| {
             const rendered = try segment.render(self.allocator);
             defer self.allocator.free(rendered);
-            try result.appendSlice(rendered);
+            try result.appendSlice(self.allocator, rendered);
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     /// Print the rich text to stdout
@@ -372,7 +420,7 @@ pub const RichText = struct {
 
     /// Free the rich text resources
     pub fn deinit(self: *RichText) void {
-        self.segments.deinit();
+        self.segments.deinit(self.allocator);
     }
 };
 
@@ -469,12 +517,6 @@ pub fn printWarning(comptime fmt: []const u8, args: anytype) !void {
     std.debug.print("\n", .{});
 }
 
-/// Print info message (cyan)
-pub fn printInfo(comptime fmt: []const u8, args: anytype) !void {
-    try printfc(.cyan, fmt, args);
-    std.debug.print("\n", .{});
-}
-
 /// Quick print helpers for common colors
 pub const p = struct {
     /// Print in given color
@@ -517,6 +559,98 @@ pub const p = struct {
         std.debug.print("{s}{s}{s}{s}\n", .{ ansi.bright_magenta, ansi.bold, txt, ansi.reset });
     }
 };
+
+/// Print to stdout using RichText builder
+pub fn print(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.text(text) catch return;
+    rt.print() catch {};
+}
+
+/// Print with bold using RichText
+pub fn printBold(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.add(.{ .text = text, .style = .{ .bold = true } }) catch return;
+    rt.print() catch {};
+}
+
+/// Print with dim using RichText
+pub fn printDim(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.add(.{ .text = text, .style = .{ .dim = true } }) catch return;
+    rt.print() catch {};
+}
+
+/// Print error (red) using RichText
+pub fn printErr(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.add(.{ .text = text, .fg = .red }) catch return;
+    rt.print() catch {};
+}
+
+/// Print success (green) using RichText
+pub fn printSucc(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.add(.{ .text = text, .fg = .green }) catch return;
+    rt.print() catch {};
+}
+
+/// Print warning (yellow) using RichText
+pub fn printWarn(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.add(.{ .text = text, .fg = .yellow }) catch return;
+    rt.print() catch {};
+}
+
+/// Print info (cyan) using RichText
+pub fn printInfo(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.add(.{ .text = text, .fg = .cyan }) catch return;
+    rt.print() catch {};
+}
+
+/// Print highlighted (magenta, bold) using RichText
+pub fn printHighlight(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.add(.{ .text = text, .fg = .magenta, .style = .{ .bold = true } }) catch return;
+    rt.print() catch {};
+}
+
+/// Print tool name in brackets [tool_name] using RichText
+pub fn printTool(comptime fmt: []const u8, args: anytype) void {
+    var rt = RichText.init(getGlobalAllocator());
+    defer rt.deinit();
+    const text = std.fmt.allocPrint(getGlobalAllocator(), fmt, args) catch return;
+    defer getGlobalAllocator().free(text);
+    _ = rt.text("[") catch return;
+    _ = rt.text(text) catch return;
+    _ = rt.text("]") catch return;
+    rt.print() catch {};
+}
 
 test "rich text basic" {
     var rt = RichText.init(std.testing.allocator);
