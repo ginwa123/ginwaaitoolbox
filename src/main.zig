@@ -349,7 +349,36 @@ pub fn main() !void {
                 std.debug.print("WORKFLOW RETURNED for session_id={s}\n", .{t.session_id});
             }
             if (std.mem.eql(u8, t.command_type, "get_sessions")) {
-                // todo rework
+                // Get sessions from database
+                std.debug.print("COMMAND: get_sessions\n", .{});
+                
+                // TODO: Query sessions from database and return them
+            }
+            if (std.mem.eql(u8, t.command_type, "create_session")) {
+                // Create a new session
+                std.debug.print("COMMAND: create_session\n", .{});
+                
+                // For now, generate a session ID and return it
+                // In production, this would create a session in the database
+                var session_id_buf: [64]u8 = undefined;
+                const session_id = std.fmt.bufPrint(&session_id_buf, "session_{}", .{std.time.timestamp()}) catch "session_error";
+                
+                // Use a fixed-size buffer for the response
+                var response_buf: [256]u8 = undefined;
+                const response = std.fmt.bufPrint(&response_buf, "{{\"sessionId\":\"{s}\"}}", .{session_id}) catch unreachable;
+                
+                // Send response back to client
+                if (http_server.getGlobalSseManager()) |sse_manager| {
+                    const event = http_server.SseEvent{
+                        .event_type = "session_created",
+                        .data = response,
+                    };
+                    sse_manager.sendEvent(session_id, event) catch |err| {
+                        std.debug.print("Failed to send session_created response: {s}\n", .{@errorName(err)});
+                    };
+                }
+                
+                std.debug.print("Created session: {s}\n", .{session_id});
             }
             if (std.mem.eql(u8, t.command_type, "ping")) {
                 // Ping command - check if session is still connected via SSE

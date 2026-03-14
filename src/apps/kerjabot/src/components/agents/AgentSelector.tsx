@@ -11,6 +11,7 @@ interface AgentSelectorProps {
   readonly agents: readonly AgentConfig[];
   readonly selectedAgentId: string | null;
   readonly onSelectAgent: (agentId: string) => void;
+  readonly disabled?: boolean;
 }
 
 export const AgentSelector: Component<AgentSelectorProps> = (props) => {
@@ -31,7 +32,8 @@ export const AgentSelector: Component<AgentSelectorProps> = (props) => {
             <AgentCard
               agent={agent}
               isSelected={props.selectedAgentId === agent.id}
-              onSelect={() => props.onSelectAgent(agent.id)}
+              onSelect={() => !props.disabled && props.onSelectAgent(agent.id)}
+              disabled={props.disabled}
             />
           )}
         </For>

@@ -188,4 +188,14 @@ pub fn build(b: *std.Build) void {
     });
     copy_tui_to_system.step.dependOn(&install_tui_linux_system.step);
     tui_linux_system_step.dependOn(&copy_tui_to_system.step);
+
+    // Kerjabot step: runs frontend dev server only
+    const kerjabot_step = b.step("run:kerjabot", "Run kerjabot frontend only");
+    
+    // Run frontend with pnpm dev
+    const kerjabot_script = b.addSystemCommand(&.{
+        "sh", "-c",
+        "cd src/apps/kerjabot && pnpm dev",
+    });
+    kerjabot_step.dependOn(&kerjabot_script.step);
 }

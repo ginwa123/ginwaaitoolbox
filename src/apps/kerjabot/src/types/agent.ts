@@ -5,8 +5,14 @@
 
 /** Available agent types in the system */
 export enum AgentType {
+  General = 'general',
+  Exploration = 'exploration',
+  Planning = 'planning',
+  Executing = 'executing',
+  Review = 'review',
+  Knowledge = 'knowledge',
+  Compaction = 'compaction',
   Agent = 'Agent',
-  Compaction = 'CompactionAgent',
 }
 
 /** Agent configuration with readonly properties for immutability */

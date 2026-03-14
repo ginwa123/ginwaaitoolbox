@@ -25,7 +25,44 @@ A SolidJS + TypeScript + Tailwind CSS web application for AI agent orchestration
 ### Prerequisites
 
 - Node.js 18+
-- npm or yarn
+- Zig 0.15+ (for backend)
+- npm or pnpm
+
+### Running the Full Stack Application
+
+The kerjabot web app connects to the Zig backend (nalarcore) which provides the HTTP API and LLM agent workflow.
+
+**Option 1: Run both backend and frontend separately**
+
+1. Start the backend (Zig):
+   ```bash
+   # From project root
+   zig build run
+   ```
+   The backend will start on http://127.0.0.1:8080
+
+2. Start the frontend (Vite dev server):
+   ```bash
+   # From project root
+   cd src/apps/kerjabot
+   pnpm dev
+   ```
+   The frontend will start on http://localhost:3000
+
+**Option 2: Use Vite proxy (recommended for development)**
+
+The Vite dev server is configured with a proxy to forward `/api` requests to the backend:
+
+```bash
+# Terminal 1: Start backend
+zig build run
+
+# Terminal 2: Start frontend
+cd src/apps/kerjabot
+pnpm dev
+```
+
+Then open http://localhost:3000 - API requests will be proxied to the backend.
 
 ### Installation
 
@@ -34,13 +71,13 @@ A SolidJS + TypeScript + Tailwind CSS web application for AI agent orchestration
 cd src/apps/kerjabot
 
 # Install dependencies
-npm install
+pnpm install
 
 # Start development server
-npm run dev
+pnpm dev
 ```
 
-The app will be available at `http://localhost:5173`
+The app will be available at `http://localhost:3000`
 
 ### Build for Production
 

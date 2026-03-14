@@ -1,6 +1,6 @@
 /**
- * Session store using SolidJS signals
- * Manages session state with reactive updates
+ * Session store with backend integration
+ * Manages session state with reactive updates and persists to backend
  */
 
 import { createSignal, createMemo, batch } from 'solid-js';
@@ -11,13 +11,16 @@ import type {
   UpdateSessionParams,
   SessionFilter,
   SessionSort,
+  AgentType,
 } from '~/types';
 import {
-  createSession,
-  updateSession,
+  createSession as createSessionType,
+  updateSession as updateSessionType,
   SessionSortBy,
   SortDirection,
+  SessionStatus,
 } from '~/types';
+import { chatService } from '~/services/chatService';
 
 // Store state
 const [sessions, setSessions] = createSignal<Session[]>([], { equals: false });
@@ -27,6 +30,8 @@ const [sort, setSort] = createSignal<SessionSort>({
   by: SessionSortBy.UpdatedAt,
   direction: SortDirection.Desc,
 });
+const [isLoading, setIsLoading] = createSignal(false);
+const [backendConnected, setBackendConnected] = createSignal(false);
 
 // Derived state
 const filteredSessions = createMemo(() => {
@@ -106,18 +111,83 @@ const activeSession = createMemo(() => {
 });
 
 // Actions
-const addSession = (params: CreateSessionParams): Session => {
-  const newSession = createSession(params);
+const loadSessionsFromBackend = async (): Promise<void> => {
+  setIsLoading(true);
+  try {
+    const result = await chatService.getSessions();
+    if (result.sessions && Array.isArray(result.sessions)) {
+      // Convert backend sessions to frontend format
+      const backendSessions: Session[] = result.sessions.map((s: any) => ({
+        id: s.session_id || s.id,
+        name: s.name || `Session ${(s.session_id || s.id).slice(0, 8)}`,
+        status: mapBackendStatus(s.status),
+        agentType: (s.agent_type || 'general') as AgentType,
+        messageCount: s.message_count || 0,
+        tokenCount: s.token_count || 0,
+        createdAt: s.created_at ? new Date(s.created_at) : new Date(),
+        updatedAt: s.updated_at ? new Date(s.updated_at) : new Date(),
+        metadata: {
+          description: s.preview,
+          tags: s.tags || [],
+        },
+      }));
+      setSessions(backendSessions);
+      setBackendConnected(true);
+    }
+  } catch (error) {
+    console.error('Failed to load sessions from backend:', error);
+    setBackendConnected(false);
+  } finally {
+    setIsLoading(false);
+  }
+};
+
+const mapBackendStatus = (status?: string): SessionStatus => {
+  switch (status) {
+    case 'active':
+      return SessionStatus.Active;
+    case 'idle':
+      return SessionStatus.Idle;
+    case 'error':
+      return SessionStatus.Error;
+    default:
+      return SessionStatus.Idle;
+  }
+};
+
+const addSession = async (params?: Partial<CreateSessionParams>): Promise<Session> => {
+  const agentType = params?.agentType || 'general';
+  
+  // Try to create session on backend first
+  let sessionId: string;
+  try {
+    const result = await chatService.createSession(agentType);
+    sessionId = result.sessionId;
+  } catch (error) {
+    // Fallback to local session ID if backend is not available
+    console.warn('Backend not available, using local session');
+    sessionId = `local_${Date.now()}`;
+  }
+
+  const newSession = createSessionType({
+    id: sessionId,
+    name: params?.name || `New Session`,
+    agentType: (agentType as AgentType) || 'general',
+    metadata: params?.metadata,
+  });
+
   batch(() => {
     setSessions((prev) => [newSession, ...prev]);
     setActiveSessionId(newSession.id);
+    setBackendConnected(true);
   });
+
   return newSession;
 };
 
 const updateSessionById = (id: string, params: UpdateSessionParams): void => {
   setSessions((prev) =>
-    prev.map((s) => (s.id === id ? updateSession(s, params) : s))
+    prev.map((s) => (s.id === id ? updateSessionType(s, params) : s))
   );
 };
 
@@ -153,6 +223,12 @@ const updateTokenCount = (id: string, tokens: number): void => {
   );
 };
 
+const checkBackendConnection = async (): Promise<boolean> => {
+  const connected = await chatService.checkBackend();
+  setBackendConnected(connected);
+  return connected;
+};
+
 // Export store API
 export const sessionStore = {
   // State
@@ -164,6 +240,12 @@ export const sessionStore = {
   filteredSessions,
   sortedSessions,
   sessionSummaries,
+  isLoading,
+  backendConnected,
+
+  // Derived
+  loadSessionsFromBackend,
+  checkBackendConnection,
 
   // Actions
   setFilter,

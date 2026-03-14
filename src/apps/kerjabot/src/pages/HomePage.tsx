@@ -12,22 +12,30 @@ import { sessionStore } from '~/store/sessionStore';
 export const HomePage: Component = () => {
   const navigate = useNavigate();
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null);
+  const [isCreating, setIsCreating] = createSignal(false);
   const agents = getAllAgents();
 
-  const handleSelectAgent = (agentId: string) => {
+  const handleSelectAgent = async (agentId: string) => {
     setSelectedAgentId(agentId);
+    setIsCreating(true);
     
     // Create a new session with the selected agent
     const agent = getAgentById(agentId);
     if (agent) {
-      const session = sessionStore.addSession({
-        name: `Chat with ${agent.name}`,
-        agentType: agent.type,
-        description: `New session with ${agent.name}`,
-      });
-      
-      // Navigate to the chat page
-      navigate(`/chat/${session.id}`);
+      try {
+        const session = await sessionStore.addSession({
+          name: `Chat with ${agent.name}`,
+          agentType: agent.type,
+          description: `New session with ${agent.name}`,
+        });
+        
+        // Navigate to the chat page
+        navigate(`/chat/${session.id}`);
+      } catch (error) {
+        console.error('Failed to create session:', error);
+      } finally {
+        setIsCreating(false);
+      }
     }
   };
 
@@ -47,6 +55,7 @@ export const HomePage: Component = () => {
         agents={agents}
         selectedAgentId={selectedAgentId()}
         onSelectAgent={handleSelectAgent}
+        disabled={isCreating()}
       />
 
       <div class="mt-12 text-center text-sm text-gray-500 dark:text-gray-400">

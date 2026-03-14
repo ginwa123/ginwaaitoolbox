@@ -4,6 +4,7 @@
 
 import type { Component } from 'solid-js';
 import { For, Show } from 'solid-js';
+import { useNavigate } from '@solidjs/router';
 import { Plus, MessageSquare, Settings, Bot } from 'lucide-solid';
 import type { SessionSummary } from '~/types';
 import { SessionStatus, AgentType } from '~/types';
@@ -13,12 +14,14 @@ interface SidebarProps {
   readonly sessions: readonly SessionSummary[];
   readonly activeSessionId: string | null;
   readonly currentAgent: AgentType | null;
-  readonly onSelectSession: (id: string) => void;
-  readonly onNewSession: () => void;
-  readonly onOpenSettings: () => void;
+  readonly onSelectSession?: (id: string) => void;
+  readonly onNewSession?: () => void;
+  readonly onOpenSettings?: () => void;
+  readonly backendConnected?: boolean;
 }
 
 export const Sidebar: Component<SidebarProps> = (props) => {
+  const navigate = useNavigate();
   const getAgentColor = (agentType: AgentType): string => {
     const colors: Record<AgentType, string> = {
       [AgentType.General]: 'bg-blue-500',
@@ -28,6 +31,7 @@ export const Sidebar: Component<SidebarProps> = (props) => {
       [AgentType.Review]: 'bg-rose-500',
       [AgentType.Knowledge]: 'bg-cyan-500',
       [AgentType.Compaction]: 'bg-indigo-500',
+      [AgentType.Agent]: 'bg-gray-500',
     };
     return colors[agentType] ?? 'bg-gray-500';
   };
@@ -57,7 +61,13 @@ export const Sidebar: Component<SidebarProps> = (props) => {
           </div>
           <div>
             <h1 class="font-semibold text-gray-900 dark:text-white">Kerjabot</h1>
-            <p class="text-xs text-gray-500 dark:text-gray-400">AI Agent Orchestrator</p>
+            <div class="flex items-center gap-2">
+              <p class="text-xs text-gray-500 dark:text-gray-400">AI Agent Orchestrator</p>
+              <Show when={props.backendConnected !== undefined}>
+                <span class={`w-2 h-2 rounded-full ${props.backendConnected ? 'bg-green-500' : 'bg-red-500'}`} 
+                      title={props.backendConnected ? 'Backend connected' : 'Backend disconnected'} />
+              </Show>
+            </div>
           </div>
         </div>
       </div>
@@ -65,7 +75,13 @@ export const Sidebar: Component<SidebarProps> = (props) => {
       {/* New session button */}
       <div class="p-4">
         <button
-          onClick={props.onNewSession}
+          onClick={() => {
+            if (props.onNewSession) {
+              props.onNewSession();
+            } else {
+              navigate('/');
+            }
+          }}
           class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-medium"
         >
           <Plus class="w-4 h-4" />
@@ -81,7 +97,13 @@ export const Sidebar: Component<SidebarProps> = (props) => {
         <For each={props.sessions}>
           {(session) => (
             <button
-              onClick={() => props.onSelectSession(session.id)}
+              onClick={() => {
+                if (props.onSelectSession) {
+                  props.onSelectSession(session.id);
+                } else {
+                  navigate(`/chat/${session.id}`);
+                }
+              }}
               class={`w-full text-left p-3 rounded-lg mb-1 transition-colors ${
                 props.activeSessionId === session.id
                   ? 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800'

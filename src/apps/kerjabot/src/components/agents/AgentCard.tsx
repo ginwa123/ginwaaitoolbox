@@ -12,6 +12,7 @@ interface AgentCardProps {
   readonly agent: AgentConfig;
   readonly isSelected: boolean;
   readonly onSelect: () => void;
+  readonly disabled?: boolean;
 }
 
 export const AgentCard: Component<AgentCardProps> = (props) => {
@@ -60,8 +61,11 @@ export const AgentCard: Component<AgentCardProps> = (props) => {
   return (
     <button
       onClick={props.onSelect}
+      disabled={props.disabled}
       class={`relative p-5 rounded-xl border-2 text-left transition-all duration-200 ${
-        props.isSelected
+        props.disabled
+          ? 'opacity-50 cursor-not-allowed'
+          : props.isSelected
           ? `border-blue-500 bg-blue-50 dark:bg-blue-900/20 shadow-lg shadow-blue-500/20`
           : `border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md`
       }`}

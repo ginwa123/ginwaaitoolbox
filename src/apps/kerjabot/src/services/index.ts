@@ -15,6 +15,16 @@ export {
   getAgentStatusText,
 } from './agentService';
 
-export { chatService, streamMessage, executeTool, sendMessage, cancelStream } from './chatService';
+export { 
+  chatService, 
+  streamMessage, 
+  executeTool, 
+  sendMessage, 
+  cancelStream,
+  createSession,
+  getSessions,
+  checkBackend,
+  pingSession,
+} from './chatService';
 
 export type { AgentConfig, AgentType, AgentCapability } from '~/types';

@@ -180,6 +180,7 @@ export const getAgentColorClass = (agentType: AgentType): string => {
     [AgentType.Review]: 'bg-agent-review',
     [AgentType.Knowledge]: 'bg-agent-knowledge',
     [AgentType.Compaction]: 'bg-agent-compaction',
+    [AgentType.Agent]: 'bg-gray-500',
   };
   return colorMap[agentType] ?? 'bg-gray-500';
 };

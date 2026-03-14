@@ -3,20 +3,21 @@
  */
 
 import type { Component } from 'solid-js';
-import { Router, useNavigate, useLocation } from '@solidjs/router';
+import { onMount } from 'solid-js';
+import { Router, Route } from '@solidjs/router';
 import { AppLayout, Sidebar, Header } from '~/components/layout';
 import { sessionStore } from '~/store/sessionStore';
 import { getAgentByType } from '~/services';
-import { routes } from './routes';
+import { HomePage } from './pages/HomePage';
+import { ChatPage } from './pages/ChatPage';
+import { SettingsPage } from './pages/SettingsPage';
 
 // Wrapper component that provides the layout with navigation
-const LayoutWrapper: Component = () => {
-  const navigate = useNavigate();
-  const location = useLocation();
-
+const LayoutWrapper: Component<{ children?: any }> = (props) => {
   const activeSession = () => sessionStore.activeSession();
   const sessionSummaries = () => sessionStore.sessionSummaries();
   const activeSessionId = () => sessionStore.activeSessionId();
+  const backendConnected = () => sessionStore.backendConnected();
 
   const currentAgent = () => {
     const session = activeSession();
@@ -24,39 +25,20 @@ const LayoutWrapper: Component = () => {
     return getAgentByType(session.agentType);
   };
 
-  const handleNewSession = () => {
-    navigate('/');
-  };
+  // Check backend connection on mount and load sessions
+  onMount(async () => {
+    await sessionStore.checkBackendConnection();
+    if (sessionStore.backendConnected()) {
+      await sessionStore.loadSessionsFromBackend();
+    }
+  });
 
-  const handleSelectSession = (id: string) => {
-    navigate(`/chat/${id}`);
+  const handleSelectSession = (_id: string) => {
+    // Navigation handled by Route component
   };
 
   const handleOpenSettings = () => {
-    navigate('/settings');
-  };
-
-  // Get the current route component to render
-  const CurrentRoute = () => {
-    const path = location.pathname;
-    
-    // Find matching route
-    for (const route of routes) {
-      if (route.path === path) {
-        const RouteComponent = route.component as Component;
-        return <RouteComponent />;
-      }
-      // Handle dynamic routes like /chat/:id
-      if (route.path.includes(':')) {
-        const routePattern = route.path.replace(/:\w+/g, '[^/]+');
-        const regex = new RegExp(`^${routePattern}$`);
-        if (regex.test(path)) {
-          const RouteComponent = route.component as Component;
-          return <RouteComponent />;
-        }
-      }
-    }
-    return null;
+    // Navigation handled by Route component
   };
 
   return (
@@ -67,8 +49,9 @@ const LayoutWrapper: Component = () => {
           activeSessionId={activeSessionId()}
           currentAgent={activeSession()?.agentType || null}
           onSelectSession={handleSelectSession}
-          onNewSession={handleNewSession}
+          onNewSession={() => {}}
           onOpenSettings={handleOpenSettings}
+          backendConnected={backendConnected()}
         />
       }
       header={
@@ -81,7 +64,7 @@ const LayoutWrapper: Component = () => {
         />
       }
     >
-      <CurrentRoute />
+      {props.children}
     </AppLayout>
   );
 };
@@ -89,8 +72,12 @@ const LayoutWrapper: Component = () => {
 export const App: Component = () => {
   return (
     <div class="h-screen w-full bg-gray-50 dark:bg-gray-900">
-      <Router>
-        <LayoutWrapper />
+      <Router
+        root={LayoutWrapper}
+      >
+        <Route path="/" component={HomePage} />
+        <Route path="/chat/:id" component={ChatPage} />
+        <Route path="/settings" component={SettingsPage} />
       </Router>
     </div>
   );

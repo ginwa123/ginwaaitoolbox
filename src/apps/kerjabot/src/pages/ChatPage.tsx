@@ -3,13 +3,13 @@
  */
 
 import type { Component } from 'solid-js';
-import { Show, createEffect } from 'solid-js';
+import { Show, createEffect, onCleanup } from 'solid-js';
 import { useParams, useNavigate } from '@solidjs/router';
 import { ConversationView } from '~/components/messages';
 import { MessageInput } from '~/components/input';
 import { sessionStore } from '~/store/sessionStore';
 import { messageStore } from '~/store/messageStore';
-import { getAgentByType, streamMessage } from '~/services';
+import { getAgentByType, chatService } from '~/services';
 
 export const ChatPage: Component = () => {
   const params = useParams();
@@ -59,15 +59,26 @@ export const ChatPage: Component = () => {
     // Start assistant message
     messageStore.startAssistantMessage(id);
 
-    // Stream response
-    await streamMessage(
+    // Stream response from backend
+    await chatService.streamMessage(
+      id,
       content,
       (chunk) => {
         messageStore.appendToStreamingMessage(chunk);
       },
-      { delay: 30, includeToolCalls: true }
+      {}
     );
   };
+
+  // Cleanup on unmount
+  createEffect(() => {
+    const id = sessionId();
+    onCleanup(() => {
+      if (id) {
+        chatService.cancelStream(id);
+      }
+    });
+  });
 
   return (
     <Show

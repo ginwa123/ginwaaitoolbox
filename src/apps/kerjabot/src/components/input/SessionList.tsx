@@ -26,6 +26,7 @@ export const SessionList: Component<SessionListProps> = (props) => {
       [AgentType.Review]: 'bg-rose-500',
       [AgentType.Knowledge]: 'bg-cyan-500',
       [AgentType.Compaction]: 'bg-indigo-500',
+      [AgentType.Agent]: 'bg-gray-500',
     };
     return colors[agentType] ?? 'bg-gray-500';
   };

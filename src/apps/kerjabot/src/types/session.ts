@@ -8,6 +8,7 @@ import type { AgentType } from './agent';
 /** Session status enumeration */
 export enum SessionStatus {
   Active = 'active',
+  Idle = 'idle',
   Paused = 'paused',
   Completed = 'completed',
   Error = 'error',
@@ -36,10 +37,12 @@ export interface SessionMetadata {
 
 /** Session creation parameters */
 export interface CreateSessionParams {
+  readonly id?: string;
   readonly name: string;
   readonly agentType: AgentType;
   readonly description?: string;
   readonly tags?: readonly string[];
+  readonly metadata?: SessionMetadata;
 }
 
 /** Session update parameters */
