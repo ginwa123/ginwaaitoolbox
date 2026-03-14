@@ -24,6 +24,10 @@ const App = struct {
     allocator: std.mem.Allocator,
     // Store input history
     history: std.ArrayList([]const u8),
+    // Scroll offset for history view (to handle long histories)
+    history_scroll: usize = 0,
+    // Number of visible lines in history box (set on first render)
+    history_visible_lines: usize = 10,
 
     const Self = @This();
 
@@ -65,6 +69,11 @@ const App = struct {
                                     const history_entry = try self.allocator.dupe(u8, input_text);
                                     try self.history.append(self.allocator, history_entry);
                                     self.input_component.clear();
+                                    // Reset scroll to show newest items
+                                    self.history_scroll = if (self.history.items.len > self.history_visible_lines)
+                                        self.history.items.len - self.history_visible_lines
+                                    else
+                                        0;
                                 }
                             } else if (key == 127 or key == 8) {
                                 // Backspace key (127 = Delete, 8 = Backspace)
@@ -79,9 +88,49 @@ const App = struct {
             },
             .key_seq => |seq| {
                 if (std.mem.eql(u8, seq, "\x1b[A")) { // Up
-                    self.counter += 1;
+                    // If history has content, scroll up (show older messages)
+                    if (self.history.items.len > 0 and self.history_scroll > 0) {
+                        self.history_scroll -= 1;
+                    }
                 } else if (std.mem.eql(u8, seq, "\x1b[B")) { // Down
-                    if (self.counter > 0) self.counter -= 1;
+                    // If history has content, scroll down (show newer messages)
+                    const max_scroll = if (self.history.items.len > self.history_visible_lines)
+                        self.history.items.len - self.history_visible_lines
+                    else
+                        0;
+                    if (self.history_scroll < max_scroll) {
+                        self.history_scroll += 1;
+                    }
+                } else if (std.mem.eql(u8, seq, "\x1b[5~")) { // PageUp
+                    // Scroll up by page
+                    if (self.history.items.len > 0) {
+                        if (self.history_scroll >= self.history_visible_lines) {
+                            self.history_scroll -= self.history_visible_lines;
+                        } else {
+                            self.history_scroll = 0;
+                        }
+                    }
+                } else if (std.mem.eql(u8, seq, "\x1b[6~")) { // PageDown
+                    // Scroll down by page
+                    const max_scroll = if (self.history.items.len > self.history_visible_lines)
+                        self.history.items.len - self.history_visible_lines
+                    else
+                        0;
+                    if (self.history_scroll < max_scroll) {
+                        self.history_scroll += self.history_visible_lines;
+                        if (self.history_scroll > max_scroll) {
+                            self.history_scroll = max_scroll;
+                        }
+                    }
+                } else if (std.mem.eql(u8, seq, "\x1b[H")) { // Home
+                    // Scroll to beginning
+                    self.history_scroll = 0;
+                } else if (std.mem.eql(u8, seq, "\x1b[F")) { // End
+                    // Scroll to end (most recent)
+                    self.history_scroll = if (self.history.items.len > self.history_visible_lines)
+                        self.history.items.len - self.history_visible_lines
+                    else
+                        0;
                 }
             },
             else => {},
@@ -93,17 +142,41 @@ const App = struct {
         var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(allocator);
 
-        // Build history content from stored history
+        // Build history content from stored history (with scrolling support)
         var history_lines = std.ArrayList(u8).empty;
         errdefer history_lines.deinit(allocator);
 
         if (self.history.items.len > 0) {
-            for (self.history.items, 0..) |entry, i| {
+            // Calculate the range of visible history items based on scroll position
+            const total_items = self.history.items.len;
+            const start_idx = self.history_scroll;
+            const end_idx = @min(start_idx + self.history_visible_lines, total_items);
+
+            // Clamp start_idx to valid range
+            const safe_start = @min(start_idx, total_items);
+
+            for (self.history.items[safe_start..end_idx], safe_start..) |entry, i| {
                 try history_lines.appendSlice(allocator, "> ");
                 try history_lines.appendSlice(allocator, entry);
-                if (i < self.history.items.len - 1) {
+                if (i < total_items - 1) {
                     try history_lines.append(allocator, '\n');
                 }
+            }
+
+            // Track if there are more items above or below
+            const has_more_above = safe_start > 0;
+            const has_more_below = end_idx < total_items;
+
+            // Add scroll indicator if needed
+            if (has_more_above or has_more_below) {
+                try history_lines.appendSlice(allocator, "\n--- ");
+                if (has_more_above) {
+                    try history_lines.appendSlice(allocator, "(+older) ");
+                }
+                if (has_more_below) {
+                    try history_lines.appendSlice(allocator, "(+newer)");
+                }
+                try history_lines.appendSlice(allocator, " ---");
             }
         } else {
             try history_lines.appendSlice(allocator, "History is empty. Type something and press Enter!");
@@ -186,8 +259,41 @@ const App = struct {
     };
 
     fn initWrapper(ptr: *anyopaque, allocator: std.mem.Allocator) anyerror!void {
-        _ = ptr;
         _ = allocator;
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        // Get terminal size to set appropriate visible lines
+        const term_size = getTerminalSize();
+        // Subtract some lines for other UI elements (title, input box, status bar)
+        self.history_visible_lines = if (term_size.rows > 10) term_size.rows - 10 else 10;
+    }
+
+    /// Get terminal size, returns default 80x24 if unavailable
+    fn getTerminalSize() struct { rows: u16, cols: u16 } {
+        // Try TIOCGWINSZ via direct syscall - try stdout first, then stderr, then stdin
+        const fds = [_]u32{ std.posix.STDOUT_FILENO, std.posix.STDERR_FILENO, std.posix.STDIN_FILENO };
+        for (fds) |fd| {
+            var ws: extern struct { ws_row: u16, ws_col: u16, ws_xpixel: u16, ws_ypixel: u16 } = undefined;
+            const rc = std.os.linux.syscall3(
+                std.os.linux.SYS.ioctl,
+                @as(u64, fd),
+                @as(u64, 0x5413), // TIOCGWINSZ
+                @intFromPtr(&ws),
+            );
+            // Check for success (rc == 0) or -1 (errno) - also check ws values are non-zero
+            if (rc >= 0 and ws.ws_col > 0 and ws.ws_row > 0) {
+                return .{ .rows = ws.ws_row, .cols = ws.ws_col };
+            }
+        }
+        // Fallback to environment
+        if (std.posix.getenv("LINES")) |lines| {
+            if (std.posix.getenv("COLUMNS")) |columns| {
+                const rows = std.fmt.parseInt(u16, lines, 10) catch 24;
+                const cols = std.fmt.parseInt(u16, columns, 10) catch 80;
+                return .{ .rows = rows, .cols = cols };
+            }
+        }
+        // Final fallback
+        return .{ .rows = 24, .cols = 80 };
     }
 
     fn deinitWrapper(ptr: *anyopaque) void {

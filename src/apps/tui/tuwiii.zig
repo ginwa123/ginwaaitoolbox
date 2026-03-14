@@ -359,6 +359,8 @@ const Terminal = struct {
     allocator: std.mem.Allocator,
     original_termios: if (@import("builtin").os.tag == .linux or @import("builtin").os.tag == .macos) termios.termios else void,
     options: TermOptions,
+    // Buffer for reading key sequences (reused to avoid allocations)
+    key_seq_buf: [32]u8 = undefined,
 
     fn init(allocator: std.mem.Allocator, options: TermOptions) !Terminal {
         var self: Terminal = .{
@@ -411,7 +413,7 @@ const Terminal = struct {
     fn render(self: *Terminal, content: []const u8) !void {
         _ = self;
         const stdout = std.fs.File.stdout();
-        // Clear screen then position cursor at top
+        // Clear screen and position cursor at top
         _ = try stdout.write("\x1b[2J\x1b[H");
         _ = try stdout.write(content);
     }
@@ -468,7 +470,6 @@ const Terminal = struct {
     }
 
     fn readEvent(self: *Terminal, timeout_ms: u64) !?Msg {
-        _ = self;
         const stdin = std.fs.File.stdin();
 
         var poll_fd = [1]std.posix.pollfd{.{
@@ -481,15 +482,34 @@ const Terminal = struct {
         if (poll_result == 0) return null;
 
         if (poll_fd[0].revents & std.posix.POLL.IN != 0) {
-            var buf: [10]u8 = undefined;
-            const n = try stdin.read(&buf);
-
-            if (n == 1) {
-                return .{ .key = buf[0] };
+            var n: usize = 0;
+            
+            // Read first byte(s)
+            const first_read = try stdin.read(self.key_seq_buf[n..1]);
+            if (first_read == 0) return null;
+            n += first_read;
+            
+            // If it's an escape sequence start, read more
+            if (self.key_seq_buf[0] == 0x1b and n < self.key_seq_buf.len) {
+                // Small delay to allow more bytes to arrive
+                std.Thread.sleep(5 * 1000 * 1000); // 5ms
+                const more_read = try stdin.read(self.key_seq_buf[n..self.key_seq_buf.len]);
+                n += more_read;
             }
 
-            if (n >= 2 and buf[0] == 0x1b and buf[1] == '[') {
-                return .{ .key_seq = buf[0..n] };
+            if (n == 1) {
+                return .{ .key = self.key_seq_buf[0] };
+            }
+
+            // Check for escape sequence (starts with ESC[)
+            if (n >= 3 and self.key_seq_buf[0] == 0x1b and self.key_seq_buf[1] == '[') {
+                // Return a slice of the buffer (caller should copy if needed)
+                return .{ .key_seq = self.key_seq_buf[0..n] };
+            }
+            
+            // Single ESC key (no sequence)
+            if (n >= 1 and self.key_seq_buf[0] == 0x1b and n < 3) {
+                return .{ .key = self.key_seq_buf[0] };
             }
         }
 
