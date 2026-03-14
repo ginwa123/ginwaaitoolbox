@@ -419,16 +419,16 @@ fn sendPingCommand(app: *App) !bool {
 
 fn printFormattedResponse(content: []const u8) void {
     const agent_name = extractTag(content, "agent") orelse "assistant";
-    std.debug.print("{s}━━ {s} ━━{s}\n", .{ cyan, agent_name, reset });
+    tui_text.print("{s}━━ {s} ━━{s}\n", .{ cyan, agent_name, reset });
     if (extractTag(content, "markdown")) |md| {
         const trimmed = trim(md);
         if (trimmed.len > 0) {
-            std.debug.print("\n{s}{s}{s}\n", .{ bold, trimmed, reset });
+            tui_text.print("\n{s}{s}{s}\n", .{ bold, trimmed, reset });
         } else {
-            std.debug.print("\n{s}{s}{s}\n", .{ bold, content, reset });
+            tui_text.print("\n{s}{s}{s}\n", .{ bold, content, reset });
         }
     } else {
-        std.debug.print("\n{s}{s}{s}\n", .{ bold, content, reset });
+        tui_text.print("\n{s}{s}{s}\n", .{ bold, content, reset });
     }
 }
 
@@ -471,22 +471,22 @@ fn displayBashResult(result_xml: []const u8, tool_name: []const u8, max_result_l
     const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
     const color = if (is_error) "\x1b[31m" else "";
     if (cmd) |c| {
-        std.debug.print(crlf ++ erase_line ++ "[{s}] $ {s}\n", .{ tool_name, c });
+        tui_text.print(crlf ++ erase_line ++ "[{s}] $ {s}\n", .{ tool_name, c });
     } else {
-        std.debug.print(crlf ++ erase_line ++ "[{s}]\n", .{ tool_name });
+        tui_text.print(crlf ++ erase_line ++ "[{s}]\n", .{ tool_name });
     }
     var lines = std.mem.splitScalar(u8, display, '\n');
     while (lines.next()) |line| {
-        std.debug.print("{s}  {s}{s}\n", .{ color, line, if (is_error) reset else "" });
+        tui_text.print("{s}  {s}{s}\n", .{ color, line, if (is_error) reset else "" });
     }
-    if (truncated) std.debug.print("  {s}[truncated...]{s}\n", .{ cyan, reset });
+    if (truncated) tui_text.print("  {s}[truncated...]{s}\n", .{ cyan, reset });
 }
 
 fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
     _ = max_result_len;
     const results = extractTag(result_xml, "results") orelse "";
     if (std.mem.eql(u8, results, "")) return;
-    std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, tool_name, reset });
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ cyan, tool_name, reset });
     var remaining = results;
     var total_shown: usize = 0;
     while (total_shown < 20) {
@@ -497,11 +497,11 @@ fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_result
         const file = extractTag(match_block, "f") orelse "";
         const line_num = extractTag(match_block, "l") orelse "0";
         const snippet = extractTag(match_block, "s") orelse "";
-        std.debug.print("  {s}:{s}:{s}\n", .{ file, line_num, snippet });
+        tui_text.print("  {s}:{s}:{s}\n", .{ file, line_num, snippet });
         total_shown += 1;
     }
     if (std.mem.indexOf(u8, remaining, "<m>") != null) {
-        std.debug.print("  {s}[more matches...]{s}\n", .{ cyan, reset });
+        tui_text.print("  {s}[more matches...]{s}\n", .{ cyan, reset });
     }
 }
 
@@ -511,16 +511,16 @@ fn displayReadFileResult(result_xml: []const u8, tool_name: []const u8) void {
     const start_line = extractTag(result_xml, "start_line") orelse "0";
     const end_line = extractTag(result_xml, "end_line") orelse "?";
     if (std.mem.eql(u8, content, "")) return;
-    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} lines {s}-{s}/{s}\n", .{ cyan, tool_name, reset, start_line, end_line, total_lines });
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} lines {s}-{s}/{s}\n", .{ cyan, tool_name, reset, start_line, end_line, total_lines });
     const max_lines: usize = 20;
     var lines = std.mem.splitScalar(u8, content, '\n');
     var count: usize = 0;
     while (lines.next()) |line| {
         if (count >= max_lines) {
-            std.debug.print("  {s}[...]{s}\n", .{ cyan, reset });
+            tui_text.print("  {s}[...]{s}\n", .{ cyan, reset });
             break;
         }
-        std.debug.print("  {s}\n", .{line});
+        tui_text.print("  {s}\n", .{line});
         count += 1;
     }
 }
@@ -530,12 +530,12 @@ fn displayWriteFileResult(result_xml: []const u8, tool_name: []const u8) void {
     const bytes_written = extractTag(result_xml, "bytes_written") orelse "0";
     const lines_written = extractTag(result_xml, "lines_written") orelse "0";
     if (std.mem.eql(u8, path, "")) return;
-    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} wrote {s} bytes ({s} lines) → {s}\n", .{ cyan, tool_name, reset, bytes_written, lines_written, path });
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} wrote {s} bytes ({s} lines) → {s}\n", .{ cyan, tool_name, reset, bytes_written, lines_written, path });
     if (extractTag(result_xml, "before")) |before| {
-        if (!std.mem.eql(u8, before, "")) std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, before });
+        if (!std.mem.eql(u8, before, "")) tui_text.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, before });
     }
     if (extractTag(result_xml, "after")) |after| {
-        if (!std.mem.eql(u8, after, "")) std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, after });
+        if (!std.mem.eql(u8, after, "")) tui_text.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, after });
     }
 }
 
@@ -543,12 +543,12 @@ fn displayTextReplaceResult(result_xml: []const u8, tool_name: []const u8) void 
     const path = extractTag(result_xml, "path") orelse "";
     const replaced_at_byte = extractTag(result_xml, "replaced_at_byte") orelse "?";
     if (std.mem.eql(u8, path, "")) return;
-    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{ cyan, tool_name, reset, replaced_at_byte, path });
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{ cyan, tool_name, reset, replaced_at_byte, path });
     if (extractTag(result_xml, "old_str")) |old_str| {
-        if (!std.mem.eql(u8, old_str, "")) std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, old_str });
+        if (!std.mem.eql(u8, old_str, "")) tui_text.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", reset, old_str });
     }
     if (extractTag(result_xml, "new_str")) |new_str| {
-        if (!std.mem.eql(u8, new_str, "")) std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, new_str });
+        if (!std.mem.eql(u8, new_str, "")) tui_text.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", reset, new_str });
     }
 }
 
@@ -621,7 +621,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     _ = try std.posix.write(stream_socket, stream_request);
 
     if (!waitForSseConnected(stream_socket, 5000)) {
-        std.debug.print("{s}Warning: SSE connection timeout{s}\n", .{ yellow, reset });
+        tui_text.print("{s}Warning: SSE connection timeout{s}\n", .{ yellow, reset });
     }
     try sendMessage(app, message);
 
@@ -679,7 +679,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
                 const needs_reconnect = sendPingCommand(app) catch false;
                 if (needs_reconnect) {
-                    std.debug.print("SSE session expired, reconnecting...\n", .{});
+                    tui_text.print("SSE session expired, reconnecting...\n", .{});
                     reconnection_attempts += 1;
                     break; // Will trigger reconnection
                 }
@@ -688,16 +688,16 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
 
             if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
                 if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
-                    std.debug.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
+                    tui_text.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
                     break;
                 }
 
                 reconnection_attempts += 1;
-                std.debug.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, reset });
+                tui_text.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, reset });
 
                 const new_socket = reconnectSseStream(app, stream_socket);
                 if (new_socket < 0) {
-                    std.debug.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
+                    tui_text.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
                     last_data_received_ms = now;
                     // No explicit sleep needed — poll() in next iteration will wait 100ms
                     continue;
@@ -706,7 +706,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 stream_socket = new_socket;
                 poll_fds[0].fd = stream_socket;
                 last_data_received_ms = std.time.milliTimestamp();
-                std.debug.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
+                tui_text.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
                 continue;
             }
 
@@ -716,7 +716,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 last_tick = now;
                 const spin = spinners[spinner_timer % spinners.len];
                 spinner_timer += 1;
-                std.debug.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
+                tui_text.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
                     yellow, spin, reset, raw_buffer.items.len,
                 });
             }
@@ -751,10 +751,10 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                             if (extractTag(chunk_block, "content")) |content| {
                                 if (content.len > 0) {
                                     if (!streaming_started) {
-                                        std.debug.print("\r\x1b[2K", .{});
+                                        tui_text.print("\r\x1b[2K", .{});
                                         streaming_started = true;
                                     }
-                                    std.debug.print("{s}", .{content});
+                                    tui_text.print("{s}", .{content});
                                 }
                             }
                         }
@@ -773,7 +773,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                                 }
                             }
                             if (!already_displayed) {
-                                std.debug.print("\r\x1b[2K", .{});
+                                tui_text.print("\r\x1b[2K", .{});
                                 const max_result_len: usize = 500;
                                 if (std.mem.eql(u8, result.name, "bash")) {
                                     displayBashResult(result.result, result.name, max_result_len);
@@ -787,7 +787,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                                     displayTextReplaceResult(result.result, result.name);
                                 }
                                 if (extractTag(result.result, "set_agent_properties")) |_| {
-                                    std.debug.print("\n{s}[agent properties]{s} → updated\n", .{ cyan, reset });
+                                    tui_text.print("\n{s}[agent properties]{s} → updated\n", .{ cyan, reset });
                                 }
                                 const id_copy = app.allocator.dupe(u8, result.id) catch continue;
                                 displayed_tool_ids.append(app.allocator, id_copy) catch {
@@ -810,7 +810,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                         continue;
                     }
                     if (std.mem.eql(u8, fr, "cancelled")) {
-                        std.debug.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ yellow, reset });
+                        tui_text.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ yellow, reset });
                         break;
                     }
                     if (std.mem.eql(u8, fr, "user_choice")) break;
@@ -820,22 +820,22 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         }
     }
 
-    std.debug.print("\r\x1b[2K", .{});
+    tui_text.print("\r\x1b[2K", .{});
     if (stream_interrupted) {
-        std.debug.print("\n{s}Interrupted (double ESC){s}\n", .{ yellow, reset });
+        tui_text.print("\n{s}Interrupted (double ESC){s}\n", .{ yellow, reset });
     }
 
-    std.debug.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ dim, raw_buffer.items.len, reset });
+    tui_text.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ dim, raw_buffer.items.len, reset });
 
     const final_decoded = decodeChunked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
-    std.debug.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ dim, final_decoded.len, reset });
+    tui_text.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ dim, final_decoded.len, reset });
 
     const final_xml = extractSseData(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);
-    std.debug.print("{s}[DEBUG] XML size: {d}{s}\n", .{ dim, final_xml.len, reset });
+    tui_text.print("{s}[DEBUG] XML size: {d}{s}\n", .{ dim, final_xml.len, reset });
     if (final_xml.len > 0) {
-        std.debug.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ dim, final_xml[0..@min(final_xml.len, 200)], reset });
+        tui_text.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ dim, final_xml[0..@min(final_xml.len, 200)], reset });
     }
 
     if (extractTag(final_xml, "content")) |content| {
@@ -844,13 +844,13 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         if (extractTag(final_xml, "message")) |msg| {
             printFormattedResponse(msg);
         } else {
-            std.debug.print("{s}\n", .{final_xml});
+            tui_text.print("{s}\n", .{final_xml});
         }
     } else {
-        std.debug.print("{s}(no response){s}\n", .{ dim, reset });
+        tui_text.print("{s}(no response){s}\n", .{ dim, reset });
     }
 
-    std.debug.print("\n", .{});
+    tui_text.print("\n", .{});
     _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
@@ -886,7 +886,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
     // Wait for "connected" event BEFORE sending command
     if (!waitForSseConnected(stream_socket, 5000)) {
-        std.debug.print("{s}Warning: SSE connection timeout{s}\n", .{ yellow, reset });
+        tui_text.print("{s}Warning: SSE connection timeout{s}\n", .{ yellow, reset });
     }
     try sendSessionsCommand(app);
 
@@ -921,7 +921,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
                 const needs_reconnect = sendPingCommand(app) catch false;
                 if (needs_reconnect) {
-                    std.debug.print("SSE session expired, reconnecting...\n", .{});
+                    tui_text.print("SSE session expired, reconnecting...\n", .{});
                     reconnection_attempts += 1;
                     break; // Will trigger reconnection
                 }
@@ -931,16 +931,16 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
             if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
                 // Timeout detected - attempt reconnection
                 if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
-                    std.debug.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
+                    tui_text.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
                     break;
                 }
 
                 reconnection_attempts += 1;
-                std.debug.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, reset });
+                tui_text.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, reset });
 
                 const new_socket = reconnectSseStream(app, stream_socket);
                 if (new_socket < 0) {
-                    std.debug.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
+                    tui_text.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
                     last_data_received_ms = now;
                     std.Thread.sleep(1_000_000_000);
                     continue;
@@ -950,7 +950,7 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
                 stream_socket = new_socket;
                 poll_fds[0].fd = stream_socket;
                 last_data_received_ms = now;
-                std.debug.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
+                tui_text.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
                 continue;
             }
 
@@ -963,12 +963,12 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
         defer app.allocator.free(decoded);
         const xml = extractSseData(app.allocator, decoded) catch continue;
 
-        std.debug.print("\r\nXML len={d}: {s}\r\nEND_XML\r\n", .{ xml.len, xml[0..@min(xml.len, 200)] });
+        tui_text.print("\r\nXML len={d}: {s}\r\nEND_XML\r\n", .{ xml.len, xml[0..@min(xml.len, 200)] });
         defer app.allocator.free(xml);
         if (std.mem.indexOf(u8, xml, "</finish_reason>") != null) break;
     }
 
-    std.debug.print("\r\x1b[2K\n", .{});
+    tui_text.print("\r\x1b[2K\n", .{});
 
     const final_decoded = decodeChunked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
@@ -977,14 +977,14 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
     if (extractTag(final_xml, "sessions")) |md| {
         const trimmed = trim(md);
-        std.debug.print("{s}Session ID           Directory                        Created{s}\n", .{ bold, reset });
-        std.debug.print("─────────────────────────────────────────────────────────────────────\n", .{});
+        tui_text.print("{s}Session ID           Directory                        Created{s}\n", .{ bold, reset });
+        tui_text.print("─────────────────────────────────────────────────────────────────────\n", .{});
         var rest = trimmed;
         while (extractTag(rest, "session")) |session| {
             const id = extractTag(session, "id") orelse "";
             const dir = extractTag(session, "dir") orelse "";
             const ts = extractTag(session, "created") orelse "";
-            std.debug.print("{s:<20} {s:<32} {s}\n", .{ id, dir, ts });
+            tui_text.print("{s:<20} {s:<32} {s}\n", .{ id, dir, ts });
             const end = std.mem.indexOf(u8, rest, "</session>") orelse break;
             rest = rest[end + "</session>".len ..];
         }
@@ -1021,10 +1021,10 @@ fn clearCompletions(app: *App) void {
     if (app.state.last_match_count == 0) return;
     var i: usize = 0;
     while (i < app.state.last_match_count) : (i += 1) {
-        std.debug.print("\x1b[1B", .{});
-        std.debug.print("\x1b[2K", .{});
+        tui_text.print("\x1b[1B", .{});
+        tui_text.print("\x1b[2K", .{});
     }
-    std.debug.print("\x1b[{}A", .{app.state.last_match_count});
+    tui_text.print("\x1b[{}A", .{app.state.last_match_count});
     app.state.visible = false;
     app.state.last_match_count = 0;
 }
@@ -1050,7 +1050,7 @@ fn handleCompletion(app: *App) !bool {
         try app.input_field.setText(app.state.matches.items[0]);
         app.state.visible = false;
         app.state.last_match_count = 0;
-        std.debug.print("\r\x1b[2K{s}>{s} {s}", .{ bold, reset, app.input_field.getText() });
+        tui_text.print("\r\x1b[2K{s}>{s} {s}", .{ bold, reset, app.input_field.getText() });
     } else {
         app.state.visible = true;
         renderCompletions(app);
@@ -1062,22 +1062,22 @@ fn renderCompletions(app: *App) void {
     if (app.state.last_match_count > 0) {
         var i: usize = 0;
         while (i < app.state.last_match_count) : (i += 1) {
-            std.debug.print("\x1b[1B", .{});
-            std.debug.print("\x1b[2K", .{});
+            tui_text.print("\x1b[1B", .{});
+            tui_text.print("\x1b[2K", .{});
         }
-        std.debug.print("\x1b[{}A", .{app.state.last_match_count});
+        tui_text.print("\x1b[{}A", .{app.state.last_match_count});
     }
-    std.debug.print("\x1b[s", .{});
+    tui_text.print("\x1b[s", .{});
     for (app.state.matches.items, 0..) |cmd, i| {
-        std.debug.print("\x1b[1E", .{});
+        tui_text.print("\x1b[1E", .{});
         if (i == app.state.selected) {
-            std.debug.print("  \x1b[7m {s} \x1b[0m", .{cmd});
+            tui_text.print("  \x1b[7m {s} \x1b[0m", .{cmd});
         } else {
-            std.debug.print("    {s}", .{cmd});
+            tui_text.print("    {s}", .{cmd});
         }
     }
     app.state.last_match_count = app.state.matches.items.len;
-    std.debug.print("\x1b[u", .{});
+    tui_text.print("\x1b[u", .{});
 }
 
 pub fn main() !void {
@@ -1098,7 +1098,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
             verbose = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            std.debug.print("zigginagentic-tui - Terminal UI for AI agent\n\nUsage: zigginagentic-tui [options]\n\nOptions:\n  -v, --verbose    Show backend debug output\n  -h, --help       Show this help message\n", .{});
+            tui_text.print("zigginagentic-tui - Terminal UI for AI agent\n\nUsage: zigginagentic-tui [options]\n\nOptions:\n  -v, --verbose    Show backend debug output\n  -h, --help       Show this help message\n", .{});
             return;
         }
     }
@@ -1107,10 +1107,10 @@ pub fn main() !void {
     var app = try App.init(allocator, verbose);
     defer app.deinit();
 
-    std.debug.print("Type message and press Enter. Ctrl+C to exit.\n\n", .{});
-    std.debug.print(paste_mode_on, .{});
-    defer std.debug.print(paste_mode_off, .{});
-    std.debug.print("{s}>{s} ", .{ bold, reset });
+    tui_text.print("Type message and press Enter. Ctrl+C to exit.\n\n", .{});
+    tui_text.print(paste_mode_on, .{});
+    defer tui_text.print(paste_mode_off, .{});
+    tui_text.print("{s}>{s} ", .{ bold, reset });
 
     // Use manual event loop (like before) but with tuwiii Terminal for input
     var term = try tuwiii.Terminal.init(allocator, .{
@@ -1131,24 +1131,24 @@ pub fn main() !void {
                     if (key == 3) break; // Ctrl+C
                     if (key >= 32) {
                         try app.input_field.insert(key);
-                        std.debug.print("{c}", .{key});
+                        tui_text.print("{c}", .{key});
                     } else if (key == 127 or key == 8) {
                         if (app.input_field.getText().len > 0) {
                             try app.input_field.backspace();
-                            std.debug.print("\x08 \x08", .{});
+                            tui_text.print("\x08 \x08", .{});
                         }
                     } else if (key == 13 or key == 10) {
                         const text = app.input_field.getText();
                         if (text.len > 0) {
                             if (std.mem.eql(u8, text, "/exit")) break;
-                            std.debug.print("\r\n\r\n", .{});
+                            tui_text.print("\r\n\r\n", .{});
                             const response = readResponseAndStreamRunLLM(&app, text) catch "";
                             defer app.allocator.free(response);
                             if (response.len == 0) {
-                                std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
+                                tui_text.print("{s}No response{s}\r\n", .{ dim, reset });
                             }
                             app.input_field.clear();
-                            std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
+                            tui_text.print("\r\n{s}>{s} ", .{ bold, reset });
                         }
                     }
                 },
@@ -1166,7 +1166,7 @@ pub fn main() !void {
         }
     }
 
-    std.debug.print("\r\n{s}Bye!{s}\r\n", .{ dim, reset });
+    tui_text.print("\r\n{s}Bye!{s}\r\n", .{ dim, reset });
 }
 
 test {
