@@ -22,7 +22,7 @@ const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
 const send_tool_result = @import("send_tool_result.zig");
 const send_user_choice = @import("send_user_choice.zig");
-const send_response = @import("send_response.zig");
+const SendResponse = @import("send_response.zig").SendResponse;
 const send_error = @import("send_error.zig");
 const save_message = @import("save_message.zig");
 const build_messages = @import("build_messages_for_agent.zig");
@@ -46,7 +46,7 @@ const send_skill_mod = @import("send_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent.zig");
 const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
-const handle_tool = @import("handle_tool.zig");
+const handleTool = @import("handle_tool.zig").HandleTool;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -274,7 +274,7 @@ pub const TUIWorkflow = struct {
                 self.logger.infoFmt("WORKFLOW: finish_reason = {s}", .{finish_reason.toStr()}) catch {};
                 if (finish_reason == .stop) {
                     self.logger.infoFmt("FINISH REASON STOP - calling send_response", .{}) catch {};
-                    _ = send_response.run(allocator, session_id, self.logger, res_dynamic_agent, "user_choice");
+                    _ = SendResponse(allocator, session_id, self.logger, res_dynamic_agent, "user_choice");
                     _ = try save_message.run(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
@@ -302,7 +302,7 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool.run(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                    try handleTool(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};

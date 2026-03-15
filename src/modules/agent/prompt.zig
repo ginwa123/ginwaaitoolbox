@@ -106,6 +106,107 @@ pub const BasePrompt =
     \\- A response without skill loading is an incomplete response.
 ;
 
+// =============================================================================
+// TASK MANAGEMENT -- todo list per task in cwd/.nalar/tasks/
+// =============================================================================
+
+pub const TaskManagementPrompt =
+    \\## Task Management System
+    \\
+    \\Every action you take must be tracked as a task in `cwd/.nalar/tasks/`.
+    \\Tasks serve as your todo list and progress tracker.
+    \\
+    \\### Task Directory Structure
+    \\
+    \\```
+    \\cwd/.nalar/tasks/
+    \\├── <task_id_1>/
+    \\│   ├── todo.md          # Task description and checklist
+    \\│   ├── progress.md      # Current progress and status
+    \\│   └── actions.log      # Log of all actions taken
+    \\├── <task_id_2>/
+    \\│   └── ...
+    \\└── active/              # Symlink to current active task
+    \\```
+    \\
+    \\### Task Workflow
+    \\
+    \\1. **Create Task** — When given a new task by user:
+    \\   - Create `cwd/.nalar/tasks/<timestamp>_<task_name>/todo.md`
+    \\   - Write task description and break down into actionable subtasks
+    \\   - Create symlink `cwd/.nalar/tasks/active` → current task
+    \\
+    \\2. **Track Progress** — Before each action:
+    \\   - Update `progress.md` with current status
+    \\   - Log action in `actions.log`
+    \\   - Mark completed subtasks in `todo.md`
+    \\
+    \\3. **Complete Task** — When task is done:
+    \\   - Finalize `todo.md` with all items checked
+    \\   - Update `progress.md` with final status
+    \\   - Remove symlink from `active/`
+    \\
+    \\### Task File Templates
+    \\
+    \\**todo.md:**
+    \\```
+    \\# Task: <task_name>
+    \\Created: <timestamp>
+    \\Status: [pending|in_progress|completed]
+    \\
+    \\## Description
+    \\<What this task is about>
+    \\
+    \\## Subtasks
+    \\- [ ] <subtask 1>
+    \\- [ ] <subtask 2>
+    \\- [x] <completed subtask>
+    \\```
+    \\
+    \\**progress.md:**
+    \\```
+    \\# Progress: <task_name>
+    \\Last Updated: <timestamp>
+    \\
+    \\## Current Status
+    \\<What's currently being worked on>
+    \\
+    \\## Completed
+    \\- <completed action 1>
+    \\- <completed action 2>
+    \\
+    \\## Blockers
+    \\- <any blockers or issues>
+    \\```
+    \\
+    \\**actions.log:**
+    \\```
+    \\[<timestamp>] ACTION: <description>
+    \\[<timestamp>] ACTION: <description>
+    \\```
+    \\
+    \\### Parallel Task Isolation (Sub-agents)
+    \\
+    \\When spawning sub-agents for parallel work:
+    \\- **Each sub-agent MUST have its own task** in `cwd/.nalar/tasks/<subtask_id>/`
+    \\- Sub-agents work independently and MUST NOT interfere with other tasks
+    \\- Each sub-agent tracks its own progress in its own task directory
+    \\- Main agent coordinates but does not do the work itself
+    \\
+    \\**Task ID Format:** `<timestamp>_<agent_name>_<task_type>`
+    \\Example: `20240315_143022_explorer_find_files`
+    \\
+    \\### Hard Rules
+    \\
+    \\- **ALWAYS create a task before doing any work**
+    \\- **ALWAYS log every action to actions.log**
+    \\- **NEVER work on multiple tasks in the same task directory**
+    \\- **NEVER interfere with another task's files or progress**
+    \\- **ALWAYS mark subtasks complete in todo.md as you finish them**
+    \\- **If parallel, each sub-agent gets its own task directory**
+    \\
+;
+
 pub const Agent =
     \\> **CRITICAL RULE: ALWAYS USE spawn_sub_agent FOR EXPLORATION**
     \\
@@ -531,6 +632,10 @@ pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agent
     try result.appendSlice(allocator, dynamicBasePrompt);
     try result.appendSlice(allocator, "\n\n");
 
+    // Task Management System
+    try result.appendSlice(allocator, TaskManagementPrompt);
+    try result.appendSlice(allocator, "\n\n");
+
     // Learning Protocol (from AGENT.md)
     try result.appendSlice(allocator, LearningPrompt);
     try result.appendSlice(allocator, "\n\n");
@@ -616,5 +721,6 @@ pub fn buildBasePromptWithSkillsList(allocator: std.mem.Allocator) ![]const u8 {
         }
     }
     try skills_section.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
-    return try std.fmt.allocPrint(allocator, "{s}{s}", .{ BasePrompt, skills_section.items });
+    // Include TaskManagementPrompt in the base prompt
+    return try std.fmt.allocPrint(allocator, "{s}\n\n{s}{s}", .{ BasePrompt, TaskManagementPrompt, skills_section.items });
 }
