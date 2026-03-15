@@ -1,5 +1,9 @@
 const std = @import("std");
 const httpz_import = @import("httpz");
+const sqlite = @import("nalarcore").sqlite;
+const kerjabot_get_session = @import("nalarcore").kerjabot_get_session;
+const kerjabot_create_session = @import("nalarcore").kerjabot_create_session;
+const kerjabot_get_list_session = @import("nalarcore").kerjabot_get_list_session;
 
 pub const httpz = httpz_import;
 
@@ -266,6 +270,7 @@ pub const HttpServer = struct {
     port: u16,
     message_handler: ?MessageHandler = null,
     session_handler: ?SessionHandler = null, // NEW: for synchronous session operations
+    db: ?*sqlite.SqliteBackend = null, // Database connection for handlers
     ctx: ?*anyopaque = null,
     sse_manager: SseConnectionManager,
 
@@ -280,6 +285,10 @@ pub const HttpServer = struct {
 
     pub fn deinit(self: *Self) void {
         self.sse_manager.deinit();
+    }
+
+    pub fn setDb(self: *Self, db: *sqlite.SqliteBackend) void {
+        self.db = db;
     }
 
     pub fn setMessageHandler(self: *Self, handler: MessageHandler) void {
@@ -314,6 +323,11 @@ pub const HttpServer = struct {
         // Session management endpoints (synchronous - returns response directly)
         router.post("/api/session/create", sessionCreateHandler, .{});
         router.get("/api/session", sessionListHandler, .{});
+
+        // Kerjabot session endpoints
+        router.post("/api/kerjabot/session/create", kerjabotSessionCreateHandler, .{});
+        router.get("/api/kerjabot/session/:id", kerjabotGetSessionHandler, .{});
+        router.get("/api/kerjabot/sessions", kerjabotListSessionsHandler, .{});
 
         try server.listen();
     }
@@ -387,6 +401,200 @@ fn sessionListHandler(@"req": *httpz.Request, res: *httpz.Response) anyerror!voi
     }
     res.status = 500;
     res.body = "{\"error\":\"No session handler\"}";
+}
+
+/// Kerjabot session create handler
+fn kerjabotSessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    if (global_server) |server| {
+        const db = server.db orelse {
+            res.status = 500;
+            res.body = "{\"error\":\"Database not available\"}";
+            return;
+        };
+        
+        const body = req.body() orelse "";
+
+        // Parse request body
+        var arena = std.heap.ArenaAllocator.init(server.allocator);
+        defer arena.deinit();
+
+        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), body, .{}) catch {
+            res.status = 400;
+            res.body = "{\"error\":\"Invalid JSON\"}";
+            return;
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value.object;
+
+        // Extract agent_type (default: "general")
+        var agent_type: []const u8 = "general";
+        if (root.get("agentType")) |v| {
+            agent_type = v.string;
+        }
+
+        // Extract config
+        var model: []const u8 = "gpt-4";
+        var temperature: f32 = 0.7;
+        var max_tokens: u32 = 4096;
+
+        if (root.get("config")) |config_val| {
+            if (config_val == .object) {
+                const cfg = config_val.object;
+                if (cfg.get("model")) |m| model = m.string;
+                if (cfg.get("temperature")) |t| {
+                    if (t == .float) temperature = @floatCast(t.float);
+                }
+                if (cfg.get("maxTokens")) |mt| {
+                    if (mt == .integer) max_tokens = @intCast(mt.integer);
+                }
+            }
+        }
+
+        // Create session in database
+        const session_id = kerjabot_create_session.createSession(arena.allocator(), db, agent_type, model, temperature) catch {
+            res.status = 500;
+            res.body = "{\"error\":\"Failed to create session\"}";
+            return;
+        };
+
+        // Build response
+        var response_buf: [512]u8 = undefined;
+        const response = std.fmt.bufPrint(&response_buf,
+            \\{{"sessionId":"{s}","createdAt":{},"agentType":"{s}","config":{{"model":"{s}","temperature":{},"maxTokens":{}}},"workflowState":{{"currentStep":0,"totalSteps":1,"stepName":"init"}}}}
+        , .{
+            session_id,
+            std.time.timestamp(),
+            agent_type,
+            model,
+            temperature,
+            max_tokens,
+        }) catch "{\"error\":\"Response too large\"}";
+
+        res.status = 201;
+        res.body = response;
+        return;
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server error\"}";
+}
+
+/// Kerjabot get session handler
+fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    if (global_server) |server| {
+        const db = server.db orelse {
+            res.status = 500;
+            res.body = "{\"error\":\"Database not available\"}";
+            return;
+        };
+        
+        const session_id_param = req.param("id");
+
+        if (session_id_param == null) {
+            res.status = 400;
+            res.body = "{\"error\":\"Missing session id\"}";
+            return;
+        }
+        const session_id = session_id_param.?;
+
+        // Query session from database
+        var arena = std.heap.ArenaAllocator.init(server.allocator);
+        defer arena.deinit();
+
+        const session = kerjabot_get_session.getSession(arena.allocator(), db, session_id) catch {
+            res.status = 500;
+            res.body = "{\"error\":\"Database query failed\"}";
+            return;
+        };
+
+        if (session) |sess| {
+            defer sess.deinit(arena.allocator());
+
+            // Build response
+            var response_buf: [512]u8 = undefined;
+            const response = std.fmt.bufPrint(&response_buf,
+                \\{{"sessionId":"{s}","createdAt":"{s}","agentType":"{s}","config":{{"model":"{s}","temperature":{},"maxTokens":4096}},"workflowState":{{"currentStep":1,"totalSteps":3,"stepName":"processing"}},"messages":[]}}
+            , .{
+                sess.session_id,
+                sess.created_at,
+                sess.agent,
+                sess.model,
+                sess.temperature,
+            }) catch "{\"error\":\"Response too large\"}";
+
+            res.status = 200;
+            res.body = response;
+            return;
+        } else {
+            res.status = 404;
+            res.body = "{\"error\":\"Session not found\"}";
+            return;
+        }
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server error\"}";
+}
+
+/// Kerjabot list sessions handler with filtering
+fn kerjabotListSessionsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    if (global_server) |server| {
+        const db = server.db orelse {
+            res.status = 500;
+            res.body = "{\"error\":\"Database not available\"}";
+            return;
+        };
+        
+        // Parse query parameters
+        const query = try req.query();
+        const limit_str = query.get("limit") orelse "10";
+        const offset_str = query.get("offset") orelse "0";
+
+        const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 10;
+        const offset_val = std.fmt.parseInt(u32, offset_str, 10) catch 0;
+
+        var arena = std.heap.ArenaAllocator.init(server.allocator);
+        defer arena.deinit();
+
+        // Get sessions from database
+        const result = kerjabot_get_list_session.getSessionList(arena.allocator(), db, limit_val, offset_val) catch {
+            res.status = 500;
+            res.body = "{\"error\":\"Database query failed\"}";
+            return;
+        };
+        defer {
+            for (result.sessions) |s| s.deinit(arena.allocator());
+            arena.allocator().free(result.sessions);
+        }
+
+        // Build JSON response
+        var response = std.ArrayList(u8).empty;
+        defer response.deinit(server.allocator);
+
+        try response.writer(server.allocator).print("{{\"sessions\":[", .{});
+
+        for (result.sessions, 0..) |sess, i| {
+            if (i > 0) {
+                try response.writer(server.allocator).print(",", .{});
+            }
+            try response.writer(server.allocator).print(
+                \\{{"sessionId":"{s}","createdAt":"{s}","agentType":"{s}","workflowState":{{"currentStep":1,"totalSteps":3}}}}
+            , .{
+                sess.session_id,
+                sess.created_at,
+                sess.agent,
+            });
+        }
+
+        try response.writer(server.allocator).print("],\"total\":{},\"limit\":{},\"offset\":{}}}", .{
+            result.total, limit_val, offset_val,
+        });
+
+        res.status = 200;
+        res.body = try response.toOwnedSlice(server.allocator);
+        return;
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server error\"}";
 }
 
 /// Context for SSE stream handler
