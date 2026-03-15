@@ -707,7 +707,7 @@ pub const CompactionAgent =
 /// Build agent prompt with dynamic base prompt (including skills list), optional skills content, and optional cwd/treeDir.
 /// If skillsContent is empty, it will be omitted. If cwd is empty, cwd and treeDir will be omitted.
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: []const u8, skillsContent: []const u8, memoryMd: []const u8, backgroundProcessContent: []const u8) ![]const u8 {
+pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: []const u8, skillsContent: []const u8, memoryMd: []const u8, backgroundProcessContent: []const u8, agent: []const u8) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
@@ -795,6 +795,13 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: 
             try result.appendSlice(allocator, info.description);
             try result.appendSlice(allocator, "\n");
         }
+    }
+
+    // dynamic agent
+    if (agent.len > 0) {
+        try result.appendSlice(allocator, "\n\n");
+        try result.appendSlice(allocator, "\n\n ## Specialized Agent Currently Active\n\n");
+        try result.appendSlice(allocator, agent);
     }
 
     return result.toOwnedSlice(allocator);

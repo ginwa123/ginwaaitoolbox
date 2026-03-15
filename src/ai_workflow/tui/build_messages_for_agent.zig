@@ -13,12 +13,13 @@ pub fn BuildMessages(
     historyMessages: []TUIHistory,
     skills: []const u8,
     memoryMd: []const u8,
-    processMessages: []const u8,
+    backgroundProcessmessage: []const u8,
+    agentUsed: []const u8,
 ) ![]agent.AgentMessage {
 
 
     // buildAgentPrompt now handles processMessages internally
-    const systemContent = try prompt.buildAgentPrompt(allocator, cwd, "", skills, memoryMd, processMessages);
+    const systemContent = try prompt.buildAgentPrompt(allocator, cwd, "", skills, memoryMd, backgroundProcessmessage, agentUsed);
     errdefer allocator.free(systemContent);
 
     const systemMessage = agent.AgentMessage{

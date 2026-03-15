@@ -5,7 +5,7 @@ const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 
 /// Build background processes content string from database for system prompt
-pub fn BuildBackgroundProcessContent(
+pub fn BuildBackgroundProcessPrompt(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
@@ -45,7 +45,7 @@ pub fn BuildBackgroundProcessContent(
         try processesBuilder.appendSlice(allocator, " | Command: `");
         try processesBuilder.appendSlice(allocator, p.command);
         try processesBuilder.appendSlice(allocator, "`\n");
-        
+
         // Add log path info
         try processesBuilder.appendSlice(allocator, "  - Log: ");
         try processesBuilder.appendSlice(allocator, p.log_path);
@@ -58,5 +58,5 @@ pub fn BuildBackgroundProcessContent(
 }
 
 test {
-    _ = @import("build_background_process_content_test.zig");
+    _ = @import("build_background_process_prompt_test.zig");
 }

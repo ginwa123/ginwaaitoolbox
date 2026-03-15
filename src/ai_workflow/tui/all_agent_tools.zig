@@ -27,7 +27,6 @@ const send_user_choice = @import("send_user_choice.zig");
 const SendResponse = @import("send_response.zig").SendResponse;
 const send_error = @import("send_error.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
-const BuildMessages = @import("build_messages_for_agent.zig").BuildMessages;
 const GetMessages = @import("get_messages.zig").GetMessages;
 const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
 const send_stream_chunk_final = @import("send_stream_chunk_final.zig");

@@ -632,7 +632,7 @@ fn displayBashResult(result_xml: []const u8, tool_name: []const u8, max_result_l
     if (cmd) |c| {
         tui_text.print(crlf ++ erase_line ++ "[{s}] $ {s}\n", .{ tool_name, c });
     } else {
-        tui_text.print(crlf ++ erase_line ++ "[{s}]\n", .{ tool_name });
+        tui_text.print(crlf ++ erase_line ++ "[{s}]\n", .{tool_name});
     }
     var lines = std.mem.splitScalar(u8, display, '\n');
     while (lines.next()) |line| {
@@ -725,8 +725,7 @@ fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
     else
         "\x1b[31m✗\x1b[0m";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} {s} {s}\n",
-        .{ cyan, tool_name, reset, loaded_status, skill_name });
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} {s} {s}\n", .{ cyan, tool_name, reset, loaded_status, skill_name });
 
     // Display error if present
     if (error_msg) |err| {
@@ -777,21 +776,18 @@ fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
 fn displayListSkillsResult(result_json: []const u8, tool_name: []const u8) void {
     // Parse JSON array of skills
     const skills_start = std.mem.indexOf(u8, result_json, "[") orelse {
-        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n",
-            .{ cyan, tool_name, reset });
+        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n", .{ cyan, tool_name, reset });
         return;
     };
     const skills_end = std.mem.lastIndexOf(u8, result_json, "]") orelse result_json.len;
     const skills_array = result_json[skills_start .. skills_end + 1];
 
     if (skills_array.len <= 2) { // Empty array "[]"
-        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n",
-            .{ cyan, tool_name, reset });
+        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n", .{ cyan, tool_name, reset });
         return;
     }
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} Available skills:\n",
-        .{ cyan, tool_name, reset });
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} Available skills:\n", .{ cyan, tool_name, reset });
 
     // Parse each skill object
     var pos: usize = 0;
@@ -880,10 +876,10 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     // Timeout detection for SSE reconnection
     // Keepalive is sent every 30s, server removes session after ~60s
     // Use 90s timeout (3x server lifecycle) to avoid false timeouts
-    const SSE_TIMEOUT_MS: i64 = 90000; // 90 seconds
+    // const SSE_TIMEOUT_MS: i64 = 90000; // 90 seconds
     var last_data_received_ms: i64 = std.time.milliTimestamp();
     var reconnection_attempts: u32 = 0;
-    const MAX_RECONNECTION_ATTEMPTS: u32 = 100;
+    // const MAX_RECONNECTION_ATTEMPTS: u32 = 100;
 
     // Ping interval - send ping every 5 seconds to keep session alive on server
     const PING_INTERVAL_MS: i64 = 1000;
@@ -963,34 +959,46 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 if (needs_reconnect) {
                     tui_text.print("SSE session expired, reconnecting...\n", .{});
                     reconnection_attempts += 1;
-                    break; // Will trigger reconnection
+                    const new_socket = reconnectSseStream(app, stream_socket);
+                    if (new_socket < 0) {
+                        tui_text.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
+                        last_data_received_ms = now;
+                        // No explicit sleep needed — poll() in next iteration will wait 100ms
+                        continue;
+                    }
+
+                    stream_socket = new_socket;
+                    poll_fds[0].fd = stream_socket;
+                    last_data_received_ms = std.time.milliTimestamp();
+                    tui_text.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
+                    continue;
                 }
                 last_ping_ms = now;
             }
 
-            if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
-                if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
-                    tui_text.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
-                    break;
-                }
-
-                reconnection_attempts += 1;
-                tui_text.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, reset });
-
-                const new_socket = reconnectSseStream(app, stream_socket);
-                if (new_socket < 0) {
-                    tui_text.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
-                    last_data_received_ms = now;
-                    // No explicit sleep needed — poll() in next iteration will wait 100ms
-                    continue;
-                }
-
-                stream_socket = new_socket;
-                poll_fds[0].fd = stream_socket;
-                last_data_received_ms = std.time.milliTimestamp();
-                tui_text.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
-                continue;
-            }
+            // if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
+            //     if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
+            //         tui_text.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ yellow, reset });
+            //         break;
+            //     }
+            //
+            //     reconnection_attempts += 1;
+            //     tui_text.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, reset });
+            //
+            //     const new_socket = reconnectSseStream(app, stream_socket);
+            //     if (new_socket < 0) {
+            //         tui_text.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ yellow, reset });
+            //         last_data_received_ms = now;
+            //         // No explicit sleep needed — poll() in next iteration will wait 100ms
+            //         continue;
+            //     }
+            //
+            //     stream_socket = new_socket;
+            //     poll_fds[0].fd = stream_socket;
+            //     last_data_received_ms = std.time.milliTimestamp();
+            //     tui_text.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ green, reset });
+            //     continue;
+            // }
 
             // Spinner — only updated when idle (no streaming yet), and only in
             // the no-data branch so it doesn't run on every data-processing iteration.
