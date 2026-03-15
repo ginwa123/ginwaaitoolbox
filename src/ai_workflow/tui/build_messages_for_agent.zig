@@ -20,15 +20,9 @@ pub fn BuildMessages(
     // Always use the unified Agent prompt
     const agent_prompt: []const u8 = prompt.Agent;
 
-    var systemContent = try prompt.buildAgentPrompt(allocator, cwd, agent_prompt, tree_dir, skills, memoryMd);
+    // buildAgentPrompt now handles processMessages internally
+    const systemContent = try prompt.buildAgentPrompt(allocator, cwd, agent_prompt, tree_dir, skills, memoryMd, processMessages);
     errdefer allocator.free(systemContent);
-
-    // If there's background process content, append it to the system message
-    if (processMessages.len > 0) {
-        const combined = try std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ systemContent, processMessages });
-        allocator.free(systemContent);
-        systemContent = combined;
-    }
 
     const systemMessage = agent.AgentMessage{
         .role = .system,

@@ -757,8 +757,9 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var streaming_started = false;
 
     // Timeout detection for SSE reconnection
-    // Keepalive is sent every 30s, so use 90s (3x) to avoid false timeouts
-    const SSE_TIMEOUT_MS: i64 = 10000; // 10 seconds
+    // Keepalive is sent every 30s, server removes session after ~60s
+    // Use 90s timeout (3x server lifecycle) to avoid false timeouts
+    const SSE_TIMEOUT_MS: i64 = 90000; // 90 seconds
     var last_data_received_ms: i64 = std.time.milliTimestamp();
     var reconnection_attempts: u32 = 0;
     const MAX_RECONNECTION_ATTEMPTS: u32 = 100;
