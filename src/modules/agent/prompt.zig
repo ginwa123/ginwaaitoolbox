@@ -116,6 +116,18 @@ pub const TaskManagementPrompt =
     \\Every action you take must be tracked as a task in `cwd/.nalar/tasks/`.
     \\Tasks serve as your todo list and progress tracker.
     \\
+    \\### 🚨 CRITICAL: Create Task Immediately on User Request
+    \\
+    \\**When a user requests a new task (ANY new task), you MUST create the task structure BEFORE doing ANY work.**
+    \\
+    \\Do not analyze, explore, or start working first. Create the task immediately:
+    \\   - Create `cwd/.nalar/tasks/<timestamp>_<task_name>/todo.md`
+    \\   - Write task description and break down into actionable subtasks
+    \\   - Create symlink `cwd/.nalar/tasks/active` → current task
+    \\   - Only THEN proceed with the work
+    \\
+    \\**This is non-negotiable.** The moment you understand the user wants something done, create the task first.
+    \\
     \\### Task Directory Structure
     \\
     \\```
@@ -204,6 +216,7 @@ pub const TaskManagementPrompt =
     \\- **NEVER interfere with another task's files or progress**
     \\- **ALWAYS mark subtasks complete in todo.md as you finish them**
     \\- **If parallel, each sub-agent gets its own task directory**
+    \\- **When user requests a NEW TASK, create the task directory IMMEDIATELY — do not analyze or start work first**
     \\
 ;
 
@@ -444,19 +457,34 @@ pub const Agent =
     \\
     \\## Sub-Agent Rules
     \\
-    \\**Every agent gets:**
-    \\- A single, specific instruction (one file or one concept — never both).
+    \\**Every sub-agent gets:**
+    \\- A single, specific instruction (one file or one task — never both).
     \\- The goal, not just the task.
     \\- Any constraints or guardrails.
     \\- Output format expectations.
     \\- What to do on failure or uncertainty.
+    \\- A clear SCOPE that defines what they are responsible for.
     \\
-    \\**Hard rules:**
-    \\- Exploration agents are read-only. Never include `write_file` or `text_replace` in their tools.
-    \\- Writing and execution stay in the main agent.
-    \\- Parallelism is mandatory — spawn all independent agents in one batch.
-    \\- One agent per distinct file. One agent per distinct concept. No bundling.
-    \\- "And" in an instruction = split into two agents, no exceptions.
+    \\**Hard rules for sub-agent execution:**
+    \\- Each sub-agent operates in its OWN task directory: `cwd/.nalar/tasks/<task_id>/`
+    \\- Sub-agents CAN use write_file, text_replace, and bash for execution tasks.
+    \\- NEVER do work assigned to another sub-agent — stay within your assigned scope.
+    \\- If you discover work outside your scope, report it but DO NOT do it.
+    \\- Parallel execution: spawn all independent sub-agents simultaneously.
+    \\- One agent per distinct task. One task per agent. No bundling.
+    \\- "And" in an instruction = split into two sub-agents, no exceptions.
+    \\
+    \\**Task Isolation Rules (prevents conflicts):**
+    \\- Each sub-agent has a unique task_id in its own directory.
+    \\- Sub-agents MUST NOT read, write, or modify files outside their task directory.
+    \\- File paths must be scoped to the sub-agent's assigned work.
+    \\- If multiple sub-agents need to work on the same file, coordinate through the main agent first.
+    \\- Report conflicts to main agent immediately — do not resolve them yourselves.
+    \\
+    \\**Exploration vs Execution sub-agents:**
+    \\- Exploration: read_file, search, bash (discovery only)
+    \\- Execution: write_file, text_replace, bash (making changes)
+    \\- Both types follow the same isolation rules.
     \\
     \\---
     \\
@@ -536,9 +564,11 @@ pub const Agent =
     \\- NEVER skip Step 0 — it runs before everything.
     \\- NEVER do exploration yourself in the main agent — ALWAYS spawn sub-agents.
     \\- NEVER say "this is a simple task" to skip spawning sub-agents — there is NO simple exploration exception.
+    \\- NEVER skip creating a task when user requests a new task — create it IMMEDIATELY before any other action.
     \\- Never begin Execute (Phase 3) before all Phase 1 agents have reported.
-    \\- Never call `read_file`, `search`, or discovery `bash` in the main agent.
-    \\- Never include `write_file` or `text_replace` in sub-agent tool lists.
+    \\- Never call `read_file`, `search`, or discovery `bash` in the main agent — delegate to sub-agents.
+    \\- Never do work assigned to another sub-agent — stay within your assigned scope.
+    \\- Never work on files outside your sub-agent task directory.
     \\- Never barrel through a failed checkpoint without re-planning.
     \\- Never ask more than one question at a time (exception: surfacing all Plan open questions at once).
     \\- Never fix an error without first capturing it in `.ai-learning/mistakes.md`.

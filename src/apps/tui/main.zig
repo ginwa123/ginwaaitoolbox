@@ -937,11 +937,16 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                                 const max_result_len: usize = 500;
                                 if (std.mem.eql(u8, result.name, "bash")) {
                                     displayBashResult(result.result, result.name, max_result_len);
-                                } else if (std.mem.eql(u8, result.name, "search")) {
-                                    displaySearchResult(result.result, result.name, max_result_len);
-                                } else if (std.mem.eql(u8, result.name, "read_file")) {
-                                    displayReadFileResult(result.result, result.name);
-                                } else if (std.mem.eql(u8, result.name, "write_file")) {
+                                }
+
+                                // else if (std.mem.eql(u8, result.name, "search")) {
+                                //     displaySearchResult(result.result, result.name, max_result_len);
+                                // }
+                                // else if (std.mem.eql(u8, result.name, "read_file")) {
+                                //     displayReadFileResult(result.result, result.name);
+                                // }
+
+                                else if (std.mem.eql(u8, result.name, "write_file")) {
                                     displayWriteFileResult(result.result, result.name);
                                 } else if (std.mem.eql(u8, result.name, "text_replace")) {
                                     displayTextReplaceResult(result.result, result.name);
