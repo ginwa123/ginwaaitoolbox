@@ -779,6 +779,8 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: 
         try result.appendSlice(allocator, backgroundProcessContent);
     }
 
+    // dynamic agent
+
     return result.toOwnedSlice(allocator);
 }
 

@@ -227,7 +227,7 @@ pub const TUIWorkflow = struct {
             self.logger.debugFmt("[COMPACTION] Body size: {} bytes", .{body_size}) catch {};
             if (body_size > COMPACTION_CONFIG.max_body_size) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
-                if (try self.call_compact_agent(messagesLists.items, allocator, api_key, model, base_url)) |compacted_xml| {
+                if (try self.callCompactAgent(messagesLists.items, allocator, api_key, model, base_url)) |compacted_xml| {
                     try self.compactMessagesInMemory(allocator, &messagesLists, compacted_xml, session_id, model, cwd);
                 }
             }
@@ -363,7 +363,7 @@ pub const TUIWorkflow = struct {
     }
 
     /// Call CompactionAgent to compress conversation history
-    fn call_compact_agent(
+    fn callCompactAgent(
         self: *TUIWorkflow,
         messages: []agent.AgentMessage,
         arena: std.mem.Allocator,
@@ -429,7 +429,8 @@ pub const TUIWorkflow = struct {
             self.estimateBodySize(messages),
         }) catch {};
 
-        const response = compaction_agent.call(params) catch |err| {
+        // Use callStreaming for compaction agent - no-op callback since we don't need to stream to client
+        const response = compaction_agent.callStreaming(params, null, noopStreamCallback) catch |err| {
             self.logger.errFmt("[COMPACTION] Failed: {s}", .{@errorName(err)}) catch {};
             return null;
         };
@@ -443,6 +444,13 @@ pub const TUIWorkflow = struct {
             return try arena.dupe(u8, content);
         }
         return null;
+    }
+
+    /// No-op callback for streaming - used when we don't need to stream chunks to client
+    fn noopStreamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
+        _ = ctx;
+        _ = chunk;
+        // Do nothing - we just collect the final response
     }
 
     /// Compact messages in memory based on CompactionAgent output
