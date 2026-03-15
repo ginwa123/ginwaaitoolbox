@@ -148,10 +148,11 @@ pub const TaskManagementPrompt =
     \\   - Write task description and break down into actionable subtasks
     \\   - Create symlink `.nalar/tasks/active` → current task
     \\
-    \\2. **Track Progress** — Before each action:
-    \\   - Update `progress.md` with current status
-    \\   - Log action in `actions.log`
-    \\   - Mark completed subtasks in `todo.md`
+    \\2. **Track Progress** — MANDATORY after EVERY action:
+    \\   - Update `progress.md` with current status IMMEDIATELY after each action
+    \\   - Log action in `actions.log` IMMEDIATELY after each action
+    \\   - Mark completed subtasks in `todo.md` IMMEDIATELY after completing each subtask
+    \\   - 🚨 **CRITICAL**: Do NOT wait until all tasks are done — update after EVERY subtask/task completion
     \\
     \\3. **Complete Task** — When task is done:
     \\   - Finalize `todo.md` with all items checked
@@ -217,6 +218,16 @@ pub const TaskManagementPrompt =
     \\- **ALWAYS mark subtasks complete in todo.md as you finish them**
     \\- **If parallel, each sub-agent gets its own task directory**
     \\- **When user requests a NEW TASK, create the task directory IMMEDIATELY — do not analyze or start work first**
+    \\
+    \\### 🚨 MANDATORY Checklist Update Rule
+    \\
+    \\**This rule applies to BOTH main agent AND sub-agents:**
+    \\
+    \\- **AFTER EVERY SUB-TASK COMPLETION**: Immediately mark the subtask as complete in `todo.md`, update `progress.md` with what was just completed, and log the action in `actions.log`
+    \\- **AFTER EVERY TASK COMPLETION**: Immediately finalize `todo.md`, update `progress.md` with final status, and log the completion in `actions.log`
+    \\- **DO NOT WAIT** — Updates must happen IMMEDIATELY after each subtask/task, not only when all tasks are done
+    \\- This ensures real-time progress tracking and prevents losing track of what was accomplished
+    \\- Sub-agents MUST also follow this rule for their own task directories
     \\
 ;
 
@@ -481,6 +492,12 @@ pub const Agent =
     \\- If multiple sub-agents need to work on the same file, coordinate through the main agent first.
     \\- Report conflicts to main agent immediately — do not resolve them yourselves.
     \\
+    \\**🚨 MANDATORY Checklist Update for Sub-agents:**
+    \\- Sub-agents MUST also update their task checklist AFTER EVERY subtask/task completion
+    \\- After completing a subtask: Immediately mark `[x]` in `todo.md`, update `progress.md`, log to `actions.log`
+    \\- After completing the entire task: Finalize `todo.md`, update `progress.md` with final status, log completion
+    \\- DO NOT wait until returning to main agent — update immediately after each action
+    \\
     \\**Exploration vs Execution sub-agents:**
     \\- Exploration: read_file, search, bash (discovery only)
     \\- Execution: write_file, text_replace, bash (making changes)
@@ -565,6 +582,7 @@ pub const Agent =
     \\- NEVER do exploration yourself in the main agent — ALWAYS spawn sub-agents.
     \\- NEVER say "this is a simple task" to skip spawning sub-agents — there is NO simple exploration exception.
     \\- NEVER skip creating a task when user requests a new task — create it IMMEDIATELY before any other action.
+    \\- **NEVER skip updating checklist after sub-task/task completion** — update IMMEDIATELY, not only when all tasks done
     \\- Never begin Execute (Phase 3) before all Phase 1 agents have reported.
     \\- Never call `read_file`, `search`, or discovery `bash` in the main agent — delegate to sub-agents.
     \\- Never do work assigned to another sub-agent — stay within your assigned scope.
