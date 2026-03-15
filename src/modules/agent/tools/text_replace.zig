@@ -119,7 +119,7 @@ pub fn text_replaceWithHash(
     };
 }
 
-pub fn textReplaceToString(allocator: std.mem.Allocator, result: TextReplaceResult) ![]const u8 {
+pub fn textReplaceToStringXML(allocator: std.mem.Allocator, result: TextReplaceResult) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<path>{s}</path>
         \\<replaced_at_byte>{d}</replaced_at_byte>
@@ -146,6 +146,8 @@ pub const textReplaceTool = AgentTool{
         \\
         \\- old_str must match file content exactly (whitespace included).
         \\- old_str must appear exactly once — error if not found or ambiguous.
+        \\- If OldStrNotUnique: expand old_str to include surrounding lines for context.
+        \\- Prefer longer, more specific old_str over minimal matches.
         \\- new_str can be any length, multiline, or empty (empty = delete).
         \\- Always read_file first to confirm the exact string to match.
         \\- Prefer over write_file for editing existing files.
@@ -180,7 +182,6 @@ pub const textReplaceTool = AgentTool{
         },
     },
 };
-
 
 test {
     _ = @import("text_replace_test.zig");

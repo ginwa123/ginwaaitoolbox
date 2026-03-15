@@ -1,10 +1,10 @@
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
-const agent = tree1_mod.agent;
-const tool_models = tree1_mod.tool_models;
-const logger_mod = tree1_mod.logger;
-const sqlite = tree1_mod.sqlite;
-const prompt = tree1_mod.prompt;
+const root_mod = @import("nalarcore");
+const agent = root_mod.agent;
+const tool_models = root_mod.tool_models;
+const logger_mod = root_mod.logger;
+const sqlite = root_mod.sqlite;
+const prompt = root_mod.prompt;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
 const bash_tool = @import("../../modules/agent/tools/bash.zig");
 const read_file_tool = @import("../../modules/agent/tools/read_file.zig");
@@ -26,36 +26,27 @@ const handle_write_file_tool = @import("handle_write_file_tool.zig");
 const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
 const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
-const loop_detector = tree1_mod.loop_detector;
+const loop_detector = root_mod.loop_detector;
+const set_agent_properties = root_mod.set_agent_properties;
+const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
 
 const MAX_SUB_AGENTS = 20;
 
 // Import BashInput from models (not exported in bash.zig)
 const BashInput = @import("../../modules/agent/tools/models.zig").BashInput;
 
-/// All available tools for sub-agents (no spawn_sub_agent, no set_agent_properties)
-const all_sub_agent_tools: []const tool_models.AgentTool = &.{
-    bash_tool.bashTool,
-    read_file_tool.readFileTool,
-    write_file_tool.writeFileTool,
-    text_replace_tool.textReplaceTool,
-    search_tool.searchTool,
-    list_skills_tool.listSkillsTool,
-    get_skill_tool.getSkillTool,
-    remove_skill_tool.removeSkillTool,
-};
 
 /// Filter tools by allowed names. If allowed_tools is null, return all tools.
 fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8) ![]const tool_models.AgentTool {
     if (allowed_tools == null) {
         // Return all tools (copy the slice)
-        return try allocator.dupe(tool_models.AgentTool, all_sub_agent_tools);
+        return try allocator.dupe(tool_models.AgentTool, AllAgentTools);
     }
 
     var result = std.ArrayList(tool_models.AgentTool).empty;
     errdefer result.deinit(allocator);
 
-    for (all_sub_agent_tools) |tool| {
+    for (AllAgentTools) |tool| {
         for (allowed_tools.?) |allowed| {
             if (std.mem.eql(u8, tool.function.name, allowed)) {
                 try result.append(allocator, tool);
@@ -494,7 +485,7 @@ pub fn run(
 
                 log.infoFmt("spawn_sub_agent[{}]: starting agent '{s}'", .{ idx, name }) catch {};
 
-                const sessionId = std.fmt.allocPrint(thread_alloc, "{}", .{ std.time.nanoTimestamp() }) catch |err| {
+                const sessionId = std.fmt.allocPrint(thread_alloc, "{}", .{std.time.nanoTimestamp()}) catch |err| {
                     log.errFmt("spawn_sub_agent[{}]: failed to generate sessionId: {}", .{ idx, err }) catch {};
                     return;
                 };

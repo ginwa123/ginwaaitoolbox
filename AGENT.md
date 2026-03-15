@@ -92,6 +92,15 @@ Core AI agent functionality with tools:
 - **change_agent** — Modify agent behavior
 - **lsp_client** — LSP for code intelligence
 - **loop_detector** — Detect repetitive behavior
+- **helper** — General helper utilities
+
+### KerjaBot Module (`src/ai_workflow/kerjabot/`)
+- Session creation, retrieval, and listing
+- Integrates with web frontend
+
+### Session Module (`src/modules/session/`)
+- Session state tracking and monitoring
+- Cancellation registry
 
 ### HTTP Server (`src/modules/http_server/`)
 - HTTP server with routing

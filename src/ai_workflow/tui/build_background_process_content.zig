@@ -2,6 +2,7 @@ const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
 const background_process = tree1_mod.background_process;
+const ProcessInfo = background_process.ProcessInfo;
 
 /// Build background processes content string from database for system prompt
 pub fn BuildBackgroundProcessContent(

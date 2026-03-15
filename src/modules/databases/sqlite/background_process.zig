@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const BackgroundProcess = struct {
+pub const ProcessInfo = struct {
     session_id: []const u8,
     pid: u32,
     command: []const u8,
@@ -28,18 +28,18 @@ pub fn save(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []cons
 }
 
 /// Get all background processes for a session
-pub fn getBySession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []const u8) ![]BackgroundProcess {
+pub fn getBySession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []const u8) ![]ProcessInfo {
     var rows = try db.query(allocator, "SELECT pid, command, log_path, started_at, status FROM session_background_process WHERE session_id = ?", &.{session_id});
     defer rows.deinit();
     
-    var processes = std.ArrayList(BackgroundProcess).init(allocator);
+    var processes = std.ArrayList(ProcessInfo).empty;
     errdefer {
         for (processes.items) |p| {
             allocator.free(p.command);
             allocator.free(p.log_path);
             allocator.free(p.status);
         }
-        processes.deinit();
+        processes.deinit(allocator);
     }
     
     while (try rows.next()) |row| {
@@ -52,7 +52,7 @@ pub fn getBySession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id
         const pid = try std.fmt.parseInt(u32, pid_str, 10);
         const started_at = try std.fmt.parseInt(i64, started_at_str, 10);
         
-        try processes.append(.{
+        try processes.append(allocator, .{
             .session_id = session_id,
             .pid = pid,
             .command = try allocator.dupe(u8, command),
@@ -62,7 +62,7 @@ pub fn getBySession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id
         });
     }
     
-    return processes.toOwnedSlice();
+    return processes.toOwnedSlice(allocator);
 }
 
 /// Update the status of a background process
@@ -84,11 +84,11 @@ pub fn delete(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []co
 }
 
 /// Get all running background processes
-pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]BackgroundProcess {
+pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]ProcessInfo {
     var rows = try db.query(allocator, "SELECT session_id, pid, command, log_path, started_at, status FROM session_background_process WHERE status = 'running'", &[_][]const u8{});
     defer rows.deinit();
     
-    var processes = std.ArrayList(BackgroundProcess).init(allocator);
+    var processes = std.ArrayList(ProcessInfo).empty;
     errdefer {
         for (processes.items) |p| {
             allocator.free(p.session_id);
@@ -96,7 +96,7 @@ pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]Backgroun
             allocator.free(p.log_path);
             allocator.free(p.status);
         }
-        processes.deinit();
+        processes.deinit(allocator);
     }
     
     while (try rows.next()) |row| {
@@ -110,7 +110,7 @@ pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]Backgroun
         const pid = try std.fmt.parseInt(u32, pid_str, 10);
         const started_at = try std.fmt.parseInt(i64, started_at_str, 10);
         
-        try processes.append(.{
+        try processes.append(allocator, .{
             .session_id = try allocator.dupe(u8, session_id),
             .pid = pid,
             .command = try allocator.dupe(u8, command),
@@ -120,7 +120,7 @@ pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]Backgroun
         });
     }
     
-    return processes.toOwnedSlice();
+    return processes.toOwnedSlice(allocator);
 }
 
 /// Check if a process with the given PID is still running

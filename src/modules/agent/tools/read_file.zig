@@ -41,7 +41,7 @@ pub fn read_file(
     // Compute SHA256 hash of the raw content
     var hash: [32]u8 = undefined;
     Sha256.hash(raw, &hash, .{});
-    
+
     // Convert hash to hex string
     const sha256_hex = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(hash, .lower)});
 
@@ -152,7 +152,7 @@ pub const readFileTool = AgentTool{
                 .{
                     .name = "show_line_numbers",
                     .type = "boolean",
-                    .description = "Whether to prefix each line with its line number. Default: false.",
+                    .description = "Whether to prefix each line with its line number, line number start from 1. Default: false.",
                 },
             },
             .required = &.{"path"},
