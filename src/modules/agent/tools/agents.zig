@@ -8,7 +8,7 @@ pub const MAX_AGENT_SIZE: usize = 100 * 1024;
 pub const APP_NAME = "nalar";
 
 /// Local agents directory
-pub const LOCAL_AGENTS_DIR = ".nalar/agents/listOfAgent";
+pub const LOCAL_AGENTS_DIR = ".nalar/agents";
 
 /// Agents file name inside each agent folder
 pub const AGENT_FILE_NAME = "AGENT.md";
@@ -101,7 +101,7 @@ pub fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedAgentFrontm
     allocator.free(fm.description);
 }
 
-/// Get the local agents directory path (.nalar/agents/listOfAgent/)
+/// Get the local agents directory path (.nalar/agents/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn getLocalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
@@ -111,7 +111,7 @@ pub fn getLocalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
         return null;
     };
 
-    // Build path: .nalar/agents/listOfAgent/
+    // Build path: .nalar/agents/
     const path = std.fs.path.join(allocator, &[_][]const u8{
         cwd,
         LOCAL_AGENTS_DIR,
@@ -124,9 +124,9 @@ pub fn getLocalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
 }
 
 /// Get the global agents path following XDG standards
-/// Linux: ~/.config/nalar/agents/listOfAgent/
-/// macOS: ~/Library/Application Support/nalar/agents/listOfAgent/
-/// Windows: %APPDATA%/nalar/agents/listOfAgent/
+/// Linux: ~/.config/nalar/agents/
+/// macOS: ~/Library/Application Support/nalar/agents/
+/// Windows: %APPDATA%/nalar/agents/
 /// Returns allocated string that caller must free, or null if home/env not found
 pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
     var config_dir: ?[]const u8 = null;
@@ -170,11 +170,10 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
     const dir = config_dir orelse return null;
     defer if (needs_free) allocator.free(dir);
 
-    // Build full path: config_dir/agents/listOfAgent/
+    // Build full path: config_dir/agents/
     const path = std.fs.path.join(allocator, &[_][]const u8{
         dir,
         "agents",
-        "listOfAgent",
     }) catch {
         std.log.debug("Could not build global agents path", .{});
         return null;

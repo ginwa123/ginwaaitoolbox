@@ -33,10 +33,10 @@ test "send_tool_result" {
     });
     defer logger.deinit();
     
-    send_tool_result.run(allocator, "invalid-session", &logger, "Command output", "call_123", "bash", "ls -la");
+    send_tool_result.SendToolResult(allocator, "invalid-session", &logger, "Command output", "call_123", "bash", "ls -la");
     
     // Test without command
-    send_tool_result.run(allocator, "invalid-session", &logger, "Output", "call_456", "list_skills", null);
+    send_tool_result.SendToolResult(allocator, "invalid-session", &logger, "Output", "call_456", "list_skills", null);
 }
 
 test "send_user_choice" {
@@ -49,5 +49,5 @@ test "send_user_choice" {
     });
     defer logger.deinit();
     
-    try send_user_choice.run(allocator, "invalid-session", &logger);
+    try send_user_choice.SendUserChoice(allocator, "invalid-session", &logger);
 }

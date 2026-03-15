@@ -7,7 +7,7 @@ test "constants are defined" {
     try std.testing.expect(agents.MAX_AGENT_SIZE > 0);
     try std.testing.expect(agents.MAX_AGENT_SIZE == 100 * 1024); // 100KB
     try std.testing.expectEqualStrings("nalar", agents.APP_NAME);
-    try std.testing.expectEqualStrings(".nalar/agents/listOfAgent", agents.LOCAL_AGENTS_DIR);
+    try std.testing.expectEqualStrings(".nalar/agents", agents.LOCAL_AGENTS_DIR);
     try std.testing.expectEqualStrings("AGENT.md", agents.AGENT_FILE_NAME);
 }
 
@@ -126,7 +126,7 @@ test "getLocalAgentsPath returns path" {
     defer agents.freeAgentsPath(allocator, path);
 
     // Path should contain the local agents directory
-    try std.testing.expect(std.mem.indexOf(u8, path, ".nalar/agents/listOfAgent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, path, ".nalar/agents") != null);
 }
 
 // Test: getGlobalAgentsPath returns a path

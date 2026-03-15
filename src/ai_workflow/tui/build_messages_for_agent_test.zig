@@ -5,12 +5,11 @@ const TUIHistory = @import("models.zig").TUIHistory;
 test "build messages with empty history" {
     const allocator = std.testing.allocator;
     const cwd = "/test/dir";
-    const tree_dir = "src/\nmain.zig";
     const skills = "test skills";
     
     const history: []TUIHistory = &[_]TUIHistory{};
     
-    const messages = try build_messages.BuildMessages(allocator, cwd, tree_dir, history, skills, "", "");
+    const messages = try build_messages.BuildMessages(allocator, cwd, history, skills, "", "");
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -35,7 +34,6 @@ test "build messages with empty history" {
 test "build messages preserves agent from history" {
     const allocator = std.testing.allocator;
     const cwd = "/test/dir";
-    const tree_dir = "src/";
     const skills = "";
     
     var history_data = [_]TUIHistory{
@@ -55,7 +53,7 @@ test "build messages preserves agent from history" {
     };
     defer history_data[0].deinit(allocator);
     
-    const messages = try build_messages.BuildMessages(allocator, cwd, tree_dir, &history_data, skills, "", "");
+    const messages = try build_messages.BuildMessages(allocator, cwd, &history_data, skills, "", "");
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);

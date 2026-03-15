@@ -30,12 +30,12 @@ fn setupTestAgentsDir() !struct { tmp_dir: std.testing.TmpDir, agents_path: []co
     var tmp_dir = std.testing.tmpDir(.{});
     errdefer tmp_dir.cleanup();
 
-    // Create the .nalar/agents/listOfAgent directory structure
-    try tmp_dir.dir.makePath(".nalar/agents/listOfAgent");
+    // Create the .nalar/agents directory structure
+    try tmp_dir.dir.makePath(".nalar/agents");
 
     // Get the full path to the agents directory
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const agents_path = try tmp_dir.dir.realpath(".nalar/agents/listOfAgent", &path_buf);
+    const agents_path = try tmp_dir.dir.realpath(".nalar/agents", &path_buf);
 
     return .{ .tmp_dir = tmp_dir, .agents_path = agents_path };
 }
@@ -51,10 +51,10 @@ test "full agent workflow - list and get agents" {
     defer tmp_dir.cleanup();
 
     // Create the agents directory
-    try tmp_dir.dir.makePath(".nalar/agents/listOfAgent");
+    try tmp_dir.dir.makePath(".nalar/agents");
 
     // Create test agent subdirectory
-    var agents_dir = try tmp_dir.dir.openDir(".nalar/agents/listOfAgent", .{});
+    var agents_dir = try tmp_dir.dir.openDir(".nalar/agents", .{});
     defer agents_dir.close();
 
     // Create test agent files
@@ -63,7 +63,7 @@ test "full agent workflow - list and get agents" {
 
     // Get the full path to the agents directory
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const agents_path = try tmp_dir.dir.realpath(".nalar/agents/listOfAgent", &path_buf);
+    const agents_path = try tmp_dir.dir.realpath(".nalar/agents", &path_buf);
 
     // Change to the temp directory so resolveAgentsPath finds our test agents
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -142,18 +142,18 @@ test "parseAgent returns valid XML" {
     defer tmp_dir.cleanup();
 
     // Create the agents directory structure
-    try tmp_dir.dir.makePath(".nalar/agents/listOfAgent/xml-test-agent");
+    try tmp_dir.dir.makePath(".nalar/agents/xml-test-agent");
 
     // Create test agent file
     const agent_content = "---\nname: xml-test-agent\ndescription: \"Agent for XML testing\"\n---\n\n# XML Test Agent\n\nThis is content for XML testing.";
 
-    const file = try tmp_dir.dir.createFile(".nalar/agents/listOfAgent/xml-test-agent/AGENT.md", .{});
+    const file = try tmp_dir.dir.createFile(".nalar/agents/xml-test-agent/AGENT.md", .{});
     defer file.close();
     try file.writeAll(agent_content);
 
     // Get the path to the agent file
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const agent_file_path = try tmp_dir.dir.realpath(".nalar/agents/listOfAgent/xml-test-agent/AGENT.md", &path_buf);
+    const agent_file_path = try tmp_dir.dir.realpath(".nalar/agents/xml-test-agent/AGENT.md", &path_buf);
 
     // Test loading via path
     const input = GetAgentInput{
@@ -214,16 +214,16 @@ test "integration with proper cleanup" {
     var tmp_dir = std.testing.tmpDir(.{});
 
     // Create test files
-    try tmp_dir.dir.makePath(".nalar/agents/listOfAgent/cleanup-test");
+    try tmp_dir.dir.makePath(".nalar/agents/cleanup-test");
 
     const agent_content = "---\nname: cleanup-test\ndescription: \"Test for cleanup\"\n---\n\n# Cleanup Test";
 
-    const file = try tmp_dir.dir.createFile(".nalar/agents/listOfAgent/cleanup-test/AGENT.md", .{});
+    const file = try tmp_dir.dir.createFile(".nalar/agents/cleanup-test/AGENT.md", .{});
     defer file.close();
     try file.writeAll(agent_content);
 
     // Verify file exists
-    const stat = try tmp_dir.dir.statFile(".nalar/agents/listOfAgent/cleanup-test/AGENT.md");
+    const stat = try tmp_dir.dir.statFile(".nalar/agents/cleanup-test/AGENT.md");
     try std.testing.expect(stat.size > 0);
 
     // Cleanup
@@ -243,9 +243,9 @@ test "full workflow with multiple agents" {
     defer tmp_dir.cleanup();
 
     // Create agents directory
-    try tmp_dir.dir.makePath(".nalar/agents/listOfAgent");
+    try tmp_dir.dir.makePath(".nalar/agents");
 
-    var agents_dir = try tmp_dir.dir.openDir(".nalar/agents/listOfAgent", .{});
+    var agents_dir = try tmp_dir.dir.openDir(".nalar/agents", .{});
     defer agents_dir.close();
 
     // Create multiple test agents
@@ -268,7 +268,7 @@ test "full workflow with multiple agents" {
 
     // Load agent-alpha
     const alpha_path = try std.fs.path.join(allocator, &[_][]const u8{
-        try tmp_dir.dir.realpath(".nalar/agents/listOfAgent", &path_buf),
+        try tmp_dir.dir.realpath(".nalar/agents", &path_buf),
         "agent-alpha",
         "AGENT.md",
     });
@@ -283,7 +283,7 @@ test "full workflow with multiple agents" {
 
     // Load agent-beta
     const beta_path = try std.fs.path.join(allocator, &[_][]const u8{
-        try tmp_dir.dir.realpath(".nalar/agents/listOfAgent", &path_buf),
+        try tmp_dir.dir.realpath(".nalar/agents", &path_buf),
         "agent-beta",
         "AGENT.md",
     });
@@ -298,7 +298,7 @@ test "full workflow with multiple agents" {
 
     // Load agent-gamma
     const gamma_path = try std.fs.path.join(allocator, &[_][]const u8{
-        try tmp_dir.dir.realpath(".nalar/agents/listOfAgent", &path_buf),
+        try tmp_dir.dir.realpath(".nalar/agents", &path_buf),
         "agent-gamma",
         "AGENT.md",
     });
