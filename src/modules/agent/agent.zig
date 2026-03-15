@@ -779,8 +779,8 @@ pub const Agent = struct {
                                     }
                                 }
                             }
-                            const tool_names_summary = if (tool_names_len > 0) tool_names_buf[0..tool_names_len] else "unknown";
-                            self.logFmt(.info, "[STREAM] AI requesting {} tool call(s): {s}", .{tc_delta.array.items.len, tool_names_summary});
+                            // const tool_names_summary = if (tool_names_len > 0) tool_names_buf[0..tool_names_len] else "unknown";
+                            // self.logFmt(.info, "[STREAM] AI requesting {} tool call(s): {s}", .{tc_delta.array.items.len, tool_names_summary});
 
                             var deltas = arena.alloc(ToolCallDelta, tc_delta.array.items.len) catch |err| {
                                 self.logMsg(.debug, "Error allocating ToolCallDelta");

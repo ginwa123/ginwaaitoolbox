@@ -13,6 +13,8 @@ const list_skills_tool = root_mod.list_skills_tool;
 const get_skill_tool = root_mod.get_skill_tool;
 const remove_skill_tool = root_mod.remove_skill_tool;
 const skills = root_mod.skills;
+const list_agents_tool = root_mod.list_agents_tool;
+const get_agent_tool = root_mod.get_agent_tool;
 const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
 const get_tree_dir = @import("get_tree_dir.zig");
@@ -59,4 +61,6 @@ pub const AllAgentTools: []const tool_models.AgentTool = &.{
     text_replace_tool.textReplaceTool,
     search_tool.searchTool,
     spawn_sub_agent_tool.spawnSubAgentTool,
+    list_agents_tool.listAgentsTool,
+    get_agent_tool.getAgentTool,
 };

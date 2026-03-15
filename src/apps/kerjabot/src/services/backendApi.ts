@@ -213,17 +213,8 @@ export const cancelRequest = async (sessionId: string): Promise<void> => {
  */
 export const pingSession = async (sessionId: string): Promise<boolean> => {
   try {
-    const response = await fetch('/api/command', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        app_type: 'web',
-        command_type: 'ping',
-        session_id: sessionId,
-      }),
-    });
+    // Use the new synchronous ping endpoint
+    const response = await fetch(`/api/ping/${sessionId}`);
 
     if (!response.ok) {
       return false;
@@ -275,17 +266,8 @@ export const executeTool = async (toolCall: ToolCall): Promise<ToolResult> => {
  */
 export const checkBackend = async (): Promise<boolean> => {
   try {
-    const response = await fetch('/api/command', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        app_type: 'web',
-        command_type: 'ping',
-        session_id: '',
-      }),
-    });
+    // Use the ping endpoint with empty session_id to check if server is up
+    const response = await fetch('/api/ping/health-check');
     return response.ok;
   } catch {
     return false;

@@ -324,6 +324,9 @@ pub const HttpServer = struct {
         router.post("/api/session/create", sessionCreateHandler, .{});
         router.get("/api/session", sessionListHandler, .{});
 
+        // Ping endpoint - checks if session is connected via SSE
+        router.get("/api/ping/:session_id", pingHandler, .{});
+
         // Kerjabot session endpoints
         router.post("/api/kerjabot/session/create", kerjabotSessionCreateHandler, .{});
         router.get("/api/kerjabot/session/:id", kerjabotGetSessionHandler, .{});
@@ -401,6 +404,36 @@ fn sessionListHandler(@"req": *httpz.Request, res: *httpz.Response) anyerror!voi
     }
     res.status = 500;
     res.body = "{\"error\":\"No session handler\"}";
+}
+
+/// Ping handler - checks if session is connected via SSE
+/// Returns JSON indicating whether the session is connected or needs reconnection
+fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    const session_id = req.param("session_id") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing session_id\"}";
+        return;
+    };
+
+    if (global_server) |server| {
+        var response_buf: [256]u8 = undefined;
+        var response: []const u8 = undefined;
+
+        if (server.sse_manager.hasSession(session_id)) {
+            response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"connected\":true}}", .{session_id}) catch unreachable;
+            std.log.info("Ping: session {s} is connected", .{session_id});
+        } else {
+            response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{session_id}) catch unreachable;
+            std.log.info("Ping: session {s} not connected, TUI should reconnect SSE", .{session_id});
+        }
+
+        res.status = 200;
+        res.body = response;
+        return;
+    }
+
+    res.status = 500;
+    res.body = "{\"error\":\"Server not initialized\"}";
 }
 
 /// Kerjabot session create handler

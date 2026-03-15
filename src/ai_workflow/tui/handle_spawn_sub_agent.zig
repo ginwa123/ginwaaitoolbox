@@ -33,6 +33,8 @@ const GetMessages = @import("get_messages.zig").GetMessages;
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const StreamingContext = @import("tui_workflow.zig").StreamingContext;
+const BuildSkillContent = @import("build_skill_content.zig").BuildSkillContent;
+const SaveSkill = @import("save_skill.zig").SaveSkill;
 
 const MAX_SUB_AGENTS = 20;
 
@@ -133,7 +135,6 @@ fn runSubAgent(
     }
 
     // Build system prompt with cwd context - sub-agents need this for path resolution
-    const systemPrompt = try prompt.buildSubAgentPrompt(parentAllocator, cwd, tool_names.items);
 
     // Save system prompt to DB so it can be fetched in the while loop
     // _ = try SaveMessage(parentAllocator, db, .{
@@ -167,6 +168,9 @@ fn runSubAgent(
         var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parentAllocator);
         defer arenaAllocatorWhileLoop.deinit();
         const allocator = arenaAllocatorWhileLoop.allocator();
+
+        const skillContents = try BuildSkillContent(allocator, db, session_id);
+        const systemPrompt = try prompt.buildSubAgentPrompt(allocator, cwd, tool_names.items, skillContents);
 
         var messages: std.ArrayList(agent.AgentMessage) = .empty;
         try messages.append(allocator, .{
@@ -298,6 +302,30 @@ fn runSubAgent(
                                 allocator.free(err_str);
                                 break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
+
+                            // Save skill to database if loaded successfully
+                            if (std.mem.indexOf(u8, tool_result, "<loaded>true</loaded>") != null) {
+                                // Parse skill_name from result
+                                if (std.mem.indexOf(u8, tool_result, "<skill_name>")) |name_start| {
+                                    const name_begin = name_start + "<skill_name>".len;
+                                    if (std.mem.indexOf(u8, tool_result[name_begin..], "</skill_name>")) |name_end| {
+                                        const skill_name = tool_result[name_begin .. name_begin + name_end];
+                                        // Parse content from result
+                                        if (std.mem.indexOf(u8, tool_result, "<content>")) |content_start| {
+                                            const content_begin = content_start + "<content>".len;
+                                            if (std.mem.indexOf(u8, tool_result[content_begin..], "</content>")) |content_end| {
+                                                const content = tool_result[content_begin .. content_begin + content_end];
+                                                // Save to database
+                                                SaveSkill(allocator, db, logger, session_id, skill_name, content) catch |err| {
+                                                    const err_name = @errorName(err);
+                                                    logger.errFmt("Error saving skill to database: {s}", .{err_name}) catch {};
+                                                };
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             // Send tool result immediately after execution
                             SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "get_skill", null);
                         } else if (std.mem.eql(u8, tc.function.name, "remove_skill")) {

@@ -336,21 +336,18 @@ fn sendMessageViaSocket(allocator: std.mem.Allocator, sock: std.posix.fd_t, sess
     allocator.free(request);
 }
 
-/// Send a ping command to keep session alive
+/// Send a ping request to check if session is still connected
 fn sendPingCommand(allocator: std.mem.Allocator, session_id: []const u8) !bool {
-    const json_payload = try std.fmt.allocPrint(allocator,
-        \\{{"app_type":"cli","command_type":"ping","session_id":"{s}"}}
-    , .{session_id});
-
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, DEFAULT_PORT);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
 
+    // Use the new synchronous ping endpoint
     const request = try std.fmt.allocPrint(allocator,
-        "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
-        .{ HTTP_HOST, DEFAULT_PORT, json_payload.len, json_payload }
+        "GET /api/ping/{s} HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n",
+        .{ session_id, HTTP_HOST, DEFAULT_PORT }
     );
     _ = try std.posix.write(sock, request);
 

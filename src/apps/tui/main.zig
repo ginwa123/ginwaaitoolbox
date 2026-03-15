@@ -548,19 +548,18 @@ fn sendSessionsCommand(app: *App) !void {
     _ = try std.posix.write(sock, request);
 }
 
-/// Send a ping command to the server to keep the session alive
+/// Send a ping request to the server to check if the session is still connected
 /// This prevents "session not found" errors when the server's SSE stream handler
 /// thread exits while the TUI is still running a long operation
 /// Returns true if reconnect is needed, false otherwise
 fn sendPingCommand(app: *App) !bool {
-    const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
-        \\{{"app_type":"tui","command_type":"ping","session_id":"{s}"}}
-    , .{app.session_id});
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, app.http_port, json_payload.len, json_payload });
+
+    // Use the new synchronous ping endpoint
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/ping/{s} HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, HTTP_HOST, app.http_port });
     _ = try std.posix.write(sock, request);
 
     // Read response to check if reconnect is needed
