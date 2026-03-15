@@ -161,11 +161,12 @@ const App = struct {
     verbose: bool = false,
     state: CompletionState = CompletionState{ .matches = .empty },
     is_noninteractive: bool = false,
+    http_port: u16 = 8080,
 
-    pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool) !App {
+    pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16) !App {
         // try spawnBackend(verbose);
         std.log.info("Spawned backend", .{});
-        try waitForHttpServer(10000);
+        try waitForHttpServer(10000, http_port);
         std.log.info("HTTP server ready", .{});
 
         // Only enable raw mode when running interactively (has a real TTY)
@@ -196,6 +197,7 @@ const App = struct {
             .state = CompletionState{
                 .matches = std.ArrayList([]const u8).empty,
             },
+            .http_port = http_port,
         };
     }
 
@@ -244,7 +246,7 @@ fn spawnBackend(_: bool) !void {
     };
     defer std.posix.close(test_socket);
 
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 8080);
     var already_running = false;
     std.posix.connect(test_socket, &addr.any, @sizeOf(std.net.Address)) catch {
         already_running = true;
@@ -281,7 +283,7 @@ fn spawnBackend(_: bool) !void {
     std.posix.exit(1);
 }
 
-fn waitForHttpServer(timeout_ms: u64) !void {
+fn waitForHttpServer(timeout_ms: u64, port: u16) !void {
     const start = std.time.milliTimestamp();
     while (true) {
         if (std.time.milliTimestamp() - start > timeout_ms) return error.Timeout;
@@ -290,7 +292,7 @@ fn waitForHttpServer(timeout_ms: u64) !void {
             continue;
         };
         defer std.posix.close(socket_fd);
-        var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+        var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
         if (std.posix.connect(socket_fd, &addr.any, @sizeOf(std.net.Address))) {
             return;
         } else |_| {
@@ -460,14 +462,14 @@ fn reconnectSseStream(app: *App, current_socket: std.posix.fd_t) std.posix.fd_t 
     // Create new socket
     const new_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return -1;
 
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     std.posix.connect(new_socket, &addr.any, @sizeOf(std.net.Address)) catch {
         std.posix.close(new_socket);
         return -1;
     };
 
     // Send stream request
-    const stream_request = std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, HTTP_PORT }) catch {
+    const stream_request = std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, app.http_port }) catch {
         std.posix.close(new_socket);
         return -1;
     };
@@ -516,9 +518,9 @@ fn sendMessage(app: *App, message: []const u8) !void {
     , .{ app.session_id, escaped_msg, escaped_cwd });
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, app.http_port, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
 
@@ -528,9 +530,9 @@ fn sendCancelCommand(app: *App) !void {
     , .{app.session_id});
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, app.http_port, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
 
@@ -540,9 +542,9 @@ fn sendSessionsCommand(app: *App) !void {
     , .{});
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, app.http_port, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
 
@@ -556,9 +558,9 @@ fn sendPingCommand(app: *App) !bool {
     , .{app.session_id});
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, HTTP_PORT, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ HTTP_HOST, app.http_port, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 
     // Read response to check if reconnect is needed
@@ -772,10 +774,10 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var enable: u32 = 1;
     std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
 
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
 
-    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, HTTP_PORT });
+    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, app.http_port });
     _ = try std.posix.write(stream_socket, stream_request);
 
     if (!waitForSseConnected(stream_socket, 5000)) {
@@ -1036,10 +1038,10 @@ fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     var enable: u32 = 1;
     std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
 
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, HTTP_PORT);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
 
-    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, HTTP_PORT });
+    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, HTTP_HOST, app.http_port });
     _ = try std.posix.write(stream_socket, stream_request);
 
     // Wait for "connected" event BEFORE sending command
@@ -1341,6 +1343,7 @@ const CliOptions = struct {
     show_help: bool = false,
     show_version: bool = false,
     verbose: bool = false,
+    port: u16 = 8080,
 };
 
 fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
@@ -1369,6 +1372,14 @@ fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
             opts.show_version = true;
         } else if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-V")) {
             opts.verbose = true;
+        } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--port")) {
+            if (i + 1 >= args.len) {
+                return error.MissingPortArgument;
+            }
+            i += 1;
+            opts.port = std.fmt.parseInt(u16, args[i], 10) catch {
+                return error.InvalidPortArgument;
+            };
         } else {
             // Unknown argument, ignore for compatibility
         }
@@ -1377,17 +1388,19 @@ fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
 }
 
 fn printHelp() void {
-    tui_text.print("nalarcore - AI Agent Terminal UI\n\n", .{});
-    tui_text.print("Usage: nalarcore [options]\n\n", .{});
+    tui_text.print("nalar-tui - AI Agent Terminal UI\n\n", .{});
+    tui_text.print("Usage: nalar-tui [options]\n\n", .{});
     tui_text.print("Options:\n", .{});
     tui_text.print("  -q, --query <prompt>    Send a query prompt (one-shot mode)\n", .{});
     tui_text.print("  -c, --continue <session_id> Resume an existing session\n", .{});
+    tui_text.print("  -p, --port <port>       HTTP server port (default: 8080)\n", .{});
     tui_text.print("  -v, --version           Print version\n", .{});
     tui_text.print("  -h, --help              Show help\n\n", .{});
     tui_text.print("Examples:\n", .{});
-    tui_text.print("  nalarcore -q \"What is the capital of France?\"\n", .{});
-    tui_text.print("  nalarcore -c abc123 -q \"Summarize that in one sentence.\"\n", .{});
-    tui_text.print("  nalarcore               Start interactive session\n", .{});
+    tui_text.print("  nalar-tui -q \"What is the capital of France?\"\n", .{});
+    tui_text.print("  nalar-tui -c abc123 -q \"Summarize that in one sentence.\"\n", .{});
+    tui_text.print("  nalar-tui -p 8081       Connect to HTTP server on port 8081\n", .{});
+    tui_text.print("  nalar-tui               Start interactive session\n", .{});
 }
 
 fn runQueryMode(app: *App, query: []const u8) !void {
@@ -1419,6 +1432,14 @@ pub fn main() !void {
             tui_text.print("Error: -c/--continue requires an argument\n", .{});
             return error.MissingSessionArgument;
         }
+        if (err == error.MissingPortArgument) {
+            tui_text.print("Error: -p/--port requires an argument\n", .{});
+            return error.MissingPortArgument;
+        }
+        if (err == error.InvalidPortArgument) {
+            tui_text.print("Error: -p/--port must be a valid u16 number\n", .{});
+            return error.InvalidPortArgument;
+        }
         return err;
     };
 
@@ -1429,7 +1450,7 @@ pub fn main() !void {
     }
 
     if (opts.show_version) {
-        tui_text.print("nalarcore version {s}\n", .{VERSION});
+        tui_text.print("nalar-tui version {s}\n", .{VERSION});
         return;
     }
 
@@ -1437,7 +1458,7 @@ pub fn main() !void {
     const is_noninteractive = opts.query != null;
 
     // Initialize app (always needed, even for query mode)
-    var app = try App.init(allocator, opts.verbose, is_noninteractive);
+    var app = try App.init(allocator, opts.verbose, is_noninteractive, opts.port);
     defer app.deinit();
 
     // Handle session continuation

@@ -15,14 +15,12 @@ type StreamCallback = (chunk: MessageStreamChunk) => void;
  * Create a new session
  */
 export const createSession = async (agentType: string = 'general'): Promise<{ sessionId: string }> => {
-  const response = await fetch('/api/command', {
+  const response = await fetch('/api/session/create', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      app_type: 'web',
-      command_type: 'create_session',
       agent_type: agentType,
     }),
   });

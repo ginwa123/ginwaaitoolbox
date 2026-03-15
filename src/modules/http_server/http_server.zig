@@ -1,5 +1,7 @@
 const std = @import("std");
-const httpz = @import("httpz");
+const httpz_import = @import("httpz");
+
+pub const httpz = httpz_import;
 
 pub const Command = struct {
     command_type: []const u8,
@@ -233,6 +235,7 @@ pub const SseConnectionManager = struct {
 };
 
 pub const MessageHandler = *const fn (allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void;
+pub const SessionHandler = *const fn (allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque, res: *httpz.Response) void;
 
 // Global server instance for handlers to access
 pub var global_server: ?*HttpServer = null;
@@ -262,6 +265,7 @@ pub const HttpServer = struct {
     allocator: std.mem.Allocator,
     port: u16,
     message_handler: ?MessageHandler = null,
+    session_handler: ?SessionHandler = null, // NEW: for synchronous session operations
     ctx: ?*anyopaque = null,
     sse_manager: SseConnectionManager,
 
@@ -280,6 +284,11 @@ pub const HttpServer = struct {
 
     pub fn setMessageHandler(self: *Self, handler: MessageHandler) void {
         self.message_handler = handler;
+    }
+
+    /// Set the session handler for synchronous session operations (create/get/delete)
+    pub fn setSessionHandler(self: *Self, handler: SessionHandler) void {
+        self.session_handler = handler;
     }
 
     pub fn run(self: *Self) !void {
@@ -301,6 +310,10 @@ pub const HttpServer = struct {
 
         // SSE stream endpoint
         router.get("/api/stream/:session_id", streamHandler, .{});
+
+        // Session management endpoints (synchronous - returns response directly)
+        router.post("/api/session/create", sessionCreateHandler, .{});
+        router.get("/api/session", sessionListHandler, .{});
 
         try server.listen();
     }
@@ -341,6 +354,39 @@ fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
 
     res.status = 200;
     res.body = "ok";
+}
+
+/// Session create handler - synchronous, returns session ID in response
+fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    if (global_server) |server| {
+        if (server.session_handler) |sess_handler| {
+            const body = req.body() orelse "";
+
+            // Run synchronously - session creation is quick
+            var arena = std.heap.ArenaAllocator.init(server.allocator);
+            defer arena.deinit();
+            sess_handler(arena.allocator(), body, server.ctx, res);
+            return;
+        }
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"No session handler\"}";
+}
+
+/// Session list handler - returns list of sessions
+fn sessionListHandler(@"req": *httpz.Request, res: *httpz.Response) anyerror!void {
+    _ = @"req";
+    if (global_server) |server| {
+        if (server.session_handler) |_| {
+            // For now, return empty sessions list
+            // Could be extended to query actual sessions from database
+            res.status = 200;
+            res.body = "{\"sessions\":[]}";
+            return;
+        }
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"No session handler\"}";
 }
 
 /// Context for SSE stream handler

@@ -1,7 +1,9 @@
 const std = @import("std");
+
 const tree1 = @import("nalarcore");
 const agentMod = tree1.agent;
 const http_server = tree1.http_server;
+const httpz = http_server.httpz;
 const agent = tree1.agent;
 const ai_workflow = tree1.ai_workflow;
 const session_monitor = tree1.session_monitor;
@@ -262,7 +264,33 @@ pub fn main() !void {
     };
     defer monitor.stop();
 
-    var server = http_server.HttpServer.init(parentAllocator, ctxParent, 0);
+    // Default port (0 means auto-select, HttpServer will use 8080)
+    var port: u16 = 0;
+
+    // Parse command line arguments
+    const args = try std.process.argsAlloc(parentAllocator);
+    defer std.process.argsFree(parentAllocator, args);
+
+    // Parse arguments
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        if (std.mem.eql(u8, arg, "--port")) {
+            if (i + 1 >= args.len) {
+                std.log.err("Error: --port requires a value\n", .{});
+                return error.InvalidArgs;
+            }
+            port = try std.fmt.parseInt(u16, args[i + 1], 10);
+            i += 2;
+        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            std.debug.print("Usage: nalar [--port PORT]\n", .{});
+            std.debug.print("  --port PORT    Port to run the HTTP server on (default: 8080)\n", .{});
+            return;
+        }
+    }
+
+    var server = http_server.HttpServer.init(parentAllocator, ctxParent, port);
 
     server.setMessageHandler(struct {
         fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
@@ -353,6 +381,45 @@ pub fn main() !void {
             }
 
             std.debug.print("Received: {s}\n", .{data});
+        }
+    }.handler);
+
+    // Set session handler for synchronous session operations (create/get sessions)
+    server.setSessionHandler(struct {
+        fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque, res: *httpz.Response) void {
+            std.debug.print("session handler called with: {s}\n", .{data});
+
+            // Note: ctx can be used for database access if needed later
+            _ = ctx;
+
+            // Parse the request body as JSON
+            const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch {
+                res.status = 400;
+                res.body = "{\"error\":\"Invalid JSON\"}";
+                return;
+            };
+            defer parsed.deinit();
+
+            const root = parsed.value.object;
+
+            // Get optional agent_type from request
+            var agent_type: []const u8 = "general";
+            if (root.get("agent_type")) |v| {
+                agent_type = v.string;
+            }
+
+            // Generate session ID
+            var session_id_buf: [64]u8 = undefined;
+            const session_id = std.fmt.bufPrint(&session_id_buf, "session_{}", .{std.time.timestamp()}) catch "session_error";
+
+            // Return JSON response
+            var response_buf: [256]u8 = undefined;
+            const response = std.fmt.bufPrint(&response_buf, "{{\"sessionId\":\"{s}\",\"agentType\":\"{s}\"}}", .{ session_id, agent_type }) catch unreachable;
+
+            res.status = 200;
+            res.body = response;
+
+            std.debug.print("Created session: {s} with agentType: {s}\n", .{ session_id, agent_type });
         }
     }.handler);
 
