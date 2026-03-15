@@ -3,6 +3,7 @@
 <!-- Known API changes, syntax rules, and environment behaviors for this codebase. -->
 <!-- Format: - [lang@version] <fact in one sentence> -->
 
+- [zig@0.15] **CRITICAL: Never return stack-allocated slices from functions** — stack memory is invalidated after function returns, causing corruption. Always use `allocator.alloc()` or `allocator.dupe()` for returned slices.
 - [zig@0.15] `{s}` format string requires `[]u8` — use `@errorName(err)` to convert error types to string
 - [zig@0.15] ArrayList API changed: `.init` → `.empty`, all of `.appendSlice`, `.deinit`, `.toOwnedSlice` now require allocator as first arg
 - [zig@0.15] `std.fs.File.createFile` replaces `writeFile` for creating/overwriting files

@@ -15,8 +15,8 @@ const list_skills_tool = @import("../../modules/agent/tools/list_skills.zig");
 const get_skill_tool = @import("../../modules/agent/tools/get_skill.zig");
 const remove_skill_tool = @import("../../modules/agent/tools/remove_skill.zig");
 const config_mod = @import("../../modules/config/config.zig");
-const save_message = @import("save_message.zig");
-const send_tool_result = @import("send_tool_result.zig");
+const SaveMessage = @import("save_message.zig").SaveMessage;
+const SendToolResult = @import("send_tool_result.zig");
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 const handle_tool = @import("handle_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
@@ -70,10 +70,7 @@ fn runSubAgent(
     model: []const u8,
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
-    allowed_tools: ?[]const []const u8, // optional list of tool names to allow
-    // New parameters for saving messages to DB
-    // session_id: []const u8,
-    // session_name: ?[]const u8,
+    allowed_tools: ?[]const []const u8,
     loop_index: u32,
     agent_temperature: f32,
     is_thinking: bool,
@@ -86,7 +83,7 @@ fn runSubAgent(
     const session_name = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
 
     // Save user instruction message to DB
-    _ = try save_message.SaveMessage(allocator, db, .{
+    _ = try SaveMessage(allocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
@@ -152,6 +149,10 @@ fn runSubAgent(
     var last_response: ?agent.CallResponse = null;
 
     while (true) {
+
+        // messagesListItems
+        // build prompt sub agent here
+
         const params = agent.AgentCall{
             .tools = sub_agent_tools,
             .messages = messages.items,
@@ -164,7 +165,7 @@ fn runSubAgent(
 
         // Save assistant response to DB
         const assistant_tool_calls = if (response.tool_calls) |tcs| tcs else null;
-        _ = try save_message.SaveMessage(allocator, db, .{
+        _ = try SaveMessage(allocator, db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -210,14 +211,14 @@ fn runSubAgent(
                         if (std.mem.eql(u8, tc.function.name, "bash")) {
                             const bash_input_opt = parseBashInput(allocator, tc.function.arguments) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                                send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
+                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
                                 allocator.free(err_str);
                                 break :blk null;
                             };
                             if (bash_input_opt) |bash_input| {
                                 const result = bash_tool.executeBash(allocator, bash_input) catch |err| blk: {
                                     const err_str = try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                                    send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
+                                    SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
                                     allocator.free(err_str);
                                     break :blk null;
                                 };
@@ -230,73 +231,73 @@ fn runSubAgent(
                                 tool_result = "Error: bash input parsing failed";
                             }
                             // Send tool result immediately after execution
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "bash", null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "bash", null);
                         } else if (std.mem.eql(u8, tc.function.name, "read_file")) {
                             tool_result = handle_read_file_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: read_file failed: {s}", .{@errorName(err)});
-                                send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "read_file", null);
+                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "read_file", null);
                                 allocator.free(err_str);
                                 break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "read_file", null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "read_file", null);
                         } else if (std.mem.eql(u8, tc.function.name, "search")) {
                             tool_result = handle_search_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: search failed: {s}", .{@errorName(err)});
-                                send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "search", null);
+                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "search", null);
                                 allocator.free(err_str);
                                 break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "search", null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "search", null);
                         } else if (std.mem.eql(u8, tc.function.name, "text_replace")) {
                             tool_result = handle_text_replace_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: text_replace failed: {s}", .{@errorName(err)});
-                                send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "text_replace", null);
+                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "text_replace", null);
                                 allocator.free(err_str);
                                 break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "text_replace", null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "text_replace", null);
                         } else if (std.mem.eql(u8, tc.function.name, "write_file")) {
                             tool_result = handle_write_file_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: write_file failed: {s}", .{@errorName(err)});
-                                send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "write_file", null);
+                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "write_file", null);
                                 allocator.free(err_str);
                                 break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "write_file", null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "write_file", null);
                         } else if (std.mem.eql(u8, tc.function.name, "list_skills")) {
                             tool_result = handle_list_skills_tool.run(allocator);
                             // Send tool result immediately after execution
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "list_skills", null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "list_skills", null);
                         } else if (std.mem.eql(u8, tc.function.name, "get_skill")) {
                             tool_result = handle_get_skill_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: get_skill failed: {s}", .{@errorName(err)});
-                                send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "get_skill", null);
+                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "get_skill", null);
                                 allocator.free(err_str);
                                 break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "get_skill", null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "get_skill", null);
                         } else if (std.mem.eql(u8, tc.function.name, "remove_skill")) {
                             tool_result = handle_remove_skill_tool.run(allocator, tc) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: remove_skill failed: {s}", .{@errorName(err)});
-                                send_tool_result.run(allocator, parent_session_id, logger, err_str, tc.id, "remove_skill", null);
+                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "remove_skill", null);
                                 allocator.free(err_str);
                                 break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
                             // Send tool result immediately after execution
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, "remove_skill", null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "remove_skill", null);
                         } else {
                             tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
                             // Send tool result for unknown tool
-                            send_tool_result.run(allocator, parent_session_id, logger, tool_result, tc.id, tc.function.name, null);
+                            SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, tc.function.name, null);
                         }
 
                         // Save tool result to DB
-                        _ = try save_message.SaveMessage(allocator, db, .{
+                        _ = try SaveMessage(allocator, db, .{
                             .session_id = session_id,
                             .model = model,
                             .cwd = cwd,
@@ -625,7 +626,7 @@ pub fn run(
     try messages_list.append(allocator, tool_result_msg);
 
     // Save to DB
-    _ = try save_message.SaveMessage(allocator, db, .{
+    _ = try SaveMessage(allocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
@@ -650,7 +651,7 @@ pub fn run(
         .total_tokens = 0,
     });
 
-    _ = send_tool_result.run(allocator, session_id, logger, copy_result_msg, tool_call_id_dup, "spawn_sub_agent", null);
+    _ = SendToolResult.SendToolResult(allocator, session_id, logger, copy_result_msg, tool_call_id_dup, "spawn_sub_agent", null);
 
     logger.infoFmt("spawn_sub_agent: completed {} sub-agents", .{parsed.sub_agents.len}) catch {};
 }

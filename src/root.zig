@@ -94,6 +94,7 @@ pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const lsp_client = @import("modules/agent/tools/lsp_client.zig");
+pub const cronjob = @import("modules/cronjob/mod.zig");
 
 
 
@@ -143,6 +144,7 @@ test {
     _ = @import("ai_workflow/tui/transform_llm_history_to_agent_messages.zig");
     _ = @import("ai_workflow/tui/tui_workflow.zig");
     _ = @import("modules/session/session_monitor.zig");
+    _ = @import("modules/cronjob/cronjob.zig");
     _ = @import("modules/agent/tools/write_file.zig");
     _ = @import("modules/agent/tools/write_file_test.zig");
     _ = @import("modules/agent/tools/text_replace.zig");

@@ -74,7 +74,7 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
         .total_tokens = 0,
     });
 
-    send_tool_result.run(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
+    send_tool_result.SendToolResult(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
 }
 
 /// Helper to handle error for tools that return owned strings
@@ -255,7 +255,7 @@ pub fn HandleTool(
                 ctx.is_thinking = isThinking.*;
                 ctx.agent_temperature = agent_temperature.*;
 
-                send_tool_result.run(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
+                send_tool_result.SendToolResult(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
                 logger.infoFmt("Agent properties updated: temp={any}, is_thinking={any}", .{ change_result.temperature, change_result.is_thinking }) catch {};
                 continue;
             }

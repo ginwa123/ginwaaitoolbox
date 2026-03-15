@@ -3,7 +3,7 @@ const tree1_mod = @import("nalarcore");
 const logger_mod = tree1_mod.logger;
 const http_server = @import("nalarcore").http_server;
 
-pub fn run(allocator: std.mem.Allocator, session_id: []const u8, logger: *logger_mod.Logger, result: []const u8, tool_call_id: []const u8, tool_name: []const u8, command: ?[]const u8) void {
+pub fn SendToolResult(allocator: std.mem.Allocator, session_id: []const u8, logger: *logger_mod.Logger, result: []const u8, tool_call_id: []const u8, tool_name: []const u8, command: ?[]const u8) void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
 
     var buf: std.ArrayList(u8) = .empty;

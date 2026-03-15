@@ -7,6 +7,7 @@ const httpz = http_server.httpz;
 const agent = tree1.agent;
 const ai_workflow = tree1.ai_workflow;
 const session_monitor = tree1.session_monitor;
+const cronjob = tree1.cronjob;
 const tui_workflow = tree1.ai_workflow;
 const ai_workflow_mod = tree1.ai_workflow_models;
 const sqlite = tree1.sqlite;
@@ -263,6 +264,17 @@ pub fn main() !void {
         return err;
     };
     defer monitor.stop();
+
+    // Spawn cronjob to periodically check background process status
+    const cronjob_config = cronjob.CronjobConfig{
+        .check_interval_ms = 30_000, // Check every 30 seconds
+        .db_path = db_path, // Use same database as the rest of the app
+    };
+    var cron = cronjob.cronjob.Cronjob.spawn(parentAllocator, cronjob_config) catch |err| {
+        std.log.err("Failed to spawn cronjob: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer cron.stop();
 
     // Default port (0 means auto-select, HttpServer will use 8080)
     var port: u16 = 0;
