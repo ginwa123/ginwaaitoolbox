@@ -146,6 +146,8 @@ test {
     _ = @import("modules/agent/tools/text_replace_test.zig");
     _ = @import("modules/agent/tools/search.zig");
     _ = @import("modules/agent/tools/search_test.zig");
+    _ = @import("modules/agent/tools/read_file.zig");
+    _ = @import("modules/agent/tools/read_file_test.zig");
     _ = @import("modules/agent/mcp/mcp/mcp_server.zig");
     _ = @import("modules/http/http_client.zig");
 }
