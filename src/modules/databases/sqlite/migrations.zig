@@ -181,6 +181,26 @@ pub const Migration013AddTokenUsageColumns = struct {
     }
 };
 
+pub const Migration014AddBackgroundProcess = struct {
+    pub const version: u32 = 14;
+    pub const name = "add_background_process";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS session_background_process (
+            \\    session_id TEXT NOT NULL,
+            \\    pid INTEGER NOT NULL,
+            \\    command TEXT NOT NULL,
+            \\    log_path TEXT NOT NULL,
+            \\    started_at INTEGER NOT NULL,
+            \\    status TEXT NOT NULL DEFAULT 'running',
+            \\    PRIMARY KEY (session_id, pid)
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_bg_process_session ON session_background_process(session_id)", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -246,6 +266,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration011AddTemperatureAndThinking.version, .name = Migration011AddTemperatureAndThinking.name, .up = Migration011AddTemperatureAndThinking.up },
     .{ .version = Migration012AddParentTracking.version, .name = Migration012AddParentTracking.name, .up = Migration012AddParentTracking.up },
     .{ .version = Migration013AddTokenUsageColumns.version, .name = Migration013AddTokenUsageColumns.name, .up = Migration013AddTokenUsageColumns.up },
+    .{ .version = Migration014AddBackgroundProcess.version, .name = Migration014AddBackgroundProcess.name, .up = Migration014AddBackgroundProcess.up },
 };
 
 /// Register all migrations with a MigrationManager
