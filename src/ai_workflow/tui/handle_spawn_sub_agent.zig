@@ -510,7 +510,7 @@ pub fn run(
 
                 log.infoFmt("spawn_sub_agent[{}]: starting agent '{s}'", .{ idx, name }) catch {};
 
-                const sessionId = std.fmt.allocPrint(thread_alloc, "{}_{}", .{ idx, std.time.nanoTimestamp() }) catch |err| {
+                const sessionId = std.fmt.allocPrint(thread_alloc, "{}", .{ std.time.nanoTimestamp() }) catch |err| {
                     log.errFmt("spawn_sub_agent[{}]: failed to generate sessionId: {}", .{ idx, err }) catch {};
                     return;
                 };

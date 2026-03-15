@@ -55,11 +55,97 @@ pub const CompletionState = struct {
     matches: std.ArrayList([]const u8),
 };
 
-pub const COMMANDS = [_][]const u8{
-    "/sessions",
-    "/exit",
-    "/help",
+/// Command names only (for completion)
+pub fn getCommandNames() []const []const u8 {
+    return &.{
+        "/sessions",
+        "/exit",
+        "/help",
+        "/clear",
+        "/ping",
+    };
+}
+
+/// Command info with descriptions (for help display and completions)
+pub const CommandInfo = struct {
+    name: []const u8,
+    description: []const u8,
 };
+
+/// Get all commands with descriptions
+pub fn getCommands() []const CommandInfo {
+    return &.{
+        .{ .name = "/sessions", .description = "List all active sessions" },
+        .{ .name = "/exit", .description = "Exit the application" },
+        .{ .name = "/help", .description = "Show available commands" },
+        .{ .name = "/clear", .description = "Clear the screen" },
+        .{ .name = "/ping", .description = "Ping the server" },
+    };
+}
+
+/// Execute a command by name
+/// Returns true if the app should exit, false otherwise
+pub fn executeCommand(app: *App, command: []const u8) !bool {
+    if (std.mem.eql(u8, command, "/sessions")) {
+        return commandSessions(app);
+    }
+    if (std.mem.eql(u8, command, "/exit")) {
+        return commandExit(app);
+    }
+    if (std.mem.eql(u8, command, "/help")) {
+        return commandHelp(app);
+    }
+    if (std.mem.eql(u8, command, "/clear")) {
+        return commandClear(app);
+    }
+    if (std.mem.eql(u8, command, "/ping")) {
+        return commandPing(app);
+    }
+    return false;
+}
+
+// ─── Command Handlers ────────────────────────────────────────────────────────
+
+fn commandSessions(app: *App) !bool {
+    std.debug.print("\r\n", .{});
+    const response = readResponseAndStreamGetSessions(app) catch "";
+    defer app.allocator.free(response);
+    if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
+    return false;
+}
+
+fn commandExit(_: *App) !bool {
+    return true;
+}
+
+fn commandHelp(_: *App) !bool {
+    std.debug.print("\r\n{s}Available commands:{s}\r\n", .{ bold, reset });
+    const commands = getCommands();
+    for (commands) |cmd| {
+        std.debug.print("  {s}{s:<12}{s}{s} - {s}\r\n", .{ bold, cmd.name, reset, dim, cmd.description });
+    }
+    std.debug.print("{s}Type / followed by a command name to execute{s}\r\n", .{ dim, reset });
+    return false;
+}
+
+fn commandClear(app: *App) !bool {
+    // Clear screen and reset cursor
+    tui_text.print("\x1b[2J\x1b[H", .{});
+    std.debug.print("{s}>{s} ", .{ bold, reset });
+    _ = app;
+    return false;
+}
+
+fn commandPing(app: *App) !bool {
+    std.debug.print("\r\n", .{});
+    const should_reconnect = sendPingCommand(app) catch false;
+    if (should_reconnect) {
+        std.debug.print("{s}Server session stale, will reconnect on next request{s}\r\n", .{ dim, reset });
+    } else {
+        std.debug.print("{s}Server is responsive{s}\r\n", .{ dim, reset });
+    }
+    return false;
+}
 
 const App = struct {
     http_client: std.http.Client,
@@ -1111,7 +1197,8 @@ fn handleCompletion(app: *App) !bool {
     app.state.matches.clearRetainingCapacity();
     app.state.selected = 0;
     if (input.len == 0 or input[0] == '/') {
-        for (COMMANDS) |cmd| {
+        const cmd_names = getCommandNames();
+        for (cmd_names) |cmd| {
             if (std.mem.startsWith(u8, cmd, input)) {
                 try app.state.matches.append(app.allocator, cmd);
             }
@@ -1140,15 +1227,43 @@ fn renderCompletions(app: *App) void {
         }
         tui_text.print("\x1b[{}A", .{app.state.last_match_count});
     }
+    
+    // Show command bar at bottom with descriptions
     tui_text.print("\x1b[s", .{});
-    for (app.state.matches.items, 0..) |cmd, i| {
-        tui_text.print("\x1b[1E", .{});
+    
+    // Move to bottom of screen
+    tui_text.print("\x1b[999;1H", .{});
+    tui_text.print("\x1b[2K", .{}); // Clear the line
+    
+    // Draw command bar border
+    tui_text.print("\x1b[7m", .{}); // Inverse colors
+    tui_text.print(" Commands: ", .{});
+    
+    // Print each matching command with its description
+    const commands = getCommands();
+    for (app.state.matches.items, 0..) |cmd_name, i| {
+        // Find the command description
+        var desc: []const u8 = "";
+        for (commands) |cmd| {
+            if (std.mem.eql(u8, cmd.name, cmd_name)) {
+                desc = cmd.description;
+                break;
+            }
+        }
+        
         if (i == app.state.selected) {
-            tui_text.print("  \x1b[7m {s} \x1b[0m", .{cmd});
+            tui_text.print("\x1b[0m\x1b[42m {s} ", .{cmd_name}); // Green highlight
+            tui_text.print("\x1b[90m{s}\x1b[0m ", .{desc});
+            tui_text.print("\x1b[7m", .{});
         } else {
-            tui_text.print("    {s}", .{cmd});
+            tui_text.print("\x1b[0m {s} ", .{cmd_name});
+            tui_text.print("\x1b[90m{s}\x1b[0m ", .{desc});
         }
     }
+    
+    // Restore cursor position
+    tui_text.print("\x1b[u", .{});
+    
     app.state.last_match_count = app.state.matches.items.len;
     std.debug.print("\x1b[u", .{});
 }
@@ -1200,16 +1315,40 @@ fn handleInput(app: *App) !bool {
             return false;
         }
         if (app.input.items.len > 0) {
-            if (std.mem.eql(u8, app.input.items, "/sessions")) {
-                std.debug.print("\r\n", .{});
-                const response = readResponseAndStreamGetSessions(app) catch "";
-                defer app.allocator.free(response);
-                if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
-                app.input.clearRetainingCapacity();
-                std.debug.print("\r\n{s}>{s} ", .{ bold, reset });
-                return false;
+            // Check if it's a command (starts with /)
+            if (app.input.items[0] == '/') {
+                const input_str = app.input.items;
+                const should_exit = executeCommand(app, input_str) catch false;
+                
+                if (!should_exit) {
+                    // Command executed successfully or wasn't found
+                    // Check if the command was actually found by looking at input
+                    const commands = getCommands();
+                    var cmd_found = false;
+                    for (commands) |cmd| {
+                        if (std.mem.eql(u8, input_str, cmd.name)) {
+                            cmd_found = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!cmd_found) {
+                        // Command not found - show error
+                        std.debug.print("\r\n{s}Unknown command: {s}{s}\r\n", .{ dim, input_str, reset });
+                        std.debug.print("{s}Type /help for available commands{s}\r\n", .{ dim, reset });
+                    }
+                    // Clear any leftover completion display and reset cursor state
+                    clearCompletions(app);
+                    app.input.clearRetainingCapacity();
+                    // Print prompt fresh on a new line
+                    std.debug.print("{s}>{s} ", .{ bold, reset });
+                    return false;
+                }
+                // else: exit was returned, so we return true to exit
+                return should_exit;
             }
-            if (std.mem.eql(u8, app.input.items, "/exit")) return true;
+            
+            // Regular input - send to LLM
             std.debug.print("\r\n\r\n", .{});
             const response = readResponseAndStreamRunLLM(app, app.input.items) catch "";
             defer app.allocator.free(response);
