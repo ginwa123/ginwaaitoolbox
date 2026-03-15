@@ -2,6 +2,29 @@ const std = @import("std");
 const list_skills = @import("tools/list_skills.zig");
 
 // =============================================================================
+// BASE -- inherited by all agents
+// =============================================================================
+
+pub const BasePrompt =
+    \\**Universal rules (all agents):**
+    \\- Detect the language of the user's message. Respond in that language throughout. Never default to English unless the user wrote in English first.
+    \\- If the user switches language mid-conversation, switch immediately and maintain the new language.
+    \\- Respond in Markdown only.
+    \\- Never ask the user more than one question at a time.
+    \\- Think before acting. Do, don't describe.
+    \\- State assumptions before acting on them.
+    \\- You are a super-genius AI. Solve problems completely. No half-measures.
+    \\
+    \\**Skills — load before every task, reload whenever stuck:**
+    \\- Call `list_skills()` first, before any file read, code write, or analysis.
+    \\- Call `get_skill("skill_name")` for every match — primary, secondary, and supporting.
+    \\- Re-load skills the moment you hit a wall, encounter a new domain, or catch yourself guessing.
+    \\- "I already know this" is never a valid reason to skip skill loading.
+    \\- "This is a simple task" is never a valid reason to skip skill loading.
+    \\- A response without skill loading is an incomplete response.
+;
+
+// =============================================================================
 // LEARNING PROTOCOL -- mistake capture and learning
 // =============================================================================
 
@@ -84,26 +107,21 @@ pub const LearningPrompt =
 ;
 
 // =============================================================================
-// BASE -- inherited by all agents
+// GIT -- git operations guidelines
 // =============================================================================
 
-pub const BasePrompt =
-    \\**Universal rules (all agents):**
-    \\- Detect the language of the user's message. Respond in that language throughout. Never default to English unless the user wrote in English first.
-    \\- If the user switches language mid-conversation, switch immediately and maintain the new language.
-    \\- Respond in Markdown only.
-    \\- Never ask the user more than one question at a time.
-    \\- Think before acting. Do, don't describe.
-    \\- State assumptions before acting on them.
-    \\- You are a super-genius AI. Solve problems completely. No half-measures.
+pub const GitPrompt =
+    \\## Git Operations
     \\
-    \\**Skills — load before every task, reload whenever stuck:**
-    \\- Call `list_skills()` first, before any file read, code write, or analysis.
-    \\- Call `get_skill("skill_name")` for every match — primary, secondary, and supporting.
-    \\- Re-load skills the moment you hit a wall, encounter a new domain, or catch yourself guessing.
-    \\- "I already know this" is never a valid reason to skip skill loading.
-    \\- "This is a simple task" is never a valid reason to skip skill loading.
-    \\- A response without skill loading is an incomplete response.
+    \\When executing git commands, **ALWAYS** use the `--no-edit` flag to prevent interactive editors from opening.
+    \\
+    \\**Examples:**
+    \\- `git commit --no-edit -m "message"` instead of `git commit -m "message"`
+    \\- `git merge --no-edit <branch>` instead of `git merge <branch>`
+    \\- `git rebase --no-edit <branch>` instead of `git rebase <branch>`
+    \\- `git cherry-pick --no-edit <commit>` instead of `git cherry-pick <commit>`
+    \\
+    \\This ensures git operations complete without requiring user interaction.
 ;
 
 // =============================================================================
@@ -614,30 +632,23 @@ pub const Agent =
     \\### Agent Management
     \\- **spawn_sub_agent**: Spawn up to 20 parallel sub-agents for concurrent tasks
     \\- **set_agent_properties**: Adjust agent temperature and deep reasoning mode
-
     \\### Agent Behavior Adjustment (set_agent_properties)
-
     \\**You SHOULD use `set_agent_properties` to dynamically adjust your behavior during tasks.** This tool allows you to fine-tune how you think and respond:
-
     \\| Property | Values | When to Use |
     \\|----------|--------|-------------|
     \\| **is_thinking** | `true` or `false` | Enable deep reasoning mode for complex architecture decisions, tradeoff analysis, or multi-step planning. Disable for simple, straightforward tasks. |
     \\| **temperature** | `0.0` - `1.0` | Lower (0.0-0.3) for deterministic, factual responses. Higher (0.7-1.0) for creative exploration and brainstorming. |
-
     \\**Guidelines:**
     \\- **Enable `is_thinking: true`** when: designing systems, analyzing tradeoffs, debugging complex issues, planning multi-phase work, or when the user asks for architectural guidance
     \\- **Adjust temperature** based on task needs:
     \\  - `0.0-0.2`: Code fixes, precise edits, factual answers
     \\  - `0.3-0.5`: General coding tasks, balanced creativity
     \\  - `0.6-1.0`: Brainstorming, creative writing, exploring alternatives
-
     \\**Example usage:**
     \\```
     \\set_agent_properties({"is_thinking": true, "temperature": 0.7})
     \\```
-
     \\**Note:** You can call this tool at any point during a task to adjust your approach. If a task becomes more complex than initially assessed, enable thinking mode. If you need more creative solutions, increase temperature.
-
     \\### Skill Management
     \\- **list_skills**: List all available skills with brief descriptions
     \\- **get_skill**: Load a skill's full content on-demand
@@ -692,28 +703,65 @@ pub const CompactionAgent =
     \\Output ONLY the compressed summary. No "Here is the summary:" or any other prefix.
 ;
 
-/// Build agent prompt with dynamic base prompt, optional skills content, and optional cwd/treeDir.
+/// Build agent prompt with dynamic base prompt (including skills list), optional skills content, and optional cwd/treeDir.
 /// If skillsContent is empty, it will be omitted. If cwd is empty, cwd and treeDir will be omitted.
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8, skillsContent: []const u8, memoryMd: []const u8, processMessages: []const u8) ![]const u8 {
-    const dynamicBasePrompt = try buildBasePromptWithSkillsList(allocator);
-    defer allocator.free(dynamicBasePrompt);
+pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: []const u8, skillsContent: []const u8, memoryMd: []const u8, backgroundProcessContent: []const u8) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
-    try result.appendSlice(allocator, dynamicBasePrompt);
-    try result.appendSlice(allocator, "\n\n");
 
-    // Task Management System
+    // Build base prompt with skills list
+    const skills_json = try list_skills.executeListSkills(allocator);
+    defer allocator.free(skills_json);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    const skills_array = root.object.get("skills");
+
+    // Build base prompt section
+    try result.appendSlice(allocator, BasePrompt);
+    try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, TaskManagementPrompt);
+
+    // Build skills section
+    if (skills_array) |arr| {
+        try result.appendSlice(allocator, "\n\n<available_skills>\n");
+        if (arr.array.items.len == 0) {
+            try result.appendSlice(allocator, "No skills available.\n");
+        } else {
+            for (arr.array.items) |skill| {
+                const name = skill.object.get("name") orelse continue;
+                const description = skill.object.get("description") orelse continue;
+                if (name == .string and description == .string) {
+                    try result.appendSlice(allocator, "- **");
+                    try result.appendSlice(allocator, name.string);
+                    try result.appendSlice(allocator, "**: ");
+                    try result.appendSlice(allocator, description.string);
+                    try result.appendSlice(allocator, "\n");
+                }
+            }
+        }
+        try result.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
+    }
+
     try result.appendSlice(allocator, "\n\n");
 
     // Learning Protocol (from AGENT.md)
     try result.appendSlice(allocator, LearningPrompt);
     try result.appendSlice(allocator, "\n\n");
 
+    // Git Operations Guidelines
+    try result.appendSlice(allocator, GitPrompt);
+    try result.appendSlice(allocator, "\n\n");
+
+    // dynamic memoryMd
     try result.appendSlice(allocator, memoryMd);
     try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, agentPrompt);
+    try result.appendSlice(allocator, Agent);
+
+    // dynamic skillsContent
     if (skillsContent.len > 0) {
         try result.appendSlice(allocator, "\n\n");
         try result.appendSlice(allocator, skillsContent);
@@ -724,10 +772,13 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, agentProm
         try result.appendSlice(allocator, " \n\n**Tree Directory:** ");
         try result.appendSlice(allocator, treeDir);
     }
-    if (processMessages.len > 0) {
+
+    // dynamic backgroundProcess
+    if (backgroundProcessContent.len > 0) {
         try result.appendSlice(allocator, "\n\n");
-        try result.appendSlice(allocator, processMessages);
+        try result.appendSlice(allocator, backgroundProcessContent);
     }
+
     return result.toOwnedSlice(allocator);
 }
 
@@ -739,6 +790,8 @@ pub fn buildSubAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, tool_n
     errdefer result.deinit(allocator);
 
     try result.appendSlice(allocator, BasePrompt);
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, GitPrompt);
     try result.appendSlice(allocator, "\n\n**Current working directory:** ");
     try result.appendSlice(allocator, cwd);
     try result.appendSlice(allocator, "\n\n## Available Tools (sub-agent)\n");
@@ -757,45 +810,4 @@ pub fn buildSubAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, tool_n
     );
 
     return result.toOwnedSlice(allocator);
-}
-
-/// Build BasePrompt with dynamically injected skills list
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn buildBasePromptWithSkillsList(allocator: std.mem.Allocator) ![]const u8 {
-    const skills_json = list_skills.executeListSkills(allocator) catch |err| {
-        std.log.warn("Failed to execute list_skills: {s}, using static BasePrompt", .{@errorName(err)});
-        return allocator.dupe(u8, BasePrompt);
-    };
-    defer allocator.free(skills_json);
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{}) catch |err| {
-        std.log.warn("Failed to parse skills JSON: {s}, using static BasePrompt", .{@errorName(err)});
-        return allocator.dupe(u8, BasePrompt);
-    };
-    defer parsed.deinit();
-    const root = parsed.value;
-    const skills_array = root.object.get("skills") orelse {
-        std.log.warn("No skills array in JSON, using static BasePrompt", .{});
-        return allocator.dupe(u8, BasePrompt);
-    };
-    var skills_section: std.ArrayList(u8) = .empty;
-    defer skills_section.deinit(allocator);
-    try skills_section.appendSlice(allocator, "\n\n<available_skills>\n");
-    if (skills_array.array.items.len == 0) {
-        try skills_section.appendSlice(allocator, "No skills available.\n");
-    } else {
-        for (skills_array.array.items) |skill| {
-            const name = skill.object.get("name") orelse continue;
-            const description = skill.object.get("description") orelse continue;
-            if (name == .string and description == .string) {
-                try skills_section.appendSlice(allocator, "- **");
-                try skills_section.appendSlice(allocator, name.string);
-                try skills_section.appendSlice(allocator, "**: ");
-                try skills_section.appendSlice(allocator, description.string);
-                try skills_section.appendSlice(allocator, "\n");
-            }
-        }
-    }
-    try skills_section.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
-    // Include TaskManagementPrompt in the base prompt
-    return try std.fmt.allocPrint(allocator, "{s}\n\n{s}{s}", .{ BasePrompt, TaskManagementPrompt, skills_section.items });
 }

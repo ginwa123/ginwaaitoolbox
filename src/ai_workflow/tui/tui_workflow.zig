@@ -17,11 +17,11 @@ const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
 const get_tree_dir = @import("get_tree_dir.zig");
 const logger_mod = root_mod.logger;
-const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
+const GetCurrentAgentBySessionId = @import("get_current_agent_by_session_id.zig");
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
 const send_tool_result = @import("send_tool_result.zig");
-const send_user_choice = @import("send_user_choice.zig");
+const SendUserChoice = @import("send_user_choice.zig").SendUserChoice;
 const SendResponse = @import("send_response.zig").SendResponse;
 const send_error = @import("send_error.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
@@ -166,7 +166,7 @@ pub const TUIWorkflow = struct {
         }
         const session_name = message;
         // Fetch initial agent for the first save_message call
-        const initial_agent_state = try get_current_agent_by_session_id.run(
+        const initial_agent_state = try GetCurrentAgentBySessionId.run(
             parent_allocator,
             self.db,
             session_id,
@@ -189,7 +189,6 @@ pub const TUIWorkflow = struct {
             .loop_index = 0,
             .temperature = initial_agent_state.temperature,
             .is_thinking = initial_agent_state.is_thinking,
-            // User messages have no LLM token usage
             .prompt_tokens = 0,
             .completion_tokens = 0,
             .total_tokens = 0,
@@ -200,7 +199,7 @@ pub const TUIWorkflow = struct {
         // this variable is used to track the number of times the agent has been retried
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
-        var loop_counter: u32 = 0;
+        var loopCounter: u32 = 0;
 
         const base_tools: []const tool_models.AgentTool = &.{
             bash_tool.bashTool,
@@ -224,42 +223,39 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            var arena_allocator_while_loop = std.heap.ArenaAllocator.init(parent_allocator);
-            defer arena_allocator_while_loop.deinit();
-            const allocator = arena_allocator_while_loop.allocator();
+            var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
+            defer arenaAllocatorWhileLoop.deinit();
+            const allocator = arenaAllocatorWhileLoop.allocator();
 
-            loop_counter += 1;
+            loopCounter += 1;
             if (retryCount > 10) return error.TooManyRetries;
 
             // Fetch current agent fresh from DB each iteration
-            const current_agent_state = try get_current_agent_by_session_id.run(
+            const currentAgentState = try GetCurrentAgentBySessionId.run(
                 allocator,
                 self.db,
                 session_id,
             );
-            const current_agent = current_agent_state.agent;
-            var agent_temperature = current_agent_state.temperature;
-            var isThinking = current_agent_state.is_thinking;
+            const current_agent = currentAgentState.agent;
+            var agent_temperature = currentAgentState.temperature;
+            var isThinking = currentAgentState.is_thinking;
 
-            var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
+            var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
-            const initial_messages = try BuildMessages(allocator, cwd, "", try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id));
+            const initialMessages = try BuildMessages(allocator, cwd,  try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id));
 
-            try messages_list.appendSlice(allocator, initial_messages);
+            try messagesLists.appendSlice(allocator, initialMessages);
 
-            const body_size = self.estimateBodySize(messages_list.items);
+            const body_size = self.estimateBodySize(messagesLists.items);
             self.logger.debugFmt("[COMPACTION] Body size: {} bytes", .{body_size}) catch {};
             if (body_size > COMPACTION_CONFIG.max_body_size) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
-                if (try self.call_compact_agent(messages_list.items, allocator, api_key, model, base_url)) |compacted_xml| {
-                    try self.compactMessagesInMemory(allocator, &messages_list, compacted_xml, session_id, model, cwd);
+                if (try self.call_compact_agent(messagesLists.items, allocator, api_key, model, base_url)) |compacted_xml| {
+                    try self.compactMessagesInMemory(allocator, &messagesLists, compacted_xml, session_id, model, cwd);
                 }
             }
 
-            var arenaDyanmicAgent = std.heap.ArenaAllocator.init(allocator);
-            defer arenaDyanmicAgent.deinit();
-            const arenaDynAgentAllocator = arenaDyanmicAgent.allocator();
-            const res_dynamic_agent = self.callDynamicAgent(arenaDynAgentAllocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config, base_tools) catch |err| {
+            const resDynmicAgent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config, base_tools) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -271,31 +267,31 @@ pub const TUIWorkflow = struct {
 
             retryCount = 0;
 
-            if (res_dynamic_agent.finish_reason) |finish_reason| {
+            if (resDynmicAgent.finish_reason) |finish_reason| {
                 self.logger.infoFmt("WORKFLOW: finish_reason = {s}", .{finish_reason.toStr()}) catch {};
                 if (finish_reason == .stop) {
                     self.logger.infoFmt("FINISH REASON STOP - calling send_response", .{}) catch {};
-                    _ = SendResponse(allocator, session_id, self.logger, res_dynamic_agent, "user_choice");
+                    _ = SendResponse(allocator, session_id, self.logger, resDynmicAgent, "user_choice");
                     _ = try SaveMessage(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
                         .cwd = cwd,
                         .content = null,
-                        .response_content = res_dynamic_agent.content,
-                        .response_finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
-                        .response_reasoning_content = res_dynamic_agent.reasoning_content,
+                        .response_content = resDynmicAgent.content,
+                        .response_finish_reason = if (resDynmicAgent.finish_reason) |fr| fr.toStr() else null,
+                        .response_reasoning_content = resDynmicAgent.reasoning_content,
                         .role = agent.Role.assistant.toStr(),
                         .finish_reason = null,
                         .tool_calls = null,
                         .tool_call_id = null,
                         .agent_name = current_agent,
                         .session_name = session_name,
-                        .loop_index = loop_counter,
+                        .loop_index = loopCounter,
                         .temperature = agent_temperature,
                         .is_thinking = isThinking,
-                        .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
-                        .completion_tokens = res_dynamic_agent.usage.completion_tokens,
-                        .total_tokens = res_dynamic_agent.usage.total_tokens,
+                        .prompt_tokens = resDynmicAgent.usage.prompt_tokens,
+                        .completion_tokens = resDynmicAgent.usage.completion_tokens,
+                        .total_tokens = resDynmicAgent.usage.total_tokens,
                     });
                     self.logger.infoFmt("FINISH REASON STOP - complete", .{}) catch {};
                     break;
@@ -303,24 +299,23 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try HandleTool(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                    try HandleTool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, &messagesLists, resDynmicAgent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                    _ = try send_user_choice.run(
+                    _ = try SendUserChoice(
                         allocator,
                         session_id,
                         self.logger,
                     );
                     break;
-                    // continue;
                 }
 
                 retryCount = 0;
             }
 
             // Log if finish_reason is null
-            if (res_dynamic_agent.finish_reason == null) {
+            if (resDynmicAgent.finish_reason == null) {
                 self.logger.warnFmt("WORKFLOW: finish_reason is NULL!", .{}) catch {};
             }
         }

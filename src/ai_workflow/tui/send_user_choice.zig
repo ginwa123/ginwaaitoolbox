@@ -3,7 +3,7 @@ const tree1_mod = @import("nalarcore");
 const logger_mod = tree1_mod.logger;
 const http_server = @import("nalarcore").http_server;
 
-pub fn run(
+pub fn SendUserChoice(
     allocator: std.mem.Allocator,
     session_id: []const u8,
     logger: *logger_mod.Logger,

@@ -765,7 +765,7 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     const MAX_RECONNECTION_ATTEMPTS: u32 = 100;
 
     // Ping interval - send ping every 5 seconds to keep session alive on server
-    const PING_INTERVAL_MS: i64 = 5000;
+    const PING_INTERVAL_MS: i64 = 1000;
     var last_ping_ms: i64 = std.time.milliTimestamp();
 
     var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);

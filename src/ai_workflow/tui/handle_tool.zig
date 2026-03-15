@@ -87,7 +87,6 @@ fn handleToolError(ctx: ToolContext, tool_call: agent.ToolCall, err: anytype, er
 
 pub fn HandleTool(
     allocator: std.mem.Allocator,
-    tui_workflow: *TUIWorkflow,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
     session_id: []const u8,
@@ -192,21 +191,6 @@ pub fn HandleTool(
         // Execute each tool call and add tool result messages
         for (tc) |tool_call| {
             logger.infoFmt("[HANDLE_TOOL] Processing tool: '{s}' (id: '{s}')", .{ tool_call.function.name, tool_call.id }) catch {};
-            if (tui_workflow.loop_detector.check(tool_call.function.arguments)) {
-                const warning = try std.fmt.allocPrint(
-                    allocator,
-                    "WARNING: Identical command repeated: {s}\n" ++
-                        "Empty output means no results found — do NOT retry. Proceed with what you know.",
-                    .{tool_call.function.arguments},
-                );
-                const tool_result_msg = agent.AgentMessage{
-                    .role = .tool,
-                    .content = warning,
-                    .tool_call_id = try allocator.dupe(u8, tool_call.id),
-                };
-                try messages_list.append(allocator, tool_result_msg);
-                continue;
-            }
 
             if (std.mem.eql(u8, tool_call.function.name, "set_agent_properties")) {
                 const change_result = handle_set_agent_properties.run(allocator, tool_call) catch |err| {

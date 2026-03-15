@@ -29,12 +29,13 @@ const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const loop_detector = root_mod.loop_detector;
 const set_agent_properties = root_mod.set_agent_properties;
 const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
+const GetMessages = @import("get_messages.zig").GetMessages;
+const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 
 const MAX_SUB_AGENTS = 20;
 
 // Import BashInput from models (not exported in bash.zig)
 const BashInput = @import("../../modules/agent/tools/models.zig").BashInput;
-
 
 /// Filter tools by allowed names. If allowed_tools is null, return all tools.
 fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8) ![]const tool_models.AgentTool {
@@ -58,116 +59,9 @@ fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const
     return try result.toOwnedSlice(allocator);
 }
 
-/// Fetch all messages for a given session_id from the database
-/// Returns an ArrayList of AgentMessage that must be freed by the caller
-fn getMessagesBySessionId(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) !std.ArrayList(agent.AgentMessage) {
-    var messages = std.ArrayList(agent.AgentMessage).empty;
-    errdefer messages.deinit(allocator);
-
-    // Query all messages for this session, ordered by creation time
-    const sql =
-        \\SELECT role, response_content, content, tool_calls_json, tool_call_id, reasoning_content
-        \\FROM llm_history
-        \\WHERE session_id = ?
-        \\ORDER BY created_at ASC
-    ;
-
-    var rows = try db.query(allocator, sql, &[_][]const u8{session_id});
-    defer rows.deinit();
-
-    while (try rows.next()) |row| {
-        defer row.deinit(allocator);
-
-        // Parse role
-        const role_str = row.values[0];
-        const role = agent.Role.fromStr(role_str) orelse .assistant;
-
-        // Content can be in response_content (for assistant) or content (for user/tool)
-        const response_content = row.values[1];
-        const content = row.values[2];
-        const tool_calls_json = row.values[3];
-        const tool_call_id = row.values[4];
-        const reasoning_content = row.values[5];
-
-        // Determine which content field to use
-        const message_content: ?[]const u8 = blk: {
-            if (content.len > 0) {
-                break :blk try allocator.dupe(u8, content);
-            } else if (response_content.len > 0) {
-                break :blk try allocator.dupe(u8, response_content);
-            }
-            break :blk null;
-        };
-
-        // Parse tool_calls if present
-        const tool_calls: ?[]agent.ToolCall = if (tool_calls_json.len > 0) blk: {
-            const parsed = std.json.parseFromSlice(std.json.Value, allocator, tool_calls_json, .{}) catch |err| {
-                std.log.warn("Failed to parse tool_calls_json: {}", .{err});
-                break :blk null;
-            };
-            defer parsed.deinit();
-
-            if (parsed.value != .array) break :blk null;
-
-            const arr = parsed.value.array;
-            var tcs = try allocator.alloc(agent.ToolCall, arr.items.len);
-            errdefer allocator.free(tcs);
-
-            for (arr.items, 0..) |item, i| {
-                if (item != .object) continue;
-                const obj = item.object;
-
-                const id = obj.get("id") orelse continue;
-                const function = obj.get("function") orelse continue;
-                if (function != .object) continue;
-                const func_obj = function.object;
-
-                const name = func_obj.get("name") orelse continue;
-                const arguments = func_obj.get("arguments") orelse continue;
-
-                tcs[i] = .{
-                    .id = try allocator.dupe(u8, id.string),
-                    .function = .{
-                        .name = try allocator.dupe(u8, name.string),
-                        .arguments = try allocator.dupe(u8, arguments.string),
-                    },
-                };
-            }
-
-            break :blk tcs;
-        } else null;
-
-        // Parse reasoning_content
-        const msg_reasoning: ?[]const u8 = if (reasoning_content.len > 0)
-            try allocator.dupe(u8, reasoning_content)
-        else
-            null;
-
-        // Parse tool_call_id
-        const msg_tool_call_id: ?[]const u8 = if (tool_call_id.len > 0)
-            try allocator.dupe(u8, tool_call_id)
-        else
-            null;
-
-        try messages.append(allocator, .{
-            .role = role,
-            .content = message_content,
-            .tool_calls = tool_calls,
-            .tool_call_id = msg_tool_call_id,
-            .reasoning_content = msg_reasoning,
-        });
-    }
-
-    return messages;
-}
-
 /// Run a single sub-agent with basic tools (but no spawn_sub_agent or set_agent_properties)
 fn runSubAgent(
-    allocator: std.mem.Allocator,
+    parentAllocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
@@ -187,10 +81,10 @@ fn runSubAgent(
 ) ![]const u8 {
     _ = config; // reserved for future use (e.g., MCP tools)
     // session_id is now passed as parameter - use it for DB and SSE
-    const session_name = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
+    const session_name = try std.fmt.allocPrint(parentAllocator, "{}", .{std.time.nanoTimestamp()});
 
     // Save user instruction message to DB
-    _ = try SaveMessage(allocator, db, .{
+    _ = try SaveMessage(parentAllocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
@@ -216,9 +110,9 @@ fn runSubAgent(
     });
 
     // Get tools based on allowed_tools (null = all tools)
-    const sub_agent_tools = try getAllowedTools(allocator, allowed_tools);
+    const sub_agent_tools = try getAllowedTools(parentAllocator, allowed_tools);
 
-    var sub_agent = try agent.Agent.init(allocator, logger);
+    var sub_agent = try agent.Agent.init(parentAllocator, logger);
 
     sub_agent.apiKey = api_key;
     sub_agent.model = model;
@@ -227,17 +121,16 @@ fn runSubAgent(
 
     // Build tool names list from allowed tools
     var tool_names: std.ArrayList([]const u8) = .empty;
-    defer tool_names.deinit(allocator);
+    defer tool_names.deinit(parentAllocator);
     for (sub_agent_tools) |tool| {
-        try tool_names.append(allocator, tool.function.name);
+        try tool_names.append(parentAllocator, tool.function.name);
     }
 
     // Build system prompt with cwd context - sub-agents need this for path resolution
-    const systemPrompt = try prompt.buildSubAgentPrompt(allocator, cwd, tool_names.items);
-    defer allocator.free(systemPrompt);
+    const systemPrompt = try prompt.buildSubAgentPrompt(parentAllocator, cwd, tool_names.items);
 
     // Save system prompt to DB so it can be fetched in the while loop
-    _ = try save_message.SaveMessage(allocator, db, .{
+    _ = try SaveMessage(parentAllocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
@@ -256,36 +149,37 @@ fn runSubAgent(
         .is_thinking = is_thinking,
         .parent_session_id = parent_session_id,
         .parent_id = parent_id,
-        // System messages have no LLM token usage
         .prompt_tokens = 0,
         .completion_tokens = 0,
         .total_tokens = 0,
     });
 
-    // Build messages: system message with cwd context + user instruction
-    var messages: std.ArrayList(agent.AgentMessage) = .empty;
-    defer messages.deinit(allocator);
-
-    // Add system message FIRST with working directory context
-    try messages.append(allocator, .{
-        .role = .system,
-        .content = systemPrompt,
-    });
-
-    // Then add user instruction
-    try messages.append(allocator, .{
-        .role = .user,
-        .content = instruction,
-    });
 
     var tool_call_count: usize = 0;
     var last_response: ?agent.CallResponse = null;
 
     while (true) {
-        // Always fetch messages by session_id at the beginning of each loop iteration
-        // This ensures we have the latest messages from the database
-        messages.deinit(allocator);
-        messages = try getMessagesBySessionId(allocator, db, session_id);
+        var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parentAllocator);
+        defer arenaAllocatorWhileLoop.deinit();
+        const allocator = arenaAllocatorWhileLoop.allocator();
+
+        var messages: std.ArrayList(agent.AgentMessage) = .empty;
+        try messages.append(allocator, .{
+            .role = .system,
+            .content = systemPrompt,
+        });
+        try messages.append(allocator, .{
+            .role = .user,
+            .content = instruction,
+        });
+
+        const tui_histories = try GetMessages(allocator, db, session_id);
+        for (tui_histories) |hist| {
+            const agent_msgs = try TransformLLMHistory.run(allocator, hist);
+            for (agent_msgs) |msg| {
+                try messages.append(allocator, msg);
+            }
+        }
 
         const params = agent.AgentCall{
             .tools = sub_agent_tools,
@@ -494,10 +388,10 @@ fn runSubAgent(
     // Max tool calls reached
     if (last_response) |response| {
         if (response.content) |content| {
-            return try allocator.dupe(u8, content);
+            return try parentAllocator.dupe(u8, content);
         }
     }
-    return try allocator.dupe(u8, "(max tool calls reached)");
+    return try parentAllocator.dupe(u8, "(max tool calls reached)");
 }
 
 /// Parse bash input from JSON arguments
