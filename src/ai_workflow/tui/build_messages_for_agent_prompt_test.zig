@@ -9,7 +9,7 @@ test "build messages with empty history" {
     
     const history: []TUIHistory = &[_]TUIHistory{};
     
-    const messages = try build_messages.BuildMessages(allocator, cwd, history, skills, "", "");
+    const messages = try build_messages.BuildMessages(allocator, cwd, history, skills, "", "", "");
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -53,7 +53,7 @@ test "build messages preserves agent from history" {
     };
     defer history_data[0].deinit(allocator);
     
-    const messages = try build_messages.BuildMessages(allocator, cwd, &history_data, skills, "", "");
+    const messages = try build_messages.BuildMessages(allocator, cwd, &history_data, skills, "", "", "");
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);

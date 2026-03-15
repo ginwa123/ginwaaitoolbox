@@ -409,6 +409,7 @@ fn sessionListHandler(@"req": *httpz.Request, res: *httpz.Response) anyerror!voi
 /// Ping handler - checks if session is connected via SSE
 /// Returns JSON indicating whether the session is connected or needs reconnection
 fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    res.content_type = .JSON;
     const session_id = req.param("session_id") orelse {
         res.status = 400;
         res.body = "{\"error\":\"Missing session_id\"}";
@@ -444,7 +445,7 @@ fn kerjabotSessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyer
             res.body = "{\"error\":\"Database not available\"}";
             return;
         };
-        
+
         const body = req.body() orelse "";
 
         // Parse request body
@@ -520,7 +521,7 @@ fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anyerror
             res.body = "{\"error\":\"Database not available\"}";
             return;
         };
-        
+
         const session_id_param = req.param("id");
 
         if (session_id_param == null) {
@@ -576,7 +577,7 @@ fn kerjabotListSessionsHandler(req: *httpz.Request, res: *httpz.Response) anyerr
             res.body = "{\"error\":\"Database not available\"}";
             return;
         };
-        
+
         // Parse query parameters
         const query = try req.query();
         const limit_str = query.get("limit") orelse "10";

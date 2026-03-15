@@ -559,7 +559,7 @@ fn sendPingCommand(app: *App) !bool {
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
 
     // Use the new synchronous ping endpoint
-    const request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/ping/{s} HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, HTTP_HOST, app.http_port });
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/ping/{s} HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, HTTP_HOST, app.http_port });
     _ = try std.posix.write(sock, request);
 
     // Read response to check if reconnect is needed
