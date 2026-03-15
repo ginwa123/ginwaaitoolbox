@@ -5,7 +5,7 @@ const logger_mod = root_mod.logger;
 const sqlite = root_mod.sqlite;
 const config_mod = @import("../../modules/config/config.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
-const send_tool_result = @import("send_tool_result.zig");
+const SendToolResult = @import("send_tool_result.zig");
 const send_response = @import("send_response.zig").SendResponse;
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
@@ -68,13 +68,12 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
         .loop_index = ctx.loop_counter,
         .temperature = ctx.agent_temperature,
         .is_thinking = ctx.is_thinking,
-        // Tool results have no LLM token usage
         .prompt_tokens = 0,
         .completion_tokens = 0,
         .total_tokens = 0,
     });
 
-    send_tool_result.SendToolResult(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
+    SendToolResult.SendToolResult(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
 }
 
 /// Helper to handle error for tools that return owned strings
@@ -230,7 +229,6 @@ pub fn HandleTool(
                     .loop_index = loop_counter,
                     .temperature = agent_temperature.*,
                     .is_thinking = isThinking.*,
-                    // Tool results have no LLM token usage
                     .prompt_tokens = 0,
                     .completion_tokens = 0,
                     .total_tokens = 0,
@@ -239,7 +237,7 @@ pub fn HandleTool(
                 ctx.is_thinking = isThinking.*;
                 ctx.agent_temperature = agent_temperature.*;
 
-                send_tool_result.SendToolResult(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
+                SendToolResult.SendToolResult(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
                 logger.infoFmt("Agent properties updated: temp={any}, is_thinking={any}", .{ change_result.temperature, change_result.is_thinking }) catch {};
                 continue;
             }
@@ -318,7 +316,6 @@ pub fn HandleTool(
                     try handleToolError(ctx, tool_call, err, "Error executing get_skill");
                     continue;
                 };
-                defer allocator.free(result);
 
                 // Save skill to database if loaded successfully
                 if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {

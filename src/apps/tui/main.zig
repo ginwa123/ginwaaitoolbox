@@ -711,6 +711,128 @@ fn displayTextReplaceResult(result_xml: []const u8, tool_name: []const u8) void 
     }
 }
 
+fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
+    const skill_name = extractTag(result_xml, "skill_name") orelse "";
+    const content = extractTag(result_xml, "content") orelse "";
+    const loaded = extractTag(result_xml, "loaded") orelse "false";
+    const error_msg = extractTag(result_xml, "error");
+
+    if (skill_name.len == 0) return;
+
+    // Header with skill name and status
+    const loaded_status = if (std.mem.eql(u8, loaded, "true"))
+        "\x1b[32m✓\x1b[0m"
+    else
+        "\x1b[31m✗\x1b[0m";
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} {s} {s}\n",
+        .{ cyan, tool_name, reset, loaded_status, skill_name });
+
+    // Display error if present
+    if (error_msg) |err| {
+        if (err.len > 0) {
+            tui_text.print("  \x1b[31mError: {s}\x1b[0m\n", .{err});
+            // Show available skills if present
+            if (extractTag(result_xml, "available_skills")) |available| {
+                if (available.len > 0) {
+                    tui_text.print("  \x1b[90mAvailable skills:\x1b[0m\n", .{});
+                    var pos: usize = 0;
+                    while (pos < available.len) {
+                        const skill_start = std.mem.indexOfPos(u8, available, pos, "<skill>") orelse break;
+                        const skill_end = std.mem.indexOfPos(u8, available, skill_start, "</skill>") orelse break;
+                        const skill_name_inner = available[skill_start + "<skill>".len .. skill_end];
+                        pos = skill_end + "</skill>".len;
+                        tui_text.print("    \x1b[32m•\x1b[0m {s}\n", .{skill_name_inner});
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    // Display skill content with proper formatting
+    if (content.len > 0) {
+        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+
+        // Show first few lines of content (preview)
+        const max_preview_lines: usize = 15;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        var count: usize = 0;
+
+        while (lines.next()) |line| {
+            if (count >= max_preview_lines) {
+                tui_text.print("  \x1b[90m... (more lines)\x1b[0m\n", .{});
+                break;
+            }
+            // Truncate long lines
+            const display_line = if (line.len > 70) line[0..70] else line;
+            tui_text.print("  {s}\n", .{display_line});
+            count += 1;
+        }
+
+        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+    }
+}
+
+fn displayListSkillsResult(result_json: []const u8, tool_name: []const u8) void {
+    // Parse JSON array of skills
+    const skills_start = std.mem.indexOf(u8, result_json, "[") orelse {
+        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n",
+            .{ cyan, tool_name, reset });
+        return;
+    };
+    const skills_end = std.mem.lastIndexOf(u8, result_json, "]") orelse result_json.len;
+    const skills_array = result_json[skills_start .. skills_end + 1];
+
+    if (skills_array.len <= 2) { // Empty array "[]"
+        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n",
+            .{ cyan, tool_name, reset });
+        return;
+    }
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} Available skills:\n",
+        .{ cyan, tool_name, reset });
+
+    // Parse each skill object
+    var pos: usize = 0;
+    var count: usize = 0;
+    while (pos < skills_array.len) {
+        const obj_start = std.mem.indexOfPos(u8, skills_array, pos, "{") orelse break;
+        const obj_end = std.mem.indexOfPos(u8, skills_array, obj_start, "}") orelse break;
+        const obj = skills_array[obj_start .. obj_end + 1];
+        pos = obj_end + 1;
+
+        // Extract name
+        const name_key = std.mem.indexOf(u8, obj, "\"name\"") orelse continue;
+        const name_start = std.mem.indexOfPos(u8, obj, name_key, "\"") orelse continue;
+        const name_start2 = std.mem.indexOfPos(u8, obj, name_start + 1, "\"") orelse continue;
+        const name_end = std.mem.indexOfPos(u8, obj, name_start2 + 1, "\"") orelse continue;
+        const name = obj[name_start2 + 1 .. name_end];
+
+        // Extract description
+        const desc_key = std.mem.indexOf(u8, obj, "\"description\"") orelse continue;
+        const desc_start = std.mem.indexOfPos(u8, obj, desc_key, "\"") orelse continue;
+        const desc_start2 = std.mem.indexOfPos(u8, obj, desc_start + 1, "\"") orelse continue;
+        const desc_end = std.mem.indexOfPos(u8, obj, desc_start2 + 1, "\"") orelse continue;
+        const desc = obj[desc_start2 + 1 .. desc_end];
+
+        if (name.len > 0) {
+            count += 1;
+            tui_text.print("  \x1b[32m•\x1b[0m {s}", .{name});
+            if (desc.len > 0) {
+                // Truncate description if too long
+                const short_desc = if (desc.len > 50) desc[0..50] else desc;
+                tui_text.print(" \x1b[90m- {s}...\x1b[0m", .{short_desc});
+            }
+            tui_text.print("\n", .{});
+        }
+    }
+
+    if (count == 0) {
+        tui_text.print("  \x1b[90m(no skills found)\x1b[0m\n", .{});
+    }
+}
+
 // ─── Double ESC ───────────────────────────────────────────────────────────────
 
 fn checkStdinForDoubleEscape(app: *App) bool {
@@ -950,6 +1072,10 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                                     displayWriteFileResult(result.result, result.name);
                                 } else if (std.mem.eql(u8, result.name, "text_replace")) {
                                     displayTextReplaceResult(result.result, result.name);
+                                } else if (std.mem.eql(u8, result.name, "get_skill")) {
+                                    displaySkillResult(result.result, result.name);
+                                } else if (std.mem.eql(u8, result.name, "list_skills")) {
+                                    displayListSkillsResult(result.result, result.name);
                                 }
                                 if (extractTag(result.result, "set_agent_properties")) |_| {
                                     tui_text.print("\n{s}[agent properties]{s} → updated\n", .{ cyan, reset });

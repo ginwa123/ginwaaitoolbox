@@ -175,7 +175,7 @@ pub const GetAgentResult = struct {
 };
 
 /// Tool definition for get_agent
-pub const getAgentTool = AgentTool{
+pub const GetAgentTool = AgentTool{
     .type = "function",
     .function = .{
         .name = "get_agent",

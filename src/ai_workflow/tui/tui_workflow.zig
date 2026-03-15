@@ -5,13 +5,13 @@ const agent = root_mod.agent;
 const prompt = root_mod.prompt;
 const context = @import("models.zig").ContextIPCTui;
 const sqlite = root_mod.sqlite;
-const bash_tool = root_mod.bash_tool;
-const read_file_tool = root_mod.read_file;
+const BashTool = root_mod.bash_tool;
+const ReadFileTool = root_mod.read_file;
 const tool_models = root_mod.tool_models;
-const set_agent_properties = root_mod.set_agent_properties;
-const list_skills_tool = root_mod.list_skills_tool;
-const get_skill_tool = root_mod.get_skill_tool;
-const remove_skill_tool = root_mod.remove_skill_tool;
+const SetAgentProperties = root_mod.set_agent_properties;
+const ListSkillsTool = root_mod.list_skills_tool;
+const GetSkillTool = root_mod.get_skill_tool;
+const RemoveSkillTool = root_mod.remove_skill_tool;
 const skills = root_mod.skills;
 const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
@@ -35,9 +35,9 @@ const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const BuildMemoryForAgent = @import("build_memory_for_agent.zig").BuildMemoryForAgent;
-const write_file_tool = root_mod.write_file;
-const search_tool = root_mod.search_tool;
-const text_replace_tool = root_mod.text_replace_tool;
+const WriteFileTool = root_mod.write_file;
+const SearchTool = root_mod.search_tool;
+const TextReplaceTool = root_mod.text_replace_tool;
 
 const handle_content_filter = @import("handle_content_filter.zig");
 const BuildSkillContent = @import("build_skill_content.zig").BuildSkillContent;
@@ -48,7 +48,8 @@ const buildMcpTools = @import("build_messages_tools_mcp_for_agent.zig");
 const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const HandleTool = @import("handle_tool.zig").HandleTool;
-const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
+const SpawnSubAgentTool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
+const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
@@ -178,18 +179,7 @@ pub const TUIWorkflow = struct {
         var current_max_tokens: usize = 8000;
         var loopCounter: u32 = 0;
 
-        const base_tools: []const tool_models.AgentTool = &.{
-            bash_tool.bashTool,
-            read_file_tool.readFileTool,
-            set_agent_properties.SetAgentPropertiesTool,
-            list_skills_tool.listSkillsTool,
-            get_skill_tool.getSkillTool,
-            remove_skill_tool.removeSkillTool,
-            write_file_tool.writeFileTool,
-            text_replace_tool.textReplaceTool,
-            search_tool.searchTool,
-            spawn_sub_agent_tool.spawnSubAgentTool,
-        };
+        const base_tools: []const tool_models.AgentTool = AllAgentTools;
 
         while (true) {
             // Check for cancellation at the start of each iteration

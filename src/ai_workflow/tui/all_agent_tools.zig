@@ -62,5 +62,5 @@ pub const AllAgentTools: []const tool_models.AgentTool = &.{
     search_tool.searchTool,
     spawn_sub_agent_tool.spawnSubAgentTool,
     list_agents_tool.listAgentsTool,
-    get_agent_tool.getAgentTool,
+    get_agent_tool.GetAgentTool,
 };

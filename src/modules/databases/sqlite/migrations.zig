@@ -201,6 +201,22 @@ pub const Migration014AddBackgroundProcess = struct {
     }
 };
 
+pub const Migration015AddSessionAgents = struct {
+    pub const version: u32 = 15;
+    pub const name = "add_session_agents";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS session_agents (
+            \\    session_id TEXT PRIMARY KEY,
+            \\    agent_name TEXT NOT NULL,
+            \\    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_session_agents_session ON session_agents(session_id)", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -267,6 +283,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration012AddParentTracking.version, .name = Migration012AddParentTracking.name, .up = Migration012AddParentTracking.up },
     .{ .version = Migration013AddTokenUsageColumns.version, .name = Migration013AddTokenUsageColumns.name, .up = Migration013AddTokenUsageColumns.up },
     .{ .version = Migration014AddBackgroundProcess.version, .name = Migration014AddBackgroundProcess.name, .up = Migration014AddBackgroundProcess.up },
+    .{ .version = Migration015AddSessionAgents.version, .name = Migration015AddSessionAgents.name, .up = Migration015AddSessionAgents.up },
 };
 
 /// Register all migrations with a MigrationManager

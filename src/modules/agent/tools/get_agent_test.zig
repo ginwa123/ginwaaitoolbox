@@ -170,7 +170,7 @@ test "executeGetAgentToString with no input returns error" {
 }
 
 test "getAgentTool has correct definition" {
-    const tool = get_agent.getAgentTool;
+    const tool = get_agent.GetAgentTool;
 
     try std.testing.expectEqualStrings("function", tool.type);
     try std.testing.expectEqualStrings("get_agent", tool.function.name);
