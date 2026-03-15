@@ -43,7 +43,7 @@ pub const McpTransport = struct {
                 header_end_pos = pos + 4;
                 // Parse Content-Length
                 const header = view[0..pos];
-                var lines = std.mem.split(u8, header, "\r\n");
+                var lines = std.mem.splitScalar(u8, header, '\r');
                 while (lines.next()) |line| {
                     if (std.mem.startsWith(u8, line, "Content-Length:")) {
                         const val = std.mem.trim(u8, line[16..], " ");
@@ -55,7 +55,7 @@ pub const McpTransport = struct {
                 header_end_pos = pos + 2;
                 // Parse Content-Length  
                 const header = view[0..pos];
-                var lines = std.mem.split(u8, header, "\n");
+                var lines = std.mem.splitScalar(u8, header, '\n');
                 while (lines.next()) |line| {
                     if (std.mem.startsWith(u8, line, "Content-Length:")) {
                         const val = std.mem.trim(u8, line[16..], " ");

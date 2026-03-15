@@ -12,7 +12,7 @@ pub fn run(allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8) !AgentState {
     std.debug.print("get_current_agent_by_session_id: looking for session_id='{s}'\n", .{session_id});
-    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0) FROM llm_history WHERE session_id = ? ORDER BY created_at DESC LIMIT 1";
+    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0.5), COALESCE(is_thinking, 1) FROM llm_history WHERE session_id = ? ORDER BY created_at DESC LIMIT 1";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -31,8 +31,8 @@ pub fn run(allocator: std.mem.Allocator,
         std.debug.print("get_current_agent_by_session_id: NO ROWS FOUND for session_id='{s}', returning defaults\n", .{session_id});
         return AgentState{
             .agent = try allocator.dupe(u8, "Agent"),
-            .temperature = 0.2,
-            .is_thinking = false,
+            .temperature = 0.5,
+            .is_thinking = true,
         };
     }
 }

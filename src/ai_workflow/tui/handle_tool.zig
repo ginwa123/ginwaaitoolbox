@@ -18,8 +18,10 @@ const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
+const save_skill_mod = @import("save_skill.zig");
 const loop_detector = tree1_mod.loop_detector;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
+const tool_models = tree1_mod.tool_models;
 
 // Forward declaration for TUIWorkflow
 const TUIWorkflow = @import("tui_workflow.zig").TUIWorkflow;
@@ -100,6 +102,7 @@ pub fn run(
     api_key: []const u8,
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
+    base_tools: []const tool_models.AgentTool,
 ) !void {
     logger.infoFmt("[HANDLE_TOOL] START - finish_reason: {?s}, tool_calls: {}", .{ if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null, res_dynamic_agent.tool_calls != null }) catch {};
     if (res_dynamic_agent.tool_calls) |tc| {
@@ -129,6 +132,22 @@ pub fn run(
         );
         const current_agent_for_save = current_agent_state.agent;
 
+
+        var isSaving = false;
+        for (assistant_tool_calls) |tool_call| {
+            for (base_tools) |base_tool| {
+                if (std.mem.eql(u8, tool_call.function.name, base_tool.function.name)) {
+                    isSaving = true;
+                    break;
+                }
+            }
+        }
+        if (!isSaving) {
+
+            logger.infoFmt("[HANDLE_TOOL] Skipping saving assistant message, no tools matched", .{}) catch {};
+            return;
+        }
+
         _ = try save_message.run(allocator, db, .{
             .session_id = session_id,
             .model = model,
@@ -152,7 +171,7 @@ pub fn run(
         });
 
         // Build context for tool handling
-        const ctx = ToolContext{
+        var ctx = ToolContext{
             .allocator = allocator,
             .db = db,
             .logger = logger,
@@ -229,6 +248,10 @@ pub fn run(
                     .completion_tokens = 0,
                     .total_tokens = 0,
                 });
+
+                ctx.is_thinking = isThinking.*;
+                ctx.agent_temperature = agent_temperature.*;
+
                 send_tool_result.run(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
                 logger.infoFmt("Agent properties updated: temp={any}, is_thinking={any}", .{ change_result.temperature, change_result.is_thinking }) catch {};
                 continue;
@@ -309,6 +332,30 @@ pub fn run(
                     continue;
                 };
                 defer allocator.free(result);
+
+                // Save skill to database if loaded successfully
+                if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
+                    // Parse skill_name from result
+                    if (std.mem.indexOf(u8, result, "<skill_name>")) |name_start| {
+                        const name_begin = name_start + "<skill_name>".len;
+                        if (std.mem.indexOf(u8, result[name_begin..], "</skill_name>")) |name_end| {
+                            const skill_name = result[name_begin..name_begin + name_end];
+                            // Parse content from result
+                            if (std.mem.indexOf(u8, result, "<content>")) |content_start| {
+                                const content_begin = content_start + "<content>".len;
+                                if (std.mem.indexOf(u8, result[content_begin..], "</content>")) |content_end| {
+                                    const content = result[content_begin..content_begin + content_end];
+                                    // Save to database
+                                    save_skill_mod.run(allocator, db, logger, session_id, skill_name, content) catch |err| {
+                                        const err_name = @errorName(err);
+                                        logger.errFmt("Error saving skill to database: {s}", .{err_name}) catch {};
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+
                 try handleToolResult(ctx, tool_call, result);
                 continue;
             }
@@ -331,32 +378,32 @@ pub fn run(
             }
 
             // Check if tool has underscore (potential MCP tool)
-            const has_underscore = std.mem.indexOf(u8, tool_call.function.name, "_") != null;
-            logger.infoFmt("[HANDLE_TOOL] Tool '{s}' has_underscore: {}", .{ tool_call.function.name, has_underscore }) catch {};
-
-            // Fallback: Check if this is an MCP tool (has underscore in name)
-            // MCP tools are named like "context7_resolve-library-id"
-            if (has_underscore) {
-                // Check if it's not one of the built-in tools
-                const is_builtin = std.mem.eql(u8, tool_call.function.name, "set_agent_properties") or
-                    std.mem.eql(u8, tool_call.function.name, "bash") or
-                    std.mem.eql(u8, tool_call.function.name, "read_file") or
-                    std.mem.eql(u8, tool_call.function.name, "write_file") or
-                    std.mem.eql(u8, tool_call.function.name, "search") or
-                    std.mem.eql(u8, tool_call.function.name, "text_replace") or
-                    std.mem.eql(u8, tool_call.function.name, "list_skills") or
-                    std.mem.eql(u8, tool_call.function.name, "get_skill") or
-                    std.mem.eql(u8, tool_call.function.name, "remove_skill") or
-                    std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent");
-
-                if (!is_builtin) {
-                    logger.infoFmt("Treating as MCP tool: {s}", .{tool_call.function.name}) catch {};
-                    handle_mcp_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, config) catch |err| {
-                        const err_name = @errorName(err);
-                        logger.errFmt("Error handling MCP tool: {s}", .{err_name}) catch {};
-                    };
-                }
-            }
+            // const has_underscore = std.mem.indexOf(u8, tool_call.function.name, "_") != null;
+            // logger.infoFmt("[HANDLE_TOOL] Tool '{s}' has_underscore: {}", .{ tool_call.function.name, has_underscore }) catch {};
+            //
+            // // Fallback: Check if this is an MCP tool (has underscore in name)
+            // // MCP tools are named like "context7_resolve-library-id"
+            // if (has_underscore) {
+            //     // Check if it's not one of the built-in tools
+            //     const is_builtin = std.mem.eql(u8, tool_call.function.name, "set_agent_properties") or
+            //         std.mem.eql(u8, tool_call.function.name, "bash") or
+            //         std.mem.eql(u8, tool_call.function.name, "read_file") or
+            //         std.mem.eql(u8, tool_call.function.name, "write_file") or
+            //         std.mem.eql(u8, tool_call.function.name, "search") or
+            //         std.mem.eql(u8, tool_call.function.name, "text_replace") or
+            //         std.mem.eql(u8, tool_call.function.name, "list_skills") or
+            //         std.mem.eql(u8, tool_call.function.name, "get_skill") or
+            //         std.mem.eql(u8, tool_call.function.name, "remove_skill") or
+            //         std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent");
+            //
+            //     if (!is_builtin) {
+            //         logger.infoFmt("Treating as MCP tool: {s}", .{tool_call.function.name}) catch {};
+            //         handle_mcp_tool.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, config) catch |err| {
+            //             const err_name = @errorName(err);
+            //             logger.errFmt("Error handling MCP tool: {s}", .{err_name}) catch {};
+            //         };
+            //     }
+            // }
         }
         logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
     } else {

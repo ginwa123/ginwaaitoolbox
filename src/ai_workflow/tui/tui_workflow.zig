@@ -200,6 +200,20 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
         var loop_counter: u32 = 0;
+
+        const base_tools: []const tool_models.AgentTool = &.{
+            bash_tool.bashTool,
+            read_file_tool.readFileTool,
+            set_agent_properties.SetAgentPropertiesTool,
+            list_skills_tool.listSkillsTool,
+            get_skill_tool.getSkillTool,
+            remove_skill_tool.removeSkillTool,
+            write_file_tool.writeFileTool,
+            text_replace_tool.textReplaceTool,
+            search_tool.searchTool,
+            spawn_sub_agent_tool.spawnSubAgentTool,
+        };
+
         while (true) {
             // Check for cancellation at the start of each iteration
             if (cancellation_registry.getGlobalRegistry()) |registry| {
@@ -208,7 +222,6 @@ pub const TUIWorkflow = struct {
                     break;
                 }
             }
-
 
             var arena_allocator_while_loop = std.heap.ArenaAllocator.init(parent_allocator);
             defer arena_allocator_while_loop.deinit();
@@ -245,7 +258,7 @@ pub const TUIWorkflow = struct {
             var arenaDyanmicAgent = std.heap.ArenaAllocator.init(allocator);
             defer arenaDyanmicAgent.deinit();
             const arenaDynAgentAllocator = arenaDyanmicAgent.allocator();
-            const res_dynamic_agent = self.callDynamicAgent(arenaDynAgentAllocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config) catch |err| {
+            const res_dynamic_agent = self.callDynamicAgent(arenaDynAgentAllocator, &messages_list, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config, base_tools) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -289,7 +302,7 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool.run(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config);
+                    try handle_tool.run(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
@@ -323,6 +336,7 @@ pub const TUIWorkflow = struct {
         base_url: []const u8,
         session_id: []const u8,
         config: *const config_mod.LlmConfig,
+        base_tools: []const tool_models.AgentTool,
     ) !agent.CallResponse {
         _ = config;
         // Fetch MCP tools from configured servers
@@ -332,19 +346,6 @@ pub const TUIWorkflow = struct {
         // };
         // Note: mcp_tools memory is managed by the arena allocator
         // mcp still isse
-
-        const base_tools: []const tool_models.AgentTool = &.{
-            bash_tool.bashTool,
-            read_file_tool.readFileTool,
-            set_agent_properties.SetAgentPropertiesTool,
-            list_skills_tool.listSkillsTool,
-            get_skill_tool.getSkillTool,
-            remove_skill_tool.removeSkillTool,
-            write_file_tool.writeFileTool,
-            text_replace_tool.textReplaceTool,
-            search_tool.searchTool,
-            spawn_sub_agent_tool.spawnSubAgentTool,
-        };
 
         // Merge base tools with MCP tools
         var all_tools: std.ArrayList(tool_models.AgentTool) = .empty;

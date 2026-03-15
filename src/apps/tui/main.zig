@@ -11,6 +11,7 @@ pub const std_options: std.Options = .{
 // HTTP SSE configuration
 const HTTP_HOST = "127.0.0.1";
 const HTTP_PORT: u16 = 8080;
+const VERSION = "0.1.0";
 
 // Re-export text module colors for backward compatibility
 const reset = tui_text.ansi.reset;
@@ -64,7 +65,7 @@ const App = struct {
     http_client: std.http.Client,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
-    original_termios: std.posix.termios,
+    original_termios: ?std.posix.termios,
     session_id: []u8,
     input: std.ArrayList(u8),
     pasting: bool,
@@ -73,14 +74,22 @@ const App = struct {
     keybindings: keybindings.Keybindings,
     verbose: bool = false,
     state: CompletionState = CompletionState{ .matches = .empty },
+    is_noninteractive: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, verbose: bool) !App {
+    pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool) !App {
         // try spawnBackend(verbose);
         std.log.info("Spawned backend", .{});
         try waitForHttpServer(10000);
         std.log.info("HTTP server ready", .{});
-        const original_termios = try enableRawMode();
-        std.log.info("Raw mode enabled", .{});
+
+        // Only enable raw mode when running interactively (has a real TTY)
+        // In non-interactive mode (e.g., -q flag), there's no terminal
+        var original_termios: ?std.posix.termios = null;
+        if (!is_noninteractive) {
+            original_termios = try enableRawMode();
+            std.log.info("Raw mode enabled", .{});
+        }
+
         const session_id = try std.fmt.allocPrint(allocator, "session_{}", .{std.time.timestamp()});
         const kb = try keybindings.loadKeybindings(allocator);
         std.log.info("Session ID: {s}", .{session_id});
@@ -106,7 +115,9 @@ const App = struct {
 
     pub fn deinit(app: *App) void {
         app.keybindings.deinit();
-        disableRawMode(app.original_termios);
+        if (app.original_termios) |orig| {
+            disableRawMode(orig);
+        }
         app.allocator.free(app.session_id);
         app.input.deinit(app.allocator);
         app.state.matches.deinit(app.allocator);
@@ -1216,6 +1227,70 @@ fn handleInput(app: *App) !bool {
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
+const CliOptions = struct {
+    query: ?[]const u8 = null,
+    continue_session: ?[]const u8 = null,
+    show_help: bool = false,
+    show_version: bool = false,
+    verbose: bool = false,
+};
+
+fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
+    var opts = CliOptions{};
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--query")) {
+            if (i + 1 >= args.len) {
+                return error.MissingQueryArgument;
+            }
+            i += 1;
+            opts.query = args[i];
+        } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--continue")) {
+            if (i + 1 >= args.len) {
+                return error.MissingSessionArgument;
+            }
+            i += 1;
+            opts.continue_session = args[i];
+        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            opts.show_help = true;
+        } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
+            opts.show_version = true;
+        } else if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-V")) {
+            opts.verbose = true;
+        } else {
+            // Unknown argument, ignore for compatibility
+        }
+    }
+    return opts;
+}
+
+fn printHelp() void {
+    tui_text.print("nalarcore - AI Agent Terminal UI\n\n", .{});
+    tui_text.print("Usage: nalarcore [options]\n\n", .{});
+    tui_text.print("Options:\n", .{});
+    tui_text.print("  -q, --query <prompt>    Send a query prompt (one-shot mode)\n", .{});
+    tui_text.print("  -c, --continue <session_id> Resume an existing session\n", .{});
+    tui_text.print("  -v, --version           Print version\n", .{});
+    tui_text.print("  -h, --help              Show help\n\n", .{});
+    tui_text.print("Examples:\n", .{});
+    tui_text.print("  nalarcore -q \"What is the capital of France?\"\n", .{});
+    tui_text.print("  nalarcore -c abc123 -q \"Summarize that in one sentence.\"\n", .{});
+    tui_text.print("  nalarcore               Start interactive session\n", .{});
+}
+
+fn runQueryMode(app: *App, query: []const u8) !void {
+    const response = readResponseAndStreamRunLLM(app, query) catch |err| {
+        tui_text.print("Error: {s}\n", .{@errorName(err)});
+        return;
+    };
+    defer app.allocator.free(response);
+    // Response is already printed by readResponseAndStreamRunLLM
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -1226,22 +1301,50 @@ pub fn main() !void {
     // Initialize the text module's global allocator
     tui_text.setGlobalAllocator(allocator);
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var verbose = false;
-    for (args[1..]) |arg| {
-        if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
-            verbose = true;
-        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            tui_text.print("zigginagentic-tui - Terminal UI for AI agent\n\nUsage: zigginagentic-tui [options]\n\nOptions:\n  -v, --verbose    Show backend debug output\n  -h, --help       Show this help message\n", .{});
-            return;
+    // Parse CLI arguments
+    const opts = parseCliArgs(allocator) catch |err| {
+        if (err == error.MissingQueryArgument) {
+            tui_text.print("Error: -q/--query requires an argument\n", .{});
+            return error.MissingQueryArgument;
         }
+        if (err == error.MissingSessionArgument) {
+            tui_text.print("Error: -c/--continue requires an argument\n", .{});
+            return error.MissingSessionArgument;
+        }
+        return err;
+    };
+
+    // Handle help and version flags
+    if (opts.show_help) {
+        printHelp();
+        return;
     }
 
-    var app = try App.init(allocator, verbose);
+    if (opts.show_version) {
+        tui_text.print("nalarcore version {s}\n", .{VERSION});
+        return;
+    }
+
+    // Determine if we're in non-interactive mode (CLI query mode vs interactive TUI)
+    const is_noninteractive = opts.query != null;
+
+    // Initialize app (always needed, even for query mode)
+    var app = try App.init(allocator, opts.verbose, is_noninteractive);
     defer app.deinit();
 
+    // Handle session continuation
+    if (opts.continue_session) |session_id| {
+        app.allocator.free(app.session_id);
+        app.session_id = try app.allocator.dupe(u8, session_id);
+    }
+
+    // Query mode: send single query and exit
+    if (opts.query) |query| {
+        try runQueryMode(&app, query);
+        return;
+    }
+
+    // Interactive mode (default)
     std.debug.print("Type message and press Enter. Ctrl+C to exit.\r\n\r\n", .{});
     std.debug.print("\x1b[?2004h", .{});
     defer std.debug.print("\x1b[?2004l", .{});

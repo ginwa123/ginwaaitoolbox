@@ -197,6 +197,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/apps/tui/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tui-text", .module = tui_text_mod },
+            },
         }),
     });
     tui_linux_exe.linkSystemLibrary("ssl");
