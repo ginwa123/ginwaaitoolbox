@@ -1,5 +1,6 @@
 const std = @import("std");
 const list_skills = @import("tools/list_skills.zig");
+const agents = @import("tools/agents.zig");
 
 // =============================================================================
 // BASE -- inherited by all agents
@@ -780,6 +781,21 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: 
     }
 
     // dynamic agent
+    const agents_list = agents.listAgents(allocator);
+    defer agents.freeAgentsList(allocator, agents_list);
+
+    if (agents_list.len > 0) {
+        try result.appendSlice(allocator, "\n\n## Available Dynamic Agents\n\n");
+        try result.appendSlice(allocator, "The following specialized agents are available. Use `get_agent` to load their full definitions when needed:\n\n");
+
+        for (agents_list) |info| {
+            try result.appendSlice(allocator, "- **");
+            try result.appendSlice(allocator, info.name);
+            try result.appendSlice(allocator, "**: ");
+            try result.appendSlice(allocator, info.description);
+            try result.appendSlice(allocator, "\n");
+        }
+    }
 
     return result.toOwnedSlice(allocator);
 }
@@ -787,7 +803,7 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: 
 /// Build a minimal system prompt for sub-agents with cwd context
 /// Sub-agents need to know the working directory to resolve file paths correctly
 /// tool_names is a list of tool names the sub-agent has access to
-pub fn buildSubAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, tool_names: []const []const u8) ![]const u8 {
+pub fn buildSubAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, tool_names: []const []const u8, skillContents: []const u8) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
@@ -802,6 +818,11 @@ pub fn buildSubAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, tool_n
         try result.appendSlice(allocator, "- **");
         try result.appendSlice(allocator, name);
         try result.appendSlice(allocator, "**\n");
+    }
+
+    if (skillContents.len > 0) {
+        try result.appendSlice(allocator, "\n\n");
+        try result.appendSlice(allocator, skillContents);
     }
 
     try result.appendSlice(allocator,
