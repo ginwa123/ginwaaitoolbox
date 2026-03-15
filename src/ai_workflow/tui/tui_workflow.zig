@@ -69,33 +69,10 @@ pub const SessionInfo = struct {
 
 pub const StreamingContext = struct {
     allocator: std.mem.Allocator,
-    workflow: *TUIWorkflow,
     session_id: []const u8 = "",
     chunk_index: usize = 0,
-    /// Cached atomic pointer for cancellation check - avoids mutex contention
-    cancel_atomic: ?*std.atomic.Value(bool) = null,
 };
 
-/// Context-aware cancellation check for use with callStreaming
-/// ctx should be a pointer to StreamingContext (same as stream_callback receives)
-/// Uses cached atomic pointer to avoid mutex contention on every check
-pub fn isCancelledWithContext(ctx: ?*anyopaque) bool {
-    if (ctx == null) return false;
-
-    // ctx is actually *StreamingContext, not *[]const u8
-    const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return false;
-
-    // Use cached atomic pointer if available (avoids mutex lock)
-    if (stream_ctx.cancel_atomic) |atomic| {
-        return atomic.load(.seq_cst);
-    }
-
-    // Fallback to registry lookup (with mutex lock)
-    if (cancellation_registry.getGlobalRegistry()) |registry| {
-        return registry.isCancelled(stream_ctx.session_id);
-    }
-    return false;
-}
 
 /// Callback for streaming chunks - sends each chunk to the client
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
@@ -359,12 +336,10 @@ pub const TUIWorkflow = struct {
 
         var stream_ctx = StreamingContext{
             .allocator = allocator,
-            .workflow = self,
             .session_id = session_id,
             .chunk_index = 0,
-            .cancel_atomic = if (cancellation_registry.getGlobalRegistry()) |registry| registry.getAtomic(session_id) else null,
         };
-        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback, isCancelledWithContext);
+        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
 
         return res_dynamic_agent;
     }

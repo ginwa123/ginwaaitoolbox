@@ -691,336 +691,6 @@ pub const Agent = struct {
         Cancelled,
     };
 
-    pub fn call(self: *Agent, params: AgentCall) CallError!CallResponse {
-        // Build a summary of the conversation context
-        var context_summary: [256]u8 = undefined;
-        var context_len: usize = 0;
-        for (params.messages) |msg| {
-            if (context_len >= context_summary.len - 20) break;
-            const role_prefix = switch (msg.role) {
-                .system => "S:",
-                .user => "U:",
-                .assistant => "A:",
-                .tool => "T:",
-            };
-            if (context_len > 0) {
-                context_summary[context_len] = ' ';
-                context_len += 1;
-            }
-            const prefix_len = role_prefix.len;
-            if (context_len + prefix_len < context_summary.len) {
-                @memcpy(context_summary[context_len..context_len + prefix_len], role_prefix);
-                context_len += prefix_len;
-            }
-        }
-        // Build tools info string
-        var tools_buf: [32]u8 = undefined;
-        const tools_info = if (params.tools.len > 0)
-            std.fmt.bufPrint(&tools_buf, " tools:{}", .{params.tools.len}) catch ""
-        else
-            "";
-
-        self.logFmt(.info, "[CALL START] model={s} | messages={} | tools={} | temp={d:.1} | max_tokens={}", .{
-            self.model,
-            params.messages.len,
-            params.tools.len,
-            params.temperature orelse self.temperature,
-            params.max_tokens orelse self.maxTokens
-        });
-        self.logFmt(.debug, "[CALL CONTEXT] {s}{s}", .{ context_summary[0..context_len], tools_info });
-
-        const json_start = timestampMs();
-        const json_body: []u8 = self.buildJsonRequest(params, false) catch |err| {
-            self.logError("buildJsonRequest", err, null);
-            return error.BuildRequestFailed;
-        };
-        self.logFmt(.debug, "[TIMING] JSON build took {}ms ({} bytes)", .{ elapsedMs(json_start), json_body.len });
-        // Log truncated JSON body for debugging (first 500 chars max)
-        const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
-        const json_ellipsis = if (json_body.len > 500) "..." else "";
-        self.logFmt(.debug, "[REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
-        defer self.allocator.free(json_body);
-
-        const connect_start = timestampMs();
-        const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
-            self.logError("concat URI", err, self.baseUrl);
-            return error.OutOfMemory;
-        };
-        defer self.allocator.free(uri_str);
-
-        const uri = std.Uri.parse(uri_str) catch |err| {
-            self.logFmt(.err, "Failed to parse URI '{s}': {s}", .{ uri_str, @errorName(err) });
-            return error.InvalidUri;
-        };
-
-        self.logFmt(.debug, "[REQUEST] POST {s} (body: {} bytes)", .{ uri_str, json_body.len });
-
-        const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
-            self.logError("concat auth", err, null);
-            return error.OutOfMemory;
-        };
-        defer self.allocator.free(auth_value);
-
-        var req = self.httpClient.request(.POST, uri, .{
-            .version = .@"HTTP/1.1",
-            .headers = .{
-                .authorization = .{ .override = auth_value },
-                .content_type = .{ .override = "application/json" },
-                .accept_encoding = .{ .override = "identity" },
-            },
-        }) catch |err| {
-            self.logFmt(.err, "HTTP request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
-            return error.HttpRequestFailed;
-        };
-        defer req.deinit();
-
-        if (req.connection) |conn| {
-            const stream = conn.stream_reader.getStream();
-            const handle = stream.handle;
-            const timeout = std.posix.timeval{
-                .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
-                .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
-            };
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch |err| {
-                self.logFmt(.warn, "Failed to set socket RCVTIMEO: {s}", .{@errorName(err)});
-            };
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch |err| {
-                self.logFmt(.warn, "Failed to set socket SNDTIMEO: {s}", .{@errorName(err)});
-            };
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&@as(u32, 1))) catch |err| {
-                self.logFmt(.warn, "Failed to set socket KEEPALIVE: {s}", .{@errorName(err)});
-            };
-        }
-        self.logFmt(.debug, "[TIMING] Connection setup took {}ms", .{elapsedMs(connect_start)});
-
-        const send_start = timestampMs();
-        req.sendBodyComplete(json_body) catch |err| {
-            self.logError("sendBodyComplete", err, null);
-            return error.SendBodyFailed;
-        };
-        self.logFmt(.debug, "[TIMING] Request sent in {}ms", .{elapsedMs(send_start)});
-
-        const receive_start = timestampMs();
-        var redirect_buffer: [8192]u8 = undefined;
-        // Use heap-allocated buffer for response body to handle large API responses
-        const transfer_buffer = self.allocator.alloc(u8, self.httpOptions.response_buffer_size) catch |err| {
-            self.logError("alloc transfer_buffer", err, null);
-            return error.OutOfMemory;
-        };
-        defer self.allocator.free(transfer_buffer);
-
-        self.logFmt(.debug, "[WAITING] Waiting for response (timeout: {}ms)...", .{self.httpOptions.read_timeout_ms});
-
-        var response = req.receiveHead(&redirect_buffer) catch |err| {
-            self.logFmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(receive_start), @errorName(err) });
-            if (req.connection) |conn| {
-                if (conn.getReadError()) |read_err| {
-                    self.logFmt(.err, "HTTP receive failed: {s} (underlying: {s})", .{ @errorName(err), @errorName(read_err) });
-                } else {
-                    self.logError("receiveHead", err, null);
-                }
-            } else {
-                self.logFmt(.err, "HTTP receive failed (no connection): {s}", .{@errorName(err)});
-            }
-            return error.ReceiveFailed;
-        };
-
-        // Handle zero content-length to avoid union field access panic
-        if (response.head.content_length != null and response.head.content_length.? == 0) {
-            self.logMsg(.info, "[RESPONSE] Response has empty body (content-length=0)");
-            return CallResponse{
-                .allocator = self.allocator,
-                .content = "",
-                .tool_calls = null,
-                .finish_reason = null,
-            };
-        }
-
-        const body = response.request.reader.bodyReader(transfer_buffer[0..], response.head.transfer_encoding, response.head.content_length).allocRemaining(self.allocator, .unlimited) catch |err| {
-            self.logFmt(.err, "[ERROR] Failed to read body after {}ms: {s}", .{ elapsedMs(receive_start), @errorName(err) });
-            return error.ReceiveFailed;
-        };
-        defer self.allocator.free(body);
-
-        const duration = elapsedMs(send_start);
-        const duration_fmt = formatDuration(duration);
-        self.logFmt(.info, "[RESPONSE] Received {} bytes in {}{s} (network: {}ms)", .{
-            body.len,
-            duration_fmt.value,
-            duration_fmt.unit,
-            elapsedMs(receive_start)
-        });
-
-        const parsed = json.parseFromSlice(json.Value, self.allocator, body, .{}) catch |err| {
-            self.logApiError("JSON parse", err, body);
-            return error.ParseJsonFailed;
-        };
-        defer parsed.deinit();
-
-        const root = parsed.value;
-        if (root.object.get("error")) |api_error| {
-            const error_detail = switch (api_error) {
-                .string => |s| s,
-                .object => |obj| blk: {
-                    if (obj.get("message")) |msg| {
-                        break :blk switch (msg) {
-                            .string => |s| s,
-                            else => "unknown error object",
-                        };
-                    }
-                    break :blk "error object without message";
-                },
-                else => "unknown error format",
-            };
-            self.logFmt(.err, "API returned error: {s}", .{error_detail});
-            return error.ApiError;
-        }
-
-        const choices = root.object.get("choices") orelse {
-            self.logApiError("No choices in response", error.NoChoices, body);
-            return error.NoChoices;
-        };
-
-        if (choices.array.items.len == 0) {
-            self.logApiError("Empty choices array", error.NoChoices, body);
-            return error.NoChoices;
-        }
-
-        const first_choice = choices.array.items[0];
-        const message = first_choice.object.get("message") orelse {
-            self.logApiError("No message in choice", error.NoChoices, body);
-            return error.NoChoices;
-        };
-
-        const content = message.object.get("content");
-        const tool_calls_val = message.object.get("tool_calls");
-        const finish_reason_val = first_choice.object.get("finish_reason");
-        const reasoning_content_val = message.object.get("reasoning_content");
-
-        if (content) |c| {
-            const preview_len = if (c.string.len > 100) 100 else c.string.len;
-            const preview = c.string[0..preview_len];
-            const ellipsis = if (c.string.len > 100) "..." else "";
-            self.logFmt(.info, "[RESPONSE] AI response: {s}{s} ({} chars total)", .{ preview, ellipsis, c.string.len });
-        } else if (tool_calls_val != null) {
-            self.logMsg(.info, "[RESPONSE] AI responded with tool_calls only (no text content)");
-        } else {
-            self.logMsg(.warn, "[RESPONSE] Empty response - no content or tool_calls received");
-        }
-
-        if (reasoning_content_val) |rc| {
-            self.logFmt(.debug, "Reasoning content ({} chars): {s}", .{ rc.string.len, rc.string });
-        }
-
-        var tool_calls: ?[]ToolCall = null;
-        if (tool_calls_val) |tc| {
-            self.logFmt(.info, "[TOOL_CALLS] Parsing {} tool call(s) from response", .{tc.array.items.len});
-            var calls = self.allocator.alloc(ToolCall, tc.array.items.len) catch |err| {
-                self.logError("alloc tool_calls", err, null);
-                return error.OutOfMemory;
-            };
-            for (tc.array.items, 0..) |tc_item, i| {
-                const tc_obj = tc_item.object;
-                const id = tc_obj.get("id") orelse {
-                    self.logFmt(.err, "[TOOL_CALLS] Tool call #{} missing 'id' field", .{i + 1});
-                    return error.ParseJsonFailed;
-                };
-                const func_obj = tc_obj.get("function") orelse {
-                    self.logFmt(.err, "[TOOL_CALLS] Tool call #{} missing 'function' field", .{i + 1});
-                    return error.ParseJsonFailed;
-                };
-                const name = func_obj.object.get("name") orelse {
-                    self.logFmt(.err, "[TOOL_CALLS] Tool call #{} missing function 'name'", .{i + 1});
-                    return error.ParseJsonFailed;
-                };
-                const arguments = func_obj.object.get("arguments") orelse {
-                    self.logFmt(.err, "[TOOL_CALLS] Tool call #{} missing function 'arguments'", .{i + 1});
-                    return error.ParseJsonFailed;
-                };
-                calls[i] = .{ .id = id.string, .function = .{ .name = name.string, .arguments = arguments.string } };
-                // Log meaningful tool call info with argument preview
-                const args_str = arguments.string;
-                const args_preview = if (args_str.len > 80) args_str[0..80] else args_str;
-                const ellipsis = if (args_str.len > 80) "..." else "";
-                self.logFmt(.info, "[TOOL_CALLS] #{}/{}: {s} (id={s}) args={s}{s}", .{
-                    i + 1,
-                    tc.array.items.len,
-                    name.string,
-                    id.string,
-                    args_preview,
-                    ellipsis
-                });
-            }
-            tool_calls = calls;
-        }
-
-        const finish_reason = FinishReason.fromStr(if (finish_reason_val) |fr| fr.string else null);
-        const finish_reason_str = if (finish_reason) |fr| fr.toStr() else "incomplete";
-        const finish_explanation = if (finish_reason) |fr|
-            switch (fr) {
-                .stop => "AI completed response naturally",
-                .length => "AI hit token limit",
-                .tool_calls => "AI triggered tool call(s)",
-                .content_filter => "Content was filtered",
-                .tool => "Tool execution completed",
-                .null => "Response incomplete or streaming",
-            }
-        else
-            "Response incomplete or streaming";
-        self.logFmt(.info, "[FINISH] Reason: {s} ({s})", .{ finish_reason_str, finish_explanation });
-
-        var content_copy: ?[]const u8 = null;
-        if (content) |c| {
-            content_copy = self.allocator.dupe(u8, c.string) catch |err| {
-                self.logError("dupe content", err, null);
-                return error.OutOfMemory;
-            };
-        }
-
-        var reasoning_content_copy: ?[]const u8 = null;
-        if (reasoning_content_val) |rc| {
-            reasoning_content_copy = self.allocator.dupe(u8, rc.string) catch |err| {
-                self.logError("dupe reasoning_content", err, null);
-                return error.OutOfMemory;
-            };
-        }
-
-        // Parse usage information
-        var usage: Usage = .{};
-        if (root.object.get("usage")) |usage_val| {
-            if (usage_val == .object) {
-                if (usage_val.object.get("prompt_tokens")) |pt| {
-                    if (pt == .integer) usage.prompt_tokens = @intCast(pt.integer);
-                }
-                if (usage_val.object.get("completion_tokens")) |ct| {
-                    if (ct == .integer) usage.completion_tokens = @intCast(ct.integer);
-                }
-                if (usage_val.object.get("total_tokens")) |tt| {
-                    if (tt == .integer) usage.total_tokens = @intCast(tt.integer);
-                }
-                // Calculate approximate cost (using OpenAI-like pricing as reference)
-                const prompt_cost = @as(f64, @floatFromInt(usage.prompt_tokens)) * 0.000003; // $3 per 1M tokens
-                const completion_cost = @as(f64, @floatFromInt(usage.completion_tokens)) * 0.000015; // $15 per 1M tokens
-                const total_cost = prompt_cost + completion_cost;
-                self.logFmt(.info, "[TOKENS] Prompt: {} | Completion: {} | Total: {} | Est. cost: ${d:.4}", .{
-                    usage.prompt_tokens,
-                    usage.completion_tokens,
-                    usage.total_tokens,
-                    total_cost
-                });
-            }
-        }
-
-        return .{
-            .allocator = self.allocator,
-            .content = content_copy,
-            .tool_calls = tool_calls,
-            .finish_reason = finish_reason,
-            .reasoning_content = reasoning_content_copy,
-            .usage = usage,
-        };
-    }
-
     /// Parse a single SSE line (format: "data: {...}" or "data: [DONE]")
     pub fn parseSseLine(_: Agent, line: []const u8) ?[]const u8 {
         // Skip empty lines
@@ -1196,21 +866,12 @@ pub const Agent = struct {
         params: AgentCall,
         ctx: ?*anyopaque,
         callback: StreamCallback,
-        is_cancelled: ?*const fn (?*anyopaque) bool,
     ) CallError!CallResponse {
         self.logFmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{
             self.model,
             params.messages.len,
             params.tools.len
         });
-
-        // Check cancellation before starting
-        if (is_cancelled) |check| {
-            if (check(ctx)) {
-                self.logMsg(.info, "[STREAM] Cancelled by user before starting");
-                return error.Cancelled;
-            }
-        }
 
         // Build request
         const json_body = self.buildJsonRequest(params, true) catch |err| {
@@ -1240,14 +901,6 @@ pub const Agent = struct {
         };
         defer self.allocator.free(auth_value);
 
-        // Check cancellation before connection
-        if (is_cancelled) |check| {
-            if (check(ctx)) {
-                self.logMsg(.info, "[STREAM] Cancelled by user before connection");
-                return error.Cancelled;
-            }
-        }
-
         var req = self.httpClient.request(.POST, uri, .{
             .version = .@"HTTP/1.1",
             .headers = .{
@@ -1274,26 +927,12 @@ pub const Agent = struct {
             std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&@as(u32, 1))) catch {};
         }
 
-        // Check cancellation before sending body
-        if (is_cancelled) |check| {
-            if (check(ctx)) {
-                self.logMsg(.info, "[STREAM] Cancelled by user before sending body");
-                return error.Cancelled;
-            }
-        }
 
         req.sendBodyComplete(json_body) catch |err| {
             self.logError("sendBodyComplete", err, null);
             return error.SendBodyFailed;
         };
 
-        // Check cancellation before receiving headers
-        if (is_cancelled) |check| {
-            if (check(ctx)) {
-                self.logMsg(.info, "[STREAM] Cancelled by user before receiving headers");
-                return error.Cancelled;
-            }
-        }
 
         const stream_start = timestampMs();
         var redirect_buffer: [8192]u8 = undefined;
@@ -1451,14 +1090,6 @@ pub const Agent = struct {
         var read_buf: [8192]u8 = undefined;
 
         while (true) {
-            // Check cancellation
-            if (is_cancelled) |check| {
-                if (check(ctx)) {
-                    self.logMsg(.info, "[STREAM] Cancelled by user");
-                    stream_ended_cleanly = false;
-                    return error.Cancelled;
-                }
-            }
 
             // Check reader state before attempting to read
             // The state can transition to 'ready' when content-length bytes are exhausted

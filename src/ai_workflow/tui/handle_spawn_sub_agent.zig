@@ -31,6 +31,8 @@ const set_agent_properties = root_mod.set_agent_properties;
 const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
 const GetMessages = @import("get_messages.zig").GetMessages;
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
+const handle_bash_tool = @import("handle_bash_tool.zig");
+const StreamingContext = @import("tui_workflow.zig").StreamingContext;
 
 const MAX_SUB_AGENTS = 20;
 
@@ -57,6 +59,11 @@ fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const
     }
 
     return try result.toOwnedSlice(allocator);
+}
+
+pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
+    _ = ctx;
+    _ = chunk;
 }
 
 /// Run a single sub-agent with basic tools (but no spawn_sub_agent or set_agent_properties)
@@ -103,7 +110,6 @@ fn runSubAgent(
         .is_thinking = is_thinking,
         .parent_session_id = parent_session_id,
         .parent_id = parent_id,
-        // User messages have no LLM token usage
         .prompt_tokens = 0,
         .completion_tokens = 0,
         .total_tokens = 0,
@@ -130,31 +136,30 @@ fn runSubAgent(
     const systemPrompt = try prompt.buildSubAgentPrompt(parentAllocator, cwd, tool_names.items);
 
     // Save system prompt to DB so it can be fetched in the while loop
-    _ = try SaveMessage(parentAllocator, db, .{
-        .session_id = session_id,
-        .model = model,
-        .cwd = cwd,
-        .content = systemPrompt,
-        .response_content = null,
-        .response_finish_reason = null,
-        .response_reasoning_content = null,
-        .role = agent.Role.system.toStr(),
-        .finish_reason = "null",
-        .tool_calls = null,
-        .tool_call_id = null,
-        .agent_name = agent_name,
-        .session_name = session_name,
-        .loop_index = loop_index,
-        .temperature = agent_temperature,
-        .is_thinking = is_thinking,
-        .parent_session_id = parent_session_id,
-        .parent_id = parent_id,
-        .prompt_tokens = 0,
-        .completion_tokens = 0,
-        .total_tokens = 0,
-    });
-
-
+    // _ = try SaveMessage(parentAllocator, db, .{
+    //     .session_id = session_id,
+    //     .model = model,
+    //     .cwd = cwd,
+    //     .content = systemPrompt,
+    //     .response_content = null,
+    //     .response_finish_reason = null,
+    //     .response_reasoning_content = null,
+    //     .role = agent.Role.system.toStr(),
+    //     .finish_reason = "null",
+    //     .tool_calls = null,
+    //     .tool_call_id = null,
+    //     .agent_name = agent_name,
+    //     .session_name = session_name,
+    //     .loop_index = loop_index,
+    //     .temperature = agent_temperature,
+    //     .is_thinking = is_thinking,
+    //     .parent_session_id = parent_session_id,
+    //     .parent_id = parent_id,
+    //     .prompt_tokens = 0,
+    //     .completion_tokens = 0,
+    //     .total_tokens = 0,
+    // });
+    //
     var tool_call_count: usize = 0;
     var last_response: ?agent.CallResponse = null;
 
@@ -168,11 +173,7 @@ fn runSubAgent(
             .role = .system,
             .content = systemPrompt,
         });
-        try messages.append(allocator, .{
-            .role = .user,
-            .content = instruction,
-        });
-
+        // Fetch existing messages from DB first
         const tui_histories = try GetMessages(allocator, db, session_id);
         for (tui_histories) |hist| {
             const agent_msgs = try TransformLLMHistory.run(allocator, hist);
@@ -184,11 +185,17 @@ fn runSubAgent(
         const params = agent.AgentCall{
             .tools = sub_agent_tools,
             .messages = messages.items,
-            .temperature = 0.3,
+            .temperature = 0.1,
             .max_tokens = 4000,
         };
 
-        last_response = try sub_agent.call(params);
+        var stream_ctx = StreamingContext{
+            .allocator = allocator,
+            .session_id = session_id,
+            .chunk_index = 0,
+        };
+
+        last_response = try sub_agent.callStreaming(params, &stream_ctx, stream_callback);
         const response = last_response.?;
 
         // Save assistant response to DB
@@ -237,28 +244,12 @@ fn runSubAgent(
                         var tool_result: []const u8 = undefined;
 
                         if (std.mem.eql(u8, tc.function.name, "bash")) {
-                            const bash_input_opt = parseBashInput(allocator, tc.function.arguments) catch |err| blk: {
+                            tool_result = handle_bash_tool.runWithContext(allocator, tc, db, session_id) catch |err| blk: {
                                 const err_str = try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
+                                SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "read_file", null);
                                 allocator.free(err_str);
-                                break :blk null;
+                                break :blk try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)});
                             };
-                            if (bash_input_opt) |bash_input| {
-                                const result = bash_tool.executeBash(allocator, bash_input) catch |err| blk: {
-                                    const err_str = try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                                    SendToolResult.SendToolResult(allocator, parent_session_id, logger, err_str, tc.id, "bash", null);
-                                    allocator.free(err_str);
-                                    break :blk null;
-                                };
-                                if (result) |r| {
-                                    tool_result = try bash_tool.bashResultToString(allocator, r);
-                                } else {
-                                    tool_result = "Error: bash execution failed";
-                                }
-                            } else {
-                                tool_result = "Error: bash input parsing failed";
-                            }
-                            // Send tool result immediately after execution
                             SendToolResult.SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "bash", null);
                         } else if (std.mem.eql(u8, tc.function.name, "read_file")) {
                             tool_result = handle_read_file_tool.run(allocator, tc) catch |err| blk: {
@@ -392,31 +383,6 @@ fn runSubAgent(
         }
     }
     return try parentAllocator.dupe(u8, "(max tool calls reached)");
-}
-
-/// Parse bash input from JSON arguments
-fn parseBashInput(allocator: std.mem.Allocator, args: []const u8) !BashInput {
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, args, .{});
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    const obj = root.object;
-
-    const command = obj.get("command") orelse return error.MissingCommand;
-    const cwd = obj.get("cwd");
-    const timeout = obj.get("timeout");
-    const max_output = obj.get("max_output");
-    const stdin_data = obj.get("stdin_data");
-    const background = obj.get("background");
-
-    return .{
-        .command = try allocator.dupe(u8, command.string),
-        .cwd = if (cwd) |v| try allocator.dupe(u8, v.string) else null,
-        .timeout = if (timeout) |v| @as(u32, @intCast(v.integer)) else null,
-        .max_output = if (max_output) |v| @as(usize, @intCast(v.integer)) else null,
-        .stdin_data = if (stdin_data) |v| try allocator.dupe(u8, v.string) else null,
-        .background = if (background) |v| v.bool else false,
-    };
 }
 
 /// Parse JSON input and run spawn_sub_agent handler
