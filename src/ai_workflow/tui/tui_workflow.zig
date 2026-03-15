@@ -243,11 +243,7 @@ pub const TUIWorkflow = struct {
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
 
-            // Get background process content
-            const processContent = try BuildBackgroundProcessContent(allocator, self.db, session_id);
-            defer allocator.free(processContent);
-
-            const initial_messages = try BuildMessages(allocator, cwd, "", try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), processContent);
+            const initial_messages = try BuildMessages(allocator, cwd, "", try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id));
 
             try messages_list.appendSlice(allocator, initial_messages);
 
