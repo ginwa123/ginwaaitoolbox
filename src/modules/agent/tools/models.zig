@@ -51,3 +51,11 @@ pub const BashOutput = struct {
     truncated: bool,
     timeout: bool,
 };
+
+// Re-export agent tools for convenience
+pub const agents = @import("agents.zig");
+pub const list_agents = @import("list_agents.zig");
+pub const get_agent = @import("get_agent.zig");
+
+pub const listAgentsTool = list_agents.listAgentsTool;
+pub const getAgentTool = get_agent.getAgentTool;
