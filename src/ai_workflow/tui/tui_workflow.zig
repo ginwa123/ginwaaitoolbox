@@ -102,11 +102,11 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const allocator = stream_ctx.allocator;
     const session_id = stream_ctx.session_id;
 
-    // we disable final chunk for now
-    // if (chunk.done) {
-    //     send_stream_chunk_final.run(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
-    //     return;
-    // }
+    // Send final chunk with usage when done
+    if (chunk.done) {
+        send_stream_chunk_final.run(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
+        return;
+    }
 
     // Send content chunk
     if (chunk.content) |content| {

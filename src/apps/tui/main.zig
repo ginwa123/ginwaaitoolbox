@@ -234,7 +234,7 @@ fn disableRawMode(original: std.posix.termios) void {
 // ─── Backend ─────────────────────────────────────────────────────────────────
 
 fn spawnBackend(_: bool) !void {
-    const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/zigginagentic");
+    const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/nalar");
     defer std.heap.page_allocator.free(backend_path);
 
     // Check if backend is already running by trying to connect to HTTP port

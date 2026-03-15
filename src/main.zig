@@ -138,14 +138,14 @@ fn killExistingProcess() void {
         defer std.heap.page_allocator.free(cmdline);
 
         // Check if this is the backend process (not the TUI)
-        // The cmdline format is typically: "/path/to/zigginagentic\0..."
-        // We want to match "zigginagentic" but NOT "zigginagentic-tui"
+        // The cmdline format is typically: "/path/to/nalar\0..."
+        // We want to match "nalar" but NOT "nalar-tui"
         const cmdline_str = std.mem.sliceTo(cmdline, 0);
-        if (std.mem.endsWith(u8, cmdline_str, "zigginagentic") or
-            std.mem.indexOf(u8, cmdline_str, "/zigginagentic") != null)
+        if (std.mem.endsWith(u8, cmdline_str, "nalar") or
+            std.mem.indexOf(u8, cmdline_str, "/nalar") != null)
         {
             // Double-check it's not the TUI by looking for "-tui" suffix
-            if (std.mem.indexOf(u8, cmdline_str, "zigginagentic-tui") == null) {
+            if (std.mem.indexOf(u8, cmdline_str, "nalar-tui") == null) {
                 std.debug.print("Killing existing backend process {d}\n", .{pid_num});
                 _ = std.c.kill(pid_num, 15);
             }
@@ -153,7 +153,7 @@ fn killExistingProcess() void {
     }
 }
 
-/// Get the database path following XDG standards: ~/.config/zigginagentic/agent.db
+/// Get the database path following XDG standards: ~/.config/nalar/agent.db
 /// Creates the config directory if it doesn't exist.
 /// Caller owns the returned memory.
 fn getDbPath(allocator: std.mem.Allocator) ![:0]const u8 {
@@ -162,11 +162,11 @@ fn getDbPath(allocator: std.mem.Allocator) ![:0]const u8 {
         return error.HomeNotFound;
     };
 
-    // Build the config directory path: ~/.config/zigginagentic
+    // Build the config directory path: ~/.config/nalar
     const config_dir = try std.fs.path.join(allocator, &[_][]const u8{
         home,
         ".config",
-        "zigginagentic",
+        "nalar",
     });
     defer allocator.free(config_dir);
 
@@ -190,7 +190,7 @@ fn getDbPath(allocator: std.mem.Allocator) ![:0]const u8 {
 }
 
 pub fn main() !void {
-    killExistingProcess();
+    // killExistingProcess();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -205,7 +205,7 @@ pub fn main() !void {
     defer llm_config.deinit();
     try llm_config.validate();
 
-    // Get database path following XDG standards: ~/.config/zigginagentic/agent.db
+    // Get database path following XDG standards: ~/.config/nalar/agent.db
     const db_path = try getDbPath(parentAllocator);
     defer parentAllocator.free(db_path);
 
@@ -351,22 +351,22 @@ pub fn main() !void {
             if (std.mem.eql(u8, t.command_type, "get_sessions")) {
                 // Get sessions from database
                 std.debug.print("COMMAND: get_sessions\n", .{});
-                
+
                 // TODO: Query sessions from database and return them
             }
             if (std.mem.eql(u8, t.command_type, "create_session")) {
                 // Create a new session
                 std.debug.print("COMMAND: create_session\n", .{});
-                
+
                 // For now, generate a session ID and return it
                 // In production, this would create a session in the database
                 var session_id_buf: [64]u8 = undefined;
                 const session_id = std.fmt.bufPrint(&session_id_buf, "session_{}", .{std.time.timestamp()}) catch "session_error";
-                
+
                 // Use a fixed-size buffer for the response
                 var response_buf: [256]u8 = undefined;
                 const response = std.fmt.bufPrint(&response_buf, "{{\"sessionId\":\"{s}\"}}", .{session_id}) catch unreachable;
-                
+
                 // Send response back to client
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     const event = http_server.SseEvent{
@@ -377,18 +377,18 @@ pub fn main() !void {
                         std.debug.print("Failed to send session_created response: {s}\n", .{@errorName(err)});
                     };
                 }
-                
+
                 std.debug.print("Created session: {s}\n", .{session_id});
             }
             if (std.mem.eql(u8, t.command_type, "ping")) {
                 // Ping command - check if session is still connected via SSE
                 // Return JSON response to tell TUI whether to reconnect
                 std.debug.print("COMMAND: ping from session_id={s}\n", .{t.session_id});
-                
+
                 // Use a fixed-size buffer for the response (max 256 bytes is plenty)
                 var response_buf: [256]u8 = undefined;
                 var response: []const u8 = undefined;
-                
+
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     if (sse_manager.hasSession(t.session_id)) {
                         response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"connected\":true}}", .{t.session_id}) catch unreachable;

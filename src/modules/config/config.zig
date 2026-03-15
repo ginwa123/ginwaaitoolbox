@@ -133,7 +133,7 @@ pub const LlmConfig = struct {
 /// Get platform-specific default config directory path
 /// Caller owns returned memory
 pub fn getDefaultConfigDir(allocator: std.mem.Allocator) LlmConfig.LoadError![]const u8 {
-    const app_name = "zigginagentic";
+    const app_name = "nalar";
 
     switch (builtin.os.tag) {
         .windows => {

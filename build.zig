@@ -176,7 +176,7 @@ pub fn build(b: *std.Build) void {
     macos_arm_step.dependOn(&install_macos_arm.step);
 
     const linux_system_step = b.step("install:linux:system", "Build for Linux x86_64 and install to system (/usr/local/bin - requires sudo)");
-    const linux_system_exe = createPlatformExe(b, mod, target, optimize, "zigginagentic");
+    const linux_system_exe = createPlatformExe(b, mod, target, optimize, "nalar");
     linux_system_exe.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
     linux_system_step.dependOn(&linux_system_exe.step);
@@ -184,15 +184,15 @@ pub fn build(b: *std.Build) void {
     linux_system_step.dependOn(&install_linux_system.step);
     const copy_to_system = b.addSystemCommand(&.{
         "cp",
-        "zig-out/bin/zigginagentic",
-        "/usr/local/bin/zigginagentic",
+        "zig-out/bin/nalar",
+        "/usr/local/bin/nalar",
     });
     copy_to_system.step.dependOn(&install_linux_system.step);
     linux_system_step.dependOn(&copy_to_system.step);
 
     const tui_linux_system_step = b.step("install:tui:linux:system", "Build TUI for Linux x86_64 and install to system (/usr/local/bin - requires sudo)");
     const tui_linux_exe = b.addExecutable(.{
-        .name = "zigginagentic-tui",
+        .name = "nalar-tui",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/apps/tui/main.zig"),
             .target = target,
@@ -209,8 +209,8 @@ pub fn build(b: *std.Build) void {
     tui_linux_system_step.dependOn(&install_tui_linux_system.step);
     const copy_tui_to_system = b.addSystemCommand(&.{
         "cp",
-        "zig-out/bin/zigginagentic-tui",
-        "/usr/local/bin/zigginagentic-tui",
+        "zig-out/bin/nalar-tui",
+        "/usr/local/bin/nalar-tui",
     });
     copy_tui_to_system.step.dependOn(&install_tui_linux_system.step);
     tui_linux_system_step.dependOn(&copy_tui_to_system.step);

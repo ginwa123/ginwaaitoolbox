@@ -29,7 +29,6 @@ const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const loop_detector = tree1_mod.loop_detector;
 
 const MAX_SUB_AGENTS = 20;
-const MAX_TOOL_CALLS = 100; // Max tool calls per sub-agent to prevent infinite loops
 
 // Import BashInput from models (not exported in bash.zig)
 const BashInput = @import("../../modules/agent/tools/models.zig").BashInput;
@@ -123,23 +122,8 @@ fn runSubAgent(
 
     // Get tools based on allowed_tools (null = all tools)
     const sub_agent_tools = try getAllowedTools(allocator, allowed_tools);
-    // defer {
-    //     for (sub_agent_tools) |t| {
-    //         allocator.free(t.function.name);
-    //         allocator.free(t.function.description);
-    //         for (t.function.parameters.properties) |p| {
-    //             allocator.free(p.name);
-    //             allocator.free(p.type);
-    //             allocator.free(p.description);
-    //         }
-    //         allocator.free(t.function.parameters.properties);
-    //         allocator.free(t.function.parameters.required);
-    //     }
-    //     allocator.free(sub_agent_tools);
-    // }
 
     var sub_agent = try agent.Agent.init(allocator, logger);
-    // defer sub_agent.deinit(); // disable this temporary because free corrupts the memory
 
     sub_agent.apiKey = api_key;
     sub_agent.model = model;
@@ -176,7 +160,7 @@ fn runSubAgent(
     var tool_call_count: usize = 0;
     var last_response: ?agent.CallResponse = null;
 
-    while (tool_call_count < MAX_TOOL_CALLS) {
+    while (true) {
         const params = agent.AgentCall{
             .tools = sub_agent_tools,
             .messages = messages.items,

@@ -413,7 +413,7 @@ pub const StreamingAggregator = struct {
             self.finish_reason = fr;
         }
 
-        // Store usage
+        // Store usage - accumulate from chunks (API sends usage in final chunk)
         if (chunk.usage) |usage| {
             self.usage = usage;
         }
@@ -1399,10 +1399,18 @@ pub const Agent = struct {
 
         const fr_str = if (aggregator.finish_reason) |fr| fr.toStr() else "null";
         self.logFmt(.info, "[STREAM] Finalizing aggregator: tool_call_buffers={}, finish_reason={s}", .{ aggregator.tool_call_buffers.count(), fr_str });
-        return aggregator.finalize() catch |err| {
+
+        const stream_response = aggregator.finalize() catch |err| {
             self.logError("finalize streaming response", err, null);
             return error.AllocFailed;
         };
+
+        // Log final usage from response
+        self.logFmt(.info, "[STREAM] Final response usage: prompt={}, completion={}, total={}", .{
+            stream_response.usage.prompt_tokens, stream_response.usage.completion_tokens, stream_response.usage.total_tokens
+        });
+
+        return stream_response;
     }
 
     pub fn deinit(self: *Agent) void {

@@ -2,17 +2,17 @@
 
 **Status:** COMPLETE
 
-**Goal:** Fix list_skills to read from individual .MD files in .zigginagentic/skills/ folder with YAML frontmatter
+**Goal:** Fix list_skills to read from individual .MD files in .nalar/skills/ folder with YAML frontmatter
 
 **Constraints:**
 - Maintain existing SkillInfo struct signature
 - Do not modify list_skills.zig or get_skill.zig tool wrappers
-- Only support local .zigginagentic/skills/ directory (not global)
+- Only support local .nalar/skills/ directory (not global)
 - Skip empty files silently
 - Handle malformed YAML frontmatter gracefully
 
 **Success Criteria:**
-1. list_skills returns all 4 non-empty skills from .zigginagentic/skills/*.MD files ✅
+1. list_skills returns all 4 non-empty skills from .nalar/skills/*.MD files ✅
 2. Each skill has correct name and description from YAML frontmatter ✅
 3. get_skill returns full content of the requested skill file ✅
 4. Empty skill files are silently skipped ✅
@@ -107,7 +107,7 @@
 
 ## TASK-006: Verify End-to-End Functionality — ✅ DONE
 
-**Description:** Verify the complete flow works with the actual skill files in .zigginagentic/skills/.
+**Description:** Verify the complete flow works with the actual skill files in .nalar/skills/.
 
 **Depends On:** TASK-005
 

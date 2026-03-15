@@ -2,7 +2,7 @@
 
 **Status:** COMPLETE
 **Created:** 2025-01-15
-**Goal:** Modify skill tools to use configurable paths (.config/zigginagentic/skills and cwd/.zigginagentic/skills) with consistent app name
+**Goal:** Modify skill tools to use configurable paths (.config/nalar/skills and cwd/.nalar/skills) with consistent app name
 
 ---
 
@@ -15,8 +15,8 @@
 
 | Subtask ID     | Type        | Action                                                                                                          | Expected Result                                      | Status  |
 |----------------|-------------|-----------------------------------------------------------------------------------------------------------------|------------------------------------------------------|---------|
-| TASK-001-01    | [FILE_EDIT] | Add getLocalSkillsPath() function that builds cwd/.zigginagentic/skills/skill.md path | Function returns allocated path or null if cwd unavailable | DONE |
-| TASK-001-02    | [FILE_EDIT] | Add getGlobalSkillsPath() function using XDG pattern (Linux: ~/.config/zigginagentic/skills/skill.md, macOS: ~/Library/Application Support/zigginagentic/skills/skill.md, Windows: %APPDATA%/zigginagentic/skills/skill.md) | Function returns allocated path or error             | DONE |
+| TASK-001-01    | [FILE_EDIT] | Add getLocalSkillsPath() function that builds cwd/.nalar/skills/skill.md path | Function returns allocated path or null if cwd unavailable | DONE |
+| TASK-001-02    | [FILE_EDIT] | Add getGlobalSkillsPath() function using XDG pattern (Linux: ~/.config/nalar/skills/skill.md, macOS: ~/Library/Application Support/nalar/skills/skill.md, Windows: %APPDATA%/nalar/skills/skill.md) | Function returns allocated path or error             | DONE |
 | TASK-001-03    | [FILE_EDIT] | Add resolveSkillsPath() function that tries local first, then global, returns first existing path | Function returns allocated path or null if none exist | DONE |
 | TASK-001-04    | [FILE_EDIT] | Add freeSkillsPath() helper function to free allocated path strings | Function frees allocated memory                      | DONE |
 | TASK-001-05    | [VERIFY]    | Run zig build in project root                                                                                 | Compiles without errors                              | DONE |
