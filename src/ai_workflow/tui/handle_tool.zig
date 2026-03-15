@@ -4,9 +4,9 @@ const agent = root_mod.agent;
 const logger_mod = root_mod.logger;
 const sqlite = root_mod.sqlite;
 const config_mod = @import("../../modules/config/config.zig");
-const save_message = @import("save_message.zig");
+const SaveMessage = @import("save_message.zig").SaveMessage;
 const send_tool_result = @import("send_tool_result.zig");
-const send_response = @import("send_response.zig");
+const send_response = @import("send_response.zig").SendResponse;
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
@@ -51,7 +51,7 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
     };
     try ctx.messages_list.append(ctx.allocator, tool_result_msg);
 
-    _ = try save_message.SaveMessage(ctx.allocator, ctx.db, .{
+    _ = try SaveMessage(ctx.allocator, ctx.db, .{
         .session_id = ctx.session_id,
         .model = ctx.model,
         .cwd = ctx.cwd,
@@ -110,7 +110,7 @@ pub fn HandleTool(
     } else {
         logger.warnFmt("[HANDLE_TOOL] tool_calls is NULL!", .{}) catch {};
     }
-    send_response.SendResponse(allocator, session_id, logger, res_dynamic_agent, null);
+    send_response(allocator, session_id, logger, res_dynamic_agent, null);
     if (res_dynamic_agent.tool_calls) |tc| {
         // Add assistant message with tool_calls to history
         var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
@@ -132,7 +132,6 @@ pub fn HandleTool(
         );
         const current_agent_for_save = current_agent_state.agent;
 
-
         var isSaving = false;
         for (assistant_tool_calls) |tool_call| {
             for (base_tools) |base_tool| {
@@ -143,12 +142,11 @@ pub fn HandleTool(
             }
         }
         if (!isSaving) {
-
             logger.infoFmt("[HANDLE_TOOL] Skipping saving assistant message, no tools matched", .{}) catch {};
             return;
         }
 
-        _ = try save_message.SaveMessage(allocator, db, .{
+        _ = try SaveMessage(allocator, db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -169,6 +167,11 @@ pub fn HandleTool(
             .completion_tokens = res_dynamic_agent.usage.completion_tokens,
             .total_tokens = res_dynamic_agent.usage.total_tokens,
         });
+
+        if (res_dynamic_agent.content) |c| {
+            _ = c;
+            _ = send_response(allocator, session_id, logger, res_dynamic_agent, null);
+        }
 
         // Build context for tool handling
         var ctx = ToolContext{
@@ -226,7 +229,7 @@ pub fn HandleTool(
                 };
                 _ = try messages_list.append(allocator, tool_result_msg);
                 // Save to DB
-                _ = try save_message.SaveMessage(allocator, db, .{
+                _ = try SaveMessage(allocator, db, .{
                     .session_id = session_id,
                     .model = model,
                     .cwd = cwd,
@@ -339,12 +342,12 @@ pub fn HandleTool(
                     if (std.mem.indexOf(u8, result, "<skill_name>")) |name_start| {
                         const name_begin = name_start + "<skill_name>".len;
                         if (std.mem.indexOf(u8, result[name_begin..], "</skill_name>")) |name_end| {
-                            const skill_name = result[name_begin..name_begin + name_end];
+                            const skill_name = result[name_begin .. name_begin + name_end];
                             // Parse content from result
                             if (std.mem.indexOf(u8, result, "<content>")) |content_start| {
                                 const content_begin = content_start + "<content>".len;
                                 if (std.mem.indexOf(u8, result[content_begin..], "</content>")) |content_end| {
-                                    const content = result[content_begin..content_begin + content_end];
+                                    const content = result[content_begin .. content_begin + content_end];
                                     // Save to database
                                     SaveSkill(allocator, db, logger, session_id, skill_name, content) catch |err| {
                                         const err_name = @errorName(err);

@@ -614,7 +614,30 @@ pub const Agent =
     \\### Agent Management
     \\- **spawn_sub_agent**: Spawn up to 20 parallel sub-agents for concurrent tasks
     \\- **set_agent_properties**: Adjust agent temperature and deep reasoning mode
-    \\
+
+    \\### Agent Behavior Adjustment (set_agent_properties)
+
+    \\**You SHOULD use `set_agent_properties` to dynamically adjust your behavior during tasks.** This tool allows you to fine-tune how you think and respond:
+
+    \\| Property | Values | When to Use |
+    \\|----------|--------|-------------|
+    \\| **is_thinking** | `true` or `false` | Enable deep reasoning mode for complex architecture decisions, tradeoff analysis, or multi-step planning. Disable for simple, straightforward tasks. |
+    \\| **temperature** | `0.0` - `1.0` | Lower (0.0-0.3) for deterministic, factual responses. Higher (0.7-1.0) for creative exploration and brainstorming. |
+
+    \\**Guidelines:**
+    \\- **Enable `is_thinking: true`** when: designing systems, analyzing tradeoffs, debugging complex issues, planning multi-phase work, or when the user asks for architectural guidance
+    \\- **Adjust temperature** based on task needs:
+    \\  - `0.0-0.2`: Code fixes, precise edits, factual answers
+    \\  - `0.3-0.5`: General coding tasks, balanced creativity
+    \\  - `0.6-1.0`: Brainstorming, creative writing, exploring alternatives
+
+    \\**Example usage:**
+    \\```
+    \\set_agent_properties({"is_thinking": true, "temperature": 0.7})
+    \\```
+
+    \\**Note:** You can call this tool at any point during a task to adjust your approach. If a task becomes more complex than initially assessed, enable thinking mode. If you need more creative solutions, increase temperature.
+
     \\### Skill Management
     \\- **list_skills**: List all available skills with brief descriptions
     \\- **get_skill**: Load a skill's full content on-demand

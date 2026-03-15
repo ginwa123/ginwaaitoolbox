@@ -49,16 +49,18 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
         const stderr_msg = try allocator.dupe(u8, "No errors.");
         errdefer allocator.free(stderr_msg);
 
-        var trunc_buf: [53]u8 = undefined;
-        const truncated_command = if (input.command.len > 50) blk: {
-            trunc_buf[0..50].* = input.command[0..50].*;
-            trunc_buf[50..53].* = "...".*;
-            break :blk trunc_buf[0..53];
-        } else input.command;
+        // Allocate command on heap to avoid dangling pointer to stack buffer
+        const command_copy = if (input.command.len > 50) blk: {
+            const cmd = try allocator.alloc(u8, 53);
+            @memcpy(cmd[0..50], input.command[0..50]);
+            @memcpy(cmd[50..53], "...");
+            break :blk cmd;
+        } else try allocator.dupe(u8, input.command);
+        errdefer allocator.free(command_copy);
 
-        // Return with the allocated stdout_msg as the stdout
+        // Return with the allocated strings
         return BashOutput{
-            .command = truncated_command,
+            .command = command_copy,
             .stdout = stdout_msg,
             .stderr = stderr_msg,
             .exit_code = 0,
@@ -204,12 +206,14 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
 
     const was_truncated = stdout_data.items.len >= max_output or stderr_data.items.len >= max_output;
 
-    var trunc_buf: [53]u8 = undefined;
-    const truncated_command = if (input.command.len > 50) blk: {
-        trunc_buf[0..50].* = input.command[0..50].*;
-        trunc_buf[50..53].* = "...".*;
-        break :blk trunc_buf[0..53];
-    } else input.command;
+    // Allocate command on heap to avoid dangling pointer to stack buffer
+    const command_copy = if (input.command.len > 50) blk: {
+        const cmd = try allocator.alloc(u8, 53);
+        @memcpy(cmd[0..50], input.command[0..50]);
+        @memcpy(cmd[50..53], "...");
+        break :blk cmd;
+    } else try allocator.dupe(u8, input.command);
+    errdefer allocator.free(command_copy);
 
     // Return structured BashOutput instead of XML string
     // Duplicate the strings so they outlive the ArrayLists
@@ -226,7 +230,7 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     errdefer allocator.free(stderr_copy);
 
     return BashOutput{
-        .command = truncated_command,
+        .command = command_copy,
         .stdout = stdout_copy,
         .stderr = stderr_copy,
         .exit_code = exit_code,

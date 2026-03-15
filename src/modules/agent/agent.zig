@@ -692,7 +692,42 @@ pub const Agent = struct {
     };
 
     pub fn call(self: *Agent, params: AgentCall) CallError!CallResponse {
-        self.logFmt(.info, "[CALL START] Building JSON request (model: {s}, messages: {})...", .{ self.model, params.messages.len });
+        // Build a summary of the conversation context
+        var context_summary: [256]u8 = undefined;
+        var context_len: usize = 0;
+        for (params.messages) |msg| {
+            if (context_len >= context_summary.len - 20) break;
+            const role_prefix = switch (msg.role) {
+                .system => "S:",
+                .user => "U:",
+                .assistant => "A:",
+                .tool => "T:",
+            };
+            if (context_len > 0) {
+                context_summary[context_len] = ' ';
+                context_len += 1;
+            }
+            const prefix_len = role_prefix.len;
+            if (context_len + prefix_len < context_summary.len) {
+                @memcpy(context_summary[context_len..context_len + prefix_len], role_prefix);
+                context_len += prefix_len;
+            }
+        }
+        // Build tools info string
+        var tools_buf: [32]u8 = undefined;
+        const tools_info = if (params.tools.len > 0)
+            std.fmt.bufPrint(&tools_buf, " tools:{}", .{params.tools.len}) catch ""
+        else
+            "";
+
+        self.logFmt(.info, "[CALL START] model={s} | messages={} | tools={} | temp={d:.1} | max_tokens={}", .{
+            self.model,
+            params.messages.len,
+            params.tools.len,
+            params.temperature orelse self.temperature,
+            params.max_tokens orelse self.maxTokens
+        });
+        self.logFmt(.debug, "[CALL CONTEXT] {s}{s}", .{ context_summary[0..context_len], tools_info });
 
         const json_start = timestampMs();
         const json_body: []u8 = self.buildJsonRequest(params, false) catch |err| {
@@ -700,8 +735,10 @@ pub const Agent = struct {
             return error.BuildRequestFailed;
         };
         self.logFmt(.debug, "[TIMING] JSON build took {}ms ({} bytes)", .{ elapsedMs(json_start), json_body.len });
-        self.logFmt(.debug, "[AGENT_MODULE] JSON body: {s}", .{json_body});
-        std.debug.print("JSON body: {s}\n", .{json_body});
+        // Log truncated JSON body for debugging (first 500 chars max)
+        const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
+        const json_ellipsis = if (json_body.len > 500) "..." else "";
+        self.logFmt(.debug, "[REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
         defer self.allocator.free(json_body);
 
         const connect_start = timestampMs();
@@ -805,7 +842,14 @@ pub const Agent = struct {
         };
         defer self.allocator.free(body);
 
-        self.logFmt(.info, "[RESPONSE] Received {} bytes in {}ms (total wait: {}ms)", .{ body.len, elapsedMs(receive_start), elapsedMs(send_start) });
+        const duration = elapsedMs(send_start);
+        const duration_fmt = formatDuration(duration);
+        self.logFmt(.info, "[RESPONSE] Received {} bytes in {}{s} (network: {}ms)", .{
+            body.len,
+            duration_fmt.value,
+            duration_fmt.unit,
+            elapsedMs(receive_start)
+        });
 
         const parsed = json.parseFromSlice(json.Value, self.allocator, body, .{}) catch |err| {
             self.logApiError("JSON parse", err, body);
@@ -854,11 +898,14 @@ pub const Agent = struct {
         const reasoning_content_val = message.object.get("reasoning_content");
 
         if (content) |c| {
-            self.logFmt(.info, "Response content received ({} chars)", .{c.string.len});
+            const preview_len = if (c.string.len > 100) 100 else c.string.len;
+            const preview = c.string[0..preview_len];
+            const ellipsis = if (c.string.len > 100) "..." else "";
+            self.logFmt(.info, "[RESPONSE] AI response: {s}{s} ({} chars total)", .{ preview, ellipsis, c.string.len });
         } else if (tool_calls_val != null) {
-            self.logMsg(.info, "Response contains tool_calls");
+            self.logMsg(.info, "[RESPONSE] AI responded with tool_calls only (no text content)");
         } else {
-            self.logMsg(.warn, "Response has no content or tool_calls");
+            self.logMsg(.warn, "[RESPONSE] Empty response - no content or tool_calls received");
         }
 
         if (reasoning_content_val) |rc| {
@@ -867,7 +914,7 @@ pub const Agent = struct {
 
         var tool_calls: ?[]ToolCall = null;
         if (tool_calls_val) |tc| {
-            self.logFmt(.debug, "Parsing {} tool calls", .{tc.array.items.len});
+            self.logFmt(.info, "[TOOL_CALLS] Parsing {} tool call(s) from response", .{tc.array.items.len});
             var calls = self.allocator.alloc(ToolCall, tc.array.items.len) catch |err| {
                 self.logError("alloc tool_calls", err, null);
                 return error.OutOfMemory;
@@ -875,29 +922,52 @@ pub const Agent = struct {
             for (tc.array.items, 0..) |tc_item, i| {
                 const tc_obj = tc_item.object;
                 const id = tc_obj.get("id") orelse {
-                    self.logFmt(.err, "Tool call {} missing 'id' field", .{i});
+                    self.logFmt(.err, "[TOOL_CALLS] Tool call #{} missing 'id' field", .{i + 1});
                     return error.ParseJsonFailed;
                 };
                 const func_obj = tc_obj.get("function") orelse {
-                    self.logFmt(.err, "Tool call {} missing 'function' field", .{i});
+                    self.logFmt(.err, "[TOOL_CALLS] Tool call #{} missing 'function' field", .{i + 1});
                     return error.ParseJsonFailed;
                 };
                 const name = func_obj.object.get("name") orelse {
-                    self.logFmt(.err, "Tool call {} missing function 'name'", .{i});
+                    self.logFmt(.err, "[TOOL_CALLS] Tool call #{} missing function 'name'", .{i + 1});
                     return error.ParseJsonFailed;
                 };
                 const arguments = func_obj.object.get("arguments") orelse {
-                    self.logFmt(.err, "Tool call {} missing function 'arguments'", .{i});
+                    self.logFmt(.err, "[TOOL_CALLS] Tool call #{} missing function 'arguments'", .{i + 1});
                     return error.ParseJsonFailed;
                 };
                 calls[i] = .{ .id = id.string, .function = .{ .name = name.string, .arguments = arguments.string } };
-                self.logFmt(.debug, "Tool call {}: {s}", .{ i, name.string });
+                // Log meaningful tool call info with argument preview
+                const args_str = arguments.string;
+                const args_preview = if (args_str.len > 80) args_str[0..80] else args_str;
+                const ellipsis = if (args_str.len > 80) "..." else "";
+                self.logFmt(.info, "[TOOL_CALLS] #{}/{}: {s} (id={s}) args={s}{s}", .{
+                    i + 1,
+                    tc.array.items.len,
+                    name.string,
+                    id.string,
+                    args_preview,
+                    ellipsis
+                });
             }
             tool_calls = calls;
         }
 
         const finish_reason = FinishReason.fromStr(if (finish_reason_val) |fr| fr.string else null);
-        self.logFmt(.debug, "Finish reason: {s}", .{if (finish_reason) |fr| fr.toStr() else "null"});
+        const finish_reason_str = if (finish_reason) |fr| fr.toStr() else "incomplete";
+        const finish_explanation = if (finish_reason) |fr|
+            switch (fr) {
+                .stop => "AI completed response naturally",
+                .length => "AI hit token limit",
+                .tool_calls => "AI triggered tool call(s)",
+                .content_filter => "Content was filtered",
+                .tool => "Tool execution completed",
+                .null => "Response incomplete or streaming",
+            }
+        else
+            "Response incomplete or streaming";
+        self.logFmt(.info, "[FINISH] Reason: {s} ({s})", .{ finish_reason_str, finish_explanation });
 
         var content_copy: ?[]const u8 = null;
         if (content) |c| {
@@ -928,7 +998,16 @@ pub const Agent = struct {
                 if (usage_val.object.get("total_tokens")) |tt| {
                     if (tt == .integer) usage.total_tokens = @intCast(tt.integer);
                 }
-                self.logFmt(.info, "Token usage - prompt: {}, completion: {}, total: {}", .{ usage.prompt_tokens, usage.completion_tokens, usage.total_tokens });
+                // Calculate approximate cost (using OpenAI-like pricing as reference)
+                const prompt_cost = @as(f64, @floatFromInt(usage.prompt_tokens)) * 0.000003; // $3 per 1M tokens
+                const completion_cost = @as(f64, @floatFromInt(usage.completion_tokens)) * 0.000015; // $15 per 1M tokens
+                const total_cost = prompt_cost + completion_cost;
+                self.logFmt(.info, "[TOKENS] Prompt: {} | Completion: {} | Total: {} | Est. cost: ${d:.4}", .{
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    usage.total_tokens,
+                    total_cost
+                });
             }
         }
 
@@ -1006,7 +1085,33 @@ pub const Agent = struct {
 
                     if (delta.object.get("tool_calls")) |tc_delta| {
                         if (tc_delta == .array and tc_delta.array.items.len > 0) {
-                            self.logFmt(.info, "[STREAM] Received tool_calls_delta with {} items", .{tc_delta.array.items.len});
+                            // First pass: collect tool names for the summary log
+                            var tool_names_buf: [256]u8 = undefined;
+                            var tool_names_len: usize = 0;
+                            for (tc_delta.array.items) |tc_item| {
+                                if (tc_item == .object) {
+                                    if (tc_item.object.get("function")) |func| {
+                                        if (func == .object) {
+                                            if (func.object.get("name")) |name| {
+                                                if (name == .string and name.string.len > 0) {
+                                                    if (tool_names_len > 0 and tool_names_len < tool_names_buf.len - 2) {
+                                                        tool_names_buf[tool_names_len] = ',';
+                                                        tool_names_buf[tool_names_len + 1] = ' ';
+                                                        tool_names_len += 2;
+                                                    }
+                                                    const remaining = tool_names_buf.len - tool_names_len;
+                                                    const to_copy = if (name.string.len > remaining) remaining else name.string.len;
+                                                    @memcpy(tool_names_buf[tool_names_len..tool_names_len + to_copy], name.string[0..to_copy]);
+                                                    tool_names_len += to_copy;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            const tool_names_summary = if (tool_names_len > 0) tool_names_buf[0..tool_names_len] else "unknown";
+                            self.logFmt(.info, "[STREAM] AI requesting {} tool call(s): {s}", .{tc_delta.array.items.len, tool_names_summary});
+
                             var deltas = arena.alloc(ToolCallDelta, tc_delta.array.items.len) catch |err| {
                                 self.logMsg(.debug, "Error allocating ToolCallDelta");
                                 self.logMsg(.err, @errorName(err));
@@ -1045,7 +1150,20 @@ pub const Agent = struct {
                                     }
                                 }
                                 deltas[i] = delta_item;
-                                self.logFmt(.info, "[STREAM] Delta[{}]: id={?s}, name={?s}, args_len={}", .{ i, delta_item.id, delta_item.function_name, if (delta_item.function_arguments) |args| args.len else 0 });
+                                // Log meaningful tool call details
+                                const fn_name = delta_item.function_name orelse "pending";
+                                const fn_id = delta_item.id orelse "pending";
+                                const args_preview = if (delta_item.function_arguments) |args|
+                                    if (args.len > 50) args[0..50] else args
+                                else
+                                    "none";
+                                self.logFmt(.debug, "[STREAM] Tool[{}] {s} (id={s}): args={s}{s}", .{
+                                    i,
+                                    fn_name,
+                                    fn_id,
+                                    args_preview,
+                                    if (delta_item.function_arguments) |a| if (a.len > 50) "..." else "" else ""
+                                });
                             }
                             chunk.tool_calls_delta = deltas;
                         }
@@ -1080,7 +1198,11 @@ pub const Agent = struct {
         callback: StreamCallback,
         is_cancelled: ?*const fn (?*anyopaque) bool,
     ) CallError!CallResponse {
-        self.logMsg(.info, "Building streaming JSON request...");
+        self.logFmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{
+            self.model,
+            params.messages.len,
+            params.tools.len
+        });
 
         // Check cancellation before starting
         if (is_cancelled) |check| {
@@ -1096,7 +1218,10 @@ pub const Agent = struct {
             return error.BuildRequestFailed;
         };
         defer self.allocator.free(json_body);
-        self.logFmt(.info, "JSON body: {s}", .{json_body});
+        // Log truncated JSON body for debugging
+        const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
+        const json_ellipsis = if (json_body.len > 500) "..." else "";
+        self.logFmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
         const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
             self.logError("concat URI", err, null);
@@ -1177,12 +1302,24 @@ pub const Agent = struct {
             return error.ReceiveFailed;
         };
 
-        self.logFmt(.info, "[STREAM START] Response headers received in {}ms (status={d})", .{ elapsedMs(stream_start), response.head.status });
+        const stream_duration = elapsedMs(stream_start);
+        const stream_duration_fmt = formatDuration(stream_duration);
+        self.logFmt(.info, "[STREAM] Connected in {}{s} (HTTP {d})", .{
+            stream_duration_fmt.value,
+            stream_duration_fmt.unit,
+            @intFromEnum(response.head.status)
+        });
 
-        // Log all response header details for debugging
-        self.logFmt(.info, "[STREAM HEADERS] transfer_encoding={s}, content_length={?}, keep_alive={}", .{
-            if (response.head.transfer_encoding == .chunked) "chunked" else "none",
-            response.head.content_length,
+        // Log transfer details for debugging
+        const encoding_str = if (response.head.transfer_encoding == .chunked) "chunked" else "fixed";
+        var content_len_buf: [32]u8 = undefined;
+        const content_len_str = if (response.head.content_length) |cl|
+            std.fmt.bufPrint(&content_len_buf, "{}", .{cl}) catch "?"
+        else
+            "unknown";
+        self.logFmt(.debug, "[STREAM] Transfer: encoding={s}, content_length={s}, keep_alive={}", .{
+            encoding_str,
+            content_len_str,
             response.head.keep_alive,
         });
 
@@ -1404,17 +1541,35 @@ pub const Agent = struct {
 
         callback(ctx, .{ .done = true });
 
-        const fr_str = if (aggregator.finish_reason) |fr| fr.toStr() else "null";
-        self.logFmt(.info, "[STREAM] Finalizing aggregator: tool_call_buffers={}, finish_reason={s}", .{ aggregator.tool_call_buffers.count(), fr_str });
+        const fr_str = if (aggregator.finish_reason) |fr| fr.toStr() else "incomplete";
+        const content_preview = if (aggregator.content.items.len > 0)
+            if (aggregator.content.items.len > 50) aggregator.content.items[0..50] else aggregator.content.items
+        else
+            "(none)";
+        const content_ellipsis = if (aggregator.content.items.len > 50) "..." else "";
+        self.logFmt(.info, "[STREAM] Finalizing: {} tool call buffer(s), finish_reason={s}, content_len={} chars", .{
+            aggregator.tool_call_buffers.count(),
+            fr_str,
+            aggregator.content.items.len
+        });
+        if (aggregator.content.items.len > 0) {
+            self.logFmt(.info, "[STREAM] Content preview: {s}{s}", .{ content_preview, content_ellipsis });
+        }
 
         const stream_response = aggregator.finalize() catch |err| {
             self.logError("finalize streaming response", err, null);
             return error.AllocFailed;
         };
 
-        // Log final usage from response
-        self.logFmt(.info, "[STREAM] Final response usage: prompt={}, completion={}, total={}", .{
-            stream_response.usage.prompt_tokens, stream_response.usage.completion_tokens, stream_response.usage.total_tokens
+        // Log final usage from response with cost estimate
+        const prompt_cost = @as(f64, @floatFromInt(stream_response.usage.prompt_tokens)) * 0.000003;
+        const completion_cost = @as(f64, @floatFromInt(stream_response.usage.completion_tokens)) * 0.000015;
+        const total_cost = prompt_cost + completion_cost;
+        self.logFmt(.info, "[STREAM] Complete - Prompt: {} | Completion: {} | Total: {} | Est. cost: ${d:.4}", .{
+            stream_response.usage.prompt_tokens,
+            stream_response.usage.completion_tokens,
+            stream_response.usage.total_tokens,
+            total_cost
         });
 
         return stream_response;
