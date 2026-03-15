@@ -144,3 +144,54 @@ pub fn killProcess(pid: u32) bool {
     const kill_result = std.os.kill(@intCast(pid), std.posix.SIGKILL);
     return kill_result == 0;
 }
+
+/// Kill all background processes for a session
+/// This is called when a session is cancelled
+pub fn killAllForSession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []const u8) !void {
+    const processes = try getBySession(db, allocator, session_id);
+    defer {
+        for (processes) |p| {
+            allocator.free(p.command);
+            allocator.free(p.log_path);
+            allocator.free(p.status);
+        }
+        allocator.free(processes);
+    }
+    
+    for (processes) |p| {
+        if (killProcess(p.pid)) {
+            // Update status to killed
+            try updateStatus(db, allocator, session_id, p.pid, "killed");
+        }
+    }
+}
+
+/// Poll all running processes and update their status
+/// Returns the number of processes that changed status
+pub fn pollAndUpdateStatus(db: *SqliteBackend, allocator: std.mem.Allocator) !u32 {
+    var changed: u32 = 0;
+    
+    const processes = try getRunning(db, allocator);
+    defer {
+        for (processes) |p| {
+            allocator.free(p.session_id);
+            allocator.free(p.command);
+            allocator.free(p.log_path);
+            allocator.free(p.status);
+        }
+        allocator.free(processes);
+    }
+    
+    for (processes) |p| {
+        const is_running = isProcessRunning(p.pid);
+        
+        if (!is_running) {
+            // Process has exited - check the log file for exit status or assume completed
+            // For now, we'll mark as 'completed' since we can't easily get exit code
+            try updateStatus(db, allocator, p.session_id, p.pid, "completed");
+            changed += 1;
+        }
+    }
+    
+    return changed;
+}
