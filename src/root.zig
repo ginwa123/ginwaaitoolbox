@@ -68,6 +68,7 @@ pub const std_options: std.Options = .{
 pub const agent = @import("modules/agent/agent.zig");
 pub const prompt = @import("modules/agent/prompt.zig");
 pub const sqlite = @import("modules/databases/sqlite/sqlite.zig");
+pub const background_process = @import("modules/databases/sqlite/background_process.zig");
 pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const tool_models = @import("modules/agent/tools/models.zig");
 pub const set_agent_properties = @import("modules/agent/tools/change_agent.zig");

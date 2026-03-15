@@ -258,7 +258,7 @@ pub fn HandleTool(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                const content = handle_bash_tool.run(allocator, tool_call) catch |err| {
+                const content = handle_bash_tool.runWithContext(allocator, tool_call, ctx.db, ctx.session_id) catch |err| {
                     const err_name = @errorName(err);
                     logger.errFmt("Error executing bash: {s}", .{err_name}) catch {};
                     try handleToolError(ctx, tool_call, err, "Error executing command");
