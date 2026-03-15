@@ -11,6 +11,7 @@ pub const ReadFileInput = struct {
     path: []const u8,
     offset: ?usize = null,
     limit: ?usize = null,
+    show_line_numbers: ?bool = null,
 };
 
 pub const ToolProperty = struct {

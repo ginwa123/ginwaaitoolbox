@@ -1187,37 +1187,6 @@ fn clearCompletions(app: *App) void {
     app.state.last_match_count = 0;
 }
 
-fn handleCompletion(app: *App) !bool {
-    const input = app.input.items;
-    if (app.state.visible and app.state.matches.items.len > 0) {
-        app.state.selected = (app.state.selected + 1) % app.state.matches.items.len;
-        renderCompletions(app);
-        return true;
-    }
-    app.state.matches.clearRetainingCapacity();
-    app.state.selected = 0;
-    if (input.len == 0 or input[0] == '/') {
-        const cmd_names = getCommandNames();
-        for (cmd_names) |cmd| {
-            if (std.mem.startsWith(u8, cmd, input)) {
-                try app.state.matches.append(app.allocator, cmd);
-            }
-        }
-    }
-    if (app.state.matches.items.len == 0) return true;
-    if (app.state.matches.items.len == 1) {
-        app.input.clearRetainingCapacity();
-        try app.input.appendSlice(app.allocator, app.state.matches.items[0]);
-        app.state.visible = false;
-        app.state.last_match_count = 0;
-        std.debug.print("\r\x1b[2K{s}>{s} {s}", .{ bold, reset, app.input.items });
-    } else {
-        app.state.visible = true;
-        renderCompletions(app);
-    }
-    return true;
-}
-
 fn renderCompletions(app: *App) void {
     if (app.state.last_match_count > 0) {
         var i: usize = 0;
@@ -1227,18 +1196,18 @@ fn renderCompletions(app: *App) void {
         }
         tui_text.print("\x1b[{}A", .{app.state.last_match_count});
     }
-    
+
     // Show command bar at bottom with descriptions
     tui_text.print("\x1b[s", .{});
-    
+
     // Move to bottom of screen
     tui_text.print("\x1b[999;1H", .{});
     tui_text.print("\x1b[2K", .{}); // Clear the line
-    
+
     // Draw command bar border
     tui_text.print("\x1b[7m", .{}); // Inverse colors
     tui_text.print(" Commands: ", .{});
-    
+
     // Print each matching command with its description
     const commands = getCommands();
     for (app.state.matches.items, 0..) |cmd_name, i| {
@@ -1250,7 +1219,7 @@ fn renderCompletions(app: *App) void {
                 break;
             }
         }
-        
+
         if (i == app.state.selected) {
             tui_text.print("\x1b[0m\x1b[42m {s} ", .{cmd_name}); // Green highlight
             tui_text.print("\x1b[90m{s}\x1b[0m ", .{desc});
@@ -1260,10 +1229,10 @@ fn renderCompletions(app: *App) void {
             tui_text.print("\x1b[90m{s}\x1b[0m ", .{desc});
         }
     }
-    
+
     // Restore cursor position
     tui_text.print("\x1b[u", .{});
-    
+
     app.state.last_match_count = app.state.matches.items.len;
     std.debug.print("\x1b[u", .{});
 }
@@ -1301,7 +1270,7 @@ fn handleInput(app: *App) !bool {
         }
     } else if (c == '\t') {
         if (!app.pasting) {
-            _ = try handleCompletion(app);
+            // _ = try handleCompletion(app);
         } else {
             // Treat tab as spaces during paste
             try app.input.append(app.allocator, ' ');
@@ -1319,7 +1288,7 @@ fn handleInput(app: *App) !bool {
             if (app.input.items[0] == '/') {
                 const input_str = app.input.items;
                 const should_exit = executeCommand(app, input_str) catch false;
-                
+
                 if (!should_exit) {
                     // Command executed successfully or wasn't found
                     // Check if the command was actually found by looking at input
@@ -1331,7 +1300,7 @@ fn handleInput(app: *App) !bool {
                             break;
                         }
                     }
-                    
+
                     if (!cmd_found) {
                         // Command not found - show error
                         std.debug.print("\r\n{s}Unknown command: {s}{s}\r\n", .{ dim, input_str, reset });
@@ -1347,7 +1316,7 @@ fn handleInput(app: *App) !bool {
                 // else: exit was returned, so we return true to exit
                 return should_exit;
             }
-            
+
             // Regular input - send to LLM
             std.debug.print("\r\n\r\n", .{});
             const response = readResponseAndStreamRunLLM(app, app.input.items) catch "";
