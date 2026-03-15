@@ -29,7 +29,6 @@ pub const SaveMessageInput = struct {
     is_thinking: bool,
     parent_session_id: ?[]const u8 = null,
     parent_id: ?[]const u8 = null,
-    /// Token usage from LLM response
     prompt_tokens: usize = 0,
     completion_tokens: usize = 0,
     total_tokens: usize = 0,

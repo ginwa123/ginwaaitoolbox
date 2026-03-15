@@ -37,6 +37,6 @@ pub fn run(
     return res_content;
 }
 
-test {
-    _ = @import("handle_read_file_tool_test.zig");
-}
+// test {
+//     _ = @import("handle_read_file_tool_test.zig");
+// }

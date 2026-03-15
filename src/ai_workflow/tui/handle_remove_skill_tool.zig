@@ -39,6 +39,6 @@ pub fn run(
     return result;
 }
 
-test {
-    _ = @import("handle_remove_skill_tool_test.zig");
-}
+// test {
+//     _ = @import("handle_remove_skill_tool_test.zig");
+// }

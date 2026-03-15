@@ -566,7 +566,6 @@ fn sendPingCommand(app: *App) !bool {
     var buf: [1024]u8 = undefined;
     const n = std.posix.read(sock, &buf) catch return false;
     if (n > 0) {
-        std.debug.print(" response: {s}\n", .{buf[0..n]});
         const response = buf[0..n];
         if (std.mem.indexOf(u8, response, "\"reconnect\":true") != null) {
             return true; // Need to reconnect

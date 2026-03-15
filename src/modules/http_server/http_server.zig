@@ -391,8 +391,8 @@ fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void
 }
 
 /// Session list handler - returns list of sessions
-fn sessionListHandler(@"req": *httpz.Request, res: *httpz.Response) anyerror!void {
-    _ = @"req";
+fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    _ = req;
     if (global_server) |server| {
         if (server.session_handler) |_| {
             // For now, return empty sessions list
@@ -415,24 +415,15 @@ fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
         res.body = "{\"error\":\"Missing session_id\"}";
         return;
     };
-
     if (global_server) |server| {
-        var response_buf: [256]u8 = undefined;
-        var response: []const u8 = undefined;
-
-        if (server.sse_manager.hasSession(session_id)) {
-            response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"connected\":true}}", .{session_id}) catch unreachable;
-            std.log.info("Ping: session {s} is connected", .{session_id});
-        } else {
-            response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{session_id}) catch unreachable;
-            std.log.info("Ping: session {s} not connected, TUI should reconnect SSE", .{session_id});
-        }
-
         res.status = 200;
-        res.body = response;
+        if (server.sse_manager.hasSession(session_id)) {
+            res.body = try std.fmt.allocPrint(req.arena, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"connected\":true}}", .{session_id});
+        } else {
+            res.body = try std.fmt.allocPrint(req.arena, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{session_id});
+        }
         return;
     }
-
     res.status = 500;
     res.body = "{\"error\":\"Server not initialized\"}";
 }

@@ -41,6 +41,7 @@ const TextReplaceTool = root_mod.text_replace_tool;
 
 const handle_content_filter = @import("handle_content_filter.zig");
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
+const BuildDynamicAgentContent = @import("build_dynamic_agent_for_agent_prompt.zig").BuildDynamicAgentContent;
 const BuildBackgroundProcessContent = @import("build_background_process_for_agent_prompt.zig").BuildBackgroundProcessPrompt;
 const save_skill_mod = @import("save_skill.zig");
 const send_skill_mod = @import("send_skill.zig");
@@ -209,7 +210,7 @@ pub const TUIWorkflow = struct {
 
             var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
-            const initialMessages = try BuildMessages(allocator, cwd,  try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), "");
+            const initialMessages = try BuildMessages(allocator, cwd,  try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
 
             try messagesLists.appendSlice(allocator, initialMessages);
 

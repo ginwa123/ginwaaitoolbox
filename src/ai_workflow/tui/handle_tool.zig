@@ -16,9 +16,12 @@ const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
 const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
 const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
+const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
+const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
 const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const SaveSkill = @import("save_skill.zig").SaveSkill;
+const SaveAgent = @import("save_agent.zig").SaveAgent;
 const loop_detector = root_mod.loop_detector;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 const tool_models = root_mod.tool_models;
@@ -81,7 +84,6 @@ fn handleToolError(ctx: ToolContext, tool_call: agent.ToolCall, err: anytype, er
     const err_name = @errorName(err);
     const err_str = try std.fmt.allocPrint(ctx.allocator, "{s}: {s}", .{ err_prefix, err_name });
     try handleToolResult(ctx, tool_call, err_str);
-    ctx.allocator.free(err_str);
 }
 
 pub fn HandleTool(
@@ -102,13 +104,7 @@ pub fn HandleTool(
     config: *const config_mod.LlmConfig,
     base_tools: []const tool_models.AgentTool,
 ) !void {
-    logger.infoFmt("[HANDLE_TOOL] START - finish_reason: {?s}, tool_calls: {}", .{ if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null, res_dynamic_agent.tool_calls != null }) catch {};
-    if (res_dynamic_agent.tool_calls) |tc| {
-        logger.infoFmt("[HANDLE_TOOL] tool_calls count: {}", .{tc.len}) catch {};
-    } else {
-        logger.warnFmt("[HANDLE_TOOL] tool_calls is NULL!", .{}) catch {};
-    }
-    send_response(allocator, session_id, logger, res_dynamic_agent, null);
+    _ = send_response(allocator, session_id, logger, res_dynamic_agent, null);
     if (res_dynamic_agent.tool_calls) |tc| {
         // Add assistant message with tool_calls to history
         var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
@@ -211,7 +207,7 @@ pub fn HandleTool(
                     .tool_call_id = change_result.tool_call_id,
                 };
                 _ = try messages_list.append(allocator, tool_result_msg);
-                // Save to DB
+
                 _ = try SaveMessage(allocator, db, .{
                     .session_id = session_id,
                     .model = model,
@@ -249,7 +245,6 @@ pub fn HandleTool(
                     try handleToolError(ctx, tool_call, err, "Error executing command");
                     continue;
                 };
-                defer allocator.free(content);
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
@@ -261,7 +256,6 @@ pub fn HandleTool(
                     try handleToolError(ctx, tool_call, err, "Error reading file");
                     continue;
                 };
-                defer allocator.free(content);
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
@@ -273,7 +267,6 @@ pub fn HandleTool(
                     try handleToolError(ctx, tool_call, err, "Error executing search");
                     continue;
                 };
-                defer allocator.free(content);
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
@@ -285,7 +278,6 @@ pub fn HandleTool(
                     try handleToolError(ctx, tool_call, err, "Error writing file");
                     continue;
                 };
-                defer allocator.free(content);
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
@@ -297,7 +289,6 @@ pub fn HandleTool(
                     try handleToolError(ctx, tool_call, err, "Error replacing text");
                     continue;
                 };
-                defer allocator.free(content);
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
@@ -317,14 +308,11 @@ pub fn HandleTool(
                     continue;
                 };
 
-                // Save skill to database if loaded successfully
                 if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
-                    // Parse skill_name from result
                     if (std.mem.indexOf(u8, result, "<skill_name>")) |name_start| {
                         const name_begin = name_start + "<skill_name>".len;
                         if (std.mem.indexOf(u8, result[name_begin..], "</skill_name>")) |name_end| {
                             const skill_name = result[name_begin .. name_begin + name_end];
-                            // Parse content from result
                             if (std.mem.indexOf(u8, result, "<content>")) |content_start| {
                                 const content_begin = content_start + "<content>".len;
                                 if (std.mem.indexOf(u8, result[content_begin..], "</content>")) |content_end| {
@@ -351,13 +339,80 @@ pub fn HandleTool(
                     try handleToolError(ctx, tool_call, err, "Error executing remove_skill");
                     continue;
                 };
-                defer allocator.free(result);
                 try handleToolResult(ctx, tool_call, result);
                 continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent")) {
                 try handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, api_key, base_url, config);
+                continue;
+            }
+
+            // if (std.mem.eql(u8, tool_call.function.name, "get_agent")) {
+            //     const result = handle_get_agent_tool.run(allocator, tool_call) catch |err| {
+            //         const err_name = @errorName(err);
+            //         logger.errFmt("Error executing get_agent: {s}", .{err_name}) catch {};
+            //         try handleToolError(ctx, tool_call, err, "Error executing get_agent");
+            //         continue;
+            //     };
+            //     defer allocator.free(result);
+
+            //     // save to table session_agents if loaded successfully
+            //     if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
+            //         if (std.mem.indexOf(u8, result, "<agent_name>")) |name_start| {
+            //             const name_begin = name_start + "<agent_name>".len;
+            //             if (std.mem.indexOf(u8, result[name_begin..], "</agent_name>")) |name_end| {
+            //                 const agent_name = result[name_begin .. name_begin + name_end];
+            //                 // Save to database
+            //                 SaveAgent(allocator, db, logger, session_id, agent_name) catch |err| {
+            //                     const err_name = @errorName(err);
+            //                     logger.errFmt("Error saving agent to database: {s}", .{err_name}) catch {};
+            //                 };
+            //             }
+            //         }
+            //     }
+
+            //     try handleToolResult(ctx, tool_call, result);
+            //     continue;
+            // }
+
+            if (std.mem.eql(u8, tool_call.function.name, "list_agents")) {
+                const result = handle_list_agents_tool.run(allocator) catch |err| {
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error executing list_agents: {s}", .{err_name}) catch {};
+                    try handleToolError(ctx, tool_call, err, "Error executing list_agents");
+                    continue;
+                };
+
+                try handleToolResult(ctx, tool_call, result);
+                continue;
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "get_agent")) {
+                const result = handle_get_agent_tool.run(allocator, tool_call) catch |err| {
+                    const err_name = @errorName(err);
+                    logger.errFmt("Error executing get_agent: {s}", .{err_name}) catch {};
+                    try handleToolError(ctx, tool_call, err, "Error executing get_agent");
+                    continue;
+                };
+                defer allocator.free(result);
+
+                // save to table session_agents if loaded successfully
+                if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
+                    if (std.mem.indexOf(u8, result, "<agent_name>")) |name_start| {
+                        const name_begin = name_start + "<agent_name>".len;
+                        if (std.mem.indexOf(u8, result[name_begin..], "</agent_name>")) |name_end| {
+                            const agent_name = result[name_begin .. name_begin + name_end];
+                            // Save to database
+                            SaveAgent(allocator, db, logger, session_id, agent_name) catch |err| {
+                                const err_name = @errorName(err);
+                                logger.errFmt("Error saving agent to database: {s}", .{err_name}) catch {};
+                            };
+                        }
+                    }
+                }
+
+                try handleToolResult(ctx, tool_call, result);
                 continue;
             }
 

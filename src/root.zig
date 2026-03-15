@@ -143,6 +143,9 @@ test {
     _ = @import("ai_workflow/tui/models.zig");
     _ = @import("ai_workflow/tui/run_agentic_loop.zig");
     _ = @import("ai_workflow/tui/save_message.zig");
+    _ = @import("ai_workflow/tui/save_message_test.zig");
+    _ = @import("ai_workflow/tui/save_agent.zig");
+    _ = @import("ai_workflow/tui/save_agent_test.zig");
     _ = @import("ai_workflow/tui/send_error.zig");
     _ = @import("ai_workflow/tui/send_response.zig");
     _ = @import("ai_workflow/tui/send_tool_result.zig");
