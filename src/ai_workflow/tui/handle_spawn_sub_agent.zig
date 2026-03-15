@@ -4,6 +4,7 @@ const agent = tree1_mod.agent;
 const tool_models = tree1_mod.tool_models;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
+const prompt = tree1_mod.prompt;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
 const bash_tool = @import("../../modules/agent/tools/bash.zig");
 const read_file_tool = @import("../../modules/agent/tools/read_file.zig");
@@ -145,10 +146,28 @@ fn runSubAgent(
     sub_agent.baseUrl = base_url;
     sub_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
-    // Build messages: empty system + user instruction
+    // Build tool names list from allowed tools
+    var tool_names: std.ArrayList([]const u8) = .empty;
+    defer tool_names.deinit(allocator);
+    for (sub_agent_tools) |tool| {
+        try tool_names.append(allocator, tool.function.name);
+    }
+
+    // Build system prompt with cwd context - sub-agents need this for path resolution
+    const systemPrompt = try prompt.subAgentPrompt(allocator, cwd, tool_names.items);
+    defer allocator.free(systemPrompt);
+
+    // Build messages: system message with cwd context + user instruction
     var messages: std.ArrayList(agent.AgentMessage) = .empty;
     defer messages.deinit(allocator);
 
+    // Add system message FIRST with working directory context
+    try messages.append(allocator, .{
+        .role = .system,
+        .content = systemPrompt,
+    });
+
+    // Then add user instruction
     try messages.append(allocator, .{
         .role = .user,
         .content = instruction,
