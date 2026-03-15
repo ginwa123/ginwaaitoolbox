@@ -142,8 +142,9 @@ const agents = struct {
         if (std.mem.indexOf(u8, frontmatter, desc_prefix)) |desc_idx| {
             const after_desc = frontmatter[desc_idx + desc_prefix.len ..];
             const desc_start = std.mem.indexOfNone(u8, after_desc, " \t") orelse 0;
-            const desc_end = std.mem.indexOf(u8, after_desc[desc_start..], "\n") orelse after_desc.len;
-            const desc_value = std.mem.trim(u8, after_desc[desc_start .. desc_start + desc_end], " \"\t\r\n");
+            const desc_in_slice = after_desc[desc_start..];
+            const desc_end = std.mem.indexOf(u8, desc_in_slice, "\n") orelse desc_in_slice.len;
+            const desc_value = std.mem.trim(u8, desc_in_slice[0..desc_end], " \"\t\r\n");
             description = allocator.dupe(u8, desc_value) catch null;
         }
 
