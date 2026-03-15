@@ -4,7 +4,7 @@ const TUIHistory = @import("models.zig").TUIHistory;
 const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
 
-pub fn run(
+pub fn GetMessages(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,

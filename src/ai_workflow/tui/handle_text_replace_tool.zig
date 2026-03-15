@@ -27,6 +27,7 @@ pub fn run(
         parsed.value.path,
         parsed.value.old_str,
         parsed.value.new_str,
+        parsed.value.expected_hash,
     );
     
     // Convert text_replace result to string format

@@ -172,7 +172,7 @@ pub fn run(
     logger.infoFmt("[MCP] Tool result appended to messages_list, total messages: {}", .{messages_list.items.len}) catch {};
 
     // Save tool result to database
-    _ = save_message.run(allocator, db, .{
+    _ = save_message.SaveMessage(allocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,

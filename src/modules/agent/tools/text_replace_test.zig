@@ -1,5 +1,6 @@
 const std = @import("std");
 const text_replace_mod = @import("text_replace.zig");
+const read_file_mod = @import("read_file.zig");
 
 test "text_replace - basic replace single occurrence" {
     const allocator = std.testing.allocator;
@@ -13,7 +14,11 @@ test "text_replace - basic replace single occurrence" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, old_str, new_str);
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    const result = try text_replace_mod.text_replace(allocator, test_path, old_str, new_str, read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify file content was changed
@@ -44,7 +49,11 @@ test "text_replace - old_str not found returns error" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = text_replace_mod.text_replace(allocator, test_path, "nonexistent", "new");
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    const result = text_replace_mod.text_replace(allocator, test_path, "nonexistent", "new", read_result.sha256);
     
     try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotFound, result);
     
@@ -55,7 +64,6 @@ test "text_replace - old_str not found returns error" {
 test "text_replace - old_str appears twice returns OldStrNotUnique" {
     const allocator = std.testing.allocator;
     const test_path = "test_replace_duplicate.txt";
-    // FIXED: The SAME string must appear twice - not similar, but identical
     const original_content = "const x = 0;\nconst x = 0;\n";
     
     // Create original file with two identical lines
@@ -63,8 +71,12 @@ test "text_replace - old_str appears twice returns OldStrNotUnique" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
     // This should fail because "const x = 0;" appears twice (both lines are identical)
-    const result = text_replace_mod.text_replace(allocator, test_path, "const x = 0;", "const z = 1;");
+    const result = text_replace_mod.text_replace(allocator, test_path, "const x = 0;", "const z = 1;", read_result.sha256);
     
     try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotUnique, result);
     
@@ -82,7 +94,11 @@ test "text_replace - replace with empty string" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, ", World!", "");
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    const result = try text_replace_mod.text_replace(allocator, test_path, ", World!", "", read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify content
@@ -108,7 +124,11 @@ test "text_replace - result serialization" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, "test", "new");
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    const result = try text_replace_mod.text_replace(allocator, test_path, "test", "new", read_result.sha256);
     defer result.deinit(allocator);
     
     const serialized = try text_replace_mod.textReplaceToString(allocator, result);
@@ -127,7 +147,6 @@ test "text_replace tool definition exists" {
 }
 
 test "text_replace - unique match with surrounding context" {
-    // This is the critical edge case: same string appears twice but user provides context to make it unique
     const allocator = std.testing.allocator;
     const test_path = "test_replace_context.txt";
     const original_content = "fn setup() void {\n    const x = 0;\n}\n\nfn other() void {\n    const x = 0;\n}\n";
@@ -137,11 +156,15 @@ test "text_replace - unique match with surrounding context" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
     // Using context to make it unique - should succeed
     const old_str_with_context = "fn setup() void {\n    const x = 0;";
     const new_str = "fn setup() void {\n    const z = 1;";
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, old_str_with_context, new_str);
+    const result = try text_replace_mod.text_replace(allocator, test_path, old_str_with_context, new_str, read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify file was modified correctly
@@ -168,7 +191,11 @@ test "text_replace - multiline replace" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, "old line 1\nold line 2", "new line A\nnew line B");
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    const result = try text_replace_mod.text_replace(allocator, test_path, "old line 1\nold line 2", "new line A\nnew line B", read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify content
@@ -194,7 +221,11 @@ test "text_replace - replace at end of file" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, "end", "FINISH");
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    const result = try text_replace_mod.text_replace(allocator, test_path, "end", "FINISH", read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify replaced_at_byte points to end

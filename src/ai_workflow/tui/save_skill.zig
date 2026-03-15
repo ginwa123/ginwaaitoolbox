@@ -24,7 +24,7 @@ pub fn isLoaded(
 }
 
 /// Save a loaded skill to the database for persistence
-pub fn run(
+pub fn SaveSkill(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,

@@ -5,15 +5,19 @@ const ToolParameters = @import("models.zig").ToolParameters;
 const AgentToolFunction = @import("models.zig").AgentToolFunction;
 const AgentTool = @import("models.zig").AgentTool;
 const std = @import("std");
+const crypto = @import("std").crypto;
+const Sha256 = crypto.hash.sha2.Sha256;
 
 pub const ReadFileResult = struct {
     content: []u8,
+    sha256: []u8,
     total_lines: usize,
     start_line: usize,
     end_line: usize,
 
     pub fn deinit(self: ReadFileResult, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
+        allocator.free(self.sha256);
     }
 };
 
@@ -33,6 +37,13 @@ pub fn read_file(
 
     const raw = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(raw);
+
+    // Compute SHA256 hash of the raw content
+    var hash: [32]u8 = undefined;
+    Sha256.hash(raw, &hash, .{});
+    
+    // Convert hash to hex string
+    const sha256_hex = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(hash, .lower)});
 
     // count lines
     var total_lines: usize = 0;
@@ -84,6 +95,7 @@ pub fn read_file(
 
     return ReadFileResult{
         .content = try out.toOwnedSlice(allocator),
+        .sha256 = sha256_hex,
         .total_lines = total_lines,
         .start_line = offset,
         .end_line = end_line,
@@ -93,11 +105,13 @@ pub fn read_file(
 pub fn readFileToString(allocator: std.mem.Allocator, result: ReadFileResult) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<content>{s}</content>
+        \\<sha256>{s}</sha256>
         \\<total_lines>{d}</total_lines>
         \\<start_line>{d}</start_line>
         \\<end_line>{d}</end_line>
     , .{
         result.content,
+        result.sha256,
         result.total_lines,
         result.start_line,
         result.end_line,
@@ -109,12 +123,13 @@ pub const readFileTool = AgentTool{
     .function = .{
         .name = "read_file",
         .description =
-        \\Read a file by path. Returns content, total_lines, start_line, end_line.
+        \\Read a file by path. Returns content, sha256, total_lines, start_line, end_line.
         \\
         \\- Omit offset and limit to read the whole file.
         \\- Use offset + limit to paginate large files (recommended page: 500 lines).
         \\- Never guess offsets — check total_lines from a prior call first.
         \\- Set show_line_numbers to true to prefix each line with its line number.
+        \\- Returns SHA256 hash of file content - save this for text_replace to prevent blind edits.
         ,
         .parameters = .{
             .type = "object",

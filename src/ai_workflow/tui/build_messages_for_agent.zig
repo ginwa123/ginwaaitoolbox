@@ -7,7 +7,7 @@ const prompt = tree1_mod.prompt;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_messages = @import("transform_llm_history_to_agent_messages.zig");
 
-pub fn run(
+pub fn BuildMessages(
     allocator: std.mem.Allocator,
     cwd: []const u8,
     tree_dir: []const u8,
@@ -19,7 +19,7 @@ pub fn run(
     // Always use the unified Agent prompt
     const agent_prompt: []const u8 = prompt.Agent;
 
-    const systemContent = try prompt.agenticCodingWithCwd(allocator, cwd, agent_prompt, tree_dir, skills, memoryMd);
+    const systemContent = try prompt.buildAgentPrompt(allocator, cwd, agent_prompt, tree_dir, skills, memoryMd);
 
     const systemMessage = agent.AgentMessage{
         .role = .system,

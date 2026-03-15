@@ -2,7 +2,7 @@ const std = @import("std");
 
 const memory_files = [_][]const u8{ "MEMORY.md", "AGENT.md", "CLAUDE.md" };
 
-pub fn run(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
+pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
 

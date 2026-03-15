@@ -624,7 +624,7 @@ pub const CompactionAgent =
 /// Build agent prompt with dynamic base prompt, optional skills content, and optional cwd/treeDir.
 /// If skillsContent is empty, it will be omitted. If cwd is empty, cwd and treeDir will be omitted.
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8, skillsContent: []const u8, memoryMd: []const u8) ![]const u8 {
+pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, agentPrompt: []const u8, treeDir: []const u8, skillsContent: []const u8, memoryMd: []const u8) ![]const u8 {
     const dynamicBasePrompt = try buildBasePromptWithSkillsList(allocator);
     defer allocator.free(dynamicBasePrompt);
     var result: std.ArrayList(u8) = .empty;
@@ -659,7 +659,7 @@ pub fn agenticCodingWithCwd(allocator: std.mem.Allocator, cwd: []const u8, agent
 /// Build a minimal system prompt for sub-agents with cwd context
 /// Sub-agents need to know the working directory to resolve file paths correctly
 /// tool_names is a list of tool names the sub-agent has access to
-pub fn subAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, tool_names: []const []const u8) ![]const u8 {
+pub fn buildSubAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, tool_names: []const []const u8) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 

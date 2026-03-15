@@ -31,7 +31,7 @@ pub fn run(
     logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
     // Save the filtered response to history
-    save_message.run(
+    save_message.SaveMessage(
         allocator, db, .{
         .session_id = session_id,
         .model = model,
@@ -62,7 +62,7 @@ pub fn run(
     if (res_dynamic_agent.content) |c| {
         if (c.len > 0) {
             // Send the partial content with content_filter finish reason
-            send_response.run(allocator, session_id, logger, res_dynamic_agent, "content_filter");
+            send_response.SendResponse(allocator, session_id, logger, res_dynamic_agent, "content_filter");
         } else {
             // No content, send error message
             send_error.run(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
@@ -71,7 +71,7 @@ pub fn run(
         // No content, send error message
         send_error.run(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
     }
-    
+
     return true; // Signal caller to break the loop
 }
 

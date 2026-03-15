@@ -18,7 +18,7 @@ const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
-const save_skill_mod = @import("save_skill.zig");
+const SaveSkill = @import("save_skill.zig").SaveSkill;
 const loop_detector = tree1_mod.loop_detector;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 const tool_models = tree1_mod.tool_models;
@@ -51,7 +51,7 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
     };
     try ctx.messages_list.append(ctx.allocator, tool_result_msg);
 
-    _ = try save_message.run(ctx.allocator, ctx.db, .{
+    _ = try save_message.SaveMessage(ctx.allocator, ctx.db, .{
         .session_id = ctx.session_id,
         .model = ctx.model,
         .cwd = ctx.cwd,
@@ -85,7 +85,7 @@ fn handleToolError(ctx: ToolContext, tool_call: agent.ToolCall, err: anytype, er
     ctx.allocator.free(err_str);
 }
 
-pub fn run(
+pub fn HandleTool(
     allocator: std.mem.Allocator,
     tui_workflow: *TUIWorkflow,
     db: *sqlite.SqliteBackend,
@@ -110,7 +110,7 @@ pub fn run(
     } else {
         logger.warnFmt("[HANDLE_TOOL] tool_calls is NULL!", .{}) catch {};
     }
-    send_response.run(allocator, session_id, logger, res_dynamic_agent, null);
+    send_response.SendResponse(allocator, session_id, logger, res_dynamic_agent, null);
     if (res_dynamic_agent.tool_calls) |tc| {
         // Add assistant message with tool_calls to history
         var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
@@ -148,7 +148,7 @@ pub fn run(
             return;
         }
 
-        _ = try save_message.run(allocator, db, .{
+        _ = try save_message.SaveMessage(allocator, db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -226,7 +226,7 @@ pub fn run(
                 };
                 _ = try messages_list.append(allocator, tool_result_msg);
                 // Save to DB
-                _ = try save_message.run(allocator, db, .{
+                _ = try save_message.SaveMessage(allocator, db, .{
                     .session_id = session_id,
                     .model = model,
                     .cwd = cwd,
@@ -346,7 +346,7 @@ pub fn run(
                                 if (std.mem.indexOf(u8, result[content_begin..], "</content>")) |content_end| {
                                     const content = result[content_begin..content_begin + content_end];
                                     // Save to database
-                                    save_skill_mod.run(allocator, db, logger, session_id, skill_name, content) catch |err| {
+                                    SaveSkill(allocator, db, logger, session_id, skill_name, content) catch |err| {
                                         const err_name = @errorName(err);
                                         logger.errFmt("Error saving skill to database: {s}", .{err_name}) catch {};
                                     };

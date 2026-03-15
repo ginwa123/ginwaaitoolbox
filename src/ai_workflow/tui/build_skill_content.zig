@@ -3,7 +3,7 @@ const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
 
 /// Build skills content string from database for persistence
-pub fn run(
+pub fn BuildSkillContent(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,

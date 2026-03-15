@@ -95,7 +95,7 @@ fn runSubAgent(
     const session_name = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
 
     // Save user instruction message to DB
-    _ = try save_message.run(allocator, db, .{
+    _ = try save_message.SaveMessage(allocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
@@ -138,7 +138,7 @@ fn runSubAgent(
     }
 
     // Build system prompt with cwd context - sub-agents need this for path resolution
-    const systemPrompt = try prompt.subAgentPrompt(allocator, cwd, tool_names.items);
+    const systemPrompt = try prompt.buildSubAgentPrompt(allocator, cwd, tool_names.items);
     defer allocator.free(systemPrompt);
 
     // Build messages: system message with cwd context + user instruction
@@ -173,7 +173,7 @@ fn runSubAgent(
 
         // Save assistant response to DB
         const assistant_tool_calls = if (response.tool_calls) |tcs| tcs else null;
-        _ = try save_message.run(allocator, db, .{
+        _ = try save_message.SaveMessage(allocator, db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -305,7 +305,7 @@ fn runSubAgent(
                         }
 
                         // Save tool result to DB
-                        _ = try save_message.run(allocator, db, .{
+                        _ = try save_message.SaveMessage(allocator, db, .{
                             .session_id = session_id,
                             .model = model,
                             .cwd = cwd,
@@ -634,7 +634,7 @@ pub fn run(
     try messages_list.append(allocator, tool_result_msg);
 
     // Save to DB
-    _ = try save_message.run(allocator, db, .{
+    _ = try save_message.SaveMessage(allocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,

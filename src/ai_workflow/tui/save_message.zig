@@ -35,7 +35,7 @@ pub const SaveMessageInput = struct {
     total_tokens: usize = 0,
 };
 
-pub fn run(
+pub fn SaveMessage(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: SaveMessageInput,

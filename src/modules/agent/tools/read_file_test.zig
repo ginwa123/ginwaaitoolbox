@@ -182,18 +182,82 @@ test "read_file tool definition exists" {
     try std.testing.expectEqualStrings("read_file", read_file_mod.readFileTool.function.name);
 }
 
-test "read_file tool has show_line_numbers parameter" {
-    // Verify the tool has the new parameter defined
-    const tool = read_file_mod.readFileTool;
-    const params = tool.function.parameters;
+test "read_file - returns SHA256 hash of file content" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_read_sha256.txt";
+    const test_content = "Hello, World!\n";
     
-    // Find show_line_numbers property
-    var found = false;
-    for (params.properties) |prop| {
-        if (std.mem.eql(u8, prop.name, "show_line_numbers")) {
-            found = true;
-            try std.testing.expectEqualStrings("boolean", prop.type);
-        }
+    // Create test file
+    const file = try std.fs.cwd().createFile(test_path, .{});
+    defer file.close();
+    try file.writeAll(test_content);
+    
+    const result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer result.deinit(allocator);
+    
+    // SHA256 should be present
+    try std.testing.expect(result.sha256.len > 0);
+    
+    // Known SHA256 of "Hello, World!\n"
+    // Using std.crypto.sha2 - we'll verify the hash format is correct (hex string)
+    try std.testing.expect(result.sha256.len == 64); // SHA256 produces 32 bytes = 64 hex chars
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "read_file - different content produces different SHA256" {
+    const allocator = std.testing.allocator;
+    const test_path1 = "test_sha256_1.txt";
+    const test_path2 = "test_sha256_2.txt";
+    const content1 = "Content A\n";
+    const content2 = "Content B\n";
+    
+    // Create two test files with different content
+    {
+        const file = try std.fs.cwd().createFile(test_path1, .{});
+        defer file.close();
+        try file.writeAll(content1);
     }
-    try std.testing.expect(found);
+    {
+        const file = try std.fs.cwd().createFile(test_path2, .{});
+        defer file.close();
+        try file.writeAll(content2);
+    }
+    
+    const result1 = try read_file_mod.read_file(allocator, test_path1, .{});
+    defer result1.deinit(allocator);
+    
+    const result2 = try read_file_mod.read_file(allocator, test_path2, .{});
+    defer result2.deinit(allocator);
+    
+    // Different content should produce different hashes
+    try std.testing.expect(!std.mem.eql(u8, result1.sha256, result2.sha256));
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path1);
+    try std.fs.cwd().deleteFile(test_path2);
+}
+
+test "read_file - SHA256 appears in serialization" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_sha256_serialize.txt";
+    const test_content = "Test content\n";
+    
+    // Create test file
+    const file = try std.fs.cwd().createFile(test_path, .{});
+    defer file.close();
+    try file.writeAll(test_content);
+    
+    const result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer result.deinit(allocator);
+    
+    const serialized = try read_file_mod.readFileToString(allocator, result);
+    defer allocator.free(serialized);
+    
+    // Should contain SHA256 in serialization
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "<sha256>") != null);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
 }

@@ -24,9 +24,9 @@ const send_tool_result = @import("send_tool_result.zig");
 const send_user_choice = @import("send_user_choice.zig");
 const SendResponse = @import("send_response.zig").SendResponse;
 const send_error = @import("send_error.zig");
-const save_message = @import("save_message.zig");
-const build_messages = @import("build_messages_for_agent.zig");
-const get_messages = @import("get_messages.zig");
+const SaveMessage = @import("save_message.zig").SaveMessage;
+const BuildMessages = @import("build_messages_for_agent.zig").BuildMessages;
+const GetMessages = @import("get_messages.zig").GetMessages;
 const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
 const send_stream_chunk_final = @import("send_stream_chunk_final.zig");
 const send_steam_chunk_content = @import("send_stream_chunk_content.zig");
@@ -34,13 +34,13 @@ const send_stream_chunk_reasoning = @import("send_stream_chunk_reasoning.zig");
 const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_call_delta.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
-const build_memory_for_agent = @import("build_memory_for_agent.zig");
+const BuildMemoryForAgent = @import("build_memory_for_agent.zig").BuildMemoryForAgent;
 const write_file_tool = root_mod.write_file;
 const search_tool = root_mod.search_tool;
 const text_replace_tool = root_mod.text_replace_tool;
 
 const handle_content_filter = @import("handle_content_filter.zig");
-const build_skill_content_mod = @import("build_skill_content.zig");
+const BuildSkillContent = @import("build_skill_content.zig").BuildSkillContent;
 const save_skill_mod = @import("save_skill.zig");
 const send_skill_mod = @import("send_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent.zig");
@@ -171,7 +171,7 @@ pub const TUIWorkflow = struct {
             session_id,
         );
         const initial_agent = initial_agent_state.agent;
-        save_message.run(parent_allocator, self.db, .{
+        SaveMessage(parent_allocator, self.db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -242,7 +242,7 @@ pub const TUIWorkflow = struct {
 
             var messages_list: std.ArrayList(agent.AgentMessage) = .empty;
 
-            const initial_messages = try build_messages.run(allocator, cwd, "", try get_messages.run(allocator, self.db, session_id), try build_skill_content_mod.run(allocator, self.db, session_id), try build_memory_for_agent.run(allocator, cwd));
+            const initial_messages = try BuildMessages(allocator, cwd, "", try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd));
 
             try messages_list.appendSlice(allocator, initial_messages);
 
@@ -275,7 +275,7 @@ pub const TUIWorkflow = struct {
                 if (finish_reason == .stop) {
                     self.logger.infoFmt("FINISH REASON STOP - calling send_response", .{}) catch {};
                     _ = SendResponse(allocator, session_id, self.logger, res_dynamic_agent, "user_choice");
-                    _ = try save_message.run(allocator, self.db, .{
+                    _ = try SaveMessage(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
                         .cwd = cwd,

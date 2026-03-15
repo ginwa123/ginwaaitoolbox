@@ -4,7 +4,7 @@ const logger_mod = tree1_mod.logger;
 const agent = tree1_mod.agent;
 const http_server = @import("nalarcore").http_server;
 
-pub fn run(allocator: std.mem.Allocator, session_id: []const u8, logger: *logger_mod.Logger, response: agent.CallResponse, override_finish_reason: ?[]const u8) void {
+pub fn SendResponse(allocator: std.mem.Allocator, session_id: []const u8, logger: *logger_mod.Logger, response: agent.CallResponse, override_finish_reason: ?[]const u8) void {
     // logger.infoFmt("SSE send_response: session_id={s}", .{session_id}) catch {};
     const sse_manager = http_server.getGlobalSseManager() orelse {
         logger.errFmt("SSE send_response: no global SSE manager", .{}) catch {};
