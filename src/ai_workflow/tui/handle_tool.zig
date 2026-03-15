@@ -1,8 +1,8 @@
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
-const agent = tree1_mod.agent;
-const logger_mod = tree1_mod.logger;
-const sqlite = tree1_mod.sqlite;
+const root_mod = @import("nalarcore");
+const agent = root_mod.agent;
+const logger_mod = root_mod.logger;
+const sqlite = root_mod.sqlite;
 const config_mod = @import("../../modules/config/config.zig");
 const save_message = @import("save_message.zig");
 const send_tool_result = @import("send_tool_result.zig");
@@ -19,9 +19,9 @@ const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const SaveSkill = @import("save_skill.zig").SaveSkill;
-const loop_detector = tree1_mod.loop_detector;
+const loop_detector = root_mod.loop_detector;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
-const tool_models = tree1_mod.tool_models;
+const tool_models = root_mod.tool_models;
 
 // Forward declaration for TUIWorkflow
 const TUIWorkflow = @import("tui_workflow.zig").TUIWorkflow;
@@ -59,8 +59,8 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
         .response_content = null,
         .response_finish_reason = null,
         .response_reasoning_content = null,
-        .role = "tool",
-        .finish_reason = "tool",
+        .role = agent.Role.tool.toStr(),
+        .finish_reason = agent.FinishReason.tool.toStr(),
         .tool_calls = null,
         .tool_call_id = tool_call.id,
         .agent_name = ctx.current_agent_for_save,
@@ -234,8 +234,8 @@ pub fn HandleTool(
                     .response_content = null,
                     .response_finish_reason = null,
                     .response_reasoning_content = null,
-                    .role = "tool",
-                    .finish_reason = "tool",
+                    .role = agent.Role.tool.toStr(),
+                    .finish_reason = agent.FinishReason.tool.toStr(),
                     .tool_calls = null,
                     .tool_call_id = change_result.tool_call_id,
                     .agent_name = null,

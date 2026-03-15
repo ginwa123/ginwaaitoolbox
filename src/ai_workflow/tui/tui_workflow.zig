@@ -46,7 +46,7 @@ const send_skill_mod = @import("send_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent.zig");
 const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
-const handleTool = @import("handle_tool.zig").HandleTool;
+const HandleTool = @import("handle_tool.zig").HandleTool;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -179,7 +179,7 @@ pub const TUIWorkflow = struct {
             .response_content = null,
             .response_finish_reason = null,
             .response_reasoning_content = null,
-            .role = "user",
+            .role = agent.Role.user.toStr(),
             .finish_reason = "null",
             .tool_calls = null,
             .tool_call_id = null,
@@ -302,7 +302,7 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handleTool(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                    try HandleTool(allocator, self, self.db, self.logger, session_id, model, cwd, session_name, loop_counter, &messages_list, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};

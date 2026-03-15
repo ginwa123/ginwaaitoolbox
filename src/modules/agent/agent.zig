@@ -272,8 +272,9 @@ pub const FinishReason = enum {
     tool_calls,
     /// Content was filtered due to safety policies
     content_filter,
-    /// No finish reason provided
+    tool,
     null,
+    /// No finish reason provided
 
     pub fn fromStr(s: ?[]const u8) ?FinishReason {
         if (s == null) return .null;
@@ -282,6 +283,7 @@ pub const FinishReason = enum {
         if (std.mem.eql(u8, str, "length")) return .length;
         if (std.mem.eql(u8, str, "tool_calls")) return .tool_calls;
         if (std.mem.eql(u8, str, "content_filter")) return .content_filter;
+        if (std.mem.eql(u8, str, "tool")) return .tool;
         return null;
     }
 
@@ -291,6 +293,7 @@ pub const FinishReason = enum {
             .length => "length",
             .tool_calls => "tool_calls",
             .content_filter => "content_filter",
+            .tool => "tool",
             .null => "null",
         };
     }
@@ -414,8 +417,12 @@ pub const StreamingAggregator = struct {
         }
 
         // Store usage - accumulate from chunks (API sends usage in final chunk)
+        // Only update if we have valid (non-zero) token counts to avoid overwriting
+        // the final usage with intermediate zero values from earlier chunks
         if (chunk.usage) |usage| {
-            self.usage = usage;
+            if (usage.total_tokens > 0) {
+                self.usage = usage;
+            }
         }
     }
 

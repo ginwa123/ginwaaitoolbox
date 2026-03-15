@@ -104,7 +104,7 @@ fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) vo
     allocator.free(fm.description);
 }
 
-/// Get the local skills directory path (cwd/.nalar/skills/)
+/// Get the local skills directory path (.nalar/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn getSkillsDirPath(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
@@ -114,7 +114,7 @@ pub fn getSkillsDirPath(allocator: std.mem.Allocator) ?[]const u8 {
         return null;
     };
 
-    // Build path: cwd/.nalar/skills/
+    // Build path: .nalar/skills/
     const path = std.fs.path.join(allocator, &[_][]const u8{
         cwd,
         LOCAL_SKILLS_DIR,
@@ -191,7 +191,7 @@ pub fn freeSkillFiles(allocator: std.mem.Allocator, files: [][]const u8) void {
     allocator.free(files);
 }
 
-/// Get the local skills path (cwd/.nalar/skills/)
+/// Get the local skills path (.nalar/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn getLocalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
@@ -201,7 +201,7 @@ pub fn getLocalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
         return null;
     };
 
-    // Build path: cwd/.nalar/skills/
+    // Build path: .nalar/skills/
     const dir_path = std.fs.path.join(allocator, &[_][]const u8{
         cwd,
         LOCAL_SKILLS_DIR,

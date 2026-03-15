@@ -107,13 +107,13 @@ pub const BasePrompt =
 ;
 
 // =============================================================================
-// TASK MANAGEMENT -- todo list per task in cwd/.nalar/tasks/
+// TASK MANAGEMENT -- todo list per task in .nalar/tasks/
 // =============================================================================
 
 pub const TaskManagementPrompt =
     \\## Task Management System
     \\
-    \\Every action you take must be tracked as a task in `cwd/.nalar/tasks/`.
+    \\Every action you take must be tracked as a task in `.nalar/tasks/`.
     \\Tasks serve as your todo list and progress tracker.
     \\
     \\### 🚨 CRITICAL: Create Task Immediately on User Request
@@ -121,9 +121,9 @@ pub const TaskManagementPrompt =
     \\**When a user requests a new task (ANY new task), you MUST create the task structure BEFORE doing ANY work.**
     \\
     \\Do not analyze, explore, or start working first. Create the task immediately:
-    \\   - Create `cwd/.nalar/tasks/<timestamp>_<task_name>/todo.md`
+    \\   - Create `.nalar/tasks/<timestamp>_<task_name>/todo.md`
     \\   - Write task description and break down into actionable subtasks
-    \\   - Create symlink `cwd/.nalar/tasks/active` → current task
+    \\   - Create symlink `.nalar/tasks/active` → current task
     \\   - Only THEN proceed with the work
     \\
     \\**This is non-negotiable.** The moment you understand the user wants something done, create the task first.
@@ -131,7 +131,7 @@ pub const TaskManagementPrompt =
     \\### Task Directory Structure
     \\
     \\```
-    \\cwd/.nalar/tasks/
+    \\.nalar/tasks/
     \\├── <task_id_1>/
     \\│   ├── todo.md          # Task description and checklist
     \\│   ├── progress.md      # Current progress and status
@@ -144,9 +144,9 @@ pub const TaskManagementPrompt =
     \\### Task Workflow
     \\
     \\1. **Create Task** — When given a new task by user:
-    \\   - Create `cwd/.nalar/tasks/<timestamp>_<task_name>/todo.md`
+    \\   - Create `.nalar/tasks/<timestamp>_<task_name>/todo.md`
     \\   - Write task description and break down into actionable subtasks
-    \\   - Create symlink `cwd/.nalar/tasks/active` → current task
+    \\   - Create symlink `.nalar/tasks/active` → current task
     \\
     \\2. **Track Progress** — Before each action:
     \\   - Update `progress.md` with current status
@@ -200,7 +200,7 @@ pub const TaskManagementPrompt =
     \\### Parallel Task Isolation (Sub-agents)
     \\
     \\When spawning sub-agents for parallel work:
-    \\- **Each sub-agent MUST have its own task** in `cwd/.nalar/tasks/<subtask_id>/`
+    \\- **Each sub-agent MUST have its own task** in `.nalar/tasks/<subtask_id>/`
     \\- Sub-agents work independently and MUST NOT interfere with other tasks
     \\- Each sub-agent tracks its own progress in its own task directory
     \\- Main agent coordinates but does not do the work itself
@@ -466,7 +466,7 @@ pub const Agent =
     \\- A clear SCOPE that defines what they are responsible for.
     \\
     \\**Hard rules for sub-agent execution:**
-    \\- Each sub-agent operates in its OWN task directory: `cwd/.nalar/tasks/<task_id>/`
+    \\- Each sub-agent operates in its OWN task directory: `.nalar/tasks/<task_id>/`
     \\- Sub-agents CAN use write_file, text_replace, and bash for execution tasks.
     \\- NEVER do work assigned to another sub-agent — stay within your assigned scope.
     \\- If you discover work outside your scope, report it but DO NOT do it.
