@@ -43,5 +43,5 @@ pub fn BuildMessages(
 }
 
 test {
-    _ = @import("build_messages_for_agent_test.zig");
+    _ = @import("build_messages_for_agent_prompt_test.zig");
 }

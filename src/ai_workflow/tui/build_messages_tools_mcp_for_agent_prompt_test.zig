@@ -1,5 +1,5 @@
 const std = @import("std");
-const build_mcp_tools = @import("build_messages_tools_mcp_for_agent.zig");
+const build_mcp_tools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 const config_mod = @import("../../modules/config/config.zig");
 
 test "parseProperties extracts tool properties" {

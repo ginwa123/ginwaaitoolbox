@@ -126,7 +126,7 @@ test "basic add functionality" {
 
 test {
     // Import all ai_workflow modules to ensure their tests run
-    _ = @import("ai_workflow/tui/build_messages_for_agent.zig");
+    _ = @import("ai_workflow/tui/build_messages_for_agent_prompt.zig");
     _ = @import("modules/session/cancellation_registry.zig");
     _ = @import("ai_workflow/tui/get_current_agent_by_session_id.zig");
     _ = @import("ai_workflow/tui/get_messages.zig");

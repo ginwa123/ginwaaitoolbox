@@ -1,5 +1,5 @@
 const std = @import("std");
-const build_messages = @import("build_messages_for_agent.zig");
+const build_messages = @import("build_messages_for_agent_prompt.zig");
 const TUIHistory = @import("models.zig").TUIHistory;
 
 test "build messages with empty history" {

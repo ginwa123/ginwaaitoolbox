@@ -44,5 +44,5 @@ pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, cwd: []const u8) ![]con
 
 
 test {
-    _ = @import("build_memory_for_agent_test.zig");
+    _ = @import("build_memory_for_agent_prompt_test.zig");
 }

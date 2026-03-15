@@ -45,5 +45,5 @@ pub fn BuildSkillContent(
 }
 
 test {
-    _ = @import("build_skill_content_test.zig");
+    _ = @import("build_skill_for_agent_prompt_test.zig");
 }

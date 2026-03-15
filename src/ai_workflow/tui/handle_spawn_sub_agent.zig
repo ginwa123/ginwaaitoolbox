@@ -33,7 +33,7 @@ const GetMessages = @import("get_messages.zig").GetMessages;
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const StreamingContext = @import("tui_workflow.zig").StreamingContext;
-const BuildSkillContent = @import("build_skill_content.zig").BuildSkillContent;
+const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
 const SaveSkill = @import("save_skill.zig").SaveSkill;
 
 const MAX_SUB_AGENTS = 20;

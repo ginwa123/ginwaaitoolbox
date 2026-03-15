@@ -566,6 +566,7 @@ fn sendPingCommand(app: *App) !bool {
     var buf: [1024]u8 = undefined;
     const n = std.posix.read(sock, &buf) catch return false;
     if (n > 0) {
+        std.debug.print(" response: {s}\n", .{buf[0..n]});
         const response = buf[0..n];
         if (std.mem.indexOf(u8, response, "\"reconnect\":true") != null) {
             return true; // Need to reconnect
@@ -1012,109 +1013,107 @@ fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
-        if (new_data) {
-            const new_raw = raw_buffer.items[raw_buffer_processed_len..];
-            if (new_raw.len == 0) continue;
+        const new_raw = raw_buffer.items[raw_buffer_processed_len..];
+        if (new_raw.len == 0) continue;
 
-            if (decodeChunked(app.allocator, new_raw)) |decoded| {
-                defer app.allocator.free(decoded);
-                raw_buffer_processed_len = raw_buffer.items.len;
+        if (decodeChunked(app.allocator, new_raw)) |decoded| {
+            defer app.allocator.free(decoded);
+            raw_buffer_processed_len = raw_buffer.items.len;
 
-                if (extractSseData(app.allocator, decoded)) |xml| {
-                    defer app.allocator.free(xml);
+            if (extractSseData(app.allocator, decoded)) |xml| {
+                defer app.allocator.free(xml);
 
-                    var chunk_pos: usize = 0;
-                    while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
-                        const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
-                        const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
-                        chunk_pos = chunk_end + "</chunk>".len;
+                var chunk_pos: usize = 0;
+                while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
+                    const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
+                    const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
+                    chunk_pos = chunk_end + "</chunk>".len;
 
-                        var chunk_index: usize = 0;
-                        if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
-                            const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
-                            const idx_str = chunk_block[idx_start + 7 .. idx_end];
-                            chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                        }
+                    var chunk_index: usize = 0;
+                    if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
+                        const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
+                        const idx_str = chunk_block[idx_start + 7 .. idx_end];
+                        chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
+                    }
 
-                        if (chunk_index >= last_printed_chunk_index) {
-                            last_printed_chunk_index = chunk_index + 1;
-                            if (extractTag(chunk_block, "content")) |content| {
-                                if (content.len > 0) {
-                                    if (!streaming_started) {
-                                        tui_text.print("\r\x1b[2K", .{});
-                                        streaming_started = true;
-                                    }
-                                    tui_text.print("{s}", .{content});
+                    if (chunk_index >= last_printed_chunk_index) {
+                        last_printed_chunk_index = chunk_index + 1;
+                        if (extractTag(chunk_block, "content")) |content| {
+                            if (content.len > 0) {
+                                if (!streaming_started) {
+                                    tui_text.print("\r\x1b[2K", .{});
+                                    streaming_started = true;
                                 }
+                                tui_text.print("{s}", .{content});
                             }
                         }
                     }
+                }
 
-                    if (extractToolResults(app.allocator, xml)) |tool_results_val| {
-                        var tool_results = tool_results_val;
-                        defer tool_results.deinit(app.allocator);
+                if (extractToolResults(app.allocator, xml)) |tool_results_val| {
+                    var tool_results = tool_results_val;
+                    defer tool_results.deinit(app.allocator);
 
-                        for (tool_results.items) |result| {
-                            var already_displayed = false;
-                            for (displayed_tool_ids.items) |id| {
-                                if (std.mem.eql(u8, id, result.id)) {
-                                    already_displayed = true;
-                                    break;
-                                }
-                            }
-                            if (!already_displayed) {
-                                tui_text.print("\r\x1b[2K", .{});
-                                const max_result_len: usize = 500;
-                                if (std.mem.eql(u8, result.name, "bash")) {
-                                    displayBashResult(result.result, result.name, max_result_len);
-                                }
-
-                                // else if (std.mem.eql(u8, result.name, "search")) {
-                                //     displaySearchResult(result.result, result.name, max_result_len);
-                                // }
-                                // else if (std.mem.eql(u8, result.name, "read_file")) {
-                                //     displayReadFileResult(result.result, result.name);
-                                // }
-
-                                else if (std.mem.eql(u8, result.name, "write_file")) {
-                                    displayWriteFileResult(result.result, result.name);
-                                } else if (std.mem.eql(u8, result.name, "text_replace")) {
-                                    displayTextReplaceResult(result.result, result.name);
-                                } else if (std.mem.eql(u8, result.name, "get_skill")) {
-                                    displaySkillResult(result.result, result.name);
-                                } else if (std.mem.eql(u8, result.name, "list_skills")) {
-                                    displayListSkillsResult(result.result, result.name);
-                                }
-                                if (extractTag(result.result, "set_agent_properties")) |_| {
-                                    tui_text.print("\n{s}[agent properties]{s} → updated\n", .{ cyan, reset });
-                                }
-                                const id_copy = app.allocator.dupe(u8, result.id) catch continue;
-                                displayed_tool_ids.append(app.allocator, id_copy) catch {
-                                    app.allocator.free(id_copy);
-                                    continue;
-                                };
+                    for (tool_results.items) |result| {
+                        var already_displayed = false;
+                        for (displayed_tool_ids.items) |id| {
+                            if (std.mem.eql(u8, id, result.id)) {
+                                already_displayed = true;
+                                break;
                             }
                         }
-                    } else |_| {}
+                        if (!already_displayed) {
+                            tui_text.print("\r\x1b[2K", .{});
+                            const max_result_len: usize = 500;
+                            if (std.mem.eql(u8, result.name, "bash")) {
+                                displayBashResult(result.result, result.name, max_result_len);
+                            }
+
+                            // else if (std.mem.eql(u8, result.name, "search")) {
+                            //     displaySearchResult(result.result, result.name, max_result_len);
+                            // }
+                            // else if (std.mem.eql(u8, result.name, "read_file")) {
+                            //     displayReadFileResult(result.result, result.name);
+                            // }
+
+                            else if (std.mem.eql(u8, result.name, "write_file")) {
+                                displayWriteFileResult(result.result, result.name);
+                            } else if (std.mem.eql(u8, result.name, "text_replace")) {
+                                displayTextReplaceResult(result.result, result.name);
+                            } else if (std.mem.eql(u8, result.name, "get_skill")) {
+                                displaySkillResult(result.result, result.name);
+                            } else if (std.mem.eql(u8, result.name, "list_skills")) {
+                                displayListSkillsResult(result.result, result.name);
+                            }
+                            if (extractTag(result.result, "set_agent_properties")) |_| {
+                                tui_text.print("\n{s}[agent properties]{s} → updated\n", .{ cyan, reset });
+                            }
+                            const id_copy = app.allocator.dupe(u8, result.id) catch continue;
+                            displayed_tool_ids.append(app.allocator, id_copy) catch {
+                                app.allocator.free(id_copy);
+                                continue;
+                            };
+                        }
+                    }
                 } else |_| {}
             } else |_| {}
+        } else |_| {}
 
-            // finish_reason — O(1) amortized
-            const search_start = @min(last_finish_search_pos, raw_buffer.items.len);
-            if (std.mem.indexOfPos(u8, raw_buffer.items, search_start, "</finish_reason>")) |_| {
-                last_finish_search_pos = raw_buffer.items.len;
-                if (extractTag(raw_buffer.items, "finish_reason")) |fr| {
-                    if (std.mem.eql(u8, fr, "notification_error")) {
-                        retry_count += 1;
-                        continue;
-                    }
-                    if (std.mem.eql(u8, fr, "cancelled")) {
-                        tui_text.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ yellow, reset });
-                        break;
-                    }
-                    if (std.mem.eql(u8, fr, "user_choice")) break;
-                    if (std.mem.eql(u8, fr, "stop")) break;
+        // finish_reason — O(1) amortized
+        const search_start = @min(last_finish_search_pos, raw_buffer.items.len);
+        if (std.mem.indexOfPos(u8, raw_buffer.items, search_start, "</finish_reason>")) |_| {
+            last_finish_search_pos = raw_buffer.items.len;
+            if (extractTag(raw_buffer.items, "finish_reason")) |fr| {
+                if (std.mem.eql(u8, fr, "notification_error")) {
+                    retry_count += 1;
+                    continue;
                 }
+                if (std.mem.eql(u8, fr, "cancelled")) {
+                    tui_text.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ yellow, reset });
+                    break;
+                }
+                if (std.mem.eql(u8, fr, "user_choice")) break;
+                if (std.mem.eql(u8, fr, "stop")) break;
             }
         }
     }

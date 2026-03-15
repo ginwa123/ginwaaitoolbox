@@ -1,6 +1,6 @@
 const std = @import("std");
 const sqlite = @import("nalarcore").sqlite;
-const build_background_process_content = @import("build_background_process_content.zig");
+const build_background_process_content = @import("build_background_process_for_agent_prompt.zig");
 
 test "build_background_process_content module exists" {
     _ = build_background_process_content.BuildBackgroundProcessPrompt;

@@ -1,5 +1,5 @@
 const std = @import("std");
-const build_memory_for_agent = @import("build_memory_for_agent.zig");
+const build_memory_for_agent = @import("build_memory_for_agent_prompt.zig");
 
 test "run creates MEMORY.MD and returns content" {
     const allocator = std.testing.allocator;

@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const build_skill_content = @import("build_skill_content.zig");
+const build_skill_content = @import("build_skill_for_agent_prompt.zig");
 const SqliteBackend = @import("../../modules/databases/sqlite/sqlite.zig").SqliteBackend;
 const MigrationManager = @import("../../modules/databases/sqlite/migrations.zig").MigrationManager;
 const Migration001CreateLLMHistory = @import("../../modules/databases/sqlite/migrations.zig").Migration001CreateLLMHistory;

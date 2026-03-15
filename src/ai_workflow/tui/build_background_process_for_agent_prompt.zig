@@ -58,5 +58,5 @@ pub fn BuildBackgroundProcessPrompt(
 }
 
 test {
-    _ = @import("build_background_process_prompt_test.zig");
+    _ = @import("build_background_process_for_agent_prompt_test.zig");
 }
