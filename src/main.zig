@@ -215,67 +215,7 @@ pub fn main() !void {
 
     var migrationManager = migrations.MigrationManager.init(parentAllocator, &dbSqlite);
     defer migrationManager.deinit();
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration001CreateLLMHistory.version,
-        .name = migrations.Migration001CreateLLMHistory.name,
-        .up = migrations.Migration001CreateLLMHistory.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration002AddRoleToLLMHistory.version,
-        .name = migrations.Migration002AddRoleToLLMHistory.name,
-        .up = migrations.Migration002AddRoleToLLMHistory.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration003AddReasoningContent.version,
-        .name = migrations.Migration003AddReasoningContent.name,
-        .up = migrations.Migration003AddReasoningContent.up,
-    });
-
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration004AddSessionDir.version,
-        .name = migrations.Migration004AddSessionDir.name,
-        .up = migrations.Migration004AddSessionDir.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration005AddIsFeedToLLM.version,
-        .name = migrations.Migration005AddIsFeedToLLM.name,
-        .up = migrations.Migration005AddIsFeedToLLM.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration006AddAgent.version,
-        .name = migrations.Migration006AddAgent.name,
-        .up = migrations.Migration006AddAgent.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration007AddSessionTracking.version,
-        .name = migrations.Migration007AddSessionTracking.name,
-        .up = migrations.Migration007AddSessionTracking.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration008AddSessionSkills.version,
-        .name = migrations.Migration008AddSessionSkills.name,
-        .up = migrations.Migration008AddSessionSkills.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration009RemoveCreatedColumn.version,
-        .name = migrations.Migration009RemoveCreatedColumn.name,
-        .up = migrations.Migration009RemoveCreatedColumn.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration011AddTemperatureAndThinking.version,
-        .name = migrations.Migration011AddTemperatureAndThinking.name,
-        .up = migrations.Migration011AddTemperatureAndThinking.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration012AddParentTracking.version,
-        .name = migrations.Migration012AddParentTracking.name,
-        .up = migrations.Migration012AddParentTracking.up,
-    });
-    try migrationManager.registerMigration(.{
-        .version = migrations.Migration013AddTokenUsageColumns.version,
-        .name = migrations.Migration013AddTokenUsageColumns.name,
-        .up = migrations.Migration013AddTokenUsageColumns.up,
-    });
+    try migrations.registerAllMigrations(&migrationManager);
     try migrationManager.runMigrations();
 
     // Get platform-appropriate temp directory
