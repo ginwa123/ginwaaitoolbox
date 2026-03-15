@@ -13,11 +13,15 @@ pub fn run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {
+    // Handle empty arguments - treat as empty JSON object
+    const args = tool_call.function.arguments;
+    const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
+
     // Parse arguments JSON to SearchInput
     const parsed = try std.json.parseFromSlice(
         search_tool.SearchInput,
         allocator,
-        tool_call.function.arguments,
+        args_to_parse,
         .{ .allocate = .alloc_always },
     );
     defer parsed.deinit();

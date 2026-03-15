@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
-const background_process = tree1_mod.background_process;
+const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 
 /// Build background processes content string from database for system prompt
@@ -55,4 +55,8 @@ pub fn BuildBackgroundProcessContent(
     try processesBuilder.appendSlice(allocator, "\nYou can check the status of these processes by reading their log files.\n");
 
     return processesBuilder.toOwnedSlice(allocator);
+}
+
+test {
+    _ = @import("build_background_process_content_test.zig");
 }

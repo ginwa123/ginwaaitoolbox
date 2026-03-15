@@ -3,7 +3,7 @@ const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const bash_tool = tree1_mod.bash_tool;
 const tool_models = tree1_mod.tool_models;
-const background_process = tree1_mod.background_process;
+const background_process = @import("background_process.zig");
 
 /// Stateless bash tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments

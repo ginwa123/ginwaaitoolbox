@@ -131,7 +131,7 @@ test "text_replace - result serialization" {
     const result = try text_replace_mod.text_replace(allocator, test_path, "test", "new", read_result.sha256);
     defer result.deinit(allocator);
     
-    const serialized = try text_replace_mod.textReplaceToString(allocator, result);
+    const serialized = try text_replace_mod.textReplaceToStringXML(allocator, result);
     defer allocator.free(serialized);
     
     // Should contain path and replaced_at_byte

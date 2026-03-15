@@ -1,4 +1,6 @@
 const std = @import("std");
+const tree1_mod = @import("nalarcore");
+const sqlite = tree1_mod.sqlite;
 
 pub const ProcessInfo = struct {
     session_id: []const u8,
@@ -9,9 +11,7 @@ pub const ProcessInfo = struct {
     status: []const u8,
 };
 
-const sqlite = @import("sqlite.zig");
-
-pub const SqliteBackend = sqlite.SqliteBackend;
+const SqliteBackend = sqlite.SqliteBackend;
 
 /// Save a new background process to the database
 pub fn save(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []const u8, pid: u32, command: []const u8, log_path: []const u8, started_at: i64) !void {
@@ -128,7 +128,7 @@ pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]ProcessIn
 pub fn isProcessRunning(pid: u32) bool {
     // kill(pid, 0) checks if process exists without sending a signal
     // Returns 0 if process exists, -1 if it doesn't (errno ESRCH)
-    const result = std.os.kill(@intCast(pid), 0);
+    const result = std.posix.kill(@intCast(pid), 0);
     return result == 0;
 }
 
@@ -136,12 +136,12 @@ pub fn isProcessRunning(pid: u32) bool {
 /// Returns true if killed successfully, false if process doesn't exist or error
 pub fn killProcess(pid: u32) bool {
     // First try SIGTERM (15)
-    const term_result = std.os.kill(@intCast(pid), std.posix.SIGTERM);
+    const term_result = std.posix.kill(@intCast(pid), std.posix.SIGTERM);
     if (term_result == 0) {
         return true;
     }
     // If SIGTERM fails (process doesn't exist), try SIGKILL
-    const kill_result = std.os.kill(@intCast(pid), std.posix.SIGKILL);
+    const kill_result = std.posix.kill(@intCast(pid), std.posix.SIGKILL);
     return kill_result == 0;
 }
 
@@ -194,4 +194,8 @@ pub fn pollAndUpdateStatus(db: *SqliteBackend, allocator: std.mem.Allocator) !u3
     }
     
     return changed;
+}
+
+test {
+    _ = @import("background_process_test.zig");
 }

@@ -57,7 +57,7 @@ test "get_messages returns empty array when no messages exist" {
     });
     try mgr.runMigrations();
 
-    const result = try get_messages.run(allocator, &db, "test-session-123");
+    const result = try get_messages.GetMessages(allocator, &db, "test-session-123");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -119,7 +119,7 @@ test "get_messages returns messages for a session" {
         \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'World', 'stop', 'user', 'Agent', 'Test Session', 1)
     , &[_][]const u8{});
 
-    const result = try get_messages.run(allocator, &db, "test-session");
+    const result = try get_messages.GetMessages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -184,7 +184,7 @@ test "get_messages filters out messages with is_feed_to_llm = 0" {
         \\('id3', 'test-session', 'gpt-4', '2024-01-01 12:00:00', 'Feed me too', 'stop', 'user', 1)
     , &[_][]const u8{});
 
-    const result = try get_messages.run(allocator, &db, "test-session");
+    const result = try get_messages.GetMessages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -249,7 +249,7 @@ test "get_messages respects ORDER BY created_at ASC" {
         \\('id3', 'test-session', 'gpt-4', '2024-01-01 12:00:00', 'Second', 'stop', 'assistant')
     , &[_][]const u8{});
 
-    const result = try get_messages.run(allocator, &db, "test-session");
+    const result = try get_messages.GetMessages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -313,7 +313,7 @@ test "get_messages handles NULL role with default 'assistant'" {
         &[_][]const u8{}
     );
 
-    const result = try get_messages.run(allocator, &db, "test-session");
+    const result = try get_messages.GetMessages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -376,7 +376,7 @@ test "get_messages handles reasoning_content correctly" {
         \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'Without reasoning', 'stop', 'assistant', NULL)
     , &[_][]const u8{});
 
-    const result = try get_messages.run(allocator, &db, "test-session");
+    const result = try get_messages.GetMessages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -440,7 +440,7 @@ test "get_messages handles agent and session tracking fields" {
         &[_][]const u8{}
     );
 
-    const result = try get_messages.run(allocator, &db, "test-session");
+    const result = try get_messages.GetMessages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -504,7 +504,7 @@ test "get_messages returns empty array for non-existent session" {
         &[_][]const u8{}
     );
 
-    const result = try get_messages.run(allocator, &db, "non-existent-session");
+    const result = try get_messages.GetMessages(allocator, &db, "non-existent-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
