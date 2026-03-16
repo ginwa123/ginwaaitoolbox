@@ -30,7 +30,7 @@ test "HttpServer can set message handler" {
         }
     };
     
-    server.setMessageHandler(Handler.handle);
+    server.setTUIHandler(Handler.handle);
     try std.testing.expect(server.message_handler != null);
 }
 
