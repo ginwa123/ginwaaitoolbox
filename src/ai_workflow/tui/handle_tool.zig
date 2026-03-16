@@ -348,34 +348,6 @@ pub fn HandleTool(
                 continue;
             }
 
-            // if (std.mem.eql(u8, tool_call.function.name, "get_agent")) {
-            //     const result = handle_get_agent_tool.run(allocator, tool_call) catch |err| {
-            //         const err_name = @errorName(err);
-            //         logger.errFmt("Error executing get_agent: {s}", .{err_name}) catch {};
-            //         try handleToolError(ctx, tool_call, err, "Error executing get_agent");
-            //         continue;
-            //     };
-            //     defer allocator.free(result);
-
-            //     // save to table session_agents if loaded successfully
-            //     if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
-            //         if (std.mem.indexOf(u8, result, "<agent_name>")) |name_start| {
-            //             const name_begin = name_start + "<agent_name>".len;
-            //             if (std.mem.indexOf(u8, result[name_begin..], "</agent_name>")) |name_end| {
-            //                 const agent_name = result[name_begin .. name_begin + name_end];
-            //                 // Save to database
-            //                 SaveAgent(allocator, db, logger, session_id, agent_name) catch |err| {
-            //                     const err_name = @errorName(err);
-            //                     logger.errFmt("Error saving agent to database: {s}", .{err_name}) catch {};
-            //                 };
-            //             }
-            //         }
-            //     }
-
-            //     try handleToolResult(ctx, tool_call, result);
-            //     continue;
-            // }
-
             if (std.mem.eql(u8, tool_call.function.name, "list_agents")) {
                 const result = handle_list_agents_tool.run(allocator) catch |err| {
                     const err_name = @errorName(err);

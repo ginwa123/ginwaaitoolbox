@@ -298,13 +298,15 @@ pub const bashTool = AgentTool{
                     \\Command to execute.
                     \\Required format: `timeout <seconds> <command> | head -n <N>`
                     \\
+                    \\ fd is a faster alternative to find and rg is a faster alternative to grep.
                     \\GOOD: `timeout 10 zig build 2>&1 | head -n 50`
                     \\GOOD: `timeout 10 rg 'MyStruct' src/ | head -n 50`
+                    \\GOOD: `timeout 10 fd MyStruct src/ | head -n 50`
+                    \\GOOD: `timeout 10 fd -e zig src/ | head -n 50`
                     \\GOOD: `timeout 5 ls -la /some/dir | head -n 30`
                     \\BAD:  `ls -R`         ← FORBIDDEN, unbounded recursive listing
                     \\BAD:  `ls -laR`       ← FORBIDDEN, unbounded recursive listing
                     \\BAD:  `ls -alR`       ← FORBIDDEN, unbounded recursive listing
-                    \\BAD:  `find / -name`  ← FORBIDDEN, use rg or scope with -maxdepth
                     \\BAD:  `cat src/main.zig`  ← use read_file instead
                     \\BAD:  `sed -n '10,20p'`   ← use read_file instead
                     \\BAD:  commands without timeout or output cap

@@ -150,5 +150,5 @@ const http_server = tree1.http_server;
 ## Related Documentation
 
 - [MEMORY.md](./MEMORY.md) — AI learning system, past mistakes and solutions
-- [docs/plans/](docs/plans/) — Design documents
+- [.nalar/plans/](.nalar/plans/) — Design documents
 - [docs/superpowers/](docs/superpowers/) — Skill definitions

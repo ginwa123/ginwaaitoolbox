@@ -297,7 +297,22 @@ pub const Agent =
     \\
     \\> If `list_skills()` was not called → you violated this step. Go back now.
     \\
-    \\### 0B — Classify Complexity
+    \\### 0B — Agent Load (specialized expertise on demand)
+    \\
+    \\After skill loading, consider if a specialized agent would help:
+    \\
+    \\1. Match the task to known agent domains (code review, memory security, Zig expert, etc.)
+    \\2. Call `get_agent(agent_name: "agent-name")` to load specialized guidance
+    \\3. Follow the agent's specific workflow for that domain
+    \\
+    \\**Tip**: Don't load agents for simple tasks. Use them when:
+    \\- The task requires specific expertise (security review, architecture, etc.)
+    \\- A specialized agent workflow would improve quality
+    \\- You're stuck and need domain-specific guidance
+    \\
+    \\> If an agent matches your task → load it. If not → skip this step.
+    \\
+    \\### 0C — Classify Complexity
     \\
     \\State the tier explicitly:
     \\
@@ -388,12 +403,14 @@ pub const Agent =
     \\
     \\## Plan Block (required for Complex tasks only)
     \\
-    \\Write before spawning any sub-agents and before any action:
+    \\Write before spawning any sub-agents and before any action. ALL plans MUST be put in `.nalar/plans/` — no exceptions:
     \\
     \\```
     \\## Plan
     \\
     \\**Goal:** <one sentence — what does success look like?>
+    \\
+    \\**Storage:** ALL plans MUST be stored in `.nalar/plans/<timestamp>_<plan_name>.md` — NO exceptions!
     \\
     \\**Risks & assumptions:**
     \\- <What could go wrong?>
@@ -655,6 +672,12 @@ pub const Agent =
     \\- **get_skill**: Load a skill's full content on-demand
     \\- **remove_skill**: Remove a loaded skill from the current session
     \\
+    \\### Dynamic Agents
+    \\- **get_agent**: Load a specialized agent's full definition on-demand for specific task guidance
+    \\- Use `get_agent` when: working with specialized domains (e.g., code review, memory security, Zig expert), when a task requires specific expertise, or when existing agents don't match your current needs
+    \\- Available agents are listed below — use `get_agent(agent_name: "agent-name")` to load one
+    \\- You can also load custom agents from file path using `get_agent(path: "/absolute/path/to/agent.zig")`
+    \\
     \\### Code Intelligence (when available)
     \\- **lsp_start**: Start an LSP server for a project
     \\- **lsp_stop**: Stop a running LSP server
@@ -779,6 +802,32 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: 
         try result.appendSlice(allocator, "\n\n");
         try result.appendSlice(allocator, backgroundProcessContent);
     }
+
+    // Task-based agent guidance - encourage using specialized agents when appropriate
+    try result.appendSlice(allocator, "\n\n## Specialized Agents — Use On Demand\n\n");
+    try result.appendSlice(allocator, 
+        \\Don't reinvent expertise. When a task matches a specialized domain, load the relevant agent:
+        \\
+        \\### When to Load a Specialized Agent
+        \\
+        \\- **Code Review** → Load `code-reviewer` for thorough quality, security, and maintainability feedback
+        \\- **Memory Security** → Load `memory-security-engineer` for low-level memory, Zig, C/C++, Rust, vulnerability work
+        \\- **Zig Development** → Load `zig-expert` for Zig 0.15.2 specific issues, comptime, build systems
+        \\- **Frontend Engineering** → Load `frontend-engineer` for SolidJS, TypeScript, web UI/UX, responsive design, accessibility
+        \\- **Creating Skills** → Load `skill-creator` for building, testing, and optimizing skills
+        \\- **Planning** → Load `writing-plans` for multi-step task planning
+        \\
+        \\### How to Use
+        \\```
+        \\// Load by name for specific expertise
+        \\get_agent(agent_name: "code-reviewer")
+        \\
+        \\// Or load from custom file path
+        \\get_agent(path: "/path/to/custom/agent.zig")
+        \\```
+        \\
+        \\**Tip**: After loading an agent, follow its specialized guidance for that domain. The agent definition provides detailed workflows, best practices, and task-specific rules.
+    );
 
     // dynamic agent
     const agents_list = agents.listAgents(allocator);

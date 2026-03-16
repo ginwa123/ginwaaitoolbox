@@ -170,7 +170,7 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
     const dir = config_dir orelse return null;
     defer if (needs_free) allocator.free(dir);
 
-    // Build full path: config_dir/agents/
+    // Build full path: config_dir/agents
     const path = std.fs.path.join(allocator, &[_][]const u8{
         dir,
         "agents",
