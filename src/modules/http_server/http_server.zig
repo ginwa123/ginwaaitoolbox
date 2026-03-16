@@ -291,7 +291,7 @@ pub const HttpServer = struct {
         self.db = db;
     }
 
-    pub fn setMessageHandler(self: *Self, handler: MessageHandler) void {
+    pub fn setTUIHandler(self: *Self, handler: MessageHandler) void {
         self.message_handler = handler;
     }
 

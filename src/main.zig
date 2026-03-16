@@ -305,7 +305,8 @@ pub fn main() !void {
     var server = http_server.HttpServer.init(parentAllocator, ctxParent, port);
     server.setDb(&dbSqlite);
 
-    server.setMessageHandler(struct {
+    // this is for tui only
+    server.setTUIHandler(struct {
         fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
             std.debug.print("message incoming {s}\n", .{data});
 
