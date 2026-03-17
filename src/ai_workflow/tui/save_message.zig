@@ -22,11 +22,14 @@ pub const SaveMessageInput = struct {
     finish_reason: ?[]const u8,
     tool_calls: ?[]agent.ToolCall,
     tool_call_id: ?[]const u8,
+    tool_name: ?[]const u8 = null,
     agent_name: ?[]const u8,
     session_name: ?[]const u8,
     loop_index: u32,
     temperature: f32,
     is_thinking: bool,
+    is_input: bool = false,
+    is_output: bool = false,
     parent_session_id: ?[]const u8 = null,
     parent_id: ?[]const u8 = null,
     prompt_tokens: usize = 0,
@@ -55,7 +58,6 @@ pub fn SaveMessage(
         contentStr = c;
     }
 
-    std.debug.print("saveMessage aa role={s} content={s}", .{ roleStr, contentStr });
 
     // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
     var toolCallsJson: []const u8 = "";
@@ -68,7 +70,7 @@ pub fn SaveMessage(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     const copy_session_id = try allocator.dupe(u8, input.session_id);
     defer allocator.free(copy_session_id);
@@ -99,8 +101,8 @@ pub fn SaveMessage(
     defer allocator.free(copy_parent_session_id);
     const copy_parent_id = try allocator.dupe(u8, input.parent_id orelse "");
     defer allocator.free(copy_parent_id);
-
-    // Token usage strings - format after other allocations to keep error handling simple
+    const copy_tool_name = try allocator.dupe(u8, input.tool_name orelse "");
+    defer allocator.free(copy_tool_name);
     const prompt_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.prompt_tokens});
     defer allocator.free(prompt_tokens_str);
     const completion_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.completion_tokens});
@@ -108,7 +110,7 @@ pub fn SaveMessage(
     const total_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.total_tokens});
     defer allocator.free(total_tokens_str);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name };
 
     try db.exec(allocator, sql, sqlArgs);
 }

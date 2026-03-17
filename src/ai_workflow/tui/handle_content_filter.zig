@@ -3,7 +3,7 @@ const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
-const save_message = @import("save_message.zig");
+const SaveMessage = @import("save_message.zig").SaveMessage;
 const send_response = @import("send_response.zig");
 const send_error = @import("send_error.zig");
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
@@ -31,7 +31,7 @@ pub fn run(
     logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
     // Save the filtered response to history
-    save_message.SaveMessage(
+    SaveMessage(
         allocator, db, .{
         .session_id = session_id,
         .model = model,

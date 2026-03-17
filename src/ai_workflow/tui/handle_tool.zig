@@ -74,6 +74,9 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
         .prompt_tokens = 0,
         .completion_tokens = 0,
         .total_tokens = 0,
+        .is_output = true,
+        .is_input = false,
+        .tool_name = tool_call.function.name,
     });
 
     SendToolResult.SendToolResult(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
@@ -106,7 +109,6 @@ pub fn HandleTool(
 ) !void {
     _ = send_response(allocator, session_id, logger, res_dynamic_agent, null);
     if (res_dynamic_agent.tool_calls) |tc| {
-        // Add assistant message with tool_calls to history
         var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
         for (tc, 0..) |tool_call, i| {
             assistant_tool_calls[i] = .{
@@ -160,6 +162,8 @@ pub fn HandleTool(
             .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
             .completion_tokens = res_dynamic_agent.usage.completion_tokens,
             .total_tokens = res_dynamic_agent.usage.total_tokens,
+            .is_input = true,
+            .is_output = false,
         });
 
         if (res_dynamic_agent.content) |c| {
@@ -228,6 +232,9 @@ pub fn HandleTool(
                     .prompt_tokens = 0,
                     .completion_tokens = 0,
                     .total_tokens = 0,
+                    .is_input = true,
+                    .is_output = false,
+                    .tool_name = tool_call.function.name,
                 });
 
                 ctx.is_thinking = isThinking.*;

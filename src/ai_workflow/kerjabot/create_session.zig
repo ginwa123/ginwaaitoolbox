@@ -15,12 +15,12 @@ pub fn createSession(
     const session_id = try std.fmt.bufPrint(&session_id_buf, "kerjabot_{}", .{std.time.timestamp()});
 
     // Insert session into database
-    const insert_sql = "INSERT INTO llm_history (id, session_id, model, response_content, role, agent, temperature, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))";
+    const insert_sql = "INSERT INTO llm_history (id, session_id, model, response_content, role, agent, temperature, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)";
     
     const temp_str = try std.fmt.allocPrint(allocator, "{d}", .{temperature});
     defer allocator.free(temp_str);
     
-    try db.exec(allocator, insert_sql, &.{ session_id, session_id, model, "", "system", agent_type, temp_str });
+    try db.exec(allocator, insert_sql, &.{ session_id, session_id, model, "", "system", agent_type, temp_str, "0", "0", "" });
 
     return session_id;
 }
