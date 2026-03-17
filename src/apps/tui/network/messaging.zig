@@ -36,10 +36,10 @@ pub fn sendMessage(app: anytype, message: []const u8) !void {
     _ = try std.posix.write(sock, request);
 }
 
-/// Send a cancel command to interrupt the current operation
-pub fn sendCancelCommand(app: anytype) !void {
+/// Send a double_escape command to unregister session from cancellation registry
+pub fn sendDoubleEscapeCommand(app: anytype) !void {
     const json_payload = try std.fmt.allocPrint(app.arena.allocator(),
-        \\{{"app_type":"tui","command_type":"cancel","session_id":"{s}"}}
+        \\{{"app_type":"tui","command_type":"double_escape","session_id":"{s}"}}
     , .{app.session_id});
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);

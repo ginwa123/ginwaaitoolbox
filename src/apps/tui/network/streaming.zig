@@ -1,6 +1,6 @@
 const std = @import("std");
 const globals = @import("../globals.zig");
-const tui_text = @import("tui-text");
+const tuiText = @import("tui-text");
 const sse = @import("sse.zig");
 const messaging = @import("messaging.zig");
 const connection = @import("connection.zig");
@@ -47,7 +47,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     _ = try std.posix.write(stream_socket, stream_request);
 
     if (!connection.waitForSseConnected(stream_socket, 5000)) {
-        tui_text.print("{s}Warning: SSE connection timeout{s}\n", .{ globals.yellow, globals.reset });
+        tuiText.print("{s}Warning: SSE connection timeout{s}\n", .{ globals.yellow, globals.reset });
     }
     try messaging.sendMessage(app, message);
 
@@ -67,17 +67,14 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     var raw_buffer_processed_len: usize = 0;
 
     while (true) {
-        // Cache timestamp once per loop — avoids redundant syscalls
         const now = std.time.milliTimestamp();
-
-        // poll() blocks up to 100ms waiting for data
         const ready = std.posix.poll(&poll_fds, 100) catch 0;
         var new_data = false;
 
         if (ready > 0) {
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
-                    messaging.sendCancelCommand(app) catch {};
+                    messaging.sendDoubleEscapeCommand(app) catch {};
                     stream_interrupted = true;
                     break;
                 }
@@ -95,17 +92,13 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
 
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         } else {
-            // poll() timed out — no data arrived in the last 100ms.
-
-            // Send periodic ping to keep session alive on server
             if (now - last_ping_ms > PING_INTERVAL_MS) {
                 const needs_reconnect = messaging.sendPingCommand(app) catch false;
                 if (needs_reconnect) {
-                    tui_text.print("SSE session expired, reconnecting...\n", .{});
                     reconnection_attempts += 1;
                     const new_socket = connection.reconnectSseStream(app, stream_socket);
                     if (new_socket < 0) {
-                        tui_text.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
+                        tuiText.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
                         last_data_received_ms = now;
                         continue;
                     }
@@ -113,7 +106,6 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                     stream_socket = new_socket;
                     poll_fds[0].fd = stream_socket;
                     last_data_received_ms = std.time.milliTimestamp();
-                    tui_text.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ globals.green, globals.reset });
                     continue;
                 }
                 last_ping_ms = now;
@@ -124,7 +116,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                 last_tick = now;
                 const spin = spinners[spinner_timer % spinners.len];
                 spinner_timer += 1;
-                tui_text.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
+                tuiText.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
                     globals.yellow, spin, globals.reset, raw_buffer.items.len,
                 });
             }
@@ -158,10 +150,10 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                         if (utils.extractTag(chunk_block, "content")) |content| {
                             if (content.len > 0) {
                                 if (!streaming_started) {
-                                    tui_text.print("\r\x1b[2K", .{});
+                                    tuiText.print("\r\x1b[2K", .{});
                                     streaming_started = true;
                                 }
-                                tui_text.print("{s}", .{content});
+                                tuiText.print("{s}", .{content});
                             }
                         }
                     }
@@ -180,11 +172,11 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                             }
                         }
                         if (!already_displayed) {
-                            tui_text.print("\r\x1b[2K", .{});
+                            tuiText.print("\r\x1b[2K", .{});
                             const max_result_len: usize = 500;
                             tool_results.displayToolResultByName(result.result, result.name, max_result_len);
                             if (utils.extractTag(result.result, "set_agent_properties")) |_| {
-                                tui_text.print("\n{s}[agent properties]{s} → updated\n", .{ globals.cyan, globals.reset });
+                                tuiText.print("\n{s}[agent properties]{s} → updated\n", .{ globals.cyan, globals.reset });
                             }
                             const id_copy = app.allocator.dupe(u8, result.id) catch continue;
                             displayed_tool_ids.append(app.allocator, id_copy) catch {
@@ -207,7 +199,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                     continue;
                 }
                 if (std.mem.eql(u8, fr, "cancelled")) {
-                    tui_text.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
+                    tuiText.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
                     break;
                 }
                 if (std.mem.eql(u8, fr, "user_choice")) break;
@@ -216,22 +208,22 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
         }
     }
 
-    tui_text.print("\r\x1b[2K", .{});
+    tuiText.print("\r\x1b[2K", .{});
     if (stream_interrupted) {
-        tui_text.print("\n{s}Interrupted (double ESC){s}\n", .{ globals.yellow, globals.reset });
+        tuiText.print("\n{s}Interrupted (double ESC){s}\n", .{ globals.yellow, globals.reset });
     }
 
-    tui_text.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ globals.dim, raw_buffer.items.len, globals.reset });
+    tuiText.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ globals.dim, raw_buffer.items.len, globals.reset });
 
     const final_decoded = sse.decodeChunked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
-    tui_text.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ globals.dim, final_decoded.len, globals.reset });
+    tuiText.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ globals.dim, final_decoded.len, globals.reset });
 
     const final_xml = sse.extractSseData(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);
-    tui_text.print("{s}[DEBUG] XML size: {d}{s}\n", .{ globals.dim, final_xml.len, globals.reset });
+    tuiText.print("{s}[DEBUG] XML size: {d}{s}\n", .{ globals.dim, final_xml.len, globals.reset });
     if (final_xml.len > 0) {
-        tui_text.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ globals.dim, final_xml[0..@min(final_xml.len, 200)], globals.reset });
+        tuiText.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ globals.dim, final_xml[0..@min(final_xml.len, 200)], globals.reset });
     }
 
     if (utils.extractTag(final_xml, "content")) |content| {
@@ -240,13 +232,13 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
         if (utils.extractTag(final_xml, "message")) |msg| {
             printFormattedResponse(msg);
         } else {
-            tui_text.print("{s}\n", .{final_xml});
+            tuiText.print("{s}\n", .{final_xml});
         }
     } else {
-        tui_text.print("{s}(no response){s}\n", .{ globals.dim, globals.reset });
+        tuiText.print("{s}(no response){s}\n", .{ globals.dim, globals.reset });
     }
 
-    tui_text.print("\n", .{});
+    tuiText.print("\n", .{});
     _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
@@ -282,7 +274,7 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
 
     // Wait for "connected" event BEFORE sending command
     if (!connection.waitForSseConnected(stream_socket, 5000)) {
-        tui_text.print("{s}Warning: SSE connection timeout{s}\n", .{ globals.yellow, globals.reset });
+        tuiText.print("{s}Warning: SSE connection timeout{s}\n", .{ globals.yellow, globals.reset });
     }
     try messaging.sendSessionsCommand(app);
 
@@ -315,7 +307,7 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
                 const needs_reconnect = messaging.sendPingCommand(app) catch false;
                 if (needs_reconnect) {
-                    tui_text.print("SSE session expired, reconnecting...\n", .{});
+                    tuiText.print("SSE session expired, reconnecting...\n", .{});
                     reconnection_attempts += 1;
                     break;
                 }
@@ -324,16 +316,16 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
 
             if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
                 if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
-                    tui_text.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ globals.yellow, globals.reset });
+                    tuiText.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ globals.yellow, globals.reset });
                     break;
                 }
 
                 reconnection_attempts += 1;
-                tui_text.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ globals.yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, globals.reset });
+                tuiText.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ globals.yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, globals.reset });
 
                 const new_socket = connection.reconnectSseStream(app, stream_socket);
                 if (new_socket < 0) {
-                    tui_text.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
+                    tuiText.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
                     last_data_received_ms = now;
                     std.Thread.sleep(1_000_000_000);
                     continue;
@@ -342,7 +334,7 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
                 stream_socket = new_socket;
                 poll_fds[0].fd = stream_socket;
                 last_data_received_ms = now;
-                tui_text.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ globals.green, globals.reset });
+                tuiText.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ globals.green, globals.reset });
                 continue;
             }
 
@@ -354,12 +346,12 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
         defer app.allocator.free(decoded);
         const xml = sse.extractSseData(app.allocator, decoded) catch continue;
 
-        tui_text.print("\r\nXML len={d}: {s}\r\nEND_XML\r\n", .{ xml.len, xml[0..@min(xml.len, 200)] });
+        tuiText.print("\r\nXML len={d}: {s}\r\nEND_XML\r\n", .{ xml.len, xml[0..@min(xml.len, 200)] });
         defer app.allocator.free(xml);
         if (std.mem.indexOf(u8, xml, "</finish_reason>") != null) break;
     }
 
-    tui_text.print("\r\x1b[2K\n", .{});
+    tuiText.print("\r\x1b[2K\n", .{});
 
     const final_decoded = sse.decodeChunked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
@@ -368,14 +360,14 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
 
     if (utils.extractTag(final_xml, "sessions")) |md| {
         const trimmed = utils.trim(md);
-        tui_text.print("{s}Session ID           Directory                        Created{s}\n", .{ globals.bold, globals.reset });
-        tui_text.print("─────────────────────────────────────────────────────────────────────\n", .{});
+        tuiText.print("{s}Session ID           Directory                        Created{s}\n", .{ globals.bold, globals.reset });
+        tuiText.print("─────────────────────────────────────────────────────────────────────\n", .{});
         var rest = trimmed;
         while (utils.extractTag(rest, "session")) |session| {
             const id = utils.extractTag(session, "id") orelse "";
             const dir = utils.extractTag(session, "dir") orelse "";
             const ts = utils.extractTag(session, "created") orelse "";
-            tui_text.print("{s:<20} {s:<32} {s}\n", .{ id, dir, ts });
+            tuiText.print("{s:<20} {s:<32} {s}\n", .{ id, dir, ts });
             const end = std.mem.indexOf(u8, rest, "</session>") orelse break;
             rest = rest[end + "</session>".len ..];
         }
@@ -388,16 +380,16 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
 /// Print formatted response from the AI
 fn printFormattedResponse(content: []const u8) void {
     const agent_name = utils.extractTag(content, "agent") orelse "assistant";
-    tui_text.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
+    tuiText.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
     if (utils.extractTag(content, "markdown")) |md| {
         const trimmed = utils.trim(md);
         if (trimmed.len > 0) {
-            tui_text.print("\n{s}{s}{s}\n", .{ globals.bold, trimmed, globals.reset });
+            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, trimmed, globals.reset });
         } else {
-            tui_text.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
+            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
         }
     } else {
-        tui_text.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
+        tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
     }
 }
 

@@ -83,31 +83,53 @@ pub fn handleInput(app: anytype) !bool {
         std.Thread.sleep(10000000);
         return false;
     }
-    const c = buf[0];
-    if (c == @intFromEnum(KEYBINDING.CTRL_C)) return true;
+    const keystroke = buf[0];
+    if (keystroke == @intFromEnum(KEYBINDING.CTRL_C)) return true;
 
-    if (c == 0x1b) {
+    if (keystroke == 0x1b) {
         var esc: [16]u8 = undefined;
         const len = try escape.readEscapeSequence(&esc);
         const seq = esc[0..len];
 
         if (std.mem.eql(u8, seq, "\x1b[200~")) {
             app.pasting = true;
+            app.last_esc_time = null;
         } else if (std.mem.eql(u8, seq, "\x1b[201~")) {
             app.pasting = false;
+            app.last_esc_time = null;
         } else {
+            // Check for double escape (quick consecutive escape presses)
+            const now = std.time.milliTimestamp();
+            var is_double_escape = false;
+            if (app.last_esc_time) |last| {
+                if (now - last < globals.DOUBLE_ESC_WINDOW_MS) {
+                    is_double_escape = true;
+                }
+            }
+            app.last_esc_time = now;
+
+            if (is_double_escape) {
+                // Double escape detected - send double_escape command to unregister session
+                const messaging = @import("../network/messaging.zig");
+                messaging.sendDoubleEscapeCommand(app) catch {
+                    std.debug.print("\r\n{s}Failed to send double escape command{s}\r\n", .{ globals.dim, globals.reset });
+                };
+                // Also clear completions
+                clearCompletions(app);
+                return false;
+            }
             // Only clear completions for non-paste escape sequences
             clearCompletions(app);
         }
         return false;
     }
 
-    if (c == 127 or c == 8) {
+    if (keystroke == 127 or keystroke == 8) {
         if (!app.pasting and app.input.items.len > 0) {
             _ = app.input.pop();
             std.debug.print("\x08 \x08", .{});
         }
-    } else if (c == '\t') {
+    } else if (keystroke == '\t') {
         if (!app.pasting) {
             // _ = try handleCompletion(app);
         } else {
@@ -115,7 +137,7 @@ pub fn handleInput(app: anytype) !bool {
             try app.input.append(app.allocator, ' ');
             std.debug.print(" ", .{});
         }
-    } else if (c == @intFromEnum(KEYBINDING.ENTER) or c == 10) {
+    } else if (keystroke == @intFromEnum(KEYBINDING.ENTER) or keystroke == 10) {
         if (app.pasting) {
             // During paste, newlines become spaces instead of submitting
             try app.input.append(app.allocator, ' ');
@@ -165,10 +187,10 @@ pub fn handleInput(app: anytype) !bool {
             app.input.clearRetainingCapacity();
         }
         std.debug.print("\r\n{s}>{s} ", .{ globals.bold, globals.reset });
-    } else if (c >= 32) {
+    } else if (keystroke >= 32) {
         if (!app.pasting) clearCompletions(app);
-        try app.input.append(app.allocator, c);
-        std.debug.print("{c}", .{c});
+        try app.input.append(app.allocator, keystroke);
+        std.debug.print("{c}", .{keystroke});
     }
     return false;
 }

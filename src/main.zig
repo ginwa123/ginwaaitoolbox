@@ -1,17 +1,18 @@
 const std = @import("std");
 
-const tree1 = @import("nalarcore");
-const agentMod = tree1.agent;
-const http_server = tree1.http_server;
+const root_mod = @import("nalarcore");
+const agentMod = root_mod.agent;
+const http_server = root_mod.http_server;
 const httpz = http_server.httpz;
-const agent = tree1.agent;
-const ai_workflow = tree1.ai_workflow;
-const session_monitor = tree1.session_monitor;
-const cronjob = tree1.cronjob;
-const tui_workflow = tree1.ai_workflow;
-const ai_workflow_mod = tree1.ai_workflow_models;
-const sqlite = tree1.sqlite;
-const migrations = tree1.migrations;
+const agent = root_mod.agent;
+const ai_workflow = root_mod.ai_workflow;
+const session_monitor = root_mod.session_monitor;
+const cronjob = root_mod.cronjob;
+const tui_workflow = root_mod.ai_workflow;
+const ai_workflow_mod = root_mod.ai_workflow_models;
+const sqlite = root_mod.sqlite;
+const migrations = root_mod.migrations;
+const cancellation_registry = root_mod.session.cancellation_registry;
 
 pub const CommandMessage = struct {
     command_type: []const u8 = "",
@@ -193,15 +194,13 @@ fn getDbPath(allocator: std.mem.Allocator) ![:0]const u8 {
 }
 
 pub fn main() !void {
-    // killExistingProcess();
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
     const parentAllocator = gpa.allocator();
 
     // Load LLM config from JSON file
-    var llm_config = tree1.config.LlmConfig.init(parentAllocator, null) catch |err| {
+    var llm_config = root_mod.config.LlmConfig.init(parentAllocator, null) catch |err| {
         std.log.err("Failed to load config: {s}", .{@errorName(err)});
         return err;
     };
@@ -231,10 +230,10 @@ pub fn main() !void {
     defer parentAllocator.free(log_file_path);
 
     // SET PANIC LOG PATH EARLY - before any code that could panic
-    tree1.setPanicLogPath(log_file_path);
+    root_mod.setPanicLogPath(log_file_path);
 
     // Initialize global logger
-    tree1.logger.initGlobalColor(parentAllocator, .{
+    root_mod.logger.initGlobalColor(parentAllocator, .{
         .min_level = .info,
         .output_mode = .file,
         .log_file_path = log_file_path,
@@ -242,9 +241,9 @@ pub fn main() !void {
         .include_request_id = true,
         .include_timestamp = true,
     });
-    defer tree1.logger.deinitGlobal();
+    defer root_mod.logger.deinitGlobal();
 
-    const global_logger_ptr = tree1.logger.getGlobal().?;
+    const global_logger_ptr = root_mod.logger.getGlobal().?;
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
     defer parentAllocator.destroy(ctxParent);
@@ -309,47 +308,30 @@ pub fn main() !void {
     server.setTUIHandler(struct {
         fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
             std.debug.print("message incoming {s}\n", .{data});
-
             const ctxTui = @as(*ai_workflow_mod.ContextIPCTui, @ptrCast(@alignCast(ctx)));
-
             const t = parseMessage(allocator, data) catch |err| {
                 std.debug.print("parse error: {}\n", .{err});
                 return;
             };
 
             var workflowAsk = ai_workflow.TUIWorkflow.init(ctxTui.db, ctxTui.logger);
-
-            // Load previously saved skills for this session
-            // workflowAsk.loadSkillsFromDB(allocator) catch |err| {
-            //     std.debug.print("Failed to load skills from database: {s}\n", .{@errorName(err)});
-            // };
             if (std.mem.eql(u8, t.command_type, "run_llm")) {
-                std.debug.print("COMMAND: run_llm with session_id={s}, message={s}\n", .{ t.session_id, t.message });
-                // Pass 0 as conn_fd - HTTP mode doesn't use socket
-                std.debug.print("LAUNCHING WORKFLOW for session_id={s}...\n", .{t.session_id});
-                workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config);
-                std.debug.print("WORKFLOW RETURNED for session_id={s}\n", .{t.session_id});
+                _ = workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config);
             }
-            if (std.mem.eql(u8, t.command_type, "get_sessions")) {
-                // Get sessions from database
-                std.debug.print("COMMAND: get_sessions\n", .{});
+            if (std.mem.eql(u8, t.command_type, "get_sessions")) {}
 
-                // TODO: Query sessions from database and return them
+            if (std.mem.eql(u8, t.command_type, "double_escape")) {
+                const sessionId = t.session_id;
+                if (cancellation_registry.getGlobalRegistry()) |registry| {
+                    _ = registry.unregister(sessionId);
+                }
             }
+
             if (std.mem.eql(u8, t.command_type, "create_session")) {
-                // Create a new session
-                std.debug.print("COMMAND: create_session\n", .{});
-
-                // For now, generate a session ID and return it
-                // In production, this would create a session in the database
                 var session_id_buf: [64]u8 = undefined;
                 const session_id = std.fmt.bufPrint(&session_id_buf, "session_{}", .{std.time.timestamp()}) catch "session_error";
-
-                // Use a fixed-size buffer for the response
                 var response_buf: [256]u8 = undefined;
                 const response = std.fmt.bufPrint(&response_buf, "{{\"sessionId\":\"{s}\"}}", .{session_id}) catch unreachable;
-
-                // Send response back to client
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     const event = http_server.SseEvent{
                         .event_type = "session_created",
@@ -359,18 +341,10 @@ pub fn main() !void {
                         std.debug.print("Failed to send session_created response: {s}\n", .{@errorName(err)});
                     };
                 }
-
-                std.debug.print("Created session: {s}\n", .{session_id});
             }
             if (std.mem.eql(u8, t.command_type, "ping")) {
-                // Ping command - check if session is still connected via SSE
-                // Return JSON response to tell TUI whether to reconnect
-                std.debug.print("COMMAND: ping from session_id={s}\n", .{t.session_id});
-
-                // Use a fixed-size buffer for the response (max 256 bytes is plenty)
                 var response_buf: [256]u8 = undefined;
                 var response: []const u8 = undefined;
-
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     if (sse_manager.hasSession(t.session_id)) {
                         response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"connected\":true}}", .{t.session_id}) catch unreachable;
@@ -393,8 +367,6 @@ pub fn main() !void {
                     };
                 }
             }
-
-            std.debug.print("Received: {s}\n", .{data});
         }
     }.handler);
 

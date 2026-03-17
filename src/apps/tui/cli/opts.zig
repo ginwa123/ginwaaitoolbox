@@ -25,7 +25,7 @@ pub fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
             }
             i += 1;
             opts.query = args[i];
-        } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--continue")) {
+        } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--continue") or std.mem.eql(u8, arg, "--session")) {
             if (i + 1 >= args.len) {
                 return error.MissingSessionArgument;
             }
@@ -58,13 +58,14 @@ pub fn printHelp() void {
     std.debug.print("Usage: nalar-tui [options]\n\n", .{});
     std.debug.print("Options:\n", .{});
     std.debug.print("  -q, --query <prompt>    Send a query prompt (one-shot mode)\n", .{});
-    std.debug.print("  -c, --continue <session_id> Resume an existing session\n", .{});
+    std.debug.print("  -c, --continue, --session <session_id> Resume an existing session\n", .{});
     std.debug.print("  -p, --port <port>       HTTP server port (default: 8080)\n", .{});
     std.debug.print("  -v, --version           Print version\n", .{});
     std.debug.print("  -h, --help              Show help\n\n", .{});
     std.debug.print("Examples:\n", .{});
     std.debug.print("  nalar-tui -q \"What is the capital of France?\"\n", .{});
     std.debug.print("  nalar-tui -c abc123 -q \"Summarize that in one sentence.\"\n", .{});
+    std.debug.print("  nalar-tui --session sessionContinue -q \"Continue the conversation\"\n", .{});
     std.debug.print("  nalar-tui -p 8081       Connect to HTTP server on port 8081\n", .{});
     std.debug.print("  nalar-tui               Start interactive session\n", .{});
 }

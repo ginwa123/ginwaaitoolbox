@@ -75,7 +75,6 @@ pub const StreamingContext = struct {
     chunk_index: usize = 0,
 };
 
-
 /// Callback for streaming chunks - sends each chunk to the client
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
@@ -122,35 +121,31 @@ pub const TUIWorkflow = struct {
     }
 
     pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) void {
-        self.run_internal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
+        self.runInternal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
-            defer allocator.free(err_msg);
             send_error.run(allocator, session_id, self.logger, err_msg, "user_choice");
         };
     }
 
-    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
-        self.logger.infoFmt("WORKFLOW START: session_id={s}, message={s}", .{ session_id, message }) catch {};
+    fn runInternal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
         defer {
-            self.logger.infoFmt("WORKFLOW END: session_id={s}", .{session_id}) catch {};
-            // Unregister session from cancellation registry
             if (cancellation_registry.getGlobalRegistry()) |registry| {
                 registry.unregister(session_id);
             }
         }
-
         // Register this session for cancellation tracking
         if (cancellation_registry.getGlobalRegistry()) |registry| {
             try registry.register(session_id);
         }
+
         const session_name = message;
-        // Fetch initial agent for the first save_message call
         const initial_agent_state = try GetCurrentAgentBySessionId.run(
             parent_allocator,
             self.db,
             session_id,
         );
         const initial_agent = initial_agent_state.agent;
+
         SaveMessage(parent_allocator, self.db, .{
             .session_id = session_id,
             .model = model,
@@ -175,15 +170,12 @@ pub const TUIWorkflow = struct {
             self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
         };
 
-        // this variable is used to track the number of times the agent has been retried
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
         var loopCounter: u32 = 0;
-
         const base_tools: []const tool_models.AgentTool = AllAgentTools;
 
         while (true) {
-            // Check for cancellation at the start of each iteration
             if (cancellation_registry.getGlobalRegistry()) |registry| {
                 if (registry.isCancelled(session_id)) {
                     self.logger.infoFmt("WORKFLOW CANCELLED: session_id={s}", .{session_id}) catch {};
@@ -210,7 +202,7 @@ pub const TUIWorkflow = struct {
 
             var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
-            const initialMessages = try BuildMessages(allocator, cwd,  try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
+            const initialMessages = try BuildMessages(allocator, cwd, try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
 
             try messagesLists.appendSlice(allocator, initialMessages);
 

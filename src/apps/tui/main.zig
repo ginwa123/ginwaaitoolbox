@@ -43,7 +43,6 @@ const App = struct {
     http_port: u16 = 8080,
 
     pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16) !App {
-        // try spawnBackend(verbose);
         std.log.info("Spawned backend", .{});
         try backend.waitForHttpServer(10000, http_port);
         std.log.info("HTTP server ready", .{});
@@ -172,7 +171,10 @@ pub fn main() !void {
 
     while (true) {
         const should_exit = try input.handleInput(&app);
-        if (should_exit) break;
+        if (should_exit) {
+            std.debug.print("\r\n{s}Bye!{s} session_id: {s}\r\n", .{ globals.dim, globals.reset, app.session_id });
+            break;
+        }
     }
 
     tui_text.print("\r\n{s}Bye!{s}\r\n", .{ globals.dim, globals.reset });
