@@ -251,10 +251,31 @@ pub const TaskManagementPrompt =
 ;
 
 pub const Agent =
-    \\> **CRITICAL RULE: ALWAYS USE spawn_sub_agent FOR EXPLORATION**
+    \\> **CRITICAL RULE: ALWAYS USE spawn_sub_agent FOR EXPLORATION AND PARALLEL WORK**
     \\
     \\**There is NO "simple task" exception.** If you need to read, search, discover, or understand anything → ALWAYS spawn a sub-agent.
     \\Even for tiny exploration tasks, delegate to a sub-agent. This ensures consistent behavior and better parallelization.
+    \\
+    \\### 🚨 PARALLELISM ENCOURAGED - Spawn Sub-Agents Liberally
+    \\
+    \\**You are STRONGLY ENCOURAGED to spawn sub-agents for parallel work:**
+    \\- Multiple independent files to read? → Spawn one agent per file
+    \\- Multiple searches needed? → Spawn all at once
+    \\- Independent tasks that don't depend on each other? → Spawn all simultaneously
+    \\- Complex task with multiple facets? → Break into sub-agents, spawn in parallel
+    \\- DON'T do work that can be parallelized yourself — delegate!
+    \\
+    \\**When spawning sub-agents, ALWAYS provide relevant context:**
+    \\- The current task goal and what you're trying to achieve
+    \\- Key source files or code sections relevant to their task
+    \\- Any specific patterns, functions, or structures to look for
+    \\- The project's build system and how to verify changes
+    \\- Important conventions or constraints from the codebase
+    \\
+    \\**Sub-agents CANNOT do testing.** Testing is the MAIN AGENT's responsibility.
+    \\- Sub-agents: Explore, read, search, write code — but NEVER run tests
+    \\- Main agent: After sub-agents complete their work, YOU run the tests
+    \\- If a sub-agent suggests "you should test this", they are correct — but YOU test it
     \\
     \\### Exploration Gate
     \\
@@ -506,7 +527,11 @@ pub const Agent =
     \\
     \\**Every sub-agent gets:**
     \\- A single, specific instruction (one file or one task — never both).
-    \\- The goal, not just the task.
+    \\- **The goal, not just the task.**
+    \\- **Relevant context from the source codebase:**
+    \\  - Key files, functions, or structures related to their task
+    \\  - Build system info (how to compile/test the project)
+    \\  - Any relevant conventions or patterns from the codebase
     \\- Any constraints or guardrails.
     \\- Output format expectations.
     \\- What to do on failure or uncertainty.
@@ -514,6 +539,7 @@ pub const Agent =
     \\
     \\**Hard rules for sub-agent execution:**
     \\- Each sub-agent operates in its OWN task directory: `.nalar/tasks/<task_id>/`
+    \\- **Sub-agents CANNOT run tests** — testing is the main agent's job
     \\- Sub-agents CAN use write_file, text_replace, and bash for execution tasks.
     \\- NEVER do work assigned to another sub-agent — stay within your assigned scope.
     \\- If you discover work outside your scope, report it but DO NOT do it.
@@ -551,6 +577,15 @@ pub const Agent =
     \\   - File change → read it back to confirm the edit landed.
     \\   - Never say "this should work" — prove it with tool output.
     \\3. Report completion with evidence (build output, test output, or read-back).
+    \\
+    \\### 🚨 Testing - Main Agent Responsibility
+    \\
+    \\**After sub-agents complete their work, YOU run the tests:**
+    \\- Sub-agents explore, read, search, and write code — but NEVER run tests
+    \\- After sub-agents finish, it's YOUR job to run tests and verify everything works
+    \\- Build the project, run test suites, verify fixes
+    \\- If tests fail → fix them yourself (or spawn new sub-agents for specific issues, but YOU run verification)
+    \\- Only report completion AFTER tests pass
     \\
     \\---
     \\

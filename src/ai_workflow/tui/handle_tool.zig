@@ -6,7 +6,7 @@ const sqlite = root_mod.sqlite;
 const config_mod = @import("../../modules/config/config.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
 const SendToolResult = @import("send_tool_result.zig");
-const send_response = @import("send_response.zig").SendResponse;
+const SendResponse = @import("send_response.zig").SendResponse;
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
@@ -107,9 +107,10 @@ pub fn HandleTool(
     config: *const config_mod.LlmConfig,
     base_tools: []const tool_models.AgentTool,
 ) !void {
-    _ = send_response(allocator, session_id, logger, res_dynamic_agent, null);
+    _ = SendResponse(allocator, session_id, logger, res_dynamic_agent, null);
     if (res_dynamic_agent.tool_calls) |tc| {
         var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
+        var toolNames = try std.ArrayList([]const u8).initCapacity(allocator, tc.len);
         for (tc, 0..) |tool_call, i| {
             assistant_tool_calls[i] = .{
                 .id = try allocator.dupe(u8, tool_call.id),
@@ -118,6 +119,7 @@ pub fn HandleTool(
                     .arguments = try allocator.dupe(u8, tool_call.function.arguments),
                 },
             };
+            _ = try toolNames.append(allocator, tool_call.function.name);
         }
 
         // Fetch current agent from DB for save_message
@@ -164,11 +166,12 @@ pub fn HandleTool(
             .total_tokens = res_dynamic_agent.usage.total_tokens,
             .is_input = true,
             .is_output = false,
+            .tool_name = try std.mem.join(allocator, ",", toolNames.items),
         });
 
         if (res_dynamic_agent.content) |c| {
             _ = c;
-            _ = send_response(allocator, session_id, logger, res_dynamic_agent, null);
+            _ = SendResponse(allocator, session_id, logger, res_dynamic_agent, null);
         }
 
         // Build context for tool handling
@@ -246,56 +249,36 @@ pub fn HandleTool(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                const content = handle_bash_tool.runWithContext(allocator, tool_call, ctx.db, ctx.session_id) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error executing bash: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error executing command");
-                    continue;
-                };
+                const content = handle_bash_tool.runWithContext(allocator, tool_call, ctx.db, ctx.session_id) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "read_file")) {
-                const content = handle_read_file_tool.run(allocator, tool_call) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error reading file: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error reading file");
-                    continue;
-                };
+                const content = handle_read_file_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: read_file failed: {s}", .{@errorName(err)});
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "search")) {
-                const content = handle_search_tool.run(allocator, tool_call) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error executing search: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error executing search");
-                    continue;
-                };
+                const content = handle_search_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: search failed: {s}", .{@errorName(err)});
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "write_file")) {
-                const content = handle_write_file_tool.run(allocator, tool_call) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error executing write_file: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error writing file");
-                    continue;
-                };
+                const content = handle_write_file_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: write_file failed: {s}", .{@errorName(err)});
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
-                const content = handle_text_replace_tool.run(allocator, tool_call) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error executing text_replace: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error replacing text");
-                    continue;
-                };
+                const content = handle_text_replace_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: text_replace failed: {s}", .{@errorName(err)});
                 try handleToolResult(ctx, tool_call, content);
                 continue;
             }
@@ -308,12 +291,8 @@ pub fn HandleTool(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
-                const result = handle_get_skill_tool.run(allocator, tool_call) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error executing get_skill: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error executing get_skill");
-                    continue;
-                };
+                const result = handle_get_skill_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: get_skill failed: {s}", .{@errorName(err)});
 
                 if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
                     if (std.mem.indexOf(u8, result, "<skill_name>")) |name_start| {
@@ -340,12 +319,8 @@ pub fn HandleTool(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
-                const result = handle_remove_skill_tool.run(allocator, tool_call) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error executing remove_skill: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error executing remove_skill");
-                    continue;
-                };
+                const result = handle_remove_skill_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: remove_skill failed: {s}", .{@errorName(err)});
                 try handleToolResult(ctx, tool_call, result);
                 continue;
             }
@@ -356,33 +331,22 @@ pub fn HandleTool(
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "list_agents")) {
-                const result = handle_list_agents_tool.run(allocator) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error executing list_agents: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error executing list_agents");
-                    continue;
-                };
-
+                const result = handle_list_agents_tool.run(allocator) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: list_agents failed: {s}", .{@errorName(err)});
                 try handleToolResult(ctx, tool_call, result);
                 continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_agent")) {
-                const result = handle_get_agent_tool.run(allocator, tool_call) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error executing get_agent: {s}", .{err_name}) catch {};
-                    try handleToolError(ctx, tool_call, err, "Error executing get_agent");
-                    continue;
-                };
+                const result = handle_get_agent_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: get_agent failed: {s}", .{@errorName(err)});
                 defer allocator.free(result);
 
-                // save to table session_agents if loaded successfully
                 if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
                     if (std.mem.indexOf(u8, result, "<agent_name>")) |name_start| {
                         const name_begin = name_start + "<agent_name>".len;
                         if (std.mem.indexOf(u8, result[name_begin..], "</agent_name>")) |name_end| {
                             const agent_name = result[name_begin .. name_begin + name_end];
-                            // Save to database
                             SaveAgent(allocator, db, logger, session_id, agent_name) catch |err| {
                                 const err_name = @errorName(err);
                                 logger.errFmt("Error saving agent to database: {s}", .{err_name}) catch {};

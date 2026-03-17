@@ -879,10 +879,10 @@ pub const Agent = struct {
             return error.BuildRequestFailed;
         };
         defer self.allocator.free(json_body);
-        // Log truncated JSON body for debugging
-        const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
-        const json_ellipsis = if (json_body.len > 500) "..." else "";
-        self.logFmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
+        self.logFmt(.debug, "[STREAM REQUEST] JSON body {s}", .{json_body});
+        // const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
+        // const json_ellipsis = if (json_body.len > 500) "..." else "";
+        // self.logFmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
         const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
             self.logError("concat URI", err, null);

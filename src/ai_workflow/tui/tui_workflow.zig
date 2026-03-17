@@ -146,7 +146,7 @@ pub const TUIWorkflow = struct {
         );
         const initial_agent = initial_agent_state.agent;
 
-        SaveMessage(parent_allocator, self.db, .{
+        try SaveMessage(parent_allocator, self.db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -166,9 +166,7 @@ pub const TUIWorkflow = struct {
             .prompt_tokens = 0,
             .completion_tokens = 0,
             .total_tokens = 0,
-        }) catch |err| {
-            self.logger.errFmt("saveMessageAsUser error: {s}", .{@errorName(err)}) catch {};
-        };
+        });
 
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
@@ -231,7 +229,6 @@ pub const TUIWorkflow = struct {
                 self.logger.infoFmt("WORKFLOW: finish_reason = {s}", .{finish_reason.toStr()}) catch {};
                 if (finish_reason == .stop) {
                     self.logger.infoFmt("FINISH REASON STOP - calling send_response", .{}) catch {};
-                    _ = SendResponse(allocator, session_id, self.logger, resDynmicAgent, "user_choice");
                     _ = try SaveMessage(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
@@ -253,6 +250,7 @@ pub const TUIWorkflow = struct {
                         .completion_tokens = resDynmicAgent.usage.completion_tokens,
                         .total_tokens = resDynmicAgent.usage.total_tokens,
                     });
+                    _ = SendResponse(allocator, session_id, self.logger, resDynmicAgent, "user_choice");
                     self.logger.infoFmt("FINISH REASON STOP - complete", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
