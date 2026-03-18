@@ -89,11 +89,6 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
     });
 
     const latestMessage = try GetMessagesLatest(ctx.allocator, ctx.db, ctx.session_id);
-    defer if (latestMessage) |msg| {
-        var mutable_msg = msg;
-        mutable_msg.deinit(ctx.allocator);
-    };
-
     const toolResult = latestMessage.?.response_content;
     const toolName = latestMessage.?.tool_name;
     _ = sendResponse(ctx.allocator, ctx.session_id, ctx.logger, .tool_result, .{
