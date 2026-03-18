@@ -49,11 +49,6 @@ pub const cancellation_registry = root_mod.session.cancellation_registry;
 const HandleTool = @import("handle_tool.zig").HandleTool;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
 const lspDefinitionTool = root_mod.tool_models.lspDefinitionTool;
-// TODO: Restore these when lsp.zig is complete with all tools
-// const lspReferencesTool = root_mod.tool_models.lspReferencesTool;
-// const lspWorkspaceSymbolTool = root_mod.tool_models.lspWorkspaceSymbolTool;
-// const lspDocumentSymbolTool = root_mod.tool_models.lspDocumentSymbolTool;
-// const lspHoverTool = root_mod.tool_models.lspHoverTool;
 
 pub const AllAgentTools: []const tool_models.AgentTool = &.{
     bash_tool.bashTool,

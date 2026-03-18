@@ -66,74 +66,149 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     return body;
 }
 
-// Find zls binary
-fn findZls(allocator: std.mem.Allocator) ![]u8 {
-    const paths = &[_][]const u8{
-        "/usr/bin/zls",
-        "/usr/local/bin/zls",
-        "/home/ginwa/.local/bin/zls",
-        "/home/ginwa/.local/share/nvim/mason/bin/zls",
-        "/opt/homebrew/bin/zls",
+/// Parse a single LSP Location or LocationLink object
+/// Returns the parsed LspLocation or null if parsing fails
+fn parseLocation(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
+    if (loc_value != .object) return null;
+
+    const obj = loc_value.object;
+
+    // Check if this is a LocationLink (has targetUri) or Location (has uri)
+    const uri_val = obj.get("targetUri") orelse obj.get("uri") orelse return null;
+    if (uri_val != .string) return null;
+
+    // Get the range (targetRange for LocationLink, range for Location)
+    const range_val = obj.get("targetRange") orelse obj.get("range") orelse return null;
+    if (range_val != .object) return null;
+
+    const start_val = range_val.object.get("start") orelse return null;
+    if (start_val != .object) return null;
+
+    const line_val = start_val.object.get("line") orelse return null;
+    const char_val = start_val.object.get("character") orelse return null;
+    if (line_val != .integer or char_val != .integer) return null;
+
+    // Extract file path from URI
+    const result_uri = uri_val.string;
+    const result_path = if (std.mem.startsWith(u8, result_uri, "file://"))
+        result_uri[7..]
+    else
+        result_uri;
+
+    var location = LspLocation{
+        .file_path = try allocator.dupe(u8, result_path),
+        .line = @intCast(line_val.integer),
+        .character = @intCast(char_val.integer),
     };
 
-    for (paths) |path| {
-        if (std.fs.accessAbsolute(path, .{})) {
-            return try allocator.dupe(u8, path);
-        } else |_| {}
-    }
-
-    // Try `which zls`
-    var which_child = std.process.Child.init(&.{ "which", "zls" }, allocator);
-    which_child.stdout_behavior = .Pipe;
-    which_child.stderr_behavior = .Ignore;
-
-    which_child.spawn() catch return LspError.BinaryNotFound;
-
-    var buf: [256]u8 = undefined;
-    const n = which_child.stdout.?.read(&buf) catch return LspError.BinaryNotFound;
-    _ = which_child.wait() catch {};
-
-    if (n > 0) {
-        const path = std.mem.trim(u8, buf[0..n], " \n\r");
-        if (path.len > 0 and path[0] == '/') {
-            return try allocator.dupe(u8, path);
+    // Parse optional end position
+    const end_val = range_val.object.get("end");
+    if (end_val) |end| {
+        if (end == .object) {
+            const end_line = end.object.get("line");
+            const end_char = end.object.get("character");
+            if (end_line) |el| {
+                if (el == .integer) {
+                    location.end_line = @intCast(el.integer);
+                }
+            }
+            if (end_char) |ec| {
+                if (ec == .integer) {
+                    location.end_character = @intCast(ec.integer);
+                }
+            }
         }
     }
 
-    return LspError.BinaryNotFound;
+    // Parse optional targetSelectionRange (more precise location for LocationLink)
+    const selection_range_val = obj.get("targetSelectionRange");
+    if (selection_range_val) |sr| {
+        if (sr == .object) {
+            const sr_start = sr.object.get("start");
+            if (sr_start) |srs| {
+                if (srs == .object) {
+                    const sr_line = srs.object.get("line");
+                    const sr_char = srs.object.get("character");
+                    if (sr_line) |sl| {
+                        if (sl == .integer) {
+                            location.line = @intCast(sl.integer);
+                        }
+                    }
+                    if (sr_char) |sc| {
+                        if (sc == .integer) {
+                            location.character = @intCast(sc.integer);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse optional originSelectionRange (where cursor was for LocationLink)
+    const origin_range_val = obj.get("originSelectionRange");
+    if (origin_range_val) |orv| {
+        if (orv == .object) {
+            const or_start = orv.object.get("start");
+            if (or_start) |ors| {
+                if (ors == .object) {
+                    const or_line = ors.object.get("line");
+                    const or_char = ors.object.get("character");
+                    if (or_line) |ol| {
+                        if (ol == .integer) {
+                            location.origin_line = @intCast(ol.integer);
+                        }
+                    }
+                    if (or_char) |oc| {
+                        if (oc == .integer) {
+                            location.origin_character = @intCast(oc.integer);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return location;
 }
 
-// Find project root by searching upward for build.zig
-fn findProjectRoot(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
-    // Start from the file's directory and search upward
-    var dir_path = std.fs.path.dirname(file_path) orelse "/";
-
-    // Limit search depth to avoid infinite loops
-    var depth: usize = 0;
-    const max_depth = 20;
-
-    while (depth < max_depth) {
-        // Check if build.zig exists in this directory
-        const build_zig_path = try std.fs.path.join(allocator, &.{ dir_path, "build.zig" });
-        defer allocator.free(build_zig_path);
-
-        if (std.fs.accessAbsolute(build_zig_path, .{})) {
-            // Found build.zig, return this directory
-            return try allocator.dupe(u8, dir_path);
-        } else |_| {
-            // build.zig not found, go up one level
-            const parent = std.fs.path.dirname(dir_path);
-            if (parent == null or parent.?.len == 0 or std.mem.eql(u8, parent.?, dir_path)) {
-                // Reached root, return the original file's directory
-                return try allocator.dupe(u8, std.fs.path.dirname(file_path) orelse "/");
-            }
-            dir_path = parent.?;
-        }
-        depth += 1;
+/// Parse LSP definition response result
+/// Handles: null, single Location, Location[], LocationLink[]
+fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value) !LspDefinitionOutput {
+    // Handle null result
+    if (result == .null) {
+        return LspDefinitionOutput{
+            .definitions = &.{},
+            .found = false,
+        };
     }
 
-    // Max depth reached, return the original file's directory
-    return try allocator.dupe(u8, std.fs.path.dirname(file_path) orelse "/");
+    var locations = std.ArrayList(LspLocation).empty;
+    defer locations.deinit(allocator);
+
+    // Handle array of locations (Location[] or LocationLink[])
+    if (result == .array) {
+        for (result.array.items) |item| {
+            const loc = try parseLocation(allocator, item);
+            if (loc) |l| {
+                try locations.append(allocator, l);
+            }
+        }
+    }
+    // Handle single location object
+    else if (result == .object) {
+        const loc = try parseLocation(allocator, result);
+        if (loc) |l| {
+            try locations.append(allocator, l);
+        }
+    }
+
+    // Convert to owned slice
+    const defs = try locations.toOwnedSlice(allocator);
+
+    return LspDefinitionOutput{
+        .definitions = defs,
+        .found = defs.len > 0,
+    };
 }
 
 pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionInput) !LspDefinitionOutput {
@@ -354,33 +429,8 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
         };
     }
 
-    const obj = loc_obj.?;
-    const uri_val = obj.object.get("uri") orelse return LspError.InvalidResponse;
-    const range_val = obj.object.get("range") orelse return LspError.InvalidResponse;
-
-    if (uri_val != .string or range_val != .object) return LspError.InvalidResponse;
-
-    const start_val = range_val.object.get("start") orelse return LspError.InvalidResponse;
-    if (start_val != .object) return LspError.InvalidResponse;
-
-    const line_val = start_val.object.get("line") orelse return LspError.InvalidResponse;
-    const char_val = start_val.object.get("character") orelse return LspError.InvalidResponse;
-
-    if (line_val != .integer or char_val != .integer) return LspError.InvalidResponse;
-
-    // Extract file path from URI
-    const result_uri = uri_val.string;
-    const result_path = if (std.mem.startsWith(u8, result_uri, "file://"))
-        result_uri[7..]
-    else
-        result_uri;
-
-    return LspDefinitionOutput{
-        .file_path = try allocator.dupe(u8, result_path),
-        .line = @intCast(line_val.integer),
-        .character = @intCast(char_val.integer),
-        .found = true,
-    };
+    // Use the original allocator for the final result (lives beyond this function)
+    return try parseDefinitionResult(allocator, result_opt.?);
 }
 
 pub fn lspDefinitionToString(allocator: std.mem.Allocator, result: LspDefinitionOutput) ![]const u8 {
@@ -408,6 +458,21 @@ pub const lspDefinitionTool = AgentTool{
         .parameters = .{
             .type = "object",
             .properties = &.{
+                .{
+                    .name = "lsp",
+                    .type = "string",
+                    .description = "lsp bin name like zls or pyls or path to binary",
+                },
+                .{
+                    .name = "lsp",
+                    .type = "string",
+                    .description = "LSP binary name like zls or pyls or path to binary",
+                },
+                .{
+                    .name = "root_dir",
+                    .type = "string",
+                    .description = "Absolute path to the project root directory",
+                },
                 .{
                     .name = "file_path",
                     .type = "string",

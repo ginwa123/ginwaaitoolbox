@@ -61,17 +61,30 @@ pub const LspDefinitionInput = struct {
     character: u32, // 0-indexed character position
 };
 
-pub const LspDefinitionOutput = struct {
-    file_path: []u8, // Absolute path to definition
-    line: u32, // 0-indexed line number
-    character: u32, // 0-indexed character position
-    found: bool, // true if definition found
+/// Represents a single LSP Location or LocationLink
+pub const LspLocation = struct {
+    file_path: []u8, // Absolute path to definition file
+    line: u32, // 0-indexed line number (start position)
+    character: u32, // 0-indexed character position (start position)
+    // Optional fields for LocationLink
+    origin_line: ?u32 = null, // Line where cursor was (for LocationLink)
+    origin_character: ?u32 = null, // Character where cursor was (for LocationLink)
+    end_line: ?u32 = null, // End line of the definition range
+    end_character: ?u32 = null, // End character of the definition range
+};
 
-    /// Free allocated memory
+/// LSP definition response can contain multiple locations
+/// Result can be: null, single Location, Location[], or LocationLink[]
+pub const LspDefinitionOutput = struct {
+    definitions: []LspLocation, // Array of definition locations (empty if not found)
+    found: bool, // true if at least one definition found
+
+    /// Free all allocated memory in definitions array
     pub fn deinit(self: *const LspDefinitionOutput, allocator: std.mem.Allocator) void {
-        if (self.file_path.len > 0) {
-            allocator.free(self.file_path);
+        for (self.definitions) |loc| {
+            allocator.free(loc.file_path);
         }
+        allocator.free(self.definitions);
     }
 };
 

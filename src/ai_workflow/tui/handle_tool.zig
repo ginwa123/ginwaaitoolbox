@@ -21,11 +21,6 @@ const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
 const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
 const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
 const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
-// TODO: Restore these when lsp.zig is complete with all tools
-// const handle_lsp_references_tool = @import("handle_lsp_references_tool.zig");
-// const handle_lsp_workspace_symbol_tool = @import("handle_lsp_workspace_symbol_tool.zig");
-// const handle_lsp_document_symbol_tool = @import("handle_lsp_document_symbol_tool.zig");
-// const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const SaveSkill = @import("save_skill.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
