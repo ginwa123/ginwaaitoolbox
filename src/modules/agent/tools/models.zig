@@ -52,10 +52,26 @@ pub const BashOutput = struct {
     timeout: bool,
 };
 
+// LSP Definition Tool Types
+pub const LspDefinitionInput = struct {
+    file_path: []const u8, // Absolute path to file
+    line: u32, // 0-indexed line number
+    character: u32, // 0-indexed character position
+};
+
+pub const LspDefinitionOutput = struct {
+    file_path: []u8, // Absolute path to definition
+    line: u32, // 0-indexed line number
+    character: u32, // 0-indexed character position
+    found: bool, // true if definition found
+};
+
 // Re-export agent tools for convenience
 pub const agents = @import("agents.zig");
 pub const list_agents = @import("list_agents.zig");
 pub const get_agent = @import("get_agent.zig");
+pub const lsp_definition = @import("lsp_definition.zig");
 
 pub const listAgentsTool = list_agents.listAgentsTool;
 pub const getAgentTool = get_agent.getAgentTool;
+pub const lspDefinitionTool = lsp_definition.lspDefinitionTool;

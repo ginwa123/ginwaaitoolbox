@@ -48,6 +48,7 @@ const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const HandleTool = @import("handle_tool.zig").HandleTool;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
+const lspDefinitionTool = root_mod.tool_models.lspDefinitionTool;
 
 pub const AllAgentTools: []const tool_models.AgentTool = &.{
     bash_tool.bashTool,
@@ -62,4 +63,5 @@ pub const AllAgentTools: []const tool_models.AgentTool = &.{
     spawn_sub_agent_tool.spawnSubAgentTool,
     list_agents_tool.listAgentsTool,
     get_agent_tool.GetAgentTool,
+    lspDefinitionTool,
 };
