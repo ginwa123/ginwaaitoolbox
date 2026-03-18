@@ -33,6 +33,54 @@ pub const LspError = error{
     HoverNotFound,
 };
 
+// Find LSP binary - resolves name to absolute path
+pub fn findLsp(allocator: std.mem.Allocator, lsp_name: []const u8) ![]u8 {
+    // If already an absolute path, check if it exists
+    if (lsp_name.len > 0 and lsp_name[0] == '/') {
+        std.fs.accessAbsolute(lsp_name, .{}) catch return LspError.BinaryNotFound;
+        return try allocator.dupe(u8, lsp_name);
+    }
+
+    // Try common paths first
+    const common_paths = &[_][]const u8{
+        "/usr/bin/zls",
+        "/usr/local/bin/zls",
+        "/home/ginwa/.local/bin/zls",
+        "/home/ginwa/.local/share/nvim/mason/bin/zls",
+        "/opt/homebrew/bin/zls",
+        "/usr/sbin/zls",
+    };
+
+    for (common_paths) |path| {
+        if (std.fs.accessAbsolute(path, .{})) {
+            return try allocator.dupe(u8, path);
+        }
+    }
+
+    // Try `which` command for the given lsp_name
+    var which_child = std.process.Child.init(&.{ "which", lsp_name }, allocator);
+    which_child.stdout_behavior = .Pipe;
+    which_child.stderr_behavior = .Ignore;
+
+    which_child.spawn() catch return LspError.BinaryNotFound;
+
+    var buf: [256]u8 = undefined;
+    const n = which_child.stdout.?.read(&buf) catch {
+        _ = which_child.wait() catch {};
+        return LspError.BinaryNotFound;
+    };
+    _ = which_child.wait() catch {};
+
+    if (n > 0) {
+        const path = std.mem.trim(u8, buf[0..n], " \n\r");
+        if (path.len > 0 and path[0] == '/') {
+            return try allocator.dupe(u8, path);
+        }
+    }
+
+    return LspError.BinaryNotFound;
+}
+
 // =============================================================================
 // Shared JSON-RPC message helpers
 // =============================================================================
@@ -102,12 +150,16 @@ const LspSession = struct {
     /// Initialize LSP session with file-based operations
     pub fn initWithFile(
         parent_allocator: std.mem.Allocator,
-        lsp_binary: []const u8,
+        lsp_name: []const u8,
         file_path: []const u8,
         root_dir: []const u8,
     ) !LspSession {
         var arena = std.heap.ArenaAllocator.init(parent_allocator);
         const arena_allocator = arena.allocator();
+
+        // Resolve LSP binary name to absolute path
+        const lsp_binary = try findLsp(arena_allocator, lsp_name);
+        errdefer arena_allocator.free(lsp_binary);
 
         std.fs.accessAbsolute(file_path, .{}) catch return LspError.FileNotFound;
 
@@ -147,11 +199,15 @@ const LspSession = struct {
     /// Initialize LSP session without file (for workspace-wide operations)
     pub fn initWithoutFile(
         parent_allocator: std.mem.Allocator,
-        lsp_binary: []const u8,
+        lsp_name: []const u8,
         root_dir: []const u8,
     ) !LspSession {
         var arena = std.heap.ArenaAllocator.init(parent_allocator);
         const arena_allocator = arena.allocator();
+
+        // Resolve LSP binary name to absolute path
+        const lsp_binary = try findLsp(arena_allocator, lsp_name);
+        errdefer arena_allocator.free(lsp_binary);
 
         var child = std.process.Child.init(&.{lsp_binary}, arena_allocator);
         child.stdin_behavior = .Pipe;

@@ -35,10 +35,11 @@ const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
 const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
 const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
-const handle_lsp_references_tool = @import("handle_lsp_references_tool.zig");
-const handle_lsp_workspace_symbol_tool = @import("handle_lsp_workspace_symbol_tool.zig");
-const handle_lsp_document_symbol_tool = @import("handle_lsp_document_symbol_tool.zig");
-const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
+// TODO: Restore these when lsp.zig is complete with all tools
+// const handle_lsp_references_tool = @import("handle_lsp_references_tool.zig");
+// const handle_lsp_workspace_symbol_tool = @import("handle_lsp_workspace_symbol_tool.zig");
+// const handle_lsp_document_symbol_tool = @import("handle_lsp_document_symbol_tool.zig");
+// const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
 const StreamingContext = @import("tui_workflow.zig").StreamingContext;
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
 const SaveSkill = @import("save_skill.zig").SaveSkill;
@@ -335,23 +336,26 @@ fn runSubAgent(
                             tool_result = handle_lsp_definition_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: lsp_definition failed: {s}", .{@errorName(err)});
                             SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_definition", null);
-                        } else if (std.mem.eql(u8, tc.function.name, "lsp_references")) {
-                            tool_result = handle_lsp_references_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: lsp_references failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_references", null);
-                        } else if (std.mem.eql(u8, tc.function.name, "lsp_workspace_symbol")) {
-                            tool_result = handle_lsp_workspace_symbol_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: lsp_workspace_symbol failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_workspace_symbol", null);
-                        } else if (std.mem.eql(u8, tc.function.name, "lsp_document_symbol")) {
-                            tool_result = handle_lsp_document_symbol_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: lsp_document_symbol failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_document_symbol", null);
-                        } else if (std.mem.eql(u8, tc.function.name, "lsp_hover")) {
-                            tool_result = handle_lsp_hover_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: lsp_hover failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_hover", null);
-                        } else {
+                        }
+                        // TODO: Restore these when lsp.zig is complete with all tools
+                        // else if (std.mem.eql(u8, tc.function.name, "lsp_references")) {
+                        //     tool_result = handle_lsp_references_tool.run(allocator, tc) catch |err|
+                        //         try std.fmt.allocPrint(allocator, "ERROR: lsp_references failed: {s}", .{@errorName(err)});
+                        //     SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_references", null);
+                        // } else if (std.mem.eql(u8, tc.function.name, "lsp_workspace_symbol")) {
+                        //     tool_result = handle_lsp_workspace_symbol_tool.run(allocator, tc) catch |err|
+                        //         try std.fmt.allocPrint(allocator, "ERROR: lsp_workspace_symbol failed: {s}", .{@errorName(err)});
+                        //     SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_workspace_symbol", null);
+                        // } else if (std.mem.eql(u8, tc.function.name, "lsp_document_symbol")) {
+                        //     tool_result = handle_lsp_document_symbol_tool.run(allocator, tc) catch |err|
+                        //         try std.fmt.allocPrint(allocator, "ERROR: lsp_document_symbol failed: {s}", .{@errorName(err)});
+                        //     SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_document_symbol", null);
+                        // } else if (std.mem.eql(u8, tc.function.name, "lsp_hover")) {
+                        //     tool_result = handle_lsp_hover_tool.run(allocator, tc) catch |err|
+                        //         try std.fmt.allocPrint(allocator, "ERROR: lsp_hover failed: {s}", .{@errorName(err)});
+                        //     SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_hover", null);
+                        // }
+                        else {
                             tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
                             SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, tc.function.name, null);
                         }
