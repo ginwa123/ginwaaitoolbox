@@ -4,10 +4,8 @@ const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const SaveMessage = @import("save_message.zig").SaveMessage;
-const on_event_sent = @import("on_event_sent.zig");
-
-const SendResponse = on_event_sent.SendResponse;
-const sendError = on_event_sent.sendError;
+const sendResponse = @import("on_event_sent.zig").sendResponse;
+const ResponseType = @import("on_event_sent.zig").ResponseType;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 
 pub fn run(
@@ -56,19 +54,30 @@ pub fn run(
         .total_tokens = res_dynamic_agent.usage.total_tokens,
     });
 
-    // Send error response to client with content_filter finish reason
     // The response content may be empty or contain partial filtered content
     if (res_dynamic_agent.content) |c| {
         if (c.len > 0) {
             // Send the partial content with content_filter finish reason
-            SendResponse(allocator, session_id, logger, res_dynamic_agent.content, res_dynamic_agent.finish_reason, res_dynamic_agent.reasoning_content, res_dynamic_agent.usage, "content_filter");
+            sendResponse(allocator, session_id, logger, .assistant_response, .{
+                .content = res_dynamic_agent.content,
+                .finish_reason = res_dynamic_agent.finish_reason,
+                .reasoning_content = res_dynamic_agent.reasoning_content,
+                .usage = res_dynamic_agent.usage,
+                .override_finish_reason = "content_filter",
+            });
         } else {
             // No content, send error message
-            sendError(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
+            sendResponse(allocator, session_id, logger, .err, .{
+                .err_msg = "Content was filtered due to safety policies. Please rephrase your request.",
+                .override_finish_reason = "user_choice",
+            });
         }
     } else {
         // No content, send error message
-        sendError(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
+        sendResponse(allocator, session_id, logger, .err, .{
+            .err_msg = "Content was filtered due to safety policies. Please rephrase your request.",
+            .override_finish_reason = "user_choice",
+        });
     }
 
     return true; // Signal caller to break the loop

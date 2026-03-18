@@ -32,15 +32,12 @@ const SearchTool = root_mod.search_tool;
 const TextReplaceTool = root_mod.text_replace_tool;
 
 const on_event_sent = @import("on_event_sent.zig");
-const SendResponse = on_event_sent.SendResponse;
-const sendError = on_event_sent.sendError;
-const sendSkill = on_event_sent.sendSkill;
+const sendResponse = on_event_sent.sendResponse;
 const sendStreamChunkContent = on_event_sent.sendStreamChunkContent;
 const sendStreamChunkReasoning = on_event_sent.sendStreamChunkReasoning;
 const sendStreamChunkFinal = on_event_sent.sendStreamChunkFinal;
-const sendStreamToolCallDelta = on_event_sent.sendStreamToolCallDelta;
-const SendToolResult = on_event_sent.SendToolResult;
-const sendUserChoice = on_event_sent.sendUserChoice;
+const ResponseType = on_event_sent.ResponseType;
+const Response = on_event_sent.Response;
 
 const handle_content_filter = @import("handle_content_filter.zig");
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
@@ -91,13 +88,13 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 
     // Send content chunk
     if (chunk.content) |content| {
-        sendStreamChunkContent(allocator, session_id, stream_ctx.chunk_index, content);
+        sendStreamChunkContent(session_id, stream_ctx.chunk_index, content);
         stream_ctx.chunk_index += 1;
     }
 
     // Send reasoning content chunk
     if (chunk.reasoning_content) |rc| {
-        sendStreamChunkReasoning(allocator, session_id, stream_ctx.chunk_index, rc);
+        sendStreamChunkReasoning(session_id, stream_ctx.chunk_index, rc);
         stream_ctx.chunk_index += 1;
     }
 
@@ -125,7 +122,10 @@ pub const TUIWorkflow = struct {
     pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) void {
         self.runInternal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
-            sendError(allocator, session_id, self.logger, err_msg, "user_choice");
+            sendResponse(allocator, session_id, self.logger, .err, .{
+                .err_msg = err_msg,
+                .override_finish_reason = "user_choice",
+            });
         };
     }
 
@@ -252,7 +252,13 @@ pub const TUIWorkflow = struct {
                         .completion_tokens = resDynmicAgent.usage.completion_tokens,
                         .total_tokens = resDynmicAgent.usage.total_tokens,
                     });
-                    _ = SendResponse(allocator, session_id, self.logger, resDynmicAgent.content, resDynmicAgent.finish_reason, resDynmicAgent.reasoning_content, resDynmicAgent.usage, "user_choice");
+                    _ = sendResponse(allocator, session_id, self.logger, .assistant_response, .{
+                        .content = resDynmicAgent.content,
+                        .finish_reason = resDynmicAgent.finish_reason,
+                        .reasoning_content = resDynmicAgent.reasoning_content,
+                        .usage = resDynmicAgent.usage,
+                        .override_finish_reason = "user_choice",
+                    });
                     self.logger.infoFmt("FINISH REASON STOP - complete", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
@@ -263,11 +269,7 @@ pub const TUIWorkflow = struct {
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                    _ = try sendUserChoice(
-                        allocator,
-                        session_id,
-                        self.logger,
-                    );
+                    sendResponse(allocator, session_id, self.logger, .user_choice, .{});
                     break;
                 }
 

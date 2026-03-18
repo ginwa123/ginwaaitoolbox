@@ -1,8 +1,8 @@
 const std = @import("std");
 const testing = std.testing;
-const send_session_response = @import("send_session_response.zig");
+const on_event_sent = @import("on_event_sent.zig");
 
-test "send_session_response - XML format validation" {
+test "on_event_sent - sendSessions XML format validation" {
     // Test XML structure components
     const xml_start = "<response><type>sessions</type><sessions>";
     const xml_end = "</sessions></response>";
@@ -21,7 +21,7 @@ test "send_session_response - XML format validation" {
     try testing.expect(std.mem.indexOf(u8, session_start, "id") != null);
 }
 
-test "send_session_response - session info structure" {
+test "on_event_sent - sendSessions session info structure" {
     // Test session info fields
     const session_id = "test-session-123";
     const session_dir = "/home/user/project";
@@ -35,13 +35,7 @@ test "send_session_response - session info structure" {
     try testing.expect(std.mem.indexOf(u8, session_dir, "/") != null);
 }
 
-test "send_session_response - invalid conn_fd handling" {
-    // Negative conn_fd should return early
-    const invalid_fd: std.posix.fd_t = -1;
-    try testing.expect(invalid_fd < 0);
-}
-
-test "send_session_response - multiple sessions handling" {
+test "on_event_sent - sendSessions multiple sessions handling" {
     // Test with multiple sessions
     const sessions = [_]struct {
         id: []const u8,
@@ -61,7 +55,7 @@ test "send_session_response - multiple sessions handling" {
     }
 }
 
-test "send_session_response - empty sessions list" {
+test "on_event_sent - sendSessions empty sessions list" {
     // Empty sessions should still produce valid XML
     const empty_count: usize = 0;
     try testing.expect(empty_count == 0);

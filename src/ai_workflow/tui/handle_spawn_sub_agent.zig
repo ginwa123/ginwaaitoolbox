@@ -16,7 +16,8 @@ const get_skill_tool = @import("../../modules/agent/tools/get_skill.zig");
 const remove_skill_tool = @import("../../modules/agent/tools/remove_skill.zig");
 const config_mod = @import("../../modules/config/config.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
-const SendToolResult = @import("on_event_sent.zig").SendToolResult;
+const SendToolResult = @import("on_event_sent.zig").sendResponse;
+const ResponseType = @import("on_event_sent.zig").ResponseType;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 const handle_tool = @import("handle_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
@@ -264,26 +265,26 @@ fn runSubAgent(
                         if (std.mem.eql(u8, tc.function.name, "bash")) {
                             tool_result = handle_bash_tool.runWithContext(allocator, tc, db, session_id) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "bash", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "bash", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "read_file")) {
                             tool_result = handle_read_file_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: read_file failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "read_file", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "read_file", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "search")) {
                             tool_result = handle_search_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: search failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "search", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "search", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "text_replace")) {
                             tool_result = handle_text_replace_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: text_replace failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "text_replace", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "text_replace", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "write_file")) {
                             tool_result = handle_write_file_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: write_file failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "write_file", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "write_file", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "list_skills")) {
                             tool_result = handle_list_skills_tool.run(allocator);
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "list_skills", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "list_skills", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "get_skill")) {
                             tool_result = handle_get_skill_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: get_skill failed: {s}", .{@errorName(err)});
@@ -307,15 +308,15 @@ fn runSubAgent(
                                     }
                                 }
                             }
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "get_skill", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "get_skill", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "remove_skill")) {
                             tool_result = handle_remove_skill_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: remove_skill failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "remove_skill", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "remove_skill", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "list_agents")) {
                             tool_result = handle_list_agents_tool.run(allocator) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: list_agents failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "list_agents", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "list_agents", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "get_agent")) {
                             tool_result = handle_get_agent_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: get_agent failed: {s}", .{@errorName(err)});
@@ -331,33 +332,33 @@ fn runSubAgent(
                                     }
                                 }
                             }
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "get_agent", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "get_agent", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "lsp_definition")) {
                             tool_result = handle_lsp_definition_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: lsp_definition failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_definition", null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_definition", .tool_result = tool_result });
                         }
                         // TODO: Restore these when lsp.zig is complete with all tools
                         // else if (std.mem.eql(u8, tc.function.name, "lsp_references")) {
                         //     tool_result = handle_lsp_references_tool.run(allocator, tc) catch |err|
                         //         try std.fmt.allocPrint(allocator, "ERROR: lsp_references failed: {s}", .{@errorName(err)});
-                        //     SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_references", null);
+                        //     SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_references", .tool_result = tool_result });
                         // } else if (std.mem.eql(u8, tc.function.name, "lsp_workspace_symbol")) {
                         //     tool_result = handle_lsp_workspace_symbol_tool.run(allocator, tc) catch |err|
                         //         try std.fmt.allocPrint(allocator, "ERROR: lsp_workspace_symbol failed: {s}", .{@errorName(err)});
-                        //     SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_workspace_symbol", null);
+                        //     SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_workspace_symbol", .tool_result = tool_result });
                         // } else if (std.mem.eql(u8, tc.function.name, "lsp_document_symbol")) {
                         //     tool_result = handle_lsp_document_symbol_tool.run(allocator, tc) catch |err|
                         //         try std.fmt.allocPrint(allocator, "ERROR: lsp_document_symbol failed: {s}", .{@errorName(err)});
-                        //     SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_document_symbol", null);
+                        //     SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_document_symbol", .tool_result = tool_result });
                         // } else if (std.mem.eql(u8, tc.function.name, "lsp_hover")) {
                         //     tool_result = handle_lsp_hover_tool.run(allocator, tc) catch |err|
                         //         try std.fmt.allocPrint(allocator, "ERROR: lsp_hover failed: {s}", .{@errorName(err)});
-                        //     SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_hover", null);
+                        //     SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_hover", .tool_result = tool_result });
                         // }
                         else {
                             tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
-                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, tc.function.name, null);
+                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = tc.function.name, .tool_result = tool_result });
                         }
 
                         // Save tool result to DB
@@ -692,7 +693,7 @@ pub fn run(
         .total_tokens = 0,
     });
 
-    _ = SendToolResult(allocator, session_id, logger, copy_result_msg, tool_call_id_dup, "spawn_sub_agent", null);
+    SendToolResult(allocator, session_id, logger, .tool_result, .{ .tool_call_id = tool_call_id_dup, .tool_name = "spawn_sub_agent", .tool_result = copy_result_msg });
 
     logger.infoFmt("spawn_sub_agent: completed {} sub-agents", .{parsed.sub_agents.len}) catch {};
 }

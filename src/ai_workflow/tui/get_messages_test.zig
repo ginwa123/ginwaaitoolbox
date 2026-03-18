@@ -514,3 +514,345 @@ test "get_messages returns empty array for non-existent session" {
 
     try std.testing.expectEqual(@as(usize, 0), result.len);
 }
+
+test "get_messages_latest returns null when no messages exist" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = 1,
+        .name = "create_llm_history",
+        .up = Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 2,
+        .name = "add_role_to_llm_history",
+        .up = Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 3,
+        .name = "add_reasoning_content",
+        .up = Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 5,
+        .name = "add_is_feed_to_llm",
+        .up = Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 6,
+        .name = "add_agent",
+        .up = Migration006AddAgent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 7,
+        .name = "add_session_tracking",
+        .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
+    try mgr.runMigrations();
+
+    const result = try get_messages.GetMessagesLatest(allocator, &db, "test-session-123");
+    defer if (result) |msg| msg.deinit(allocator);
+
+    try std.testing.expect(result == null);
+}
+
+test "get_messages_latest returns single message when only one exists" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = 1,
+        .name = "create_llm_history",
+        .up = Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 2,
+        .name = "add_role_to_llm_history",
+        .up = Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 3,
+        .name = "add_reasoning_content",
+        .up = Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 5,
+        .name = "add_is_feed_to_llm",
+        .up = Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 6,
+        .name = "add_agent",
+        .up = Migration006AddAgent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 7,
+        .name = "add_session_tracking",
+        .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
+    try mgr.runMigrations();
+
+    try db.exec(allocator,
+        "INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role, agent, session_name, loop_index, tool_name) VALUES ('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'Hello', 'stop', 'assistant', 'Agent', 'Test Session', 0, 'bash')",
+        &[_][]const u8{}
+    );
+
+    const result = try get_messages.GetMessagesLatest(allocator, &db, "test-session");
+    defer if (result) |msg| msg.deinit(allocator);
+
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("id1", result.?.id);
+    try std.testing.expectEqualStrings("Hello", result.?.response_content);
+    try std.testing.expectEqualStrings("bash", result.?.tool_name);
+}
+
+test "get_messages_latest returns most recent message when multiple exist" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = 1,
+        .name = "create_llm_history",
+        .up = Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 2,
+        .name = "add_role_to_llm_history",
+        .up = Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 3,
+        .name = "add_reasoning_content",
+        .up = Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 5,
+        .name = "add_is_feed_to_llm",
+        .up = Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 6,
+        .name = "add_agent",
+        .up = Migration006AddAgent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 7,
+        .name = "add_session_tracking",
+        .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
+    try mgr.runMigrations();
+
+    try db.exec(allocator,
+        \\INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role) VALUES 
+        \\('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'First', 'stop', 'assistant'),
+        \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'Second', 'stop', 'user'),
+        \\('id3', 'test-session', 'gpt-4', '2024-01-01 12:00:00', 'Third', 'stop', 'assistant')
+    , &[_][]const u8{});
+
+    const result = try get_messages.GetMessagesLatest(allocator, &db, "test-session");
+    defer if (result) |msg| msg.deinit(allocator);
+
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("id3", result.?.id);
+    try std.testing.expectEqualStrings("Third", result.?.response_content);
+}
+
+test "get_messages_latest filters out is_feed_to_llm = 0" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = 1,
+        .name = "create_llm_history",
+        .up = Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 2,
+        .name = "add_role_to_llm_history",
+        .up = Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 3,
+        .name = "add_reasoning_content",
+        .up = Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 5,
+        .name = "add_is_feed_to_llm",
+        .up = Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 6,
+        .name = "add_agent",
+        .up = Migration006AddAgent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 7,
+        .name = "add_session_tracking",
+        .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
+    try mgr.runMigrations();
+
+    try db.exec(allocator,
+        \\INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role, is_feed_to_llm) VALUES 
+        \\('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'Should be skipped', 'stop', 'assistant', 0),
+        \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'Should be returned', 'stop', 'assistant', 1)
+    , &[_][]const u8{});
+
+    const result = try get_messages.GetMessagesLatest(allocator, &db, "test-session");
+    defer if (result) |msg| msg.deinit(allocator);
+
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("id2", result.?.id);
+    try std.testing.expectEqualStrings("Should be returned", result.?.response_content);
+}
+
+test "get_messages_latest returns null for non-existent session" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = 1,
+        .name = "create_llm_history",
+        .up = Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 2,
+        .name = "add_role_to_llm_history",
+        .up = Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 3,
+        .name = "add_reasoning_content",
+        .up = Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 5,
+        .name = "add_is_feed_to_llm",
+        .up = Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 6,
+        .name = "add_agent",
+        .up = Migration006AddAgent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 7,
+        .name = "add_session_tracking",
+        .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
+    try mgr.runMigrations();
+
+    try db.exec(allocator,
+        "INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role) VALUES ('id1', 'other-session', 'gpt-4', '2024-01-01 10:00:00', 'Hello', 'stop', 'assistant')",
+        &[_][]const u8{}
+    );
+
+    const result = try get_messages.GetMessagesLatest(allocator, &db, "non-existent-session");
+    defer if (result) |msg| msg.deinit(allocator);
+
+    try std.testing.expect(result == null);
+}
+
+test "get_messages_latest handles tool_name from database" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try mgr.registerMigration(.{
+        .version = 1,
+        .name = "create_llm_history",
+        .up = Migration001CreateLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 2,
+        .name = "add_role_to_llm_history",
+        .up = Migration002AddRoleToLLMHistory.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 3,
+        .name = "add_reasoning_content",
+        .up = Migration003AddReasoningContent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 5,
+        .name = "add_is_feed_to_llm",
+        .up = Migration005AddIsFeedToLLM.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 6,
+        .name = "add_agent",
+        .up = Migration006AddAgent.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 7,
+        .name = "add_session_tracking",
+        .up = Migration007AddSessionTracking.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 11,
+        .name = "add_temperature_and_thinking",
+        .up = Migration011AddTemperatureAndThinking.up,
+    });
+    try mgr.runMigrations();
+
+    try db.exec(allocator,
+        "INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role, tool_name) VALUES ('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'Tool result', 'tool', 'tool', 'read_file')",
+        &[_][]const u8{}
+    );
+
+    const result = try get_messages.GetMessagesLatest(allocator, &db, "test-session");
+    defer if (result) |msg| msg.deinit(allocator);
+
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("read_file", result.?.tool_name);
+}
