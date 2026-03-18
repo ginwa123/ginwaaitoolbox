@@ -3,6 +3,7 @@ const json = std.json;
 const AgentTool = @import("models.zig").AgentTool;
 pub const LspDefinitionInput = @import("models.zig").LspDefinitionInput;
 const LspDefinitionOutput = @import("models.zig").LspDefinitionOutput;
+const LspLocation = @import("models.zig").LspLocation;
 
 // LSP error set
 pub const LspError = error{
@@ -64,6 +65,47 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     }
 
     return body;
+}
+
+/// Find the zls binary in PATH or return BinaryNotFound error
+fn findZls(allocator: std.mem.Allocator) ![]u8 {
+    // First check if zls exists in PATH
+    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch return LspError.BinaryNotFound;
+    defer allocator.free(path_env);
+
+    var path_iter = std.mem.splitScalar(u8, path_env, ':');
+    while (path_iter.next()) |dir| {
+        const zls_path = try std.fmt.allocPrint(allocator, "{s}/zls", .{dir});
+        defer allocator.free(zls_path);
+
+        if (std.fs.accessAbsolute(zls_path, .{})) {
+            return zls_path;
+        } else |_| {}
+    }
+
+    return LspError.BinaryNotFound;
+}
+
+/// Find project root by searching upward for build.zig
+fn findProjectRoot(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
+    var dir = std.fs.path.dirname(file_path) orelse ".";
+    
+    while (true) {
+        const build_zig_path = try std.fmt.allocPrint(allocator, "{s}/build.zig", .{dir});
+        defer allocator.free(build_zig_path);
+
+        std.fs.accessAbsolute(build_zig_path, .{}) catch {
+            const parent = std.fs.path.dirname(dir);
+            if (parent) |p| {
+                dir = p;
+            } else {
+                // No build.zig found, use current directory
+                return try std.process.getCwdAlloc(allocator);
+            }
+            continue;
+        };
+        return try allocator.dupe(u8, dir);
+    }
 }
 
 /// Parse a single LSP Location or LocationLink object
@@ -403,9 +445,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     const result_opt = parsed.value.object.get("result");
     if (result_opt == null or result_opt.? == .null) {
         return LspDefinitionOutput{
-            .file_path = try allocator.dupe(u8, ""),
-            .line = 0,
-            .character = 0,
+            .definitions = &.{},
             .found = false,
         };
     }
@@ -422,9 +462,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
 
     if (loc_obj == null or loc_obj.? != .object) {
         return LspDefinitionOutput{
-            .file_path = try allocator.dupe(u8, ""),
-            .line = 0,
-            .character = 0,
+            .definitions = &.{},
             .found = false,
         };
     }
@@ -434,13 +472,16 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
 }
 
 pub fn lspDefinitionToString(allocator: std.mem.Allocator, result: LspDefinitionOutput) ![]const u8 {
-    if (result.found) {
+    if (result.found and result.definitions.len > 0) {
+        // Return info about the first definition
+        const first_def = result.definitions[0];
         return try std.fmt.allocPrint(allocator,
             \\<file_path>{s}</file_path>
             \\n<line>{d}</line>
             \\n<character>{d}</character>
             \\n<found>true</found>
-        , .{ result.file_path, result.line, result.character });
+            \\n<count>{d}</count>
+        , .{ first_def.file_path, first_def.line, first_def.character, result.definitions.len });
     } else {
         return try allocator.dupe(u8, "<found>false</found>");
     }
