@@ -5,10 +5,14 @@ const models = @import("models.zig");
 // Test 1.1: LspDefinitionInput struct
 test "LspDefinitionInput has all required fields" {
     const input = models.LspDefinitionInput{
+        .lsp = "zls",
+        .root_dir = "/home/ginwa/project",
         .file_path = "/home/ginwa/project/src/main.zig",
         .line = 10,
         .character = 5,
     };
+    try std.testing.expect(std.mem.eql(u8, input.lsp, "zls"));
+    try std.testing.expect(std.mem.eql(u8, input.root_dir, "/home/ginwa/project"));
     try std.testing.expect(std.mem.eql(u8, input.file_path, "/home/ginwa/project/src/main.zig"));
     try std.testing.expectEqual(@as(u32, 10), input.line);
     try std.testing.expectEqual(@as(u32, 5), input.character);
@@ -50,28 +54,36 @@ test "lspDefinitionTool has correct name" {
 // Test 2.2: lspDefinitionTool parameters
 test "lspDefinitionTool has required parameters" {
     const params = lsp_definition.lspDefinitionTool.function.parameters;
-    try std.testing.expectEqual(@as(usize, 3), params.properties.len);
+    try std.testing.expectEqual(@as(usize, 5), params.properties.len);
 
+    var has_lsp = false;
+    var has_root_dir = false;
     var has_file_path = false;
     var has_line = false;
     var has_character = false;
 
     for (params.properties) |prop| {
+        if (std.mem.eql(u8, prop.name, "lsp")) has_lsp = true;
+        if (std.mem.eql(u8, prop.name, "root_dir")) has_root_dir = true;
         if (std.mem.eql(u8, prop.name, "file_path")) has_file_path = true;
         if (std.mem.eql(u8, prop.name, "line")) has_line = true;
         if (std.mem.eql(u8, prop.name, "character")) has_character = true;
     }
 
+    try std.testing.expect(has_lsp);
+    try std.testing.expect(has_root_dir);
     try std.testing.expect(has_file_path);
     try std.testing.expect(has_line);
     try std.testing.expect(has_character);
-    try std.testing.expectEqual(@as(usize, 3), params.required.len);
+    try std.testing.expectEqual(@as(usize, 5), params.required.len);
 }
 
 // Test 3.1: Non-existent file
 test "executeLspDefinition returns error for non-existent file" {
     const allocator = std.testing.allocator;
     const input = models.LspDefinitionInput{
+        .lsp = "zls",
+        .root_dir = "/nonexistent/path",
         .file_path = "/nonexistent/path/that/does/not/exist.zig",
         .line = 0,
         .character = 0,
@@ -132,16 +144,7 @@ test "createMessage formats Content-Length header" {
     try std.testing.expect(std.mem.endsWith(u8, msg, content));
 }
 
-// Test 5.2: Find zls binary error
-test "findZls returns error when zls not found" {
-    // This test verifies the error type exists by using it in a switch
-    const err: lsp_definition.LspError = error.BinaryNotFound;
-    const is_binary_not_found = switch (err) {
-        error.BinaryNotFound => true,
-        else => false,
-    };
-    try std.testing.expect(is_binary_not_found);
-}
+
 
 // Test 6.1: Full workflow with real zls
 test "integration: lsp_definition finds definition in real Zig file" {
@@ -171,6 +174,8 @@ test "integration: lsp_definition finds definition in real Zig file" {
 
     // Request definition
     const input = models.LspDefinitionInput{
+        .lsp = "zls",
+        .root_dir = "/tmp",
         .file_path = temp_path,
         .line = 7, // Line with "const s = MyStruct..."
         .character = 16, // Position of "MyStruct"

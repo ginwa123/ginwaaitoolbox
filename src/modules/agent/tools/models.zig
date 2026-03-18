@@ -54,6 +54,8 @@ pub const BashOutput = struct {
 
 // LSP Definition Tool Types
 pub const LspDefinitionInput = struct {
+    lsp: []const u8, // LSP binary name (e.g., "zls", "pyls") or absolute path
+    root_dir: []const u8, // Absolute path to project root directory
     file_path: []const u8, // Absolute path to file
     line: u32, // 0-indexed line number
     character: u32, // 0-indexed character position

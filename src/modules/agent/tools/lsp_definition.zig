@@ -66,76 +66,6 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     return body;
 }
 
-// Find zls binary
-fn findZls(allocator: std.mem.Allocator) ![]u8 {
-    const paths = &[_][]const u8{
-        "/usr/bin/zls",
-        "/usr/local/bin/zls",
-        "/home/ginwa/.local/bin/zls",
-        "/home/ginwa/.local/share/nvim/mason/bin/zls",
-        "/opt/homebrew/bin/zls",
-    };
-
-    for (paths) |path| {
-        if (std.fs.accessAbsolute(path, .{})) {
-            return try allocator.dupe(u8, path);
-        } else |_| {}
-    }
-
-    // Try `which zls`
-    var which_child = std.process.Child.init(&.{ "which", "zls" }, allocator);
-    which_child.stdout_behavior = .Pipe;
-    which_child.stderr_behavior = .Ignore;
-
-    which_child.spawn() catch return LspError.BinaryNotFound;
-
-    var buf: [256]u8 = undefined;
-    const n = which_child.stdout.?.read(&buf) catch return LspError.BinaryNotFound;
-    _ = which_child.wait() catch {};
-
-    if (n > 0) {
-        const path = std.mem.trim(u8, buf[0..n], " \n\r");
-        if (path.len > 0 and path[0] == '/') {
-            return try allocator.dupe(u8, path);
-        }
-    }
-
-    return LspError.BinaryNotFound;
-}
-
-// Find project root by searching upward for build.zig
-fn findProjectRoot(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
-    // Start from the file's directory and search upward
-    var dir_path = std.fs.path.dirname(file_path) orelse "/";
-
-    // Limit search depth to avoid infinite loops
-    var depth: usize = 0;
-    const max_depth = 20;
-
-    while (depth < max_depth) {
-        // Check if build.zig exists in this directory
-        const build_zig_path = try std.fs.path.join(allocator, &.{ dir_path, "build.zig" });
-        defer allocator.free(build_zig_path);
-
-        if (std.fs.accessAbsolute(build_zig_path, .{})) {
-            // Found build.zig, return this directory
-            return try allocator.dupe(u8, dir_path);
-        } else |_| {
-            // build.zig not found, go up one level
-            const parent = std.fs.path.dirname(dir_path);
-            if (parent == null or parent.?.len == 0 or std.mem.eql(u8, parent.?, dir_path)) {
-                // Reached root, return the original file's directory
-                return try allocator.dupe(u8, std.fs.path.dirname(file_path) orelse "/");
-            }
-            dir_path = parent.?;
-        }
-        depth += 1;
-    }
-
-    // Max depth reached, return the original file's directory
-    return try allocator.dupe(u8, std.fs.path.dirname(file_path) orelse "/");
-}
-
 pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionInput) !LspDefinitionOutput {
     // Verify file exists
     std.fs.accessAbsolute(input.file_path, .{}) catch return LspError.FileNotFound;
@@ -146,12 +76,8 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     const content = try file.readToEndAlloc(allocator, 1024 * 1024);
     defer allocator.free(content);
 
-    // Find zls binary
-    const zls_path = try findZls(allocator);
-    defer allocator.free(zls_path);
-
-    // Spawn zls
-    var child = std.process.Child.init(&.{zls_path}, allocator);
+    // Use provided LSP binary directly
+    var child = std.process.Child.init(&.{input.lsp}, allocator);
     child.stdin_behavior = .Pipe;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
@@ -169,10 +95,8 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     const uri = try std.fmt.allocPrint(allocator, "file://{s}", .{input.file_path});
     defer allocator.free(uri);
 
-    // Find project root by searching upward for build.zig
-    const root_dir = try findProjectRoot(allocator, input.file_path);
-    defer allocator.free(root_dir);
-    const root_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{root_dir});
+    // Use provided root_dir directly
+    const root_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{input.root_dir});
     defer allocator.free(root_uri);
 
     // 1. Send initialize with rootUri
@@ -409,6 +333,21 @@ pub const lspDefinitionTool = AgentTool{
             .type = "object",
             .properties = &.{
                 .{
+                    .name = "lsp",
+                    .type = "string",
+                    .description = "lsp bin name like zls or pyls or path to binary",
+                },
+                .{
+                    .name = "lsp",
+                    .type = "string",
+                    .description = "LSP binary name like zls or pyls or path to binary",
+                },
+                .{
+                    .name = "root_dir",
+                    .type = "string",
+                    .description = "Absolute path to the project root directory",
+                },
+                .{
                     .name = "file_path",
                     .type = "string",
                     .description = "Absolute path to the source file",
@@ -424,7 +363,7 @@ pub const lspDefinitionTool = AgentTool{
                     .description = "Character position (0-indexed)",
                 },
             },
-            .required = &.{ "file_path", "line", "character" },
+            .required = &.{ "lsp", "root_dir", "file_path", "line", "character" },
         },
     },
 };
