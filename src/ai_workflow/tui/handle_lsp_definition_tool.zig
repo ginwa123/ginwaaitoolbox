@@ -33,11 +33,7 @@ pub fn run(
             .{@errorName(err)},
         );
     };
-    defer {
-        if (result.found) {
-            allocator.free(result.file_path);
-        }
-    }
+    defer result.deinit(allocator);
 
     return lsp_definition_tool.lspDefinitionToString(allocator, result);
 }
