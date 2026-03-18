@@ -1,5 +1,5 @@
 const std = @import("std");
-const lsp_workspace_symbol = @import("lsp_workspace_symbol.zig");
+const lsp = @import("lsp.zig");
 const models = @import("models.zig");
 
 // Test 1.1: LspWorkspaceSymbolInput struct
@@ -104,12 +104,12 @@ test "LspWorkspaceSymbolOutput can represent not found" {
 
 // Test 2.1: lspWorkspaceSymbolTool name
 test "lspWorkspaceSymbolTool has correct name" {
-    try std.testing.expect(std.mem.eql(u8, lsp_workspace_symbol.lspWorkspaceSymbolTool.function.name, "lsp_workspace_symbol"));
+    try std.testing.expect(std.mem.eql(u8, lsp.lspWorkspaceSymbolTool.function.name, "lsp_workspace_symbol"));
 }
 
 // Test 2.2: lspWorkspaceSymbolTool parameters
 test "lspWorkspaceSymbolTool has required parameters" {
-    const params = lsp_workspace_symbol.lspWorkspaceSymbolTool.function.parameters;
+    const params = lsp.lspWorkspaceSymbolTool.function.parameters;
     try std.testing.expectEqual(@as(usize, 4), params.properties.len);
 
     var has_lsp = false;
@@ -164,7 +164,7 @@ test "lspWorkspaceSymbolToString formats found symbols" {
     defer allocator.free(output.symbols[1].container_name.?);
     defer allocator.free(output.symbols);
 
-    const result = try lsp_workspace_symbol.lspWorkspaceSymbolToString(allocator, output);
+    const result = try lsp.lspWorkspaceSymbolToString(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "<found>true</found>") != null);
@@ -185,7 +185,7 @@ test "lspWorkspaceSymbolToString formats not found" {
         .found = false,
     };
 
-    const result = try lsp_workspace_symbol.lspWorkspaceSymbolToString(allocator, output);
+    const result = try lsp.lspWorkspaceSymbolToString(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.eql(u8, result, "<found>false</found>"));
@@ -196,7 +196,7 @@ test "createMessage creates valid LSP message" {
     const allocator = std.testing.allocator;
 
     const content = "{\"jsonrpc\":\"2.0\",\"id\":1}";
-    const msg = try lsp_workspace_symbol.createMessage(allocator, content);
+    const msg = try lsp.createMessage(allocator, content);
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.startsWith(u8, msg, "Content-Length: "));

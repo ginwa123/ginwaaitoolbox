@@ -1,5 +1,5 @@
 const std = @import("std");
-const lsp_definition = @import("lsp_definition.zig");
+const lsp = @import("lsp.zig");
 const models = @import("models.zig");
 
 // Test 1.1: LspDefinitionInput struct
@@ -86,12 +86,12 @@ test "LspDefinitionOutput can hold multiple definitions" {
 
 // Test 2.1: lspDefinitionTool name
 test "lspDefinitionTool has correct name" {
-    try std.testing.expect(std.mem.eql(u8, lsp_definition.lspDefinitionTool.function.name, "lsp_definition"));
+    try std.testing.expect(std.mem.eql(u8, lsp.lspDefinitionTool.function.name, "lsp_definition"));
 }
 
 // Test 2.2: lspDefinitionTool parameters
 test "lspDefinitionTool has required parameters" {
-    const params = lsp_definition.lspDefinitionTool.function.parameters;
+    const params = lsp.lspDefinitionTool.function.parameters;
     try std.testing.expectEqual(@as(usize, 5), params.properties.len);
 
     var has_lsp = false;
@@ -127,7 +127,7 @@ test "executeLspDefinition returns error for non-existent file" {
         .character = 0,
     };
 
-    const result = lsp_definition.executeLspDefinition(allocator, input);
+    const result = lsp.executeLspDefinition(allocator, input);
     try std.testing.expectError(error.FileNotFound, result);
 }
 
@@ -149,7 +149,7 @@ test "lspDefinitionToString formats found definition" {
     defer allocator.free(output.definitions[0].file_path);
     defer allocator.free(output.definitions);
 
-    const str = try lsp_definition.lspDefinitionToString(allocator, output);
+    const str = try lsp.lspDefinitionToString(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>true</found>"));
@@ -171,7 +171,7 @@ test "lspDefinitionToString formats not found" {
         .found = false,
     };
 
-    const str = try lsp_definition.lspDefinitionToString(allocator, output);
+    const str = try lsp.lspDefinitionToString(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>false</found>"));
@@ -204,7 +204,7 @@ test "lspDefinitionToString formats multiple definitions" {
         allocator.free(output.definitions);
     }
 
-    const str = try lsp_definition.lspDefinitionToString(allocator, output);
+    const str = try lsp.lspDefinitionToString(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>true</found>"));
@@ -218,7 +218,7 @@ test "createMessage formats Content-Length header" {
     const allocator = std.testing.allocator;
     const content = "{\"jsonrpc\":\"2.0\"}";
 
-    const msg = try lsp_definition.createMessage(allocator, content);
+    const msg = try lsp.createMessage(allocator, content);
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.startsWith(u8, msg, "Content-Length:"));
@@ -261,7 +261,7 @@ test "integration: lsp_definition finds definition in real Zig file" {
         .character = 16, // Position of "MyStruct"
     };
 
-    const output = lsp_definition.executeLspDefinition(allocator, input) catch |e| {
+    const output = lsp.executeLspDefinition(allocator, input) catch |e| {
         if (e == error.BinaryNotFound) {
             std.debug.print("Skipping integration test - zls not found\n", .{});
             return;
@@ -307,7 +307,7 @@ test "integration: lsp_definition finds definition in real Zig file" {
 // Test 7.1: LspError error set
 test "LspError error set contains expected errors" {
     // Verify all expected error types exist by checking they can be assigned
-    const errors = [_]lsp_definition.LspError{
+    const errors = [_]lsp.LspError{
         error.FileNotFound,
         error.BinaryNotFound,
         error.ProcessSpawnFailed,
@@ -382,7 +382,7 @@ test "integration: lsp_definition resolves through import chains to actual defin
         .character = 12, // Position of "MyType"
     };
 
-    const output = lsp_definition.executeLspDefinition(allocator, input) catch |e| {
+    const output = lsp.executeLspDefinition(allocator, input) catch |e| {
         if (e == error.BinaryNotFound) {
             std.debug.print("Skipping import chain test - zls not found\n", .{});
             return;

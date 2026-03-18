@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
-const lsp_references_tool = tree1_mod.tool_models.lsp_references;
+const lsp_tool = tree1_mod.tool_models.lsp;
 
 /// Stateless lsp_references tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments
@@ -15,7 +15,7 @@ pub fn run(
 ) ![]const u8 {
     // Parse arguments JSON to LspReferencesInput
     const parsed = std.json.parseFromSlice(
-        lsp_references_tool.LspReferencesInput,
+        lsp_tool.LspReferencesInput,
         allocator,
         tool_call.function.arguments,
         .{ .allocate = .alloc_always },
@@ -27,7 +27,7 @@ pub fn run(
     };
     defer parsed.deinit();
 
-    const result = lsp_references_tool.executeLspReferences(allocator, parsed.value) catch |err| {
+    const result = lsp_tool.executeLspReferences(allocator, parsed.value) catch |err| {
         return try std.fmt.allocPrint(allocator,
             "<error>Failed to get references: {s}</error>",
             .{@errorName(err)},
@@ -35,5 +35,5 @@ pub fn run(
     };
     defer result.deinit(allocator);
 
-    return lsp_references_tool.lspReferencesToString(allocator, result);
+    return lsp_tool.lspReferencesToString(allocator, result);
 }

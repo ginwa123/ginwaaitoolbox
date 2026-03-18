@@ -1,5 +1,5 @@
 const std = @import("std");
-const lsp_references = @import("lsp_references.zig");
+const lsp = @import("lsp.zig");
 const models = @import("models.zig");
 
 // =============================================================================
@@ -111,17 +111,17 @@ test "LspReferencesOutput can hold multiple references" {
 }
 
 // =============================================================================
-// Chunk 2: Tool Definition Tests (lsp_references.zig)
+// Chunk 2: Tool Definition Tests (lsp.zig)
 // =============================================================================
 
 // Test 2.1: lspReferencesTool has correct name
 test "lspReferencesTool has correct name" {
-    try std.testing.expect(std.mem.eql(u8, lsp_references.lspReferencesTool.function.name, "lsp_references"));
+    try std.testing.expect(std.mem.eql(u8, lsp.lspReferencesTool.function.name, "lsp_references"));
 }
 
 // Test 2.2: lspReferencesTool has required parameters
 test "lspReferencesTool has required parameters" {
-    const params = lsp_references.lspReferencesTool.function.parameters;
+    const params = lsp.lspReferencesTool.function.parameters;
     // Should have 7 properties: lsp, root_dir, file_path, line, character, include_declaration, max_output
     try std.testing.expectEqual(@as(usize, 7), params.properties.len);
 
@@ -156,7 +156,7 @@ test "lspReferencesTool has required parameters" {
 
 // Test 2.3: lspReferencesTool has correct description
 test "lspReferencesTool has description mentioning textDocument/references" {
-    const desc = lsp_references.lspReferencesTool.function.description;
+    const desc = lsp.lspReferencesTool.function.description;
     try std.testing.expect(std.mem.containsAtLeast(u8, desc, 1, "references"));
 }
 
@@ -184,7 +184,7 @@ test "lspReferencesToString formats found reference" {
         allocator.free(output.definitions);
     }
 
-    const str = try lsp_references.lspReferencesToString(allocator, output);
+    const str = try lsp.lspReferencesToString(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>true</found>"));
@@ -207,7 +207,7 @@ test "lspReferencesToString formats not found" {
         .found = false,
     };
 
-    const str = try lsp_references.lspReferencesToString(allocator, output);
+    const str = try lsp.lspReferencesToString(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>false</found>"));
@@ -240,7 +240,7 @@ test "lspReferencesToString formats multiple references" {
         allocator.free(output.definitions);
     }
 
-    const str = try lsp_references.lspReferencesToString(allocator, output);
+    const str = try lsp.lspReferencesToString(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>true</found>"));
@@ -272,7 +272,7 @@ test "lspReferencesToString includes end positions when present" {
         allocator.free(output.definitions);
     }
 
-    const str = try lsp_references.lspReferencesToString(allocator, output);
+    const str = try lsp.lspReferencesToString(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<end_line>15</end_line>"));
@@ -284,7 +284,7 @@ test "createMessage formats Content-Length header" {
     const allocator = std.testing.allocator;
     const content = "{\"jsonrpc\":\"2.0\"}";
 
-    const msg = try lsp_references.createMessage(allocator, content);
+    const msg = try lsp.createMessage(allocator, content);
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.startsWith(u8, msg, "Content-Length:"));
@@ -308,13 +308,13 @@ test "executeLspReferences returns error for non-existent file" {
         .include_declaration = true,
     };
 
-    const result = lsp_references.executeLspReferences(allocator, input);
+    const result = lsp.executeLspReferences(allocator, input);
     try std.testing.expectError(error.FileNotFound, result);
 }
 
 // Test 4.2: LspError error set contains expected errors
 test "LspError error set contains expected errors" {
-    const errors = [_]lsp_references.LspError{
+    const errors = [_]lsp.LspError{
         error.FileNotFound,
         error.BinaryNotFound,
         error.ProcessSpawnFailed,
@@ -366,7 +366,7 @@ test "integration: lsp_references finds references in real Zig file" {
         .include_declaration = true,
     };
 
-    const output = lsp_references.executeLspReferences(allocator, input) catch |e| {
+    const output = lsp.executeLspReferences(allocator, input) catch |e| {
         if (e == error.BinaryNotFound) {
             std.debug.print("Skipping integration test - zls not found\n", .{});
             return;
@@ -438,7 +438,7 @@ test "integration: lsp_references respects include_declaration=false" {
         .include_declaration = false, // Exclude declaration
     };
 
-    const output = lsp_references.executeLspReferences(allocator, input) catch |e| {
+    const output = lsp.executeLspReferences(allocator, input) catch |e| {
         if (e == error.BinaryNotFound) {
             std.debug.print("Skipping integration test - zls not found\n", .{});
             return;

@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
-const lsp_workspace_symbol_tool = tree1_mod.tool_models.lsp_workspace_symbol;
+const lsp_tool = tree1_mod.tool_models.lsp;
 
 /// Stateless lsp_workspace_symbol tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments
@@ -15,7 +15,7 @@ pub fn run(
 ) ![]const u8 {
     // Parse arguments JSON to LspWorkspaceSymbolInput
     const parsed = std.json.parseFromSlice(
-        lsp_workspace_symbol_tool.LspWorkspaceSymbolInput,
+        lsp_tool.LspWorkspaceSymbolInput,
         allocator,
         tool_call.function.arguments,
         .{ .allocate = .alloc_always },
@@ -27,7 +27,7 @@ pub fn run(
     };
     defer parsed.deinit();
 
-    const result = lsp_workspace_symbol_tool.executeLspWorkspaceSymbol(allocator, parsed.value) catch |err| {
+    const result = lsp_tool.executeLspWorkspaceSymbol(allocator, parsed.value) catch |err| {
         return try std.fmt.allocPrint(allocator,
             "<error>Failed to search workspace symbols: {s}</error>",
             .{@errorName(err)},
@@ -35,5 +35,5 @@ pub fn run(
     };
     defer result.deinit(allocator);
 
-    return lsp_workspace_symbol_tool.lspWorkspaceSymbolToString(allocator, result);
+    return lsp_tool.lspWorkspaceSymbolToString(allocator, result);
 }

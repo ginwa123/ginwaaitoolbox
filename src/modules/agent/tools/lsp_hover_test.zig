@@ -1,5 +1,5 @@
 const std = @import("std");
-const lsp_hover = @import("lsp_hover.zig");
+const lsp = @import("lsp.zig");
 const models = @import("models.zig");
 
 // Test 1.1: LspHoverInput struct
@@ -55,12 +55,12 @@ test "LspHoverOutput can represent not found" {
 
 // Test 2.1: lspHoverTool name
 test "lspHoverTool has correct name" {
-    try std.testing.expect(std.mem.eql(u8, lsp_hover.lspHoverTool.function.name, "lsp_hover"));
+    try std.testing.expect(std.mem.eql(u8, lsp.lspHoverTool.function.name, "lsp_hover"));
 }
 
 // Test 2.2: lspHoverTool parameters
 test "lspHoverTool has required parameters" {
-    const params = lsp_hover.lspHoverTool.function.parameters;
+    const params = lsp.lspHoverTool.function.parameters;
     try std.testing.expectEqual(@as(usize, 5), params.properties.len);
 
     var has_lsp = false;
@@ -99,7 +99,7 @@ test "lspHoverToString formats found hover" {
     };
     defer allocator.free(output.contents.?);
 
-    const result = try lsp_hover.lspHoverToString(allocator, output);
+    const result = try lsp.lspHoverToString(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "<found>true</found>") != null);
@@ -124,7 +124,7 @@ test "lspHoverToString formats not found" {
         .found = false,
     };
 
-    const result = try lsp_hover.lspHoverToString(allocator, output);
+    const result = try lsp.lspHoverToString(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.eql(u8, result, "<found>false</found>"));
@@ -135,7 +135,7 @@ test "createMessage creates valid LSP message" {
     const allocator = std.testing.allocator;
 
     const content = "{\"jsonrpc\":\"2.0\",\"id\":1}";
-    const msg = try lsp_hover.createMessage(allocator, content);
+    const msg = try lsp.createMessage(allocator, content);
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.startsWith(u8, msg, "Content-Length: "));
@@ -154,6 +154,6 @@ test "executeLspHover returns error for non-existent file" {
         .character = 0,
     };
 
-    const result = lsp_hover.executeLspHover(allocator, input);
+    const result = lsp.executeLspHover(allocator, input);
     try std.testing.expectError(error.FileNotFound, result);
 }

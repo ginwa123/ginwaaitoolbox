@@ -734,7 +734,7 @@ pub const Agent = struct {
                 if (first_choice.object.get("finish_reason")) |fr| {
                     if (fr == .string) {
                         chunk.finish_reason = FinishReason.fromStr(fr.string);
-                        self.logFmt(.info, "[STREAM] finish_reason parsed: {s}", .{fr.string});
+                        // self.logFmt(.info, "[STREAM] finish_reason parsed: {s}", .{fr.string});
                     }
                 }
 
@@ -821,19 +821,19 @@ pub const Agent = struct {
                                 }
                                 deltas[i] = delta_item;
                                 // Log meaningful tool call details
-                                const fn_name = delta_item.function_name orelse "pending";
-                                const fn_id = delta_item.id orelse "pending";
-                                const args_preview = if (delta_item.function_arguments) |args|
-                                    if (args.len > 50) args[0..50] else args
-                                else
-                                    "none";
-                                self.logFmt(.debug, "[STREAM] Tool[{}] {s} (id={s}): args={s}{s}", .{
-                                    i,
-                                    fn_name,
-                                    fn_id,
-                                    args_preview,
-                                    if (delta_item.function_arguments) |a| if (a.len > 50) "..." else "" else ""
-                                });
+                                // const fn_name = delta_item.function_name orelse "pending";
+                                // const fn_id = delta_item.id orelse "pending";
+                                // const args_preview = if (delta_item.function_arguments) |args|
+                                //     if (args.len > 50) args[0..50] else args
+                                // else
+                                //     "none";
+                                // self.logFmt(.debug, "[STREAM] Tool[{}] {s} (id={s}): args={s}{s}", .{
+                                //     i,
+                                //     fn_name,
+                                //     fn_id,
+                                //     args_preview,
+                                //     if (delta_item.function_arguments) |a| if (a.len > 50) "..." else "" else ""
+                                // });
                             }
                             chunk.tool_calls_delta = deltas;
                         }
@@ -1128,7 +1128,7 @@ pub const Agent = struct {
                 break;
             }
 
-            self.logFmt(.debug, "[STREAM] Read {} bytes", .{bytes_read});
+            // self.logFmt(.debug, "[STREAM] Read {} bytes", .{bytes_read});
 
             // Add small yield to prevent tight CPU spinning during streaming
             // This ensures we don't monopolize CPU when reading small chunks rapidly
