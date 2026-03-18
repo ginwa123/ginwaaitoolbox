@@ -20,18 +20,10 @@ const logger_mod = root_mod.logger;
 const GetCurrentAgentBySessionId = @import("get_current_agent_by_session_id.zig");
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
-const send_tool_result = @import("send_tool_result.zig");
-const SendUserChoice = @import("send_user_choice.zig").SendUserChoice;
-const SendResponse = @import("send_response.zig").SendResponse;
-const send_error = @import("send_error.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
 const BuildMessages = @import("build_messages_for_agent_prompt.zig").BuildMessages;
 const GetMessages = @import("get_messages.zig").GetMessages;
 const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
-const send_stream_chunk_final = @import("send_stream_chunk_final.zig");
-const send_steam_chunk_content = @import("send_stream_chunk_content.zig");
-const send_stream_chunk_reasoning = @import("send_stream_chunk_reasoning.zig");
-const send_stream_to_chunk_tool_call_delta = @import("send_stream_to_chunk_tool_call_delta.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const BuildMemoryForAgent = @import("build_memory_for_agent_prompt.zig").BuildMemoryForAgent;
@@ -39,12 +31,22 @@ const WriteFileTool = root_mod.write_file;
 const SearchTool = root_mod.search_tool;
 const TextReplaceTool = root_mod.text_replace_tool;
 
+const on_event_sent = @import("on_event_sent.zig");
+const SendResponse = on_event_sent.SendResponse;
+const sendError = on_event_sent.sendError;
+const sendSkill = on_event_sent.sendSkill;
+const sendStreamChunkContent = on_event_sent.sendStreamChunkContent;
+const sendStreamChunkReasoning = on_event_sent.sendStreamChunkReasoning;
+const sendStreamChunkFinal = on_event_sent.sendStreamChunkFinal;
+const sendStreamToolCallDelta = on_event_sent.sendStreamToolCallDelta;
+const SendToolResult = on_event_sent.SendToolResult;
+const sendUserChoice = on_event_sent.sendUserChoice;
+
 const handle_content_filter = @import("handle_content_filter.zig");
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
 const BuildDynamicAgentContent = @import("build_dynamic_agent_for_agent_prompt.zig").BuildDynamicAgentContent;
 const BuildBackgroundProcessContent = @import("build_background_process_for_agent_prompt.zig").BuildBackgroundProcessPrompt;
 const save_skill_mod = @import("save_skill.zig");
-const send_skill_mod = @import("send_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
@@ -83,26 +85,26 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 
     // Send final chunk with usage when done
     if (chunk.done) {
-        send_stream_chunk_final.run(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
+        sendStreamChunkFinal(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
         return;
     }
 
     // Send content chunk
     if (chunk.content) |content| {
-        send_steam_chunk_content.run(allocator, session_id, stream_ctx.chunk_index, content);
+        sendStreamChunkContent(allocator, session_id, stream_ctx.chunk_index, content);
         stream_ctx.chunk_index += 1;
     }
 
     // Send reasoning content chunk
     if (chunk.reasoning_content) |rc| {
-        send_stream_chunk_reasoning.run(allocator, session_id, stream_ctx.chunk_index, rc);
+        sendStreamChunkReasoning(allocator, session_id, stream_ctx.chunk_index, rc);
         stream_ctx.chunk_index += 1;
     }
 
     // we disable tool calls delta for now
     // Handle tool calls delta - we'll aggregate these
     // if (chunk.tool_calls_delta) |deltas| {
-    //     send_stream_to_chunk_tool_call_delta.run(allocator, session_id, stream_ctx.chunk_index, deltas);
+    //     sendStreamToolCallDelta(allocator, session_id, stream_ctx.chunk_index, deltas);
     //     stream_ctx.chunk_index += 1;
     // }
 }
@@ -123,7 +125,7 @@ pub const TUIWorkflow = struct {
     pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) void {
         self.runInternal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
-            send_error.run(allocator, session_id, self.logger, err_msg, "user_choice");
+            sendError(allocator, session_id, self.logger, err_msg, "user_choice");
         };
     }
 
@@ -250,7 +252,7 @@ pub const TUIWorkflow = struct {
                         .completion_tokens = resDynmicAgent.usage.completion_tokens,
                         .total_tokens = resDynmicAgent.usage.total_tokens,
                     });
-                    _ = SendResponse(allocator, session_id, self.logger, resDynmicAgent, "user_choice");
+                    _ = SendResponse(allocator, session_id, self.logger, resDynmicAgent.content, resDynmicAgent.finish_reason, resDynmicAgent.reasoning_content, resDynmicAgent.usage, "user_choice");
                     self.logger.infoFmt("FINISH REASON STOP - complete", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
@@ -261,7 +263,7 @@ pub const TUIWorkflow = struct {
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                    _ = try SendUserChoice(
+                    _ = try sendUserChoice(
                         allocator,
                         session_id,
                         self.logger,

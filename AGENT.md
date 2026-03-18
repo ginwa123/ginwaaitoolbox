@@ -90,7 +90,6 @@ Core AI agent functionality with tools:
 - **get_skill** — Load skill content
 - **remove_skill** — Unload skills
 - **change_agent** — Modify agent behavior
-- **lsp_client** — LSP for code intelligence
 - **loop_detector** — Detect repetitive behavior
 - **helper** — General helper utilities
 

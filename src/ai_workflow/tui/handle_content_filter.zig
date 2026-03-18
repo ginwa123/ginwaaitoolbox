@@ -4,8 +4,10 @@ const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const SaveMessage = @import("save_message.zig").SaveMessage;
-const send_response = @import("send_response.zig");
-const send_error = @import("send_error.zig");
+const on_event_sent = @import("on_event_sent.zig");
+
+const SendResponse = on_event_sent.SendResponse;
+const sendError = on_event_sent.sendError;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 
 pub fn run(
@@ -31,7 +33,7 @@ pub fn run(
     logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
     // Save the filtered response to history
-    SaveMessage(
+    _ = try SaveMessage(
         allocator, db, .{
         .session_id = session_id,
         .model = model,
@@ -52,24 +54,21 @@ pub fn run(
         .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
         .completion_tokens = res_dynamic_agent.usage.completion_tokens,
         .total_tokens = res_dynamic_agent.usage.total_tokens,
-    }) catch |err| {
-        const err_name = @errorName(err);
-        logger.errFmt("saveMessage error: {s}", .{err_name}) catch {};
-    };
+    });
 
     // Send error response to client with content_filter finish reason
     // The response content may be empty or contain partial filtered content
     if (res_dynamic_agent.content) |c| {
         if (c.len > 0) {
             // Send the partial content with content_filter finish reason
-            send_response.SendResponse(allocator, session_id, logger, res_dynamic_agent, "content_filter");
+            SendResponse(allocator, session_id, logger, res_dynamic_agent.content, res_dynamic_agent.finish_reason, res_dynamic_agent.reasoning_content, res_dynamic_agent.usage, "content_filter");
         } else {
             // No content, send error message
-            send_error.run(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
+            sendError(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
         }
     } else {
         // No content, send error message
-        send_error.run(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
+        sendError(allocator, session_id, logger, "Content was filtered due to safety policies. Please rephrase your request.", "user_choice");
     }
 
     return true; // Signal caller to break the loop

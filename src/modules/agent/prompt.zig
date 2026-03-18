@@ -713,14 +713,6 @@ pub const Agent =
     \\- Available agents are listed below — use `get_agent(agent_name: "agent-name")` to load one
     \\- You can also load custom agents from file path using `get_agent(path: "/absolute/path/to/agent.zig")`
     \\
-    \\### Code Intelligence (when available)
-    \\- **lsp_start**: Start an LSP server for a project
-    \\- **lsp_stop**: Stop a running LSP server
-    \\- **lsp_definition**: Go to definition in code
-    \\- **lsp_references**: Find all references to a symbol
-    \\- **lsp_hover**: Get hover information for a symbol
-    \\- **lsp_diagnostics**: Get compiler diagnostics
-    \\
     \\**IMPORTANT**: There is NO "glob" tool. Do NOT attempt to use or request a glob tool.
     \\Use `search` with ripgrep patterns instead for finding files by pattern.
 ;

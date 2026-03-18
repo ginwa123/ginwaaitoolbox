@@ -217,7 +217,7 @@ pub fn build(b: *std.Build) void {
 
     // Kerjabot step: runs frontend dev server only
     const kerjabot_step = b.step("run:kerjabot", "Run kerjabot frontend only");
-    
+
     // Run frontend with pnpm dev
     const kerjabot_script = b.addSystemCommand(&.{
         "sh", "-c",

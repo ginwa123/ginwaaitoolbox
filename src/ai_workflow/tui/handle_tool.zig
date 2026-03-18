@@ -5,8 +5,9 @@ const logger_mod = root_mod.logger;
 const sqlite = root_mod.sqlite;
 const config_mod = @import("../../modules/config/config.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
-const SendToolResult = @import("send_tool_result.zig");
-const SendResponse = @import("send_response.zig").SendResponse;
+const on_event_sent = @import("on_event_sent.zig");
+const SendToolResult = on_event_sent.SendToolResult;
+const SendResponse = on_event_sent.SendResponse;
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
@@ -79,7 +80,7 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
         .tool_name = tool_call.function.name,
     });
 
-    SendToolResult.SendToolResult(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
+    SendToolResult(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
 }
 
 /// Helper to handle error for tools that return owned strings
@@ -107,7 +108,7 @@ pub fn HandleTool(
     config: *const config_mod.LlmConfig,
     base_tools: []const tool_models.AgentTool,
 ) !void {
-    _ = SendResponse(allocator, session_id, logger, res_dynamic_agent, null);
+    _ = SendResponse(allocator, session_id, logger, res_dynamic_agent.content, res_dynamic_agent.finish_reason, res_dynamic_agent.reasoning_content, res_dynamic_agent.usage, null);
     if (res_dynamic_agent.tool_calls) |tc| {
         var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
         var toolNames = try std.ArrayList([]const u8).initCapacity(allocator, tc.len);
@@ -171,7 +172,7 @@ pub fn HandleTool(
 
         if (res_dynamic_agent.content) |c| {
             _ = c;
-            _ = SendResponse(allocator, session_id, logger, res_dynamic_agent, null);
+            _ = SendResponse(allocator, session_id, logger, res_dynamic_agent.content, res_dynamic_agent.finish_reason, res_dynamic_agent.reasoning_content, res_dynamic_agent.usage, null);
         }
 
         // Build context for tool handling
@@ -243,7 +244,7 @@ pub fn HandleTool(
                 ctx.is_thinking = isThinking.*;
                 ctx.agent_temperature = agent_temperature.*;
 
-                SendToolResult.SendToolResult(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
+                SendToolResult(allocator, session_id, logger, change_result.arguments, change_result.tool_call_id, tool_call.function.name, null);
                 logger.infoFmt("Agent properties updated: temp={any}, is_thinking={any}", .{ change_result.temperature, change_result.is_thinking }) catch {};
                 continue;
             }
