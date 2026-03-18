@@ -1,9 +1,8 @@
 const std = @import("std");
 const json = std.json;
 const AgentTool = @import("models.zig").AgentTool;
-pub const LspDefinitionInput = @import("models.zig").LspDefinitionInput;
-const LspDefinitionOutput = @import("models.zig").LspDefinitionOutput;
-const LspLocation = @import("models.zig").LspLocation;
+pub const LspHoverInput = @import("models.zig").LspHoverInput;
+const LspHoverOutput = @import("models.zig").LspHoverOutput;
 
 // LSP error set
 pub const LspError = error{
@@ -11,7 +10,7 @@ pub const LspError = error{
     BinaryNotFound,
     ProcessSpawnFailed,
     InvalidResponse,
-    DefinitionNotFound,
+    HoverNotFound,
 };
 
 // JSON-RPC message helpers
@@ -67,157 +66,134 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     return body;
 }
 
-/// Parse a single LSP Location or LocationLink object
-/// Returns the parsed LspLocation or null if parsing fails
-fn parseLocation(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
-    if (loc_value != .object) return null;
+/// Parse hover contents which can be:
+/// - string (plain text)
+/// - { kind: "markdown" | "plaintext", value: string }
+/// - string[] (array of strings)
+/// - { kind: ..., value: ... }[] (array of marked strings)
+fn parseHoverContents(allocator: std.mem.Allocator, contents: json.Value) !?[]u8 {
+    switch (contents) {
+        .string => {
+            return try allocator.dupe(u8, contents.string);
+        },
+        .object => {
+            // { kind: "markdown" | "plaintext", value: string }
+            const value_val = contents.object.get("value") orelse return null;
+            if (value_val == .string) {
+                return try allocator.dupe(u8, value_val.string);
+            }
+            return null;
+        },
+        .array => {
+            // Array of strings or marked strings
+            var result = std.ArrayList(u8).empty;
+            defer result.deinit(allocator);
+            const writer = result.writer(allocator);
 
-    const obj = loc_value.object;
+            for (contents.array.items, 0..) |item, i| {
+                if (i > 0) {
+                    try writer.print("\n\n", .{});
+                }
 
-    // Check if this is a LocationLink (has targetUri) or Location (has uri)
-    const uri_val = obj.get("targetUri") orelse obj.get("uri") orelse return null;
-    if (uri_val != .string) return null;
-
-    // Get the range (targetRange for LocationLink, range for Location)
-    const range_val = obj.get("targetRange") orelse obj.get("range") orelse return null;
-    if (range_val != .object) return null;
-
-    const start_val = range_val.object.get("start") orelse return null;
-    if (start_val != .object) return null;
-
-    const line_val = start_val.object.get("line") orelse return null;
-    const char_val = start_val.object.get("character") orelse return null;
-    if (line_val != .integer or char_val != .integer) return null;
-
-    // Extract file path from URI
-    const result_uri = uri_val.string;
-    const result_path = if (std.mem.startsWith(u8, result_uri, "file://"))
-        result_uri[7..]
-    else
-        result_uri;
-
-    var location = LspLocation{
-        .file_path = try allocator.dupe(u8, result_path),
-        .line = @intCast(line_val.integer),
-        .character = @intCast(char_val.integer),
-    };
-
-    // Parse optional end position
-    const end_val = range_val.object.get("end");
-    if (end_val) |end| {
-        if (end == .object) {
-            const end_line = end.object.get("line");
-            const end_char = end.object.get("character");
-            if (end_line) |el| {
-                if (el == .integer) {
-                    location.end_line = @intCast(el.integer);
+                switch (item) {
+                    .string => {
+                        try writer.print("{s}", .{item.string});
+                    },
+                    .object => {
+                        const value_val = item.object.get("value") orelse continue;
+                        if (value_val == .string) {
+                            try writer.print("{s}", .{value_val.string});
+                        }
+                    },
+                    else => {},
                 }
             }
-            if (end_char) |ec| {
-                if (ec == .integer) {
-                    location.end_character = @intCast(ec.integer);
-                }
+
+            if (result.items.len > 0) {
+                return try result.toOwnedSlice(allocator);
             }
-        }
+            return null;
+        },
+        else => return null,
     }
-
-    // Parse optional targetSelectionRange (more precise location for LocationLink)
-    const selection_range_val = obj.get("targetSelectionRange");
-    if (selection_range_val) |sr| {
-        if (sr == .object) {
-            const sr_start = sr.object.get("start");
-            if (sr_start) |srs| {
-                if (srs == .object) {
-                    const sr_line = srs.object.get("line");
-                    const sr_char = srs.object.get("character");
-                    if (sr_line) |sl| {
-                        if (sl == .integer) {
-                            location.line = @intCast(sl.integer);
-                        }
-                    }
-                    if (sr_char) |sc| {
-                        if (sc == .integer) {
-                            location.character = @intCast(sc.integer);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Parse optional originSelectionRange (where cursor was for LocationLink)
-    const origin_range_val = obj.get("originSelectionRange");
-    if (origin_range_val) |orv| {
-        if (orv == .object) {
-            const or_start = orv.object.get("start");
-            if (or_start) |ors| {
-                if (ors == .object) {
-                    const or_line = ors.object.get("line");
-                    const or_char = ors.object.get("character");
-                    if (or_line) |ol| {
-                        if (ol == .integer) {
-                            location.origin_line = @intCast(ol.integer);
-                        }
-                    }
-                    if (or_char) |oc| {
-                        if (oc == .integer) {
-                            location.origin_character = @intCast(oc.integer);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    return location;
 }
 
-/// Parse LSP definition response result
-/// Handles: null, single Location, Location[], LocationLink[]
-fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspDefinitionOutput {
-    // Handle null result
+/// Parse LSP hover response result
+fn parseHoverResult(allocator: std.mem.Allocator, result: json.Value) !LspHoverOutput {
     if (result == .null) {
-        return LspDefinitionOutput{
-            .definitions = &.{},
+        return LspHoverOutput{
+            .contents = null,
             .found = false,
         };
     }
 
-    var locations = std.ArrayList(LspLocation).empty;
-    defer locations.deinit(allocator);
+    if (result != .object) {
+        return LspHoverOutput{
+            .contents = null,
+            .found = false,
+        };
+    }
 
-    const limit = max_output orelse 100;
+    const obj = result.object;
 
-    // Handle array of locations (Location[] or LocationLink[])
-    if (result == .array) {
-        for (result.array.items) |item| {
-            if (locations.items.len >= limit) break;
-            const loc = try parseLocation(allocator, item);
-            if (loc) |l| {
-                try locations.append(allocator, l);
+    // Parse contents
+    var contents: ?[]u8 = null;
+    const contents_val = obj.get("contents");
+    if (contents_val) |cv| {
+        contents = try parseHoverContents(allocator, cv);
+    }
+
+    // Parse range
+    var line: ?u32 = null;
+    var character: ?u32 = null;
+    var end_line: ?u32 = null;
+    var end_character: ?u32 = null;
+
+    const range_val = obj.get("range");
+    if (range_val) |rv| {
+        if (rv == .object) {
+            const start_val = rv.object.get("start");
+            if (start_val) |sv| {
+                if (sv == .object) {
+                    const line_val = sv.object.get("line");
+                    const char_val = sv.object.get("character");
+                    if (line_val) |lv| {
+                        if (lv == .integer) line = @intCast(lv.integer);
+                    }
+                    if (char_val) |cv| {
+                        if (cv == .integer) character = @intCast(cv.integer);
+                    }
+                }
+            }
+
+            const end_v = rv.object.get("end");
+            if (end_v) |ev| {
+                if (ev == .object) {
+                    const line_val = ev.object.get("line");
+                    const char_val = ev.object.get("character");
+                    if (line_val) |lv| {
+                        if (lv == .integer) end_line = @intCast(lv.integer);
+                    }
+                    if (char_val) |cv| {
+                        if (cv == .integer) end_character = @intCast(cv.integer);
+                    }
+                }
             }
         }
     }
-    // Handle single location object
-    else if (result == .object) {
-        const loc = try parseLocation(allocator, result);
-        if (loc) |l| {
-            try locations.append(allocator, l);
-        }
-    }
 
-    // Convert to owned slice
-    const defs = try locations.toOwnedSlice(allocator);
-
-    return LspDefinitionOutput{
-        .definitions = defs,
-        .found = defs.len > 0,
+    return LspHoverOutput{
+        .contents = contents,
+        .line = line,
+        .character = character,
+        .end_line = end_line,
+        .end_character = end_character,
+        .found = contents != null,
     };
 }
 
-pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionInput) !LspDefinitionOutput {
+pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspHoverOutput {
     // Use arena allocator for all temporary allocations
-    // This eliminates the need for manual cleanup of intermediate data
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_allocator = arena.allocator();
@@ -294,7 +270,6 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     if (init_attempts >= max_init_attempts) {
         return LspError.InvalidResponse;
     }
-    std.debug.print("LSP init response: {s}\n", .{init_response});
 
     // 2. Send initialized notification
     const initialized_msg = try createMessage(arena_allocator,
@@ -325,30 +300,28 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     const full_didopen = try std.fmt.allocPrint(arena_allocator, "{s}{s}{s}", .{ didopen_json, escaped_content.items, didopen_end });
 
     const didopen_msg = try createMessage(arena_allocator, full_didopen);
-    std.debug.print("didOpen message: {s}\n", .{didopen_msg});
     try stdin.writeAll(didopen_msg);
-    std.debug.print("Sent didOpen message\n", .{});
 
-    // Small delay to let zls process the didOpen
+    // Small delay to let LSP process the didOpen
     std.Thread.sleep(100 * std.time.ns_per_ms);
 
-    // 4. Send definition request - build JSON using ArrayList
-    var def_json = std.ArrayList(u8).empty;
-    const w = def_json.writer(arena_allocator);
+    // 4. Send hover request
+    var hover_json = std.ArrayList(u8).empty;
+    const w = hover_json.writer(arena_allocator);
     try w.print("{{", .{});
     try w.print("\"jsonrpc\":\"2.0\",", .{});
     try w.print("\"id\":2,", .{});
-    try w.print("\"method\":\"textDocument/definition\",", .{});
+    try w.print("\"method\":\"textDocument/hover\",", .{});
     try w.print("\"params\":{{", .{});
     try w.print("\"textDocument\":{{\"uri\":\"{s}\"}},", .{uri});
     try w.print("\"position\":{{\"line\":{d},\"character\":{d}}}", .{ input.line, input.character });
     try w.print("}}}}", .{});
 
-    const def_msg = try createMessage(arena_allocator, def_json.items);
-    try stdin.writeAll(def_msg);
+    const hover_msg = try createMessage(arena_allocator, hover_json.items);
+    try stdin.writeAll(hover_msg);
 
-    // 5. Read definition response (may need to skip notifications)
-    var def_response: []u8 = undefined;
+    // 5. Read hover response (may need to skip notifications)
+    var hover_response: []u8 = undefined;
     var attempts: usize = 0;
     const max_attempts = 10;
 
@@ -363,7 +336,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
 
         if (temp_parsed.value.object.get("id")) |id_val| {
             if (id_val == .integer and id_val.integer == 2) {
-                def_response = msg_data;
+                hover_response = msg_data;
                 break;
             }
         }
@@ -377,69 +350,62 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     }
 
     // Parse response
-    var parsed = try json.parseFromSlice(json.Value, arena_allocator, def_response, .{});
+    var parsed = try json.parseFromSlice(json.Value, arena_allocator, hover_response, .{});
 
     if (parsed.value != .object) return LspError.InvalidResponse;
 
     const result_opt = parsed.value.object.get("result");
     if (result_opt == null) {
-        return LspDefinitionOutput{
-            .definitions = &.{},
+        return LspHoverOutput{
+            .contents = null,
             .found = false,
         };
     }
 
     // Use the original allocator for the final result (lives beyond this function)
-    return try parseDefinitionResult(allocator, result_opt.?, input.max_output);
+    return try parseHoverResult(allocator, result_opt.?);
 }
 
-pub fn lspDefinitionToString(allocator: std.mem.Allocator, result: LspDefinitionOutput) ![]const u8 {
-    if (!result.found or result.definitions.len == 0) {
+pub fn lspHoverToString(allocator: std.mem.Allocator, result: LspHoverOutput) ![]const u8 {
+    if (!result.found or result.contents == null) {
         return try allocator.dupe(u8, "<found>false</found>");
     }
 
-    // Build XML string for multiple definitions
+    // Build XML string for hover info
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
     const writer = output.writer(allocator);
 
     try writer.print("<found>true</found>\n", .{});
-    try writer.print("<count>{d}</count>\n", .{result.definitions.len});
-    try writer.print("<definitions>\n", .{});
 
-    for (result.definitions, 0..) |def, i| {
-        try writer.print("  <definition index=\"{d}\">\n", .{i + 1});
-        try writer.print("    <file_path>{s}</file_path>\n", .{def.file_path});
-        try writer.print("    <line>{d}</line>\n", .{def.line});
-        try writer.print("    <character>{d}</character>\n", .{def.character});
-        if (def.end_line) |end_line| {
-            try writer.print("    <end_line>{d}</end_line>\n", .{end_line});
-        }
-        if (def.end_character) |end_char| {
-            try writer.print("    <end_character>{d}</end_character>\n", .{end_char});
-        }
-        if (def.origin_line) |origin_line| {
-            try writer.print("    <origin_line>{d}</origin_line>\n", .{origin_line});
-        }
-        if (def.origin_character) |origin_char| {
-            try writer.print("    <origin_character>{d}</origin_character>\n", .{origin_char});
-        }
-        try writer.print("  </definition>\n", .{});
+    if (result.line) |line| {
+        try writer.print("<line>{d}</line>\n", .{line});
+    }
+    if (result.character) |char| {
+        try writer.print("<character>{d}</character>\n", .{char});
+    }
+    if (result.end_line) |el| {
+        try writer.print("<end_line>{d}</end_line>\n", .{el});
+    }
+    if (result.end_character) |ec| {
+        try writer.print("<end_character>{d}</end_character>\n", .{ec});
     }
 
-    try writer.print("</definitions>", .{});
+    try writer.print("<contents><![CDATA[", .{});
+    try writer.print("{s}", .{result.contents.?});
+    try writer.print("]]></contents>", .{});
 
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspDefinitionTool = AgentTool{
+pub const lspHoverTool = AgentTool{
     .type = "function",
     .function = .{
-        .name = "lsp_definition",
+        .name = "lsp_hover",
         .description =
-        \\Go to definition of symbol at cursor position using LSP.
-        \\Spawns lsp bin, initializes it, and queries the definition.
-        \\Returns the file path, line, and character of the definition.
+        \\Get hover information (documentation/type info) for a symbol at cursor position using LSP.
+        \\Spawns lsp bin, initializes it, and queries textDocument/hover.
+        \\Returns hover contents with documentation and type information.
         ,
         .parameters = .{
             .type = "object",
@@ -469,11 +435,6 @@ pub const lspDefinitionTool = AgentTool{
                     .type = "number",
                     .description = "Character position (0-indexed)",
                 },
-                .{
-                    .name = "max_output",
-                    .type = "number",
-                    .description = "Maximum number of results to return (default: 100)",
-                },
             },
             .required = &.{ "lsp", "root_dir", "file_path", "line", "character" },
         },
@@ -481,5 +442,5 @@ pub const lspDefinitionTool = AgentTool{
 };
 
 test {
-    _ = @import("lsp_definition_test.zig");
+    _ = @import("lsp_hover_test.zig");
 }

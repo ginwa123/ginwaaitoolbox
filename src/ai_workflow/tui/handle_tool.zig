@@ -21,6 +21,10 @@ const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
 const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
 const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
 const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
+const handle_lsp_references_tool = @import("handle_lsp_references_tool.zig");
+const handle_lsp_workspace_symbol_tool = @import("handle_lsp_workspace_symbol_tool.zig");
+const handle_lsp_document_symbol_tool = @import("handle_lsp_document_symbol_tool.zig");
+const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const SaveSkill = @import("save_skill.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
@@ -364,6 +368,42 @@ pub fn HandleTool(
             if (std.mem.eql(u8, tool_call.function.name, "lsp_definition")) {
                 const result = handle_lsp_definition_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: lsp_definition failed: {s}", .{@errorName(err)});
+                defer allocator.free(result);
+
+                try handleToolResult(ctx, tool_call, result);
+                continue;
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "lsp_references")) {
+                const result = handle_lsp_references_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: lsp_references failed: {s}", .{@errorName(err)});
+                defer allocator.free(result);
+
+                try handleToolResult(ctx, tool_call, result);
+                continue;
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "lsp_workspace_symbol")) {
+                const result = handle_lsp_workspace_symbol_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: lsp_workspace_symbol failed: {s}", .{@errorName(err)});
+                defer allocator.free(result);
+
+                try handleToolResult(ctx, tool_call, result);
+                continue;
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "lsp_document_symbol")) {
+                const result = handle_lsp_document_symbol_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: lsp_document_symbol failed: {s}", .{@errorName(err)});
+                defer allocator.free(result);
+
+                try handleToolResult(ctx, tool_call, result);
+                continue;
+            }
+
+            if (std.mem.eql(u8, tool_call.function.name, "lsp_hover")) {
+                const result = handle_lsp_hover_tool.run(allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: lsp_hover failed: {s}", .{@errorName(err)});
                 defer allocator.free(result);
 
                 try handleToolResult(ctx, tool_call, result);
