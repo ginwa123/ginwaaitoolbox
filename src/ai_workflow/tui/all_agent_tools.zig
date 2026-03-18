@@ -69,7 +69,7 @@ pub const AllAgentTools: []const tool_models.AgentTool = &.{
     get_agent_tool.GetAgentTool,
     lspDefinitionTool,
     lspReferencesTool,
-    lspWorkspaceSymbolTool,
+    // lspWorkspaceSymbolTool, // still not used
     lspDocumentSymbolTool,
     lspHoverTool,
 };

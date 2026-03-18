@@ -32,9 +32,17 @@ const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
 const GetMessages = @import("get_messages.zig").GetMessages;
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
+const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
+const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
+const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
+const handle_lsp_references_tool = @import("handle_lsp_references_tool.zig");
+const handle_lsp_workspace_symbol_tool = @import("handle_lsp_workspace_symbol_tool.zig");
+const handle_lsp_document_symbol_tool = @import("handle_lsp_document_symbol_tool.zig");
+const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
 const StreamingContext = @import("tui_workflow.zig").StreamingContext;
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
 const SaveSkill = @import("save_skill.zig").SaveSkill;
+const SaveAgent = @import("save_agent.zig").SaveAgent;
 
 const MAX_SUB_AGENTS = 20;
 
@@ -303,6 +311,46 @@ fn runSubAgent(
                             tool_result = handle_remove_skill_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: remove_skill failed: {s}", .{@errorName(err)});
                             SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "remove_skill", null);
+                        } else if (std.mem.eql(u8, tc.function.name, "list_agents")) {
+                            tool_result = handle_list_agents_tool.run(allocator) catch |err|
+                                try std.fmt.allocPrint(allocator, "ERROR: list_agents failed: {s}", .{@errorName(err)});
+                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "list_agents", null);
+                        } else if (std.mem.eql(u8, tc.function.name, "get_agent")) {
+                            tool_result = handle_get_agent_tool.run(allocator, tc) catch |err|
+                                try std.fmt.allocPrint(allocator, "ERROR: get_agent failed: {s}", .{@errorName(err)});
+                            // Parse and save agent if loaded successfully
+                            if (std.mem.indexOf(u8, tool_result, "<loaded>true</loaded>") != null) {
+                                if (std.mem.indexOf(u8, tool_result, "<agent_name>")) |name_start| {
+                                    const name_begin = name_start + "<agent_name>".len;
+                                    if (std.mem.indexOf(u8, tool_result[name_begin..], "</agent_name>")) |name_end| {
+                                        const loaded_agent_name = tool_result[name_begin .. name_begin + name_end];
+                                        SaveAgent(allocator, db, logger, session_id, loaded_agent_name) catch |err| {
+                                            logger.errFmt("Error saving agent to database: {s}", .{@errorName(err)}) catch {};
+                                        };
+                                    }
+                                }
+                            }
+                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "get_agent", null);
+                        } else if (std.mem.eql(u8, tc.function.name, "lsp_definition")) {
+                            tool_result = handle_lsp_definition_tool.run(allocator, tc) catch |err|
+                                try std.fmt.allocPrint(allocator, "ERROR: lsp_definition failed: {s}", .{@errorName(err)});
+                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_definition", null);
+                        } else if (std.mem.eql(u8, tc.function.name, "lsp_references")) {
+                            tool_result = handle_lsp_references_tool.run(allocator, tc) catch |err|
+                                try std.fmt.allocPrint(allocator, "ERROR: lsp_references failed: {s}", .{@errorName(err)});
+                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_references", null);
+                        } else if (std.mem.eql(u8, tc.function.name, "lsp_workspace_symbol")) {
+                            tool_result = handle_lsp_workspace_symbol_tool.run(allocator, tc) catch |err|
+                                try std.fmt.allocPrint(allocator, "ERROR: lsp_workspace_symbol failed: {s}", .{@errorName(err)});
+                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_workspace_symbol", null);
+                        } else if (std.mem.eql(u8, tc.function.name, "lsp_document_symbol")) {
+                            tool_result = handle_lsp_document_symbol_tool.run(allocator, tc) catch |err|
+                                try std.fmt.allocPrint(allocator, "ERROR: lsp_document_symbol failed: {s}", .{@errorName(err)});
+                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_document_symbol", null);
+                        } else if (std.mem.eql(u8, tc.function.name, "lsp_hover")) {
+                            tool_result = handle_lsp_hover_tool.run(allocator, tc) catch |err|
+                                try std.fmt.allocPrint(allocator, "ERROR: lsp_hover failed: {s}", .{@errorName(err)});
+                            SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, "lsp_hover", null);
                         } else {
                             tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
                             SendToolResult(allocator, parent_session_id, logger, tool_result, tc.id, tc.function.name, null);

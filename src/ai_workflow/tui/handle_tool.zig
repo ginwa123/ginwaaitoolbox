@@ -88,13 +88,6 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
     SendToolResult(ctx.allocator, ctx.session_id, ctx.logger, content, tool_call.id, tool_call.function.name, null);
 }
 
-/// Helper to handle error for tools that return owned strings
-fn handleToolError(ctx: ToolContext, tool_call: agent.ToolCall, err: anytype, err_prefix: []const u8) !void {
-    const err_name = @errorName(err);
-    const err_str = try std.fmt.allocPrint(ctx.allocator, "{s}: {s}", .{ err_prefix, err_name });
-    try handleToolResult(ctx, tool_call, err_str);
-}
-
 pub fn HandleTool(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
