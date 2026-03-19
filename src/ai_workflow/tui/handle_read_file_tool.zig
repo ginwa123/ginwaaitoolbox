@@ -7,8 +7,8 @@ const tool_models = tree1_mod.tool_models;
 /// Stateless read_file tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments
 /// 2. Read file with options
-/// Returns the file content or error.
-/// 
+/// Returns XML-wrapped result with path and content.
+///
 /// All side effects (DB, logging, socket, message list) must be handled by caller.
 pub fn run(
     allocator: std.mem.Allocator,
@@ -33,8 +33,17 @@ pub fn run(
     defer read_result.deinit(allocator);
 
     const res_content = try read_file_mod.readFileToString(allocator, read_result);
+
+    // Wrap result in XML with path for proper TUI display
+    const xml_result = try std.fmt.allocPrint(allocator,
+        \\<path>{s}</path><content>{s}</content>
+    , .{
+        parsed.value.path,
+        res_content,
+    });
+
     // Caller is responsible for freeing this returned string
-    return res_content;
+    return xml_result;
 }
 
 // test {

@@ -165,6 +165,8 @@ pub fn main() !void {
                 tui_text.print("{s}Use /sessions to see available sessions or start a new session.{s}\n", .{ globals.yellow, globals.reset });
                 return error.SessionNotFound;
             }
+            // Fetch and display conversation history
+            _ = network.readResponseAndStreamGetHistory(&app) catch {};
         }
     }
 

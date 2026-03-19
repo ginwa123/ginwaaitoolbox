@@ -23,3 +23,25 @@ pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
     const open_pos = std.mem.lastIndexOf(u8, xml[0..close_pos], open_tag) orelse return null;
     return xml[open_pos + open_tag.len .. close_pos];
 }
+
+/// Extract content from nested response XML structure like:
+/// <response><choices><choice><message><content>...</content></message>...</choice></choices></response>
+/// Returns the content inside the innermost <content> tag
+pub fn extractContentFromResponse(response_xml: []const u8) ?[]const u8 {
+    // First, find the <message>...</message> block
+    if (std.mem.indexOf(u8, response_xml, "<message>")) |msg_start| {
+        const after_msg = response_xml[msg_start..];
+        if (std.mem.indexOf(u8, after_msg, "</message>")) |msg_end| {
+            const message_content = after_msg[0..msg_end + "</message>".len];
+            // Now extract content from inside message
+            if (std.mem.indexOf(u8, message_content, "<content>")) |content_start| {
+                const after_content = message_content[content_start + "<content>".len..];
+                if (std.mem.indexOf(u8, after_content, "</content>")) |content_end| {
+                    return after_content[0..content_end];
+                }
+            }
+        }
+    }
+    // Fallback: try the old method
+    return extractTag(response_xml, "content");
+}
