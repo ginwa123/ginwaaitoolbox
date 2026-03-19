@@ -23,6 +23,7 @@ pub const TUIHistory = struct {
     session_name: []const u8 = "",
     loop_index: u32 = 0,
     tool_name: []const u8 = "",
+    parent_session_id: ?[]const u8 = null,
 
     pub fn deinit(self: *TUIHistory, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -37,6 +38,7 @@ pub const TUIHistory = struct {
         allocator.free(self.agent);
         allocator.free(self.session_name);
         allocator.free(self.tool_name);
+        if (self.parent_session_id) |psi| allocator.free(psi);
     }
 };
 

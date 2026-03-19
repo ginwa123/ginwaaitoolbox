@@ -425,7 +425,7 @@ fn runSubAgent(
                         {
                             const latestMessage = try GetMessagesLatest(allocator, db, session_id);
                             try onEventSendNew(allocator, .{
-                                .session_id = latestMessage.?.session_id,
+                                .session_id = latestMessage.?.parent_session_id orelse session_id,
                                 .model = latestMessage.?.model,
                                 .cwd = cwd,
                                 .content = latestMessage.?.response_content,

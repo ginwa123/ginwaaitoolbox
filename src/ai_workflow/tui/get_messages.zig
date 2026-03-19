@@ -11,11 +11,12 @@ pub fn GetMessages(
 ) ![]TUIHistory {
     var results: std.ArrayList(TUIHistory) = .empty;
 
-    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at ASC";
+    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(parent_session_id, '') FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at ASC";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
     while (try rows.next()) |row| {
+        const parent_session_id_str = row.values[14];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -29,6 +30,7 @@ pub fn GetMessages(
             .agent = try allocator.dupe(u8, row.values[9]),
             .session_name = try allocator.dupe(u8, row.values[10]),
             .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
+            .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -42,11 +44,12 @@ pub fn GetMessageLatest(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?TUIHistory {
-    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(tool_name, '') FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at DESC LIMIT 1";
+    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(parent_session_id, ''), COALESCE(tool_name, '') FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at DESC LIMIT 1";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
     if (try rows.next()) |row| {
+        const parent_session_id_str = row.values[14];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -60,7 +63,8 @@ pub fn GetMessageLatest(
             .agent = try allocator.dupe(u8, row.values[9]),
             .session_name = try allocator.dupe(u8, row.values[10]),
             .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            .tool_name = try allocator.dupe(u8, row.values[14]),
+            .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
+            .tool_name = try allocator.dupe(u8, row.values[15]),
         };
         row.deinit(allocator);
         return history;

@@ -77,27 +77,29 @@ pub const StreamingContext = struct {
 
 /// Callback for streaming chunks - sends each chunk to the client
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
-    const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
-    const allocator = stream_ctx.allocator;
-    const session_id = stream_ctx.session_id;
+    _ = ctx;
+    _ = chunk;
+    // const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
+    // const allocator = stream_ctx.allocator;
+    // const session_id = stream_ctx.session_id;
 
-    // Send final chunk with usage when done
-    if (chunk.done) {
-        sendStreamChunkFinal(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
-        return;
-    }
-
-    // Send content chunk
-    if (chunk.content) |content| {
-        sendStreamChunkContent(session_id, stream_ctx.chunk_index, content);
-        stream_ctx.chunk_index += 1;
-    }
-
-    // Send reasoning content chunk
-    if (chunk.reasoning_content) |rc| {
-        sendStreamChunkReasoning(session_id, stream_ctx.chunk_index, rc);
-        stream_ctx.chunk_index += 1;
-    }
+    // for now we disable streaming
+    // if (chunk.done) {
+    //     sendStreamChunkFinal(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
+    //     return;
+    // }
+    //
+    // // Send content chunk
+    // if (chunk.content) |content| {
+    //     sendStreamChunkContent(session_id, stream_ctx.chunk_index, content);
+    //     stream_ctx.chunk_index += 1;
+    // }
+    //
+    // // Send reasoning content chunk
+    // if (chunk.reasoning_content) |rc| {
+    //     sendStreamChunkReasoning(session_id, stream_ctx.chunk_index, rc);
+    //     stream_ctx.chunk_index += 1;
+    // }
 
     // we disable tool calls delta for now
     // Handle tool calls delta - we'll aggregate these
@@ -272,7 +274,7 @@ pub const TUIWorkflow = struct {
                     // Send SSE event using GetMessagesLatest
                     const latestMessage = try GetMessagesLatest(allocator, self.db, session_id);
                     if (latestMessage) |msg| {
-                        onEventSendNew(allocator, .{
+                        _ = try onEventSendNew(allocator, .{
                             .session_id = msg.session_id,
                             .model = msg.model,
                             .cwd = cwd,
@@ -292,7 +294,7 @@ pub const TUIWorkflow = struct {
                             .is_output = false,
                             .parent_session_id = session_id,
                             .parent_id = session_id,
-                        }) catch {};
+                        });
                     }
                     break;
                 } else if (finish_reason == .length) {

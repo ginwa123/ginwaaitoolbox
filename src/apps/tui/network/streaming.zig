@@ -6,6 +6,7 @@ const messaging = @import("messaging.zig");
 const connection = @import("connection.zig");
 const utils = @import("../helpers/utils.zig");
 const tool_results = @import("../display/tool_results.zig");
+const response = @import("../display/response.zig");
 
 // Re-export ToolResult from tool_results for convenience
 pub const ToolResult = tool_results.ToolResult;
@@ -62,7 +63,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
         for (displayed_tool_ids.items) |id| app.allocator.free(id);
         displayed_tool_ids.deinit(app.allocator);
     }
-    var last_printed_chunk_index: usize = 0;
+    // var last_printed_chunk_index: usize = 0;
     var last_finish_search_pos: usize = 0;
     var raw_buffer_processed_len: usize = 0;
 
@@ -112,6 +113,14 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
             }
 
             // Spinner — only updated when idle and before streaming starts
+            // if (!streaming_started and now - last_tick >= 100) {
+            //     last_tick = now;
+            //     const spin = spinners[spinner_timer % spinners.len];
+            //     spinner_timer += 1;
+            //     tuiText.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
+            //         globals.yellow, spin, globals.reset, raw_buffer.items.len,
+            //     });
+            // }
             if (!streaming_started and now - last_tick >= 100) {
                 last_tick = now;
                 const spin = spinners[spinner_timer % spinners.len];
@@ -132,29 +141,41 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
             if (sse.extractSseData(app.allocator, decoded)) |xml| {
                 defer app.allocator.free(xml);
 
-                var chunk_pos: usize = 0;
-                while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
-                    const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
-                    const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
-                    chunk_pos = chunk_end + "</chunk>".len;
+                // var chunk_pos: usize = 0;
+                // while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
+                //     const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
+                //     const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
+                //     chunk_pos = chunk_end + "</chunk>".len;
+                //
+                //     var chunk_index: usize = 0;
+                //     if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
+                //         const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
+                //         const idx_str = chunk_block[idx_start + 7 .. idx_end];
+                //         chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
+                //     }
+                //
+                //     if (chunk_index >= last_printed_chunk_index) {
+                //         last_printed_chunk_index = chunk_index + 1;
+                //         if (utils.extractTag(chunk_block, "content")) |content| {
+                //             if (content.len > 0) {
+                //                 if (!streaming_started) {
+                //                     tuiText.print("\r\x1b[2K", .{});
+                //                     streaming_started = true;
+                //                 }
+                //                 tuiText.print("{s}", .{content});
+                //             }
+                //         }
+                //     }
+                // }
 
-                    var chunk_index: usize = 0;
-                    if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
-                        const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
-                        const idx_str = chunk_block[idx_start + 7 .. idx_end];
-                        chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                    }
+                if (response.extractContentResult(app.allocator, xml)) |content_results| {
+                    var content_list = content_results;
+                    defer content_list.deinit(app.allocator);
 
-                    if (chunk_index >= last_printed_chunk_index) {
-                        last_printed_chunk_index = chunk_index + 1;
-                        if (utils.extractTag(chunk_block, "content")) |content| {
-                            if (content.len > 0) {
-                                if (!streaming_started) {
-                                    tuiText.print("\r\x1b[2K", .{});
-                                    streaming_started = true;
-                                }
-                                tuiText.print("{s}", .{content});
-                            }
+                    for (content_list.items) |result| {
+                        if (result.content.len > 0) {
+                            streaming_started = true;
+                            tuiText.print("{s}", .{result.content});
                         }
                     }
                 }

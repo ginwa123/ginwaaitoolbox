@@ -13,6 +13,7 @@ const Migration007AddSessionTracking = tree1_mod.migrations.Migration007AddSessi
 const Migration011AddTemperatureAndThinking = tree1_mod.migrations.Migration011AddTemperatureAndThinking;
 const Migration015AddSessionAgents = tree1_mod.migrations.Migration015AddSessionAgents;
 const Migration016AddInputOutputColumns = tree1_mod.migrations.Migration016AddInputOutputColumns;
+const Migration012AddParentTracking = tree1_mod.migrations.Migration012AddParentTracking;
 
 fn setupTestDb(allocator: std.mem.Allocator, mgr: *MigrationManager) !void {
     _ = allocator;
@@ -60,6 +61,11 @@ fn setupTestDb(allocator: std.mem.Allocator, mgr: *MigrationManager) !void {
         .version = 16,
         .name = "add_input_output_columns",
         .up = Migration016AddInputOutputColumns.up,
+    });
+    try mgr.registerMigration(.{
+        .version = 12,
+        .name = "add_parent_tracking",
+        .up = Migration012AddParentTracking.up,
     });
     try mgr.runMigrations();
 }
@@ -435,4 +441,85 @@ test "get_message_latest handles tool_name from database" {
 
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("read_file", result.?.tool_name);
+}
+
+test "get_message_latest handles parent_session_id from database" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try setupTestDb(allocator, &mgr);
+
+    try db.exec(allocator,
+        "INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role, parent_session_id) VALUES ('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'From parent', 'stop', 'assistant', 'parent-session-123')",
+        &[_][]const u8{}
+    );
+
+    const result = try get_messages.GetMessageLatest(allocator, &db, "test-session");
+    defer if (result) |msg| {
+        var m = msg;
+        m.deinit(allocator);
+    };
+
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.parent_session_id != null);
+    try std.testing.expectEqualStrings("parent-session-123", result.?.parent_session_id.?);
+}
+
+test "get_message_latest returns null parent_session_id when not set" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try setupTestDb(allocator, &mgr);
+
+    try db.exec(allocator,
+        "INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role) VALUES ('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'No parent', 'stop', 'assistant')",
+        &[_][]const u8{}
+    );
+
+    const result = try get_messages.GetMessageLatest(allocator, &db, "test-session");
+    defer if (result) |msg| {
+        var m = msg;
+        m.deinit(allocator);
+    };
+
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.parent_session_id == null);
+}
+
+test "get_messages returns parent_session_id for each message" {
+    const allocator = std.testing.allocator;
+    var db: SqliteBackend = .{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    var mgr = MigrationManager.init(allocator, &db);
+    defer mgr.deinit();
+    try setupTestDb(allocator, &mgr);
+
+    try db.exec(allocator,
+        \\INSERT INTO llm_history (id, session_id, model, created_at, response_content, finish_reason, role, parent_session_id) VALUES 
+        \\('id1', 'test-session', 'gpt-4', '2024-01-01 10:00:00', 'First', 'stop', 'assistant', 'root-session'),
+        \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'Second', 'stop', 'user', NULL)
+    , &[_][]const u8{});
+
+    const result = try get_messages.GetMessages(allocator, &db, "test-session");
+    defer {
+        for (result) |*msg| {
+            msg.deinit(allocator);
+        }
+        allocator.free(result);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expect(result[0].parent_session_id != null);
+    try std.testing.expectEqualStrings("root-session", result[0].parent_session_id.?);
+    try std.testing.expect(result[1].parent_session_id == null);
 }
