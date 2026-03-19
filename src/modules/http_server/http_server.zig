@@ -323,6 +323,7 @@ pub const HttpServer = struct {
         // Session management endpoints (synchronous - returns response directly)
         router.post("/api/session/create", sessionCreateHandler, .{});
         router.get("/api/session", sessionListHandler, .{});
+        router.get("/api/session/exists/:session_id", sessionExistsHandler, .{});
 
         // Ping endpoint - checks if session is connected via SSE
         router.get("/api/ping/:session_id", pingHandler, .{});
@@ -404,6 +405,32 @@ fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     }
     res.status = 500;
     res.body = "{\"error\":\"No session handler\"}";
+}
+
+/// Session exists handler - checks if a session exists in the database
+/// Returns JSON with exists:true/false
+fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    res.content_type = .JSON;
+    const session_id = req.param("session_id") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing session_id\"}";
+        return;
+    };
+
+    if (global_server) |server| {
+        if (server.db) |db| {
+            const tree1 = @import("nalarcore");
+            const exists = tree1.tui_check_session_exists.checkSessionExists(server.allocator, db, session_id);
+
+            res.status = 200;
+            res.body = try std.fmt.allocPrint(req.arena,
+                "{{\"session_id\":\"{s}\",\"exists\":{s}}}",
+                .{ session_id, if (exists) "true" else "false" });
+            return;
+        }
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server not initialized\"}";
 }
 
 /// Ping handler - checks if session is connected via SSE

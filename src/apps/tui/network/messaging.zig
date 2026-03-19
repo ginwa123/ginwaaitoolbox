@@ -87,3 +87,27 @@ pub fn sendPingCommand(app: anytype) !bool {
     }
     return false;
 }
+
+/// Check if a session exists in the database
+/// Returns true if session exists, false otherwise
+pub fn checkSessionExists(app: anytype) !bool {
+    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+    defer std.posix.close(sock);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
+    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+
+    const request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/session/exists/{s} HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
+    _ = try std.posix.write(sock, request);
+
+    // Read response to check if session exists
+    var buf: [1024]u8 = undefined;
+    const n = std.posix.read(sock, &buf) catch return false;
+    if (n > 0) {
+        const response = buf[0..n];
+        // Parse JSON response: {"session_id":"...","exists":true/false}
+        if (std.mem.indexOf(u8, response, "\"exists\":true") != null) {
+            return true;
+        }
+    }
+    return false;
+}

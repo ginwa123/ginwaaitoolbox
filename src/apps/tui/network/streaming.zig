@@ -227,12 +227,23 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     // }
 
     if (utils.extractTag(final_xml, "content")) |content| {
-        // Skip duplicate printing - content was already streamed
-        _ = content;
+        // Print formatted response if no streaming happened
+        if (!streaming_started) {
+            printFormattedResponse(content);
+        } else {
+            // Content already streamed - just add formatted header
+            const agent_name = utils.extractTag(content, "agent") orelse "assistant";
+            tuiText.print("\n{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
+        }
     } else if (final_xml.len > 0) {
         if (utils.extractTag(final_xml, "message")) |msg| {
-            // Skip duplicate printing - content was already streamed
-            _ = msg;
+            // Print formatted response if no streaming happened
+            if (!streaming_started) {
+                printFormattedResponse(msg);
+            } else {
+                const agent_name = utils.extractTag(msg, "agent") orelse "assistant";
+                tuiText.print("\n{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
+            }
         } else {
             tuiText.print("{s}\n", .{final_xml});
         }

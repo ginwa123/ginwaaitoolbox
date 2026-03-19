@@ -88,6 +88,7 @@ pub const session_monitor = @import("modules/session/session_monitor.zig");
 pub const kerjabot_get_session = @import("ai_workflow/kerjabot/get_session.zig");
 pub const kerjabot_create_session = @import("ai_workflow/kerjabot/create_session.zig");
 pub const kerjabot_get_list_session = @import("ai_workflow/kerjabot/get_list_session.zig");
+pub const tui_check_session_exists = @import("ai_workflow/tui/check_session_exists.zig");
 pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
 pub const skills = @import("modules/agent/tools/skills.zig");
 pub const config = @import("modules/config/config.zig");
@@ -127,6 +128,8 @@ test {
     // Import all ai_workflow modules to ensure their tests run
     _ = @import("ai_workflow/tui/build_messages_for_agent_prompt.zig");
     _ = @import("modules/session/cancellation_registry.zig");
+    _ = @import("ai_workflow/tui/check_session_exists.zig");
+    _ = @import("ai_workflow/tui/check_session_exists_test.zig");
     _ = @import("ai_workflow/tui/get_current_agent_by_session_id.zig");
     _ = @import("ai_workflow/tui/get_messages.zig");
     _ = @import("ai_workflow/tui/get_session_by_dir.zig");

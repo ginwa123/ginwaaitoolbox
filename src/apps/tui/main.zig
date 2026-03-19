@@ -15,6 +15,7 @@ const command_handlers = @import("commands/handlers.zig");
 const raw_mode = @import("terminal/raw_mode.zig");
 const backend = @import("terminal/backend.zig");
 const network = @import("network/streaming.zig");
+const messaging = @import("network/messaging.zig");
 const tool_display = @import("display/tool_results.zig");
 const input = @import("input/handle_input.zig");
 const cli = @import("cli/opts.zig");
@@ -154,6 +155,17 @@ pub fn main() !void {
     );
     if (opts.continue_session) |session_id| {
         app.session_id = try app.allocator.dupe(u8, session_id);
+
+        // Check if session exists in database before continuing
+        if (!is_noninteractive) {
+            // Only check in interactive mode (non-query mode)
+            const session_found = messaging.checkSessionExists(&app) catch false;
+            if (!session_found) {
+                tui_text.print("{s}Error: Session '{s}' not found in database.{s}\n", .{ globals.red, session_id, globals.reset });
+                tui_text.print("{s}Use /sessions to see available sessions or start a new session.{s}\n", .{ globals.yellow, globals.reset });
+                return error.SessionNotFound;
+            }
+        }
     }
 
     if (std.mem.eql(u8, app.session_id, "")) {
