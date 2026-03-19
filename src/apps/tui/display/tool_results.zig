@@ -116,23 +116,15 @@ pub fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_re
 
 /// Display read_file result
 pub fn displayReadFileResult(result_xml: []const u8, tool_name: []const u8) void {
-    const content = utils.extractTag(result_xml, "content") orelse "";
-    const total_lines = utils.extractTag(result_xml, "total_lines") orelse "?";
-    const start_line = utils.extractTag(result_xml, "start_line") orelse "0";
-    const end_line = utils.extractTag(result_xml, "end_line") orelse "?";
-    if (std.mem.eql(u8, content, "")) return;
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} lines {s}-{s}/{s}\n", .{ globals.cyan, tool_name, globals.reset, start_line, end_line, total_lines });
-    const max_lines: usize = 20;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var count: usize = 0;
-    while (lines.next()) |line| {
-        if (count >= max_lines) {
-            tui_text.print("  {s}[...]{s}\n", .{ globals.cyan, globals.reset });
-            break;
-        }
-        tui_text.print("  {s}\n", .{line});
-        count += 1;
-    }
+    const path = utils.extractTag(result_xml, "path") orelse "unknown";
+    if (std.mem.eql(u8, path, "")) return;
+    
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} {s}\n", .{ 
+        globals.cyan, 
+        tool_name, 
+        globals.reset, 
+        path 
+    });
 }
 
 /// Display write_file result

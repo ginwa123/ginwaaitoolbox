@@ -8,7 +8,7 @@
 
 **Architecture:** 
 - Task 1: Modify `displayReadFileResult` in `tool_results.zig` to show filename instead of line counts
-- Task 2: Track if content was streamed; at end-of-stream, print full response if none was streamed, or just header if it was
+- Task 2: Modify end-of-stream logic in `streaming.zig` to print formatted response
 
 **Tech Stack:** Zig 0.15.2, TUI application
 
@@ -30,33 +30,46 @@
 
 ### Issue 2: LLM Text Response Display
 
-**Problem:** 
-- Streaming prints chunk content (line 163: `tuiText.print("{s}", .{content})`)
-- BUT: what if there are NO chunks? Then content is LOST (discarded with `_ = content;`)
-- Need to print full response IF no content was streamed, or just header IF content was streamed
+**Server sends response via `sendResponse()` in `on_event_sent.zig`:**
+```xml
+<response>
+  <content>Hello, how can I help?</content>
+</response>
+```
 
-**Current code (streaming.zig lines 226-238):**
+**TUI streaming in `streaming.zig`:**
+- Streaming loop (lines 127-180): Processes `<chunk>` tags → prints content raw
+- End-of-stream (lines 226-238): Extracts `<content>` → **DISCARDS it** (`_ = content;`)
+
+**Current buggy code (streaming.zig lines 226-238):**
 ```zig
 if (utils.extractTag(final_xml, "content")) |content| {
-    _ = content;  // ❌ Lost if no chunks came
+    _ = content;  // ❌ LOST! Never displayed!
 } else if (final_xml.len > 0) {
     if (utils.extractTag(final_xml, "message")) |msg| {
-        _ = msg;  // ❌ Lost if no chunks came
+        _ = msg;  // ❌ LOST! Never displayed!
     } else {
         tuiText.print("{s}\n", .{final_xml});
     }
 }
 ```
 
-**Streaming loop (line 163):**
+**Dead code function (`streaming.zig` lines 381-393):**
 ```zig
-tuiText.print("{s}", .{content});  // Raw content printed
+fn printFormattedResponse(content: []const u8) void {
+    const agent_name = utils.extractTag(content, "agent") orelse "assistant";
+    tuiText.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
+    // ...prints content...
+}
 ```
+This function exists but is **NEVER CALLED**!
 
-**Correct approach:**
-- Track if `streaming_started == true` during streaming
-- If content was streamed (`streaming_started == true`) → add header only
-- If NO content was streamed (`streaming_started == false`) → print FULL response (header + content)
+### Expected Behavior
+
+| Scenario | What Should Happen |
+|----------|---------------------|
+| Chunks came | Content streamed + `━━ assistant ━━` header at end |
+| No chunks (instant) | Full response: `━━ assistant ━━` + content |
 
 ---
 
@@ -65,7 +78,8 @@ tuiText.print("{s}", .{content});  // Raw content printed
 | File | Role |
 |------|------|
 | `src/apps/tui/display/tool_results.zig` | Contains `displayReadFileResult` function (Task 1) |
-| `src/apps/tui/network/streaming.zig` | Contains streaming loop, `streaming_started` flag, and printFormattedResponse (Task 2) |
+| `src/apps/tui/network/streaming.zig` | Contains streaming loop, end-of-stream logic, `printFormattedResponse` (Task 2) |
+| `src/ai_workflow/tui/on_event_sent.zig` | Server-side: sends `<response><content>` to TUI |
 | `src/apps/tui/display/utils.zig` | `extractTag()` utility for XML parsing |
 | `src/apps/tui/globals.zig` | Color constants (`cyan`, `reset`, `bold`, etc.) |
 
@@ -118,79 +132,30 @@ git commit -m "feat(tui): show filename in read_file tool display"
 
 ---
 
-## Chunk 2: Fix LLM Text Response Display (Smart Header/Content Logic)
+## Chunk 2: Fix LLM Text Response Display
 
 **Files:**
 - Modify: `src/apps/tui/network/streaming.zig`
 
-### Logic
+### Task 2: Call printFormattedResponse Instead of Discarding Content
 
-| `streaming_started` | Action at End-of-Stream |
-|--------------------|-------------------------|
-| `true` (content was streamed) | Print header only |
-| `false` (no content streamed) | Print FULL response (header + content) |
-
-### Task 2: Modify printFormattedResponse and End-of-Stream Logic
-
-- [ ] **Step 1: Read the current printFormattedResponse function**
+- [ ] **Step 1: Read the current end-of-stream logic**
 
 ```bash
-cat -n src/apps/tui/network/streaming.zig | sed -n '381,393p'
+cat -n src/apps/tui/network/streaming.zig | sed -n '220,250p'
 ```
 
-- [ ] **Step 2: Modify printFormattedResponse to print BOTH header AND content**
+- [ ] **Step 2: Modify the end-of-stream logic**
 
-Replace:
-```zig
-/// Print formatted response from the AI
-fn printFormattedResponse(content: []const u8) void {
-    const agent_name = utils.extractTag(content, "agent") orelse "assistant";
-    tuiText.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
-    if (utils.extractTag(content, "markdown")) |md| {
-        const trimmed = utils.trim(md);
-        if (trimmed.len > 0) {
-            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, trimmed, globals.reset });
-        } else {
-            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
-        }
-    } else {
-        tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
-    }
-}
-```
-
-With (keep the same - it already prints header + content):
-```zig
-/// Print formatted response from the AI (header + content)
-fn printFormattedResponse(content: []const u8) void {
-    const agent_name = utils.extractTag(content, "agent") orelse "assistant";
-    tuiText.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
-    if (utils.extractTag(content, "markdown")) |md| {
-        const trimmed = utils.trim(md);
-        if (trimmed.len > 0) {
-            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, trimmed, globals.reset });
-        } else {
-            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
-        }
-    } else {
-        tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
-    }
-}
-```
-
-- [ ] **Step 3: Modify end-of-stream logic to check streaming_started**
-
-Find the section (around lines 226-238):
+Find the section that discards content (around lines 226-238):
 
 Current code:
 ```zig
 if (utils.extractTag(final_xml, "content")) |content| {
-    // Skip duplicate printing - content was already streamed
-    _ = content;
+    _ = content;  // ❌ Lost!
 } else if (final_xml.len > 0) {
     if (utils.extractTag(final_xml, "message")) |msg| {
-        // Skip duplicate printing - content was already streamed
-        _ = msg;
+        _ = msg;  // ❌ Lost!
     } else {
         tuiText.print("{s}\n", .{final_xml});
     }
@@ -200,8 +165,7 @@ if (utils.extractTag(final_xml, "content")) |content| {
 Replace with:
 ```zig
 if (utils.extractTag(final_xml, "content")) |content| {
-    // If no content was streamed, print full response
-    // If content was streamed, just add header
+    // Print formatted response if no streaming happened
     if (!streaming_started) {
         printFormattedResponse(content);
     } else {
@@ -211,8 +175,7 @@ if (utils.extractTag(final_xml, "content")) |content| {
     }
 } else if (final_xml.len > 0) {
     if (utils.extractTag(final_xml, "message")) |msg| {
-        // If no content was streamed, print full response
-        // If content was streamed, just add header
+        // Print formatted response if no streaming happened
         if (!streaming_started) {
             printFormattedResponse(msg);
         } else {
@@ -225,28 +188,27 @@ if (utils.extractTag(final_xml, "content")) |content| {
 }
 ```
 
-- [ ] **Step 4: Build to verify**
+- [ ] **Step 3: Build to verify**
 
 ```bash
 zig build 2>&1
 ```
 Expected: No errors (empty output = success in Zig)
 
-- [ ] **Step 5: Test with the TUI**
+- [ ] **Step 4: Test with the TUI**
 
 ```bash
 zig build run:tui
 ```
+Expected:
+- **If chunks came**: Content streams → `━━ assistant ━━` header at end
+- **If NO chunks**: Full formatted response: `━━ assistant ━━` + content
 
-Expected behavior:
-- **If chunks came**: Content appears as it streams, then `━━ assistant ━━` header appears at end
-- **If NO chunks**: Full formatted response appears with header: `━━ assistant ━━` + content
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add -A
-git commit -m "feat(tui): display LLM text responses with smart header logic
+git commit -m "feat(tui): display LLM text responses with formatted header
 
 Print full response if no streaming chunks came,
 or just add header if content was already streamed."
@@ -256,14 +218,14 @@ or just add header if content was already streamed."
 
 ## Chunk 3: Final Verification
 
-- [ ] **Step 7: Build full project**
+- [ ] **Step 6: Build full project**
 
 ```bash
 zig build 2>&1
 ```
 Expected: Success
 
-- [ ] **Step 8: Final commit**
+- [ ] **Step 7: Final commit**
 
 ```bash
 git add -A
