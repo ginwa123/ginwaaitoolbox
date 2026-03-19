@@ -98,9 +98,15 @@ pub fn handleInput(app: anytype) !bool {
         if (std.mem.eql(u8, seq, "\x1b[200~")) {
             app.pasting = true;
             app.last_esc_time = null;
+            // Wrap pasted content with data boundary markers for security
+            try app.input.appendSlice(app.allocator, "[START DATA]\n");
+            std.debug.print("{s}[START DATA]{s}", .{ globals.dim, globals.reset });
         } else if (std.mem.eql(u8, seq, "\x1b[201~")) {
             app.pasting = false;
             app.last_esc_time = null;
+            // Wrap pasted content with data boundary markers for security
+            try app.input.appendSlice(app.allocator, "\n[END DATA]");
+            std.debug.print("{s}[END DATA]{s}", .{ globals.dim, globals.reset });
         } else {
             // Check for double escape (quick consecutive escape presses)
             const now = std.time.milliTimestamp();

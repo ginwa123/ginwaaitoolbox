@@ -100,6 +100,7 @@ pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
+pub const tui_display_response = @import("apps/tui/display/response.zig");
 
 
 
@@ -161,4 +162,5 @@ test {
     _ = @import("modules/agent/tools/read_file_test.zig");
     _ = @import("modules/agent/mcp/mcp/mcp_server.zig");
     _ = @import("modules/http/http_client.zig");
+    _ = @import("modules/agent/extract_content_result_test.zig");
 }

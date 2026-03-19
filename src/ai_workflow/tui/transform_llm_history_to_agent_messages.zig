@@ -4,7 +4,7 @@ const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const json = std.json;
 
-pub fn run(allocator: std.mem.Allocator, message: TUIHistory) ![]agent.AgentMessage {
+pub fn TransformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: TUIHistory) ![]agent.AgentMessage {
     var messages: std.ArrayList(agent.AgentMessage) = .empty;
 
     const role = agent.Role.fromStr(message.role) orelse .assistant;

@@ -216,7 +216,7 @@ fn runSubAgent(
         // Fetch existing messages from DB first
         const tui_histories = try GetMessages(allocator, db, session_id);
         for (tui_histories) |hist| {
-            const agent_msgs = try TransformLLMHistory.run(allocator, hist);
+            const agent_msgs = try TransformLLMHistory.TransformLLMHistoryToAgentMessage(allocator, hist);
             for (agent_msgs) |msg| {
                 try messages.append(allocator, msg);
             }
@@ -426,7 +426,7 @@ fn runSubAgent(
                         {
                             const latestMessage = try GetMessagesLatest(allocator, db, session_id);
                             try onEventSendNew(allocator, .{
-                                .session_id = latestMessage.?.parent_session_id orelse session_id,
+                                .session_id = latestMessage.?.parent_session_id,
                                 .model = latestMessage.?.model,
                                 .cwd = cwd,
                                 .content = latestMessage.?.response_content,
@@ -519,7 +519,7 @@ pub fn run(
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
 
     // Fetch current agent from DB (before running sub-agents)
-    const current_agent_state = try get_current_agent_by_session_id(
+    const current_agent_state = try get_current_agent_by_session_id.run(
         allocator,
         db,
         session_id,

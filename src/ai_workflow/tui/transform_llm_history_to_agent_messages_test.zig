@@ -4,7 +4,7 @@ const TUIHistory = @import("models.zig").TUIHistory;
 
 test "transform assistant message" {
     const allocator = std.testing.allocator;
-    
+
     var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
@@ -19,8 +19,8 @@ test "transform assistant message" {
         .loop_index = 0,
     };
     defer history.deinit(allocator);
-    
-    const messages = try transform.run(allocator, history);
+
+    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -37,14 +37,14 @@ test "transform assistant message" {
         }
         allocator.free(messages);
     }
-    
+
     try std.testing.expectEqual(@as(usize, 1), messages.len);
     try std.testing.expectEqualStrings("Hello, world!", messages[0].content.?);
 }
 
 test "transform user message" {
     const allocator = std.testing.allocator;
-    
+
     var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
@@ -59,8 +59,8 @@ test "transform user message" {
         .loop_index = 0,
     };
     defer history.deinit(allocator);
-    
-    const messages = try transform.run(allocator, history);
+
+    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -77,13 +77,13 @@ test "transform user message" {
         }
         allocator.free(messages);
     }
-    
+
     try std.testing.expectEqual(@as(usize, 1), messages.len);
 }
 
 test "transform tool message" {
     const allocator = std.testing.allocator;
-    
+
     var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
@@ -98,8 +98,8 @@ test "transform tool message" {
         .loop_index = 0,
     };
     defer history.deinit(allocator);
-    
-    const messages = try transform.run(allocator, history);
+
+    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -116,7 +116,7 @@ test "transform tool message" {
         }
         allocator.free(messages);
     }
-    
+
     try std.testing.expectEqual(@as(usize, 1), messages.len);
     try std.testing.expectEqualStrings("Tool result", messages[0].content.?);
     try std.testing.expectEqualStrings("call_123", messages[0].tool_call_id.?);
@@ -124,7 +124,7 @@ test "transform tool message" {
 
 test "transform empty content" {
     const allocator = std.testing.allocator;
-    
+
     var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
@@ -139,8 +139,8 @@ test "transform empty content" {
         .loop_index = 0,
     };
     defer history.deinit(allocator);
-    
-    const messages = try transform.run(allocator, history);
+
+    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -157,14 +157,14 @@ test "transform empty content" {
         }
         allocator.free(messages);
     }
-    
+
     // Empty content should still produce a message
     try std.testing.expectEqual(@as(usize, 1), messages.len);
 }
 
 test "transform with reasoning content" {
     const allocator = std.testing.allocator;
-    
+
     var history = TUIHistory{
         .id = try allocator.dupe(u8, "id1"),
         .session_id = try allocator.dupe(u8, "session1"),
@@ -180,8 +180,8 @@ test "transform with reasoning content" {
         .loop_index = 0,
     };
     defer history.deinit(allocator);
-    
-    const messages = try transform.run(allocator, history);
+
+    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -198,7 +198,7 @@ test "transform with reasoning content" {
         }
         allocator.free(messages);
     }
-    
+
     try std.testing.expectEqual(@as(usize, 1), messages.len);
     try std.testing.expect(messages[0].reasoning_content != null);
     try std.testing.expectEqualStrings("Let me think...", messages[0].reasoning_content.?);

@@ -32,7 +32,7 @@ pub fn BuildMessages(
     try allMessages.append(allocator, systemMessage);
 
     for (historyMessages) |hist| {
-        const agentMsgs = try transform_llm_history_to_agent_messages.run(allocator, hist);
+        const agentMsgs = try transform_llm_history_to_agent_messages.TransformLLMHistoryToAgentMessage(allocator, hist);
         for (agentMsgs) |msg| {
             try allMessages.append(allocator, msg);
         }
