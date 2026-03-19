@@ -30,6 +30,29 @@ pub fn getSession(
     return null;
 }
 
+/// Get the latest finish_reason for a session from the database
+/// Returns the most recent finish_reason value (e.g., "stop", "tool_calls", "length", etc.)
+/// Returns null if no history exists for the session
+pub fn getLatestFinishReason(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !?[]const u8 {
+    // Query to get the most recent finish_reason for the session
+    const sql = "SELECT finish_reason FROM llm_history WHERE session_id = ? AND finish_reason IS NOT NULL AND finish_reason != '' ORDER BY created_at DESC LIMIT 1";
+    
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const finish_reason = try allocator.dupe(u8, row.values[0]);
+        row.deinit(allocator);
+        return finish_reason;
+    }
+
+    return null;
+}
+
 /// Session detail info
 pub const SessionDetail = struct {
     session_id: []const u8,

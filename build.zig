@@ -89,28 +89,8 @@ pub fn build(b: *std.Build) void {
     tui_step.dependOn(&tui_cmd.step);
     tui_cmd.step.dependOn(b.getInstallStep());
 
-    // CLI executable
-    const cli_exe = b.addExecutable(.{
-        .name = "nalarcore-cli",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/apps/cli/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "nalarcore", .module = mod },
-            },
-        }),
-    });
-    cli_exe.linkSystemLibrary("sqlite3");
-    cli_exe.linkSystemLibrary("ssl");
-    cli_exe.linkSystemLibrary("crypto");
-    cli_exe.linkLibC();
-    b.installArtifact(cli_exe);
-
     const cli_step = b.step("run:cli", "Run the CLI");
-    const cli_cmd = b.addRunArtifact(cli_exe);
-    cli_step.dependOn(&cli_cmd.step);
-    cli_cmd.step.dependOn(b.getInstallStep());
+    _ = cli_step; // CLI has been removed. Use 'zig build run' for HTTP server or 'zig build run:tui' for TUI.
 
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -215,13 +195,5 @@ pub fn build(b: *std.Build) void {
     copy_tui_to_system.step.dependOn(&install_tui_linux_system.step);
     tui_linux_system_step.dependOn(&copy_tui_to_system.step);
 
-    // Kerjabot step: runs frontend dev server only
-    const kerjabot_step = b.step("run:kerjabot", "Run kerjabot frontend only");
-
-    // Run frontend with pnpm dev
-    const kerjabot_script = b.addSystemCommand(&.{
-        "sh", "-c",
-        "cd src/apps/kerjabot && pnpm dev",
-    });
-    kerjabot_step.dependOn(&kerjabot_script.step);
+    _ = b.step("run:kerjabot", "Kerjabot has been removed");
 }
