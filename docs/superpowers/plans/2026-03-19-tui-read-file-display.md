@@ -4,11 +4,11 @@
 
 **Goal:** Two TUI display improvements:
 1. Change `read_file` display from `[read_file] lines X-Y/Total` to `[read_file] filename`
-2. Ensure LLM text responses (non-tool calls) are printed in TUI
+2. Add formatted header for LLM text responses in TUI (NO double print)
 
 **Architecture:** 
 - Task 1: Modify `displayReadFileResult` in `tool_results.zig` to show filename instead of line counts
-- Task 2: Modify end-of-stream logic in `streaming.zig` to call `printFormattedResponse()` for text responses
+- Task 2: Modify end-of-stream logic in `streaming.zig` to add header only (content already streamed)
 
 **Tech Stack:** Zig 0.15.2, TUI application
 
@@ -28,19 +28,22 @@
 [read_file] src/apps/tui/display/tool_results.zig
 ```
 
-### Issue 2: LLM Text Response Display
+### Issue 2: LLM Text Response Header (No Double Print)
 
-**Problem:** The `printFormattedResponse()` function exists but is never called. End-of-stream logic discards text content with `_ = content;` instead of printing it.
+**Problem:** 
+- Streaming already prints chunk content raw (line 163: `tuiText.print("{s}", .{content})`)
+- End-of-stream logic discards content with `_ = content;`
+- User wants to see formatted header but NO double print
 
 **Current code (streaming.zig lines 226-238):**
 ```zig
 if (utils.extractTag(final_xml, "content")) |content| {
-    _ = content;  // ❌ Discarded - not printed
+    _ = content;  // ❌ Discarded - no header either
 } else if (final_xml.len > 0) {
     if (utils.extractTag(final_xml, "message")) |msg| {
-        _ = msg;  // ❌ Discarded - not printed
+        _ = msg;  // ❌ Discarded - no header either
     } else {
-        tui_text.print("{s}\n", .{final_xml});  // Falls through to raw XML
+        tuiText.print("{s}\n", .{final_xml});
     }
 }
 ```
@@ -49,14 +52,19 @@ if (utils.extractTag(final_xml, "content")) |content| {
 ```zig
 fn printFormattedResponse(content: []const u8) void {
     const agent_name = utils.extractTag(content, "agent") orelse "assistant";
-    tui_text.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
-    if (utils.extractTag(content, "markdown")) |md| {
-        const trimmed = utils.trim(md);
-        if (trimmed.len > 0) {
-            tui_text.print("\n{s}{s}{s}\n", .{ globals.bold, trimmed, globals.reset });
-        }
-    }
+    tuiText.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
+    // ... prints content again - would cause double print!
 }
+```
+
+**Correct approach:**
+- During streaming: content printed raw ✅ (line 163)
+- At end-of-stream: ONLY add `━━ agent ━━` header (NO content re-print)
+
+**Expected output:**
+```
+Hello, how can I help you?
+━━ assistant ━━
 ```
 
 ---
@@ -66,7 +74,7 @@ fn printFormattedResponse(content: []const u8) void {
 | File | Role |
 |------|------|
 | `src/apps/tui/display/tool_results.zig` | Contains `displayReadFileResult` function (Task 1) |
-| `src/apps/tui/network/streaming.zig` | Contains streaming loop and `printFormattedResponse` (Task 2) |
+| `src/apps/tui/network/streaming.zig` | Contains streaming loop and header function (Task 2) |
 | `src/apps/tui/display/utils.zig` | `extractTag()` utility for XML parsing |
 | `src/apps/tui/globals.zig` | Color constants (`cyan`, `reset`, `bold`, etc.) |
 
@@ -119,93 +127,137 @@ git commit -m "feat(tui): show filename in read_file tool display"
 
 ---
 
-## Chunk 2: Fix LLM Text Response Display
+## Chunk 2: Fix LLM Text Response Header (Header Only - No Double Print)
 
 **Files:**
-- Modify: `src/apps/tui/network/streaming.zig:220-245` (end-of-stream logic)
+- Modify: `src/apps/tui/network/streaming.zig`
 
-### Task 2: Call printFormattedResponse for Text Responses
+### IMPORTANT: Double-Print Prevention
 
-- [ ] **Step 1: Read the current end-of-stream logic**
+| Phase | What Gets Printed |
+|-------|-------------------|
+| **Streaming** (line 163) | Raw content: `tuiText.print("{s}", .{content})` ✅ |
+| **End-of-stream** | MUST NOT re-print content ❌ |
+
+**Correct behavior:**
+- Streaming phase: content printed raw ✅
+- End-of-stream: `━━ assistant ━━` header added (no content) ✅
+
+### Task 2: Add Header-Only PrintFormattedResponse
+
+- [ ] **Step 1: Read the current printFormattedResponse function**
 
 ```bash
-cat -n src/apps/tui/network/streaming.zig | sed -n '220,250p'
+cat -n src/apps/tui/network/streaming.zig | sed -n '381,393p'
 ```
 
-- [ ] **Step 2: Modify the end-of-stream response handling**
+- [ ] **Step 2: Rename and simplify printFormattedResponse to printFormattedResponseHeader**
 
-Find and replace the section that discards content. The current code:
+The current function prints BOTH header AND content. We need to change it to ONLY print header:
 
+Replace:
+```zig
+/// Print formatted response from the AI
+fn printFormattedResponse(content: []const u8) void {
+    const agent_name = utils.extractTag(content, "agent") orelse "assistant";
+    tuiText.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
+    if (utils.extractTag(content, "markdown")) |md| {
+        const trimmed = utils.trim(md);
+        if (trimmed.len > 0) {
+            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, trimmed, globals.reset });
+        } else {
+            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
+        }
+    } else {
+        tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
+    }
+}
+```
+
+With:
+```zig
+/// Print formatted response header (content already streamed via chunks)
+fn printFormattedResponseHeader(content: []const u8) void {
+    const agent_name = utils.extractTag(content, "agent") orelse "assistant";
+    tuiText.print("\n{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
+}
+```
+
+- [ ] **Step 3: Update end-of-stream logic to call printFormattedResponseHeader**
+
+Find the section that discards content (around lines 226-238):
+
+Current code:
 ```zig
 if (utils.extractTag(final_xml, "content")) |content| {
-    _ = content;  // Skip duplicate printing - content was already streamed
+    // Skip duplicate printing - content was already streamed
+    _ = content;
 } else if (final_xml.len > 0) {
     if (utils.extractTag(final_xml, "message")) |msg| {
-        _ = msg;  // Skip duplicate printing - content was already streamed
+        // Skip duplicate printing - content was already streamed
+        _ = msg;
     } else {
-        tui_text.print("{s}\n", .{final_xml});
+        tuiText.print("{s}\n", .{final_xml});
     }
 }
 ```
 
 Replace with:
-
 ```zig
 if (utils.extractTag(final_xml, "content")) |content| {
-    // Print final formatted response
-    printFormattedResponse(content);
+    // Content already streamed - just add formatted header
+    printFormattedResponseHeader(content);
 } else if (final_xml.len > 0) {
     if (utils.extractTag(final_xml, "message")) |msg| {
-        // Print final formatted response
-        printFormattedResponse(msg);
+        // Content already streamed - just add formatted header
+        printFormattedResponseHeader(msg);
     } else {
-        // No structured content - print raw XML as fallback
-        tui_text.print("{s}\n", .{final_xml});
+        tuiText.print("{s}\n", .{final_xml});
     }
 }
 ```
 
-- [ ] **Step 3: Build to verify**
+- [ ] **Step 4: Build to verify**
 
 ```bash
 zig build 2>&1
 ```
 Expected: No errors (empty output = success in Zig)
 
-- [ ] **Step 4: Test with the TUI**
+- [ ] **Step 5: Test with the TUI**
 
 ```bash
 zig build run:tui
 ```
-Expected: When LLM sends a text response (no tool call), it displays as:
+Expected: When LLM sends a text response:
 ```
+Hello, how can I help you?
 ━━ assistant ━━
-
-**formatted markdown content**
 ```
+(No double print - content appears once, header added at end)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add -A
-git commit -m "feat(tui): display LLM text responses in TUI
+git commit -m "feat(tui): add formatted header for LLM text responses
 
-Call printFormattedResponse() at end of streaming to show
-non-tool LLM responses with proper formatting."
+Print '━━ agent ━━' header at end of streaming without
+re-printing content (content already streamed via chunks)."
 ```
 
 ---
 
 ## Chunk 3: Final Verification
 
-- [ ] **Step 6: Build full project**
+- [ ] **Step 7: Build full project**
 
 ```bash
 zig build 2>&1
 ```
 Expected: Success
 
-- [ ] **Step 7: Final commit**
+- [ ] **Step 8: Final commit**
 
 ```bash
 git add -A
