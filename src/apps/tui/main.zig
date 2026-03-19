@@ -44,6 +44,12 @@ const App = struct {
     http_port: u16 = 8080,
 
     pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16) !App {
+        // Spawn the backend if it's not already running
+        backend.spawnBackend(verbose, http_port) catch |err| {
+            std.debug.print("{s}Error: Failed to spawn nalar backend: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
+            std.debug.print("{s}Make sure /usr/local/bin/nalar exists (run: zig build install){s}\n", .{ globals.yellow, globals.reset });
+            return err;
+        };
         std.log.info("Spawned backend", .{});
         try backend.waitForHttpServer(10000, http_port);
         std.log.info("HTTP server ready", .{});
