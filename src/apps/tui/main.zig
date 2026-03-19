@@ -44,6 +44,7 @@ const App = struct {
     http_port: u16 = 8080,
 
     pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16) !App {
+        std.debug.print("DEBUG App.init: is_noninteractive={}\n", .{is_noninteractive});
         // Spawn the backend if it's not already running
         backend.spawnBackend(verbose, http_port) catch |err| {
             std.debug.print("{s}Error: Failed to spawn nalar backend: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
@@ -57,9 +58,14 @@ const App = struct {
         // Only enable raw mode when running interactively (has a real TTY)
         // In non-interactive mode (e.g., -q flag), there's no terminal
         var original_termios: ?std.posix.termios = null;
+        const stdin_is_tty = std.posix.isatty(std.posix.STDIN_FILENO);
         if (!is_noninteractive) {
-            original_termios = try raw_mode.enableRawMode();
-            std.log.info("Raw mode enabled", .{});
+            if (stdin_is_tty) {
+                original_termios = try raw_mode.enableRawMode();
+                std.log.info("Raw mode enabled", .{});
+            } else {
+                std.log.info("Running in non-interactive mode (stdin is not a TTY)", .{});
+            }
         }
 
         const kb = try keybindings.loadKeybindings(allocator);
@@ -80,6 +86,7 @@ const App = struct {
             .state = CompletionState{
                 .matches = std.ArrayList([]const u8).empty,
             },
+            .is_noninteractive = is_noninteractive,
             .http_port = http_port,
         };
     }
@@ -150,7 +157,9 @@ pub fn main() !void {
     }
 
     // Determine if we're in non-interactive mode (CLI query mode vs interactive TUI)
-    const is_noninteractive = opts.query != null;
+    // Also consider non-interactive if stdin is not a TTY
+    const stdin_is_tty = std.posix.isatty(std.posix.STDIN_FILENO);
+    const is_noninteractive = opts.query != null or !stdin_is_tty;
 
     // Initialize app (always needed, even for query mode)
     var app = try App.init(
@@ -195,6 +204,7 @@ pub fn main() !void {
 
     while (true) {
         const should_exit = try input.handleInput(&app);
+        std.debug.print("DEBUG: should_exit={}\n", .{should_exit});
         if (should_exit) {
             std.debug.print("\r\n{s}Bye!{s} session_id: {s}\r\n", .{ globals.dim, globals.reset, app.session_id });
             break;

@@ -79,7 +79,13 @@ pub fn renderCompletions(app: anytype) void {
 pub fn handleInput(app: anytype) !bool {
     var buf: [1]u8 = undefined;
     const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
+    std.debug.print("DEBUG handleInput: n={}, is_noninteractive={}\n", .{ n, app.is_noninteractive });
     if (n == 0) {
+        // EOF detected - exit if in non-interactive mode
+        std.debug.print("DEBUG: EOF detected, is_noninteractive={}\n", .{app.is_noninteractive});
+        if (app.is_noninteractive) {
+            return true;
+        }
         std.Thread.sleep(10000000);
         return false;
     }

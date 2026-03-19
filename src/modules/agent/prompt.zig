@@ -138,124 +138,31 @@ pub const GitPrompt =
 // =============================================================================
 
 pub const TaskManagementPrompt =
-    \\## Task Management System
+    \\## Task Management
     \\
-    \\Every action you take must be tracked as a task in `.nalar/tasks/`.
-    \\Tasks serve as your todo list and progress tracker.
+    \\Track all tasks in a single append-only file: `.nalar/tasks.md`.
+    \\Create this file on first use. Never create per-task directories.
     \\
-    \\### 🚨 CRITICAL: Create Task Immediately on User Request
-    \\
-    \\**When a user requests a new task (ANY new task), you MUST create the task structure BEFORE doing ANY work.**
-    \\
-    \\Do not analyze, explore, or start working first. Create the task immediately:
-    \\   - Create `.nalar/tasks/<timestamp>_<task_name>/todo.md`
-    \\   - Write task description and break down into actionable subtasks
-    \\   - Create symlink `.nalar/tasks/active` → current task
-    \\   - Only THEN proceed with the work
-    \\
-    \\**This is non-negotiable.** The moment you understand the user wants something done, create the task first.
-    \\
-    \\### Task Directory Structure
+    \\### Task entry format
     \\
     \\```
-    \\.nalar/tasks/
-    \\├── <task_id_1>/
-    \\│   ├── todo.md          # Task description and checklist
-    \\│   ├── progress.md      # Current progress and status
-    \\│   └── actions.log      # Log of all actions taken
-    \\├── <task_id_2>/
-    \\│   └── ...
-    \\└── active/              # Symlink to current active task
+    \\## [status] YYYYMMDD_HHMMSS — task name
+    \\
+    \\- [ ] subtask one
+    \\- [ ] subtask two
+    \\- [x] completed subtask
     \\```
     \\
-    \\### Task Workflow
+    \\Status values: `active` | `done` | `skipped`
     \\
-    \\1. **Create Task** — When given a new task by user:
-    \\   - Create `.nalar/tasks/<timestamp>_<task_name>/todo.md`
-    \\   - Write task description and break down into actionable subtasks
-    \\   - Create symlink `.nalar/tasks/active` → current task
+    \\### Rules
     \\
-    \\2. **Track Progress** — MANDATORY after EVERY action:
-    \\   - Update `progress.md` with current status IMMEDIATELY after each action
-    \\   - Log action in `actions.log` IMMEDIATELY after each action
-    \\   - Mark completed subtasks in `todo.md` IMMEDIATELY after completing each subtask
-    \\   - 🚨 **CRITICAL**: Do NOT wait until all tasks are done — update after EVERY subtask/task completion
-    \\
-    \\3. **Complete Task** — When task is done:
-    \\   - Finalize `todo.md` with all items checked
-    \\   - Update `progress.md` with final status
-    \\   - Remove symlink from `active/`
-    \\
-    \\### Task File Templates
-    \\
-    \\**todo.md:**
-    \\```
-    \\# Task: <task_name>
-    \\Created: <timestamp>
-    \\Status: [pending|in_progress|completed]
-    \\
-    \\## Description
-    \\<What this task is about>
-    \\
-    \\## Subtasks
-    \\- [ ] <subtask 1>
-    \\- [ ] <subtask 2>
-    \\- [x] <completed subtask>
-    \\```
-    \\
-    \\**progress.md:**
-    \\```
-    \\# Progress: <task_name>
-    \\Last Updated: <timestamp>
-    \\
-    \\## Current Status
-    \\<What's currently being worked on>
-    \\
-    \\## Completed
-    \\- <completed action 1>
-    \\- <completed action 2>
-    \\
-    \\## Blockers
-    \\- <any blockers or issues>
-    \\```
-    \\
-    \\**actions.log:**
-    \\```
-    \\[<timestamp>] ACTION: <description>
-    \\[<timestamp>] ACTION: <description>
-    \\```
-    \\
-    \\### Parallel Task Isolation (Sub-agents)
-    \\
-    \\When spawning sub-agents for parallel work:
-    \\- **Each sub-agent MUST have its own task** in `.nalar/tasks/<subtask_id>/`
-    \\- Sub-agents work independently and MUST NOT interfere with other tasks
-    \\- Each sub-agent tracks its own progress in its own task directory
-    \\- Main agent coordinates but does not do the work itself
-    \\
-    \\**Task ID Format:** `<timestamp>_<agent_name>_<task_type>`
-    \\Example: `20240315_143022_explorer_find_files`
-    \\
-    \\### Hard Rules
-    \\
-    \\- **ALWAYS create a task before doing any work**
-    \\- **ALWAYS log every action to actions.log**
-    \\- **NEVER work on multiple tasks in the same task directory**
-    \\- **NEVER interfere with another task's files or progress**
-    \\- **ALWAYS mark subtasks complete in todo.md as you finish them**
-    \\- **If parallel, each sub-agent gets its own task directory**
-    \\- **When user requests a NEW TASK, create the task directory IMMEDIATELY — do not analyze or start work first**
-    \\
-    \\### 🚨 MANDATORY Checklist Update Rule
-    \\
-    \\**This rule applies to BOTH main agent AND sub-agents:**
-    \\
-    \\- **AFTER EVERY SUB-TASK COMPLETION**: Immediately mark the subtask as complete in `todo.md`, update `progress.md` with what was just completed, and log the action in `actions.log`
-    \\- **AFTER EVERY TASK COMPLETION**: Immediately finalize `todo.md`, update `progress.md` with final status, and log the completion in `actions.log`
-    \\- **DO NOT WAIT** — Updates must happen IMMEDIATELY after each subtask/task, not only when all tasks are done
-    \\- This ensures real-time progress tracking and prevents losing track of what was accomplished
-    \\- Sub-agents MUST also follow this rule for their own task directories
-    \\
+    \\- **Before any work**: append a new `[active]` section to `.nalar/tasks.md`.
+    \\- **After every subtask**: mark `[x]` immediately — do not batch updates.
+    \\- **On completion**: change `[active]` → `[done]` in the header line.
+    \\- **Sub-agents**: append their own section with a unique timestamp + agent name.
+    \\- One active task per agent at a time. Parallel sub-agents each get their own section.
+    \\- Never rewrite history — only append and update status markers.
 ;
 
 pub const Agent =
@@ -840,7 +747,7 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: 
 
     // Task-based agent guidance - encourage using specialized agents when appropriate
     try result.appendSlice(allocator, "\n\n## Specialized Agents — Use On Demand\n\n");
-    try result.appendSlice(allocator, 
+    try result.appendSlice(allocator,
         \\Don't reinvent expertise. When a task matches a specialized domain, load the relevant agent:
         \\
         \\### When to Load a Specialized Agent

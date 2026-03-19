@@ -172,7 +172,7 @@ pub fn run(
     logger.infoFmt("[MCP] Tool result appended to messages_list, total messages: {}", .{messages_list.items.len}) catch {};
 
     // Save tool result to database
-    _ = save_message.SaveMessage(allocator, db, .{
+    _ = try save_message.SaveMessage(allocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
@@ -192,9 +192,7 @@ pub fn run(
         .is_output = true,
         .is_input = false,
         .tool_name = tool_call.function.name,
-    }) catch |err| {
-        logger.errFmt("Failed to save MCP tool result: {s}", .{@errorName(err)}) catch {};
-    };
+    });
 }
 
 fn addErrorResponse(
