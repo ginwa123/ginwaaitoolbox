@@ -562,16 +562,29 @@ fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anyerror
         if (session) |sess| {
             defer sess.deinit(arena.allocator());
 
-            // Build response
-            var response_buf: [512]u8 = undefined;
+            // Also get the latest finish_reason from database to verify stream completion
+            const latest_finish_reason = kerjabot_get_session.getLatestFinishReason(arena.allocator(), db, session_id) catch null;
+            defer if (latest_finish_reason) |fr| arena.allocator().free(fr);
+
+            // Determine if session is complete based on latest finish_reason
+            const is_complete = if (latest_finish_reason) |fr|
+                std.mem.eql(u8, fr, "stop") or std.mem.eql(u8, fr, "cancelled")
+            else
+                false;
+
+            // Build response with latest finish_reason
+            var response_buf: [1024]u8 = undefined;
+            const fr_str = if (latest_finish_reason) |fr| fr else "";
             const response = std.fmt.bufPrint(&response_buf,
-                \\{{"sessionId":"{s}","createdAt":"{s}","agentType":"{s}","config":{{"model":"{s}","temperature":{},"maxTokens":4096}},"workflowState":{{"currentStep":1,"totalSteps":3,"stepName":"processing"}},"messages":[]}}
+                \\{{"sessionId":"{s}","createdAt":"{s}","agentType":"{s}","config":{{"model":"{s}","temperature":{},"maxTokens":4096}},"workflowState":{{"currentStep":1,"totalSteps":3,"stepName":"processing","isComplete":{},"latestFinishReason":"{s}"}},"messages":[]}}
             , .{
                 sess.session_id,
                 sess.created_at,
                 sess.agent,
                 sess.model,
                 sess.temperature,
+                is_complete,
+                fr_str,
             }) catch "{\"error\":\"Response too large\"}";
 
             res.status = 200;
