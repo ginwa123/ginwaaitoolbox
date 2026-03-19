@@ -1,6 +1,5 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
-const logger_mod = tree1_mod.logger;
 const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
 const http_server = @import("nalarcore").http_server;
@@ -37,102 +36,171 @@ pub const Response = struct {
     command: ?[]const u8 = null,
 };
 
-// ============================================================================
-// Send Response - Unified handler for all response types
-// ============================================================================
+pub const OnEventInput = struct { session_id: []const u8, model: []const u8, cwd: []const u8, content: ?[]const u8, reasoning_content: ?[]const u8, role: ?[]const u8, finish_reason: ?[]const u8, tool_calls: ?[]agent.ToolCall, tool_call_id: ?[]const u8, tool_name: ?[]const u8 = null, agent_name: ?[]const u8, session_name: ?[]const u8, loop_index: u32, temperature: f32, is_thinking: bool, is_input: bool = false, is_output: bool = false, parent_session_id: ?[]const u8 = null, parent_id: ?[]const u8 = null };
 
-/// Send a unified response to the TUI via SSE
-/// Handles: assistant_response, error, tool_result, user_choice
-pub fn sendResponse(
-    allocator: std.mem.Allocator,
-    session_id: []const u8,
-    logger: *logger_mod.Logger,
-    response_type: ResponseType,
-    resp: Response,
-) void {
+pub fn onEventSendNew(allocator: std.mem.Allocator, input: OnEventInput) !void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     var w = buf.writer(allocator);
 
-    switch (response_type) {
-        .assistant_response => {
-            w.writeAll("<response><choices><choice><index>0</index><message><role>assistant</role>") catch return;
-
-            if (resp.content) |c| {
-                w.writeAll("<content>") catch return;
-                w.writeAll(c) catch return;
-                w.writeAll("</content>") catch return;
-            }
-
-            if (resp.reasoning_content) |rc| {
-                w.writeAll("<reasoning_content>") catch return;
-                w.writeAll(rc) catch return;
-                w.writeAll("</reasoning_content>") catch return;
-            }
-
-            w.writeAll("</message>") catch return;
-
-            if (resp.override_finish_reason) |fr| {
-                if (fr.len > 0) {
-                    w.writeAll("<finish_reason>") catch return;
-                    w.writeAll(fr) catch return;
-                    w.writeAll("</finish_reason>") catch return;
-                }
-            } else if (resp.finish_reason) |fr| {
-                w.writeAll("<finish_reason>") catch return;
-                w.writeAll(fr.toStr()) catch return;
-                w.writeAll("</finish_reason>") catch return;
-            }
-
-            w.print("<usage><prompt_tokens>{}</prompt_tokens><completion_tokens>{}</completion_tokens><total_tokens>{}</total_tokens></usage>", .{ resp.usage.prompt_tokens, resp.usage.completion_tokens, resp.usage.total_tokens }) catch return;
-            w.writeAll("</choice></choices></response>") catch return;
-        },
-        .err => {
-            w.writeAll("<response><choices><choice><index>0</index><message><role>assistant</role><content><agent>ErrorAgent</agent><markdown>") catch return;
-            w.writeAll(resp.err_msg orelse "") catch return;
-            w.writeAll("</markdown></content></message><finish_reason>") catch return;
-            const fr = resp.override_finish_reason orelse "stop";
-            w.writeAll(fr) catch return;
-            w.writeAll("</finish_reason></choice></choices></response>") catch return;
-        },
-        .tool_result => {
-            w.writeAll("<response><tool_result><tool_call_id>") catch return;
-            w.writeAll(resp.tool_call_id orelse "") catch return;
-            w.writeAll("</tool_call_id><tool_name>") catch return;
-            w.writeAll(resp.tool_name orelse "") catch return;
-            w.writeAll("</tool_name>") catch return;
-
-            if (resp.command) |cmd| {
-                w.writeAll("<command>") catch return;
-                w.writeAll(cmd) catch return;
-                w.writeAll("</command>") catch return;
-            }
-
-            w.writeAll("<result>") catch return;
-            w.writeAll(resp.tool_result orelse "") catch return;
-            w.writeAll("</result></tool_result></response>") catch return;
-        },
-        .user_choice => {
-            w.writeAll("<response><finish_reason>user_choice</finish_reason></response>") catch return;
-        },
+    // Use <tool_result> format when sending tool results (when tool_call_id is set)
+    // This is what the TUI client expects
+    const is_tool_result = input.tool_call_id != null;
+    if (is_tool_result) {
+        _ = try w.writeAll("<tool_result>");
+    } else {
+        _ = try w.writeAll("<response>");
     }
 
-    const event_type: []const u8 = switch (response_type) {
-        .assistant_response => "response",
-        .err => "error",
-        .tool_result => "tool_result",
-        .user_choice => "user_choice",
-    };
+    if (!is_tool_result) {
+        _ = try w.writeAll("<session_id>");
+        _ = try w.writeAll(input.session_id);
+        _ = try w.writeAll("</session_id>");
 
+        _ = try w.writeAll("<model>");
+        _ = try w.writeAll(input.model);
+        _ = try w.writeAll("</model>");
+
+        _ = try w.writeAll("<cwd>");
+        _ = try w.writeAll(input.cwd);
+        _ = try w.writeAll("</cwd>");
+    }
+
+    if (input.content) |v| {
+        if (is_tool_result) {
+            _ = try w.writeAll("<result>");
+            _ = try w.writeAll(v);
+            _ = try w.writeAll("</result>");
+        } else {
+            _ = try w.writeAll("<content>");
+            _ = try w.writeAll(v);
+            _ = try w.writeAll("</content>");
+        }
+    }
+
+    if (input.reasoning_content) |v| {
+        _ = try w.writeAll("<reasoning_content>");
+        _ = try w.writeAll(v);
+        _ = try w.writeAll("</reasoning_content>");
+    }
+
+    if (!is_tool_result) {
+        _ = try w.writeAll("<role>");
+        _ = try w.writeAll(input.role orelse "assistant");
+        _ = try w.writeAll("</role>");
+    }
+
+    if (input.finish_reason) |v| {
+        _ = try w.writeAll("<finish_reason>");
+        _ = try w.writeAll(v);
+        _ = try w.writeAll("</finish_reason>");
+    }
+
+    if (input.tool_calls) |calls| {
+        _ = try w.writeAll("<tool_calls>");
+        for (calls) |call| {
+            _ = try w.writeAll("<tool_call>");
+            _ = try w.writeAll("<id>");
+            _ = try w.writeAll(call.id);
+            _ = try w.writeAll("</id>");
+            _ = try w.writeAll("<name>");
+            _ = try w.writeAll(call.function.name);
+            _ = try w.writeAll("</name>");
+            _ = try w.writeAll("<arguments>");
+            _ = try w.writeAll(call.function.arguments);
+            _ = try w.writeAll("</arguments>");
+            _ = try w.writeAll("</tool_call>");
+        }
+        _ = try w.writeAll("</tool_calls>");
+    }
+
+    if (input.tool_call_id) |v| {
+        _ = try w.writeAll("<tool_call_id>");
+        _ = try w.writeAll(v);
+        _ = try w.writeAll("</tool_call_id>");
+    }
+
+    if (input.tool_name) |v| {
+        _ = try w.writeAll("<tool_name>");
+        _ = try w.writeAll(v);
+        _ = try w.writeAll("</tool_name>");
+    }
+
+    if (!is_tool_result) {
+        if (input.agent_name) |v| {
+            _ = try w.writeAll("<agent_name>");
+            _ = try w.writeAll(v);
+            _ = try w.writeAll("</agent_name>");
+        }
+
+        if (input.session_name) |v| {
+            _ = try w.writeAll("<session_name>");
+            _ = try w.writeAll(v);
+            _ = try w.writeAll("</session_name>");
+        }
+
+        _ = try w.print("<loop_index>{d}</loop_index>", .{input.loop_index});
+        _ = try w.print("<temperature>{d}</temperature>", .{input.temperature});
+        _ = try w.print("<is_thinking>{}</is_thinking>", .{input.is_thinking});
+        _ = try w.print("<is_input>{}</is_input>", .{input.is_input});
+        _ = try w.print("<is_output>{}</is_output>", .{input.is_output});
+
+        if (input.parent_session_id) |v| {
+            _ = try w.writeAll("<parent_session_id>");
+            _ = try w.writeAll(v);
+            _ = try w.writeAll("</parent_session_id>");
+        }
+
+        if (input.parent_id) |v| {
+            _ = try w.writeAll("<parent_id>");
+            _ = try w.writeAll(v);
+            _ = try w.writeAll("</parent_id>");
+        }
+
+        _ = try w.writeAll("</response>");
+    } else {
+        _ = try w.writeAll("</tool_result>");
+    }
+
+    const event_type: []const u8 = if (is_tool_result) "tool_result" else "response";
     const event = http_server.SseEvent{
         .event_type = event_type,
         .data = buf.items,
     };
-    sse_manager.sendEvent(session_id, event) catch |err| {
-        logger.errFmt("SSE send error: {s}", .{@errorName(err)}) catch {};
+    try sse_manager.sendEvent(input.session_id, event);
+}
+
+/// Legacy sendResponse function - wraps onEventSendNew for backward compatibility
+pub fn sendResponse(
+    allocator: std.mem.Allocator,
+    session_id: []const u8,
+    response_type: ResponseType,
+    resp: Response,
+) void {
+    const input = OnEventInput{
+        .session_id = session_id,
+        .model = "",
+        .cwd = "",
+        .content = resp.content,
+        .reasoning_content = resp.reasoning_content,
+        .role = if (response_type == .err) "assistant" else null,
+        .finish_reason = if (resp.override_finish_reason) |fr| fr else if (resp.finish_reason) |fr| fr.toStr() else null,
+        .tool_calls = null,
+        .tool_call_id = resp.tool_call_id,
+        .tool_name = resp.tool_name,
+        .agent_name = null,
+        .session_name = null,
+        .loop_index = 0,
+        .temperature = 0.0,
+        .is_thinking = false,
+        .is_input = false,
+        .is_output = false,
+        .parent_session_id = null,
+        .parent_id = null,
     };
+    onEventSendNew(allocator, input) catch return;
 }
 
 // ============================================================================

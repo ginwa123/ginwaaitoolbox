@@ -23,6 +23,7 @@ const transform_llm_history_to_agent_message = @import("transform_llm_history_to
 const SaveMessage = @import("save_message.zig").SaveMessage;
 const BuildMessages = @import("build_messages_for_agent_prompt.zig").BuildMessages;
 const GetMessages = @import("get_messages.zig").GetMessages;
+const GetMessagesLatest = @import("get_messages.zig").GetMessageLatest;
 const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
@@ -32,7 +33,7 @@ const SearchTool = root_mod.search_tool;
 const TextReplaceTool = root_mod.text_replace_tool;
 
 const on_event_sent = @import("on_event_sent.zig");
-const sendResponse = on_event_sent.sendResponse;
+const onEventSendNew = on_event_sent.onEventSendNew;
 const sendStreamChunkContent = on_event_sent.sendStreamChunkContent;
 const sendStreamChunkReasoning = on_event_sent.sendStreamChunkReasoning;
 const sendStreamChunkFinal = on_event_sent.sendStreamChunkFinal;
@@ -53,7 +54,7 @@ const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
-    pub const max_body_size: usize = 500 * 1024; // 150kb threshold to trigger
+    pub const max_body_size: usize = 650 * 1024; // 150kb threshold to trigger
 };
 
 pub const SessionInfo = struct {
@@ -122,10 +123,27 @@ pub const TUIWorkflow = struct {
     pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) void {
         self.runInternal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
-            sendResponse(allocator, session_id, self.logger, .err, .{
-                .err_msg = err_msg,
-                .override_finish_reason = "user_choice",
-            });
+            onEventSendNew(allocator, .{
+                .session_id = session_id,
+                .model = model,
+                .cwd = cwd,
+                .content = err_msg,
+                .reasoning_content = null,
+                .role = "assistant",
+                .finish_reason = "user_choice",
+                .tool_calls = null,
+                .tool_call_id = null,
+                .tool_name = null,
+                .agent_name = null,
+                .session_name = message,
+                .loop_index = 0,
+                .temperature = 0.0,
+                .is_thinking = false,
+                .is_input = false,
+                .is_output = false,
+                .parent_session_id = null,
+                .parent_id = null,
+            }) catch return;
         };
     }
 
@@ -250,13 +268,32 @@ pub const TUIWorkflow = struct {
                         .parent_id = session_id,
                         .parent_session_id = session_id,
                     });
-                    _ = sendResponse(allocator, session_id, self.logger, .assistant_response, .{
-                        .content = resDynmicAgent.content,
-                        .finish_reason = resDynmicAgent.finish_reason,
-                        .reasoning_content = resDynmicAgent.reasoning_content,
-                        .usage = resDynmicAgent.usage,
-                        .override_finish_reason = "user_choice",
-                    });
+
+                    // Send SSE event using GetMessagesLatest
+                    const latestMessage = try GetMessagesLatest(allocator, self.db, session_id);
+                    if (latestMessage) |msg| {
+                        onEventSendNew(allocator, .{
+                            .session_id = msg.session_id,
+                            .model = msg.model,
+                            .cwd = cwd,
+                            .content = msg.response_content,
+                            .reasoning_content = msg.reasoning_content,
+                            .role = msg.role,
+                            .finish_reason = msg.finish_reason,
+                            .tool_calls = null,
+                            .tool_call_id = null,
+                            .tool_name = msg.tool_name,
+                            .agent_name = current_agent,
+                            .session_name = msg.session_name,
+                            .loop_index = msg.loop_index,
+                            .temperature = agent_temperature,
+                            .is_thinking = isThinking,
+                            .is_input = false,
+                            .is_output = false,
+                            .parent_session_id = session_id,
+                            .parent_id = session_id,
+                        }) catch {};
+                    }
                     break;
                 } else if (finish_reason == .length) {
                     current_max_tokens += 4096;
@@ -266,7 +303,27 @@ pub const TUIWorkflow = struct {
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                    sendResponse(allocator, session_id, self.logger, .user_choice, .{});
+                    onEventSendNew(allocator, .{
+                        .session_id = session_id,
+                        .model = model,
+                        .cwd = cwd,
+                        .content = null,
+                        .reasoning_content = null,
+                        .role = null,
+                        .finish_reason = "user_choice",
+                        .tool_calls = null,
+                        .tool_call_id = null,
+                        .tool_name = null,
+                        .agent_name = current_agent,
+                        .session_name = session_name,
+                        .loop_index = loopCounter,
+                        .temperature = agent_temperature,
+                        .is_thinking = isThinking,
+                        .is_input = false,
+                        .is_output = false,
+                        .parent_session_id = session_id,
+                        .parent_id = session_id,
+                    }) catch {};
                     break;
                 }
 

@@ -6,7 +6,7 @@ const sqlite = root_mod.sqlite;
 const config_mod = @import("../../modules/config/config.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
 const on_event_sent = @import("on_event_sent.zig");
-const sendResponse = on_event_sent.sendResponse;
+const onEventSendNew = on_event_sent.onEventSendNew;
 const ResponseType = on_event_sent.ResponseType;
 const Response = on_event_sent.Response;
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
@@ -71,13 +71,6 @@ pub fn HandleTool(
     config: *const config_mod.LlmConfig,
     base_tools: []const tool_models.AgentTool,
 ) !void {
-    _ = sendResponse(allocator, session_id, logger, .assistant_response, .{
-        .content = res_dynamic_agent.content,
-        .finish_reason = res_dynamic_agent.finish_reason,
-        .reasoning_content = res_dynamic_agent.reasoning_content,
-        .usage = res_dynamic_agent.usage,
-    });
-
     if (res_dynamic_agent.tool_calls) |tc| {
         var assistant_tool_calls = try allocator.alloc(agent.ToolCall, tc.len);
         var toolNames = try std.ArrayList([]const u8).initCapacity(allocator, tc.len);
@@ -139,13 +132,29 @@ pub fn HandleTool(
             .parent_session_id = session_id,
         });
 
-        if (res_dynamic_agent.content) |c| {
-            _ = c;
-            _ = sendResponse(allocator, session_id, logger, .assistant_response, .{
-                .content = res_dynamic_agent.content,
-                .finish_reason = res_dynamic_agent.finish_reason,
-                .reasoning_content = res_dynamic_agent.reasoning_content,
-                .usage = res_dynamic_agent.usage,
+        // Send SSE event for assistant message with tool calls
+        {
+            const latestMessage = try GetMessagesLatest(allocator, db, session_id);
+            try onEventSendNew(allocator, .{
+                .session_id = latestMessage.?.session_id,
+                .model = latestMessage.?.model,
+                .cwd = cwd,
+                .content = latestMessage.?.response_content,
+                .reasoning_content = latestMessage.?.reasoning_content,
+                .role = latestMessage.?.role,
+                .finish_reason = latestMessage.?.finish_reason,
+                .tool_calls = null,
+                .tool_call_id = null,
+                .tool_name = latestMessage.?.tool_name,
+                .agent_name = current_agent_for_save,
+                .session_name = latestMessage.?.session_name,
+                .loop_index = latestMessage.?.loop_index,
+                .temperature = agent_temperature.*,
+                .is_thinking = isThinking.*,
+                .is_input = true,
+                .is_output = false,
+                .parent_session_id = session_id,
+                .parent_id = session_id,
             });
         }
 
@@ -302,12 +311,31 @@ pub fn HandleTool(
                 .parent_session_id = session_id,
             });
 
-            const latestMessage = try GetMessagesLatest(allocator, db, session_id);
-            _ = sendResponse(allocator, session_id, logger, .tool_result, .{
-                .tool_call_id = latestMessage.?.id,
-                .tool_name = latestMessage.?.tool_name,
-                .tool_result = latestMessage.?.response_content,
-            });
+            // Send SSE event for tool result
+            {
+                const latestMessage = try GetMessagesLatest(allocator, db, session_id);
+                try onEventSendNew(allocator, .{
+                    .session_id = latestMessage.?.session_id,
+                    .model = latestMessage.?.model,
+                    .cwd = cwd,
+                    .content = latestMessage.?.response_content,
+                    .reasoning_content = latestMessage.?.reasoning_content,
+                    .role = latestMessage.?.role,
+                    .finish_reason = latestMessage.?.finish_reason,
+                    .tool_calls = null,
+                    .tool_call_id = latestMessage.?.id,
+                    .tool_name = latestMessage.?.tool_name,
+                    .agent_name = current_agent_for_save,
+                    .session_name = latestMessage.?.session_name,
+                    .loop_index = latestMessage.?.loop_index,
+                    .temperature = agentTemperature,
+                    .is_thinking = toolIsThinking,
+                    .is_input = false,
+                    .is_output = true,
+                    .parent_session_id = session_id,
+                    .parent_id = session_id,
+                });
+            }
 
             // Check if tool has underscore (potential MCP tool)
             // const has_underscore = std.mem.indexOf(u8, tool_call.function.name, "_") != null;
@@ -337,8 +365,7 @@ pub fn HandleTool(
             //     }
             // }
         }
-    } else {
-    }
+    } else {}
     // Continue to next LLM call - no break, loop continues naturally
     logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{}) catch {};
 }

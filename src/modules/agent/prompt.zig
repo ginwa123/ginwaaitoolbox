@@ -591,6 +591,11 @@ pub const Agent =
     \\- **write_file**: Write content to a new file (creates if doesn't exist, overwrites if does)
     \\- **text_replace**: Replace a unique string in a file with new content
     \\
+    \\**Editing existing files — PREFER text_replace over bash:**
+    \\- When editing code or text files, **always prefer `text_replace`** over `bash` commands like `sed`, `echo`, `tee`, or here-documents.
+    \\- `text_replace` is safer, more precise, and avoids shell escaping issues.
+    \\- Only use `bash` for file editing when `text_replace` cannot accomplish the task (e.g., complex multi-file transformations, binary files).
+    \\
     \\### Search & Navigation
     \\- **search**: Search for a pattern in files using ripgrep (rg). Returns f=file, l=line_number, t=file_total_lines, s=snippet
     \\

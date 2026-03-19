@@ -4,8 +4,7 @@ const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const SaveMessage = @import("save_message.zig").SaveMessage;
-const sendResponse = @import("on_event_sent.zig").sendResponse;
-const ResponseType = @import("on_event_sent.zig").ResponseType;
+const onEventSendNew = @import("on_event_sent.zig").onEventSendNew;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 
 pub fn run(
@@ -56,26 +55,74 @@ pub fn run(
     if (res_dynamic_agent.content) |c| {
         if (c.len > 0) {
             // Send the partial content with content_filter finish reason
-            sendResponse(allocator, session_id, logger, .assistant_response, .{
+            _ = try onEventSendNew(allocator, .{
+                .session_id = session_id,
+                .model = model,
+                .cwd = cwd,
                 .content = res_dynamic_agent.content,
-                .finish_reason = res_dynamic_agent.finish_reason,
                 .reasoning_content = res_dynamic_agent.reasoning_content,
-                .usage = res_dynamic_agent.usage,
-                .override_finish_reason = "content_filter",
-            });
+                .role = "assistant",
+                .finish_reason = "content_filter",
+                .tool_calls = null,
+                .tool_call_id = null,
+                .tool_name = null,
+                .agent_name = current_agent,
+                .session_name = session_name,
+                .loop_index = loop_counter,
+                .temperature = agent_temperature,
+                .is_thinking = is_thinking,
+                .is_input = false,
+                .is_output = false,
+                .parent_session_id = session_id,
+                .parent_id = session_id,
+            }) catch {};
         } else {
             // No content, send error message
-            sendResponse(allocator, session_id, logger, .err, .{
-                .err_msg = "Content was filtered due to safety policies. Please rephrase your request.",
-                .override_finish_reason = "user_choice",
+            _ = try onEventSendNew(allocator, .{
+                .session_id = session_id,
+                .model = model,
+                .cwd = cwd,
+                .content = "Content was filtered due to safety policies. Please rephrase your request.",
+                .reasoning_content = null,
+                .role = "assistant",
+                .finish_reason = "user_choice",
+                .tool_calls = null,
+                .tool_call_id = null,
+                .tool_name = null,
+                .agent_name = current_agent,
+                .session_name = session_name,
+                .loop_index = loop_counter,
+                .temperature = agent_temperature,
+                .is_thinking = is_thinking,
+                .is_input = false,
+                .is_output = false,
+                .parent_session_id = session_id,
+                .parent_id = session_id,
             });
         }
     } else {
         // No content, send error message
-        sendResponse(allocator, session_id, logger, .err, .{
-            .err_msg = "Content was filtered due to safety policies. Please rephrase your request.",
-            .override_finish_reason = "user_choice",
-        });
+        onEventSendNew(allocator, .{
+            .session_id = session_id,
+            .model = model,
+            .cwd = cwd,
+            .content = "Content was filtered due to safety policies. Please rephrase your request.",
+            .reasoning_content = null,
+            .role = "assistant",
+            .finish_reason = "user_choice",
+            .tool_calls = null,
+            .tool_call_id = null,
+            .tool_name = null,
+            .agent_name = current_agent,
+            .session_name = session_name,
+            .loop_index = loop_counter,
+            .temperature = agent_temperature,
+            .is_thinking = is_thinking,
+            .is_input = false,
+            .is_output = false,
+            .parent_session_id = session_id,
+            .parent_id = session_id,
+        }) catch {};
     }
 
     return true; // Signal caller to break the loop

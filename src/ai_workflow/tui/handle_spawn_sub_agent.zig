@@ -16,8 +16,7 @@ const get_skill_tool = @import("../../modules/agent/tools/get_skill.zig");
 const remove_skill_tool = @import("../../modules/agent/tools/remove_skill.zig");
 const config_mod = @import("../../modules/config/config.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
-const SendToolResult = @import("on_event_sent.zig").sendResponse;
-const ResponseType = @import("on_event_sent.zig").ResponseType;
+const onEventSendNew = @import("on_event_sent.zig").onEventSendNew;
 const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
 const handle_tool = @import("handle_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
@@ -31,6 +30,7 @@ const loop_detector = root_mod.loop_detector;
 const set_agent_properties = root_mod.set_agent_properties;
 const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
 const GetMessages = @import("get_messages.zig").GetMessages;
+const GetMessagesLatest = @import("get_messages.zig").GetMessageLatest;
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
@@ -127,6 +127,32 @@ fn runSubAgent(
         .is_output = false,
         .tool_name = null,
     });
+
+    // Send SSE event for user instruction
+    {
+        const latestMessage = try GetMessagesLatest(parentAllocator, db, session_id);
+        try onEventSendNew(parentAllocator, .{
+            .session_id = latestMessage.?.session_id,
+            .model = latestMessage.?.model,
+            .cwd = cwd,
+            .content = latestMessage.?.response_content,
+            .reasoning_content = latestMessage.?.reasoning_content,
+            .role = latestMessage.?.role,
+            .finish_reason = latestMessage.?.finish_reason,
+            .tool_calls = null,
+            .tool_call_id = latestMessage.?.id,
+            .tool_name = latestMessage.?.tool_name,
+            .agent_name = agent_name,
+            .session_name = latestMessage.?.session_name,
+            .loop_index = latestMessage.?.loop_index,
+            .temperature = agent_temperature,
+            .is_thinking = is_thinking,
+            .is_input = true,
+            .is_output = false,
+            .parent_session_id = null,
+            .parent_id = null,
+        });
+    }
 
     // Get tools based on allowed_tools (null = all tools)
     const sub_agent_tools = try getAllowedTools(parentAllocator, allowed_tools);
@@ -237,6 +263,32 @@ fn runSubAgent(
             .is_output = false,
         });
 
+        // Send SSE event for assistant response
+        {
+            const latestMessage = try GetMessagesLatest(allocator, db, session_id);
+            try onEventSendNew(allocator, .{
+                .session_id = latestMessage.?.session_id,
+                .model = latestMessage.?.model,
+                .cwd = cwd,
+                .content = latestMessage.?.response_content,
+                .reasoning_content = latestMessage.?.reasoning_content,
+                .role = latestMessage.?.role,
+                .finish_reason = latestMessage.?.finish_reason,
+                .tool_calls = null,
+                .tool_call_id = latestMessage.?.id,
+                .tool_name = latestMessage.?.tool_name,
+                .agent_name = agent_name,
+                .session_name = latestMessage.?.session_name,
+                .loop_index = latestMessage.?.loop_index,
+                .temperature = agent_temperature,
+                .is_thinking = is_thinking,
+                .is_input = true,
+                .is_output = false,
+                .parent_session_id = null,
+                .parent_id = null,
+            });
+        }
+
         // Check finish_reason
         if (response.finish_reason) |fr| {
             if (fr == .stop) {
@@ -259,26 +311,20 @@ fn runSubAgent(
                         if (std.mem.eql(u8, tc.function.name, "bash")) {
                             tool_result = handle_bash_tool.runWithContext(allocator, tc, db, session_id) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "bash", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "read_file")) {
                             tool_result = handle_read_file_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: read_file failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "read_file", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "search")) {
                             tool_result = handle_search_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: search failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "search", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "text_replace")) {
                             tool_result = handle_text_replace_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: text_replace failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "text_replace", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "write_file")) {
                             tool_result = handle_write_file_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: write_file failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "write_file", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "list_skills")) {
                             tool_result = handle_list_skills_tool.run(allocator);
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "list_skills", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "get_skill")) {
                             tool_result = handle_get_skill_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: get_skill failed: {s}", .{@errorName(err)});
@@ -302,15 +348,12 @@ fn runSubAgent(
                                     }
                                 }
                             }
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "get_skill", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "remove_skill")) {
                             tool_result = handle_remove_skill_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: remove_skill failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "remove_skill", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "list_agents")) {
                             tool_result = handle_list_agents_tool.run(allocator) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: list_agents failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "list_agents", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "get_agent")) {
                             tool_result = handle_get_agent_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: get_agent failed: {s}", .{@errorName(err)});
@@ -326,11 +369,9 @@ fn runSubAgent(
                                     }
                                 }
                             }
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "get_agent", .tool_result = tool_result });
                         } else if (std.mem.eql(u8, tc.function.name, "lsp_definition")) {
                             tool_result = handle_lsp_definition_tool.run(allocator, tc) catch |err|
                                 try std.fmt.allocPrint(allocator, "ERROR: lsp_definition failed: {s}", .{@errorName(err)});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_definition", .tool_result = tool_result });
                         }
                         // TODO: Restore these when lsp.zig is complete with all tools
                         // else if (std.mem.eql(u8, tc.function.name, "lsp_references")) {
@@ -352,7 +393,6 @@ fn runSubAgent(
                         // }
                         else {
                             tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
-                            SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = tc.function.name, .tool_result = tool_result });
                         }
 
                         // Save tool result to DB
@@ -380,6 +420,32 @@ fn runSubAgent(
                             .is_output = true,
                             .tool_name = tc.function.name,
                         });
+
+                        // Send SSE event for tool result
+                        {
+                            const latestMessage = try GetMessagesLatest(allocator, db, session_id);
+                            try onEventSendNew(allocator, .{
+                                .session_id = latestMessage.?.session_id,
+                                .model = latestMessage.?.model,
+                                .cwd = cwd,
+                                .content = latestMessage.?.response_content,
+                                .reasoning_content = latestMessage.?.reasoning_content,
+                                .role = latestMessage.?.role,
+                                .finish_reason = latestMessage.?.finish_reason,
+                                .tool_calls = null,
+                                .tool_call_id = latestMessage.?.id,
+                                .tool_name = latestMessage.?.tool_name,
+                                .agent_name = agent_name,
+                                .session_name = latestMessage.?.session_name,
+                                .loop_index = latestMessage.?.loop_index,
+                                .temperature = agent_temperature,
+                                .is_thinking = is_thinking,
+                                .is_input = false,
+                                .is_output = true,
+                                .parent_session_id = null,
+                                .parent_id = null,
+                            });
+                        }
 
                         // Add assistant message with tool_calls
                         const tc_slice = try allocator.alloc(agent.ToolCall, 1);
