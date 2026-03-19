@@ -54,54 +54,6 @@ const ToolContext = struct {
     current_agent_for_save: []const u8,
 };
 
-/// Helper to handle error for tools that return owned strings
-fn handleToolError(ctx: ToolContext, tool_call: agent.ToolCall, err: anytype, err_prefix: []const u8) !void {
-    const err_name = @errorName(err);
-    const err_str = try std.fmt.allocPrint(ctx.allocator, "{s}: {s}", .{ err_prefix, err_name });
-
-    const tool_result_msg = agent.AgentMessage{
-        .role = .tool,
-        .content = try ctx.allocator.dupe(u8, err_str),
-        .tool_call_id = try ctx.allocator.dupe(u8, tool_call.id),
-    };
-    try ctx.messages_list.append(ctx.allocator, tool_result_msg);
-
-    _ = try SaveMessage(ctx.allocator, ctx.db, .{
-        .session_id = ctx.session_id,
-        .model = ctx.model,
-        .cwd = ctx.cwd,
-        .content = err_str,
-        .reasoning_content = null,
-        .role = agent.Role.tool.toStr(),
-        .finish_reason = agent.FinishReason.tool.toStr(),
-        .tool_calls = null,
-        .tool_call_id = tool_call.id,
-        .agent_name = ctx.current_agent_for_save,
-        .session_name = ctx.session_name,
-        .loop_index = ctx.loop_counter,
-        .temperature = ctx.agent_temperature,
-        .is_thinking = ctx.is_thinking,
-        .prompt_tokens = 0,
-        .completion_tokens = 0,
-        .total_tokens = 0,
-        .is_output = true,
-        .is_input = false,
-        .tool_name = tool_call.function.name,
-    });
-
-    const latestMessage = try GetMessagesLatest(ctx.allocator, ctx.db, ctx.session_id);
-    defer if (latestMessage) |msg| {
-        var m = msg;
-        m.deinit(ctx.allocator);
-    };
-
-    _ = sendResponse(ctx.allocator, ctx.session_id, ctx.logger, .tool_result, .{
-        .tool_call_id = latestMessage.?.id,
-        .tool_name = latestMessage.?.tool_name,
-        .tool_result = latestMessage.?.response_content,
-    });
-}
-
 pub fn HandleTool(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -200,8 +152,8 @@ pub fn HandleTool(
         // Execute each tool call and add tool result messages
         for (tc) |tool_call| {
             var result: []const u8 = undefined;
-            var agentTemperature: f32 = undefined;
-            var toolIsThinking: bool = false;
+            var agentTemperature: f32 = agent_temperature.*;
+            var toolIsThinking: bool = isThinking.*;
 
             if (std.mem.eql(u8, tool_call.function.name, "set_agent_properties")) {
                 const set_props_result = handle_set_agent_properties.run(allocator, tool_call) catch |err| {

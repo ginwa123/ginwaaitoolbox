@@ -21,7 +21,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     var last_tick: i64 = 0;
     var retry_count: usize = 0;
-    var streaming_started = false;
+    // var streaming_started = false;
 
     // Timeout detection for SSE reconnection
     // Keepalive is sent every 30s, server removes session after ~60s
@@ -62,7 +62,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
         for (displayed_tool_ids.items) |id| app.allocator.free(id);
         displayed_tool_ids.deinit(app.allocator);
     }
-    var last_printed_chunk_index: usize = 0;
+    // var last_printed_chunk_index: usize = 0;
     var last_finish_search_pos: usize = 0;
     var raw_buffer_processed_len: usize = 0;
 
@@ -112,7 +112,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
             }
 
             // Spinner — only updated when idle
-            if (!streaming_started and now - last_tick >= 100) {
+            if (now - last_tick >= 100) {
                 last_tick = now;
                 const spin = spinners[spinner_timer % spinners.len];
                 spinner_timer += 1;
@@ -132,32 +132,33 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
             if (sse.extractSseData(app.allocator, decoded)) |xml| {
                 defer app.allocator.free(xml);
 
-                var chunk_pos: usize = 0;
-                while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
-                    const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
-                    const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
-                    chunk_pos = chunk_end + "</chunk>".len;
-
-                    var chunk_index: usize = 0;
-                    if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
-                        const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
-                        const idx_str = chunk_block[idx_start + 7 .. idx_end];
-                        chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                    }
-
-                    if (chunk_index >= last_printed_chunk_index) {
-                        last_printed_chunk_index = chunk_index + 1;
-                        if (utils.extractTag(chunk_block, "content")) |content| {
-                            if (content.len > 0) {
-                                if (!streaming_started) {
-                                    tuiText.print("\r\x1b[2K", .{});
-                                    streaming_started = true;
-                                }
-                                tuiText.print("{s}", .{content});
-                            }
-                        }
-                    }
-                }
+                // disable streaming for now
+                // var chunk_pos: usize = 0;
+                // while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
+                //     const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
+                //     const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
+                //     chunk_pos = chunk_end + "</chunk>".len;
+                //
+                //     var chunk_index: usize = 0;
+                //     if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
+                //         const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
+                //         const idx_str = chunk_block[idx_start + 7 .. idx_end];
+                //         chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
+                //     }
+                //
+                //     if (chunk_index >= last_printed_chunk_index) {
+                //         last_printed_chunk_index = chunk_index + 1;
+                //         if (utils.extractTag(chunk_block, "content")) |content| {
+                //             if (content.len > 0) {
+                //                 if (!streaming_started) {
+                //                     tuiText.print("\r\x1b[2K", .{});
+                //                     streaming_started = true;
+                //                 }
+                //                 tuiText.print("{s}", .{content});
+                //             }
+                //         }
+                //     }
+                // }
 
                 if (tool_results.extractToolResults(app.allocator, xml)) |tr_val| {
                     var tool_results_list = tr_val;
@@ -189,10 +190,12 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
             } else |_| {}
         } else |_| {}
 
+        var finish_reason_stop = false;
         // finish_reason
         const search_start = @min(last_finish_search_pos, raw_buffer.items.len);
-        if (std.mem.indexOfPos(u8, raw_buffer.items, search_start, "</finish_reason>")) |_| {
+        if (std.mem.indexOfPos(u8, raw_buffer.items, search_start, "</finish_reason>")) |pos| {
             last_finish_search_pos = raw_buffer.items.len;
+            // Find the corresponding opening tag to extract content
             if (utils.extractTag(raw_buffer.items, "finish_reason")) |fr| {
                 if (std.mem.eql(u8, fr, "notification_error")) {
                     retry_count += 1;
@@ -200,10 +203,32 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                 }
                 if (std.mem.eql(u8, fr, "cancelled")) {
                     tuiText.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
-                    break;
+                    finish_reason_stop = true;
                 }
-                if (std.mem.eql(u8, fr, "user_choice")) break;
-                if (std.mem.eql(u8, fr, "stop")) break;
+                if (std.mem.eql(u8, fr, "user_choice")) {
+                    finish_reason_stop = true;
+                }
+                if (std.mem.eql(u8, fr, "stop")) {
+                    finish_reason_stop = true;
+                }
+                if (finish_reason_stop) {
+                    // Verify this is the LAST finish_reason in buffer before breaking
+                    // Count total finish_reason tags - if this is the only one, it's the latest
+                    const total_tags = std.mem.count(u8, raw_buffer.items, "</finish_reason>");
+                    if (total_tags == 1) {
+                        // Only one finish_reason - this is definitely the latest
+                        break;
+                    }
+                    // Multiple tags - check if there's another one after this position
+                    const after_this_end = pos + "</finish_reason>".len;
+                    if (after_this_end >= raw_buffer.items.len or
+                        std.mem.indexOf(u8, raw_buffer.items[after_this_end..], "</finish_reason>") == null)
+                    {
+                        // No more finish_reason tags after this one - safe to break
+                        break;
+                    }
+                    // More finish_reason tags coming - continue reading
+                }
             }
         }
     }
@@ -222,34 +247,253 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     const final_xml = sse.extractSseData(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);
     // tuiText.print("{s}[DEBUG] XML size: {d}{s}\n", .{ globals.dim, final_xml.len, globals.reset });
-    // if (final_xml.len > 0) {
-    //     tuiText.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ globals.dim, final_xml[0..@min(final_xml.len, 200)], globals.reset });
-    // }
+    // tuiText.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ globals.dim, final_xml[0..@min(final_xml.len, 500)], globals.reset });
 
-    if (utils.extractTag(final_xml, "content")) |content| {
-        // Print formatted response if no streaming happened
-        if (!streaming_started) {
+    // First check for nested <response> structure (from sendResponse with finish_reason=stop)
+    // This must come before the simpler <content> check
+    if (utils.extractTag(final_xml, "response")) |response_xml| {
+        if (utils.extractContentFromResponse(response_xml)) |content| {
             printFormattedResponse(content);
-        } else {
-            // Content already streamed - just add formatted header
-            const agent_name = utils.extractTag(content, "agent") orelse "assistant";
-            tuiText.print("\n{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
         }
+    } else if (utils.extractTag(final_xml, "content")) |content| {
+        printFormattedResponse(content);
+    } else if (utils.extractTag(final_xml, "message")) |msg| {
+        printFormattedResponse(msg);
     } else if (final_xml.len > 0) {
-        if (utils.extractTag(final_xml, "message")) |msg| {
-            // Print formatted response if no streaming happened
-            if (!streaming_started) {
-                printFormattedResponse(msg);
-            } else {
-                const agent_name = utils.extractTag(msg, "agent") orelse "assistant";
-                tuiText.print("\n{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
-            }
-        } else {
+        // Fallback: just print what we have if it's not empty
+        // Skip keepalive comments and empty responses
+        const trimmed = utils.trim(final_xml);
+        if (trimmed.len > 0) {
             tuiText.print("{s}\n", .{final_xml});
         }
     }
 
     tuiText.print("\n", .{});
+    _ = app.arena.reset(.retain_capacity);
+    return try raw_buffer.toOwnedSlice(app.allocator);
+}
+
+/// Read and stream the list of session messages (conversation history)
+pub fn readResponseAndStreamGetHistory(app: anytype) ![]u8 {
+    var raw_buffer = std.ArrayList(u8).empty;
+    errdefer raw_buffer.deinit(app.allocator);
+    var buf: [4096]u8 = undefined;
+
+    // Timeout detection for SSE reconnection
+    const SSE_TIMEOUT_MS: i64 = 90000; // 90 seconds
+    var last_data_received_ms: i64 = std.time.milliTimestamp();
+    var reconnection_attempts: u32 = 0;
+    const MAX_RECONNECTION_ATTEMPTS: u32 = 3;
+
+    // Ping interval
+    const PING_INTERVAL_MS: i64 = 5000;
+    var last_ping_ms: i64 = std.time.milliTimestamp();
+
+    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
+    defer std.posix.close(stream_socket);
+
+    // Enable TCP keepalive
+    var enable: u32 = 1;
+    std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
+
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
+    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
+
+    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
+    _ = try std.posix.write(stream_socket, stream_request);
+
+    // Wait for "connected" event BEFORE sending command
+    if (!connection.waitForSseConnected(stream_socket, 5000)) {
+        tuiText.print("{s}Warning: SSE connection timeout{s}\n", .{ globals.yellow, globals.reset });
+    }
+    try messaging.sendHistoryCommand(app);
+
+    var poll_fds = [2]std.posix.pollfd{
+        .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
+        .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
+    };
+
+    while (true) {
+        const now = std.time.milliTimestamp();
+        const ready = std.posix.poll(&poll_fds, 50) catch 0;
+        var new_data = false;
+        if (ready > 0) {
+            if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
+                poll_fds[1].revents = 0;
+            }
+            if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
+                const n = std.posix.read(stream_socket, &buf) catch break;
+                if (n == 0) break;
+                try raw_buffer.appendSlice(app.allocator, buf[0..n]);
+                poll_fds[0].revents = 0;
+                new_data = true;
+                last_data_received_ms = now;
+            }
+            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
+        }
+
+        if (!new_data) {
+            // No data available - check for timeout
+            if (now - last_ping_ms > PING_INTERVAL_MS) {
+                const needs_reconnect = messaging.sendPingCommand(app) catch false;
+                if (needs_reconnect) {
+                    tuiText.print("SSE session expired, reconnecting...\n", .{});
+                    reconnection_attempts += 1;
+                    break;
+                }
+                last_ping_ms = now;
+            }
+
+            if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
+                if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
+                    tuiText.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ globals.yellow, globals.reset });
+                    break;
+                }
+
+                reconnection_attempts += 1;
+                tuiText.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ globals.yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, globals.reset });
+
+                const new_socket = connection.reconnectSseStream(app, stream_socket);
+                if (new_socket < 0) {
+                    tuiText.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
+                    last_data_received_ms = now;
+                    std.Thread.sleep(1_000_000_000);
+                    continue;
+                }
+
+                stream_socket = new_socket;
+                poll_fds[0].fd = stream_socket;
+                last_data_received_ms = now;
+                tuiText.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ globals.green, globals.reset });
+                continue;
+            }
+
+            std.Thread.sleep(10_000_000); // 10ms
+            continue;
+        }
+
+        const decoded = sse.decodeChunked(app.allocator, raw_buffer.items) catch continue;
+        defer app.allocator.free(decoded);
+        const xml = sse.extractSseData(app.allocator, decoded) catch continue;
+
+        defer app.allocator.free(xml);
+        if (std.mem.indexOf(u8, xml, "</finish_reason>") != null) break;
+    }
+
+    tuiText.print("\r\x1b[2K\n", .{});
+
+    const final_decoded = sse.decodeChunked(app.allocator, raw_buffer.items) catch "";
+    defer app.allocator.free(final_decoded);
+    const final_xml = sse.extractSseData(app.allocator, final_decoded) catch "";
+    defer app.allocator.free(final_xml);
+
+    // Parse and display history messages
+    if (utils.extractTag(final_xml, "history")) |history_xml| {
+        const trimmed = utils.trim(history_xml);
+        if (trimmed.len > 0) {
+            tuiText.print("{s}━━ Conversation History ━━{s}\n\n", .{ globals.bold, globals.reset });
+            var rest = trimmed;
+            while (utils.extractTag(rest, "message")) |message| {
+                const role = utils.extractTag(message, "role") orelse "assistant";
+                const content = utils.extractTag(message, "content") orelse "";
+                const timestamp = utils.extractTag(message, "timestamp") orelse "";
+                const tool_calls_json = utils.extractTag(message, "tool_calls") orelse "";
+                const tool_results_json = utils.extractTag(message, "tool_results") orelse "";
+                const agent_name = utils.extractTag(message, "agent") orelse "Agent";
+                _ = utils.extractTag(message, "tool_name") orelse "";
+
+                // Format role display
+                const role_color: []const u8 = if (std.mem.eql(u8, role, "user"))
+                    globals.cyan
+                else if (std.mem.eql(u8, role, "assistant"))
+                    globals.green
+                else if (std.mem.eql(u8, role, "system"))
+                    globals.yellow
+                else
+                    globals.reset;
+
+                const role_display: []const u8 = if (std.mem.eql(u8, role, "user"))
+                    "User"
+                else if (std.mem.eql(u8, role, "assistant"))
+                    "Assistant"
+                else if (std.mem.eql(u8, role, "system"))
+                    "System"
+                else
+                    role;
+
+                // Print message with formatting - consistent with streaming output
+                if (content.len > 0) {
+                    // Add agent header for assistant messages (consistent with streaming)
+                    if (std.mem.eql(u8, role, "assistant")) {
+                        tuiText.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
+                    }
+                    tuiText.print("{s}[{s}] {s}{s}:{s}\n", .{ globals.dim, timestamp, role_color, role_display, globals.reset });
+                    tuiText.print("  {s}\n\n", .{content});
+                }
+
+                // Display tool calls (like streaming does)
+                if (tool_calls_json.len > 0 and !std.mem.eql(u8, tool_calls_json, "null")) {
+                    if (std.mem.indexOf(u8, tool_calls_json, "{") != null) {
+                        // Parse tool_calls JSON and display each tool
+                        var tool_rest = tool_calls_json;
+                        while (std.mem.indexOf(u8, tool_rest, "\"name\"") != null) {
+                            const name_start = std.mem.indexOf(u8, tool_rest, "\"name\"") orelse break;
+                            const colon_start = std.mem.indexOfPos(u8, tool_rest, name_start, ":") orelse break;
+                            const first_quote = std.mem.indexOfPos(u8, tool_rest, colon_start, "\"") orelse break;
+                            const second_quote = std.mem.indexOfPos(u8, tool_rest, first_quote + 1, "\"") orelse break;
+                            const tool_func_name = tool_rest[first_quote + 1 .. second_quote];
+
+                            // Also extract arguments
+                            var args_slice: []const u8 = "";
+                            const args_start = std.mem.indexOfPos(u8, tool_rest, second_quote, "\"arguments\"") orelse null;
+                            if (args_start) |as| {
+                                const a_colon = std.mem.indexOfPos(u8, tool_rest, as, ":") orelse continue;
+                                const a_first_quote = std.mem.indexOfPos(u8, tool_rest, a_colon, "\"") orelse continue;
+                                const a_second_quote = std.mem.indexOfPos(u8, tool_rest, a_first_quote + 1, "\"") orelse continue;
+                                args_slice = tool_rest[a_first_quote + 1 .. a_second_quote];
+                            }
+
+                            tuiText.print("\r\x1b[2K{s}[{s}]{s}\n", .{ globals.cyan, tool_func_name, globals.reset });
+                            if (args_slice.len > 0) {
+                                // Truncate long arguments for display
+                                const max_args_len: usize = 200;
+                                const display_args = if (args_slice.len > max_args_len)
+                                    try std.fmt.allocPrint(app.allocator, "{s}...", .{args_slice[0..max_args_len]})
+                                else
+                                    args_slice;
+                                tuiText.print("  {s}\n", .{display_args});
+                            }
+
+                            // Move to next tool call
+                            const after_this = std.mem.indexOfPos(u8, tool_rest, second_quote, "}") orelse second_quote + 1;
+                            tool_rest = tool_rest[after_this..];
+                        }
+                    }
+                }
+
+                // Display tool results (like streaming does)
+                if (tool_results_json.len > 0 and !std.mem.eql(u8, tool_results_json, "null")) {
+                    if (tool_results.extractToolResults(app.allocator, tool_results_json)) |tr_val| {
+                        var tool_results_list = tr_val;
+                        defer tool_results_list.deinit(app.allocator);
+
+                        for (tool_results_list.items) |result| {
+                            const max_result_len: usize = 500;
+                            tool_results.displayToolResultByName(result.result, result.name, max_result_len);
+                        }
+                    } else |_| {}
+                }
+
+                const end = std.mem.indexOf(u8, rest, "</message>") orelse break;
+                rest = rest[end + "</message>".len ..];
+            }
+            tuiText.print("{s}━━ End of History ━━{s}\n\n", .{ globals.bold, globals.reset });
+        }
+    } else {
+        // Fallback: just print raw XML if parsing fails
+        tuiText.print("{s}\n", .{final_xml});
+    }
+
     _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
