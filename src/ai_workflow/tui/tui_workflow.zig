@@ -53,7 +53,7 @@ const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
-    pub const max_body_size: usize = 700 * 1024; // 150kb threshold to trigger
+    pub const max_body_size: usize = 500 * 1024; // 150kb threshold to trigger
 };
 
 pub const SessionInfo = struct {
@@ -432,7 +432,6 @@ pub const TUIWorkflow = struct {
     fn noopStreamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
         _ = ctx;
         _ = chunk;
-        // Do nothing - we just collect the final response
     }
 
     /// Compact messages in memory based on CompactionAgent output

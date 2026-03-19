@@ -323,7 +323,7 @@ pub fn main() !void {
             if (std.mem.eql(u8, t.command_type, "double_escape")) {
                 const sessionId = t.session_id;
                 if (cancellation_registry.getGlobalRegistry()) |registry| {
-                    _ = registry.unregister(sessionId);
+                    registry.cancel(sessionId);
                 }
             }
 
