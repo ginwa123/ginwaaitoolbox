@@ -44,7 +44,6 @@ const App = struct {
     http_port: u16 = 8080,
 
     pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16) !App {
-        std.debug.print("DEBUG App.init: is_noninteractive={}\n", .{is_noninteractive});
         // Spawn the backend if it's not already running
         backend.spawnBackend(verbose, http_port) catch |err| {
             std.debug.print("{s}Error: Failed to spawn nalar backend: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
@@ -172,17 +171,16 @@ pub fn main() !void {
         app.session_id = try app.allocator.dupe(u8, session_id);
 
         // Check if session exists in database before continuing
-        if (!is_noninteractive) {
-            // Only check in interactive mode (non-query mode)
-            const session_found = messaging.checkSessionExists(&app) catch false;
-            if (!session_found) {
-                tui_text.print("{s}Error: Session '{s}' not found in database.{s}\n", .{ globals.red, session_id, globals.reset });
-                tui_text.print("{s}Use /sessions to see available sessions or start a new session.{s}\n", .{ globals.yellow, globals.reset });
-                return error.SessionNotFound;
-            }
-            // Fetch and display conversation history
-            _ = network.readResponseAndStreamGetHistory(&app) catch {};
+        const session_found = messaging.checkSessionExists(&app) catch |err| {
+            tui_text.print("{s}Error: Failed to check session: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
+            return err;
+        };
+        if (!session_found) {
+            tui_text.print("{s}Error: Session '{s}' not found.{s}\n", .{ globals.red, session_id, globals.reset });
+            tui_text.print("{s}Use /sessions to see available sessions or start a new session.{s}\n", .{ globals.yellow, globals.reset });
+            return error.SessionNotFound;
         }
+        // TODO: Fetch history when backend supports get_history command
     }
 
     if (std.mem.eql(u8, app.session_id, "")) {
@@ -204,7 +202,6 @@ pub fn main() !void {
 
     while (true) {
         const should_exit = try input.handleInput(&app);
-        std.debug.print("DEBUG: should_exit={}\n", .{should_exit});
         if (should_exit) {
             std.debug.print("\r\n{s}Bye!{s} session_id: {s}\r\n", .{ globals.dim, globals.reset, app.session_id });
             break;

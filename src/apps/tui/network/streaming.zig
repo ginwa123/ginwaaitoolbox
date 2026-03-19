@@ -21,7 +21,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     var last_tick: i64 = 0;
     var retry_count: usize = 0;
-    // var streaming_started = false;
+    var streaming_started = false;
 
     // Timeout detection for SSE reconnection
     // Keepalive is sent every 30s, server removes session after ~60s
@@ -62,7 +62,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
         for (displayed_tool_ids.items) |id| app.allocator.free(id);
         displayed_tool_ids.deinit(app.allocator);
     }
-    // var last_printed_chunk_index: usize = 0;
+    var last_printed_chunk_index: usize = 0;
     var last_finish_search_pos: usize = 0;
     var raw_buffer_processed_len: usize = 0;
 
@@ -111,8 +111,8 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                 last_ping_ms = now;
             }
 
-            // Spinner — only updated when idle
-            if (now - last_tick >= 100) {
+            // Spinner — only updated when idle and before streaming starts
+            if (!streaming_started and now - last_tick >= 100) {
                 last_tick = now;
                 const spin = spinners[spinner_timer % spinners.len];
                 spinner_timer += 1;
@@ -132,33 +132,32 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
             if (sse.extractSseData(app.allocator, decoded)) |xml| {
                 defer app.allocator.free(xml);
 
-                // disable streaming for now
-                // var chunk_pos: usize = 0;
-                // while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
-                //     const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
-                //     const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
-                //     chunk_pos = chunk_end + "</chunk>".len;
-                //
-                //     var chunk_index: usize = 0;
-                //     if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
-                //         const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
-                //         const idx_str = chunk_block[idx_start + 7 .. idx_end];
-                //         chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                //     }
-                //
-                //     if (chunk_index >= last_printed_chunk_index) {
-                //         last_printed_chunk_index = chunk_index + 1;
-                //         if (utils.extractTag(chunk_block, "content")) |content| {
-                //             if (content.len > 0) {
-                //                 if (!streaming_started) {
-                //                     tuiText.print("\r\x1b[2K", .{});
-                //                     streaming_started = true;
-                //                 }
-                //                 tuiText.print("{s}", .{content});
-                //             }
-                //         }
-                //     }
-                // }
+                var chunk_pos: usize = 0;
+                while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
+                    const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
+                    const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
+                    chunk_pos = chunk_end + "</chunk>".len;
+
+                    var chunk_index: usize = 0;
+                    if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
+                        const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
+                        const idx_str = chunk_block[idx_start + 7 .. idx_end];
+                        chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
+                    }
+
+                    if (chunk_index >= last_printed_chunk_index) {
+                        last_printed_chunk_index = chunk_index + 1;
+                        if (utils.extractTag(chunk_block, "content")) |content| {
+                            if (content.len > 0) {
+                                if (!streaming_started) {
+                                    tuiText.print("\r\x1b[2K", .{});
+                                    streaming_started = true;
+                                }
+                                tuiText.print("{s}", .{content});
+                            }
+                        }
+                    }
+                }
 
                 if (tool_results.extractToolResults(app.allocator, xml)) |tr_val| {
                     var tool_results_list = tr_val;
@@ -249,24 +248,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     // tuiText.print("{s}[DEBUG] XML size: {d}{s}\n", .{ globals.dim, final_xml.len, globals.reset });
     // tuiText.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ globals.dim, final_xml[0..@min(final_xml.len, 500)], globals.reset });
 
-    // First check for nested <response> structure (from sendResponse with finish_reason=stop)
-    // This must come before the simpler <content> check
-    if (utils.extractTag(final_xml, "response")) |response_xml| {
-        if (utils.extractContentFromResponse(response_xml)) |content| {
-            printFormattedResponse(content);
-        }
-    } else if (utils.extractTag(final_xml, "content")) |content| {
-        printFormattedResponse(content);
-    } else if (utils.extractTag(final_xml, "message")) |msg| {
-        printFormattedResponse(msg);
-    } else if (final_xml.len > 0) {
-        // Fallback: just print what we have if it's not empty
-        // Skip keepalive comments and empty responses
-        const trimmed = utils.trim(final_xml);
-        if (trimmed.len > 0) {
-            tuiText.print("{s}\n", .{final_xml});
-        }
-    }
+    // Content was already printed during streaming, no need to reprint here
 
     tuiText.print("\n", .{});
     _ = app.arena.reset(.retain_capacity);
@@ -601,7 +583,6 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
         defer app.allocator.free(decoded);
         const xml = sse.extractSseData(app.allocator, decoded) catch continue;
 
-        tuiText.print("\r\nXML len={d}: {s}\r\nEND_XML\r\n", .{ xml.len, xml[0..@min(xml.len, 200)] });
         defer app.allocator.free(xml);
         if (std.mem.indexOf(u8, xml, "</finish_reason>") != null) break;
     }
@@ -630,22 +611,6 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
 
     _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
-}
-
-/// Print formatted response from the AI
-fn printFormattedResponse(content: []const u8) void {
-    const agent_name = utils.extractTag(content, "agent") orelse "assistant";
-    tuiText.print("{s}━━ {s} ━━{s}\n", .{ globals.cyan, agent_name, globals.reset });
-    if (utils.extractTag(content, "markdown")) |md| {
-        const trimmed = utils.trim(md);
-        if (trimmed.len > 0) {
-            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, trimmed, globals.reset });
-        } else {
-            tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
-        }
-    } else {
-        tuiText.print("\n{s}{s}{s}\n", .{ globals.bold, content, globals.reset });
-    }
 }
 
 /// Check stdin for double escape sequence (to interrupt streaming)
