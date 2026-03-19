@@ -146,7 +146,12 @@ pub fn main() !void {
     const is_noninteractive = opts.query != null;
 
     // Initialize app (always needed, even for query mode)
-    var app = try App.init(allocator, opts.verbose, is_noninteractive, opts.port, );
+    var app = try App.init(
+        allocator,
+        opts.verbose,
+        is_noninteractive,
+        opts.port,
+    );
     if (opts.continue_session) |session_id| {
         app.session_id = try app.allocator.dupe(u8, session_id);
     }
@@ -155,10 +160,10 @@ pub fn main() !void {
         app.session_id = try std.fmt.allocPrint(app.allocator, "session_{}", .{std.time.timestamp()});
     }
 
-
     // Query mode: send single query and exit
     if (opts.query) |query| {
         try runQueryMode(&app, query);
+        std.debug.print("\r\n{s}Bye!{s} session_id: {s}\r\n", .{ globals.dim, globals.reset, app.session_id });
         return;
     }
 

@@ -42,8 +42,30 @@ pub fn displayToolResultByName(result_xml: []const u8, tool_name: []const u8, ma
         displaySkillResult(result_xml, tool_name);
     } else if (std.mem.eql(u8, tool_name, "list_skills")) {
         displayListSkillsResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "search")) {
+        displaySearchResult(result_xml, tool_name, max_result_len);
+    } else if (std.mem.eql(u8, tool_name, "read_file")) {
+        displayReadFileResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "lsp_definition")) {
+        displayLspDefinitionResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "lsp_references")) {
+        displayLspReferencesResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "lsp_hover")) {
+        displayLspHoverResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "lsp_workspace_symbol")) {
+        displayLspWorkspaceSymbolResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "lsp_document_symbol")) {
+        displayLspDocumentSymbolResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "list_agents")) {
+        displayListAgentsResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "get_agent")) {
+        displayGetAgentResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "spawn_sub_agent")) {
+        displaySpawnSubAgentResult(result_xml, tool_name);
+    } else {
+        // Generic fallback for unknown tools
+        displayGenericResult(result_xml, tool_name, max_result_len);
     }
-    // Note: search and read_file are commented out in original code
 }
 
 /// Display bash command result
@@ -259,5 +281,334 @@ pub fn displayListSkillsResult(result_json: []const u8, tool_name: []const u8) v
 
     if (count == 0) {
         tui_text.print("  \x1b[90m(no skills found)\x1b[0m\n", .{});
+    }
+}
+
+// =============================================================================
+// Agent Management Tool Displays
+// =============================================================================
+
+/// Display list_agents result
+pub fn displayListAgentsResult(result_xml: []const u8, tool_name: []const u8) void {
+    const agents_xml = utils.extractTag(result_xml, "agents") orelse "";
+    if (std.mem.eql(u8, agents_xml, "")) {
+        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No agents available\n", .{ globals.cyan, tool_name, globals.reset });
+        return;
+    }
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} Available agents:\n", .{ globals.cyan, tool_name, globals.reset });
+
+    var pos: usize = 0;
+    var count: usize = 0;
+    while (pos < agents_xml.len) {
+        const agent_start = std.mem.indexOfPos(u8, agents_xml, pos, "<agent>") orelse break;
+        const agent_end = std.mem.indexOfPos(u8, agents_xml, agent_start, "</agent>") orelse break;
+        const agent_block = agents_xml[agent_start + "<agent>".len .. agent_end];
+        pos = agent_end + "</agent>".len;
+
+        const name = utils.extractTag(agent_block, "name") orelse "";
+        const desc = utils.extractTag(agent_block, "description") orelse "";
+
+        if (name.len > 0) {
+            count += 1;
+            tui_text.print("  \x1b[36m•\x1b[0m {s}", .{name});
+            if (desc.len > 0) {
+                const short_desc = if (desc.len > 50) desc[0..50] else desc;
+                tui_text.print(" \x1b[90m- {s}...\x1b[0m", .{short_desc});
+            }
+            tui_text.print("\n", .{});
+        }
+    }
+
+    if (count == 0) {
+        tui_text.print("  \x1b[90m(no agents found)\x1b[0m\n", .{});
+    }
+}
+
+/// Display get_agent result
+pub fn displayGetAgentResult(result_xml: []const u8, tool_name: []const u8) void {
+    const agent_name = utils.extractTag(result_xml, "agent_name") orelse "";
+    const content = utils.extractTag(result_xml, "content") orelse "";
+    const loaded = utils.extractTag(result_xml, "loaded") orelse "false";
+    const error_msg = utils.extractTag(result_xml, "error");
+
+    if (agent_name.len == 0 and content.len == 0) {
+        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No agent content\n", .{ globals.cyan, tool_name, globals.reset });
+        return;
+    }
+
+    const loaded_status = if (std.mem.eql(u8, loaded, "true"))
+        "\x1b[32m✓\x1b[0m"
+    else
+        "\x1b[31m✗\x1b[0m";
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} {s} {s}\n", .{ globals.cyan, tool_name, globals.reset, loaded_status, if (agent_name.len > 0) agent_name else "agent" });
+
+    if (error_msg) |err| {
+        if (err.len > 0) {
+            tui_text.print("  \x1b[31mError: {s}\x1b[0m\n", .{err});
+            return;
+        }
+    }
+
+    if (content.len > 0) {
+        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+        const max_preview_lines: usize = 15;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        var count: usize = 0;
+        while (lines.next()) |line| {
+            if (count >= max_preview_lines) {
+                tui_text.print("  \x1b[90m... (more lines)\x1b[0m\n", .{});
+                break;
+            }
+            const display_line = if (line.len > 70) line[0..70] else line;
+            tui_text.print("  {s}\n", .{display_line});
+            count += 1;
+        }
+        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+    }
+}
+
+/// Display spawn_sub_agent result
+pub fn displaySpawnSubAgentResult(result_xml: []const u8, tool_name: []const u8) void {
+    const sub_agent_id = utils.extractTag(result_xml, "sub_agent_id") orelse "";
+    const status = utils.extractTag(result_xml, "status") orelse "";
+    const message = utils.extractTag(result_xml, "message") orelse "";
+
+    if (std.mem.eql(u8, sub_agent_id, "") and std.mem.eql(u8, message, "")) {
+        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} Sub-agent spawned\n", .{ globals.cyan, tool_name, globals.reset });
+        return;
+    }
+
+    const status_color: []const u8 = if (std.mem.eql(u8, status, "success") or std.mem.eql(u8, status, "running"))
+        "\x1b[32m"
+    else
+        "\x1b[31m";
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+    if (sub_agent_id.len > 0) {
+        tui_text.print("{s}{s}\x1b[0m", .{ status_color, sub_agent_id });
+    }
+    if (message.len > 0) {
+        tui_text.print(" - {s}", .{message});
+    }
+    tui_text.print("\n", .{});
+}
+
+// =============================================================================
+// LSP Tool Displays
+// =============================================================================
+
+/// Display lsp_definition result
+pub fn displayLspDefinitionResult(result_xml: []const u8, tool_name: []const u8) void {
+    const found = utils.extractTag(result_xml, "found") orelse "false";
+    const definitions = utils.extractTag(result_xml, "definitions") orelse "";
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+
+    if (std.mem.eql(u8, found, "true")) {
+        tui_text.print("\x1b[32m✓ Found definitions:\x1b[0m\n", .{});
+        var pos: usize = 0;
+        var count: usize = 0;
+        while (pos < definitions.len and count < 10) {
+            const loc_start = std.mem.indexOfPos(u8, definitions, pos, "<loc>") orelse break;
+            const loc_end = std.mem.indexOfPos(u8, definitions, loc_start, "</loc>") orelse break;
+            const loc_block = definitions[loc_start + "<loc>".len .. loc_end];
+            pos = loc_end + "</loc>".len;
+
+            const file_path = utils.extractTag(loc_block, "file_path") orelse "";
+            const line = utils.extractTag(loc_block, "line") orelse "0";
+            const character = utils.extractTag(loc_block, "character") orelse "0";
+
+            tui_text.print("  \x1b[33m→\x1b[0m {s}:{s}:{s}\n", .{ file_path, line, character });
+            count += 1;
+        }
+        if (std.mem.indexOfPos(u8, definitions, pos, "<loc>") != null) {
+            tui_text.print("  \x1b[90m... (more definitions)\x1b[0m\n", .{});
+        }
+    } else {
+        tui_text.print("\x1b[31m✗ No definition found\x1b[0m\n", .{});
+    }
+}
+
+/// Display lsp_references result
+pub fn displayLspReferencesResult(result_xml: []const u8, tool_name: []const u8) void {
+    const found = utils.extractTag(result_xml, "found") orelse "false";
+    const references = utils.extractTag(result_xml, "references") orelse "";
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+
+    if (std.mem.eql(u8, found, "true")) {
+        tui_text.print("\x1b[32m✓ Found {d} references:\x1b[0m\n", .{
+            @as(usize, @intCast(std.mem.count(u8, references, "<loc>")))});
+        var pos: usize = 0;
+        var count: usize = 0;
+        while (pos < references.len and count < 15) {
+            const loc_start = std.mem.indexOfPos(u8, references, pos, "<loc>") orelse break;
+            const loc_end = std.mem.indexOfPos(u8, references, loc_start, "</loc>") orelse break;
+            const loc_block = references[loc_start + "<loc>".len .. loc_end];
+            pos = loc_end + "</loc>".len;
+
+            const file_path = utils.extractTag(loc_block, "file_path") orelse "";
+            const line = utils.extractTag(loc_block, "line") orelse "0";
+
+            tui_text.print("  \x1b[36m→\x1b[0m {s}:{s}\n", .{ file_path, line });
+            count += 1;
+        }
+        if (std.mem.indexOfPos(u8, references, pos, "<loc>") != null) {
+            tui_text.print("  \x1b[90m... (more references)\x1b[0m\n", .{});
+        }
+    } else {
+        tui_text.print("\x1b[31m✗ No references found\x1b[0m\n", .{});
+    }
+}
+
+/// Display lsp_hover result
+pub fn displayLspHoverResult(result_xml: []const u8, tool_name: []const u8) void {
+    const found = utils.extractTag(result_xml, "found") orelse "false";
+    const contents = utils.extractTag(result_xml, "contents") orelse "";
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+
+    if (std.mem.eql(u8, found, "true") and contents.len > 0) {
+        tui_text.print("\x1b[32m✓ Hover info:\x1b[0m\n", .{});
+        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+
+        // Parse markdown/code blocks
+        var lines = std.mem.splitScalar(u8, contents, '\n');
+        var count: usize = 0;
+        const max_lines: usize = 12;
+        while (lines.next()) |line| {
+            if (count >= max_lines) {
+                tui_text.print("  \x1b[90m...\x1b[0m\n", .{});
+                break;
+            }
+            const display_line = if (line.len > 80) line[0..80] else line;
+            tui_text.print("  {s}\n", .{display_line});
+            count += 1;
+        }
+        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+    } else {
+        tui_text.print("\x1b[31m✗ No hover info found\x1b[0m\n", .{});
+    }
+}
+
+/// Display lsp_workspace_symbol result
+pub fn displayLspWorkspaceSymbolResult(result_xml: []const u8, tool_name: []const u8) void {
+    const found = utils.extractTag(result_xml, "found") orelse "false";
+    const symbols = utils.extractTag(result_xml, "symbols") orelse "";
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+
+    if (std.mem.eql(u8, found, "true")) {
+        const total = std.mem.count(u8, symbols, "<symbol>");
+        tui_text.print("\x1b[32m✓ Found {d} symbols:\x1b[0m\n", .{total});
+        var pos: usize = 0;
+        var count: usize = 0;
+        while (pos < symbols.len and count < 15) {
+            const sym_start = std.mem.indexOfPos(u8, symbols, pos, "<symbol>") orelse break;
+            const sym_end = std.mem.indexOfPos(u8, symbols, sym_start, "</symbol>") orelse break;
+            const sym_block = symbols[sym_start + "<symbol>".len .. sym_end];
+            pos = sym_end + "</symbol>".len;
+
+            const name = utils.extractTag(sym_block, "name") orelse "";
+            const kind = utils.extractTag(sym_block, "kind") orelse "";
+            const file_path = utils.extractTag(sym_block, "file_path") orelse "";
+            const line = utils.extractTag(sym_block, "line") orelse "0";
+
+            const kind_icon: []const u8 = switch (std.fmt.parseInt(u32, kind, 10) catch 0) {
+                1 => "\x1b[33m⚙\x1b[0m", // File
+                2 => "\x1b[36m📦\x1b[0m", // Module
+                3 => "\x1b[32m🏛\x1b[0m", // Namespace
+                4 => "\x1b[34m✦\x1b[0m", // Package
+                5 => "\x1b[35m📁\x1b[0m", // Class
+                6 => "\x1b[31m◇\x1b[0m", // Method
+                7 => "\x1b[32m▷\x1b[0m", // Property
+                8 => "\x1b[36m≡\x1b[0m", // Field
+                9 => "\x1b[33m⊢\x1b[0m", // Constructor
+                10 => "\x1b[35m∋\x1b[0m", // Enum
+                11 => "\x1b[34m◈\x1b[0m", // Interface
+                12 => "\x1b[31m∫\x1b[0m", // Function
+                13 => "\x1b[32mλ\x1b[0m", // Variable
+                14 => "\x1b[33m⌁\x1b[0m", // Constant
+                else => "\x1b[90m•\x1b[0m",
+            };
+
+            tui_text.print("  {s} {s} \x1b[90m{s}:{s}\x1b[0m\n", .{ kind_icon, name, file_path, line });
+            count += 1;
+        }
+        if (std.mem.indexOfPos(u8, symbols, pos, "<symbol>") != null) {
+            tui_text.print("  \x1b[90m... (more symbols)\x1b[0m\n", .{});
+        }
+    } else {
+        tui_text.print("\x1b[31m✗ No symbols found\x1b[0m\n", .{});
+    }
+}
+
+/// Display lsp_document_symbol result
+pub fn displayLspDocumentSymbolResult(result_xml: []const u8, tool_name: []const u8) void {
+    const found = utils.extractTag(result_xml, "found") orelse "false";
+    const symbols = utils.extractTag(result_xml, "symbols") orelse "";
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+
+    if (std.mem.eql(u8, found, "true")) {
+        const total = std.mem.count(u8, symbols, "<symbol>");
+        tui_text.print("\x1b[32m✓ Document symbols ({d}):\x1b[0m\n", .{total});
+
+        // Simple tree display
+        var pos: usize = 0;
+        var count: usize = 0;
+        while (pos < symbols.len and count < 20) {
+            const sym_start = std.mem.indexOfPos(u8, symbols, pos, "<symbol>") orelse break;
+            const sym_end = std.mem.indexOfPos(u8, symbols, sym_start, "</symbol>") orelse break;
+            const sym_block = symbols[sym_start + "<symbol>".len .. sym_end];
+            pos = sym_end + "</symbol>".len;
+
+            const name = utils.extractTag(sym_block, "name") orelse "";
+            const kind = utils.extractTag(sym_block, "kind") orelse "";
+            const line = utils.extractTag(sym_block, "line") orelse "0";
+
+            const kind_color: []const u8 = switch (std.fmt.parseInt(u32, kind, 10) catch 0) {
+                1 => "\x1b[33m", // File
+                5 => "\x1b[35m", // Class
+                6 => "\x1b[31m", // Method
+                8 => "\x1b[36m", // Field
+                12 => "\x1b[32m", // Function
+                13 => "\x1b[34m", // Variable
+                14 => "\x1b[33m", // Constant
+                else => "\x1b[90m",
+            };
+
+            tui_text.print("  \x1b[90m{s}:\x1b[0m {s}{s}\x1b[0m\n", .{
+                line,
+                kind_color,
+                name,
+            });
+            count += 1;
+        }
+        if (std.mem.indexOfPos(u8, symbols, pos, "<symbol>") != null) {
+            tui_text.print("  \x1b[90m... (more symbols)\x1b[0m\n", .{});
+        }
+    } else {
+        tui_text.print("\x1b[31m✗ No document symbols found\x1b[0m\n", .{});
+    }
+}
+
+// =============================================================================
+// Generic Fallback Display
+// =============================================================================
+
+/// Generic fallback for unknown tools
+pub fn displayGenericResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
+    const result = utils.extractTag(result_xml, "result") orelse result_xml;
+    const truncated = result.len > max_result_len;
+    const display = if (truncated) result[0..max_result_len] else result;
+
+    tui_text.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ globals.cyan, tool_name, globals.reset });
+    tui_text.print("  {s}\n", .{display});
+
+    if (truncated) {
+        tui_text.print("  {s}[truncated...]{s}\n", .{ globals.cyan, globals.reset });
     }
 }

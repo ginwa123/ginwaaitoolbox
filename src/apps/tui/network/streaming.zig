@@ -213,29 +213,29 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
         tuiText.print("\n{s}Interrupted (double ESC){s}\n", .{ globals.yellow, globals.reset });
     }
 
-    tuiText.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ globals.dim, raw_buffer.items.len, globals.reset });
+    // tuiText.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ globals.dim, raw_buffer.items.len, globals.reset });
 
     const final_decoded = sse.decodeChunked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
-    tuiText.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ globals.dim, final_decoded.len, globals.reset });
+    // tuiText.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ globals.dim, final_decoded.len, globals.reset });
 
     const final_xml = sse.extractSseData(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);
-    tuiText.print("{s}[DEBUG] XML size: {d}{s}\n", .{ globals.dim, final_xml.len, globals.reset });
-    if (final_xml.len > 0) {
-        tuiText.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ globals.dim, final_xml[0..@min(final_xml.len, 200)], globals.reset });
-    }
+    // tuiText.print("{s}[DEBUG] XML size: {d}{s}\n", .{ globals.dim, final_xml.len, globals.reset });
+    // if (final_xml.len > 0) {
+    //     tuiText.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ globals.dim, final_xml[0..@min(final_xml.len, 200)], globals.reset });
+    // }
 
     if (utils.extractTag(final_xml, "content")) |content| {
-        printFormattedResponse(content);
+        // Skip duplicate printing - content was already streamed
+        _ = content;
     } else if (final_xml.len > 0) {
         if (utils.extractTag(final_xml, "message")) |msg| {
-            printFormattedResponse(msg);
+            // Skip duplicate printing - content was already streamed
+            _ = msg;
         } else {
             tuiText.print("{s}\n", .{final_xml});
         }
-    } else {
-        tuiText.print("{s}(no response){s}\n", .{ globals.dim, globals.reset });
     }
 
     tuiText.print("\n", .{});

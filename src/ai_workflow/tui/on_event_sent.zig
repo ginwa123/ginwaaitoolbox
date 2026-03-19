@@ -88,7 +88,6 @@ pub fn sendResponse(
 
             w.print("<usage><prompt_tokens>{}</prompt_tokens><completion_tokens>{}</completion_tokens><total_tokens>{}</total_tokens></usage>", .{ resp.usage.prompt_tokens, resp.usage.completion_tokens, resp.usage.total_tokens }) catch return;
             w.writeAll("</choice></choices></response>") catch return;
-            logger.infoFmt("SEND RESPONSE XML: {s}", .{buf.items}) catch {};
         },
         .err => {
             w.writeAll("<response><choices><choice><index>0</index><message><role>assistant</role><content><agent>ErrorAgent</agent><markdown>") catch return;
@@ -97,7 +96,6 @@ pub fn sendResponse(
             const fr = resp.override_finish_reason orelse "stop";
             w.writeAll(fr) catch return;
             w.writeAll("</finish_reason></choice></choices></response>") catch return;
-            logger.traceFmt("SEND ERROR XML: {s}", .{buf.items}) catch {};
         },
         .tool_result => {
             w.writeAll("<response><tool_result><tool_call_id>") catch return;
@@ -115,11 +113,9 @@ pub fn sendResponse(
             w.writeAll("<result>") catch return;
             w.writeAll(resp.tool_result orelse "") catch return;
             w.writeAll("</result></tool_result></response>") catch return;
-            logger.traceFmt("SEND TOOL RESULT XML: {s}", .{buf.items}) catch {};
         },
         .user_choice => {
             w.writeAll("<response><finish_reason>user_choice</finish_reason></response>") catch return;
-            logger.traceFmt("SEND USER CHOICE XML: {s}", .{buf.items}) catch {};
         },
     }
 
