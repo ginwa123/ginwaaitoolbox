@@ -5,12 +5,20 @@ pub const ContentResult = struct {
     content: []const u8,
 };
 
-/// Extract content from XML response
-/// Finds all <content>...</content> tags and returns them as a list
+/// Result structure containing extracted content and finish reason
+pub const ExtractResult = struct {
+    content_results: std.ArrayList(ContentResult),
+    finish_reason: ?[]const u8,
+};
+
+/// Extract content and finish_reason from XML response
+/// Finds all <content>...</content> tags and the last <finish_reason>...</finish_reason>
 /// Returns null if no content found
-pub fn extractContentResult(allocator: std.mem.Allocator, xml: []const u8) ?std.ArrayList(ContentResult) {
+pub fn extractContentResult(allocator: std.mem.Allocator, xml: []const u8) ?ExtractResult {
     var results = std.ArrayList(ContentResult).empty;
     errdefer results.deinit(allocator);
+
+    // Extract all content tags
     var pos: usize = 0;
     while (pos < xml.len) {
         const content_start = std.mem.indexOfPos(u8, xml, pos, "<content>") orelse break;
@@ -21,7 +29,21 @@ pub fn extractContentResult(allocator: std.mem.Allocator, xml: []const u8) ?std.
             results.append(allocator, .{ .content = content }) catch break;
         }
     }
-    if (results.items.len == 0) return null;
-    return results;
+
+    // Extract the LAST finish_reason tag (there may be multiple from streaming chunks)
+    var finish_reason: ?[]const u8 = null;
+    var fr_pos: usize = 0;
+    while (fr_pos < xml.len) {
+        const fr_start = std.mem.indexOfPos(u8, xml, fr_pos, "<finish_reason>") orelse break;
+        const fr_end = std.mem.indexOfPos(u8, xml, fr_start, "</finish_reason>") orelse break;
+        finish_reason = xml[fr_start + "<finish_reason>".len .. fr_end];
+        fr_pos = fr_end + "</finish_reason>".len;
+    }
+
+    if (results.items.len == 0 and finish_reason == null) return null;
+    return ExtractResult{
+        .content_results = results,
+        .finish_reason = finish_reason,
+    };
 }
 

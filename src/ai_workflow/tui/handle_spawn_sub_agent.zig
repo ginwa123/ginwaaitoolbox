@@ -17,7 +17,8 @@ const remove_skill_tool = @import("../../modules/agent/tools/remove_skill.zig");
 const config_mod = @import("../../modules/config/config.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
 const onEventSendNew = @import("on_event_sent.zig").onEventSendNew;
-const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
+const session_helpers = @import("session_helpers.zig");
+const get_current_agent_by_session_id = session_helpers.GetCurrentAgentBySessionId;
 const handle_tool = @import("handle_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
@@ -29,8 +30,8 @@ const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const loop_detector = root_mod.loop_detector;
 const set_agent_properties = root_mod.set_agent_properties;
 const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
-const GetMessages = @import("get_messages.zig").GetMessages;
-const GetMessagesLatest = @import("get_messages.zig").GetMessageLatest;
+const GetMessages = session_helpers.GetMessages;
+const GetMessagesLatest = session_helpers.GetMessageLatest;
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
@@ -518,7 +519,7 @@ pub fn run(
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
 
     // Fetch current agent from DB (before running sub-agents)
-    const current_agent_state = try get_current_agent_by_session_id.run(
+    const current_agent_state = try get_current_agent_by_session_id(
         allocator,
         db,
         session_id,

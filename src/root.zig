@@ -130,9 +130,7 @@ test {
     _ = @import("modules/session/cancellation_registry.zig");
     _ = @import("ai_workflow/tui/check_session_exists.zig");
     _ = @import("ai_workflow/tui/check_session_exists_test.zig");
-    _ = @import("ai_workflow/tui/get_current_agent_by_session_id.zig");
-    _ = @import("ai_workflow/tui/get_messages.zig");
-    _ = @import("ai_workflow/tui/get_session_by_dir.zig");
+    _ = @import("ai_workflow/tui/session_helpers.zig");
     _ = @import("ai_workflow/tui/get_tree_dir.zig");
     _ = @import("ai_workflow/tui/handle_bash_tool.zig");
     _ = @import("ai_workflow/tui/handle_set_agent_properties.zig");

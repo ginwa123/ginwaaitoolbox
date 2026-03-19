@@ -168,14 +168,18 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                 //     }
                 // }
 
-                if (response.extractContentResult(app.allocator, xml)) |content_results| {
-                    var content_list = content_results;
+                if (response.extractContentResult(app.allocator, xml)) |extract_result| {
+                    var content_list = extract_result.content_results;
                     defer content_list.deinit(app.allocator);
 
-                    for (content_list.items) |result| {
-                        if (result.content.len > 0) {
-                            streaming_started = true;
-                            tuiText.print("{s}", .{result.content});
+                    if (extract_result.finish_reason) |finish_reason| {
+                        if (std.mem.eql(u8, finish_reason, "stop") or std.mem.eql(u8, finish_reason, "tool_calls")) {
+                            for (content_list.items) |result| {
+                                if (result.content.len > 0) {
+                                    streaming_started = true;
+                                    tuiText.print("{s}", .{result.content});
+                                }
+                            }
                         }
                     }
                 }

@@ -275,6 +275,8 @@ pub const FinishReason = enum {
     tool,
     null,
     /// No finish reason provided
+    /// Model returned assistant role (some providers use this)
+    assistant,
 
     pub fn fromStr(s: ?[]const u8) ?FinishReason {
         if (s == null) return .null;
@@ -284,6 +286,7 @@ pub const FinishReason = enum {
         if (std.mem.eql(u8, str, "tool_calls")) return .tool_calls;
         if (std.mem.eql(u8, str, "content_filter")) return .content_filter;
         if (std.mem.eql(u8, str, "tool")) return .tool;
+        if (std.mem.eql(u8, str, "assistant")) return .assistant;
         return null;
     }
 
@@ -295,6 +298,7 @@ pub const FinishReason = enum {
             .content_filter => "content_filter",
             .tool => "tool",
             .null => "null",
+            .assistant => "assistant",
         };
     }
 };

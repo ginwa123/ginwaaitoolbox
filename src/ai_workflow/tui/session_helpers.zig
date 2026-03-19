@@ -1,8 +1,13 @@
 const std = @import("std");
 const tui_workflow = @import("tui_workflow.zig");
 const TUIHistory = @import("models.zig").TUIHistory;
+const SessionInfo = tui_workflow.SessionInfo;
 const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
+
+// ============================================================================
+// Get Messages Functions
+// ============================================================================
 
 pub fn GetMessages(
     allocator: std.mem.Allocator,
@@ -73,6 +78,76 @@ pub fn GetMessageLatest(
     return null;
 }
 
+// ============================================================================
+// Get Session By Directory Functions
+// ============================================================================
+
+pub fn GetSessionsByDir(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_dir: []const u8,
+) ![]SessionInfo {
+    var results: std.ArrayList(SessionInfo) = .empty;
+
+    const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created_at) as created_at FROM llm_history WHERE session_dir = ? GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT 10";
+    var rows = try db.query(allocator, sql, &[_][]const u8{session_dir});
+    defer rows.deinit();
+
+    while (try rows.next()) |row| {
+        const session = SessionInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .created_at = try allocator.dupe(u8, row.values[2]),
+        };
+        try results.append(allocator, session);
+        row.deinit(allocator);
+    }
+
+    return results.toOwnedSlice(allocator);
+}
+
+// ============================================================================
+// Get Current Agent By Session ID Functions
+// ============================================================================
+
+pub const AgentState = struct {
+    agent: []const u8,
+    temperature: f32,
+    is_thinking: bool,
+};
+
+pub fn GetCurrentAgentBySessionId(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !AgentState {
+    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0.5), COALESCE(is_thinking, 1) FROM llm_history WHERE session_id = ? ORDER BY created_at DESC LIMIT 1";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        const agent_name = try allocator.dupe(u8, row.values[0]);
+        const temperature = try std.fmt.parseFloat(f32, row.values[1]);
+        const is_thinking = std.mem.eql(u8, row.values[2], "1");
+        return AgentState{
+            .agent = agent_name,
+            .temperature = temperature,
+            .is_thinking = is_thinking,
+        };
+    } else {
+        return AgentState{
+            .agent = try allocator.dupe(u8, "Agent"),
+            .temperature = 0.5,
+            .is_thinking = true,
+        };
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
 test {
-    _ = @import("get_messages_test.zig");
+    _ = @import("session_helpers_test.zig");
 }

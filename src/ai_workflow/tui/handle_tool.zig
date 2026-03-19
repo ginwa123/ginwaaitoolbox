@@ -30,10 +30,11 @@ const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const SaveSkill = @import("save_skill.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
 const loop_detector = root_mod.loop_detector;
-const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
+const session_helpers = @import("session_helpers.zig");
+const get_current_agent_by_session_id = session_helpers.GetCurrentAgentBySessionId;
 const tool_models = root_mod.tool_models;
-const GetMessages = @import("get_messages.zig").GetMessages;
-const GetMessagesLatest = @import("get_messages.zig").GetMessageLatest;
+const GetMessages = session_helpers.GetMessages;
+const GetMessagesLatest = session_helpers.GetMessageLatest;
 
 // Forward declaration for TUIWorkflow
 const TUIWorkflow = @import("tui_workflow.zig").TUIWorkflow;
@@ -86,7 +87,7 @@ pub fn HandleTool(
         }
 
         // Fetch current agent from DB for save_message
-        const current_agent_state = try get_current_agent_by_session_id.run(
+        const current_agent_state = try get_current_agent_by_session_id(
             allocator,
             db,
             session_id,

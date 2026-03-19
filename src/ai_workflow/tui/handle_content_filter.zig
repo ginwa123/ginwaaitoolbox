@@ -5,7 +5,8 @@ const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const SaveMessage = @import("save_message.zig").SaveMessage;
 const onEventSendNew = @import("on_event_sent.zig").onEventSendNew;
-const get_current_agent_by_session_id = @import("get_current_agent_by_session_id.zig");
+const session_helpers = @import("session_helpers.zig");
+const get_current_agent_by_session_id = session_helpers.GetCurrentAgentBySessionId;
 
 pub fn run(
     allocator: std.mem.Allocator,
@@ -21,7 +22,7 @@ pub fn run(
     is_thinking: bool,
 ) !bool {
     // Fetch current agent from DB
-    const current_agent_state = try get_current_agent_by_session_id.run(
+    const current_agent_state = try get_current_agent_by_session_id(
         allocator,
         db,
         session_id,

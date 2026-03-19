@@ -17,13 +17,14 @@ const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
 const get_tree_dir = @import("get_tree_dir.zig");
 const logger_mod = root_mod.logger;
-const GetCurrentAgentBySessionId = @import("get_current_agent_by_session_id.zig");
+const session_helpers = @import("session_helpers.zig");
+const GetCurrentAgentBySessionId = session_helpers.GetCurrentAgentBySessionId;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
 const SaveMessage = @import("save_message.zig").SaveMessage;
 const BuildMessages = @import("build_messages_for_agent_prompt.zig").BuildMessages;
-const GetMessages = @import("get_messages.zig").GetMessages;
-const GetMessagesLatest = @import("get_messages.zig").GetMessageLatest;
+const GetMessages = session_helpers.GetMessages;
+const GetMessagesLatest = session_helpers.GetMessageLatest;
 const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
@@ -161,7 +162,7 @@ pub const TUIWorkflow = struct {
         }
 
         const session_name = message;
-        const initial_agent_state = try GetCurrentAgentBySessionId.run(
+        const initial_agent_state = try GetCurrentAgentBySessionId(
             parent_allocator,
             self.db,
             session_id,
@@ -211,7 +212,7 @@ pub const TUIWorkflow = struct {
             if (retryCount > 10) return error.TooManyRetries;
 
             // Fetch current agent fresh from DB each iteration
-            const currentAgentState = try GetCurrentAgentBySessionId.run(
+            const currentAgentState = try GetCurrentAgentBySessionId(
                 allocator,
                 self.db,
                 session_id,
@@ -302,6 +303,62 @@ pub const TUIWorkflow = struct {
                     continue;
                 } else if (finish_reason == .tool_calls) {
                     try HandleTool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, resDynmicAgent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                } else if (finish_reason == .assistant) {
+                    // Some providers return "assistant" instead of "tool_calls" when tool calls are present
+                    // Treat it the same as tool_calls - check if there are actual tool calls to process
+                    if (resDynmicAgent.tool_calls != null and resDynmicAgent.tool_calls.?.len > 0) {
+                        try HandleTool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, resDynmicAgent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                    } else {
+                        // No tool calls present - treat as normal completion
+                        _ = try SaveMessage(allocator, self.db, .{
+                            .session_id = session_id,
+                            .model = model,
+                            .cwd = cwd,
+                            .content = resDynmicAgent.content,
+                            .reasoning_content = resDynmicAgent.reasoning_content,
+                            .role = agent.Role.assistant.toStr(),
+                            .finish_reason = if (resDynmicAgent.finish_reason) |fr| fr.toStr() else null,
+                            .tool_calls = null,
+                            .tool_call_id = null,
+                            .agent_name = current_agent,
+                            .session_name = session_name,
+                            .loop_index = loopCounter,
+                            .temperature = agent_temperature,
+                            .is_thinking = isThinking,
+                            .prompt_tokens = resDynmicAgent.usage.prompt_tokens,
+                            .completion_tokens = resDynmicAgent.usage.completion_tokens,
+                            .total_tokens = resDynmicAgent.usage.total_tokens,
+                            .parent_id = session_id,
+                            .parent_session_id = session_id,
+                        });
+
+                        // Send SSE event using GetMessagesLatest
+                        const latestMessage = try GetMessagesLatest(allocator, self.db, session_id);
+                        if (latestMessage) |msg| {
+                            _ = try onEventSendNew(allocator, .{
+                                .session_id = msg.session_id,
+                                .model = msg.model,
+                                .cwd = cwd,
+                                .content = msg.response_content,
+                                .reasoning_content = msg.reasoning_content,
+                                .role = msg.role,
+                                .finish_reason = msg.finish_reason,
+                                .tool_calls = null,
+                                .tool_call_id = null,
+                                .tool_name = msg.tool_name,
+                                .agent_name = current_agent,
+                                .session_name = msg.session_name,
+                                .loop_index = msg.loop_index,
+                                .temperature = agent_temperature,
+                                .is_thinking = isThinking,
+                                .is_input = false,
+                                .is_output = false,
+                                .parent_session_id = session_id,
+                                .parent_id = session_id,
+                            });
+                        }
+                        break;
+                    }
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
