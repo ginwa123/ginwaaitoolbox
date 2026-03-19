@@ -198,7 +198,7 @@ fn runSubAgent(
         const params = agent.AgentCall{
             .tools = sub_agent_tools,
             .messages = messages.items,
-            .temperature = 0.1,
+            .temperature = 0.5,
             .max_tokens = 4000,
         };
 

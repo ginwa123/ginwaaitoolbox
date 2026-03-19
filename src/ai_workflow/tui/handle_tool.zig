@@ -183,6 +183,8 @@ pub fn HandleTool(
             .is_input = true,
             .is_output = false,
             .tool_name = try std.mem.join(allocator, ",", toolNames.items),
+            .parent_id = session_id,
+            .parent_session_id = session_id,
         });
 
         if (res_dynamic_agent.content) |c| {
@@ -344,6 +346,8 @@ pub fn HandleTool(
                 .is_output = true,
                 .is_input = false,
                 .tool_name = tool_call.function.name,
+                .parent_id = session_id,
+                .parent_session_id = session_id,
             });
 
             const latestMessage = try GetMessagesLatest(allocator, db, session_id);

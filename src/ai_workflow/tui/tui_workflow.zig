@@ -166,6 +166,8 @@ pub const TUIWorkflow = struct {
             .prompt_tokens = 0,
             .completion_tokens = 0,
             .total_tokens = 0,
+            .parent_id = session_id,
+            .parent_session_id = session_id,
         });
 
         var retryCount: usize = 0;
@@ -245,6 +247,8 @@ pub const TUIWorkflow = struct {
                         .prompt_tokens = resDynmicAgent.usage.prompt_tokens,
                         .completion_tokens = resDynmicAgent.usage.completion_tokens,
                         .total_tokens = resDynmicAgent.usage.total_tokens,
+                        .parent_id = session_id,
+                        .parent_session_id = session_id,
                     });
                     _ = sendResponse(allocator, session_id, self.logger, .assistant_response, .{
                         .content = resDynmicAgent.content,
