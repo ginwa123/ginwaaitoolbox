@@ -55,9 +55,7 @@ const App = struct {
             std.log.info("Raw mode enabled", .{});
         }
 
-        const session_id = try std.fmt.allocPrint(allocator, "session_{}", .{std.time.timestamp()});
         const kb = try keybindings.loadKeybindings(allocator);
-        std.log.info("Session ID: {s}", .{session_id});
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const http_client = std.http.Client{ .allocator = arena.allocator() };
@@ -66,7 +64,7 @@ const App = struct {
             .arena = arena,
             .allocator = allocator,
             .original_termios = original_termios,
-            .session_id = session_id,
+            .session_id = "",
             .input = std.ArrayList(u8).empty,
             .pasting = false,
             .last_esc_time = null,
@@ -148,14 +146,15 @@ pub fn main() !void {
     const is_noninteractive = opts.query != null;
 
     // Initialize app (always needed, even for query mode)
-    var app = try App.init(allocator, opts.verbose, is_noninteractive, opts.port);
-    defer app.deinit();
-
-    // Handle session continuation
+    var app = try App.init(allocator, opts.verbose, is_noninteractive, opts.port, );
     if (opts.continue_session) |session_id| {
-        app.allocator.free(app.session_id);
         app.session_id = try app.allocator.dupe(u8, session_id);
     }
+
+    if (std.mem.eql(u8, app.session_id, "")) {
+        app.session_id = try std.fmt.allocPrint(app.allocator, "session_{}", .{std.time.timestamp()});
+    }
+
 
     // Query mode: send single query and exit
     if (opts.query) |query| {
@@ -177,7 +176,7 @@ pub fn main() !void {
         }
     }
 
-    tui_text.print("\r\n{s}Bye!{s}\r\n", .{ globals.dim, globals.reset });
+    // tui_text.print("\r\n{s}Bye!{s}\r\n", .{ globals.dim, globals.reset });
 }
 
 test {

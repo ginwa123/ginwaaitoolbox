@@ -24,13 +24,17 @@ pub fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
                 return error.MissingQueryArgument;
             }
             i += 1;
-            opts.query = args[i];
+            // CRITICAL: Allocate query BEFORE args is freed
+            opts.query = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--continue") or std.mem.eql(u8, arg, "--session")) {
             if (i + 1 >= args.len) {
                 return error.MissingSessionArgument;
             }
             i += 1;
-            opts.continue_session = args[i];
+            // CRITICAL: Allocate session_id BEFORE args is freed
+            // The args buffer will be freed by defer below, so we must
+            // dupe the session_id now while args is still valid.
+            opts.continue_session = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             opts.show_help = true;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {

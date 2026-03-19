@@ -54,11 +54,14 @@ const ToolContext = struct {
     current_agent_for_save: []const u8,
 };
 
-/// Helper to handle tool result: append to messages, save to DB, send to client
-fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []const u8) !void {
+/// Helper to handle error for tools that return owned strings
+fn handleToolError(ctx: ToolContext, tool_call: agent.ToolCall, err: anytype, err_prefix: []const u8) !void {
+    const err_name = @errorName(err);
+    const err_str = try std.fmt.allocPrint(ctx.allocator, "{s}: {s}", .{ err_prefix, err_name });
+
     const tool_result_msg = agent.AgentMessage{
         .role = .tool,
-        .content = try ctx.allocator.dupe(u8, content),
+        .content = try ctx.allocator.dupe(u8, err_str),
         .tool_call_id = try ctx.allocator.dupe(u8, tool_call.id),
     };
     try ctx.messages_list.append(ctx.allocator, tool_result_msg);
@@ -67,10 +70,8 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
         .session_id = ctx.session_id,
         .model = ctx.model,
         .cwd = ctx.cwd,
-        .content = content,
-        .response_content = null,
-        .response_finish_reason = null,
-        .response_reasoning_content = null,
+        .content = err_str,
+        .reasoning_content = null,
         .role = agent.Role.tool.toStr(),
         .finish_reason = agent.FinishReason.tool.toStr(),
         .tool_calls = null,
@@ -89,20 +90,16 @@ fn handleToolResult(ctx: ToolContext, tool_call: agent.ToolCall, content: []cons
     });
 
     const latestMessage = try GetMessagesLatest(ctx.allocator, ctx.db, ctx.session_id);
-    const toolResult = latestMessage.?.response_content;
-    const toolName = latestMessage.?.tool_name;
+    defer if (latestMessage) |msg| {
+        var m = msg;
+        m.deinit(ctx.allocator);
+    };
+
     _ = sendResponse(ctx.allocator, ctx.session_id, ctx.logger, .tool_result, .{
         .tool_call_id = latestMessage.?.id,
-        .tool_name = toolName,
-        .tool_result = toolResult,
+        .tool_name = latestMessage.?.tool_name,
+        .tool_result = latestMessage.?.response_content,
     });
-}
-
-/// Helper to handle error for tools that return owned strings
-fn handleToolError(ctx: ToolContext, tool_call: agent.ToolCall, err: anytype, err_prefix: []const u8) !void {
-    const err_name = @errorName(err);
-    const err_str = try std.fmt.allocPrint(ctx.allocator, "{s}: {s}", .{ err_prefix, err_name });
-    try handleToolResult(ctx, tool_call, err_str);
 }
 
 pub fn HandleTool(
@@ -114,7 +111,6 @@ pub fn HandleTool(
     cwd: []const u8,
     session_name: ?[]const u8,
     loop_counter: u32,
-    messages_list: *std.ArrayList(agent.AgentMessage),
     res_dynamic_agent: agent.CallResponse,
     agent_temperature: *f32,
     isThinking: *bool,
@@ -170,12 +166,10 @@ pub fn HandleTool(
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
-            .content = null,
-            .response_content = res_dynamic_agent.content,
-            .response_finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
-            .response_reasoning_content = res_dynamic_agent.reasoning_content,
+            .content = res_dynamic_agent.content,
+            .reasoning_content = res_dynamic_agent.reasoning_content,
             .role = agent.Role.assistant.toStr(),
-            .finish_reason = null,
+            .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
             .tool_calls = assistant_tool_calls,
             .tool_call_id = null,
             .agent_name = current_agent_for_save,
@@ -201,128 +195,60 @@ pub fn HandleTool(
             });
         }
 
-        // Build context for tool handling
-        var ctx = ToolContext{
-            .allocator = allocator,
-            .db = db,
-            .logger = logger,
-            .session_id = session_id,
-            .model = model,
-            .cwd = cwd,
-            .session_name = session_name,
-            .loop_counter = loop_counter,
-            .messages_list = messages_list,
-            .agent_temperature = agent_temperature.*,
-            .is_thinking = isThinking.*,
-            .current_agent_for_save = current_agent_for_save,
-        };
-
         // Execute each tool call and add tool result messages
         for (tc) |tool_call| {
-            logger.infoFmt("[HANDLE_TOOL] Processing tool: '{s}' (id: '{s}')", .{ tool_call.function.name, tool_call.id }) catch {};
+            var result: []const u8 = undefined;
+            var agentTemperature: f32 = undefined;
+            var toolIsThinking: bool = false;
 
             if (std.mem.eql(u8, tool_call.function.name, "set_agent_properties")) {
-                const change_result = handle_set_agent_properties.run(allocator, tool_call) catch |err| {
-                    const err_name = @errorName(err);
-                    logger.errFmt("Error handling set_agent_properties tool: {s}", .{err_name}) catch {};
+                const set_props_result = handle_set_agent_properties.run(allocator, tool_call) catch |err| {
+                    result = try std.fmt.allocPrint(allocator, "ERROR: set_agent_properties failed: {s}", .{@errorName(err)});
                     continue;
                 };
-                // Apply temperature and is_thinking changes
-                if (change_result.temperature) |temp| {
-                    agent_temperature.* = temp;
+
+                result = set_props_result.arguments;
+
+                if (set_props_result.temperature) |temp| {
+                    agentTemperature = temp;
                 }
-                if (change_result.is_thinking) |think| {
-                    isThinking.* = think;
+
+                if (set_props_result.is_thinking) |think| {
+                    toolIsThinking = think;
                 }
-                // Create tool result message and add to messages_list
-                const tool_result_msg = agent.AgentMessage{
-                    .role = .tool,
-                    .content = change_result.arguments,
-                    .tool_call_id = change_result.tool_call_id,
-                };
-                _ = try messages_list.append(allocator, tool_result_msg);
-
-                _ = try SaveMessage(allocator, db, .{
-                    .session_id = session_id,
-                    .model = model,
-                    .cwd = cwd,
-                    .content = change_result.arguments,
-                    .response_content = null,
-                    .response_finish_reason = null,
-                    .response_reasoning_content = null,
-                    .role = agent.Role.tool.toStr(),
-                    .finish_reason = agent.FinishReason.tool.toStr(),
-                    .tool_calls = null,
-                    .tool_call_id = change_result.tool_call_id,
-                    .agent_name = null,
-                    .session_name = session_name,
-                    .loop_index = loop_counter,
-                    .temperature = agent_temperature.*,
-                    .is_thinking = isThinking.*,
-                    .prompt_tokens = 0,
-                    .completion_tokens = 0,
-                    .total_tokens = 0,
-                    .is_input = true,
-                    .is_output = false,
-                    .tool_name = tool_call.function.name,
-                });
-
-                ctx.is_thinking = isThinking.*;
-                ctx.agent_temperature = agent_temperature.*;
-
-                sendResponse(allocator, session_id, logger, .tool_result, .{
-                    .tool_call_id = change_result.tool_call_id,
-                    .tool_name = tool_call.function.name,
-                    .tool_result = change_result.arguments,
-                });
-                logger.infoFmt("Agent properties updated: temp={any}, is_thinking={any}", .{ change_result.temperature, change_result.is_thinking }) catch {};
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "bash")) {
-                const content = handle_bash_tool.runWithContext(allocator, tool_call, ctx.db, ctx.session_id) catch |err|
+                result = handle_bash_tool.runWithContext(allocator, tool_call, db, session_id) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                try handleToolResult(ctx, tool_call, content);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "read_file")) {
-                const content = handle_read_file_tool.run(allocator, tool_call) catch |err|
+                result = handle_read_file_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: read_file failed: {s}", .{@errorName(err)});
-                try handleToolResult(ctx, tool_call, content);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "search")) {
-                const content = handle_search_tool.run(allocator, tool_call) catch |err|
+                result = handle_search_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: search failed: {s}", .{@errorName(err)});
-                try handleToolResult(ctx, tool_call, content);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "write_file")) {
-                const content = handle_write_file_tool.run(allocator, tool_call) catch |err|
+                result = handle_write_file_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: write_file failed: {s}", .{@errorName(err)});
-                try handleToolResult(ctx, tool_call, content);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
-                const content = handle_text_replace_tool.run(allocator, tool_call) catch |err|
+                result = handle_text_replace_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: text_replace failed: {s}", .{@errorName(err)});
-                try handleToolResult(ctx, tool_call, content);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "list_skills")) {
-                const result = handle_list_skills_tool.run(allocator);
-                logger.debugFmt("LIST_SKILLS RESULT: {s}", .{result}) catch {};
-                try handleToolResult(ctx, tool_call, result);
-                continue;
+                result = handle_list_skills_tool.run(allocator);
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_skill")) {
-                const result = handle_get_skill_tool.run(allocator, tool_call) catch |err|
+                result = handle_get_skill_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: get_skill failed: {s}", .{@errorName(err)});
 
                 if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
@@ -334,106 +260,98 @@ pub fn HandleTool(
                                 const content_begin = content_start + "<content>".len;
                                 if (std.mem.indexOf(u8, result[content_begin..], "</content>")) |content_end| {
                                     const content = result[content_begin .. content_begin + content_end];
-                                    // Save to database
-                                    SaveSkill(allocator, db, logger, session_id, skill_name, content) catch |err| {
-                                        const err_name = @errorName(err);
-                                        logger.errFmt("Error saving skill to database: {s}", .{err_name}) catch {};
-                                    };
+                                    _ = try SaveSkill(allocator, db, logger, session_id, skill_name, content);
                                 }
                             }
                         }
                     }
                 }
-
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "remove_skill")) {
-                const result = handle_remove_skill_tool.run(allocator, tool_call) catch |err|
+                result = handle_remove_skill_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: remove_skill failed: {s}", .{@errorName(err)});
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent")) {
-                try handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, messages_list, tool_call, agent_temperature.*, isThinking.*, api_key, base_url, config);
-                continue;
+                result = handle_spawn_sub_agent.run(allocator, db, logger, session_id, model, cwd, session_name, loop_counter, tool_call, agent_temperature.*, isThinking.*, api_key, base_url, config) catch |err|
+                    try std.fmt.allocPrint(allocator, "ERROR: spawn_sub_agent failed: {s}", .{@errorName(err)});
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "list_agents")) {
-                const result = handle_list_agents_tool.run(allocator) catch |err|
+                result = handle_list_agents_tool.run(allocator) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: list_agents failed: {s}", .{@errorName(err)});
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "get_agent")) {
-                const result = handle_get_agent_tool.run(allocator, tool_call) catch |err|
+                result = handle_get_agent_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: get_agent failed: {s}", .{@errorName(err)});
-                defer allocator.free(result);
 
                 if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null) {
                     if (std.mem.indexOf(u8, result, "<agent_name>")) |name_start| {
                         const name_begin = name_start + "<agent_name>".len;
                         if (std.mem.indexOf(u8, result[name_begin..], "</agent_name>")) |name_end| {
                             const agent_name = result[name_begin .. name_begin + name_end];
-                            SaveAgent(allocator, db, logger, session_id, agent_name) catch |err| {
-                                const err_name = @errorName(err);
-                                logger.errFmt("Error saving agent to database: {s}", .{err_name}) catch {};
-                            };
+                            _ = try SaveAgent(allocator, db, logger, session_id, agent_name);
                         }
                     }
                 }
-
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "lsp_definition")) {
-                const result = handle_lsp_definition_tool.run(allocator, tool_call) catch |err|
+                result = handle_lsp_definition_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: lsp_definition failed: {s}", .{@errorName(err)});
-                defer allocator.free(result);
-
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "lsp_references")) {
-                const result = handle_lsp_references_tool.run(allocator, tool_call) catch |err|
+                result = handle_lsp_references_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: lsp_references failed: {s}", .{@errorName(err)});
-                defer allocator.free(result);
-
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "lsp_workspace_symbol")) {
-                const result = handle_lsp_workspace_symbol_tool.run(allocator, tool_call) catch |err|
+                result = handle_lsp_workspace_symbol_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: lsp_workspace_symbol failed: {s}", .{@errorName(err)});
-                defer allocator.free(result);
-
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "lsp_document_symbol")) {
-                const result = handle_lsp_document_symbol_tool.run(allocator, tool_call) catch |err|
+                result = handle_lsp_document_symbol_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: lsp_document_symbol failed: {s}", .{@errorName(err)});
-                defer allocator.free(result);
-
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
 
             if (std.mem.eql(u8, tool_call.function.name, "lsp_hover")) {
-                const result = handle_lsp_hover_tool.run(allocator, tool_call) catch |err|
+                result = handle_lsp_hover_tool.run(allocator, tool_call) catch |err|
                     try std.fmt.allocPrint(allocator, "ERROR: lsp_hover failed: {s}", .{@errorName(err)});
-                defer allocator.free(result);
-
-                try handleToolResult(ctx, tool_call, result);
-                continue;
             }
+
+            _ = try SaveMessage(allocator, db, .{
+                .session_id = session_id,
+                .model = model,
+                .cwd = cwd,
+                .content = result,
+                .reasoning_content = null,
+                .role = agent.Role.tool.toStr(),
+                .finish_reason = agent.FinishReason.tool.toStr(),
+                .tool_calls = null,
+                .tool_call_id = tool_call.id,
+                .agent_name = current_agent_for_save,
+                .session_name = session_name,
+                .loop_index = loop_counter,
+                .temperature = agentTemperature,
+                .is_thinking = toolIsThinking,
+                .prompt_tokens = 0,
+                .completion_tokens = 0,
+                .total_tokens = 0,
+                .is_output = true,
+                .is_input = false,
+                .tool_name = tool_call.function.name,
+            });
+
+            const latestMessage = try GetMessagesLatest(allocator, db, session_id);
+            _ = sendResponse(allocator, session_id, logger, .tool_result, .{
+                .tool_call_id = latestMessage.?.id,
+                .tool_name = latestMessage.?.tool_name,
+                .tool_result = latestMessage.?.response_content,
+            });
 
             // Check if tool has underscore (potential MCP tool)
             // const has_underscore = std.mem.indexOf(u8, tool_call.function.name, "_") != null;
@@ -463,9 +381,7 @@ pub fn HandleTool(
             //     }
             // }
         }
-        logger.debugFmt("All tools executed, continuing to next LLM call. Message count: {}", .{messages_list.items.len}) catch {};
     } else {
-        logger.warnFmt("Tool function not found", .{}) catch {};
     }
     // Continue to next LLM call - no break, loop continues naturally
     logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{}) catch {};

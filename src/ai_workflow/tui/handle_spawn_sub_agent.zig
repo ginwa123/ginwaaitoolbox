@@ -108,9 +108,7 @@ fn runSubAgent(
         .model = model,
         .cwd = cwd,
         .content = instruction,
-        .response_content = null,
-        .response_finish_reason = null,
-        .response_reasoning_content = null,
+        .reasoning_content = null,
         .role = agent.Role.user.toStr(),
         .finish_reason = "null",
         .tool_calls = null,
@@ -155,8 +153,6 @@ fn runSubAgent(
     //     .model = model,
     //     .cwd = cwd,
     //     .content = systemPrompt,
-    //     .response_content = null,
-    //     .response_finish_reason = null,
     //     .response_reasoning_content = null,
     //     .role = agent.Role.system.toStr(),
     //     .finish_reason = "null",
@@ -221,12 +217,10 @@ fn runSubAgent(
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
-            .content = null,
-            .response_content = response.content,
-            .response_finish_reason = if (response.finish_reason) |fr| fr.toStr() else null,
-            .response_reasoning_content = response.reasoning_content,
+            .content = response.content,
+            .reasoning_content = response.reasoning_content,
             .role = agent.Role.assistant.toStr(),
-            .finish_reason = null,
+            .finish_reason = if (response.finish_reason) |fr| fr.toStr() else null,
             .tool_calls = assistant_tool_calls,
             .tool_call_id = null,
             .agent_name = agent_name,
@@ -367,9 +361,7 @@ fn runSubAgent(
                             .model = model,
                             .cwd = cwd,
                             .content = tool_result,
-                            .response_content = null,
-                            .response_finish_reason = null,
-                            .response_reasoning_content = null,
+                            .reasoning_content = null,
                             .role = agent.Role.tool.toStr(),
                             .finish_reason = agent.FinishReason.tool.toStr(),
                             .tool_calls = null,
@@ -441,21 +433,21 @@ pub fn run(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    session_name: ?[]const u8,
+    _session_name: ?[]const u8,
     loop_counter: u32,
-    messages_list: *std.ArrayList(agent.AgentMessage),
     tool_call: agent.ToolCall,
     agent_temperature: f32,
     is_thinking: bool,
     api_key: []const u8,
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
-) !void {
+) ![]u8 {
     // Parse the JSON input from function.arguments
     logger.infoFmt("spawn_sub_agent: parsing JSON input", .{}) catch {};
     logger.debugFmt("spawn_sub_agent: JSON input: {s}", .{tool_call.function.arguments}) catch {};
     const parsed = try spawn_sub_agent_tool.parseSubAgents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
     // defer parsed.deinit(allocator);
+    _ = _session_name; // unused parameter
 
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
 
@@ -658,44 +650,32 @@ pub fn run(
     // CRITICAL FIX: Duplicate tool_call.id from arena to persistent allocator
     // The tool_call.id was allocated from the workflow's arena which gets reset
     // between loop iterations, causing garbage in the result
-    const tool_call_id_dup = try allocator.dupe(u8, tool_call.id);
-
-    const tool_result_msg = agent.AgentMessage{
-        .role = .tool,
-        .content = result_msg,
-        .tool_call_id = tool_call_id_dup,
-    };
-    try messages_list.append(allocator, tool_result_msg);
+    // const tool_call_id_dup = try allocator.dupe(u8, tool_call.id);
 
     // Save to DB
-    _ = try SaveMessage(allocator, db, .{
-        .session_id = session_id,
-        .model = model,
-        .cwd = cwd,
-        .content = copy_result_msg,
-        .response_content = null,
-        .response_finish_reason = null,
-        .response_reasoning_content = null,
-        .role = "tool",
-        .finish_reason = "tool",
-        .tool_calls = null,
-        .tool_call_id = tool_call_id_dup,
-        .agent_name = current_agent,
-        .session_name = session_name,
-        .loop_index = loop_counter,
-        .temperature = agent_temperature,
-        .is_thinking = is_thinking,
-        // .parent_session_id = parent_session_id,
-        // .parent_id = parent_id,
-        // Tool results have no LLM token usage
-        .prompt_tokens = 0,
-        .completion_tokens = 0,
-        .total_tokens = 0,
-    });
+    // _ = try SaveMessage(allocator, db, .{
+    //     .session_id = session_id,
+    //     .model = model,
+    //     .cwd = cwd,
+    //     .content = copy_result_msg,
+    //     .reasoning_content = null,
+    //     .role = "tool",
+    //     .finish_reason = "tool",
+    //     .tool_calls = null,
+    //     .tool_call_id = tool_call_id_dup,
+    //     .agent_name = current_agent,
+    //     .session_name = session_name,
+    //     .loop_index = loop_counter,
+    //     .temperature = agent_temperature,
+    //     .is_thinking = is_thinking,
+    //     .prompt_tokens = 0,
+    //     .completion_tokens = 0,
+    //     .total_tokens = 0,
+    // });
+    //
+    // SendToolResult(allocator, session_id, logger, .tool_result, .{ .tool_call_id = tool_call_id_dup, .tool_name = "spawn_sub_agent", .tool_result = copy_result_msg });
 
-    SendToolResult(allocator, session_id, logger, .tool_result, .{ .tool_call_id = tool_call_id_dup, .tool_name = "spawn_sub_agent", .tool_result = copy_result_msg });
-
-    logger.infoFmt("spawn_sub_agent: completed {} sub-agents", .{parsed.sub_agents.len}) catch {};
+    return copy_result_msg;
 }
 
 test {

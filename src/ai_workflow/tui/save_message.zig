@@ -15,9 +15,7 @@ pub const SaveMessageInput = struct {
     model: []const u8,
     cwd: []const u8,
     content: ?[]const u8,
-    response_content: ?[]const u8,
-    response_finish_reason: ?[]const u8,
-    response_reasoning_content: ?[]const u8,
+    reasoning_content: ?[]const u8,
     role: ?[]const u8,
     finish_reason: ?[]const u8,
     tool_calls: ?[]agent.ToolCall,
@@ -47,17 +45,11 @@ pub fn SaveMessage(
     const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
     defer allocator.free(created_at);
 
-    var contentStr = input.content orelse "";
-    const finishReasonStr = input.finish_reason orelse
-        (input.response_finish_reason orelse "null");
+    const contentStr = input.content orelse "";
+    const finishReasonStr = input.finish_reason orelse "null";
     const roleStr = input.role orelse "assistant";
-    const reasoningStr = input.response_reasoning_content orelse "";
+    const reasoningStr = input.reasoning_content orelse "";
     const agentStr = input.agent_name orelse "Agent";
-
-    if (input.response_content) |c| {
-        contentStr = c;
-    }
-
 
     // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
     var toolCallsJson: []const u8 = "";

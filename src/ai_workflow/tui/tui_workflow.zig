@@ -153,9 +153,7 @@ pub const TUIWorkflow = struct {
             .model = model,
             .cwd = cwd,
             .content = message,
-            .response_content = null,
-            .response_finish_reason = null,
-            .response_reasoning_content = null,
+            .reasoning_content = null,
             .role = agent.Role.user.toStr(),
             .finish_reason = "null",
             .tool_calls = null,
@@ -228,19 +226,15 @@ pub const TUIWorkflow = struct {
             retryCount = 0;
 
             if (resDynmicAgent.finish_reason) |finish_reason| {
-                self.logger.infoFmt("WORKFLOW: finish_reason = {s}", .{finish_reason.toStr()}) catch {};
                 if (finish_reason == .stop) {
-                    self.logger.infoFmt("FINISH REASON STOP - calling send_response", .{}) catch {};
                     _ = try SaveMessage(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
                         .cwd = cwd,
-                        .content = null,
-                        .response_content = resDynmicAgent.content,
-                        .response_finish_reason = if (resDynmicAgent.finish_reason) |fr| fr.toStr() else null,
-                        .response_reasoning_content = resDynmicAgent.reasoning_content,
+                        .content = resDynmicAgent.content,
+                        .reasoning_content = resDynmicAgent.reasoning_content,
                         .role = agent.Role.assistant.toStr(),
-                        .finish_reason = null,
+                        .finish_reason = if (resDynmicAgent.finish_reason) |fr| fr.toStr() else null,
                         .tool_calls = null,
                         .tool_call_id = null,
                         .agent_name = current_agent,
@@ -259,13 +253,12 @@ pub const TUIWorkflow = struct {
                         .usage = resDynmicAgent.usage,
                         .override_finish_reason = "user_choice",
                     });
-                    self.logger.infoFmt("FINISH REASON STOP - complete", .{}) catch {};
                     break;
                 } else if (finish_reason == .length) {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try HandleTool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, &messagesLists, resDynmicAgent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                    try HandleTool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, resDynmicAgent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
