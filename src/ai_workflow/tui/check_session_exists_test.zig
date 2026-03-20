@@ -1,10 +1,10 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
-const checkSessionExists = tree1_mod.tui_check_session_exists;
+const check_session_exists = tree1_mod.tui_check_session_exists;
 const SqliteBackend = tree1_mod.sqlite.SqliteBackend;
 const MigrationManager = tree1_mod.migrations.MigrationManager;
 
-test "checkSessionExists returns false for non-existent session" {
+test "check_session_exists returns false for non-existent session" {
     const allocator = std.testing.allocator;
     var db: SqliteBackend = .{};
     try db.init(":memory:");
@@ -21,11 +21,11 @@ test "checkSessionExists returns false for non-existent session" {
     try mgr.runMigrations();
 
     // Check non-existent session
-    const exists = checkSessionExists.checkSessionExists(allocator, &db, "non_existent_session");
+    const exists = check_session_exists.check_session_exists(allocator, &db, "non_existent_session");
     try std.testing.expectEqual(false, exists);
 }
 
-test "checkSessionExists returns true for existing session" {
+test "check_session_exists returns true for existing session" {
     const allocator = std.testing.allocator;
     var db: SqliteBackend = .{};
     try db.init(":memory:");
@@ -47,11 +47,11 @@ test "checkSessionExists returns true for existing session" {
     , &.{"msg-1", "test_session_123", "gpt-4", "Hello"});
 
     // Check existing session
-    const exists = checkSessionExists.checkSessionExists(allocator, &db, "test_session_123");
+    const exists = check_session_exists.check_session_exists(allocator, &db, "test_session_123");
     try std.testing.expectEqual(true, exists);
 }
 
-test "checkSessionExists returns false after deleting all messages for session" {
+test "check_session_exists returns false after deleting all messages for session" {
     const allocator = std.testing.allocator;
     var db: SqliteBackend = .{};
     try db.init(":memory:");
@@ -76,11 +76,11 @@ test "checkSessionExists returns false after deleting all messages for session" 
     try db.exec(allocator, "DELETE FROM llm_history WHERE session_id = ?", &.{"session_to_delete"});
 
     // Check non-existent (deleted) session
-    const exists = checkSessionExists.checkSessionExists(allocator, &db, "session_to_delete");
+    const exists = check_session_exists.check_session_exists(allocator, &db, "session_to_delete");
     try std.testing.expectEqual(false, exists);
 }
 
-test "checkSessionExists handles multiple sessions correctly" {
+test "check_session_exists handles multiple sessions correctly" {
     const allocator = std.testing.allocator;
     var db: SqliteBackend = .{};
     try db.init(":memory:");
@@ -108,15 +108,15 @@ test "checkSessionExists handles multiple sessions correctly" {
     , &.{"msg-C1", "session_C", "gpt-4", "Hello C"});
 
     // All existing
-    try std.testing.expectEqual(true, checkSessionExists.checkSessionExists(allocator, &db, "session_A"));
-    try std.testing.expectEqual(true, checkSessionExists.checkSessionExists(allocator, &db, "session_B"));
-    try std.testing.expectEqual(true, checkSessionExists.checkSessionExists(allocator, &db, "session_C"));
+    try std.testing.expectEqual(true, check_session_exists.check_session_exists(allocator, &db, "session_A"));
+    try std.testing.expectEqual(true, check_session_exists.check_session_exists(allocator, &db, "session_B"));
+    try std.testing.expectEqual(true, check_session_exists.check_session_exists(allocator, &db, "session_C"));
 
     // Non-existent
-    try std.testing.expectEqual(false, checkSessionExists.checkSessionExists(allocator, &db, "session_D"));
+    try std.testing.expectEqual(false, check_session_exists.check_session_exists(allocator, &db, "session_D"));
 }
 
-test "checkSessionExists handles empty session_id" {
+test "check_session_exists handles empty session_id" {
     const allocator = std.testing.allocator;
     var db: SqliteBackend = .{};
     try db.init(":memory:");
@@ -133,11 +133,11 @@ test "checkSessionExists handles empty session_id" {
     try mgr.runMigrations();
 
     // Empty string should not exist (no session has empty session_id)
-    const exists = checkSessionExists.checkSessionExists(allocator, &db, "");
+    const exists = check_session_exists.check_session_exists(allocator, &db, "");
     try std.testing.expectEqual(false, exists);
 }
 
-test "checkSessionExists is case-sensitive" {
+test "check_session_exists is case-sensitive" {
     const allocator = std.testing.allocator;
     var db: SqliteBackend = .{};
     try db.init(":memory:");
@@ -159,14 +159,14 @@ test "checkSessionExists is case-sensitive" {
     , &.{"msg-1", "MySession", "gpt-4", "Hello"});
 
     // Exact match exists
-    try std.testing.expectEqual(true, checkSessionExists.checkSessionExists(allocator, &db, "MySession"));
+    try std.testing.expectEqual(true, check_session_exists.check_session_exists(allocator, &db, "MySession"));
 
     // Different case does not exist
-    try std.testing.expectEqual(false, checkSessionExists.checkSessionExists(allocator, &db, "mysession"));
-    try std.testing.expectEqual(false, checkSessionExists.checkSessionExists(allocator, &db, "MYSESSION"));
+    try std.testing.expectEqual(false, check_session_exists.check_session_exists(allocator, &db, "mysession"));
+    try std.testing.expectEqual(false, check_session_exists.check_session_exists(allocator, &db, "MYSESSION"));
 }
 
-test "checkSessionExists counts multiple messages in same session" {
+test "check_session_exists counts multiple messages in same session" {
     const allocator = std.testing.allocator;
     var db: SqliteBackend = .{};
     try db.init(":memory:");
@@ -194,5 +194,5 @@ test "checkSessionExists counts multiple messages in same session" {
     , &.{"msg-3", "multi_msg_session", "gpt-4", "Hello 3"});
 
     // Session still exists even with multiple messages
-    try std.testing.expectEqual(true, checkSessionExists.checkSessionExists(allocator, &db, "multi_msg_session"));
+    try std.testing.expectEqual(true, check_session_exists.check_session_exists(allocator, &db, "multi_msg_session"));
 }

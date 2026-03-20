@@ -1,6 +1,6 @@
 const std = @import("std");
 const cancellation_registry = @import("../../modules/session/cancellation_registry.zig");
-const tui_workflow = @import("tui_workflow.zig");
+const tui_workflow = @import("workflow.zig");
 const StreamingContext = tui_workflow.StreamingContext;
 
 test "multiple sessions can be cancelled independently" {

@@ -1,0 +1,10 @@
+{
+  "background_color": "#ffffff",
+  "description": "Desktop",
+  "display": "standalone",
+  "name": "Desktop",
+  "short_name": "Desktop",
+  "start_url": "/index.html",
+  "theme_color": "#ffffff",
+  "scope": "/"
+}

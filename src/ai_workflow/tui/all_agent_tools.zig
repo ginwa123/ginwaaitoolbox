@@ -24,7 +24,7 @@ const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
 const ResponseType = @import("on_event_sent.zig").ResponseType;
 const Response = @import("on_event_sent.zig").Response;
-const GetMessages = session_helpers.GetMessages;
+const get_messages = session_helpers.get_messages;
 const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
@@ -38,7 +38,7 @@ const save_skill_mod = @import("save_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
-const HandleTool = @import("handle_tool.zig").HandleTool;
+const handle_tool = @import("handle_tool.zig").handle_tool;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
 const lspDefinitionTool = root_mod.tool_models.lspDefinitionTool;
 const lspReferencesTool = root_mod.tool_models.lspReferencesTool;
@@ -46,7 +46,7 @@ const lspWorkspaceSymbolTool = root_mod.tool_models.lspWorkspaceSymbolTool;
 const lspDocumentSymbolTool = root_mod.tool_models.lspDocumentSymbolTool;
 const lspHoverTool = root_mod.tool_models.lspHoverTool;
 
-pub const AllAgentTools: []const tool_models.AgentTool = &.{
+pub const all_agent_tools: []const tool_models.AgentTool = &.{
     bash_tool.bashTool,
     read_file_tool.readFileTool,
     set_agent_properties.SetAgentPropertiesTool,

@@ -77,7 +77,7 @@ fn setupTestDb(allocator: std.mem.Allocator, mgr: *MigrationManager) !void {
 }
 
 // ============================================================================
-// GetMessages Tests
+// get_messages Tests
 // ============================================================================
 
 test "get_messages returns empty array when no messages exist" {
@@ -90,7 +90,7 @@ test "get_messages returns empty array when no messages exist" {
     defer mgr.deinit();
     try setupTestDb(allocator, &mgr);
 
-    const result = try session_helpers.GetMessages(allocator, &db, "test-session-123");
+    const result = try session_helpers.get_messages(allocator, &db, "test-session-123");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -117,7 +117,7 @@ test "get_messages returns messages for a session" {
         \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'World', 'stop', 'user', 'Agent', 'Test Session', 1)
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetMessages(allocator, &db, "test-session");
+    const result = try session_helpers.get_messages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -147,7 +147,7 @@ test "get_messages filters out messages with is_feed_to_llm = 0" {
         \\('id3', 'test-session', 'gpt-4', '2024-01-01 12:00:00', 'Feed me too', 'stop', 'user', 1)
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetMessages(allocator, &db, "test-session");
+    const result = try session_helpers.get_messages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -177,7 +177,7 @@ test "get_messages respects ORDER BY created_at ASC" {
         \\('id3', 'test-session', 'gpt-4', '2024-01-01 12:00:00', 'Second', 'stop', 'assistant')
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetMessages(allocator, &db, "test-session");
+    const result = try session_helpers.get_messages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -206,7 +206,7 @@ test "get_messages handles NULL role with default 'assistant'" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetMessages(allocator, &db, "test-session");
+    const result = try session_helpers.get_messages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -234,7 +234,7 @@ test "get_messages handles reasoning_content correctly" {
         \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'Without reasoning', 'stop', 'assistant', NULL)
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetMessages(allocator, &db, "test-session");
+    const result = try session_helpers.get_messages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -263,7 +263,7 @@ test "get_messages handles agent and session tracking fields" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetMessages(allocator, &db, "test-session");
+    const result = try session_helpers.get_messages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -292,7 +292,7 @@ test "get_messages returns empty array for non-existent session" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetMessages(allocator, &db, "non-existent-session");
+    const result = try session_helpers.get_messages(allocator, &db, "non-existent-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -319,7 +319,7 @@ test "get_messages returns parent_session_id for each message" {
         \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'Second', 'stop', 'user', NULL)
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetMessages(allocator, &db, "test-session");
+    const result = try session_helpers.get_messages(allocator, &db, "test-session");
     defer {
         for (result) |*msg| {
             msg.deinit(allocator);
@@ -334,7 +334,7 @@ test "get_messages returns parent_session_id for each message" {
 }
 
 // ============================================================================
-// GetMessageLatest Tests
+// get_message_latest Tests
 // ============================================================================
 
 test "get_message_latest returns null when no messages exist" {
@@ -347,7 +347,7 @@ test "get_message_latest returns null when no messages exist" {
     defer mgr.deinit();
     try setupTestDb(allocator, &mgr);
 
-    const result = try session_helpers.GetMessageLatest(allocator, &db, "test-session-123");
+    const result = try session_helpers.get_message_latest(allocator, &db, "test-session-123");
     defer if (result) |msg| {
         var m = msg;
         m.deinit(allocator);
@@ -371,7 +371,7 @@ test "get_message_latest returns single message when only one exists" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetMessageLatest(allocator, &db, "test-session");
+    const result = try session_helpers.get_message_latest(allocator, &db, "test-session");
     defer if (result) |msg| {
         var m = msg;
         m.deinit(allocator);
@@ -400,7 +400,7 @@ test "get_message_latest returns most recent message when multiple exist" {
         \\('id3', 'test-session', 'gpt-4', '2024-01-01 12:00:00', 'Third', 'stop', 'assistant')
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetMessageLatest(allocator, &db, "test-session");
+    const result = try session_helpers.get_message_latest(allocator, &db, "test-session");
     defer if (result) |msg| {
         var m = msg;
         m.deinit(allocator);
@@ -427,7 +427,7 @@ test "get_message_latest filters out is_feed_to_llm = 0" {
         \\('id2', 'test-session', 'gpt-4', '2024-01-01 11:00:00', 'Should be returned', 'stop', 'assistant', 1)
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetMessageLatest(allocator, &db, "test-session");
+    const result = try session_helpers.get_message_latest(allocator, &db, "test-session");
     defer if (result) |msg| {
         var m = msg;
         m.deinit(allocator);
@@ -453,7 +453,7 @@ test "get_message_latest returns null for non-existent session" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetMessageLatest(allocator, &db, "non-existent-session");
+    const result = try session_helpers.get_message_latest(allocator, &db, "non-existent-session");
     defer if (result) |msg| {
         var m = msg;
         m.deinit(allocator);
@@ -477,7 +477,7 @@ test "get_message_latest handles tool_name from database" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetMessageLatest(allocator, &db, "test-session");
+    const result = try session_helpers.get_message_latest(allocator, &db, "test-session");
     defer if (result) |msg| {
         var m = msg;
         m.deinit(allocator);
@@ -502,7 +502,7 @@ test "get_message_latest handles parent_session_id from database" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetMessageLatest(allocator, &db, "test-session");
+    const result = try session_helpers.get_message_latest(allocator, &db, "test-session");
     defer if (result) |msg| {
         var m = msg;
         m.deinit(allocator);
@@ -528,7 +528,7 @@ test "get_message_latest returns null parent_session_id when not set" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetMessageLatest(allocator, &db, "test-session");
+    const result = try session_helpers.get_message_latest(allocator, &db, "test-session");
     defer if (result) |msg| {
         var m = msg;
         m.deinit(allocator);
@@ -539,7 +539,7 @@ test "get_message_latest returns null parent_session_id when not set" {
 }
 
 // ============================================================================
-// GetSessionsByDir Tests
+// get_sessions_by_dir Tests
 // ============================================================================
 
 test "get_session_by_dir returns empty array when no sessions exist" {
@@ -552,7 +552,7 @@ test "get_session_by_dir returns empty array when no sessions exist" {
     defer mgr.deinit();
     try setupTestDb(allocator, &mgr);
 
-    const result = try session_helpers.GetSessionsByDir(allocator, &db, "/test/dir");
+    const result = try session_helpers.get_sessions_by_dir(allocator, &db, "/test/dir");
     defer {
         for (result) |*session| {
             session.deinit(allocator);
@@ -582,7 +582,7 @@ test "get_session_by_dir returns sessions matching directory" {
         \\('id5', 'session5', 'gpt4', '/another/dir', '2024-01-01 14:00:00')
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetSessionsByDir(allocator, &db, "/test/dir");
+    const result = try session_helpers.get_sessions_by_dir(allocator, &db, "/test/dir");
     defer {
         for (result) |*session| {
             session.deinit(allocator);
@@ -614,7 +614,7 @@ test "get_session_by_dir respects ORDER BY created_at DESC" {
         \\('id3', 'session3', 'gpt4', '/test/dir', '2024-01-01 12:00:00')
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetSessionsByDir(allocator, &db, "/test/dir");
+    const result = try session_helpers.get_sessions_by_dir(allocator, &db, "/test/dir");
     defer {
         for (result) |*session| {
             session.deinit(allocator);
@@ -654,7 +654,7 @@ test "get_session_by_dir respects LIMIT 10" {
         );
     }
 
-    const result = try session_helpers.GetSessionsByDir(allocator, &db, "/test/dir");
+    const result = try session_helpers.get_sessions_by_dir(allocator, &db, "/test/dir");
     defer {
         for (result) |*session| {
             session.deinit(allocator);
@@ -683,7 +683,7 @@ test "get_session_by_dir handles multiple entries per session_id" {
         \\('id4', 'session2', 'gpt4', '/test/dir', '2024-01-01 13:00:00')
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetSessionsByDir(allocator, &db, "/test/dir");
+    const result = try session_helpers.get_sessions_by_dir(allocator, &db, "/test/dir");
     defer {
         for (result) |*session| {
             session.deinit(allocator);
@@ -713,7 +713,7 @@ test "get_session_by_dir handles NULL session_dir" {
         \\('id2', 'session2', 'gpt4', '2024-01-01 11:00:00')
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetSessionsByDir(allocator, &db, "/test/dir");
+    const result = try session_helpers.get_sessions_by_dir(allocator, &db, "/test/dir");
     defer {
         for (result) |*session| {
             session.deinit(allocator);
@@ -725,7 +725,7 @@ test "get_session_by_dir handles NULL session_dir" {
 }
 
 // ============================================================================
-// GetCurrentAgentBySessionId Tests
+// get_current_agent_by_session_id Tests
 // ============================================================================
 
 test "get_current_agent_by_session_id returns defaults when no sessions exist" {
@@ -738,7 +738,7 @@ test "get_current_agent_by_session_id returns defaults when no sessions exist" {
     defer mgr.deinit();
     try setupTestDb(allocator, &mgr);
 
-    const result = try session_helpers.GetCurrentAgentBySessionId(allocator, &db, "non-existent");
+    const result = try session_helpers.get_current_agent_by_session_id(allocator, &db, "non-existent");
     defer {
         allocator.free(result.agent);
     }
@@ -763,7 +763,7 @@ test "get_current_agent_by_session_id returns agent state from database" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetCurrentAgentBySessionId(allocator, &db, "test-session");
+    const result = try session_helpers.get_current_agent_by_session_id(allocator, &db, "test-session");
     defer {
         allocator.free(result.agent);
     }
@@ -789,7 +789,7 @@ test "get_current_agent_by_session_id uses most recent entry" {
         \\('id2', 'test-session', 'gpt-4', '2024-01-01 12:00:00', 'Second', 'stop', 'assistant', 'NewAgent', 0.9, 1)
     , &[_][]const u8{});
 
-    const result = try session_helpers.GetCurrentAgentBySessionId(allocator, &db, "test-session");
+    const result = try session_helpers.get_current_agent_by_session_id(allocator, &db, "test-session");
     defer {
         allocator.free(result.agent);
     }
@@ -814,7 +814,7 @@ test "get_current_agent_by_session_id handles is_thinking = 0" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetCurrentAgentBySessionId(allocator, &db, "test-session");
+    const result = try session_helpers.get_current_agent_by_session_id(allocator, &db, "test-session");
     defer {
         allocator.free(result.agent);
     }
@@ -839,7 +839,7 @@ test "get_current_agent_by_session_id defaults NULL values" {
         &[_][]const u8{}
     );
 
-    const result = try session_helpers.GetCurrentAgentBySessionId(allocator, &db, "test-session");
+    const result = try session_helpers.get_current_agent_by_session_id(allocator, &db, "test-session");
     defer {
         allocator.free(result.agent);
     }

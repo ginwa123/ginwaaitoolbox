@@ -39,8 +39,8 @@ pub fn extractContentResult(allocator: std.mem.Allocator, xml: []const u8) ?Extr
         finish_reason = xml[fr_start + "<finish_reason>".len .. fr_end];
         fr_pos = fr_end + "</finish_reason>".len;
     }
-
-    if (results.items.len == 0 and finish_reason == null) return null;
+    //
+    // if (results.items.len == 0 and finish_reason == null) return null;
     return ExtractResult{
         .content_results = results,
         .finish_reason = finish_reason,

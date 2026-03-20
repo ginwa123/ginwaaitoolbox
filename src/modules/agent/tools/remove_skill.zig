@@ -43,7 +43,7 @@ pub const removeSkillTool = AgentTool{
 };
 
 /// Execute the remove_skill tool - validation only
-/// Actual database removal is handled in tui_workflow.zig
+/// Actual database removal is handled in workflow.zig
 /// Returns an XML string with result
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn executeRemoveSkillToString(
@@ -69,7 +69,7 @@ pub fn executeRemoveSkillToString(
         return result;
     }
 
-    // Return success - actual removal done in tui_workflow.zig
+    // Return success - actual removal done in workflow.zig
     const result = try std.fmt.allocPrint(allocator,
         \\<skill_name>{s}</skill_name>
         \\<removed>true</removed>

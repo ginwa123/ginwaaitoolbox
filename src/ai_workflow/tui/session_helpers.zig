@@ -1,5 +1,5 @@
 const std = @import("std");
-const tui_workflow = @import("tui_workflow.zig");
+const tui_workflow = @import("workflow.zig");
 const TUIHistory = @import("models.zig").TUIHistory;
 const SessionInfo = tui_workflow.SessionInfo;
 const tree1_mod = @import("nalarcore");
@@ -9,7 +9,7 @@ const sqlite = tree1_mod.sqlite;
 // Get Messages Functions
 // ============================================================================
 
-pub fn GetMessages(
+pub fn get_messages(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
@@ -44,7 +44,7 @@ pub fn GetMessages(
     return results.toOwnedSlice(allocator);
 }
 
-pub fn GetMessageLatest(
+pub fn get_message_latest(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
@@ -82,7 +82,7 @@ pub fn GetMessageLatest(
 // Get Session By Directory Functions
 // ============================================================================
 
-pub fn GetSessionsByDir(
+pub fn get_sessions_by_dir(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_dir: []const u8,
@@ -116,7 +116,7 @@ pub const AgentState = struct {
     is_thinking: bool,
 };
 
-pub fn GetCurrentAgentBySessionId(
+pub fn get_current_agent_by_session_id(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,

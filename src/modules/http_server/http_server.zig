@@ -420,7 +420,7 @@ fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void
     if (global_server) |server| {
         if (server.db) |db| {
             const tree1 = @import("nalarcore");
-            const exists = tree1.tui_check_session_exists.checkSessionExists(server.allocator, db, session_id);
+            const exists = tree1.tui_check_session_exists.check_session_exists(server.allocator, db, session_id);
 
             res.status = 200;
             res.body = try std.fmt.allocPrint(req.arena,

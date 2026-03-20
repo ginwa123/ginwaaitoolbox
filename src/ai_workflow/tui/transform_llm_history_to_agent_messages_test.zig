@@ -20,7 +20,7 @@ test "transform assistant message" {
     };
     defer history.deinit(allocator);
 
-    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
+    const messages = try transform.transform_llm_history_to_agent_message(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -60,7 +60,7 @@ test "transform user message" {
     };
     defer history.deinit(allocator);
 
-    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
+    const messages = try transform.transform_llm_history_to_agent_message(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -99,7 +99,7 @@ test "transform tool message" {
     };
     defer history.deinit(allocator);
 
-    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
+    const messages = try transform.transform_llm_history_to_agent_message(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -140,7 +140,7 @@ test "transform empty content" {
     };
     defer history.deinit(allocator);
 
-    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
+    const messages = try transform.transform_llm_history_to_agent_message(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);
@@ -181,7 +181,7 @@ test "transform with reasoning content" {
     };
     defer history.deinit(allocator);
 
-    const messages = try transform.TransformLLMHistoryToAgentMessage(allocator, history);
+    const messages = try transform.transform_llm_history_to_agent_message(allocator, history);
     defer {
         for (messages) |msg| {
             if (msg.content) |c| allocator.free(c);

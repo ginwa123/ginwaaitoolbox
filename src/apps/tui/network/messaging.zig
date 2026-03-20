@@ -90,7 +90,7 @@ pub fn sendPingCommand(app: anytype) !bool {
 
 /// Check if a session exists in the database
 /// Returns true if session exists, false otherwise
-pub fn checkSessionExists(app: anytype) !bool {
+pub fn check_session_exists(app: anytype) !bool {
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);

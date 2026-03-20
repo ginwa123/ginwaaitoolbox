@@ -172,14 +172,10 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                     var content_list = extract_result.content_results;
                     defer content_list.deinit(app.allocator);
 
-                    if (extract_result.finish_reason) |finish_reason| {
-                        if (std.mem.eql(u8, finish_reason, "stop") or std.mem.eql(u8, finish_reason, "tool_calls")) {
-                            for (content_list.items) |result| {
-                                if (result.content.len > 0) {
-                                    streaming_started = true;
-                                    tuiText.print("{s}", .{result.content});
-                                }
-                            }
+                    for (content_list.items) |result| {
+                        if (result.content.len > 0) {
+                            streaming_started = true;
+                            tuiText.print("{s}", .{result.content});
                         }
                     }
                 }
@@ -248,10 +244,10 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                     if (after_this_end >= raw_buffer.items.len or
                         std.mem.indexOf(u8, raw_buffer.items[after_this_end..], "</finish_reason>") == null)
                     {
-                        // No more finish_reason tags after this one - safe to break
+                        // check get session to make sure we loop
+                        // call api get session
                         break;
                     }
-                    // More finish_reason tags coming - continue reading
                 }
             }
         }

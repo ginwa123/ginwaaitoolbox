@@ -82,7 +82,7 @@ pub const get_agent_tool = @import("modules/agent/tools/get_agent.zig");
 pub const http_server = @import("modules/http_server/http_server.zig");
 pub const logger = @import("modules/logger/logger.zig");
 pub const migrations = @import("modules/databases/sqlite/migrations.zig");
-pub const ai_workflow = @import("ai_workflow/tui/tui_workflow.zig");
+pub const ai_workflow = @import("ai_workflow/tui/workflow.zig");
 pub const ai_workflow_models = @import("ai_workflow/tui/models.zig");
 pub const session_monitor = @import("modules/session/session_monitor.zig");
 pub const kerjabot_get_session = @import("ai_workflow/kerjabot/get_session.zig");
@@ -142,14 +142,13 @@ test {
     _ = @import("ai_workflow/tui/handle_text_replace_tool.zig");
     _ = @import("ai_workflow/tui/mark_message_not_for_llm.zig");
     _ = @import("ai_workflow/tui/models.zig");
-    _ = @import("ai_workflow/tui/run_agentic_loop.zig");
     _ = @import("ai_workflow/tui/save_message.zig");
     _ = @import("ai_workflow/tui/save_message_test.zig");
     _ = @import("ai_workflow/tui/save_agent.zig");
     _ = @import("ai_workflow/tui/save_agent_test.zig");
     _ = @import("ai_workflow/tui/on_event_sent.zig");
     _ = @import("ai_workflow/tui/transform_llm_history_to_agent_messages.zig");
-    _ = @import("ai_workflow/tui/tui_workflow.zig");
+    _ = @import("ai_workflow/tui/workflow.zig");
     _ = @import("modules/session/session_monitor.zig");
     _ = @import("modules/cronjob/cronjob.zig");
     _ = @import("modules/agent/tools/write_file.zig");
@@ -162,5 +161,4 @@ test {
     _ = @import("modules/agent/tools/read_file_test.zig");
     _ = @import("modules/agent/mcp/mcp/mcp_server.zig");
     _ = @import("modules/http/http_client.zig");
-    _ = @import("modules/agent/extract_content_result_test.zig");
 }

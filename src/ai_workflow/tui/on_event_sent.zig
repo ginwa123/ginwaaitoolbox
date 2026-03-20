@@ -4,11 +4,61 @@ const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
 const http_server = @import("nalarcore").http_server;
 
+// ============================================================================
+// XML Protocol Constants
+// ============================================================================
+
 /// Maximum size for chunk content (32KB)
 const MAX_CHUNK_SIZE = 32768;
 
 /// Maximum size for tool call delta chunk (64KB - tool calls can be large)
 const MAX_TOOL_CALL_DELTA_SIZE = 65536;
+
+/// XML event types for SSE
+const EventType = enum {
+    response,
+    tool_result,
+    chunk,
+    reasoning,
+    chunk_final,
+    tool_call_delta,
+};
+
+// ============================================================================
+// XML Helper Functions
+// ============================================================================
+
+/// Write an XML tag pair with content
+fn writeTag(w: anytype, tag: []const u8, value: []const u8) !void {
+    _ = try w.writeAll("<");
+    _ = try w.writeAll(tag);
+    _ = try w.writeAll(">");
+    _ = try w.writeAll(value);
+    _ = try w.writeAll("</");
+    _ = try w.writeAll(tag);
+    _ = try w.writeAll(">");
+}
+
+/// Write an opening XML tag
+fn writeOpenTag(w: anytype, tag: []const u8) !void {
+    _ = try w.writeAll("<");
+    _ = try w.writeAll(tag);
+    _ = try w.writeAll(">");
+}
+
+/// Write a closing XML tag
+fn writeCloseTag(w: anytype, tag: []const u8) !void {
+    _ = try w.writeAll("</");
+    _ = try w.writeAll(tag);
+    _ = try w.writeAll(">");
+}
+
+/// Write a self-closing XML tag
+fn writeSelfClosingTag(w: anytype, tag: []const u8) !void {
+    _ = try w.writeAll("<");
+    _ = try w.writeAll(tag);
+    _ = try w.writeAll("/>");
+}
 
 // ============================================================================
 // Unified Response Types
@@ -36,109 +86,113 @@ pub const Response = struct {
     command: ?[]const u8 = null,
 };
 
-pub const OnEventInput = struct { session_id: []const u8, model: []const u8, cwd: []const u8, content: ?[]const u8, reasoning_content: ?[]const u8, role: ?[]const u8, finish_reason: ?[]const u8, tool_calls: ?[]agent.ToolCall, tool_call_id: ?[]const u8, tool_name: ?[]const u8 = null, agent_name: ?[]const u8, session_name: ?[]const u8, loop_index: u32, temperature: f32, is_thinking: bool, is_input: bool = false, is_output: bool = false, parent_session_id: ?[]const u8 = null, parent_id: ?[]const u8 = null };
+/// Input parameters for sending SSE events
+/// Used by TUI workflow to broadcast messages to connected clients
+pub const OnEventInput = struct {
+    session_id: []const u8,
+    model: []const u8,
+    cwd: []const u8,
+    content: ?[]const u8,
+    reasoning_content: ?[]const u8,
+    role: ?[]const u8,
+    finish_reason: ?[]const u8,
+    tool_calls: ?[]agent.ToolCall,
+    tool_call_id: ?[]const u8,
+    tool_name: ?[]const u8 = null,
+    agent_name: ?[]const u8,
+    session_name: ?[]const u8,
+    loop_index: u32,
+    temperature: f32,
+    is_thinking: bool,
+    is_input: bool = false,
+    is_output: bool = false,
+    parent_session_id: ?[]const u8 = null,
+    parent_id: ?[]const u8 = null,
+};
 
-pub fn onEventSendNew(allocator: std.mem.Allocator, input: OnEventInput) !void {
+/// Send an SSE event to all clients connected to the given session
+/// 
+/// XML Protocol:
+/// - Response events: <response>...</response>
+/// - Tool result events: <tool_result>...</tool_result>
+/// 
+/// Format is determined by whether tool_call_id is set (tool_result) or not (response)
+pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     var w = buf.writer(allocator);
 
-    // Use <tool_result> format when sending tool results (when tool_call_id is set)
-    // This is what the TUI client expects
+    // Determine event type based on presence of tool_call_id
     const is_tool_result = input.tool_call_id != null;
+
+    // Write opening tag
     if (is_tool_result) {
         _ = try w.writeAll("<tool_result>");
     } else {
         _ = try w.writeAll("<response>");
     }
 
+    // Write response-only fields (not present in tool_result)
     if (!is_tool_result) {
-        _ = try w.writeAll("<session_id>");
-        _ = try w.writeAll(input.session_id);
-        _ = try w.writeAll("</session_id>");
-
-        _ = try w.writeAll("<model>");
-        _ = try w.writeAll(input.model);
-        _ = try w.writeAll("</model>");
-
-        _ = try w.writeAll("<cwd>");
-        _ = try w.writeAll(input.cwd);
-        _ = try w.writeAll("</cwd>");
+        try writeTag(w, "session_id", input.session_id);
+        try writeTag(w, "model", input.model);
+        try writeTag(w, "cwd", input.cwd);
     }
 
+    // Write content field (different tag name for tool_result)
     if (input.content) |v| {
         if (is_tool_result) {
-            _ = try w.writeAll("<result>");
-            _ = try w.writeAll(v);
-            _ = try w.writeAll("</result>");
+            try writeTag(w, "result", v);
         } else {
-            _ = try w.writeAll("<content>");
-            _ = try w.writeAll(v);
-            _ = try w.writeAll("</content>");
+            try writeTag(w, "content", v);
         }
     }
 
+    // Write optional fields
     if (input.reasoning_content) |v| {
-        _ = try w.writeAll("<reasoning_content>");
-        _ = try w.writeAll(v);
-        _ = try w.writeAll("</reasoning_content>");
+        try writeTag(w, "reasoning_content", v);
     }
 
     if (!is_tool_result) {
-        _ = try w.writeAll("<role>");
-        _ = try w.writeAll(input.role orelse "assistant");
-        _ = try w.writeAll("</role>");
+        try writeTag(w, "role", input.role orelse "assistant");
     }
 
     if (input.finish_reason) |v| {
-        _ = try w.writeAll("<finish_reason>");
-        _ = try w.writeAll(v);
-        _ = try w.writeAll("</finish_reason>");
+        try writeTag(w, "finish_reason", v);
     }
 
+    // Write tool calls (only in response events)
     if (input.tool_calls) |calls| {
         _ = try w.writeAll("<tool_calls>");
         for (calls) |call| {
             _ = try w.writeAll("<tool_call>");
-            _ = try w.writeAll("<id>");
-            _ = try w.writeAll(call.id);
-            _ = try w.writeAll("</id>");
-            _ = try w.writeAll("<name>");
-            _ = try w.writeAll(call.function.name);
-            _ = try w.writeAll("</name>");
-            _ = try w.writeAll("<arguments>");
-            _ = try w.writeAll(call.function.arguments);
-            _ = try w.writeAll("</arguments>");
+            try writeTag(w, "id", call.id);
+            try writeTag(w, "name", call.function.name);
+            try writeTag(w, "arguments", call.function.arguments);
             _ = try w.writeAll("</tool_call>");
         }
         _ = try w.writeAll("</tool_calls>");
     }
 
+    // Write tool metadata fields
     if (input.tool_call_id) |v| {
-        _ = try w.writeAll("<tool_call_id>");
-        _ = try w.writeAll(v);
-        _ = try w.writeAll("</tool_call_id>");
+        try writeTag(w, "tool_call_id", v);
     }
 
     if (input.tool_name) |v| {
-        _ = try w.writeAll("<tool_name>");
-        _ = try w.writeAll(v);
-        _ = try w.writeAll("</tool_name>");
+        try writeTag(w, "tool_name", v);
     }
 
+    // Write response-only fields (metadata)
     if (!is_tool_result) {
         if (input.agent_name) |v| {
-            _ = try w.writeAll("<agent_name>");
-            _ = try w.writeAll(v);
-            _ = try w.writeAll("</agent_name>");
+            try writeTag(w, "agent_name", v);
         }
 
         if (input.session_name) |v| {
-            _ = try w.writeAll("<session_name>");
-            _ = try w.writeAll(v);
-            _ = try w.writeAll("</session_name>");
+            try writeTag(w, "session_name", v);
         }
 
         _ = try w.print("<loop_index>{d}</loop_index>", .{input.loop_index});
@@ -148,15 +202,11 @@ pub fn onEventSendNew(allocator: std.mem.Allocator, input: OnEventInput) !void {
         _ = try w.print("<is_output>{}</is_output>", .{input.is_output});
 
         if (input.parent_session_id) |v| {
-            _ = try w.writeAll("<parent_session_id>");
-            _ = try w.writeAll(v);
-            _ = try w.writeAll("</parent_session_id>");
+            try writeTag(w, "parent_session_id", v);
         }
 
         if (input.parent_id) |v| {
-            _ = try w.writeAll("<parent_id>");
-            _ = try w.writeAll(v);
-            _ = try w.writeAll("</parent_id>");
+            try writeTag(w, "parent_id", v);
         }
 
         _ = try w.writeAll("</response>");
@@ -164,6 +214,7 @@ pub fn onEventSendNew(allocator: std.mem.Allocator, input: OnEventInput) !void {
         _ = try w.writeAll("</tool_result>");
     }
 
+    // Send the event via SSE manager
     const event_type: []const u8 = if (is_tool_result) "tool_result" else "response";
     const event = http_server.SseEvent{
         .event_type = event_type,
@@ -172,7 +223,121 @@ pub fn onEventSendNew(allocator: std.mem.Allocator, input: OnEventInput) !void {
     try sse_manager.sendEvent(input.session_id, event);
 }
 
-/// Legacy sendResponse function - wraps onEventSendNew for backward compatibility
+// ============================================================================
+// Structured Chunk Types for Streaming
+// ============================================================================
+
+/// Structured representation of a content chunk
+pub const ContentChunk = struct {
+    index: usize,
+    content: []const u8,
+};
+
+/// Structured representation of a reasoning chunk
+pub const ReasoningChunk = struct {
+    index: usize,
+    reasoning: []const u8,
+};
+
+/// Structured representation of usage information
+pub const ChunkUsage = struct {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+};
+
+/// Structured representation of a final chunk with usage
+pub const FinalChunk = struct {
+    index: usize,
+    usage: ?ChunkUsage,
+};
+
+/// Structured representation of a tool call delta
+pub const ToolCallDeltaChunk = struct {
+    index: usize,
+    deltas: []const agent.ToolCallDelta,
+};
+
+// ============================================================================
+// Structured Serialization Functions
+// ============================================================================
+
+/// Serialize a content chunk to XML format
+pub fn serializeContentChunk(allocator: std.mem.Allocator, chunk: ContentChunk) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    const w = buf.writer(allocator);
+
+    _ = try w.print(
+        \\<response><chunk index="{d}"><content>{s}</content></chunk></response>
+    , .{ chunk.index, chunk.content });
+
+    return try buf.toOwnedSlice(allocator);
+}
+
+/// Serialize a reasoning chunk to XML format
+pub fn serializeReasoningChunk(allocator: std.mem.Allocator, chunk: ReasoningChunk) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    const w = buf.writer(allocator);
+
+    _ = try w.print(
+        \\<response><chunk index="{d}"><reasoning_content>{s}</reasoning_content></chunk></response>
+    , .{ chunk.index, chunk.reasoning });
+
+    return try buf.toOwnedSlice(allocator);
+}
+
+/// Serialize a final chunk with usage information
+pub fn serializeFinalChunk(allocator: std.mem.Allocator, chunk: FinalChunk) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    const w = buf.writer(allocator);
+
+    _ = try w.writeAll("<response><chunk index=\"");
+    _ = try w.print("{d}\" final=\"true\">", .{chunk.index});
+
+    if (chunk.usage) |u| {
+        _ = try w.print(
+            \\<usage><prompt_tokens>{d}</prompt_tokens><completion_tokens>{d}</completion_tokens><total_tokens>{d}</total_tokens></usage>
+        , .{ u.prompt_tokens, u.completion_tokens, u.total_tokens });
+    }
+
+    _ = try w.writeAll("</chunk></response>");
+
+    return try buf.toOwnedSlice(allocator);
+}
+
+/// Serialize tool call deltas to XML format
+pub fn serializeToolCallDeltas(allocator: std.mem.Allocator, chunk: ToolCallDeltaChunk) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    const w = buf.writer(allocator);
+
+    _ = try w.print("<response><chunk index=\"{d}\"><tool_calls_delta>", .{chunk.index});
+
+    for (chunk.deltas) |delta| {
+        _ = try w.print("<delta index=\"{d}\">", .{delta.index});
+
+        if (delta.id) |id| {
+            _ = try w.print("<id>{s}</id>", .{id});
+        }
+        if (delta.function_name) |name| {
+            _ = try w.print("<function_name>{s}</function_name>", .{name});
+        }
+        if (delta.function_arguments) |args| {
+            _ = try w.print("<function_arguments>{s}</function_arguments>", .{args});
+        }
+
+        _ = try w.writeAll("</delta>");
+    }
+
+    _ = try w.writeAll("</tool_calls_delta></chunk></response>");
+
+    return try buf.toOwnedSlice(allocator);
+}
+
+/// Legacy sendResponse function - wraps on_event_send_new for backward compatibility
 pub fn sendResponse(
     allocator: std.mem.Allocator,
     session_id: []const u8,
@@ -200,67 +365,43 @@ pub fn sendResponse(
         .parent_session_id = null,
         .parent_id = null,
     };
-    onEventSendNew(allocator, input) catch return;
+    on_event_send_new(allocator, input) catch return;
 }
 
 // ============================================================================
-// Streaming helpers
+// Streaming helpers (using structured serialization)
 // ============================================================================
 
 /// Send content chunk during streaming response
 pub fn sendStreamChunkContent(
+    allocator: std.mem.Allocator,
     session_id: []const u8,
-    index: usize,
-    content: []const u8,
+    chunk: ContentChunk,
 ) void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
-
-    var buf: [MAX_CHUNK_SIZE]u8 = undefined;
-    var pos: usize = 0;
-
-    const prefix = std.fmt.bufPrint(buf[pos..], "<response><chunk index=\"{}\"><content>", .{index}) catch return;
-    pos += prefix.len;
-
-    if (pos + content.len + 30 > buf.len) return;
-    @memcpy(buf[pos..][0..content.len], content);
-    pos += content.len;
-
-    const suffix = "</content></chunk></response>";
-    @memcpy(buf[pos..][0..suffix.len], suffix);
-    pos += suffix.len;
+    const data = serializeContentChunk(allocator, chunk) catch return;
+    defer allocator.free(data);
 
     const event = http_server.SseEvent{
         .event_type = "chunk",
-        .data = buf[0..pos],
+        .data = data,
     };
     sse_manager.sendEvent(session_id, event) catch {};
 }
 
 /// Send reasoning chunk during streaming response
 pub fn sendStreamChunkReasoning(
+    allocator: std.mem.Allocator,
     session_id: []const u8,
-    index: usize,
-    reasoning: []const u8,
+    chunk: ReasoningChunk,
 ) void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
-
-    var buf: [MAX_CHUNK_SIZE]u8 = undefined;
-    var pos: usize = 0;
-
-    const prefix = std.fmt.bufPrint(buf[pos..], "<response><chunk index=\"{}\"><reasoning_content>", .{index}) catch return;
-    pos += prefix.len;
-
-    if (pos + reasoning.len + 40 > buf.len) return;
-    @memcpy(buf[pos..][0..reasoning.len], reasoning);
-    pos += reasoning.len;
-
-    const suffix = "</reasoning_content></chunk></response>";
-    @memcpy(buf[pos..][0..suffix.len], suffix);
-    pos += suffix.len;
+    const data = serializeReasoningChunk(allocator, chunk) catch return;
+    defer allocator.free(data);
 
     const event = http_server.SseEvent{
         .event_type = "reasoning",
-        .data = buf[0..pos],
+        .data = data,
     };
     sse_manager.sendEvent(session_id, event) catch {};
 }
@@ -269,73 +410,32 @@ pub fn sendStreamChunkReasoning(
 pub fn sendStreamChunkFinal(
     allocator: std.mem.Allocator,
     session_id: []const u8,
-    index: usize,
-    usage: ?agent.Usage,
+    chunk: FinalChunk,
 ) void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-    var w = buf.writer(allocator);
-
-    w.print("<response><chunk index=\"{}\" final=\"true\">", .{index}) catch return;
-    if (usage) |u| {
-        w.print("<usage><prompt_tokens>{}</prompt_tokens><completion_tokens>{}</completion_tokens><total_tokens>{}</total_tokens></usage>", .{ u.prompt_tokens, u.completion_tokens, u.total_tokens }) catch return;
-    }
-    w.writeAll("</chunk></response>") catch return;
+    const data = serializeFinalChunk(allocator, chunk) catch return;
+    defer allocator.free(data);
 
     const event = http_server.SseEvent{
         .event_type = "chunk_final",
-        .data = buf.items,
+        .data = data,
     };
     sse_manager.sendEvent(session_id, event) catch {};
 }
 
 /// Send tool call delta chunk during streaming response
 pub fn sendStreamToolCallDelta(
+    allocator: std.mem.Allocator,
     session_id: []const u8,
-    index: usize,
-    deltas: []const agent.ToolCallDelta,
+    chunk: ToolCallDeltaChunk,
 ) void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
-
-    var buf: [MAX_TOOL_CALL_DELTA_SIZE]u8 = undefined;
-    var pos: usize = 0;
-
-    const prefix = std.fmt.bufPrint(buf[pos..], "<response><chunk index=\"{}\"><tool_calls_delta>", .{index}) catch return;
-    pos += prefix.len;
-
-    for (deltas) |delta| {
-        const delta_start = std.fmt.bufPrint(buf[pos..], "<delta index=\"{}\">", .{delta.index}) catch return;
-        pos += delta_start.len;
-
-        if (delta.id) |id| {
-            const id_part = std.fmt.bufPrint(buf[pos..], "<id>{s}</id>", .{id}) catch return;
-            pos += id_part.len;
-        }
-        if (delta.function_name) |name| {
-            const name_part = std.fmt.bufPrint(buf[pos..], "<function_name>{s}</function_name>", .{name}) catch return;
-            pos += name_part.len;
-        }
-        if (delta.function_arguments) |args| {
-            const args_part = std.fmt.bufPrint(buf[pos..], "<function_arguments>{s}</function_arguments>", .{args}) catch return;
-            pos += args_part.len;
-        }
-
-        const delta_end = "</delta>";
-        if (pos + delta_end.len > buf.len) return;
-        @memcpy(buf[pos..][0..delta_end.len], delta_end);
-        pos += delta_end.len;
-    }
-
-    const suffix = "</tool_calls_delta></chunk></response>";
-    if (pos + suffix.len > buf.len) return;
-    @memcpy(buf[pos..][0..suffix.len], suffix);
-    pos += suffix.len;
+    const data = serializeToolCallDeltas(allocator, chunk) catch return;
+    defer allocator.free(data);
 
     const event = http_server.SseEvent{
         .event_type = "tool_call_delta",
-        .data = buf[0..pos],
+        .data = data,
     };
     sse_manager.sendEvent(session_id, event) catch {};
 }

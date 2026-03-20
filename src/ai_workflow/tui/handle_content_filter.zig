@@ -3,10 +3,10 @@ const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
-const SaveMessage = @import("save_message.zig").SaveMessage;
-const onEventSendNew = @import("on_event_sent.zig").onEventSendNew;
+const save_message = @import("save_message.zig").save_message;
+const on_event_send_new = @import("on_event_sent.zig").on_event_send_new;
 const session_helpers = @import("session_helpers.zig");
-const get_current_agent_by_session_id = session_helpers.GetCurrentAgentBySessionId;
+const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;
 
 pub fn run(
     allocator: std.mem.Allocator,
@@ -31,7 +31,7 @@ pub fn run(
     logger.infoFmt("FINISH REASON CONTENT FILTER - content was filtered due to safety policies", .{}) catch {};
 
     // Save the filtered response to history
-    _ = try SaveMessage(
+    _ = try save_message(
         allocator, db, .{
         .session_id = session_id,
         .model = model,
@@ -56,7 +56,7 @@ pub fn run(
     if (res_dynamic_agent.content) |c| {
         if (c.len > 0) {
             // Send the partial content with content_filter finish reason
-            _ = try onEventSendNew(allocator, .{
+            _ = try on_event_send_new(allocator, .{
                 .session_id = session_id,
                 .model = model,
                 .cwd = cwd,
@@ -79,7 +79,7 @@ pub fn run(
             }) catch {};
         } else {
             // No content, send error message
-            _ = try onEventSendNew(allocator, .{
+            _ = try on_event_send_new(allocator, .{
                 .session_id = session_id,
                 .model = model,
                 .cwd = cwd,
@@ -103,7 +103,7 @@ pub fn run(
         }
     } else {
         // No content, send error message
-        onEventSendNew(allocator, .{
+        on_event_send_new(allocator, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,

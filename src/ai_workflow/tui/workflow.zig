@@ -18,13 +18,13 @@ const bash_helper = root_mod.helperTool;
 const get_tree_dir = @import("get_tree_dir.zig");
 const logger_mod = root_mod.logger;
 const session_helpers = @import("session_helpers.zig");
-const GetCurrentAgentBySessionId = session_helpers.GetCurrentAgentBySessionId;
+const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
-const SaveMessage = @import("save_message.zig").SaveMessage;
+const save_message = @import("save_message.zig").save_message;
 const BuildMessages = @import("build_messages_for_agent_prompt.zig").BuildMessages;
-const GetMessages = session_helpers.GetMessages;
-const GetMessagesLatest = session_helpers.GetMessageLatest;
+const get_messages = session_helpers.get_messages;
+const get_messagesLatest = session_helpers.get_message_latest;
 const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
@@ -34,10 +34,13 @@ const SearchTool = root_mod.search_tool;
 const TextReplaceTool = root_mod.text_replace_tool;
 
 const on_event_sent = @import("on_event_sent.zig");
-const onEventSendNew = on_event_sent.onEventSendNew;
+const on_event_send_new = on_event_sent.on_event_send_new;
 const sendStreamChunkContent = on_event_sent.sendStreamChunkContent;
 const sendStreamChunkReasoning = on_event_sent.sendStreamChunkReasoning;
 const sendStreamChunkFinal = on_event_sent.sendStreamChunkFinal;
+const ContentChunk = on_event_sent.ContentChunk;
+const ReasoningChunk = on_event_sent.ReasoningChunk;
+const FinalChunk = on_event_sent.FinalChunk;
 const ResponseType = on_event_sent.ResponseType;
 const Response = on_event_sent.Response;
 
@@ -49,9 +52,9 @@ const save_skill_mod = @import("save_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
-const HandleTool = @import("handle_tool.zig").HandleTool;
+const handle_tool = @import("handle_tool.zig").handle_tool;
 const SpawnSubAgentTool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
-const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
+const all_agent_tools = @import("all_agent_tools.zig").all_agent_tools;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
@@ -126,7 +129,7 @@ pub const TUIWorkflow = struct {
     pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) void {
         self.runInternal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
-            onEventSendNew(allocator, .{
+            on_event_send_new(allocator, .{
                 .session_id = session_id,
                 .model = model,
                 .cwd = cwd,
@@ -162,14 +165,14 @@ pub const TUIWorkflow = struct {
         }
 
         const session_name = message;
-        const initial_agent_state = try GetCurrentAgentBySessionId(
+        const initial_agent_state = try get_current_agent_by_session_id(
             parent_allocator,
             self.db,
             session_id,
         );
         const initial_agent = initial_agent_state.agent;
 
-        try SaveMessage(parent_allocator, self.db, .{
+        try save_message(parent_allocator, self.db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -194,7 +197,7 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
         var loopCounter: u32 = 0;
-        const base_tools: []const tool_models.AgentTool = AllAgentTools;
+        const base_tools: []const tool_models.AgentTool = all_agent_tools;
 
         while (true) {
             if (cancellation_registry.getGlobalRegistry()) |registry| {
@@ -212,7 +215,7 @@ pub const TUIWorkflow = struct {
             if (retryCount > 10) return error.TooManyRetries;
 
             // Fetch current agent fresh from DB each iteration
-            const currentAgentState = try GetCurrentAgentBySessionId(
+            const currentAgentState = try get_current_agent_by_session_id(
                 allocator,
                 self.db,
                 session_id,
@@ -223,7 +226,7 @@ pub const TUIWorkflow = struct {
 
             var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
-            const initialMessages = try BuildMessages(allocator, cwd, try GetMessages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
+            const initialMessages = try BuildMessages(allocator, cwd, try get_messages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
@@ -236,7 +239,7 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            const resDynmicAgent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config, base_tools) catch |err| {
+            const res_dynamic_agent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config, base_tools) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -248,16 +251,16 @@ pub const TUIWorkflow = struct {
 
             retryCount = 0;
 
-            if (resDynmicAgent.finish_reason) |finish_reason| {
+            if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    _ = try SaveMessage(allocator, self.db, .{
+                    _ = try save_message(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
                         .cwd = cwd,
-                        .content = resDynmicAgent.content,
-                        .reasoning_content = resDynmicAgent.reasoning_content,
+                        .content = res_dynamic_agent.content,
+                        .reasoning_content = res_dynamic_agent.reasoning_content,
                         .role = agent.Role.assistant.toStr(),
-                        .finish_reason = if (resDynmicAgent.finish_reason) |fr| fr.toStr() else null,
+                        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
                         .tool_calls = null,
                         .tool_call_id = null,
                         .agent_name = current_agent,
@@ -265,17 +268,17 @@ pub const TUIWorkflow = struct {
                         .loop_index = loopCounter,
                         .temperature = agent_temperature,
                         .is_thinking = isThinking,
-                        .prompt_tokens = resDynmicAgent.usage.prompt_tokens,
-                        .completion_tokens = resDynmicAgent.usage.completion_tokens,
-                        .total_tokens = resDynmicAgent.usage.total_tokens,
+                        .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+                        .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+                        .total_tokens = res_dynamic_agent.usage.total_tokens,
                         .parent_id = session_id,
                         .parent_session_id = session_id,
                     });
 
-                    // Send SSE event using GetMessagesLatest
-                    const latestMessage = try GetMessagesLatest(allocator, self.db, session_id);
+                    // Send SSE event using get_messagesLatest
+                    const latestMessage = try get_messagesLatest(allocator, self.db, session_id);
                     if (latestMessage) |msg| {
-                        _ = try onEventSendNew(allocator, .{
+                        _ = try on_event_send_new(allocator, .{
                             .session_id = msg.session_id,
                             .model = msg.model,
                             .cwd = cwd,
@@ -302,22 +305,22 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try HandleTool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, resDynmicAgent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                    try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
                 } else if (finish_reason == .assistant) {
                     // Some providers return "assistant" instead of "tool_calls" when tool calls are present
                     // Treat it the same as tool_calls - check if there are actual tool calls to process
-                    if (resDynmicAgent.tool_calls != null and resDynmicAgent.tool_calls.?.len > 0) {
-                        try HandleTool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, resDynmicAgent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                    if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
+                        try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
                     } else {
                         // No tool calls present - treat as normal completion
-                        _ = try SaveMessage(allocator, self.db, .{
+                        _ = try save_message(allocator, self.db, .{
                             .session_id = session_id,
                             .model = model,
                             .cwd = cwd,
-                            .content = resDynmicAgent.content,
-                            .reasoning_content = resDynmicAgent.reasoning_content,
+                            .content = res_dynamic_agent.content,
+                            .reasoning_content = res_dynamic_agent.reasoning_content,
                             .role = agent.Role.assistant.toStr(),
-                            .finish_reason = if (resDynmicAgent.finish_reason) |fr| fr.toStr() else null,
+                            .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
                             .tool_calls = null,
                             .tool_call_id = null,
                             .agent_name = current_agent,
@@ -325,17 +328,17 @@ pub const TUIWorkflow = struct {
                             .loop_index = loopCounter,
                             .temperature = agent_temperature,
                             .is_thinking = isThinking,
-                            .prompt_tokens = resDynmicAgent.usage.prompt_tokens,
-                            .completion_tokens = resDynmicAgent.usage.completion_tokens,
-                            .total_tokens = resDynmicAgent.usage.total_tokens,
+                            .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+                            .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+                            .total_tokens = res_dynamic_agent.usage.total_tokens,
                             .parent_id = session_id,
                             .parent_session_id = session_id,
                         });
 
-                        // Send SSE event using GetMessagesLatest
-                        const latestMessage = try GetMessagesLatest(allocator, self.db, session_id);
+                        // Send SSE event using get_messagesLatest
+                        const latestMessage = try get_messagesLatest(allocator, self.db, session_id);
                         if (latestMessage) |msg| {
-                            _ = try onEventSendNew(allocator, .{
+                            _ = try on_event_send_new(allocator, .{
                                 .session_id = msg.session_id,
                                 .model = msg.model,
                                 .cwd = cwd,
@@ -362,7 +365,7 @@ pub const TUIWorkflow = struct {
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                    onEventSendNew(allocator, .{
+                    on_event_send_new(allocator, .{
                         .session_id = session_id,
                         .model = model,
                         .cwd = cwd,
@@ -390,7 +393,7 @@ pub const TUIWorkflow = struct {
             }
 
             // Log if finish_reason is null
-            if (resDynmicAgent.finish_reason == null) {
+            if (res_dynamic_agent.finish_reason == null) {
                 self.logger.warnFmt("WORKFLOW: finish_reason is NULL!", .{}) catch {};
             }
         }
@@ -615,5 +618,5 @@ pub const TUIWorkflow = struct {
 };
 
 test {
-    _ = @import("tui_workflow_test.zig");
+    _ = @import("workflow_test.zig");
 }

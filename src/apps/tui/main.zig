@@ -171,7 +171,7 @@ pub fn main() !void {
         app.session_id = try app.allocator.dupe(u8, session_id);
 
         // Check if session exists in database before continuing
-        const session_found = messaging.checkSessionExists(&app) catch |err| {
+        const session_found = messaging.check_session_exists(&app) catch |err| {
             tui_text.print("{s}Error: Failed to check session: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
             return err;
         };

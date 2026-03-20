@@ -15,11 +15,21 @@ const list_skills_tool = @import("../../modules/agent/tools/list_skills.zig");
 const get_skill_tool = @import("../../modules/agent/tools/get_skill.zig");
 const remove_skill_tool = @import("../../modules/agent/tools/remove_skill.zig");
 const config_mod = @import("../../modules/config/config.zig");
-const SaveMessage = @import("save_message.zig").SaveMessage;
-const onEventSendNew = @import("on_event_sent.zig").onEventSendNew;
+const save_message = @import("save_message.zig").save_message;
 const session_helpers = @import("session_helpers.zig");
-const get_current_agent_by_session_id = session_helpers.GetCurrentAgentBySessionId;
+const getCurrentAgentBySessionId = session_helpers.get_current_agent_by_session_id;
 const handle_tool = @import("handle_tool.zig");
+const BashTool = @import("../../modules/agent/tools/bash.zig");
+const ReadFileTool = @import("../../modules/agent/tools/read_file.zig");
+const SearchTool = @import("../../modules/agent/tools/search.zig");
+const TextReplaceTool = @import("../../modules/agent/tools/text_replace.zig");
+const WriteFileTool = @import("../../modules/agent/tools/write_file.zig");
+const ListSkillsTool = @import("../../modules/agent/tools/list_skills.zig");
+const GetSkillTool = @import("../../modules/agent/tools/get_skill.zig");
+const RemoveSkillTool = @import("../../modules/agent/tools/remove_skill.zig");
+const ListAgentsTool = @import("../../modules/agent/tools/list_agents.zig");
+const GetAgentTool = @import("../../modules/agent/tools/get_agent.zig");
+const LspDefinitionTool = @import("../../modules/agent/tools/lsp_definition.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
 const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
@@ -27,22 +37,12 @@ const handle_write_file_tool = @import("handle_write_file_tool.zig");
 const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
 const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
-const loop_detector = root_mod.loop_detector;
-const set_agent_properties = root_mod.set_agent_properties;
-const AllAgentTools = @import("all_agent_tools.zig").AllAgentTools;
-const GetMessages = session_helpers.GetMessages;
-const GetMessagesLatest = session_helpers.GetMessageLatest;
-const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
-const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
 const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
 const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
-// TODO: Restore these when lsp.zig is complete with all tools
-// const handle_lsp_references_tool = @import("handle_lsp_references_tool.zig");
-// const handle_lsp_workspace_symbol_tool = @import("handle_lsp_workspace_symbol_tool.zig");
-// const handle_lsp_document_symbol_tool = @import("handle_lsp_document_symbol_tool.zig");
-// const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
-const StreamingContext = @import("tui_workflow.zig").StreamingContext;
+const handle_bash_tool = @import("handle_bash_tool.zig");
+const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
+const StreamingContext = @import("workflow.zig").StreamingContext;
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
 const SaveSkill = @import("save_skill.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
@@ -52,27 +52,253 @@ const MAX_SUB_AGENTS = 20;
 // Import BashInput from models (not exported in bash.zig)
 const BashInput = @import("../../modules/agent/tools/models.zig").BashInput;
 
-/// Filter tools by allowed names. If allowed_tools is null, return all tools.
-fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8) ![]const tool_models.AgentTool {
-    if (allowed_tools == null) {
-        // Return all tools (copy the slice)
-        return try allocator.dupe(tool_models.AgentTool, AllAgentTools);
+// ============================================================================
+// SUB-AGENT TOOL DISPATCH TABLE
+// ============================================================================
+
+/// Function signature for sub-agent tool executors
+const SubAgentToolExec = *const fn (
+    allocator: std.mem.Allocator,
+    tc: agent.ToolCall,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) anyerror![]const u8;
+
+/// Entry in the sub-agent tool registry
+const SubAgentToolEntry = struct {
+    name: []const u8,
+    exec: SubAgentToolExec,
+    auto_save_skill: bool = false,
+    auto_save_agent: bool = false,
+};
+
+/// Tool execution result with optional auto-save metadata
+const SubAgentToolResult = struct {
+    output: []const u8,
+    skill_save: ?SkillSaveInfo = null,
+    agent_save: ?AgentSaveInfo = null,
+};
+
+const SkillSaveInfo = struct {
+    name: []const u8,
+    content: []const u8,
+};
+
+const AgentSaveInfo = struct {
+    name: []const u8,
+};
+
+// Individual tool executors
+fn execBash(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    return handle_bash_tool.runWithContext(allocator, tc, db, session_id);
+}
+
+fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_read_file_tool.run(allocator, tc);
+}
+
+fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_search_tool.run(allocator, tc);
+}
+
+fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_text_replace_tool.run(allocator, tc);
+}
+
+fn execWriteFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_write_file_tool.run(allocator, tc);
+}
+
+fn execListSkills(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    return handle_list_skills_tool.run(allocator);
+}
+
+fn execGetSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_get_skill_tool.run(allocator, tc);
+}
+
+fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_remove_skill_tool.run(allocator, tc);
+}
+
+fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    return handle_list_agents_tool.run(allocator);
+}
+
+fn execGetAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_get_agent_tool.run(allocator, tc);
+}
+
+fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_lsp_definition_tool.run(allocator, tc);
+}
+
+/// The canonical registry for sub-agent tools (no spawn_sub_agent or set_agent_properties)
+/// Maps tool names to their executors and actual tool definitions
+const SubAgentToolInfo = struct {
+    name: []const u8,
+    exec: SubAgentToolExec,
+    tool_def: tool_models.AgentTool,
+    auto_save_skill: bool = false,
+    auto_save_agent: bool = false,
+};
+
+const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
+    // File operations
+    .{ .name = "bash", .exec = execBash, .tool_def = BashTool.bashTool },
+    .{ .name = "read_file", .exec = execReadFile, .tool_def = ReadFileTool.readFileTool },
+    .{ .name = "search", .exec = execSearch, .tool_def = SearchTool.searchTool },
+    .{ .name = "text_replace", .exec = execTextReplace, .tool_def = TextReplaceTool.textReplaceTool },
+    .{ .name = "write_file", .exec = execWriteFile, .tool_def = WriteFileTool.writeFileTool },
+
+    // Skill management
+    .{ .name = "list_skills", .exec = execListSkills, .tool_def = ListSkillsTool.listSkillsTool },
+    .{ .name = "get_skill", .exec = execGetSkill, .tool_def = GetSkillTool.getSkillTool, .auto_save_skill = true },
+    .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = RemoveSkillTool.removeSkillTool },
+
+    // Agent management
+    .{ .name = "list_agents", .exec = execListAgents, .tool_def = ListAgentsTool.listAgentsTool },
+    .{ .name = "get_agent", .exec = execGetAgent, .tool_def = GetAgentTool.GetAgentTool, .auto_save_agent = true },
+
+    // LSP tools
+    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = LspDefinitionTool.lspDefinitionTool },
+    // TODO: Restore remaining LSP tools when lsp.zig is complete
+};
+
+/// Execute a tool by name, returning the result
+fn executeSubAgentTool(
+    allocator: std.mem.Allocator,
+    tc: agent.ToolCall,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !SubAgentToolResult {
+    inline for (SUB_AGENT_TOOL_REGISTRY) |entry| {
+        if (std.mem.eql(u8, tc.function.name, entry.name)) {
+            const output = entry.exec(allocator, tc, db, session_id) catch |err| {
+                return SubAgentToolResult{
+                    .output = try std.fmt.allocPrint(allocator, "ERROR: {s} failed: {s}", .{
+                        tc.function.name,
+                        @errorName(err),
+                    }),
+                };
+            };
+
+            var result = SubAgentToolResult{ .output = output };
+
+            // Auto-save skill if this tool loaded one
+            if (entry.auto_save_skill) {
+                if (parseSkillFromResult(output)) |info| {
+                    result.skill_save = SkillSaveInfo{ .name = info.name, .content = info.content };
+                }
+            }
+
+            // Auto-save agent if this tool loaded one
+            if (entry.auto_save_agent) {
+                if (parseAgentFromResult(output)) |name| {
+                    result.agent_save = AgentSaveInfo{ .name = name };
+                }
+            }
+
+            return result;
+        }
     }
 
+    return error.UnknownTool;
+}
+
+// ============================================================================
+// HELPER FUNCTIONS - Skill/Agent Parsing
+// ============================================================================
+
+fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content: []const u8 } {
+    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
+
+    const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
+    const name_begin = name_start + "<skill_name>".len;
+    const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
+    const skill_name = result[name_begin..name_begin + name_end];
+
+    const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
+    const content_begin = content_start + "<content>".len;
+    const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
+    const skill_content = result[content_begin..content_begin + content_end];
+
+    return .{ .name = skill_name, .content = skill_content };
+}
+
+fn parseAgentFromResult(result: []const u8) ?[]const u8 {
+    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
+
+    const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
+    const name_begin = name_start + "<agent_name>".len;
+    const name_end = std.mem.indexOf(u8, result[name_begin..], "</agent_name>") orelse return null;
+    return result[name_begin..name_begin + name_end];
+}
+
+// ============================================================================
+// FILTERED TOOLS FOR SUB-AGENTS
+// ============================================================================
+
+/// Get all sub-agent tools as a filtered list
+/// If allowed_tools is null, returns all sub-agent tools
+/// Always excludes spawn_sub_agent and set_agent_properties for security
+fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8) ![]const tool_models.AgentTool {
     var result = std.ArrayList(tool_models.AgentTool).empty;
     errdefer result.deinit(allocator);
 
-    for (AllAgentTools) |tool| {
-        for (allowed_tools.?) |allowed| {
-            if (std.mem.eql(u8, tool.function.name, allowed)) {
-                try result.append(allocator, tool);
-                break;
+    for (SUB_AGENT_TOOL_REGISTRY) |entry| {
+        // If no filter specified, include all tools
+        if (allowed_tools == null) {
+            try result.append(allocator, entry.tool_def);
+        } else {
+            // Check if this tool is in the allowed list
+            for (allowed_tools.?) |allowed| {
+                if (std.mem.eql(u8, entry.name, allowed)) {
+                    try result.append(allocator, entry.tool_def);
+                    break;
+                }
             }
         }
     }
 
     return try result.toOwnedSlice(allocator);
 }
+
+/// Build a list of tool names from the allowed tools
+fn buildToolNamesList(allocator: std.mem.Allocator, tools: []const tool_models.AgentTool) ![]const []const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    errdefer names.deinit(allocator);
+    for (tools) |tool| {
+        try names.append(allocator, tool.function.name);
+    }
+    return try names.toOwnedSlice(allocator);
+}
+
+// ============================================================================
+// SUB-AGENT EXECUTION
+// ============================================================================
 
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     _ = ctx;
@@ -100,11 +326,11 @@ fn runSubAgent(
     parent_id: []const u8,
 ) ![]const u8 {
     _ = config; // reserved for future use (e.g., MCP tools)
-    // session_id is now passed as parameter - use it for DB and SSE
+
     const sessionName = try std.fmt.allocPrint(parentAllocator, "{}", .{std.time.nanoTimestamp()});
 
     // Save user instruction message to DB
-    _ = try SaveMessage(parentAllocator, db, .{
+    _ = try save_message(parentAllocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
@@ -129,34 +355,9 @@ fn runSubAgent(
         .tool_name = null,
     });
 
-    // Send SSE event for user instruction
-    {
-        const latestMessage = try GetMessagesLatest(parentAllocator, db, session_id);
-        try onEventSendNew(parentAllocator, .{
-            .session_id = latestMessage.?.session_id,
-            .model = latestMessage.?.model,
-            .cwd = cwd,
-            .content = latestMessage.?.response_content,
-            .reasoning_content = latestMessage.?.reasoning_content,
-            .role = latestMessage.?.role,
-            .finish_reason = latestMessage.?.finish_reason,
-            .tool_calls = null,
-            .tool_call_id = latestMessage.?.id,
-            .tool_name = latestMessage.?.tool_name,
-            .agent_name = agent_name,
-            .session_name = latestMessage.?.session_name,
-            .loop_index = latestMessage.?.loop_index,
-            .temperature = agent_temperature,
-            .is_thinking = is_thinking,
-            .is_input = true,
-            .is_output = false,
-            .parent_session_id = null,
-            .parent_id = null,
-        });
-    }
-
-    // Get tools based on allowed_tools (null = all tools)
+    // Get tools based on allowed_tools (null = all tools except restricted)
     const sub_agent_tools = try getAllowedTools(parentAllocator, allowed_tools);
+    defer parentAllocator.free(sub_agent_tools);
 
     var sub_agent = try agent.Agent.init(parentAllocator, logger);
 
@@ -166,38 +367,12 @@ fn runSubAgent(
     sub_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
     // Build tool names list from allowed tools
-    var tool_names: std.ArrayList([]const u8) = .empty;
-    defer tool_names.deinit(parentAllocator);
-    for (sub_agent_tools) |tool| {
-        try tool_names.append(parentAllocator, tool.function.name);
+    const tool_names = try buildToolNamesList(parentAllocator, sub_agent_tools);
+    defer {
+        for (tool_names) |n| parentAllocator.free(n);
+        parentAllocator.free(tool_names);
     }
 
-    // Build system prompt with cwd context - sub-agents need this for path resolution
-
-    // Save system prompt to DB so it can be fetched in the while loop
-    // _ = try SaveMessage(parentAllocator, db, .{
-    //     .session_id = session_id,
-    //     .model = model,
-    //     .cwd = cwd,
-    //     .content = systemPrompt,
-    //     .response_reasoning_content = null,
-    //     .role = agent.Role.system.toStr(),
-    //     .finish_reason = "null",
-    //     .tool_calls = null,
-    //     .tool_call_id = null,
-    //     .agent_name = agent_name,
-    //     .session_name = session_name,
-    //     .loop_index = loop_index,
-    //     .temperature = agent_temperature,
-    //     .is_thinking = is_thinking,
-    //     .parent_session_id = parent_session_id,
-    //     .parent_id = parent_id,
-    //     .prompt_tokens = 0,
-    //     .completion_tokens = 0,
-    //     .total_tokens = 0,
-    // });
-    //
-    var tool_call_count: usize = 0;
     var last_response: ?agent.CallResponse = null;
 
     while (true) {
@@ -206,17 +381,18 @@ fn runSubAgent(
         const allocator = arenaAllocatorWhileLoop.allocator();
 
         const skillContents = try BuildSkillContent(allocator, db, session_id);
-        const systemPrompt = try prompt.buildSubAgentPrompt(allocator, cwd, tool_names.items, skillContents);
+        const systemPrompt = try prompt.buildSubAgentPrompt(allocator, cwd, tool_names, skillContents);
 
         var messages: std.ArrayList(agent.AgentMessage) = .empty;
         try messages.append(allocator, .{
             .role = .system,
             .content = systemPrompt,
         });
-        // Fetch existing messages from DB first
-        const tui_histories = try GetMessages(allocator, db, session_id);
+
+        // Fetch existing messages from DB
+        const tui_histories = try session_helpers.get_messages(allocator, db, session_id);
         for (tui_histories) |hist| {
-            const agent_msgs = try TransformLLMHistory.TransformLLMHistoryToAgentMessage(allocator, hist);
+            const agent_msgs = try TransformLLMHistory.transform_llm_history_to_agent_message(allocator, hist);
             for (agent_msgs) |msg| {
                 try messages.append(allocator, msg);
             }
@@ -240,7 +416,7 @@ fn runSubAgent(
 
         // Save assistant response to DB
         const assistant_tool_calls = if (response.tool_calls) |tcs| tcs else null;
-        _ = try SaveMessage(allocator, db, .{
+        _ = try save_message(allocator, db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -264,32 +440,6 @@ fn runSubAgent(
             .is_output = false,
         });
 
-        // Send SSE event for assistant response
-        {
-            const latestMessage = try GetMessagesLatest(allocator, db, session_id);
-            try onEventSendNew(allocator, .{
-                .session_id = latestMessage.?.session_id,
-                .model = latestMessage.?.model,
-                .cwd = cwd,
-                .content = latestMessage.?.response_content,
-                .reasoning_content = latestMessage.?.reasoning_content,
-                .role = latestMessage.?.role,
-                .finish_reason = latestMessage.?.finish_reason,
-                .tool_calls = null,
-                .tool_call_id = latestMessage.?.id,
-                .tool_name = latestMessage.?.tool_name,
-                .agent_name = agent_name,
-                .session_name = latestMessage.?.session_name,
-                .loop_index = latestMessage.?.loop_index,
-                .temperature = agent_temperature,
-                .is_thinking = is_thinking,
-                .is_input = true,
-                .is_output = false,
-                .parent_session_id = null,
-                .parent_id = null,
-            });
-        }
-
         // Check finish_reason
         if (response.finish_reason) |fr| {
             if (fr == .stop) {
@@ -299,109 +449,40 @@ fn runSubAgent(
                 }
                 return try allocator.dupe(u8, "(empty response)");
             } else if (fr == .tool_calls) {
-                // Process tool calls
-                tool_call_count += 1;
-
+                // Process tool calls using dispatch table
                 if (response.tool_calls) |tcs| {
                     for (tcs) |tc| {
                         logger.infoFmt("[SUB_AGENT] Tool: '{s}'", .{tc.function.name}) catch {};
 
-                        // Execute basic tools inline (no spawn_sub_agent or set_agent_properties)
-                        var tool_result: []const u8 = undefined;
+                        const tool_result = executeSubAgentTool(allocator, tc, db, session_id) catch |err| blk: {
+                            const msg = try std.fmt.allocPrint(allocator, "ERROR: {s} failed: {s}", .{
+                                tc.function.name,
+                                @errorName(err),
+                            });
+                            break :blk SubAgentToolResult{ .output = msg };
+                        };
 
-                        if (std.mem.eql(u8, tc.function.name, "bash")) {
-                            tool_result = handle_bash_tool.runWithContext(allocator, tc, db, session_id) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: bash failed: {s}", .{@errorName(err)});
-                        } else if (std.mem.eql(u8, tc.function.name, "read_file")) {
-                            tool_result = handle_read_file_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: read_file failed: {s}", .{@errorName(err)});
-                        } else if (std.mem.eql(u8, tc.function.name, "search")) {
-                            tool_result = handle_search_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: search failed: {s}", .{@errorName(err)});
-                        } else if (std.mem.eql(u8, tc.function.name, "text_replace")) {
-                            tool_result = handle_text_replace_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: text_replace failed: {s}", .{@errorName(err)});
-                        } else if (std.mem.eql(u8, tc.function.name, "write_file")) {
-                            tool_result = handle_write_file_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: write_file failed: {s}", .{@errorName(err)});
-                        } else if (std.mem.eql(u8, tc.function.name, "list_skills")) {
-                            tool_result = handle_list_skills_tool.run(allocator);
-                        } else if (std.mem.eql(u8, tc.function.name, "get_skill")) {
-                            tool_result = handle_get_skill_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: get_skill failed: {s}", .{@errorName(err)});
-                            if (std.mem.indexOf(u8, tool_result, "<loaded>true</loaded>") != null) {
-                                if (std.mem.indexOf(u8, tool_result, "<skill_name>")) |name_start| {
-                                    const name_begin = name_start + "<skill_name>".len;
-                                    if (std.mem.indexOf(u8, tool_result[name_begin..], "</skill_name>")) |name_end| {
-                                        const skill_name = tool_result[name_begin .. name_begin + name_end];
-                                        // Parse content from result
-                                        if (std.mem.indexOf(u8, tool_result, "<content>")) |content_start| {
-                                            const content_begin = content_start + "<content>".len;
-                                            if (std.mem.indexOf(u8, tool_result[content_begin..], "</content>")) |content_end| {
-                                                const content = tool_result[content_begin .. content_begin + content_end];
-                                                // Save to database
-                                                SaveSkill(allocator, db, logger, session_id, skill_name, content) catch |err| {
-                                                    const err_name = @errorName(err);
-                                                    logger.errFmt("Error saving skill to database: {s}", .{err_name}) catch {};
-                                                };
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else if (std.mem.eql(u8, tc.function.name, "remove_skill")) {
-                            tool_result = handle_remove_skill_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: remove_skill failed: {s}", .{@errorName(err)});
-                        } else if (std.mem.eql(u8, tc.function.name, "list_agents")) {
-                            tool_result = handle_list_agents_tool.run(allocator) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: list_agents failed: {s}", .{@errorName(err)});
-                        } else if (std.mem.eql(u8, tc.function.name, "get_agent")) {
-                            tool_result = handle_get_agent_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: get_agent failed: {s}", .{@errorName(err)});
-                            // Parse and save agent if loaded successfully
-                            if (std.mem.indexOf(u8, tool_result, "<loaded>true</loaded>") != null) {
-                                if (std.mem.indexOf(u8, tool_result, "<agent_name>")) |name_start| {
-                                    const name_begin = name_start + "<agent_name>".len;
-                                    if (std.mem.indexOf(u8, tool_result[name_begin..], "</agent_name>")) |name_end| {
-                                        const loaded_agent_name = tool_result[name_begin .. name_begin + name_end];
-                                        SaveAgent(allocator, db, logger, session_id, loaded_agent_name) catch |err| {
-                                            logger.errFmt("Error saving agent to database: {s}", .{@errorName(err)}) catch {};
-                                        };
-                                    }
-                                }
-                            }
-                        } else if (std.mem.eql(u8, tc.function.name, "lsp_definition")) {
-                            tool_result = handle_lsp_definition_tool.run(allocator, tc) catch |err|
-                                try std.fmt.allocPrint(allocator, "ERROR: lsp_definition failed: {s}", .{@errorName(err)});
+                        // Auto-save skill if loaded
+                        if (tool_result.skill_save) |info| {
+                            SaveSkill(allocator, db, logger, session_id, info.name, info.content) catch |err| {
+                                const err_name = @errorName(err);
+                                logger.errFmt("Error saving skill to database: {s}", .{err_name}) catch {};
+                            };
                         }
-                        // TODO: Restore these when lsp.zig is complete with all tools
-                        // else if (std.mem.eql(u8, tc.function.name, "lsp_references")) {
-                        //     tool_result = handle_lsp_references_tool.run(allocator, tc) catch |err|
-                        //         try std.fmt.allocPrint(allocator, "ERROR: lsp_references failed: {s}", .{@errorName(err)});
-                        //     SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_references", .tool_result = tool_result });
-                        // } else if (std.mem.eql(u8, tc.function.name, "lsp_workspace_symbol")) {
-                        //     tool_result = handle_lsp_workspace_symbol_tool.run(allocator, tc) catch |err|
-                        //         try std.fmt.allocPrint(allocator, "ERROR: lsp_workspace_symbol failed: {s}", .{@errorName(err)});
-                        //     SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_workspace_symbol", .tool_result = tool_result });
-                        // } else if (std.mem.eql(u8, tc.function.name, "lsp_document_symbol")) {
-                        //     tool_result = handle_lsp_document_symbol_tool.run(allocator, tc) catch |err|
-                        //         try std.fmt.allocPrint(allocator, "ERROR: lsp_document_symbol failed: {s}", .{@errorName(err)});
-                        //     SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_document_symbol", .tool_result = tool_result });
-                        // } else if (std.mem.eql(u8, tc.function.name, "lsp_hover")) {
-                        //     tool_result = handle_lsp_hover_tool.run(allocator, tc) catch |err|
-                        //         try std.fmt.allocPrint(allocator, "ERROR: lsp_hover failed: {s}", .{@errorName(err)});
-                        //     SendToolResult(allocator, parent_session_id, logger, .tool_result, .{ .tool_call_id = tc.id, .tool_name = "lsp_hover", .tool_result = tool_result });
-                        // }
-                        else {
-                            tool_result = try std.fmt.allocPrint(allocator, "ERROR: Unknown tool '{s}'", .{tc.function.name});
+
+                        // Auto-save agent if loaded
+                        if (tool_result.agent_save) |info| {
+                            SaveAgent(allocator, db, logger, session_id, info.name) catch |err| {
+                                logger.errFmt("Error saving agent to database: {s}", .{@errorName(err)}) catch {};
+                            };
                         }
 
                         // Save tool result to DB
-                        _ = try SaveMessage(allocator, db, .{
+                        _ = try save_message(allocator, db, .{
                             .session_id = session_id,
                             .model = model,
                             .cwd = cwd,
-                            .content = tool_result,
+                            .content = tool_result.output,
                             .reasoning_content = null,
                             .role = agent.Role.tool.toStr(),
                             .finish_reason = agent.FinishReason.tool.toStr(),
@@ -422,32 +503,6 @@ fn runSubAgent(
                             .tool_name = tc.function.name,
                         });
 
-                        // Send SSE event for tool result
-                        {
-                            const latestMessage = try GetMessagesLatest(allocator, db, session_id);
-                            try onEventSendNew(allocator, .{
-                                .session_id = latestMessage.?.parent_session_id,
-                                .model = latestMessage.?.model,
-                                .cwd = cwd,
-                                .content = latestMessage.?.response_content,
-                                .reasoning_content = latestMessage.?.reasoning_content,
-                                .role = latestMessage.?.role,
-                                .finish_reason = latestMessage.?.finish_reason,
-                                .tool_calls = null,
-                                .tool_call_id = latestMessage.?.id,
-                                .tool_name = latestMessage.?.tool_name,
-                                .agent_name = agent_name,
-                                .session_name = latestMessage.?.session_name,
-                                .loop_index = latestMessage.?.loop_index,
-                                .temperature = agent_temperature,
-                                .is_thinking = is_thinking,
-                                .is_input = false,
-                                .is_output = true,
-                                .parent_session_id = null,
-                                .parent_id = null,
-                            });
-                        }
-
                         // Add assistant message with tool_calls
                         const tc_slice = try allocator.alloc(agent.ToolCall, 1);
                         tc_slice[0] = .{
@@ -466,7 +521,7 @@ fn runSubAgent(
                         // Add tool result message
                         try messages.append(allocator, .{
                             .role = .tool,
-                            .content = tool_result,
+                            .content = tool_result.output,
                             .tool_call_id = try allocator.dupe(u8, tc.id),
                         });
                     }
@@ -492,6 +547,84 @@ fn runSubAgent(
     return try parentAllocator.dupe(u8, "(max tool calls reached)");
 }
 
+// ============================================================================
+// PARALLEL SUB-AGENT EXECUTION
+// ============================================================================
+
+/// Thread-safe result storage for parallel agents
+const ThreadResult = struct {
+    result: ?[]const u8 = null,
+    err_msg: ?[]const u8 = null,
+    completed: bool = false,
+    mutex: std.Thread.Mutex = .{},
+};
+
+/// Named thread entry point for running a single sub-agent
+fn runSubAgentThread(
+    idx: usize,
+    name: []const u8,
+    instruction: []const u8,
+    tools: ?[]const []const u8,
+    alloc: std.mem.Allocator,
+    log: *logger_mod.Logger,
+    database: *sqlite.SqliteBackend,
+    workdir: []const u8,
+    llm_api_key: []const u8,
+    llm_model: []const u8,
+    url: []const u8,
+    cfg: *const config_mod.LlmConfig,
+    loop_idx: u32,
+    temp: f32,
+    think: bool,
+    agent_nm: []const u8,
+    parent_sess: []const u8,
+    parent_id: []const u8,
+    thread_res: []ThreadResult,
+) void {
+    _ = name;
+    // Each thread gets its own arena allocator to prevent memory corruption
+    // when multiple sub-agents run in parallel
+    var thread_arena = std.heap.ArenaAllocator.init(alloc);
+    defer thread_arena.deinit();
+    const thread_alloc = thread_arena.allocator();
+
+    const sessionId = std.fmt.allocPrint(thread_alloc, "{}", .{std.time.nanoTimestamp()}) catch |err| {
+        log.errFmt("spawn_sub_agent[{}]: failed to generate sessionId: {}", .{ idx, err }) catch {};
+        return;
+    };
+
+    const run_result = runSubAgent(
+        thread_alloc,
+        log,
+        database,
+        sessionId,
+        workdir,
+        instruction,
+        llm_api_key,
+        llm_model,
+        url,
+        cfg,
+        tools,
+        loop_idx,
+        temp,
+        think,
+        agent_nm,
+        parent_sess,
+        parent_id,
+    );
+
+    // Store result or error in thread-safe manner
+    thread_res[idx].mutex.lock();
+    defer thread_res[idx].mutex.unlock();
+    thread_res[idx].completed = true;
+    if (run_result) |res| {
+        // Duplicate to shared allocator since thread arena will be freed
+        thread_res[idx].result = alloc.dupe(u8, res) catch null;
+    } else |err| {
+        thread_res[idx].err_msg = alloc.dupe(u8, @errorName(err)) catch null;
+    }
+}
+
 /// Parse JSON input and run spawn_sub_agent handler
 pub fn run(
     allocator: std.mem.Allocator,
@@ -509,123 +642,34 @@ pub fn run(
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
 ) ![]u8 {
-    // Parse the JSON input from function.arguments
-    logger.infoFmt("spawn_sub_agent: parsing JSON input", .{}) catch {};
-    logger.debugFmt("spawn_sub_agent: JSON input: {s}", .{tool_call.function.arguments}) catch {};
     const parsed = try spawn_sub_agent_tool.parseSubAgents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
-    // defer parsed.deinit(allocator);
     _ = _session_name; // unused parameter
 
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
 
     // Fetch current agent from DB (before running sub-agents)
-    const current_agent_state = try get_current_agent_by_session_id.run(
+    const current_agent_state = try getCurrentAgentBySessionId(
         allocator,
         db,
         session_id,
     );
     const current_agent = current_agent_state.agent;
 
-    // Run each sub-agent and collect results
-    var results: std.ArrayList([]const u8) = .empty;
-    // defer {
-    //     for (results.items) |r| allocator.free(r);
-    //     results.deinit(allocator);
-    // }
-
     // Run all sub-agents in parallel using threads
     const num_agents = parsed.sub_agents.len;
 
     // Allocate result slots for each sub-agent (thread-safe result storage)
-    const ThreadResult = struct {
-        result: ?[]const u8 = null,
-        err_msg: ?[]const u8 = null,
-        completed: bool = false,
-        mutex: std.Thread.Mutex = .{},
-    };
-
-    // Use thread-safe result storage
     const thread_results = try allocator.alloc(ThreadResult, num_agents);
     @memset(thread_results, .{});
 
     // Spawn a thread for each sub-agent
     for (parsed.sub_agents, 0..) |sub_agent, index| {
-        logger.infoFmt("spawn_sub_agent: spawning parallel agent '{s}' (index {})", .{ sub_agent.name, index }) catch {};
-
         // Create a local copy of the sub_agent data for the thread
         const sub_agent_name = try allocator.dupe(u8, sub_agent.name);
         const sub_agent_instruction = try allocator.dupe(u8, sub_agent.instruction);
         const sub_agent_tools_copy = if (sub_agent.tools) |tools| try allocator.dupe([]const u8, tools) else null;
 
-        const thread = try std.Thread.spawn(.{}, struct {
-            fn run(
-                idx: usize,
-                name: []const u8,
-                instruction: []const u8,
-                tools: ?[]const []const u8,
-                alloc: std.mem.Allocator,
-                log: *logger_mod.Logger,
-                database: *sqlite.SqliteBackend,
-                workdir: []const u8,
-                llm_api_key: []const u8,
-                llm_model: []const u8,
-                url: []const u8,
-                cfg: *const config_mod.LlmConfig,
-                loop_idx: u32,
-                temp: f32,
-                think: bool,
-                agent_nm: []const u8,
-                parent_sess: []const u8,
-                parent_id: []const u8,
-                thread_res: []ThreadResult,
-            ) void {
-                // Each thread gets its own arena allocator to prevent memory corruption
-                // when multiple sub-agents run in parallel
-                var thread_arena = std.heap.ArenaAllocator.init(alloc);
-                defer thread_arena.deinit();
-                const thread_alloc = thread_arena.allocator();
-
-                log.infoFmt("spawn_sub_agent[{}]: starting agent '{s}'", .{ idx, name }) catch {};
-
-                const sessionId = std.fmt.allocPrint(thread_alloc, "{}", .{std.time.nanoTimestamp()}) catch |err| {
-                    log.errFmt("spawn_sub_agent[{}]: failed to generate sessionId: {}", .{ idx, err }) catch {};
-                    return;
-                };
-
-                const run_result = runSubAgent(
-                    thread_alloc,
-                    log,
-                    database,
-                    sessionId,
-                    workdir,
-                    instruction,
-                    llm_api_key,
-                    llm_model,
-                    url,
-                    cfg,
-                    tools,
-                    loop_idx,
-                    temp,
-                    think,
-                    agent_nm,
-                    parent_sess,
-                    parent_id,
-                );
-
-                // Store result or error in thread-safe manner
-                thread_res[idx].mutex.lock();
-                defer thread_res[idx].mutex.unlock();
-                thread_res[idx].completed = true;
-                if (run_result) |res| {
-                    // Duplicate to shared allocator since thread arena will be freed
-                    thread_res[idx].result = alloc.dupe(u8, res) catch null;
-                } else |err| {
-                    thread_res[idx].err_msg = alloc.dupe(u8, @errorName(err)) catch null;
-                }
-
-                log.infoFmt("spawn_sub_agent[{}]: agent '{s}' completed", .{ idx, name }) catch {};
-            }
-        }.run, .{
+        const thread = try std.Thread.spawn(.{}, runSubAgentThread, .{
             index,
             sub_agent_name,
             sub_agent_instruction,
@@ -670,24 +714,23 @@ pub fn run(
     }
 
     // Collect results from all agents
-    for (thread_results, 0..) |*r, i| {
-        const sub_agent = parsed.sub_agents[i];
+    var results = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (results.items) |r| allocator.free(r);
+        results.deinit(allocator);
+    }
+
+    for (thread_results) |*r| {
         r.mutex.lock();
         const result = r.result;
         const err_msg = r.err_msg;
         r.mutex.unlock();
 
         if (err_msg) |em| {
-            logger.errFmt("spawn_sub_agent: agent '{s}' failed: {s}", .{ sub_agent.name, em }) catch {};
-            // CRITICAL FIX: Duplicate the string before thread_results is freed
-            // Without this, the string would be freed below and we'd have a use-after-free
             try results.append(allocator, try allocator.dupe(u8, em));
         } else if (result) |res| {
-            // CRITICAL FIX: Duplicate the string before thread_results is freed
-            // Without this, the string would be freed below and we'd have a use-after-free
             try results.append(allocator, try allocator.dupe(u8, res));
         } else {
-            // Shouldn't happen but handle gracefully
             try results.append(allocator, "ERROR: unknown result");
         }
     }
@@ -699,8 +742,10 @@ pub fn run(
     }
     allocator.free(thread_results);
 
+    // Format combined results
     var combined_result = std.ArrayList(u8).empty;
-    var w = combined_result.writer(allocator);
+    errdefer combined_result.deinit(allocator);
+    const w = combined_result.writer(allocator);
 
     for (parsed.sub_agents, 0..) |sub_agent, i| {
         try w.print("=== {s} ===\n", .{sub_agent.name});
@@ -710,39 +755,7 @@ pub fn run(
         try w.writeByte('\n');
     }
 
-    const result_msg = try combined_result.toOwnedSlice(allocator);
-
-    const copy_result_msg = try allocator.dupe(u8, result_msg);
-
-    // CRITICAL FIX: Duplicate tool_call.id from arena to persistent allocator
-    // The tool_call.id was allocated from the workflow's arena which gets reset
-    // between loop iterations, causing garbage in the result
-    // const tool_call_id_dup = try allocator.dupe(u8, tool_call.id);
-
-    // Save to DB
-    // _ = try SaveMessage(allocator, db, .{
-    //     .session_id = session_id,
-    //     .model = model,
-    //     .cwd = cwd,
-    //     .content = copy_result_msg,
-    //     .reasoning_content = null,
-    //     .role = "tool",
-    //     .finish_reason = "tool",
-    //     .tool_calls = null,
-    //     .tool_call_id = tool_call_id_dup,
-    //     .agent_name = current_agent,
-    //     .session_name = session_name,
-    //     .loop_index = loop_counter,
-    //     .temperature = agent_temperature,
-    //     .is_thinking = is_thinking,
-    //     .prompt_tokens = 0,
-    //     .completion_tokens = 0,
-    //     .total_tokens = 0,
-    // });
-    //
-    // SendToolResult(allocator, session_id, logger, .tool_result, .{ .tool_call_id = tool_call_id_dup, .tool_name = "spawn_sub_agent", .tool_result = copy_result_msg });
-
-    return copy_result_msg;
+    return try combined_result.toOwnedSlice(allocator);
 }
 
 test {
