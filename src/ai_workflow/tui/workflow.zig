@@ -50,10 +50,10 @@ const BuildDynamicAgentContent = @import("build_dynamic_agent_for_agent_prompt.z
 const BuildBackgroundProcessContent = @import("build_background_process_for_agent_prompt.zig").BuildBackgroundProcessPrompt;
 const save_skill_mod = @import("save_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
-const config_mod = @import("../../modules/config/config.zig");
+const config_mod = root_mod.config;
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig").handle_tool;
-const SpawnSubAgentTool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
+const SpawnSubAgentTool = root_mod.agents;
 const all_agent_tools = @import("all_agent_tools.zig").all_agent_tools;
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {

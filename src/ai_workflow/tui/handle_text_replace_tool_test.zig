@@ -46,9 +46,8 @@ test "handle_text_replace_tool - empty strings" {
 test "handle_text_replace_tool - special characters in content" {
     const allocator = testing.allocator;
 
-    const special_json =
-        \\{"path": "/path/to/file.zig", "old_str": "const x = \\\"hello\\\";", "new_str": "const y = 'world';"}
-    ;
+    // Note: JSON strings need \" to represent a quote character
+    const special_json = "{\"path\": \"/path/to/file.zig\", \"old_str\": \"const x = \\\"hello\\\";\", \"new_str\": \"const y = 'world';\"}";
 
     const parsed = try std.json.parseFromSlice(
         struct { path: []const u8, old_str: []const u8, new_str: []const u8 },

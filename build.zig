@@ -105,9 +105,11 @@ pub fn build(b: *std.Build) void {
 
     {
         // Use a simple bash script to find and run all test files
-        const run_all_cmd = b.addSystemCommand(&.{ "bash", "-c",
-            "for f in $(find src -name '*_test.zig' -type f); do echo \"Running: $f\"; zig test \"$f\" || exit 1; done"
-        });
+        // Each test file tests its module in isolation
+        const test_cmd =
+            \\for f in $(find src -name '*_test.zig' -type f | sort); do echo "Running: $f"; zig test "$f" -I /usr/include || exit 1; done
+        ;
+        const run_all_cmd = b.addSystemCommand(&.{ "bash", "-c", test_cmd });
         run_all_cmd.setCwd(b.path("."));
         test_step.dependOn(&run_all_cmd.step);
     }

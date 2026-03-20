@@ -1,6 +1,6 @@
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
-const sqlite = tree1_mod.sqlite;
+const root_mod = @import("nalarcore");
+const sqlite = root_mod.sqlite;
 
 pub const ProcessInfo = struct {
     session_id: []const u8,
@@ -17,10 +17,10 @@ const SqliteBackend = sqlite.SqliteBackend;
 pub fn save(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []const u8, pid: u32, command: []const u8, log_path: []const u8, started_at: i64) !void {
     const pid_str = try std.fmt.allocPrint(allocator, "{}", .{pid});
     defer allocator.free(pid_str);
-    
+
     const started_at_str = try std.fmt.allocPrint(allocator, "{}", .{started_at});
     defer allocator.free(started_at_str);
-    
+
     try db.exec(allocator,
         \\INSERT OR REPLACE INTO session_background_process (session_id, pid, command, log_path, started_at, status)
         \\VALUES (?, ?, ?, ?, ?, 'running')
@@ -31,7 +31,7 @@ pub fn save(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []cons
 pub fn getBySession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []const u8) ![]ProcessInfo {
     var rows = try db.query(allocator, "SELECT pid, command, log_path, started_at, status FROM session_background_process WHERE session_id = ?", &.{session_id});
     defer rows.deinit();
-    
+
     var processes = std.ArrayList(ProcessInfo).empty;
     errdefer {
         for (processes.items) |p| {
@@ -41,17 +41,17 @@ pub fn getBySession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id
         }
         processes.deinit(allocator);
     }
-    
+
     while (try rows.next()) |row| {
         const pid_str = row.values[0];
         const command = row.values[1];
         const log_path = row.values[2];
         const started_at_str = row.values[3];
         const status = row.values[4];
-        
+
         const pid = try std.fmt.parseInt(u32, pid_str, 10);
         const started_at = try std.fmt.parseInt(i64, started_at_str, 10);
-        
+
         try processes.append(allocator, .{
             .session_id = session_id,
             .pid = pid,
@@ -61,7 +61,7 @@ pub fn getBySession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id
             .status = try allocator.dupe(u8, status),
         });
     }
-    
+
     return processes.toOwnedSlice(allocator);
 }
 
@@ -69,7 +69,7 @@ pub fn getBySession(db: *SqliteBackend, allocator: std.mem.Allocator, session_id
 pub fn updateStatus(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []const u8, pid: u32, new_status: []const u8) !void {
     const pid_str = try std.fmt.allocPrint(allocator, "{}", .{pid});
     defer allocator.free(pid_str);
-    
+
     try db.exec(allocator,
         \\UPDATE session_background_process SET status = ? WHERE session_id = ? AND pid = ?
     , &.{ new_status, session_id, pid_str });
@@ -79,7 +79,7 @@ pub fn updateStatus(db: *SqliteBackend, allocator: std.mem.Allocator, session_id
 pub fn delete(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []const u8, pid: u32) !void {
     const pid_str = try std.fmt.allocPrint(allocator, "{}", .{pid});
     defer allocator.free(pid_str);
-    
+
     try db.exec(allocator, "DELETE FROM session_background_process WHERE session_id = ? AND pid = ?", &.{ session_id, pid_str });
 }
 
@@ -87,7 +87,7 @@ pub fn delete(db: *SqliteBackend, allocator: std.mem.Allocator, session_id: []co
 pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]ProcessInfo {
     var rows = try db.query(allocator, "SELECT session_id, pid, command, log_path, started_at, status FROM session_background_process WHERE status = 'running'", &[_][]const u8{});
     defer rows.deinit();
-    
+
     var processes = std.ArrayList(ProcessInfo).empty;
     errdefer {
         for (processes.items) |p| {
@@ -98,7 +98,7 @@ pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]ProcessIn
         }
         processes.deinit(allocator);
     }
-    
+
     while (try rows.next()) |row| {
         const session_id = row.values[0];
         const pid_str = row.values[1];
@@ -106,10 +106,10 @@ pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]ProcessIn
         const log_path = row.values[3];
         const started_at_str = row.values[4];
         const status = row.values[5];
-        
+
         const pid = try std.fmt.parseInt(u32, pid_str, 10);
         const started_at = try std.fmt.parseInt(i64, started_at_str, 10);
-        
+
         try processes.append(allocator, .{
             .session_id = try allocator.dupe(u8, session_id),
             .pid = pid,
@@ -119,30 +119,28 @@ pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]ProcessIn
             .status = try allocator.dupe(u8, status),
         });
     }
-    
+
     return processes.toOwnedSlice(allocator);
 }
 
 /// Check if a process with the given PID is still running
 /// Returns true if process exists, false otherwise
 pub fn isProcessRunning(pid: u32) bool {
-    // kill(pid, 0) checks if process exists without sending a signal
-    // Returns 0 if process exists, -1 if it doesn't (errno ESRCH)
-    const result = std.posix.kill(@intCast(pid), 0);
-    return result == 0;
+    // kill(pid, 0) returns error if process doesn't exist
+    std.posix.kill(@intCast(pid), 0) catch return false;
+    return true;
 }
 
 /// Kill a background process by PID
 /// Returns true if killed successfully, false if process doesn't exist or error
 pub fn killProcess(pid: u32) bool {
-    // First try SIGTERM (15)
-    const term_result = std.posix.kill(@intCast(pid), std.posix.SIGTERM);
-    if (term_result == 0) {
+    // Try SIGTERM first (15)
+    std.posix.kill(@intCast(pid), 15) catch {
+        // If SIGTERM fails, try SIGKILL (9)
+        std.posix.kill(@intCast(pid), 9) catch return false;
         return true;
-    }
-    // If SIGTERM fails (process doesn't exist), try SIGKILL
-    const kill_result = std.posix.kill(@intCast(pid), std.posix.SIGKILL);
-    return kill_result == 0;
+    };
+    return true;
 }
 
 /// Kill all background processes for a session
@@ -157,7 +155,7 @@ pub fn killAllForSession(db: *SqliteBackend, allocator: std.mem.Allocator, sessi
         }
         allocator.free(processes);
     }
-    
+
     for (processes) |p| {
         if (killProcess(p.pid)) {
             // Update status to killed
@@ -170,7 +168,7 @@ pub fn killAllForSession(db: *SqliteBackend, allocator: std.mem.Allocator, sessi
 /// Returns the number of processes that changed status
 pub fn pollAndUpdateStatus(db: *SqliteBackend, allocator: std.mem.Allocator) !u32 {
     var changed: u32 = 0;
-    
+
     const processes = try getRunning(db, allocator);
     defer {
         for (processes) |p| {
@@ -181,10 +179,10 @@ pub fn pollAndUpdateStatus(db: *SqliteBackend, allocator: std.mem.Allocator) !u3
         }
         allocator.free(processes);
     }
-    
+
     for (processes) |p| {
         const is_running = isProcessRunning(p.pid);
-        
+
         if (!is_running) {
             // Process has exited - check the log file for exit status or assume completed
             // For now, we'll mark as 'completed' since we can't easily get exit code
@@ -192,7 +190,7 @@ pub fn pollAndUpdateStatus(db: *SqliteBackend, allocator: std.mem.Allocator) !u3
             changed += 1;
         }
     }
-    
+
     return changed;
 }
 

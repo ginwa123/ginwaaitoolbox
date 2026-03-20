@@ -212,14 +212,11 @@ test "lspDocumentSymbolToString formats found symbols" {
         .children = null,
     };
 
-    const output = lsp_types.LspDocumentSymbolOutput{
+    var output = lsp_types.LspDocumentSymbolOutput{
         .symbols = symbols,
         .found = true,
     };
-    defer allocator.free(output.symbols[0].name);
-    defer allocator.free(output.symbols[0].detail.?);
-    defer allocator.free(output.symbols[1].name);
-    defer allocator.free(output.symbols);
+    defer output.deinit(allocator);
 
     const result = try lsp_document_symbol.lspDocumentSymbolToString(allocator, output);
     defer allocator.free(result);

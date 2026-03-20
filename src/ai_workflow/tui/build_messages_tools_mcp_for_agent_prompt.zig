@@ -1,11 +1,12 @@
 const std = @import("std");
 const json = std.json;
-const AgentTool = @import("nalarcore").tool_models.AgentTool;
-const AgentToolFunction = @import("nalarcore").tool_models.AgentToolFunction;
-const ToolParameters = @import("nalarcore").tool_models.ToolParameters;
-const ToolProperty = @import("nalarcore").tool_models.ToolProperty;
-const config_mod = @import("../../modules/config/config.zig");
-const http_client = @import("../../modules/http/http_client.zig");
+const root_mod = @import("nalarcore");
+const AgentTool = root_mod.tool_models.AgentTool;
+const AgentToolFunction = root_mod.tool_models.AgentToolFunction;
+const ToolParameters = root_mod.tool_models.ToolParameters;
+const ToolProperty = root_mod.tool_models.ToolProperty;
+const config_mod = root_mod.config;
+const http_client = root_mod.http_client;
 
 /// Error types for MCP tool fetching
 pub const McpToolError = error{

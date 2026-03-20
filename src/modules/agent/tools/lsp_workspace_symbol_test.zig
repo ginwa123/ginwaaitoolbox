@@ -42,7 +42,7 @@ test "LspWorkspaceSymbol can have container_name" {
     const allocator = std.testing.allocator;
 
     const sym = lsp_types.LspWorkspaceSymbol{
-        .name = "myMethod",
+        .name = try allocator.dupe(u8, "myMethod"),
         .kind = 6, // Method
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/class.zig"),
         .line = 25,
@@ -71,7 +71,7 @@ test "LspWorkspaceSymbolOutput can represent found symbols" {
         .container_name = null,
     };
     symbols[1] = lsp_types.LspWorkspaceSymbol{
-        .name = "helper",
+        .name = try allocator.dupe(u8, "helper"),
         .kind = 12, // Function
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/utils.zig"),
         .line = 5,
@@ -145,7 +145,7 @@ test "lspWorkspaceSymbolToString formats found symbols" {
         .container_name = null,
     };
     symbols[1] = lsp_types.LspWorkspaceSymbol{
-        .name = "MyClass",
+        .name = try allocator.dupe(u8, "MyClass"),
         .kind = 5, // Class
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/class.zig"),
         .line = 5,
@@ -157,12 +157,7 @@ test "lspWorkspaceSymbolToString formats found symbols" {
         .symbols = symbols,
         .found = true,
     };
-    defer allocator.free(output.symbols[0].name);
-    defer allocator.free(output.symbols[0].file_path);
-    defer allocator.free(output.symbols[1].name);
-    defer allocator.free(output.symbols[1].file_path);
-    defer allocator.free(output.symbols[1].container_name.?);
-    defer allocator.free(output.symbols);
+    defer output.deinit(allocator);
 
     const result = try lsp_workspace_symbol.lspWorkspaceSymbolToString(allocator, output);
     defer allocator.free(result);

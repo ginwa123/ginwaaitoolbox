@@ -4,8 +4,8 @@ const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const save_message = @import("save_message.zig");
-const http_client = @import("../../modules/http/http_client.zig");
-const config_mod = @import("../../modules/config/config.zig");
+const http_client = tree1_mod.http_client;
+const config_mod = tree1_mod.config;
 
 /// Handle an MCP tool call by forwarding it to the MCP server
 pub fn run(
