@@ -202,7 +202,9 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
         var loopCounter: u32 = 0;
-        const base_tools: []const tool_models.AgentTool = all_agent_tools;
+        const base_base_tools: []const tool_models.AgentTool = all_agent_tools;
+        const base_tools = try parent_allocator.dupe(tool_models.AgentTool, base_base_tools);
+        defer parent_allocator.free(base_tools);
 
         while (true) {
             if (cancellation_registry.getGlobalRegistry()) |registry| {

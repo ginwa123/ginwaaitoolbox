@@ -135,7 +135,7 @@ pub fn getToolNames(allocator: std.mem.Allocator) ![]const []const u8 {
 fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
     const result = try handle_set_agent_properties.run(ctx.allocator, tool_call);
-    
+
     return ToolResult{
         .output = result.arguments,
         .temperature = result.temperature,
@@ -183,12 +183,12 @@ fn dispatchListSkills(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 fn dispatchGetSkill(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
     const result = try handle_get_skill_tool.run(ctx.allocator, tool_call);
-    
+
     var skill_save: ?SkillSaveInfo = null;
     if (parseSkillFromResult(result)) |info| {
         skill_save = SkillSaveInfo{ .name = info.name, .content = info.content };
     }
-    
+
     return ToolResult{
         .output = result,
         .skill_saved = skill_save,
@@ -232,12 +232,12 @@ fn dispatchListAgents(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 fn dispatchGetAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
     const result = try handle_get_agent_tool.run(ctx.allocator, tool_call);
-    
+
     var agent_save: ?AgentSaveInfo = null;
     if (parseAgentFromResult(result)) |name| {
         agent_save = AgentSaveInfo{ .name = name };
     }
-    
+
     return ToolResult{
         .output = result,
         .agent_saved = agent_save,
@@ -280,23 +280,23 @@ fn dispatchLspHover(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 
 fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content: []const u8 } {
     if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
-    
+
     const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
     const name_begin = name_start + "<skill_name>".len;
     const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
     const skill_name = result[name_begin..name_begin + name_end];
-    
+
     const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
     const content_begin = content_start + "<content>".len;
     const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
     const skill_content = result[content_begin..content_begin + content_end];
-    
+
     return .{ .name = skill_name, .content = skill_content };
 }
 
 fn parseAgentFromResult(result: []const u8) ?[]const u8 {
     if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
-    
+
     const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
     const name_begin = name_start + "<agent_name>".len;
     const name_end = std.mem.indexOf(u8, result[name_begin..], "</agent_name>") orelse return null;
@@ -339,17 +339,17 @@ pub fn handle_tool(
             logger.infoFmt("[HANDLE_TOOL] Skipping saving assistant message, no tools matched", .{}) catch {};
             return;
         }
-        
+
         // Build tool names list and save assistant message
         var toolNames = try std.ArrayList([]const u8).initCapacity(allocator, tc.len);
         defer toolNames.deinit(allocator);
         for (tc) |tc_| {
             _ = try toolNames.append(allocator, tc_.function.name);
         }
-        
+
         const current_agent_state = try get_current_agent_by_session_id(allocator, db, session_id);
         const current_agent_for_save = current_agent_state.agent;
-        
+
         _ = try save_message(allocator, db, .{
             .session_id = session_id,
             .model = model,
@@ -374,10 +374,10 @@ pub fn handle_tool(
             .parent_id = session_id,
             .parent_session_id = session_id,
         });
-        
+
         // Send SSE for assistant message
         try sendSSEForLatestMessage(allocator, db, session_id, cwd, current_agent_for_save, session_id, agent_temperature.*, isThinking.*, true, false);
-        
+
         // Build context for dispatch
         const ctx = ToolContext{
             .allocator = allocator,
@@ -392,13 +392,13 @@ pub fn handle_tool(
             .agent_temperature = agent_temperature,
             .is_thinking = isThinking,
         };
-        
+
         // Execute each tool call using dispatch
         for (tc) |tool_call| {
             var tool_result: []const u8 = undefined;
             var toolAgentTemp: f32 = agent_temperature.*;
             var toolIsThinking: bool = isThinking.*;
-            
+
             // Dispatch to the appropriate handler
             const exec_result = dispatchTool(ctx, tool_call) catch |err| {
                 tool_result = try std.fmt.allocPrint(allocator, "ERROR: {s} failed: {s}", .{
@@ -408,31 +408,31 @@ pub fn handle_tool(
                 try saveAndSendToolResult(allocator, db, session_id, model, cwd, session_name, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                 continue;
             };
-            
+
             tool_result = exec_result.output;
-            
+
             // Apply property changes from tool execution
             if (exec_result.temperature) |temp| toolAgentTemp = temp;
             if (exec_result.is_thinking) |think| toolIsThinking = think;
-            
+
             // Auto-save skill if loaded
             if (exec_result.skill_saved) |skill_info| {
                 SaveSkill(allocator, db, logger, session_id, skill_info.name, skill_info.content) catch |err| {
                     logger.errFmt("Failed to save skill '{s}': {s}", .{ skill_info.name, @errorName(err) }) catch {};
                 };
             }
-            
+
             // Auto-save agent if loaded
             if (exec_result.agent_saved) |agent_info| {
                 SaveAgent(allocator, db, logger, session_id, agent_info.name) catch |err| {
                     logger.errFmt("Failed to save agent '{s}': {s}", .{ agent_info.name, @errorName(err) }) catch {};
                 };
             }
-            
+
             try saveAndSendToolResult(allocator, db, session_id, model, cwd, session_name, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
         }
     }
-    
+
     logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{}) catch {};
 }
 
@@ -474,7 +474,7 @@ fn saveAndSendToolResult(
         .parent_id = session_id,
         .parent_session_id = session_id,
     });
-    
+
     try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, session_id, temperature, is_thinking, false, true);
 }
 

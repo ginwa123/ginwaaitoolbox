@@ -114,6 +114,19 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
 
+    // AI Workflow TUI tests step - using root.zig as test source to avoid module conflicts
+    const ai_workflow_tui_test_mod = b.addTest(.{
+        .root_module = mod,
+    });
+    ai_workflow_tui_test_mod.linkLibC();
+    ai_workflow_tui_test_mod.linkSystemLibrary("sqlite3");
+    ai_workflow_tui_test_mod.linkSystemLibrary("ssl");
+    ai_workflow_tui_test_mod.linkSystemLibrary("crypto");
+
+    const run_ai_workflow_tui_tests = b.addRunArtifact(ai_workflow_tui_test_mod);
+    const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
+    test_ai_workflow_tui_step.dependOn(&run_ai_workflow_tui_tests.step);
+
     // Platform-specific build steps
     const linux_step = b.step("install:linux", "Build for Linux x86_64");
     const linux_target = b.resolveTargetQuery(.{

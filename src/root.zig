@@ -106,3 +106,7 @@ pub const kerjabot_get_list_session = @import("ai_workflow/tui/get_list_session.
 pub const tui_check_session_exists = @import("ai_workflow/tui/check_session_exists.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 
+
+test {
+    _ = @import("ai_workflow/tui/test_runner.zig");
+}

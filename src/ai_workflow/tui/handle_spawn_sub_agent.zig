@@ -188,7 +188,7 @@ const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
 };
 
 /// Execute a tool by name, returning the result
-fn executeSubAgentTool(
+pub fn executeSubAgentTool(
     allocator: std.mem.Allocator,
     tc: agent.ToolCall,
     db: *sqlite.SqliteBackend,
@@ -232,7 +232,7 @@ fn executeSubAgentTool(
 // HELPER FUNCTIONS - Skill/Agent Parsing
 // ============================================================================
 
-fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content: []const u8 } {
+pub fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content: []const u8 } {
     if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
 
     const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
@@ -248,7 +248,7 @@ fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content:
     return .{ .name = skill_name, .content = skill_content };
 }
 
-fn parseAgentFromResult(result: []const u8) ?[]const u8 {
+pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
     if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
 
     const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
@@ -264,9 +264,8 @@ fn parseAgentFromResult(result: []const u8) ?[]const u8 {
 /// Get all sub-agent tools as a filtered list
 /// If allowed_tools is null, returns all sub-agent tools
 /// Always excludes spawn_sub_agent and set_agent_properties for security
-fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8) ![]const tool_models.AgentTool {
+pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8) ![]const tool_models.AgentTool {
     var result = std.ArrayList(tool_models.AgentTool).empty;
-    errdefer result.deinit(allocator);
 
     for (SUB_AGENT_TOOL_REGISTRY) |entry| {
         // If no filter specified, include all tools
@@ -287,9 +286,8 @@ fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const
 }
 
 /// Build a list of tool names from the allowed tools
-fn buildToolNamesList(allocator: std.mem.Allocator, tools: []const tool_models.AgentTool) ![]const []const u8 {
+pub fn buildToolNamesList(allocator: std.mem.Allocator, tools: []const tool_models.AgentTool) ![]const []const u8 {
     var names = std.ArrayList([]const u8).empty;
-    errdefer names.deinit(allocator);
     for (tools) |tool| {
         try names.append(allocator, tool.function.name);
     }
@@ -357,7 +355,6 @@ fn runSubAgent(
 
     // Get tools based on allowed_tools (null = all tools except restricted)
     const sub_agent_tools = try getAllowedTools(parentAllocator, allowed_tools);
-    defer parentAllocator.free(sub_agent_tools);
 
     var sub_agent = try agent.Agent.init(parentAllocator, logger);
 
@@ -368,10 +365,6 @@ fn runSubAgent(
 
     // Build tool names list from allowed tools
     const tool_names = try buildToolNamesList(parentAllocator, sub_agent_tools);
-    defer {
-        for (tool_names) |n| parentAllocator.free(n);
-        parentAllocator.free(tool_names);
-    }
 
     var last_response: ?agent.CallResponse = null;
 
@@ -715,10 +708,6 @@ pub fn run(
 
     // Collect results from all agents
     var results = std.ArrayList([]const u8).empty;
-    errdefer {
-        for (results.items) |r| allocator.free(r);
-        results.deinit(allocator);
-    }
 
     for (thread_results) |*r| {
         r.mutex.lock();
@@ -744,7 +733,6 @@ pub fn run(
 
     // Format combined results
     var combined_result = std.ArrayList(u8).empty;
-    errdefer combined_result.deinit(allocator);
     const w = combined_result.writer(allocator);
 
     for (parsed.sub_agents, 0..) |sub_agent, i| {
