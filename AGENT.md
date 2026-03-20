@@ -62,6 +62,9 @@ src/
 - HTTP routing with httpz
 - Server-Sent Events (SSE) streaming
 - Panic broadcasting to connected clients
+- **Session List API:** `GET /api/session` and `GET /api/kerjabot/sessions` with cursor pagination
+  - Query params: `limit` (default 20, max 100), `cursor`, `sort_by` (created_at/session_id/session_name/agent), `sort_order` (asc/desc)
+  - Response: `{sessions: [], total, next_cursor, has_more}`
 
 ### TUI (`src/apps/tui/`)
 - Terminal UI with raw mode
