@@ -357,6 +357,7 @@ fn runSubAgent(
 
     // Get tools based on allowed_tools (null = all tools except restricted)
     const sub_agent_tools = try getAllowedTools(parentAllocator, allowed_tools);
+    defer parentAllocator.free(sub_agent_tools);
 
     var sub_agent = try agent.Agent.init(parentAllocator, logger);
 
@@ -367,6 +368,10 @@ fn runSubAgent(
 
     // Build tool names list from allowed tools
     const tool_names = try buildToolNamesList(parentAllocator, sub_agent_tools);
+    defer {
+        for (tool_names) |n| parentAllocator.free(n);
+        parentAllocator.free(tool_names);
+    }
 
     var last_response: ?agent.CallResponse = null;
 
@@ -613,6 +618,7 @@ fn runSubAgentThread(
     defer thread_res[idx].mutex.unlock();
     thread_res[idx].completed = true;
     if (run_result) |res| {
+        // Duplicate to shared allocator since thread arena will be freed
         thread_res[idx].result = alloc.dupe(u8, res) catch null;
     } else |err| {
         thread_res[idx].err_msg = alloc.dupe(u8, @errorName(err)) catch null;
@@ -728,6 +734,13 @@ pub fn run(
             try results.append(allocator, "ERROR: unknown result");
         }
     }
+
+    // Free thread result slots
+    for (thread_results) |*r| {
+        if (r.result) |res| allocator.free(res);
+        if (r.err_msg) |err| allocator.free(err);
+    }
+    allocator.free(thread_results);
 
     // Format combined results
     var combined_result = std.ArrayList(u8).empty;

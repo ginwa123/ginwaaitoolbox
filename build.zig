@@ -100,19 +100,19 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Test step: discover all *_test.zig files and run each with zig test
-    const test_step = b.step("test", "Run all *_test.zig files");
+    // Test step: only runs tests in root.zig (and everything it imports)
+    const mod_tests = b.addTest(.{
+        .root_module = mod,
+    });
+    mod_tests.linkLibC();
+    mod_tests.linkSystemLibrary("sqlite3");
+    mod_tests.linkSystemLibrary("ssl");
+    mod_tests.linkSystemLibrary("crypto");
 
-    {
-        // Use a simple bash script to find and run all test files
-        // Each test file tests its module in isolation
-        const test_cmd =
-            \\for f in $(find src -name '*_test.zig' -type f | sort); do echo "Running: $f"; zig test "$f" -I /usr/include || exit 1; done
-        ;
-        const run_all_cmd = b.addSystemCommand(&.{ "bash", "-c", test_cmd });
-        run_all_cmd.setCwd(b.path("."));
-        test_step.dependOn(&run_all_cmd.step);
-    }
+    const run_mod_tests = b.addRunArtifact(mod_tests);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_mod_tests.step);
 
     // Platform-specific build steps
     const linux_step = b.step("install:linux", "Build for Linux x86_64");

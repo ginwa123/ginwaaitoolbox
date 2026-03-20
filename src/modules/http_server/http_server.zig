@@ -373,115 +373,20 @@ pub fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!
     res.body = "{\"error\":\"No session handler\"}";
 }
 
-/// Session list handler - returns list of sessions with cursor pagination
-/// Query params:
-///   - limit: number of sessions per page (default: 20, max: 100)
-///   - cursor: pagination cursor (created_at of last item from previous page)
-///   - sort_by: field to sort by (created_at, session_id, session_name, agent) (default: created_at)
-///   - sort_order: asc or desc (default: desc - latest first)
+/// Session list handler - returns list of sessions
 pub fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    res.content_type = .JSON;
-
+    _ = req;
     if (global_server) |server| {
-        if (server.db) |db| {
-            // Parse query params
-            const query = try req.query();
-
-            // Limit (default 20, max 100)
-            const limit_str = query.get("limit") orelse "20";
-            const limit = @min(std.fmt.parseInt(u32, limit_str, 10) catch 20, 100);
-
-            // Cursor for pagination
-            const cursor = query.get("cursor");
-
-            // Sort field (default: created_at)
-            const sort_by_str = query.get("sort_by") orelse "created_at";
-            const sort_field: kerjabot_get_list_session.SortField = if (std.mem.eql(u8, sort_by_str, "session_id"))
-                .session_id
-            else if (std.mem.eql(u8, sort_by_str, "session_name"))
-                .session_name
-            else if (std.mem.eql(u8, sort_by_str, "agent"))
-                .agent
-            else
-                .created_at;
-
-            // Sort order (default: desc - latest first)
-            const sort_order_str = query.get("sort_order") orelse "desc";
-            const sort_order: kerjabot_get_list_session.SortOrder = if (std.mem.eql(u8, sort_order_str, "asc"))
-                .asc
-            else
-                .desc;
-
-            // Query sessions from database
-            const result = kerjabot_get_list_session.getSessionList(
-                server.allocator,
-                db,
-                limit,
-                cursor,
-                sort_field,
-                sort_order,
-            ) catch {
-                res.status = 500;
-                res.body = "{\"error\":\"Database query failed\"}";
-                return;
-            };
-            defer {
-                for (result.sessions) |*sess| sess.deinit(server.allocator);
-                server.allocator.free(result.sessions);
-                if (result.next_cursor) |nc| server.allocator.free(nc);
-            }
-
-            // Build JSON response
-            var response_json = std.ArrayList(u8).empty;
-            errdefer response_json.deinit(server.allocator);
-            try response_json.appendSlice(server.allocator, "{\"sessions\":[");
-
-            for (result.sessions, 0..) |sess, i| {
-                if (i > 0) try response_json.appendSlice(server.allocator, ",");
-                try response_json.appendSlice(server.allocator,
-                    \\{"session_id":"\\
-                );
-                try response_json.appendSlice(server.allocator, sess.session_id);
-                try response_json.appendSlice(server.allocator,
-                    \\","session_dir":"\\
-                );
-                try response_json.appendSlice(server.allocator, sess.session_dir);
-                try response_json.appendSlice(server.allocator,
-                    \\","created_at":"\\
-                );
-                try response_json.appendSlice(server.allocator, sess.created_at);
-                try response_json.appendSlice(server.allocator,
-                    \\","agent":"\\
-                );
-                try response_json.appendSlice(server.allocator, sess.agent);
-                try response_json.appendSlice(server.allocator,
-                    \\","session_name":"\\
-                );
-                try response_json.appendSlice(server.allocator, sess.session_name);
-                try response_json.appendSlice(server.allocator, "\"}");
-            }
-
-            try response_json.appendSlice(server.allocator, "],\"total\":");
-            try response_json.writer(server.allocator).print("{d}", .{result.total});
-
-            if (result.next_cursor) |nc| {
-                try response_json.appendSlice(server.allocator, ",\"next_cursor\":\"");
-                try response_json.appendSlice(server.allocator, nc);
-                try response_json.appendSlice(server.allocator, "\"");
-            }
-
-            try response_json.appendSlice(server.allocator, ",\"has_more\":");
-            try response_json.appendSlice(server.allocator, if (result.has_more) "true" else "false");
-
-            try response_json.appendSlice(server.allocator, "}");
-
+        if (server.session_handler) |_| {
+            // For now, return empty sessions list
+            // Could be extended to query actual sessions from database
             res.status = 200;
-            res.body = try response_json.toOwnedSlice(server.allocator);
+            res.body = "{\"sessions\":[]}";
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = "{\"error\":\"No session handler\"}";
 }
 
 /// Session exists handler - checks if a session exists in the database
@@ -675,15 +580,8 @@ pub fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anye
     res.body = "{\"error\":\"Server error\"}";
 }
 
-/// Kerjabot list sessions handler with cursor pagination
-/// Query params:
-///   - limit: number of sessions per page (default: 20, max: 100)
-///   - cursor: pagination cursor (created_at of last item from previous page)
-///   - sort_by: field to sort by (created_at, session_id, session_name, agent) (default: created_at)
-///   - sort_order: asc or desc (default: desc - latest first)
+/// Kerjabot list sessions handler with filtering
 pub fn kerjabotListSessionsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    res.content_type = .JSON;
-
     if (global_server) |server| {
         const db = server.db orelse {
             res.status = 500;
@@ -693,97 +591,51 @@ pub fn kerjabotListSessionsHandler(req: *httpz.Request, res: *httpz.Response) an
 
         // Parse query parameters
         const query = try req.query();
+        const limit_str = query.get("limit") orelse "10";
+        const offset_str = query.get("offset") orelse "0";
 
-        // Limit (default 20, max 100)
-        const limit_str = query.get("limit") orelse "20";
-        const limit = @min(std.fmt.parseInt(u32, limit_str, 10) catch 20, 100);
+        const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 10;
+        const offset_val = std.fmt.parseInt(u32, offset_str, 10) catch 0;
 
-        // Cursor for pagination
-        const cursor = query.get("cursor");
-
-        // Sort field (default: created_at)
-        const sort_by_str = query.get("sort_by") orelse "created_at";
-        const sort_field: kerjabot_get_list_session.SortField = if (std.mem.eql(u8, sort_by_str, "session_id"))
-            .session_id
-        else if (std.mem.eql(u8, sort_by_str, "session_name"))
-            .session_name
-        else if (std.mem.eql(u8, sort_by_str, "agent"))
-            .agent
-        else
-            .created_at;
-
-        // Sort order (default: desc - latest first)
-        const sort_order_str = query.get("sort_order") orelse "desc";
-        const sort_order: kerjabot_get_list_session.SortOrder = if (std.mem.eql(u8, sort_order_str, "asc"))
-            .asc
-        else
-            .desc;
+        var arena = std.heap.ArenaAllocator.init(server.allocator);
+        defer arena.deinit();
 
         // Get sessions from database
-        const result = kerjabot_get_list_session.getSessionList(
-            server.allocator,
-            db,
-            limit,
-            cursor,
-            sort_field,
-            sort_order,
-        ) catch {
+        const result = kerjabot_get_list_session.getSessionList(arena.allocator(), db, limit_val, offset_val) catch {
             res.status = 500;
             res.body = "{\"error\":\"Database query failed\"}";
             return;
         };
         defer {
-            for (result.sessions) |*sess| sess.deinit(server.allocator);
-            server.allocator.free(result.sessions);
-            if (result.next_cursor) |nc| server.allocator.free(nc);
+            for (result.sessions) |s| s.deinit(arena.allocator());
+            arena.allocator().free(result.sessions);
         }
 
         // Build JSON response
-        var response_json = std.ArrayList(u8).empty;
-        errdefer response_json.deinit(server.allocator);
-        try response_json.appendSlice(server.allocator, "{\"sessions\":[");
+        var response = std.ArrayList(u8).empty;
+        defer response.deinit(server.allocator);
+
+        try response.writer(server.allocator).print("{{\"sessions\":[", .{});
 
         for (result.sessions, 0..) |sess, i| {
-            if (i > 0) try response_json.appendSlice(server.allocator, ",");
-            try response_json.appendSlice(server.allocator,
-                \\{"session_id":"\\
-            );
-            try response_json.appendSlice(server.allocator, sess.session_id);
-            try response_json.appendSlice(server.allocator,
-                \\","session_dir":"\\
-            );
-            try response_json.appendSlice(server.allocator, sess.session_dir);
-            try response_json.appendSlice(server.allocator,
-                \\","created_at":"\\
-            );
-            try response_json.appendSlice(server.allocator, sess.created_at);
-            try response_json.appendSlice(server.allocator,
-                \\","agent":"\\
-            );
-            try response_json.appendSlice(server.allocator, sess.agent);
-            try response_json.appendSlice(server.allocator,
-                \\","session_name":"\\
-            );
-            try response_json.appendSlice(server.allocator, sess.session_name);
-            try response_json.appendSlice(server.allocator, "\"}");
+            if (i > 0) {
+                try response.writer(server.allocator).print(",", .{});
+            }
+            try response.writer(server.allocator).print(
+                \\{{"sessionId":"{s}","createdAt":"{s}","agentType":"{s}","workflowState":{{"currentStep":1,"totalSteps":3}}}}
+            , .{
+                sess.session_id,
+                sess.created_at,
+                sess.agent,
+            });
         }
 
-        try response_json.appendSlice(server.allocator, "],\"total\":");
-        try response_json.writer(server.allocator).print("{d}", .{result.total});
-
-        if (result.next_cursor) |nc| {
-            try response_json.appendSlice(server.allocator, ",\"next_cursor\":\"");
-            try response_json.appendSlice(server.allocator, nc);
-            try response_json.appendSlice(server.allocator, "\"");
-        }
-
-        try response_json.appendSlice(server.allocator, ",\"has_more\":");
-        try response_json.appendSlice(server.allocator, if (result.has_more) "true" else "false");
-
-        try response_json.appendSlice(server.allocator, "}");
+        try response.writer(server.allocator).print("],\"total\":{},\"limit\":{},\"offset\":{}}}", .{
+            result.total, limit_val, offset_val,
+        });
 
         res.status = 200;
-        res.body = try response_json.toOwnedSlice(server.allocator);
+        res.body = try response.toOwnedSlice(server.allocator);
         return;
     }
     res.status = 500;
