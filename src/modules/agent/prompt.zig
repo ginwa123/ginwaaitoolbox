@@ -141,6 +141,58 @@ pub const GitPrompt =
 ;
 
 // =============================================================================
+// AGENT.MD AUTO-UPDATE -- keep project documentation in sync
+// =============================================================================
+
+pub const AgentMdAutoUpdate =
+    \\## AGENT.md — Auto-Update Rule
+    \\
+    \\**CRITICAL: ALWAYS update AGENT.md after making changes to the project.**
+    \\**ALSO: Keep AGENT.md concise — summarize, don't bloat.**
+    \\
+    \\### Triggering Actions
+    \\
+    \\Update AGENT.md after: new modules, build targets, dependencies, apps, tools, structure changes, features, conventions.
+    \\
+    \\### What to Update
+    \\
+    \\Focus on: Project Structure, Key Modules, Build Targets, Dependencies, Conventions, Technical Details.
+    \\
+    \\### Anti-Bloat Rules
+    \\
+    \\- **Summarize, don't copy-paste** — don't dump entire file contents
+    \\- **One-liners for obvious things** — "Logger: Structured logging with panic logging to file"
+    \\- **Preserve depth for complex systems** — only expand on things that need explanation
+    \\- **Max ~200 lines** — if AGENT.md exceeds this, trim redundant sections
+    \\- **Delete stale entries** — remove references to deleted/renamed files
+    \\- **Link to source** — prefer `src/file.zig` over dumping code snippets
+    \\
+    \\### Update Template
+    \\
+    \\```markdown
+    \\### ModuleName (`path/to/file.zig`)
+    \\Brief description of purpose.
+    \\- `function_name` — purpose
+    \\- `StructName` — purpose
+    \\```
+    \\
+    \\### How to Update
+    \\
+    \\```bash
+    \\read_file("AGENT.md")           # Read current state
+    \\text_replace(old, new)          # Update relevant section
+    \\```
+    \\
+    \\### Hard Rules
+    \\
+    \\- **Update IMMEDIATELY after the change**
+    \\- **One change = one update** — don't batch
+    \\- **Keep it accurate** — if AGENT.md says it exists, it must exist
+    \\- **Summarize** — no dumping unless absolutely necessary
+    \\
+;
+
+// =============================================================================
 // TASK MANAGEMENT -- todo list per task in .nalar/tasks/
 // =============================================================================
 
@@ -729,6 +781,10 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: 
 
     // Git Operations Guidelines
     try result.appendSlice(allocator, GitPrompt);
+    try result.appendSlice(allocator, "\n\n");
+
+    // AGENT.md Auto-Update Rule
+    try result.appendSlice(allocator, AgentMdAutoUpdate);
     try result.appendSlice(allocator, "\n\n");
 
     // dynamic memoryMd

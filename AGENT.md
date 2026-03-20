@@ -1,160 +1,92 @@
 # AGENT.md — Project Summary
 
+> **Last Updated:** 2025-03-20
+> **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
+
+---
+
 ## Project Overview
 
-**Name:** nalarcore (also known as ginwaaitoolbox)
-**Language:** Zig 0.15.2
-**Type:** AI agentic coding toolbox with multiple interfaces
-
----
-
-## What This Project Does
-
-Nalarcore is an AI-powered agentic coding system written in Zig. It provides multiple ways to interact with an AI agent:
-
-1. **HTTP Server** — Main application exposing AI capabilities via HTTP with SSE (Server-Sent Events) for real-time streaming
-2. **TUI (Terminal UI)** — Interactive terminal interface for chatting with the AI
-3. **CLI** — Command-line interface for scripting and automation
-
----
+**Name:** nalarcore  
+**Language:** Zig 0.15.2  
+**Type:** AI agentic coding toolbox with HTTP server + TUI interfaces
 
 ## Build System
 
-- **Build Tool:** Zig's native build system (build.zig)
-- **Package Manager:** Zig 0.15+ (build.zig.zon)
-- **Minimum Zig Version:** 0.15.2
-
-### Build Targets
-
 ```bash
-zig build              # Build main executable (nalarcore)
-zig build run          # Run the HTTP server
-zig build run:tui      # Run the TUI
-zig build run:cli      # Run the CLI
+zig build              # Build all targets
+zig build run          # Run HTTP server
+zig build run:tui      # Run TUI app
+zig build test         # Run tests
+zig build install:linux:system   # Install to /usr/local/bin (requires sudo)
 ```
 
-### Dependencies
-
-| Dependency | Purpose |
-|------------|---------|
-| http.zig | HTTP client/server |
-| libsqlite3 | Database storage |
-| libssl | TLS/SSL support |
-| libcrypto | Cryptographic operations |
-
----
+**Deps:** httpz, libsqlite3, libssl, libcrypto
 
 ## Project Structure
 
 ```
-ginwaaitoolbox/
-├── src/
-│   ├── main.zig           # Main entry point
-│   ├── root.zig           # Library root & module exports
-│   ├── ai_workflow/       # AI workflow orchestration
-│   ├── apps/
-│   │   ├── cli/           # CLI application
-│   │   ├── kerjabot/      # KerjaBot integration
-│   │   └── tui/           # Terminal UI application
-│   └── modules/
-│       ├── agent/         # AI agent implementation
-│       │   └── tools/     # Agent tools (bash, read_file, write_file, etc.)
-│       ├── config/        # Configuration management
-│       ├── databases/     # SQLite database & migrations
-│       ├── http/          # HTTP client
-│       ├── http_server/   # HTTP server with SSE
-│       ├── ipc/           # Inter-process communication
-│       ├── logger/        # Logging system
-│       └── session/       # Session management
-├── docs/
-│   ├── plans/             # Design documents
-│   └── superpowers/      # Skill documentation
-├── build.zig             # Build configuration
-├── build.zig.zon         # Package manifest
-├── MEMORY.md             # AI learning & mistake tracking
-└── AGENT.md              # This file
+src/
+├── main.zig              # HTTP server entry point
+├── root.zig              # nalarcore module exports
+├── helpers/              # Utility helpers
+├── apps/
+│   └── tui/              # Terminal UI app
+│       ├── main.zig
+│       ├── commands/     # Command handlers
+│       ├── display/      # Response rendering
+│       ├── input/       # Keyboard input
+│       ├── network/     # SSE, messaging, streaming
+│       └── terminal/    # Raw mode, backend
+├── modules/
+│   ├── agent/            # AI agent core
+│   │   └── tools/        # 20+ tools (bash, read_file, write_file, etc.)
+│   ├── config/           # Configuration management
+│   ├── databases/        # SQLite + migrations
+│   ├── http/             # HTTP client
+│   ├── http_server/      # HTTP routing, SSE, panic broadcast
+│   ├── ipc/              # Inter-process communication
+│   ├── logger/           # Structured logging + panic to file
+│   └── session/          # Session state + cancellation registry
+└── ai_workflow/          # AI workflow orchestration
+    └── tui/              # TUI-specific workflows (tool handlers)
 ```
-
----
 
 ## Key Modules
 
-### Agent Module (`src/modules/agent/`)
-Core AI agent functionality with tools:
-- **bash** — Execute shell commands
-- **read_file** — Read files from disk
-- **write_file** — Write/create files
-- **text_replace** — Edit existing files
-- **search** — Search for patterns in code
-- **list_skills** — List available skills
-- **get_skill** — Load skill content
-- **remove_skill** — Unload skills
-- **change_agent** — Modify agent behavior
-- **loop_detector** — Detect repetitive behavior
-- **helper** — General helper utilities
-
-### KerjaBot Module (`src/ai_workflow/kerjabot/`)
-- Session creation, retrieval, and listing
-- Integrates with web frontend
-
-### Session Module (`src/modules/session/`)
-- Session state tracking and monitoring
-- Cancellation registry
+### Agent (`src/modules/agent/`)
+- **Tools:** bash, read_file, write_file, text_replace, search, list_skills, get_skill, remove_skill, change_agent, loop_detector, helper, list_agents, get_agent, spawn_sub_agent, LSP tools
+- **Test coverage:** Unit + integration tests for all tools
 
 ### HTTP Server (`src/modules/http_server/`)
-- HTTP server with routing
-- SSE (Server-Sent Events) for streaming responses
+- HTTP routing with httpz
+- Server-Sent Events (SSE) streaming
 - Panic broadcasting to connected clients
 
-### Session Management (`src/modules/session/`)
-- Session state tracking
-- Session monitoring
+### TUI (`src/apps/tui/`)
+- Terminal UI with raw mode
+- SSE connection to HTTP server
+- Display rendering, input handling
+- Command system
 
 ### Logger (`src/modules/logger/`)
-- Structured logging system
+- Structured logging
 - Panic logging to file
 
----
+### Session (`src/modules/session/`)
+- Session state tracking
+- Cancellation registry
 
 ## Important Conventions
 
-### Module Imports
-```zig
-const tree1 = @import("nalarcore");
-const agent = tree1.agent;
-const http_server = tree1.http_server;
-```
+- `const tree1 = @import("nalarcore");` — module imports
+- snake_case for variables, PascalCase for structs
+- `ArrayList.empty` replaces `ArrayList.init` (Zig 0.15)
+- `ArrayList.deinit(allocator)` — allocator required
+- Never return stack-allocated slices from functions
 
-### Key Files
-- `src/root.zig` — Main library entry, exports all modules
-- `src/main.zig` — Application entry point
-- `build.zig` — Build configuration for all executables
+## Related
 
-### Database
-- SQLite for persistent storage
-- Migrations in `src/modules/databases/sqlite/migrations.zig`
-
----
-
-## Known Technical Details
-
-- **Zig 0.15 API Notes** (from MEMORY.md):
-  - `ArrayList.empty` replaces `ArrayList.init`
-  - `ArrayList.deinit(allocator)` — allocator required
-  - `std.fs.File.createFile` for file creation
-  - Format strings require explicit type conversion
-
----
-
-## Related Documentation
-
-- [MEMORY.md](./MEMORY.md) — AI learning system, past mistakes and solutions
+- [MEMORY.md](./MEMORY.md) — AI learning & mistakes
 - [.nalar/plans/](.nalar/plans/) — Design documents
-- [docs/superpowers/](docs/superpowers/) — Skill definitions
-
-
-# Code guideline
-## Naming convention
-- Use snake_case for variable names
-- Use PascalCase for struct names
-- use snake_case for function names
+- [docs/superpowers/](docs/superpowers/) — Skills
