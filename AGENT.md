@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-**Name:** nalarcore (also known as ginwaaitoolbox)  
-**Language:** Zig 0.15.2  
-**Type:** AI agentic coding toolbox with multiple interfaces  
+**Name:** nalarcore (also known as ginwaaitoolbox)
+**Language:** Zig 0.15.2
+**Type:** AI agentic coding toolbox with multiple interfaces
 
 ---
 
@@ -151,3 +151,10 @@ const http_server = tree1.http_server;
 - [MEMORY.md](./MEMORY.md) — AI learning system, past mistakes and solutions
 - [.nalar/plans/](.nalar/plans/) — Design documents
 - [docs/superpowers/](docs/superpowers/) — Skill definitions
+
+
+# Code guideline
+## Naming convention
+- Use snake_case for variable names
+- Use PascalCase for struct names
+- use snake_case for function names

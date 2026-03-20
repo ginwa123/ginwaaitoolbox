@@ -300,8 +300,8 @@ pub const HttpServer = struct {
         self.session_handler = handler;
     }
 
-    pub fn run(self: *Self) !void {
-        // Store global reference for handlers
+    /// Run server with custom route configuration
+    pub fn runWithConfig(self: *Self, custom_routes: *const fn (port: u16, router: anytype) anyerror!void) !void {
         global_server = self;
         defer global_server = null;
 
@@ -310,28 +310,10 @@ pub const HttpServer = struct {
         }, {});
         defer server.deinit();
 
-        std.log.info("HTTP server listening on http://127.0.0.1:{d}/", .{self.port});
+        const router = try server.router(.{});
 
-        var router = try server.router(.{});
-
-        // Command endpoint
-        router.post("/api/command", commandHandler, .{});
-
-        // SSE stream endpoint
-        router.get("/api/stream/:session_id", streamHandler, .{});
-
-        // Session management endpoints (synchronous - returns response directly)
-        router.post("/api/session/create", sessionCreateHandler, .{});
-        router.get("/api/session", sessionListHandler, .{});
-        router.get("/api/session/exists/:session_id", sessionExistsHandler, .{});
-
-        // Ping endpoint - checks if session is connected via SSE
-        router.get("/api/ping/:session_id", pingHandler, .{});
-
-        // Kerjabot session endpoints
-        router.post("/api/kerjabot/session/create", kerjabotSessionCreateHandler, .{});
-        router.get("/api/kerjabot/session/:id", kerjabotGetSessionHandler, .{});
-        router.get("/api/kerjabot/sessions", kerjabotListSessionsHandler, .{});
+        // Call custom setup function to add routes
+        try custom_routes(self.port, router);
 
         try server.listen();
     }
@@ -344,7 +326,7 @@ const HandlerArgs = struct {
     ctx: ?*anyopaque,
 };
 
-fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (global_server) |server| {
         if (server.message_handler) |msg_handler| {
             const body = req.body() orelse "";
@@ -375,7 +357,7 @@ fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
 }
 
 /// Session create handler - synchronous, returns session ID in response
-fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (global_server) |server| {
         if (server.session_handler) |sess_handler| {
             const body = req.body() orelse "";
@@ -392,7 +374,7 @@ fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void
 }
 
 /// Session list handler - returns list of sessions
-fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     _ = req;
     if (global_server) |server| {
         if (server.session_handler) |_| {
@@ -409,7 +391,7 @@ fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
 
 /// Session exists handler - checks if a session exists in the database
 /// Returns JSON with exists:true/false
-fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;
     const session_id = req.param("session_id") orelse {
         res.status = 400;
@@ -423,9 +405,7 @@ fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void
             const exists = tree1.tui_check_session_exists.check_session_exists(server.allocator, db, session_id);
 
             res.status = 200;
-            res.body = try std.fmt.allocPrint(req.arena,
-                "{{\"session_id\":\"{s}\",\"exists\":{s}}}",
-                .{ session_id, if (exists) "true" else "false" });
+            res.body = try std.fmt.allocPrint(req.arena, "{{\"session_id\":\"{s}\",\"exists\":{s}}}", .{ session_id, if (exists) "true" else "false" });
             return;
         }
     }
@@ -435,7 +415,7 @@ fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void
 
 /// Ping handler - checks if session is connected via SSE
 /// Returns JSON indicating whether the session is connected or needs reconnection
-fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;
     const session_id = req.param("session_id") orelse {
         res.status = 400;
@@ -456,7 +436,7 @@ fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
 }
 
 /// Kerjabot session create handler
-fn kerjabotSessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn kerjabotSessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (global_server) |server| {
         const db = server.db orelse {
             res.status = 500;
@@ -532,7 +512,7 @@ fn kerjabotSessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyer
 }
 
 /// Kerjabot get session handler
-fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (global_server) |server| {
         const db = server.db orelse {
             res.status = 500;
@@ -601,7 +581,7 @@ fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anyerror
 }
 
 /// Kerjabot list sessions handler with filtering
-fn kerjabotListSessionsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn kerjabotListSessionsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (global_server) |server| {
         const db = server.db orelse {
             res.status = 500;
@@ -719,7 +699,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
     ctx.server.allocator.free(ctx.session_id);
 }
 
-fn streamHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn streamHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const session_id_param = req.param("session_id");
 
     if (session_id_param == null) {

@@ -13,6 +13,7 @@ const ai_workflow_mod = root_mod.ai_workflow_models;
 const sqlite = root_mod.sqlite;
 const migrations = root_mod.migrations;
 const cancellation_registry = root_mod.session.cancellation_registry;
+const helpers = root_mod.helpers;
 
 pub const CommandMessage = struct {
     command_type: []const u8 = "",
@@ -21,56 +22,6 @@ pub const CommandMessage = struct {
     cwd_session: []const u8 = "",
 };
 
-/// Extract content between XML tags
-pub fn extractTag(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
-    const start_tag = std.fmt.allocPrint(allocator, "<{s}>", .{tag}) catch return null;
-    defer allocator.free(start_tag);
-    const end_tag = std.fmt.allocPrint(allocator, "</{s}>", .{tag}) catch return null;
-    defer allocator.free(end_tag);
-
-    const start_idx = std.mem.indexOf(u8, xml, start_tag) orelse return null;
-    const content_start = start_idx + start_tag.len;
-    const end_idx = std.mem.indexOf(u8, xml[content_start..], end_tag) orelse return null;
-
-    return xml[content_start .. content_start + end_idx];
-}
-
-/// Decode XML entities
-pub fn decodeXmlEntities(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == '&') {
-            if (std.mem.startsWith(u8, s[i..], "&amp;")) {
-                try result.append(allocator, '&');
-                i += 5;
-            } else if (std.mem.startsWith(u8, s[i..], "&lt;")) {
-                try result.append(allocator, '<');
-                i += 4;
-            } else if (std.mem.startsWith(u8, s[i..], "&gt;")) {
-                try result.append(allocator, '>');
-                i += 4;
-            } else if (std.mem.startsWith(u8, s[i..], "&quot;")) {
-                try result.append(allocator, '"');
-                i += 6;
-            } else if (std.mem.startsWith(u8, s[i..], "&apos;")) {
-                try result.append(allocator, '\'');
-                i += 6;
-            } else {
-                try result.append(allocator, s[i]);
-                i += 1;
-            }
-        } else {
-            try result.append(allocator, s[i]);
-            i += 1;
-        }
-    }
-
-    return result.toOwnedSlice(allocator);
-}
-
 /// Parse message (JSON or XML) into CommandMessage struct
 pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMessage {
     // Try JSON first (HTTP format)
@@ -78,17 +29,17 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMess
         // Fall back to XML parsing (IPC format)
         var msg: CommandMessage = .{};
 
-        if (extractTag(data, "command_type", allocator)) |val| {
-            msg.command_type = try decodeXmlEntities(allocator, val);
+        if (helpers.xml.extractTag(data, "command_type", allocator)) |val| {
+            msg.command_type = try helpers.xml.decodeXmlEntities(allocator, val);
         }
-        if (extractTag(data, "session_id", allocator)) |val| {
-            msg.session_id = try decodeXmlEntities(allocator, val);
+        if (helpers.xml.extractTag(data, "session_id", allocator)) |val| {
+            msg.session_id = try helpers.xml.decodeXmlEntities(allocator, val);
         }
-        if (extractTag(data, "content", allocator)) |val| {
-            msg.message = try decodeXmlEntities(allocator, val);
+        if (helpers.xml.extractTag(data, "content", allocator)) |val| {
+            msg.message = try helpers.xml.decodeXmlEntities(allocator, val);
         }
-        if (extractTag(data, "cwd_session", allocator)) |val| {
-            msg.cwd_session = try decodeXmlEntities(allocator, val);
+        if (helpers.xml.extractTag(data, "cwd_session", allocator)) |val| {
+            msg.cwd_session = try helpers.xml.decodeXmlEntities(allocator, val);
         }
 
         return msg;
@@ -115,46 +66,6 @@ pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMess
     parsed.deinit();
 
     return msg;
-}
-
-fn killExistingProcess() void {
-    const self_pid = std.c.getpid();
-
-    var proc_dir = std.fs.openDirAbsolute("/proc", .{
-        .iterate = true,
-    }) catch return;
-    defer proc_dir.close();
-
-    var iterator = proc_dir.iterate();
-    while (true) {
-        const entry = iterator.next() catch break;
-        if (entry == null) break;
-        const entry_name = entry.?.name;
-        const pid_num = std.fmt.parseInt(std.posix.pid_t, entry_name, 10) catch continue;
-        if (pid_num == self_pid) continue;
-
-        var path_buf: [64]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/cmdline", .{pid_num}) catch continue;
-        const cmdline_file = std.fs.openFileAbsolute(path, .{}) catch continue;
-        defer cmdline_file.close();
-
-        const cmdline = cmdline_file.readToEndAlloc(std.heap.page_allocator, 4096) catch continue;
-        defer std.heap.page_allocator.free(cmdline);
-
-        // Check if this is the backend process (not the TUI)
-        // The cmdline format is typically: "/path/to/nalar\0..."
-        // We want to match "nalar" but NOT "nalar-tui"
-        const cmdline_str = std.mem.sliceTo(cmdline, 0);
-        if (std.mem.endsWith(u8, cmdline_str, "nalar") or
-            std.mem.indexOf(u8, cmdline_str, "/nalar") != null)
-        {
-            // Double-check it's not the TUI by looking for "-tui" suffix
-            if (std.mem.indexOf(u8, cmdline_str, "nalar-tui") == null) {
-                std.debug.print("Killing existing backend process {d}\n", .{pid_num});
-                _ = std.c.kill(pid_num, 15);
-            }
-        }
-    }
 }
 
 /// Get the database path following XDG standards: ~/.config/nalar/agent.db
@@ -348,10 +259,8 @@ pub fn main() !void {
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     if (sse_manager.hasSession(t.session_id)) {
                         response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"connected\":true}}", .{t.session_id}) catch unreachable;
-                        std.debug.print("Pong: session {s} is connected\n", .{t.session_id});
                     } else {
                         response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{t.session_id}) catch unreachable;
-                        std.debug.print("Pong: session {s} not connected, TUI should reconnect SSE\n", .{t.session_id});
                     }
                 } else {
                     response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{t.session_id}) catch unreachable;
@@ -409,5 +318,29 @@ pub fn main() !void {
         }
     }.handler);
 
-    try server.run();
+    const HttpRoutes = struct {
+        pub fn setup(http_port: u16, router: anytype) !void {
+            std.log.info("HTTP server listening on http://127.0.0.1:{d}/", .{http_port});
+
+            // Command endpoint
+            router.post("/api/command", http_server.commandHandler, .{});
+
+            // SSE stream endpoint
+            router.get("/api/stream/:session_id", http_server.streamHandler, .{});
+
+            // Session management endpoints (synchronous - returns response directly)
+            router.post("/api/session/create", http_server.sessionCreateHandler, .{});
+            router.get("/api/session", http_server.sessionListHandler, .{});
+            router.get("/api/session/exists/:session_id", http_server.sessionExistsHandler, .{});
+
+            // Ping endpoint - checks if session is connected via SSE
+            router.get("/api/ping/:session_id", http_server.pingHandler, .{});
+
+            // Kerjabot session endpoints
+            router.post("/api/kerjabot/session/create", http_server.kerjabotSessionCreateHandler, .{});
+            router.get("/api/kerjabot/session/:id", http_server.kerjabotGetSessionHandler, .{});
+            router.get("/api/kerjabot/sessions", http_server.kerjabotListSessionsHandler, .{});
+        }
+    };
+    try server.runWithConfig(HttpRoutes.setup);
 }
