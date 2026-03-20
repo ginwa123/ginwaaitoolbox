@@ -65,6 +65,7 @@ pub const std_options: std.Options = .{
 };
 
 // Module exports - these are available via @import("nalarcore")
+// it should import from folder modules only
 pub const agent = @import("modules/agent/agent.zig");
 pub const prompt = @import("modules/agent/prompt.zig");
 pub const sqlite = @import("modules/databases/sqlite/sqlite.zig");
@@ -86,12 +87,7 @@ pub const http_client = @import("modules/http/http_client.zig");
 pub const logger = @import("modules/logger/logger.zig");
 pub const migrations = @import("modules/databases/sqlite/migrations.zig");
 pub const ai_workflow = @import("ai_workflow/tui/workflow.zig");
-pub const ai_workflow_models = @import("ai_workflow/tui/models.zig");
 pub const session_monitor = @import("modules/session/session_monitor.zig");
-pub const kerjabot_get_session = @import("ai_workflow/kerjabot/get_session.zig");
-pub const kerjabot_create_session = @import("ai_workflow/kerjabot/create_session.zig");
-pub const kerjabot_get_list_session = @import("ai_workflow/kerjabot/get_list_session.zig");
-pub const tui_check_session_exists = @import("ai_workflow/tui/check_session_exists.zig");
 pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
 pub const skills = @import("modules/agent/tools/skills.zig");
 pub const config = @import("modules/config/config.zig");
@@ -104,5 +100,9 @@ pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
 pub const helpers = @import("helpers/mod.zig");
-pub const tui_display_response = @import("apps/tui/display/response.zig");
+pub const kerjabot_get_session = @import("ai_workflow/tui/get_session.zig");
+pub const kerjabot_create_session = @import("ai_workflow/tui/create_session.zig");
+pub const kerjabot_get_list_session = @import("ai_workflow/tui/get_list_session.zig");
+pub const tui_check_session_exists = @import("ai_workflow/tui/check_session_exists.zig");
+pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 

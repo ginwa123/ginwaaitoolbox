@@ -5,7 +5,7 @@ const tool_models = root_mod.tool_models;
 const logger_mod = root_mod.logger;
 const sqlite = root_mod.sqlite;
 const prompt = root_mod.prompt;
-const spawn_sub_agent_tool = root_mod.agents;
+const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
 const bash_tool = root_mod.bash_tool;
 const read_file_tool = root_mod.read_file;
 const write_file_tool = root_mod.write_file;
@@ -183,7 +183,7 @@ const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
     .{ .name = "get_agent", .exec = execGetAgent, .tool_def = GetAgentTool.GetAgentTool, .auto_save_agent = true },
 
     // LSP tools
-    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = LspDefinitionTool.lspDefinitionTool },
+    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = LspDefinitionTool },
     // TODO: Restore remaining LSP tools when lsp.zig is complete
 };
 
