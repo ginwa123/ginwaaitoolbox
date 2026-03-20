@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
-const get_agent_tool = tree1_mod.tool_models.get_agent;
+const get_agent_tool = tree1_mod.get_agent;
 
 /// Stateless get_agent tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments

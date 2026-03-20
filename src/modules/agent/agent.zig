@@ -2,11 +2,12 @@ const std = @import("std");
 const json = std.json;
 const bashTool = @import("tools/bash.zig").bashTool;
 const bashMod = @import("tools/bash.zig");
-const BashInput = @import("tools/models.zig").BashInput;
-const ToolProperty = @import("tools/models.zig").ToolProperty;
-const ToolParameters = @import("tools/models.zig").ToolParameters;
-const AgentToolFunction = @import("tools/models.zig").AgentToolFunction;
-const AgentTool = @import("tools/models.zig").AgentTool;
+const schemas = @import("tools/schemas.zig");
+const BashInput = schemas.BashInput;
+const ToolProperty = schemas.ToolProperty;
+const ToolParameters = schemas.ToolParameters;
+const AgentToolFunction = schemas.AgentToolFunction;
+const AgentTool = schemas.AgentTool;
 const log = @import("nalarcore").logger;
 
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create

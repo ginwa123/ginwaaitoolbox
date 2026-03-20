@@ -1,8 +1,10 @@
 const std = @import("std");
 const json = std.json;
-const AgentTool = @import("models.zig").AgentTool;
-pub const LspHoverInput = @import("models.zig").LspHoverInput;
-const LspHoverOutput = @import("models.zig").LspHoverOutput;
+const schemas = @import("schemas.zig");
+const lsp_types = @import("lsp_types.zig");
+const AgentTool = schemas.AgentTool;
+pub const LspHoverInput = lsp_types.LspHoverInput;
+const LspHoverOutput = lsp_types.LspHoverOutput;
 
 // LSP error set
 pub const LspError = error{

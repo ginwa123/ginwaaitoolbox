@@ -1,8 +1,9 @@
 const std = @import("std");
-const ToolProperty = @import("models.zig").ToolProperty;
-const ToolParameters = @import("models.zig").ToolParameters;
-const AgentToolFunction = @import("models.zig").AgentToolFunction;
-const AgentTool = @import("models.zig").AgentTool;
+const schemas = @import("schemas.zig");
+const ToolProperty = schemas.ToolProperty;
+const ToolParameters = schemas.ToolParameters;
+const AgentToolFunction = schemas.AgentToolFunction;
+const AgentTool = schemas.AgentTool;
 const skills = @import("skills.zig");
 
 /// Result structure for list_skills tool

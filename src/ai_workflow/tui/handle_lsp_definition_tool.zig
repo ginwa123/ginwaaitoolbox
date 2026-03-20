@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
-const lsp_definition = tree1_mod.tool_models.lsp_definition;
+const lsp_definition = tree1_mod.tools.lsp_definition;
 
 /// Stateless lsp_definition tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments

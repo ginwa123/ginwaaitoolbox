@@ -1,25 +1,27 @@
 const std = @import("std");
 const json = std.json;
-const AgentTool = @import("models.zig").AgentTool;
+const schemas = @import("schemas.zig");
+const lsp_types = @import("lsp_types.zig");
+const AgentTool = schemas.AgentTool;
 
-// Re-export all LSP input/output types from models.zig
-pub const LspDefinitionInput = @import("models.zig").LspDefinitionInput;
-pub const LspDefinitionOutput = @import("models.zig").LspDefinitionOutput;
-pub const LspLocation = @import("models.zig").LspLocation;
+// Re-export all LSP input/output types from lsp_types.zig
+pub const LspDefinitionInput = lsp_types.LspDefinitionInput;
+pub const LspDefinitionOutput = lsp_types.LspDefinitionOutput;
+pub const LspLocation = lsp_types.LspLocation;
 
-pub const LspReferencesInput = @import("models.zig").LspReferencesInput;
-pub const LspReferencesOutput = @import("models.zig").LspReferencesOutput;
+pub const LspReferencesInput = lsp_types.LspReferencesInput;
+pub const LspReferencesOutput = lsp_types.LspReferencesOutput;
 
-pub const LspWorkspaceSymbolInput = @import("models.zig").LspWorkspaceSymbolInput;
-pub const LspWorkspaceSymbolOutput = @import("models.zig").LspWorkspaceSymbolOutput;
-pub const LspWorkspaceSymbol = @import("models.zig").LspWorkspaceSymbol;
+pub const LspWorkspaceSymbolInput = lsp_types.LspWorkspaceSymbolInput;
+pub const LspWorkspaceSymbolOutput = lsp_types.LspWorkspaceSymbolOutput;
+pub const LspWorkspaceSymbol = lsp_types.LspWorkspaceSymbol;
 
-pub const LspDocumentSymbolInput = @import("models.zig").LspDocumentSymbolInput;
-pub const LspDocumentSymbolOutput = @import("models.zig").LspDocumentSymbolOutput;
-pub const LspDocumentSymbol = @import("models.zig").LspDocumentSymbol;
+pub const LspDocumentSymbolInput = lsp_types.LspDocumentSymbolInput;
+pub const LspDocumentSymbolOutput = lsp_types.LspDocumentSymbolOutput;
+pub const LspDocumentSymbol = lsp_types.LspDocumentSymbol;
 
-pub const LspHoverInput = @import("models.zig").LspHoverInput;
-pub const LspHoverOutput = @import("models.zig").LspHoverOutput;
+pub const LspHoverInput = lsp_types.LspHoverInput;
+pub const LspHoverOutput = lsp_types.LspHoverOutput;
 
 // Unified LSP error set
 pub const LspError = error{

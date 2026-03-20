@@ -49,8 +49,8 @@ const SaveAgent = @import("save_agent.zig").SaveAgent;
 
 const MAX_SUB_AGENTS = 20;
 
-// Import BashInput from models (not exported in bash.zig)
-const BashInput = @import("../../modules/agent/tools/models.zig").BashInput;
+// Import BashInput from schemas (not exported in bash.zig)
+const BashInput = tool_models.BashInput;
 
 // ============================================================================
 // SUB-AGENT TOOL DISPATCH TABLE

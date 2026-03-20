@@ -1,10 +1,10 @@
 const std = @import("std");
 const lsp_document_symbol = @import("lsp_document_symbol.zig");
-const models = @import("models.zig");
+const lsp_types = @import("lsp_types.zig");
 
 // Test 1.1: LspDocumentSymbolInput struct
 test "LspDocumentSymbolInput has all required fields" {
-    const input = models.LspDocumentSymbolInput{
+    const input = lsp_types.LspDocumentSymbolInput{
         .lsp = "zls",
         .root_dir = "/home/ginwa/project",
         .file_path = "/home/ginwa/project/src/main.zig",
@@ -19,7 +19,7 @@ test "LspDocumentSymbolInput has all required fields" {
 test "LspDocumentSymbol has all required fields" {
     const allocator = std.testing.allocator;
 
-    const sym = models.LspDocumentSymbol{
+    const sym = lsp_types.LspDocumentSymbol{
         .name = try allocator.dupe(u8, "main"),
         .kind = 12, // Function
         .detail = null,
@@ -43,7 +43,7 @@ test "LspDocumentSymbol has all required fields" {
 test "LspDocumentSymbol can have detail" {
     const allocator = std.testing.allocator;
 
-    const sym = models.LspDocumentSymbol{
+    const sym = lsp_types.LspDocumentSymbol{
         .name = try allocator.dupe(u8, "myFunction"),
         .kind = 12, // Function
         .detail = try allocator.dupe(u8, "fn myFunction(x: i32) void"),
@@ -66,8 +66,8 @@ test "LspDocumentSymbol can have detail" {
 test "LspDocumentSymbol can have children" {
     const allocator = std.testing.allocator;
 
-    const children = try allocator.alloc(models.LspDocumentSymbol, 1);
-    children[0] = models.LspDocumentSymbol{
+    const children = try allocator.alloc(lsp_types.LspDocumentSymbol, 1);
+    children[0] = lsp_types.LspDocumentSymbol{
         .name = try allocator.dupe(u8, "childMethod"),
         .kind = 6, // Method
         .detail = null,
@@ -80,7 +80,7 @@ test "LspDocumentSymbol can have children" {
         .children = null,
     };
 
-    const sym = models.LspDocumentSymbol{
+    const sym = lsp_types.LspDocumentSymbol{
         .name = try allocator.dupe(u8, "MyClass"),
         .kind = 5, // Class
         .detail = null,
@@ -104,8 +104,8 @@ test "LspDocumentSymbol can have children" {
 test "LspDocumentSymbolOutput can represent found symbols" {
     const allocator = std.testing.allocator;
 
-    const symbols = try allocator.alloc(models.LspDocumentSymbol, 2);
-    symbols[0] = models.LspDocumentSymbol{
+    const symbols = try allocator.alloc(lsp_types.LspDocumentSymbol, 2);
+    symbols[0] = lsp_types.LspDocumentSymbol{
         .name = try allocator.dupe(u8, "main"),
         .kind = 12, // Function
         .detail = null,
@@ -117,7 +117,7 @@ test "LspDocumentSymbolOutput can represent found symbols" {
         .selection_character = null,
         .children = null,
     };
-    symbols[1] = models.LspDocumentSymbol{
+    symbols[1] = lsp_types.LspDocumentSymbol{
         .name = try allocator.dupe(u8, "helper"),
         .kind = 12, // Function
         .detail = null,
@@ -130,7 +130,7 @@ test "LspDocumentSymbolOutput can represent found symbols" {
         .children = null,
     };
 
-    var output = models.LspDocumentSymbolOutput{
+    var output = lsp_types.LspDocumentSymbolOutput{
         .symbols = symbols,
         .found = true,
     };
@@ -144,7 +144,7 @@ test "LspDocumentSymbolOutput can represent found symbols" {
 
 // Test 1.6: LspDocumentSymbolOutput struct - not found
 test "LspDocumentSymbolOutput can represent not found" {
-    const output = models.LspDocumentSymbolOutput{
+    const output = lsp_types.LspDocumentSymbolOutput{
         .symbols = &.{},
         .found = false,
     };
@@ -186,8 +186,8 @@ test "lspDocumentSymbolTool has required parameters" {
 test "lspDocumentSymbolToString formats found symbols" {
     const allocator = std.testing.allocator;
 
-    const symbols = try allocator.alloc(models.LspDocumentSymbol, 2);
-    symbols[0] = models.LspDocumentSymbol{
+    const symbols = try allocator.alloc(lsp_types.LspDocumentSymbol, 2);
+    symbols[0] = lsp_types.LspDocumentSymbol{
         .name = try allocator.dupe(u8, "main"),
         .kind = 12, // Function
         .detail = try allocator.dupe(u8, "fn main() void"),
@@ -199,7 +199,7 @@ test "lspDocumentSymbolToString formats found symbols" {
         .selection_character = 3,
         .children = null,
     };
-    symbols[1] = models.LspDocumentSymbol{
+    symbols[1] = lsp_types.LspDocumentSymbol{
         .name = try allocator.dupe(u8, "MyStruct"),
         .kind = 23, // Struct
         .detail = null,
@@ -212,7 +212,7 @@ test "lspDocumentSymbolToString formats found symbols" {
         .children = null,
     };
 
-    const output = models.LspDocumentSymbolOutput{
+    const output = lsp_types.LspDocumentSymbolOutput{
         .symbols = symbols,
         .found = true,
     };
@@ -239,7 +239,7 @@ test "lspDocumentSymbolToString formats found symbols" {
 test "lspDocumentSymbolToString formats not found" {
     const allocator = std.testing.allocator;
 
-    const output = models.LspDocumentSymbolOutput{
+    const output = lsp_types.LspDocumentSymbolOutput{
         .symbols = &.{},
         .found = false,
     };
@@ -266,7 +266,7 @@ test "createMessage creates valid LSP message" {
 // Test 5.1: Non-existent file
 test "executeLspDocumentSymbol returns error for non-existent file" {
     const allocator = std.testing.allocator;
-    const input = models.LspDocumentSymbolInput{
+    const input = lsp_types.LspDocumentSymbolInput{
         .lsp = "zls",
         .root_dir = "/nonexistent/path",
         .file_path = "/nonexistent/path/that/does/not/exist.zig",

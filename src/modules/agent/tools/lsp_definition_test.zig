@@ -1,10 +1,10 @@
 const std = @import("std");
 const lsp_definition = @import("lsp_definition.zig");
-const models = @import("models.zig");
+const lsp_types = @import("lsp_types.zig");
 
 // Test 1.1: LspDefinitionInput struct
 test "LspDefinitionInput has all required fields" {
-    const input = models.LspDefinitionInput{
+    const input = lsp_types.LspDefinitionInput{
         .file_path = "/home/ginwa/project/src/main.zig",
         .line = 10,
         .character = 5,
@@ -17,7 +17,7 @@ test "LspDefinitionInput has all required fields" {
 // Test 1.2: LspDefinitionOutput struct - found
 test "LspDefinitionOutput can represent found definition" {
     const allocator = std.testing.allocator;
-    const output = models.LspDefinitionOutput{
+    const output = lsp_types.LspDefinitionOutput{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/lib.zig"),
         .line = 20,
         .character = 8,
@@ -32,7 +32,7 @@ test "LspDefinitionOutput can represent found definition" {
 
 // Test 1.3: LspDefinitionOutput struct - not found
 test "LspDefinitionOutput can represent not found" {
-    const output = models.LspDefinitionOutput{
+    const output = lsp_types.LspDefinitionOutput{
         .file_path = "",
         .line = 0,
         .character = 0,
@@ -71,7 +71,7 @@ test "lspDefinitionTool has required parameters" {
 // Test 3.1: Non-existent file
 test "executeLspDefinition returns error for non-existent file" {
     const allocator = std.testing.allocator;
-    const input = models.LspDefinitionInput{
+    const input = lsp_types.LspDefinitionInput{
         .file_path = "/nonexistent/path/that/does/not/exist.zig",
         .line = 0,
         .character = 0,
@@ -84,7 +84,7 @@ test "executeLspDefinition returns error for non-existent file" {
 // Test 4.1: Format found definition
 test "lspDefinitionToString formats found definition" {
     const allocator = std.testing.allocator;
-    const output = models.LspDefinitionOutput{
+    const output = lsp_types.LspDefinitionOutput{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/lib.zig"),
         .line = 20,
         .character = 8,
@@ -106,7 +106,7 @@ test "lspDefinitionToString formats found definition" {
 // Test 4.2: Format not found
 test "lspDefinitionToString formats not found" {
     const allocator = std.testing.allocator;
-    const output = models.LspDefinitionOutput{
+    const output = lsp_types.LspDefinitionOutput{
         .file_path = "",
         .line = 0,
         .character = 0,
@@ -170,7 +170,7 @@ test "integration: lsp_definition finds definition in real Zig file" {
     defer std.fs.cwd().deleteFile(temp_path) catch {};
 
     // Request definition
-    const input = models.LspDefinitionInput{
+    const input = lsp_types.LspDefinitionInput{
         .file_path = temp_path,
         .line = 7, // Line with "const s = MyStruct..."
         .character = 16, // Position of "MyStruct"

@@ -1,6 +1,6 @@
 const std = @import("std");
 const lsp_references = @import("lsp_references.zig");
-const models = @import("models.zig");
+const lsp_types = @import("lsp_types.zig");
 
 // =============================================================================
 // TDD TEST CASES for lsp_references tool
@@ -8,12 +8,12 @@ const models = @import("models.zig");
 // =============================================================================
 
 // =============================================================================
-// Chunk 1: Type Tests (models.zig)
+// Chunk 1: Type Tests (lsp_types.zig)
 // =============================================================================
 
 // Test 1.1: LspReferencesInput struct has all required fields
 test "LspReferencesInput has all required fields" {
-    const input = models.LspReferencesInput{
+    const input = lsp_types.LspReferencesInput{
         .lsp = "zls",
         .root_dir = "/home/ginwa/project",
         .file_path = "/home/ginwa/project/src/main.zig",
@@ -31,7 +31,7 @@ test "LspReferencesInput has all required fields" {
 
 // Test 1.2: LspReferencesInput has default include_declaration = true
 test "LspReferencesInput defaults include_declaration to true" {
-    const input = models.LspReferencesInput{
+    const input = lsp_types.LspReferencesInput{
         .lsp = "zls",
         .root_dir = "/home/ginwa/project",
         .file_path = "/home/ginwa/project/src/main.zig",
@@ -46,16 +46,16 @@ test "LspReferencesInput defaults include_declaration to true" {
 test "LspReferencesOutput can represent found references" {
     const allocator = std.testing.allocator;
 
-    const loc = models.LspLocation{
+    const loc = lsp_types.LspLocation{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/main.zig"),
         .line = 15,
         .character = 10,
     };
 
-    const references = try allocator.alloc(models.LspLocation, 1);
+    const references = try allocator.alloc(lsp_types.LspLocation, 1);
     references[0] = loc;
 
-    var output = models.LspReferencesOutput{
+    var output = lsp_types.LspReferencesOutput{
         .definitions = references, // reuses LspLocation array
         .found = true,
     };
@@ -67,7 +67,7 @@ test "LspReferencesOutput can represent found references" {
 
 // Test 1.4: LspReferencesOutput can represent no references found
 test "LspReferencesOutput can represent no references found" {
-    const output = models.LspReferencesOutput{
+    const output = lsp_types.LspReferencesOutput{
         .definitions = &.{},
         .found = false,
     };
@@ -80,24 +80,24 @@ test "LspReferencesOutput can represent no references found" {
 test "LspReferencesOutput can hold multiple references" {
     const allocator = std.testing.allocator;
 
-    const references = try allocator.alloc(models.LspLocation, 3);
-    references[0] = models.LspLocation{
+    const references = try allocator.alloc(lsp_types.LspLocation, 3);
+    references[0] = lsp_types.LspLocation{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/main.zig"),
         .line = 10,
         .character = 5,
     };
-    references[1] = models.LspLocation{
+    references[1] = lsp_types.LspLocation{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/lib.zig"),
         .line = 25,
         .character = 8,
     };
-    references[2] = models.LspLocation{
+    references[2] = lsp_types.LspLocation{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/utils.zig"),
         .line = 50,
         .character = 12,
     };
 
-    var output = models.LspReferencesOutput{
+    var output = lsp_types.LspReferencesOutput{
         .definitions = references,
         .found = true,
     };
@@ -168,14 +168,14 @@ test "lspReferencesTool has description mentioning textDocument/references" {
 test "lspReferencesToString formats found reference" {
     const allocator = std.testing.allocator;
 
-    const references = try allocator.alloc(models.LspLocation, 1);
-    references[0] = models.LspLocation{
+    const references = try allocator.alloc(lsp_types.LspLocation, 1);
+    references[0] = lsp_types.LspLocation{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/main.zig"),
         .line = 15,
         .character = 10,
     };
 
-    const output = models.LspReferencesOutput{
+    const output = lsp_types.LspReferencesOutput{
         .definitions = references,
         .found = true,
     };
@@ -202,7 +202,7 @@ test "lspReferencesToString formats found reference" {
 // Test 3.2: Format not found
 test "lspReferencesToString formats not found" {
     const allocator = std.testing.allocator;
-    const output = models.LspReferencesOutput{
+    const output = lsp_types.LspReferencesOutput{
         .definitions = &.{},
         .found = false,
     };
@@ -217,19 +217,19 @@ test "lspReferencesToString formats not found" {
 test "lspReferencesToString formats multiple references" {
     const allocator = std.testing.allocator;
 
-    const references = try allocator.alloc(models.LspLocation, 2);
-    references[0] = models.LspLocation{
+    const references = try allocator.alloc(lsp_types.LspLocation, 2);
+    references[0] = lsp_types.LspLocation{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/main.zig"),
         .line = 10,
         .character = 5,
     };
-    references[1] = models.LspLocation{
+    references[1] = lsp_types.LspLocation{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/lib.zig"),
         .line = 25,
         .character = 8,
     };
 
-    const output = models.LspReferencesOutput{
+    const output = lsp_types.LspReferencesOutput{
         .definitions = references,
         .found = true,
     };
@@ -254,8 +254,8 @@ test "lspReferencesToString formats multiple references" {
 test "lspReferencesToString includes end positions when present" {
     const allocator = std.testing.allocator;
 
-    const references = try allocator.alloc(models.LspLocation, 1);
-    references[0] = models.LspLocation{
+    const references = try allocator.alloc(lsp_types.LspLocation, 1);
+    references[0] = lsp_types.LspLocation{
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/main.zig"),
         .line = 15,
         .character = 10,
@@ -263,7 +263,7 @@ test "lspReferencesToString includes end positions when present" {
         .end_character = 20,
     };
 
-    const output = models.LspReferencesOutput{
+    const output = lsp_types.LspReferencesOutput{
         .definitions = references,
         .found = true,
     };
@@ -299,7 +299,7 @@ test "createMessage formats Content-Length header" {
 // Test 4.1: Non-existent file returns FileNotFound
 test "executeLspReferences returns error for non-existent file" {
     const allocator = std.testing.allocator;
-    const input = models.LspReferencesInput{
+    const input = lsp_types.LspReferencesInput{
         .lsp = "zls",
         .root_dir = "/nonexistent/path",
         .file_path = "/nonexistent/path/that/does/not/exist.zig",
@@ -357,7 +357,7 @@ test "integration: lsp_references finds references in real Zig file" {
     defer std.fs.cwd().deleteFile(temp_path) catch {};
 
     // Request references to MyStruct
-    const input = models.LspReferencesInput{
+    const input = lsp_types.LspReferencesInput{
         .lsp = "zls",
         .root_dir = "/tmp",
         .file_path = temp_path,
@@ -429,7 +429,7 @@ test "integration: lsp_references respects include_declaration=false" {
     });
     defer std.fs.cwd().deleteFile(temp_path) catch {};
 
-    const input = models.LspReferencesInput{
+    const input = lsp_types.LspReferencesInput{
         .lsp = "zls",
         .root_dir = "/tmp",
         .file_path = temp_path,

@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
-const lsp_document_symbol_tool = tree1_mod.tool_models.lsp_document_symbol;
+const lsp_document_symbol_tool = tree1_mod.tools.lsp_document_symbol;
 
 /// Stateless lsp_document_symbol tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments

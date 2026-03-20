@@ -1,11 +1,12 @@
 const std = @import("std");
 const posix = std.posix;
-const BashInput = @import("models.zig").BashInput;
-const BashOutput = @import("models.zig").BashOutput;
-const ToolProperty = @import("models.zig").ToolProperty;
-const ToolParameters = @import("models.zig").ToolParameters;
-const AgentToolFunction = @import("models.zig").AgentToolFunction;
-const AgentTool = @import("models.zig").AgentTool;
+const schemas = @import("schemas.zig");
+const BashInput = schemas.BashInput;
+const BashOutput = schemas.BashOutput;
+const ToolProperty = schemas.ToolProperty;
+const ToolParameters = schemas.ToolParameters;
+const AgentToolFunction = schemas.AgentToolFunction;
+const AgentTool = schemas.AgentTool;
 
 pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     // --- Background mode ---

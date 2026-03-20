@@ -2,7 +2,8 @@ const std = @import("std");
 const json = std.json;
 const mcp_types = @import("mcp_types.zig");
 const mcp_server = @import("mcp_server.zig");
-const AgentTool = @import("../../tools/models.zig").AgentTool;
+const schemas = @import("../../tools/schemas.zig");
+const AgentTool = schemas.AgentTool;
 
 pub const ToolAdapter = struct {
     allocator: std.mem.Allocator,

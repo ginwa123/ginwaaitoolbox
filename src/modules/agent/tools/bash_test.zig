@@ -1,7 +1,8 @@
 const std = @import("std");
 const bashMod = @import("bash.zig");
-const BashInput = @import("models.zig").BashInput;
-const BashOutput = @import("models.zig").BashOutput;
+const schemas = @import("schemas.zig");
+const BashInput = schemas.BashInput;
+const BashOutput = schemas.BashOutput;
 
 test "bash execute helloworld" {
     const allocator = std.testing.allocator;

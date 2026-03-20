@@ -1,10 +1,10 @@
 const std = @import("std");
 const lsp_hover = @import("lsp_hover.zig");
-const models = @import("models.zig");
+const lsp_types = @import("lsp_types.zig");
 
 // Test 1.1: LspHoverInput struct
 test "LspHoverInput has all required fields" {
-    const input = models.LspHoverInput{
+    const input = lsp_types.LspHoverInput{
         .lsp = "zls",
         .root_dir = "/home/ginwa/project",
         .file_path = "/home/ginwa/project/src/main.zig",
@@ -22,7 +22,7 @@ test "LspHoverInput has all required fields" {
 test "LspHoverOutput can represent found hover" {
     const allocator = std.testing.allocator;
 
-    const output = models.LspHoverOutput{
+    const output = lsp_types.LspHoverOutput{
         .contents = try allocator.dupe(u8, "fn main() void\n\nMain entry point"),
         .line = 10,
         .character = 0,
@@ -40,7 +40,7 @@ test "LspHoverOutput can represent found hover" {
 
 // Test 1.3: LspHoverOutput struct - not found
 test "LspHoverOutput can represent not found" {
-    const output = models.LspHoverOutput{
+    const output = lsp_types.LspHoverOutput{
         .contents = null,
         .line = null,
         .character = null,
@@ -89,7 +89,7 @@ test "lspHoverTool has required parameters" {
 test "lspHoverToString formats found hover" {
     const allocator = std.testing.allocator;
 
-    const output = models.LspHoverOutput{
+    const output = lsp_types.LspHoverOutput{
         .contents = try allocator.dupe(u8, "fn main() void"),
         .line = 10,
         .character = 0,
@@ -115,7 +115,7 @@ test "lspHoverToString formats found hover" {
 test "lspHoverToString formats not found" {
     const allocator = std.testing.allocator;
 
-    const output = models.LspHoverOutput{
+    const output = lsp_types.LspHoverOutput{
         .contents = null,
         .line = null,
         .character = null,
@@ -146,7 +146,7 @@ test "createMessage creates valid LSP message" {
 // Test 5.1: Non-existent file
 test "executeLspHover returns error for non-existent file" {
     const allocator = std.testing.allocator;
-    const input = models.LspHoverInput{
+    const input = lsp_types.LspHoverInput{
         .lsp = "zls",
         .root_dir = "/nonexistent/path",
         .file_path = "/nonexistent/path/that/does/not/exist.zig",

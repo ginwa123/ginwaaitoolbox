@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
-const lsp_hover_tool = tree1_mod.tool_models.lsp_hover;
+const lsp_hover_tool = tree1_mod.tools.lsp_hover;
 
 /// Stateless lsp_hover tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments

@@ -2,11 +2,12 @@ const std = @import("std");
 const json = std.json;
 const bashTool = @import("nalarcore").bash_tool.bashTool;
 const bashMod = @import("nalarcore").bash_tool;
-const BashInput = @import("nalarcore").tool_models.BashInput;
-const ToolProperty = @import("nalarcore").tool_models.ToolProperty;
-const ToolParameters = @import("nalarcore").tool_models.ToolParameters;
-const AgentToolFunction = @import("nalarcore").tool_models.AgentToolFunction;
-const AgentTool = @import("nalarcore").tool_models.AgentTool;
+const tool_models = @import("nalarcore").tool_models;
+const BashInput = tool_models.BashInput;
+const ToolProperty = tool_models.ToolProperty;
+const ToolParameters = tool_models.ToolParameters;
+const AgentToolFunction = tool_models.AgentToolFunction;
+const AgentTool = tool_models.AgentTool;
 
 const Agent = @import("nalarcore").agent.Agent;
 const logger = @import("nalarcore").logger;

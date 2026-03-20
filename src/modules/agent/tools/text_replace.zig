@@ -1,8 +1,9 @@
 const std = @import("std");
-const ToolProperty = @import("models.zig").ToolProperty;
-const ToolParameters = @import("models.zig").ToolParameters;
-const AgentToolFunction = @import("models.zig").AgentToolFunction;
-const AgentTool = @import("models.zig").AgentTool;
+const schemas = @import("schemas.zig");
+const ToolProperty = schemas.ToolProperty;
+const ToolParameters = schemas.ToolParameters;
+const AgentToolFunction = schemas.AgentToolFunction;
+const AgentTool = schemas.AgentTool;
 const crypto = @import("std").crypto;
 const Sha256 = crypto.hash.sha2.Sha256;
 

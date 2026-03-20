@@ -1,10 +1,10 @@
 const std = @import("std");
 const lsp_workspace_symbol = @import("lsp_workspace_symbol.zig");
-const models = @import("models.zig");
+const lsp_types = @import("lsp_types.zig");
 
 // Test 1.1: LspWorkspaceSymbolInput struct
 test "LspWorkspaceSymbolInput has all required fields" {
-    const input = models.LspWorkspaceSymbolInput{
+    const input = lsp_types.LspWorkspaceSymbolInput{
         .lsp = "zls",
         .root_dir = "/home/ginwa/project",
         .query = "main",
@@ -19,7 +19,7 @@ test "LspWorkspaceSymbolInput has all required fields" {
 test "LspWorkspaceSymbol has all required fields" {
     const allocator = std.testing.allocator;
 
-    const sym = models.LspWorkspaceSymbol{
+    const sym = lsp_types.LspWorkspaceSymbol{
         .name = try allocator.dupe(u8, "main"),
         .kind = 12, // Function
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/main.zig"),
@@ -41,7 +41,7 @@ test "LspWorkspaceSymbol has all required fields" {
 test "LspWorkspaceSymbol can have container_name" {
     const allocator = std.testing.allocator;
 
-    const sym = models.LspWorkspaceSymbol{
+    const sym = lsp_types.LspWorkspaceSymbol{
         .name = "myMethod",
         .kind = 6, // Method
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/class.zig"),
@@ -61,8 +61,8 @@ test "LspWorkspaceSymbolOutput can represent found symbols" {
     const allocator = std.testing.allocator;
 
     // Create symbols array
-    const symbols = try allocator.alloc(models.LspWorkspaceSymbol, 2);
-    symbols[0] = models.LspWorkspaceSymbol{
+    const symbols = try allocator.alloc(lsp_types.LspWorkspaceSymbol, 2);
+    symbols[0] = lsp_types.LspWorkspaceSymbol{
         .name = try allocator.dupe(u8, "main"),
         .kind = 12, // Function
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/main.zig"),
@@ -70,7 +70,7 @@ test "LspWorkspaceSymbolOutput can represent found symbols" {
         .character = 0,
         .container_name = null,
     };
-    symbols[1] = models.LspWorkspaceSymbol{
+    symbols[1] = lsp_types.LspWorkspaceSymbol{
         .name = "helper",
         .kind = 12, // Function
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/utils.zig"),
@@ -79,7 +79,7 @@ test "LspWorkspaceSymbolOutput can represent found symbols" {
         .container_name = null,
     };
 
-    var output = models.LspWorkspaceSymbolOutput{
+    var output = lsp_types.LspWorkspaceSymbolOutput{
         .symbols = symbols,
         .found = true,
     };
@@ -93,7 +93,7 @@ test "LspWorkspaceSymbolOutput can represent found symbols" {
 
 // Test 1.5: LspWorkspaceSymbolOutput struct - not found
 test "LspWorkspaceSymbolOutput can represent not found" {
-    const output = models.LspWorkspaceSymbolOutput{
+    const output = lsp_types.LspWorkspaceSymbolOutput{
         .symbols = &.{},
         .found = false,
     };
@@ -135,8 +135,8 @@ test "lspWorkspaceSymbolTool has required parameters" {
 test "lspWorkspaceSymbolToString formats found symbols" {
     const allocator = std.testing.allocator;
 
-    const symbols = try allocator.alloc(models.LspWorkspaceSymbol, 2);
-    symbols[0] = models.LspWorkspaceSymbol{
+    const symbols = try allocator.alloc(lsp_types.LspWorkspaceSymbol, 2);
+    symbols[0] = lsp_types.LspWorkspaceSymbol{
         .name = try allocator.dupe(u8, "main"),
         .kind = 12, // Function
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/main.zig"),
@@ -144,7 +144,7 @@ test "lspWorkspaceSymbolToString formats found symbols" {
         .character = 0,
         .container_name = null,
     };
-    symbols[1] = models.LspWorkspaceSymbol{
+    symbols[1] = lsp_types.LspWorkspaceSymbol{
         .name = "MyClass",
         .kind = 5, // Class
         .file_path = try allocator.dupe(u8, "/home/ginwa/project/src/class.zig"),
@@ -153,7 +153,7 @@ test "lspWorkspaceSymbolToString formats found symbols" {
         .container_name = try allocator.dupe(u8, "myModule"),
     };
 
-    const output = models.LspWorkspaceSymbolOutput{
+    const output = lsp_types.LspWorkspaceSymbolOutput{
         .symbols = symbols,
         .found = true,
     };
@@ -180,7 +180,7 @@ test "lspWorkspaceSymbolToString formats found symbols" {
 test "lspWorkspaceSymbolToString formats not found" {
     const allocator = std.testing.allocator;
 
-    const output = models.LspWorkspaceSymbolOutput{
+    const output = lsp_types.LspWorkspaceSymbolOutput{
         .symbols = &.{},
         .found = false,
     };

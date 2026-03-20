@@ -40,11 +40,11 @@ const config_mod = @import("../../modules/config/config.zig");
 pub const cancellation_registry = root_mod.session.cancellation_registry;
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const spawn_sub_agent_tool = @import("../../modules/agent/tools/spawn_sub_agent.zig");
-const lspDefinitionTool = root_mod.tool_models.lspDefinitionTool;
-const lspReferencesTool = root_mod.tool_models.lspReferencesTool;
-const lspWorkspaceSymbolTool = root_mod.tool_models.lspWorkspaceSymbolTool;
-const lspDocumentSymbolTool = root_mod.tool_models.lspDocumentSymbolTool;
-const lspHoverTool = root_mod.tool_models.lspHoverTool;
+const lspDefinitionTool = root_mod.tools.lspDefinitionTool;
+const lspReferencesTool = root_mod.tools.lspReferencesTool;
+const lspWorkspaceSymbolTool = root_mod.tools.lspWorkspaceSymbolTool;
+const lspDocumentSymbolTool = root_mod.tools.lspDocumentSymbolTool;
+const lspHoverTool = root_mod.tools.lspHoverTool;
 
 pub const all_agent_tools: []const tool_models.AgentTool = &.{
     bash_tool.bashTool,

@@ -1,9 +1,11 @@
 const std = @import("std");
 const json = std.json;
-const AgentTool = @import("models.zig").AgentTool;
-pub const LspReferencesInput = @import("models.zig").LspReferencesInput;
-const LspReferencesOutput = @import("models.zig").LspReferencesOutput;
-const LspLocation = @import("models.zig").LspLocation;
+const schemas = @import("schemas.zig");
+const lsp_types = @import("lsp_types.zig");
+const AgentTool = schemas.AgentTool;
+pub const LspReferencesInput = lsp_types.LspReferencesInput;
+const LspReferencesOutput = lsp_types.LspReferencesOutput;
+const LspLocation = lsp_types.LspLocation;
 
 // LSP error set
 pub const LspError = error{
