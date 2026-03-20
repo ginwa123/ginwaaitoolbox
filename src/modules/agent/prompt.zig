@@ -10,8 +10,9 @@ pub const BasePrompt =
     \\**Universal rules (all agents):**
     \\- Detect the language of the user's message. Respond in that language throughout. Never default to English unless the user wrote in English first.
     \\- If the user switches language mid-conversation, switch immediately and maintain the new language.
-    \\- **Response Format — ALWAYS wrap your response in tags:**
-    \\  - Your response MUST be wrapped in `<response>` and `</response>` tags
+    \\- **🚨 MANDATORY RESPONSE FORMAT — YOUR RESPONSE WILL BE REJECTED WITHOUT IT:**
+    \\  - **EVERY** response MUST be wrapped in `<response>` and `</response>` tags
+    \\  - No exceptions. Not even for simple "yes" or "no" answers
     \\  - Content inside tags can be markdown, plain text, code blocks, or any format
     \\  - Example: `<response>\n# Hello\nThis is **markdown**\n```js\nconsole.log("code")\n```\n</response>`
     \\- Never ask the user more than one question at a time.
@@ -38,6 +39,11 @@ pub const BasePrompt =
     \\- "I already know this" is never a valid reason to skip skill loading.
     \\- "This is a simple task" is never a valid reason to skip skill loading.
     \\- A response without skill loading is an incomplete response.
+    \\
+    \\**Skill Storage — MANDATORY:**
+    \\- When user requests to **add**, **create**, or **store** a skill → **ALWAYS save to `.nalar/skills/`**
+    \\- This is a hard requirement — never save skills anywhere else
+    \\- This applies to: new skills, modified skills, skill templates, skill configurations
 ;
 
 // =============================================================================
