@@ -210,36 +210,33 @@ pub fn build(b: *std.Build) void {
 
     _ = b.step("run:kerjabot", "Kerjabot has been removed");
 
-    // Desktop executable using Clay UI library
-    // Note: raylib must be installed on the system for full functionality
-    // On Debian/Ubuntu: sudo apt install libraylib-dev
-    // On Arch: sudo pacman -S raylib
-    // On macOS: brew install raylib
-    const desktop_exe = b.addExecutable(.{
-        .name = "nalarcore-desktop",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/apps/desktop/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{},
-        }),
-    });
-    desktop_exe.linkSystemLibrary("ssl");
-    desktop_exe.linkSystemLibrary("crypto");
-    desktop_exe.linkSystemLibrary("raylib");
-    desktop_exe.linkLibC();
-    desktop_exe.addIncludePath(.{ .cwd_relative = "src/apps/desktop" });
-    desktop_exe.addIncludePath(.{ .cwd_relative = "src/apps/desktop/renderer" });
-    desktop_exe.addCSourceFile(.{
-        .file = b.path("src/apps/desktop/renderer/clay.c"),
-    });
-    desktop_exe.addCSourceFile(.{
-        .file = b.path("src/apps/desktop/renderer/clay_renderer_raylib.c"),
-    });
-    b.installArtifact(desktop_exe);
-
-    const desktop_step = b.step("run:desktop", "Run the Desktop app (requires raylib)");
-    const desktop_cmd = b.addRunArtifact(desktop_exe);
-    desktop_step.dependOn(&desktop_cmd.step);
-    desktop_cmd.step.dependOn(b.getInstallStep());
+    // Desktop executable disabled - desktop source files not present
+    // Uncomment when desktop files are added back
+    // const desktop_exe = b.addExecutable(.{
+    //     .name = "nalarcore-desktop",
+    //     .root_module = b.createModule(.{
+    //         .root_source_file = b.path("src/apps/desktop/main.zig"),
+    //         .target = target,
+    //         .optimize = optimize,
+    //         .imports = &.{},
+    //     }),
+    // });
+    // desktop_exe.linkSystemLibrary("ssl");
+    // desktop_exe.linkSystemLibrary("crypto");
+    // desktop_exe.linkSystemLibrary("raylib");
+    // desktop_exe.linkLibC();
+    // desktop_exe.addIncludePath(.{ .cwd_relative = "src/apps/desktop" });
+    // desktop_exe.addIncludePath(.{ .cwd_relative = "src/apps/desktop/renderer" });
+    // desktop_exe.addCSourceFile(.{
+    //     .file = b.path("src/apps/desktop/renderer/clay.c"),
+    // });
+    // desktop_exe.addCSourceFile(.{
+    //     .file = b.path("src/apps/desktop/renderer/clay_renderer_raylib.c"),
+    // });
+    // b.installArtifact(desktop_exe);
+    //
+    // const desktop_step = b.step("run:desktop", "Run the Desktop app (requires raylib)");
+    // const desktop_cmd = b.addRunArtifact(desktop_exe);
+    // desktop_step.dependOn(&desktop_cmd.step);
+    // desktop_cmd.step.dependOn(b.getInstallStep());
 }

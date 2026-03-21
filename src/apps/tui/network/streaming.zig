@@ -138,46 +138,37 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
             defer app.allocator.free(decoded);
             raw_buffer_processed_len = raw_buffer.items.len;
 
+            // Debug: print decoded size
+            tuiText.print("{s}[DEBUG] Decoded: {d} bytes{s}\n", .{ globals.dim, decoded.len, globals.reset });
+
             if (sse.extractSseData(app.allocator, decoded)) |xml| {
                 defer app.allocator.free(xml);
 
-                // var chunk_pos: usize = 0;
-                // while (std.mem.indexOfPos(u8, xml, chunk_pos, "<chunk")) |chunk_start| {
-                //     const chunk_end = std.mem.indexOfPos(u8, xml, chunk_start, "</chunk>") orelse break;
-                //     const chunk_block = xml[chunk_start .. chunk_end + "</chunk>".len];
-                //     chunk_pos = chunk_end + "</chunk>".len;
-                //
-                //     var chunk_index: usize = 0;
-                //     if (std.mem.indexOfPos(u8, chunk_block, 0, "index=\"")) |idx_start| {
-                //         const idx_end = std.mem.indexOfPos(u8, chunk_block, idx_start + 7, "\"") orelse continue;
-                //         const idx_str = chunk_block[idx_start + 7 .. idx_end];
-                //         chunk_index = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                //     }
-                //
-                //     if (chunk_index >= last_printed_chunk_index) {
-                //         last_printed_chunk_index = chunk_index + 1;
-                //         if (utils.extractTag(chunk_block, "content")) |content| {
-                //             if (content.len > 0) {
-                //                 if (!streaming_started) {
-                //                     tuiText.print("\r\x1b[2K", .{});
-                //                     streaming_started = true;
-                //                 }
-                //                 tuiText.print("{s}", .{content});
-                //             }
-                //         }
-                //     }
-                // }
+                // Debug: print XML preview
+                const xml_preview = xml[0..@min(xml.len, 500)];
+                tuiText.print("{s}[DEBUG] XML ({d} bytes): {s}{s}\n", .{ globals.dim, xml.len, xml_preview, globals.reset });
 
-                if (response.extractContentResult(app.allocator, xml)) |extract_result| {
+                if (try response.extractContentResult(app.allocator, xml)) |extract_result| {
                     var content_list = extract_result.content_results;
                     defer content_list.deinit(app.allocator);
 
+                    // Debug: print extraction results
+                    tuiText.print("{s}[DEBUG] Found {d} content results{s}\n", .{ globals.dim, content_list.items.len, globals.reset });
+
                     for (content_list.items) |result| {
+                        const xml_type_str: []const u8 = switch (result.xml_type) {
+                            .response => "response",
+                            .tool_result => "tool_result",
+                            .content => "content",
+                        };
+                        tuiText.print("{s}[DEBUG] Content ({s}): {s}{s}\n", .{ globals.cyan, xml_type_str, result.content[0..@min(result.content.len, 200)], globals.reset });
                         if (result.content.len > 0) {
                             streaming_started = true;
                             tuiText.print("{s}", .{result.content});
                         }
                     }
+                } else {
+                    tuiText.print("{s}[DEBUG] extractContentResult returned null (no <response>/<tool_result> tags found){s}\n", .{ globals.red, globals.reset });
                 }
 
                 if (tool_results.extractToolResults(app.allocator, xml)) |tr_val| {
