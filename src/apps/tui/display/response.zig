@@ -21,10 +21,10 @@ pub fn extractContentResult(allocator: std.mem.Allocator, xml: []const u8) ?Extr
     // Extract all content tags
     var pos: usize = 0;
     while (pos < xml.len) {
-        const content_start = std.mem.indexOfPos(u8, xml, pos, "<content>") orelse break;
-        const content_end = std.mem.indexOfPos(u8, xml, content_start, "</content>") orelse break;
-        const content = xml[content_start + "<content>".len .. content_end];
-        pos = content_end + "</content>".len;
+        const content_start = std.mem.indexOfPos(u8, xml, pos, "<response>") orelse break;
+        const content_end = std.mem.indexOfPos(u8, xml, content_start, "</response>") orelse break;
+        const content = xml[content_start + "<response>".len .. content_end];
+        pos = content_end + "</response>".len;
         if (content.len > 0) {
             results.append(allocator, .{ .content = content }) catch break;
         }
