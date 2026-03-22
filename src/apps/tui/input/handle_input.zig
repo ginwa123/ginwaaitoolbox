@@ -5,6 +5,7 @@ const command_defs = @import("../commands/command_defs.zig");
 const command_handlers = @import("../commands/handlers.zig");
 const escape = @import("escape.zig");
 const raw_mode = @import("../terminal/raw_mode.zig");
+const App = @import("../main.zig").App;
 
 const KEYBINDING = enum(u8) {
     CTRL_C = 3,
@@ -12,7 +13,7 @@ const KEYBINDING = enum(u8) {
 };
 
 /// Clear completion display
-pub fn clearCompletions(app: anytype) void {
+pub fn clearCompletions(app: *App) void {
     if (app.state.last_match_count == 0) return;
     var i: usize = 0;
     while (i < app.state.last_match_count) : (i += 1) {
@@ -25,7 +26,7 @@ pub fn clearCompletions(app: anytype) void {
 }
 
 /// Render completion suggestions
-pub fn renderCompletions(app: anytype) void {
+pub fn renderCompletions(app: *App) void {
     if (app.state.last_match_count > 0) {
         var i: usize = 0;
         while (i < app.state.last_match_count) : (i += 1) {
@@ -76,7 +77,7 @@ pub fn renderCompletions(app: anytype) void {
 }
 
 /// Handle keyboard input
-pub fn handleInput(app: anytype) !bool {
+pub fn handle_input(app: *App) !bool {
     var buf: [1]u8 = undefined;
     const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
     if (n == 0) {

@@ -10,11 +10,6 @@ pub const BasePrompt =
     \\**Universal rules (all agents):**
     \\- Detect the language of the user's message. Respond in that language throughout. Never default to English unless the user wrote in English first.
     \\- If the user switches language mid-conversation, switch immediately and maintain the new language.
-    \\- **MANDATORY RESPONSE FORMAT — YOUR RESPONSE WILL BE REJECTED WITHOUT IT:**
-    \\  - **EVERY** response MUST be wrapped in `<response>` and `</response>` tags
-    \\  - No exceptions. Not even for simple "yes" or "no" answers
-    \\  - Content inside tags can be markdown, plain text, code blocks, or any format
-    \\  - Example: `<response>\n# Hello\nThis is **markdown**\n```js\nconsole.log("code")\n```\n</response>`
     \\- Never ask the user more than one question at a time.
     \\- Think before acting. Do, don't describe.
     \\- State assumptions before acting on them.

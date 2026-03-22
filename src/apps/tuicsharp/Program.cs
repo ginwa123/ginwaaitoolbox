@@ -17,40 +17,40 @@ internal static partial class NativeMethods
 {
     [DllImport("libc", SetLastError = true)]
     public static extern IntPtr fork();
-    
+
     [DllImport("libc", SetLastError = true)]
     public static extern int daemon(int nochdir, int noclose);
-    
+
     [DllImport("libc", SetLastError = true)]
     public static extern int execv(string path, IntPtr argv);
-    
+
     [DllImport("libc", SetLastError = true)]
     public static extern IntPtr malloc(IntPtr size);
-    
+
     [DllImport("libc", SetLastError = true)]
     public static extern void free(IntPtr ptr);
-    
+
     /// Execute a program with the given arguments
     public static void execvp(string file, string[] args)
     {
         // Build argument array with null terminator
         var argc = args.Length + 2; // program name + args + null
         var argvPtrs = new IntPtr[argc];
-        
+
         // Allocate array of pointers (8 bytes each on 64-bit)
         var argvSize = (IntPtr)(argc * IntPtr.Size);
         var argv = malloc(argvSize);
         if (argv == IntPtr.Zero) Environment.Exit(1);
-        
+
         var strPtrs = new List<IntPtr>();
-        
+
         try
         {
             // First arg is program name
             var progPtr = Marshal.StringToHGlobalAnsi(file);
             strPtrs.Add(progPtr);
             Marshal.WriteIntPtr(argv, 0, progPtr);
-            
+
             // Remaining args
             for (int i = 0; i < args.Length; i++)
             {
@@ -58,13 +58,13 @@ internal static partial class NativeMethods
                 strPtrs.Add(argPtr);
                 Marshal.WriteIntPtr(argv, i * IntPtr.Size + IntPtr.Size, argPtr);
             }
-            
+
             // Null terminator
             Marshal.WriteIntPtr(argv, args.Length * IntPtr.Size + IntPtr.Size, IntPtr.Zero);
-            
+
             // execv replaces this process
             execv(file, argv);
-            
+
             // If we get here, exec failed
             Environment.Exit(1);
         }
@@ -78,16 +78,16 @@ internal static partial class NativeMethods
             free(argv);
         }
     }
-    
+
     [DllImport("libc", SetLastError = true)]
     public static extern int usleep(uint usec);
-    
+
     [DllImport("libc", SetLastError = true)]
     public static extern IntPtr realpath(string path, IntPtr resolved_path);
-    
+
     [DllImport("libc", SetLastError = true)]
     public static extern int setsid();
-    
+
     [DllImport("libc")]
     public static extern void _exit(int status);
 }
@@ -96,7 +96,7 @@ internal static partial class NativeMethods
 internal static class BackendManager
 {
     private const int DefaultPort = 8080;
-    
+
     /// Check if backend is already running by trying to connect to HTTP port
     private static bool IsBackendRunning(int port)
     {
@@ -113,12 +113,12 @@ internal static class BackendManager
             return false;
         }
     }
-    
+
     /// Resolve the real path of the backend binary (handles symlinks)
     private static string? ResolveBackendPath()
     {
         var path = "/usr/local/bin/nalar";
-        
+
         // Method 1: Try realpath first to resolve symlinks
         var resolved = NativeMethods.realpath(path, IntPtr.Zero);
         if (resolved != IntPtr.Zero)
@@ -127,20 +127,20 @@ internal static class BackendManager
             if (File.Exists(resolvedStr))
                 return resolvedStr;
         }
-        
+
         // Method 2: Fallback to File.Exists on original path
         if (File.Exists(path))
             return path;
-        
+
         return null;
     }
-    
+
     /// Public version for debugging (exposes ResolveBackendPath)
     public static string? ResolveBackendPathForDebug()
     {
         return ResolveBackendPath();
     }
-    
+
     /// Spawn the nalar backend as a daemon process
     public static bool SpawnBackend(bool verbose, int port = DefaultPort)
     {
@@ -148,7 +148,7 @@ internal static class BackendManager
         {
             AnsiConsole.MarkupLine($"[dim]Checking if backend is already running on port {port}...[/]");
         }
-        
+
         // Check if backend is already running
         if (IsBackendRunning(port))
         {
@@ -158,7 +158,7 @@ internal static class BackendManager
             }
             return true;
         }
-        
+
         // Get the backend path with symlink resolution
         var backendPath = ResolveBackendPath();
         if (backendPath == null)
@@ -169,12 +169,12 @@ internal static class BackendManager
             }
             return false;
         }
-        
+
         if (verbose)
         {
             AnsiConsole.MarkupLine($"[yellow]Spawning backend on port {port}...[/]");
         }
-        
+
         // Use native_daemon helper to avoid .NET's problematic fork() semantics
         // The native helper does fork/setsid/daemon/exec in one step
         var nativeDaemonPath = Path.Combine(AppContext.BaseDirectory, "native_daemon");
@@ -183,7 +183,7 @@ internal static class BackendManager
             // Try local build path
             nativeDaemonPath = "/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp/native_daemon";
         }
-        
+
         if (!File.Exists(nativeDaemonPath))
         {
             if (verbose)
@@ -192,7 +192,7 @@ internal static class BackendManager
             }
             return false;
         }
-        
+
         // Spawn via native_daemon: it handles fork/setsid/daemon/exec properly
         var startInfo = new ProcessStartInfo
         {
@@ -201,7 +201,7 @@ internal static class BackendManager
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        
+
         try
         {
             using var process = Process.Start(startInfo);
@@ -209,7 +209,7 @@ internal static class BackendManager
             {
                 // Wait a moment for the process to spawn and daemonize
                 Thread.Sleep(500);
-                
+
                 // Check if process exited immediately (failure)
                 if (process.HasExited && process.ExitCode != 0)
                 {
@@ -220,7 +220,7 @@ internal static class BackendManager
                     return false;
                 }
             }
-            
+
             if (verbose)
             {
                 AnsiConsole.MarkupLine("[dim]Backend spawned via native daemon[/]");
@@ -236,12 +236,12 @@ internal static class BackendManager
             return false;
         }
     }
-    
+
     /// Wait for the HTTP server to become available
     public static async Task<bool> WaitForHttpServerAsync(int timeoutMs = 5000, int port = DefaultPort)
     {
         var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
-        
+
         while (DateTimeOffset.UtcNow < deadline)
         {
             try
@@ -251,16 +251,16 @@ internal static class BackendManager
                 socket.ReceiveTimeout = 100;
                 socket.SendTimeout = 100;
                 socket.Connect("127.0.0.1", port);
-                
+
                 // Socket connected - now try HTTP request
                 var request = "GET /api/session HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
                 var requestBytes = Encoding.ASCII.GetBytes(request);
                 socket.Send(requestBytes);
-                
+
                 var buffer = new byte[1024];
                 var bytesReceived = socket.Receive(buffer);
                 var response = Encoding.ASCII.GetString(buffer, 0, bytesReceived);
-                
+
                 // Check for HTTP 200 OK
                 if (response.Contains("200"))
                 {
@@ -335,14 +335,14 @@ public class DefaultCommand : AsyncCommand<DefaultCommand.Settings>
         {
             // More diagnostic output
             AnsiConsole.MarkupLine("[yellow]Backend check failed. Debugging...[/]");
-            
+
             // Check if binary exists
             var debugBackendPath = BackendManager.ResolveBackendPathForDebug();
             if (debugBackendPath != null)
                 AnsiConsole.MarkupLine($"[dim]  Binary exists: {debugBackendPath}[/]");
             else
                 AnsiConsole.MarkupLine("[red]  Binary NOT found![/]");
-            
+
             // Check what process is on port (if any)
             try
             {
@@ -354,12 +354,12 @@ public class DefaultCommand : AsyncCommand<DefaultCommand.Settings>
             {
                 AnsiConsole.MarkupLine($"[dim]  Port {port} is not accepting connections[/]");
             }
-            
+
             AnsiConsole.MarkupLine("[yellow]Backend may not be fully ready, proceeding anyway...[/]");
         }
 
         AnsiConsole.MarkupLine("[dim]Sending query to LLM...[/]");
-        
+
         // Run synchronous streaming in a task
         await Task.Run(() => StreamLlmResponse(settings.Query, port), cancellationToken);
 
@@ -386,25 +386,25 @@ public class DefaultCommand : AsyncCommand<DefaultCommand.Settings>
         string sessionId = $"session_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
         Socket? sseSocket = null;
         Socket? postSocket = null;
-        
+
         try
         {
             // Create SSE socket
             sseSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             sseSocket.NoDelay = true;
             sseSocket.Connect(HttpHost, port);
-            
+
             // Send SSE subscription
             var sseRequest = $"GET /api/stream/{sessionId} HTTP/1.1\r\nHost: {HttpHost}:{port}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n";
             sseSocket.Send(Encoding.UTF8.GetBytes(sseRequest));
-            
+
             // Wait for connected
             if (!WaitForConnected(sseSocket, 5000))
             {
                 AnsiConsole.MarkupLine("[red]Failed to connect[/]");
                 return;
             }
-            
+
             // Send message via POST
             var jsonPayload = JsonSerializer.Serialize(new
             {
@@ -414,15 +414,15 @@ public class DefaultCommand : AsyncCommand<DefaultCommand.Settings>
                 content = EscapeJsonString(query),
                 cwd_session = Environment.CurrentDirectory
             });
-            
+
             postSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             postSocket.Connect(HttpHost, port);
-            
+
             var postRequest = $"POST /api/command HTTP/1.1\r\nHost: {HttpHost}:{port}\r\nContent-Type: application/json\r\nContent-Length: {jsonPayload.Length}\r\n\r\n{jsonPayload}";
             postSocket.Send(Encoding.UTF8.GetBytes(postRequest));
             postSocket.Close();
             postSocket = null;
-            
+
             // Stream response
             AnsiConsole.Markup("[bold cyan]Response:[/] ");
             StreamResponse(sseSocket);
@@ -444,7 +444,7 @@ public class DefaultCommand : AsyncCommand<DefaultCommand.Settings>
         var buffer = new byte[4096];
         var sb = new StringBuilder();
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        
+
         while (DateTime.UtcNow < deadline)
         {
             if (socket.Poll(100000, SelectMode.SelectRead))
@@ -467,182 +467,180 @@ public class DefaultCommand : AsyncCommand<DefaultCommand.Settings>
         var rawBuffer = new StringBuilder();
         bool foundResponse = false;
         int loopCount = 0;
-        
+
         while (true)
         {
             if (socket.Poll(100000, SelectMode.SelectRead))
             {
                 int n = socket.Receive(buffer);
                 if (n == 0) break;
-                
+
                 rawBuffer.Append(Encoding.UTF8.GetString(buffer, 0, n));
-                
+
                 // Process all complete SSE events in the buffer
                 foundResponse = ProcessSseBuffer(rawBuffer, foundResponse);
-                
+
                 // Check for finish
-                if (rawBuffer.ToString().Contains("</finish_reason>")) 
+                if (rawBuffer.ToString().Contains("</finish_reason>"))
                 {
                     break;
                 }
             }
             loopCount++;
-            if (loopCount > 1000) {
+            if (loopCount > 1000)
+            {
                 break;
             }
         }
-        
+
         if (!foundResponse) AnsiConsole.Markup("[dim](no response)[/]");
     }
 
     /// Process the raw buffer to extract and display SSE events
-    private static bool ProcessSseBuffer(StringBuilder rawBuffer, bool foundResponse)
+    internal static bool ProcessSseBuffer(StringBuilder rawBuffer, bool foundResponse)
     {
         var raw = rawBuffer.ToString();
-        
+
         // Skip HTTP headers to get body
         var headerEnd = raw.IndexOf("\r\n\r\n");
         var body = (headerEnd >= 0) ? raw.Substring(headerEnd + 4) : raw;
-        
+
         if (string.IsNullOrEmpty(body)) return foundResponse;
-        
+
         // Decode chunked transfer encoding if present
         var decodedBody = TryDecodeChunked(body);
-        
+
         if (string.IsNullOrEmpty(decodedBody)) return foundResponse;
-        
+
         // Parse SSE format: "event: type\ndata: content\ndata: more\n\n"
         // The double newline separates events
-        
+
         // Split by double newline to get event chunks
-        var eventChunks = decodedBody.Split(new string[] {"\n\n"}, StringSplitOptions.None);
-        
+        var eventChunks = decodedBody.Split(new string[] { "\n\n" }, StringSplitOptions.None);
+
         foreach (var chunk in eventChunks)
         {
             if (string.IsNullOrEmpty(chunk)) continue;
-            
+
             // Parse this event chunk - extract event type and data
             var eventType = "";
             var eventData = new StringBuilder();
-            
+
             // Split by single newline to process each line
             var lines = chunk.Split('\n');
             foreach (var line in lines)
             {
                 var trimmed = line.TrimEnd('\r');
-                
+                trimmed = trimmed.Trim();
+
                 // Skip empty lines
                 if (string.IsNullOrEmpty(trimmed)) continue;
-                
+
                 // Skip comment lines (keepalive)
                 if (trimmed.StartsWith(":")) continue;
-                
+
                 // Event type
                 if (trimmed.StartsWith("event:"))
                 {
                     eventType = trimmed.Substring(6).Trim();
                     continue;
                 }
-                
+
                 // Data line
                 if (trimmed.StartsWith("data:"))
                 {
                     eventData.Append(trimmed.Substring(5));
                     continue;
                 }
-                
+
                 // Continuation of data
                 eventData.Append(trimmed);
             }
-            
+
             // Process this event's data
             var dataStr = eventData.ToString();
             if (!string.IsNullOrEmpty(dataStr))
             {
                 foundResponse = ParseAndDisplayXml(dataStr, foundResponse);
+                if (foundResponse) break;
             }
         }
-        
+
         return foundResponse;
     }
 
     /// Try to decode chunked transfer encoding, return original if not chunked
-    private static string TryDecodeChunked(string body)
+    internal static string TryDecodeChunked(string body)
     {
-        // Check if body starts with hex number (chunked encoding)
-        var firstLineEnd = body.IndexOf('\n');
-        if (firstLineEnd <= 0) return body;
-        
-        var firstLine = body.Substring(0, firstLineEnd).Trim();
-        if (!int.TryParse(firstLine, System.Globalization.NumberStyles.HexNumber, null, out int chunkSize) || chunkSize <= 0)
-        {
-            return body;
-        }
-        
-        // It's chunked encoding - decode it
+        // Chunked transfer encoding format:
+        // size\r\n
+        // data (exactly 'size' bytes, may contain \r\n)\r\n
+        // ... repeat ...
+        // 0\r\n
+        // \r\n
+
+        var pos = 0;
         var result = new StringBuilder();
-        var pos = firstLineEnd + 1;
-        
+        var isChunked = false;
+
         while (pos < body.Length)
         {
-            // Find next chunk size line
+            // Find end of size line
             var lineEnd = body.IndexOf('\n', pos);
             if (lineEnd == -1) break;
-            
+
             var sizeLine = body.Substring(pos, lineEnd - pos).Trim();
             pos = lineEnd + 1;
-            
+
             if (string.IsNullOrEmpty(sizeLine)) continue;
-            
+
             // Parse hex chunk size
             if (!int.TryParse(sizeLine, System.Globalization.NumberStyles.HexNumber, null, out int size))
             {
                 break;
             }
-            
+
+            isChunked = true;
+
             if (size == 0) break; // End of chunks
-            
-            // Extract chunk data
-            if (pos + size <= body.Length)
-            {
-                result.Append(body.Substring(pos, size));
-                pos += size;
-                
-                // Skip trailing \r\n
-                if (pos < body.Length && body[pos] == '\r') pos++;
-                if (pos < body.Length && body[pos] == '\n') pos++;
-            }
-            else
-            {
-                break;
-            }
+
+            // Extract chunk data (exactly 'size' bytes, including any \r\n within)
+            if (pos + size > body.Length) break;
+
+            result.Append(body.Substring(pos, size));
+            pos += size;
+
+            // Skip trailing \r\n after chunk data
+            if (pos < body.Length && body[pos] == '\r') pos++;
+            if (pos < body.Length && body[pos] == '\n') pos++;
         }
-        
-        return result.ToString();
+
+        return isChunked ? result.ToString() : body;
     }
 
     /// Parse XML content and display response/tool_result tags
+    /// need testing
     private static bool ParseAndDisplayXml(string xmlContent, bool foundResponse)
     {
         if (string.IsNullOrEmpty(xmlContent)) return foundResponse;
-        
+
         // Unescape XML entities
         xmlContent = xmlContent.Replace("&lt;", "<")
                             .Replace("&gt;", ">")
                             .Replace("&amp;", "&")
                             .Replace("&quot;", "\"")
                             .Replace("&apos;", "'");
-        
+
         // Find <response> tags
         var idx = 0;
         while ((idx = xmlContent.IndexOf("<response>", idx)) != -1)
         {
             var endIdx = xmlContent.IndexOf("</response>", idx);
             if (endIdx == -1) break;
-            
+
             var responseContent = xmlContent.Substring(idx + 10, endIdx - idx - 10);
             idx = endIdx + 11;
-            
+
             if (!string.IsNullOrEmpty(responseContent))
             {
                 // Extract content from nested <content> tag
@@ -668,24 +666,24 @@ public class DefaultCommand : AsyncCommand<DefaultCommand.Settings>
                 }
             }
         }
-        
+
         // Also handle <tool_result> tags
         idx = 0;
         while ((idx = xmlContent.IndexOf("<tool_result>", idx)) != -1)
         {
             var endIdx = xmlContent.IndexOf("</tool_result>", idx);
             if (endIdx == -1) break;
-            
+
             var content = xmlContent.Substring(idx + 13, endIdx - idx - 13);
             idx = endIdx + 14;
-            
+
             if (!string.IsNullOrEmpty(content))
             {
                 AnsiConsole.Markup(content);
                 foundResponse = true;
             }
         }
-        
+
         return foundResponse;
     }
 

@@ -27,7 +27,7 @@ pub const CompletionState = struct {
     matches: std.ArrayList([]const u8),
 };
 
-const App = struct {
+pub const App = struct {
     http_client: std.http.Client,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
@@ -201,7 +201,7 @@ pub fn main() !void {
     std.debug.print("{s}>{s} ", .{ globals.bold, globals.reset });
 
     while (true) {
-        const should_exit = try input.handleInput(&app);
+        const should_exit = try input.handle_input(&app);
         if (should_exit) {
             std.debug.print("\r\n{s}Bye!{s} session_id: {s}\r\n", .{ globals.dim, globals.reset, app.session_id });
             break;

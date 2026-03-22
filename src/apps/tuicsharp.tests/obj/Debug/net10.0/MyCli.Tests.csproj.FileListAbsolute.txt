@@ -1,0 +1,8 @@
+/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp.tests/bin/Debug/net10.0/.msCoverageSourceRootsMapping_MyCli.Tests
+/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp.tests/bin/Debug/net10.0/CoverletSourceRootsMapping_MyCli.Tests
+/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp.tests/obj/Debug/net10.0/MyCli.Tests.csproj.AssemblyReference.cache
+/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp.tests/obj/Debug/net10.0/MyCli.Tests.GeneratedMSBuildEditorConfig.editorconfig
+/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp.tests/obj/Debug/net10.0/MyCli.Tests.AssemblyInfoInputs.cache
+/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp.tests/obj/Debug/net10.0/MyCli.Tests.AssemblyInfo.cs
+/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp.tests/obj/Debug/net10.0/MyCli.Tests.csproj.CoreCompileInputs.cache
+/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/tuicsharp.tests/obj/Debug/net10.0/MyCli.Tests.sourcelink.json

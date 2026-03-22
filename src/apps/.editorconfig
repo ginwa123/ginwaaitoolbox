@@ -1,0 +1,9 @@
+[*.cs]
+# Avoid 'var' for built-in types
+csharp_style_var_for_built_in_types = false:none
+
+# Avoid 'var' when type is apparent
+csharp_style_var_when_type_is_apparent = false:none
+
+# Avoid 'var' elsewhere
+csharp_style_var_elsewhere = false:none
