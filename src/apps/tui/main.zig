@@ -29,7 +29,6 @@ pub const CompletionState = struct {
 
 pub const App = struct {
     http_client: std.http.Client,
-    arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
     original_termios: ?std.posix.termios,
     session_id: []u8,
@@ -50,9 +49,9 @@ pub const App = struct {
             std.debug.print("{s}Make sure /usr/local/bin/nalar exists (run: zig build install){s}\n", .{ globals.yellow, globals.reset });
             return err;
         };
-        std.log.info("Spawned backend", .{});
+        // std.log.info("Spawned backend", .{});
         try backend.waitForHttpServer(10000, http_port);
-        std.log.info("HTTP server ready", .{});
+        // std.log.info("HTTP server ready", .{});
 
         // Only enable raw mode when running interactively (has a real TTY)
         // In non-interactive mode (e.g., -q flag), there's no terminal
@@ -61,9 +60,9 @@ pub const App = struct {
         if (!is_noninteractive) {
             if (stdin_is_tty) {
                 original_termios = try raw_mode.enableRawMode();
-                std.log.info("Raw mode enabled", .{});
+                // std.log.info("Raw mode enabled", .{});
             } else {
-                std.log.info("Running in non-interactive mode (stdin is not a TTY)", .{});
+                // std.log.info("Running in non-interactive mode (stdin is not a TTY)", .{});
             }
         }
 
@@ -73,7 +72,6 @@ pub const App = struct {
         const http_client = std.http.Client{ .allocator = arena.allocator() };
         return App{
             .http_client = http_client,
-            .arena = arena,
             .allocator = allocator,
             .original_termios = original_termios,
             .session_id = "",
@@ -99,7 +97,6 @@ pub const App = struct {
         app.input.deinit(app.allocator);
         app.state.matches.deinit(app.allocator);
         app.http_client.deinit();
-        app.arena.deinit();
     }
 };
 
@@ -167,7 +164,10 @@ pub fn main() !void {
         is_noninteractive,
         opts.port,
     );
-    if (opts.continue_session) |session_id| {
+
+    // Handle session ID: -c alone = auto-detect latest, -c <id> = specific session, no flag = new session
+    if (opts.continue_session_id) |session_id| {
+        // -c <session_id> provided
         app.session_id = try app.allocator.dupe(u8, session_id);
 
         // Check if session exists in database before continuing
@@ -180,9 +180,27 @@ pub fn main() !void {
             tui_text.print("{s}Use /sessions to see available sessions or start a new session.{s}\n", .{ globals.yellow, globals.reset });
             return error.SessionNotFound;
         }
-        // TODO: Fetch history when backend supports get_history command
-    }
+    } else if (opts.continue_session) {
+        // -c alone = auto-detect latest session
+        var cwd_buf: [4096]u8 = undefined;
+        const cwd = std.posix.getcwd(&cwd_buf) catch |err| {
+            tui_text.print("{s}Error: Failed to get current directory: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
+            return err;
+        };
+        const cwd_slice = std.mem.sliceTo(cwd, 0);
 
+        var opt_session_id: ?[]const u8 = null;
+        opt_session_id = try messaging.get_latest_session_by_dir(app.allocator, app.http_port, cwd_slice);
+        if (opt_session_id) |session_id| {
+            app.session_id = try app.allocator.dupe(u8, session_id);
+            tui_text.print("{s}Resuming latest session for this directory: {s}{s}\n", .{ globals.green, session_id, globals.reset });
+        } else {
+            tui_text.print("{s}Warning: No previous session found for this directory. Starting new session.{s}\n", .{ globals.yellow, globals.reset });
+        }
+    }
+    // else: no -c flag = new session (will be created below if session_id is empty)
+
+    // Always ensure we have a session_id (either from -c, auto-detected, or new)
     if (std.mem.eql(u8, app.session_id, "")) {
         app.session_id = try std.fmt.allocPrint(app.allocator, "session_{}", .{std.time.timestamp()});
     }
@@ -190,7 +208,6 @@ pub fn main() !void {
     // Query mode: send single query and exit
     if (opts.query) |query| {
         try runQueryMode(&app, query);
-        std.debug.print("\r\n{s}Bye!{s} session_id: {s}\r\n", .{ globals.dim, globals.reset, app.session_id });
         return;
     }
 

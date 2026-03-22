@@ -3,7 +3,8 @@ const std = @import("std");
 /// CLI options structure
 pub const CliOptions = struct {
     query: ?[]const u8 = null,
-    continue_session: ?[]const u8 = null,
+    continue_session: bool = false,  // true = auto-detect latest session
+    continue_session_id: ?[]const u8 = null,  // specific session ID if provided
     show_help: bool = false,
     show_version: bool = false,
     verbose: bool = false,
@@ -27,14 +28,20 @@ pub fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
             // CRITICAL: Allocate query BEFORE args is freed
             opts.query = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--continue") or std.mem.eql(u8, arg, "--session")) {
-            if (i + 1 >= args.len) {
-                return error.MissingSessionArgument;
+            // -c alone = auto-detect latest session
+            // -c <session_id> = continue specific session
+            opts.continue_session = true;
+            if (i + 1 < args.len) {
+                // Check if next arg is a flag or a session ID
+                const next_arg = args[i + 1];
+                if (std.mem.startsWith(u8, next_arg, "-")) {
+                    // Next arg is a flag, not a session ID - auto-detect only
+                } else {
+                    // Next arg is a session ID
+                    i += 1;
+                    opts.continue_session_id = try allocator.dupe(u8, args[i]);
+                }
             }
-            i += 1;
-            // CRITICAL: Allocate session_id BEFORE args is freed
-            // The args buffer will be freed by defer below, so we must
-            // dupe the session_id now while args is still valid.
-            opts.continue_session = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             opts.show_help = true;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
@@ -62,14 +69,15 @@ pub fn printHelp() void {
     std.debug.print("Usage: nalar-tui [options]\n\n", .{});
     std.debug.print("Options:\n", .{});
     std.debug.print("  -q, --query <prompt>    Send a query prompt (one-shot mode)\n", .{});
-    std.debug.print("  -c, --continue, --session <session_id> Resume an existing session\n", .{});
+    std.debug.print("  -c, --continue          Resume latest session (auto-detect)\n", .{});
+    std.debug.print("  -c <session_id>         Resume specific session\n", .{});
     std.debug.print("  -p, --port <port>       HTTP server port (default: 8080)\n", .{});
     std.debug.print("  -v, --version           Print version\n", .{});
     std.debug.print("  -h, --help              Show help\n\n", .{});
     std.debug.print("Examples:\n", .{});
+    std.debug.print("  nalar-tui               Start new session\n", .{});
+    std.debug.print("  nalar-tui -c            Resume latest session\n", .{});
+    std.debug.print("  nalar-tui -c abc123     Resume specific session\n", .{});
     std.debug.print("  nalar-tui -q \"What is the capital of France?\"\n", .{});
-    std.debug.print("  nalar-tui -c abc123 -q \"Summarize that in one sentence.\"\n", .{});
-    std.debug.print("  nalar-tui --session sessionContinue -q \"Continue the conversation\"\n", .{});
-    std.debug.print("  nalar-tui -p 8081       Connect to HTTP server on port 8081\n", .{});
-    std.debug.print("  nalar-tui               Start interactive session\n", .{});
+    std.debug.print("  nalar-tui -c -p 8081    Resume latest session on port 8081\n", .{});
 }

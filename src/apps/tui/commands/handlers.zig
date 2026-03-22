@@ -1,6 +1,7 @@
 const std = @import("std");
 const command_defs = @import("command_defs.zig");
 const tui_text = @import("tui-text");
+const App = @import("../main.zig").App;
 
 const reset = tui_text.ansi.reset;
 const bold = tui_text.ansi.bold;
@@ -8,12 +9,9 @@ const dim = tui_text.ansi.dim;
 const green = tui_text.ansi.green;
 const yellow = tui_text.ansi.yellow;
 
-/// App type - forward declared, will be passed as anytype or we use a generic approach
-/// Since we're splitting files, we'll use anytype for the app parameter to avoid circular imports
-
 /// Execute a command by name
 /// Returns true if the app should exit, false otherwise
-pub fn executeCommand(app: anytype, command: []const u8) !bool {
+pub fn executeCommand(app: *App, command: []const u8) !bool {
     if (std.mem.eql(u8, command, "/sessions")) {
         return commandSessions(app);
     }
@@ -34,7 +32,7 @@ pub fn executeCommand(app: anytype, command: []const u8) !bool {
 
 // ─── Command Handlers ────────────────────────────────────────────────────────
 
-fn commandSessions(app: anytype) !bool {
+fn commandSessions(app: *App) !bool {
     std.debug.print("\r\n", .{});
     // Import the streaming function from network module
     const streaming = @import("../network/streaming.zig");
@@ -44,11 +42,11 @@ fn commandSessions(app: anytype) !bool {
     return false;
 }
 
-fn commandExit(_: anytype) !bool {
+fn commandExit(_: *App) !bool {
     return true;
 }
 
-fn commandHelp(_: anytype) !bool {
+fn commandHelp(_: *App) !bool {
     std.debug.print("\r\n{s}Available commands:{s}\r\n", .{ bold, reset });
     const commands = command_defs.getCommands();
     for (commands) |cmd| {
@@ -58,7 +56,7 @@ fn commandHelp(_: anytype) !bool {
     return false;
 }
 
-fn commandClear(app: anytype) !bool {
+fn commandClear(app: *App) !bool {
     // Clear screen and reset cursor
     tui_text.print("\x1b[2J\x1b[H", .{});
     std.debug.print("{s}>{s} ", .{ bold, reset });
@@ -66,7 +64,7 @@ fn commandClear(app: anytype) !bool {
     return false;
 }
 
-fn commandPing(app: anytype) !bool {
+fn commandPing(app: *App) !bool {
     std.debug.print("\r\n", .{});
     const messaging = @import("../network/messaging.zig");
     const should_reconnect = messaging.sendPingCommand(app) catch false;

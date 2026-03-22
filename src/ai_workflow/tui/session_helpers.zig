@@ -106,6 +106,30 @@ pub fn get_sessions_by_dir(
     return results.toOwnedSlice(allocator);
 }
 
+/// Get the latest session for a given directory
+/// Returns null if no sessions exist for that directory
+pub fn getLatestSessionByDir(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_dir: []const u8,
+) !?SessionInfo {
+    const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created_at) as created_at FROM llm_history WHERE session_dir = ? GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT 1";
+    var rows = try db.query(allocator, sql, &[_][]const u8{session_dir});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const session = SessionInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .created_at = try allocator.dupe(u8, row.values[2]),
+        };
+        row.deinit(allocator);
+        return session;
+    }
+
+    return null;
+}
+
 // ============================================================================
 // Get Current Agent By Session ID Functions
 // ============================================================================

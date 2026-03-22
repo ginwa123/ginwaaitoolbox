@@ -413,6 +413,52 @@ pub fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!
     res.body = "{\"error\":\"Server not initialized\"}";
 }
 
+/// Get latest session by directory - finds the most recent session for a given cwd
+pub fn getLatestSessionByDirHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    res.content_type = .JSON;
+    
+    // Get the cwd from query parameter
+    const query = try req.query();
+    const cwd = query.get("cwd") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing cwd parameter\"}";
+        return;
+    };
+
+    if (global_server) |server| {
+        if (server.db) |db| {
+            const tree1 = @import("nalarcore");
+            
+            var arena = std.heap.ArenaAllocator.init(server.allocator);
+            defer arena.deinit();
+            
+            const latest_session = tree1.session_helpers.getLatestSessionByDir(arena.allocator(), db, cwd) catch {
+                res.status = 500;
+                res.body = "{\"error\":\"Database query failed\"}";
+                return;
+            };
+            
+            if (latest_session) |session| {
+                defer {
+                    arena.allocator().free(session.session_id);
+                    arena.allocator().free(session.session_dir);
+                    arena.allocator().free(session.created_at);
+                }
+                res.status = 200;
+                res.body = try std.fmt.allocPrint(req.arena, 
+                    \\{{"session_id":"{s}","session_dir":"{s}","created_at":"{s}","found":true}}
+                , .{ session.session_id, session.session_dir, session.created_at });
+            } else {
+                res.status = 200;
+                res.body = "{\"found\":false}";
+            }
+            return;
+        }
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server not initialized\"}";
+}
+
 /// Ping handler - checks if session is connected via SSE
 /// Returns JSON indicating whether the session is connected or needs reconnection
 pub fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {

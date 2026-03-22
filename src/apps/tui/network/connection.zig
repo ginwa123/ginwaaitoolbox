@@ -1,6 +1,7 @@
 const std = @import("std");
 const globals = @import("../globals.zig");
 const raw_mode = @import("../terminal/raw_mode.zig");
+const App = @import("../main.zig").App;
 
 /// Wait for SSE "connected" event from server
 /// Returns true if connected event received, false on timeout/error
@@ -32,7 +33,7 @@ pub fn waitForSseConnected(socket: std.posix.fd_t, timeout_ms: u64) bool {
 
 /// Reconnect to SSE stream for the given session
 /// Returns new socket fd on success, -1 on failure
-pub fn reconnectSseStream(app: anytype, current_socket: std.posix.fd_t) std.posix.fd_t {
+pub fn reconnectSseStream(app: *App, alloc: std.mem.Allocator, current_socket: std.posix.fd_t) std.posix.fd_t {
     // Close old socket
     std.posix.close(current_socket);
 
@@ -46,7 +47,7 @@ pub fn reconnectSseStream(app: anytype, current_socket: std.posix.fd_t) std.posi
     };
 
     // Send stream request
-    const stream_request = std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port }) catch {
+    const stream_request = std.fmt.allocPrint(alloc, "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port }) catch {
         std.posix.close(new_socket);
         return -1;
     };

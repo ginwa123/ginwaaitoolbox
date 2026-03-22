@@ -332,6 +332,7 @@ pub fn main() !void {
             router.post("/api/session/create", http_server.sessionCreateHandler, .{});
             router.get("/api/session", http_server.sessionListHandler, .{});
             router.get("/api/session/exists/:session_id", http_server.sessionExistsHandler, .{});
+            router.get("/api/session/latest", http_server.getLatestSessionByDirHandler, .{});
 
             // Ping endpoint - checks if session is connected via SSE
             router.get("/api/ping/:session_id", http_server.pingHandler, .{});

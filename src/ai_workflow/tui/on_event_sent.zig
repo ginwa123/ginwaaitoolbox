@@ -111,11 +111,11 @@ pub const OnEventInput = struct {
 };
 
 /// Send an SSE event to all clients connected to the given session
-/// 
+///
 /// XML Protocol:
 /// - Response events: <response>...</response>
 /// - Tool result events: <tool_result>...</tool_result>
-/// 
+///
 /// Format is determined by whether tool_call_id is set (tool_result) or not (response)
 pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
@@ -215,9 +215,8 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
     }
 
     // Send the event via SSE manager
-    const event_type: []const u8 = if (is_tool_result) "tool_result" else "response";
     const event = http_server.SseEvent{
-        .event_type = event_type,
+        .event_type = "response",
         .data = buf.items,
     };
     try sse_manager.sendEvent(input.session_id, event);

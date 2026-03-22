@@ -7,20 +7,24 @@ const connection = @import("connection.zig");
 const utils = @import("../helpers/utils.zig");
 const tool_results = @import("../display/tool_results.zig");
 const response = @import("../display/response.zig");
+const App = @import("../main.zig").App;
 
 // Re-export ToolResult from tool_results for convenience
 pub const ToolResult = tool_results.ToolResult;
 
 /// Read response and stream LLM output
 /// This is the main streaming function for chatting with the AI
-pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
+pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var raw_buffer = std.ArrayList(u8).empty;
     errdefer raw_buffer.deinit(app.allocator);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     var buf: [4096]u8 = undefined;
-    var spinner_timer: usize = 0;
-    const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-    var last_tick: i64 = 0;
+    // var spinner_timer: usize = 0;
+    // const spinners = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+    // var last_tick: i64 = 0;
     var retry_count: usize = 0;
     var streaming_started = false;
 
@@ -44,7 +48,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
 
-    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
+    const stream_request = try std.fmt.allocPrint(alloc, "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(stream_socket, stream_request);
 
     if (!connection.waitForSseConnected(stream_socket, 5000)) {
@@ -97,7 +101,7 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
                 const needs_reconnect = messaging.sendPingCommand(app) catch false;
                 if (needs_reconnect) {
                     reconnection_attempts += 1;
-                    const new_socket = connection.reconnectSseStream(app, stream_socket);
+                    const new_socket = connection.reconnectSseStream(app, alloc, stream_socket);
                     if (new_socket < 0) {
                         tuiText.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
                         last_data_received_ms = now;
@@ -121,14 +125,14 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
             //         globals.yellow, spin, globals.reset, raw_buffer.items.len,
             //     });
             // }
-            if (!streaming_started and now - last_tick >= 100) {
-                last_tick = now;
-                const spin = spinners[spinner_timer % spinners.len];
-                spinner_timer += 1;
-                tuiText.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
-                    globals.yellow, spin, globals.reset, raw_buffer.items.len,
-                });
-            }
+            // if (!streaming_started and now - last_tick >= 100) {
+            //     last_tick = now;
+            //     const spin = spinners[spinner_timer % spinners.len];
+            //     spinner_timer += 1;
+            //     tuiText.print("\r\x1b[2K {s}{s}{s} Loading... ({d} bytes)", .{
+            //         globals.yellow, spin, globals.reset, raw_buffer.items.len,
+            //     });
+            // }
         }
 
         const new_raw = raw_buffer.items[raw_buffer_processed_len..];
@@ -263,14 +267,16 @@ pub fn readResponseAndStreamRunLLM(app: anytype, message: []const u8) ![]u8 {
     // Content was already printed during streaming, no need to reprint here
 
     tuiText.print("\n", .{});
-    _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
 
 /// Read and stream the list of active sessions
-pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
+pub fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     var raw_buffer = std.ArrayList(u8).empty;
     errdefer raw_buffer.deinit(app.allocator);
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var buf: [4096]u8 = undefined;
 
     // Timeout detection for SSE reconnection
@@ -293,7 +299,7 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
 
-    const stream_request = try std.fmt.allocPrint(app.arena.allocator(), "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
+    const stream_request = try std.fmt.allocPrint(alloc, "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(stream_socket, stream_request);
 
     // Wait for "connected" event BEFORE sending command
@@ -347,7 +353,7 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
                 reconnection_attempts += 1;
                 tuiText.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ globals.yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, globals.reset });
 
-                const new_socket = connection.reconnectSseStream(app, stream_socket);
+                const new_socket = connection.reconnectSseStream(app, alloc, stream_socket);
                 if (new_socket < 0) {
                     tuiText.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
                     last_data_received_ms = now;
@@ -396,12 +402,11 @@ pub fn readResponseAndStreamGetSessions(app: anytype) ![]u8 {
         }
     }
 
-    _ = app.arena.reset(.retain_capacity);
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
 
 /// Check stdin for double escape sequence (to interrupt streaming)
-fn checkStdinForDoubleEscape(app: anytype) bool {
+fn checkStdinForDoubleEscape(app: *App) bool {
     const raw_mode = @import("../terminal/raw_mode.zig");
     const bytes_available = raw_mode.stdinBytesAvailable();
     if (bytes_available == 0) return false;
