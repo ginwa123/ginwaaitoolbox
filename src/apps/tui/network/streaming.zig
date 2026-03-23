@@ -145,14 +145,14 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
             // Debug: print decoded size
             // tuiText.print("{s}[DEBUG] Decoded: {d} bytes{s}\n", .{ globals.dim, decoded.len, globals.reset });
 
-            if (sse.extractSseData(app.allocator, decoded)) |xml| {
+            if (sse.extract_sse_data(app.allocator, decoded)) |xml| {
                 defer app.allocator.free(xml);
 
                 // Debug: print XML preview
                 // const xml_preview = xml[0..@min(xml.len, 500)];
                 // tuiText.print("{s}[DEBUG] XML ({d} bytes): {s}{s}\n", .{ globals.dim, xml.len, xml_preview, globals.reset });
 
-                if (try response.extractContentResult(app.allocator, xml)) |extract_result| {
+                if (try response.extract_content_result(app.allocator, xml)) |extract_result| {
                     var content_list = extract_result.content_results;
                     defer content_list.deinit(app.allocator);
 
@@ -259,7 +259,7 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     defer app.allocator.free(final_decoded);
     // tuiText.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ globals.dim, final_decoded.len, globals.reset });
 
-    const final_xml = sse.extractSseData(app.allocator, final_decoded) catch "";
+    const final_xml = sse.extract_sse_data(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);
     // tuiText.print("{s}[DEBUG] XML size: {d}{s}\n", .{ globals.dim, final_xml.len, globals.reset });
     // tuiText.print("{s}[DEBUG] XML preview: {s}{s}\n", .{ globals.dim, final_xml[0..@min(final_xml.len, 500)], globals.reset });
@@ -374,7 +374,7 @@ pub fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
         const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch continue;
         defer app.allocator.free(decoded);
-        const xml = sse.extractSseData(app.allocator, decoded) catch continue;
+        const xml = sse.extract_sse_data(app.allocator, decoded) catch continue;
 
         defer app.allocator.free(xml);
         if (std.mem.indexOf(u8, xml, "</finish_reason>") != null) break;
@@ -384,7 +384,7 @@ pub fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
     const final_decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
-    const final_xml = sse.extractSseData(app.allocator, final_decoded) catch "";
+    const final_xml = sse.extract_sse_data(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);
 
     if (utils.extractTag(final_xml, "sessions")) |md| {

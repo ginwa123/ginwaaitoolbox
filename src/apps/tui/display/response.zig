@@ -23,7 +23,7 @@ pub const ExtractResult = struct {
 /// Also extracts inner <content> tags from the extracted content
 /// Finds all <content>...</content> tags and the last <finish_reason>...</finish_reason>
 /// Returns null if no content found
-pub fn extractContentResult(allocator: std.mem.Allocator, xml: []const u8) std.mem.Allocator.Error!?ExtractResult {
+pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) std.mem.Allocator.Error!?ExtractResult {
     var results = std.ArrayList(ContentResult).empty;
     errdefer results.deinit(allocator);
 

@@ -79,3 +79,123 @@ test "decode_chuncked: empty input" {
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("", result);
 }
+
+// ============================================================================
+// extract_sse_data tests
+// ============================================================================
+
+test "extract_sse_data: basic single data line" {
+    const sse_text = "data: <xml>hello</xml>\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
+}
+
+test "extract_sse_data: multiple data lines concatenated with newlines" {
+    // SSE spec: multiple data: lines are concatenated with single newline
+    const sse_text = "data: <xml>part1</xml>\ndata: <xml>part2</xml>\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>part1</xml>\n <xml>part2</xml>", result);
+}
+
+test "extract_sse_data: skips comment lines" {
+    const sse_text = ": keepalive\ndata: <xml>hello</xml>\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
+}
+
+test "extract_sse_data: skips event type lines" {
+    const sse_text = "event: chunk\ndata: <xml>hello</xml>\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
+}
+
+test "extract_sse_data: mixed content real SSE format" {
+    const sse_text =
+        \\: keepalive
+        \\event: chunk
+        \\data: {"event":"chunk","data":"<xml>escaped</xml>"}
+        \\
+    ;
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(
+        \\{"event":"chunk","data":"<xml>escaped</xml>"}
+    , result);
+}
+
+test "extract_sse_data: empty input returns empty" {
+    const sse_text = "";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "extract_sse_data: no data lines returns empty" {
+    const sse_text = ": keepalive\nevent: ping\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "extract_sse_data: data with carriage returns" {
+    const sse_text = "data: <xml>hello</xml>\r\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
+}
+
+test "extract_sse_data: three data lines" {
+    const sse_text = "data: line1\ndata: line2\ndata: line3\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    // Note: output includes the space after "data:" prefix
+    try std.testing.expectEqualStrings(" line1\n line2\n line3", result);
+}
+
+test "extract_sse_data: strips carriage return from data payload" {
+    const sse_text = "data: payload\r\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    // Note: output includes the space after "data:" prefix
+    try std.testing.expectEqualStrings(" payload", result);
+}
+
+test "extract_sse_data: data without space after colon" {
+    // Some SSE implementations may not have space after "data:"
+    const sse_text = "data:<xml>hello</xml>\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("<xml>hello</xml>", result);
+}
+
+test "extract_sse_data: id field is skipped" {
+    const sse_text = "id: 123\nevent: message\ndata: <xml>hello</xml>\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
+}
+
+test "extract_sse_data: consecutive empty lines are skipped" {
+    const sse_text = "\n\ndata: <xml>hello</xml>\n\n\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
+}
+
+test "extract_sse_data: retry field is skipped" {
+    const sse_text = "retry: 5000\nevent: message\ndata: <xml>hello</xml>\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
+}
+
+test "extract_sse_data: comment with space after colon is skipped" {
+    const sse_text = ": This is a comment\ndata: <xml>hello</xml>\n\n";
+    const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
+}

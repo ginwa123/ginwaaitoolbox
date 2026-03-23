@@ -66,7 +66,7 @@ pub fn decode_chuncked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
 ///
 /// This extracts and unescapes the "data" JSON field value from each data: line,
 /// concatenating all of them into one XML string.
-pub fn extractSseData(allocator: std.mem.Allocator, sse_text: []const u8) ![]u8 {
+pub fn extract_sse_data(allocator: std.mem.Allocator, sse_text: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
