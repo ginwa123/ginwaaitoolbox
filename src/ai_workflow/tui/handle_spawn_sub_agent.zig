@@ -638,6 +638,17 @@ pub fn run(
     const parsed = try spawn_sub_agent_tool.parseSubAgents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
     _ = _session_name; // unused parameter
 
+    // Reject single sub-agent - must spawn at least 2 for parallel work
+    if (parsed.sub_agents.len == 1) {
+        return try std.fmt.allocPrint(allocator,
+            \\ERROR: spawn_sub_agent requires at least 2 sub-agents.
+            \\Spawning only 1 sub-agent is FORBIDDEN.
+            \\If you need to run a single task, either:
+            \\1. Do it directly yourself (no sub-agent needed for single tasks)
+            \\2. Spawn 2+ sub-agents for parallel work
+        , .{});
+    }
+
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
 
     // Fetch current agent from DB (before running sub-agents)

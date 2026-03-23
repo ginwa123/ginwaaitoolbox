@@ -3,6 +3,7 @@ const std = @import("std");
 const root_mod = @import("nalarcore");
 const agentMod = root_mod.agent;
 const http_server = root_mod.http_server;
+const http_handlers = root_mod.http_handlers;
 const httpz = http_server.httpz;
 const agent = root_mod.agent;
 const ai_workflow = root_mod.ai_workflow;
@@ -213,7 +214,7 @@ pub fn main() !void {
     }
 
     var server = http_server.HttpServer.init(parentAllocator, ctxParent, port);
-    server.setDb(&dbSqlite);
+    server.setDb(@ptrCast(&dbSqlite));
 
     // this is for tui only
     server.setTUIHandler(struct {
@@ -323,24 +324,24 @@ pub fn main() !void {
             std.log.info("HTTP server listening on http://127.0.0.1:{d}/", .{http_port});
 
             // Command endpoint
-            router.post("/api/command", http_server.commandHandler, .{});
+            router.post("/api/command", http_handlers.commandHandler, .{});
 
             // SSE stream endpoint
-            router.get("/api/stream/:session_id", http_server.streamHandler, .{});
+            router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
 
             // Session management endpoints (synchronous - returns response directly)
-            router.post("/api/session/create", http_server.sessionCreateHandler, .{});
-            router.get("/api/session", http_server.sessionListHandler, .{});
-            router.get("/api/session/exists/:session_id", http_server.sessionExistsHandler, .{});
-            router.get("/api/session/latest", http_server.getLatestSessionByDirHandler, .{});
+            router.post("/api/session/create", http_handlers.sessionCreateHandler, .{});
+            router.get("/api/session", http_handlers.sessionListHandler, .{});
+            router.get("/api/session/exists/:session_id", http_handlers.sessionExistsHandler, .{});
+            router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, .{});
 
             // Ping endpoint - checks if session is connected via SSE
-            router.get("/api/ping/:session_id", http_server.pingHandler, .{});
+            router.get("/api/ping/:session_id", http_handlers.pingHandler, .{});
 
             // Kerjabot session endpoints
-            router.post("/api/kerjabot/session/create", http_server.kerjabotSessionCreateHandler, .{});
-            router.get("/api/kerjabot/session/:id", http_server.kerjabotGetSessionHandler, .{});
-            router.get("/api/kerjabot/sessions", http_server.kerjabotListSessionsHandler, .{});
+            router.post("/api/kerjabot/session/create", http_handlers.kerjabotSessionCreateHandler, .{});
+            router.get("/api/kerjabot/session/:id", http_handlers.kerjabotGetSessionHandler, .{});
+            router.get("/api/kerjabot/sessions", http_handlers.kerjabotListSessionsHandler, .{});
         }
     };
     try server.runWithConfig(HttpRoutes.setup);
