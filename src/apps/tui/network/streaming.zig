@@ -153,26 +153,23 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 // tuiText.print("{s}[DEBUG] XML ({d} bytes): {s}{s}\n", .{ globals.dim, xml.len, xml_preview, globals.reset });
 
                 if (try response.extract_content_result(app.allocator, xml)) |extract_result| {
-                    var content_list = extract_result.content_results;
-                    defer content_list.deinit(app.allocator);
+                    // Check finish_reason to decide whether to display content
+                    const should_display = if (extract_result.finish_reason) |fr|
+                        !std.mem.eql(u8, fr, "tool_calls")
+                    else
+                        true; // null finish_reason means show content (normal completion)
 
-                    // Debug: print extraction results
-                    // tuiText.print("{s}[DEBUG] Found {d} content results{s}\n", .{ globals.dim, content_list.items.len, globals.reset });
+                    if (should_display) {
+                        var content_list = extract_result.content_results;
+                        defer content_list.deinit(app.allocator);
 
-                    for (content_list.items) |result| {
-                        // const xml_type_str: []const u8 = switch (result.xml_type) {
-                        //     .response => "response",
-                        //     .tool_result => "tool_result",
-                        //     .content => "content",
-                        // };
-                        // tuiText.print("{s}[DEBUG] Content ({s}): {s}{s}\n", .{ globals.cyan, xml_type_str, result.content[0..@min(result.content.len, 200)], globals.reset });
-                        if (result.content.len > 0) {
-                            streaming_started = true;
-                            tuiText.print("{s}", .{result.content});
+                        for (content_list.items) |result| {
+                            if (result.content.len > 0) {
+                                streaming_started = true;
+                                tuiText.print("{s}", .{result.content});
+                            }
                         }
                     }
-                } else {
-                    // tuiText.print("{s}[DEBUG] extractContentResult returned null (no <response>/<tool_result> tags found){s}\n", .{ globals.red, globals.reset });
                 }
 
                 if (tool_results.extractToolResults(app.allocator, xml)) |tr_val| {
