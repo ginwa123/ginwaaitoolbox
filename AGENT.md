@@ -84,7 +84,7 @@ src/
 - `ArrayList.empty` replaces `ArrayList.init` (Zig 0.15)
 - `ArrayList.deinit(allocator)` — allocator required
 - Never return stack-allocated slices from functions
-- **Memory management:** Prefer `ArenaAllocator` over manual `free()` calls — simpler, less error-prone
+- **Memory management:** Prefer `ArenaAllocator` over manual `free()` calls — simpler, less error-prone, but for testing use `std.testing.allocator`
 
 ## Related
 
@@ -99,7 +99,7 @@ src/
 Use the TUI CLI to test AI agentic behavior:
 
 ```bash
-./zigout/bin/nalar-dev-tui --port 8080 -q "your query"
+./zig-out/bin/nalar-dev-tui --port 8080 -q "your query"
 ```
 
 **Options:**

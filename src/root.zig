@@ -112,4 +112,5 @@ pub const http_handlers = @import("ai_workflow/tui/http_handlers.zig");
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
+    _ = @import("modules/agent/test_runner.zig");
 }
