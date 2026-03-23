@@ -419,19 +419,17 @@ pub const TUIWorkflow = struct {
         config: *const config_mod.LlmConfig,
         base_tools: []const tool_models.AgentTool,
     ) !agent.CallResponse {
-        _ = config;
         // Fetch MCP tools from configured servers
-        // const mcp_tools = buildMcpTools.run(allocator, config) catch |err| blk: {
-        //     self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
-        //     break :blk &[_]tool_models.AgentTool{};
-        // };
+        const mcp_tools = buildMcpTools.run(allocator, config) catch |err| blk: {
+            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
+            break :blk &[_]tool_models.AgentTool{};
+        };
         // Note: mcp_tools memory is managed by the arena allocator
-        // mcp still isse
 
         // Merge base tools with MCP tools
         var all_tools: std.ArrayList(tool_models.AgentTool) = .empty;
         try all_tools.appendSlice(allocator, base_tools);
-        // try all_tools.appendSlice(allocator, mcp_tools); // this is issue will be fixed in the next release
+        try all_tools.appendSlice(allocator, mcp_tools);
         const tools = try all_tools.toOwnedSlice(allocator);
 
         var dynamic_agent = try agent.Agent.init(allocator, self.logger);

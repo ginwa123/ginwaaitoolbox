@@ -46,6 +46,8 @@ const StreamingContext = @import("workflow.zig").StreamingContext;
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
 const SaveSkill = @import("save_skill.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
+const handle_mcp_tool = @import("handle_mcp_tool.zig");
+const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 
 const MAX_SUB_AGENTS = 20;
 
@@ -155,6 +157,18 @@ fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqli
     return handle_lsp_definition_tool.run(allocator, tc);
 }
 
+/// MCP tool executor - placeholder for dynamic MCP tool handling
+/// Note: MCP tools are actually handled dynamically in executeSubAgentTool
+/// This function is kept for API completeness but is not used
+fn execMCP(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    // MCP tools are handled dynamically in executeSubAgentTool
+    return "MCP tools are handled dynamically";
+}
+
 /// The canonical registry for sub-agent tools (no spawn_sub_agent or set_agent_properties)
 /// Maps tool names to their executors and actual tool definitions
 const SubAgentToolInfo = struct {
@@ -193,7 +207,30 @@ pub fn executeSubAgentTool(
     tc: agent.ToolCall,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
+    model: []const u8,
+    cwd: []const u8,
+    config: *const config_mod.LlmConfig,
+    logger: ?*logger_mod.Logger,
 ) !SubAgentToolResult {
+    _ = model;
+    _ = cwd;
+    // Check if it's an MCP tool first (dynamic handling)
+    if (isMCPTool(config, tc.function.name)) {
+        if (logger) |log| {
+            const mcp_result = try handle_mcp_tool.run(allocator, log, tc, config);
+            return SubAgentToolResult{ .output = mcp_result };
+        } else {
+            // Create a minimal logger for MCP calls when no logger is available
+            var minimal_logger = logger_mod.Logger.init(allocator, .{
+                .min_level = .err, // Only errors
+                .output_mode = .stdout,
+            });
+            defer minimal_logger.deinit();
+            const mcp_result = try handle_mcp_tool.run(allocator, &minimal_logger, tc, config);
+            return SubAgentToolResult{ .output = mcp_result };
+        }
+    }
+
     inline for (SUB_AGENT_TOOL_REGISTRY) |entry| {
         if (std.mem.eql(u8, tc.function.name, entry.name)) {
             const output = entry.exec(allocator, tc, db, session_id) catch |err| {
@@ -226,6 +263,18 @@ pub fn executeSubAgentTool(
     }
 
     return error.UnknownTool;
+}
+
+/// Check if a tool name is an MCP tool (format: serverName_toolName)
+fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
+    if (config.mcpServers == null) return false;
+    const underscore_idx = std.mem.indexOf(u8, tool_name, "_") orelse return false;
+    const server_name = tool_name[0..underscore_idx];
+    const mcp_servers = switch (config.mcpServers.?) {
+        .object => |obj| obj,
+        else => return false,
+    };
+    return mcp_servers.get(server_name) != null;
 }
 
 // ============================================================================
@@ -264,7 +313,7 @@ pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
 /// Get all sub-agent tools as a filtered list
 /// If allowed_tools is null, returns all sub-agent tools
 /// Always excludes spawn_sub_agent and set_agent_properties for security
-pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8) ![]const tool_models.AgentTool {
+pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8, mcp_tools: []const tool_models.AgentTool) ![]const tool_models.AgentTool {
     var result = std.ArrayList(tool_models.AgentTool).empty;
 
     for (SUB_AGENT_TOOL_REGISTRY) |entry| {
@@ -276,6 +325,22 @@ pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []c
             for (allowed_tools.?) |allowed| {
                 if (std.mem.eql(u8, entry.name, allowed)) {
                     try result.append(allocator, entry.tool_def);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Add MCP tools to the list
+    if (allowed_tools == null) {
+        // If no filter, include all MCP tools
+        try result.appendSlice(allocator, mcp_tools);
+    } else {
+        // If there's a filter, only include MCP tools that match
+        for (mcp_tools) |mcp_tool| {
+            for (allowed_tools.?) |allowed| {
+                if (std.mem.eql(u8, mcp_tool.function.name, allowed)) {
+                    try result.append(allocator, mcp_tool);
                     break;
                 }
             }
@@ -323,7 +388,8 @@ fn runSubAgent(
     parent_session_id: []const u8,
     parent_id: []const u8,
 ) ![]const u8 {
-    _ = config; // reserved for future use (e.g., MCP tools)
+    // Fetch MCP tools for sub-agent
+    const mcp_tools = buildMcpTools.run(parentAllocator, config) catch &[_]tool_models.AgentTool{};
 
     const sessionName = try std.fmt.allocPrint(parentAllocator, "{}", .{std.time.nanoTimestamp()});
 
@@ -354,7 +420,7 @@ fn runSubAgent(
     });
 
     // Get tools based on allowed_tools (null = all tools except restricted)
-    const sub_agent_tools = try getAllowedTools(parentAllocator, allowed_tools);
+    const sub_agent_tools = try getAllowedTools(parentAllocator, allowed_tools, mcp_tools);
 
     var sub_agent = try agent.Agent.init(parentAllocator, logger);
 
@@ -447,7 +513,7 @@ fn runSubAgent(
                     for (tcs) |tc| {
                         logger.infoFmt("[SUB_AGENT] Tool: '{s}'", .{tc.function.name}) catch {};
 
-                        const tool_result = executeSubAgentTool(allocator, tc, db, session_id) catch |err| blk: {
+                        const tool_result = executeSubAgentTool(allocator, tc, db, session_id, model, cwd, config, logger) catch |err| blk: {
                             const msg = try std.fmt.allocPrint(allocator, "ERROR: {s} failed: {s}", .{
                                 tc.function.name,
                                 @errorName(err),

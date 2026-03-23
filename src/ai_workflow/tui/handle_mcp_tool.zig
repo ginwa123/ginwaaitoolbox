@@ -10,18 +10,10 @@ const config_mod = tree1_mod.config;
 /// Handle an MCP tool call by forwarding it to the MCP server
 pub fn run(
     parent_allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
-    session_id: []const u8,
-    model: []const u8,
-    cwd: []const u8,
-    session_name: ?[]const u8,
-    loop_counter: u32,
     tool_call: agent.ToolCall,
-    agent_temperature: f32,
-    isThinking: bool,
     config: *const config_mod.LlmConfig,
-) !void {
+) ![]const u8 {
     var arena = std.heap.ArenaAllocator.init(parent_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -152,26 +144,6 @@ pub fn run(
         }
     }
 
-    // Save tool result to database
-    _ = try save_message.save_message(allocator, db, .{
-        .session_id = session_id,
-        .model = model,
-        .cwd = cwd,
-        .content = tool_result,
-        .reasoning_content = null,
-        .role = agent.Role.tool.toStr(),
-        .tool_calls = null,
-        .tool_call_id = tool_call.id,
-        .agent_name = tool_call.function.name,
-        .session_name = session_name,
-        .loop_index = loop_counter,
-        .temperature = agent_temperature,
-        .is_thinking = isThinking,
-        .prompt_tokens = 0,
-        .completion_tokens = 0,
-        .total_tokens = 0,
-        .is_output = true,
-        .is_input = false,
-        .tool_name = tool_call.function.name,
-    });
+
+    return tool_result;
 }

@@ -13,6 +13,7 @@ const session_helpers = @import("session_helpers.zig");
 const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;
 const tool_models = root_mod.tool_models;
 const get_messagesLatest = session_helpers.get_message_latest;
+const handle_mcp_tool = @import("handle_mcp_tool.zig");
 
 // ============================================================================
 // TOOL REGISTRY - Single source of truth for all tool definitions
@@ -107,7 +108,38 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
         }
     }
 
+    // Check if it's an MCP tool (format: serverName_toolName)
+    if (std.mem.indexOf(u8, tool_name, "_") != null) {
+        if (isMCPTool(ctx.config, tool_name)) {
+            return dispatchMCP(ctx, tool_call);
+        }
+    }
+
     return error.UnknownTool;
+}
+
+/// Check if a tool name is an MCP tool (format: serverName_toolName)
+fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
+    if (config.mcpServers == null) return false;
+    const underscore_idx = std.mem.indexOf(u8, tool_name, "_") orelse return false;
+    const server_name = tool_name[0..underscore_idx];
+    const mcp_servers = switch (config.mcpServers.?) {
+        .object => |obj| obj,
+        else => return false,
+    };
+    return mcp_servers.get(server_name) != null;
+}
+
+/// Dispatch an MCP tool call
+fn dispatchMCP(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const result = try handle_mcp_tool.run(
+        ctx.allocator,
+        ctx.logger,
+        tool_call,
+        ctx.config,
+    );
+    // Return success with tool output
+    return ToolResult{ .output = result };
 }
 
 /// Check if a tool name is registered
@@ -116,6 +148,12 @@ pub fn isKnownTool(name: []const u8) bool {
         if (std.mem.eql(u8, name, entry.name)) return true;
     }
     return false;
+}
+
+/// Check if a tool name is registered or is an MCP tool
+pub fn isKnownToolOrMCP(name: []const u8, config: *const config_mod.LlmConfig) bool {
+    if (isKnownTool(name)) return true;
+    return isMCPTool(config, name);
 }
 
 /// Get all tool names as a slice (for compatibility)
@@ -327,10 +365,10 @@ pub fn handle_tool(
     _ = base_tools; // Kept for API compatibility, tool validation is now via registry
 
     if (res_dynamic_agent.tool_calls) |tc| {
-        // Check if any tools match registered tools
+        // Check if any tools match registered tools or MCP tools
         var has_known_tools = false;
         for (tc) |tool_call| {
-            if (isKnownTool(tool_call.function.name)) {
+            if (isKnownToolOrMCP(tool_call.function.name, config)) {
                 has_known_tools = true;
                 break;
             }
