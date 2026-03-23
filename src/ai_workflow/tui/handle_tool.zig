@@ -364,6 +364,7 @@ pub fn handle_tool(
     messages_list: *std.ArrayList(agent.AgentMessage),
 ) !void {
     _ = base_tools; // Kept for API compatibility, tool validation is now via registry
+    _ = messages_list; // Kept for API compatibility
 
     if (res_dynamic_agent.tool_calls) |tc| {
         // Check if any tools match registered tools or MCP tools
