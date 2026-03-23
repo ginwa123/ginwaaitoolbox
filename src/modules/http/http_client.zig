@@ -89,13 +89,12 @@ pub const HttpClient = struct {
     fn postWithCurl(self: HttpClient, url: []const u8, body: []const u8, headers: ?std.StringHashMap([]const u8)) !HttpResult {
         // Note: headers param is not used because we hardcode the Accept header for MCP
         _ = headers;
-        
+
         // Build curl command with proper escaping using bash -c
-        const shell_cmd = try std.fmt.allocPrint(self.allocator, 
+        const shell_cmd = try std.fmt.allocPrint(self.allocator,
             "curl -s -X POST '{s}' -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{s}'",
             .{ url, body }
         );
-        defer self.allocator.free(shell_cmd);
 
         // Execute curl via bash -c
         var child = std.process.Child.init(&[_][]const u8{ "bash", "-c", shell_cmd }, self.allocator);

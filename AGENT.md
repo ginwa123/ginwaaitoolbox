@@ -7,8 +7,8 @@
 
 ## Project Overview
 
-**Name:** nalarcore  
-**Language:** Zig 0.15.2  
+**Name:** nalarcore
+**Language:** Zig 0.15.2
 **Type:** AI agentic coding toolbox with HTTP server + TUI interfaces
 
 ## Build System
@@ -90,3 +90,11 @@ src/
 - [MEMORY.md](./MEMORY.md) — AI learning & mistakes
 - [.nalar/plans/](.nalar/plans/) — Design documents
 - [docs/superpowers/](docs/superpowers/) — Skills
+
+
+
+## to testing ai agentic use cli
+ nalar-tui --port 8081 -q "your query" -c
+ -c will be continue last session
+ -q will be query to llm
+

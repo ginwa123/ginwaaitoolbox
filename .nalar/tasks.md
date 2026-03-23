@@ -1,11 +1,7 @@
-## [done] 20250320_143000 — Create Raylib Skill
+## [done] 20250320_120000 — Activate MCP Tools in main and sub agents
 
-- [x] Explore raylib GitHub repository
-- [x] Summarize key features, modules, API
-- [x] Create SKILL.md for raylib
-
-## [done] 20250320_150000 — Create Clay Skill
-
-- [x] Explore Clay GitHub repository
-- [x] Summarize key features, modules, API
-- [x] Create SKILL.md for Clay
+- [x] Uncomment MCP tool fetching in workflow.zig
+- [x] Uncomment MCP tool merging in workflow.zig
+- [x] Add MCP tool handler to TOOL_REGISTRY in handle_tool.zig
+- [x] Add MCP tools to sub-agent tool registry in handle_spawn_sub_agent.zig
+- [x] Build and test

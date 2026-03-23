@@ -285,6 +285,21 @@ pub const Agent =
     \\4. State which skills were loaded and how each will be applied.
     \\5. Identify skill stacking opportunities (two skills together are more powerful than one).
     \\
+    \\### 0A2 — MCP Tools Check (mandatory second action)
+    \\
+    \\**Before using any built-in tool, check if an MCP tool exists for your task.**
+    \\
+    \\1. Review the MCP tools listed above (server-prefixed names like `mcp_*`)
+    \\2. Match your task against their descriptions
+    \\3. **Use MCP tool if available** — they are purpose-built for specific domains
+    \\4. If no MCP tool matches → proceed with built-in tools
+    \\
+    \\**Examples of MCP tool use:**
+    \\- Task involves GitHub/GitLab → check for `mcp_github_*` or `mcp_gitlab_*` tools
+    \\- Task involves file search → check for `mcp_filesystem_*` or `mcp_search_*` tools
+    \\- Task involves web search → check for `mcp_browser_*` or `mcp_web_*` tools
+    \\- Task involves database → check for `mcp_database_*` or `mcp_sql_*` tools
+    \\
     \\### 0B — Agent Load (specialized expertise on demand)
     \\
     \\After skill loading, consider if a specialized agent would help:
@@ -696,6 +711,7 @@ pub const Agent =
     \\**Classification:** Execution | Exploration | Ambiguous | Q&A
     \\**Signals:** <domain signals detected>
     \\**Skills loaded:** <every skill called, or "none">
+    \\**MCP tools checked:** <any MCP tools used or why none apply>
     \\**Stacking:** <how skills compound, or "n/a">
     \\**Hypothesis:** <root cause hypothesis, or "n/a">
     \\**Tool budget:** <N declared> / <N used>
@@ -743,10 +759,35 @@ pub const Agent =
     \\- Never run a search before writing a Hypothesis block.
     \\- Never exceed the tool budget without stopping to reassess at 80%.
     \\
+    \\## MCP Tools — PREFER External Toolsets
+    \\
+    \\**MCP (Model Context Protocol) tools provide specialized capabilities via external servers.**
+    \\These tools are prefixed with `<server_name>_` (e.g., `filesystem_read`, `github_create_issue`).
+    \\
+    \\**MANDATORY: Check for MCP tools BEFORE using built-in tools.**
+    \\When a task matches an MCP tool's capability:
+    \\1. **USE the MCP tool first** — it's optimized for that domain
+    \\2. **Use built-in tools as fallback** — only if MCP tool is unavailable or insufficient
+    \\
+    \\**How to identify MCP tools:**
+    \\- Listed in your available tools with `_<name>` suffix (server prefix)
+    \\- Their description explicitly states the capability they provide
+    \\- Example: `mcp_github_create_issue` for GitHub issues, `mcp_filesystem_search` for file search
+    \\
+    \\**Decision tree:**
+    \\```
+    \\Does the task match an MCP tool's description?
+    \\  ├─ YES → Use the MCP tool (server-prefixed function call)
+    \\  └─ NO  → Use the most appropriate built-in tool below
+    \\```
+    \\
+    \\---
+    \\
     \\## Available Tools (use ONLY these)
     \\
     \\You have access to the following tools. NEVER invent, assume, or request tools not listed here.
     \\If you need functionality not provided by these tools, solve the problem with the tools you have.
+    \\**NOTE:** MCP tools are listed above. Built-in tools are listed below.
     \\
     \\### File Operations
     \\- **read_file**: Read a file by path with optional offset and limit for pagination
