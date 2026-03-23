@@ -88,6 +88,7 @@ const TOOL_REGISTRY: []const ToolEntry = &.{
     .{ .name = "write_file", .dispatch = dispatchWriteFile },
     .{ .name = "text_replace", .dispatch = dispatchTextReplace },
     .{ .name = "search", .dispatch = dispatchSearch },
+    .{ .name = "glob", .dispatch = dispatchGlob },
 
     // LSP tools
     .{ .name = "lsp_definition", .dispatch = dispatchLspDefinition },
@@ -196,6 +197,12 @@ fn dispatchReadFile(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 fn dispatchSearch(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_search_tool = @import("handle_search_tool.zig");
     const result = try handle_search_tool.handle_search_tool_run(ctx.allocator, tool_call);
+    return ToolResult{ .output = result };
+}
+
+fn dispatchGlob(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const handle_glob_tool = @import("handle_glob_tool.zig");
+    const result = try handle_glob_tool.handle_glob_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 

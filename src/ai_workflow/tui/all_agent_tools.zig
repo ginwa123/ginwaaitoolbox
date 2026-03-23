@@ -31,6 +31,7 @@ const handle_bash_tool = @import("handle_bash_tool.zig");
 const BuildMemoryForAgent = @import("build_memory_for_agent_prompt.zig").BuildMemoryForAgent;
 const write_file_tool = root_mod.write_file;
 const search_tool = root_mod.search_tool;
+const glob_tool = root_mod.glob_tool;
 const text_replace_tool = root_mod.text_replace_tool;
 const handle_content_filter = @import("handle_content_filter.zig");
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
@@ -56,6 +57,7 @@ pub const all_agent_tools: []const tool_models.AgentTool = &.{
     write_file_tool.writeFileTool,
     text_replace_tool.textReplaceTool,
     search_tool.searchTool,
+    glob_tool.globTool,
     spawn_sub_agent_tool.spawnSubAgentTool,
     list_agents_tool.listAgentsTool,
     get_agent_tool.GetAgentTool,
