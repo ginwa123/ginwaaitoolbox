@@ -97,7 +97,7 @@ src/
 dont ever kill port 8081, or the process
 
 you allowed to use port 8081 for testing
- nalar-tui --port 8080 -q "your query" -c
+ ./zigout/bin/nalar-tui --port 8080 -q "your query" -c
  -c will be continue last session
  -q will be query to llm
 

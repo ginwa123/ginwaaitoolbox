@@ -8,6 +8,9 @@ pub fn getCommandNames() []const []const u8 {
         "/help",
         "/clear",
         "/ping",
+        "/model",
+        "/config",
+        "/session",
     };
 }
 
@@ -25,5 +28,8 @@ pub fn getCommands() []const CommandInfo {
         .{ .name = "/help", .description = "Show available commands" },
         .{ .name = "/clear", .description = "Clear the screen" },
         .{ .name = "/ping", .description = "Ping the server" },
+        .{ .name = "/model", .description = "Show current AI model" },
+        .{ .name = "/config", .description = "Show configuration settings" },
+        .{ .name = "/session", .description = "Show current session info" },
     };
 }

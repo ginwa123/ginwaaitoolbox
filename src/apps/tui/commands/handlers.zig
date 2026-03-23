@@ -27,7 +27,30 @@ pub fn executeCommand(app: *App, command: []const u8) !bool {
     if (std.mem.eql(u8, command, "/ping")) {
         return commandPing(app);
     }
+    if (std.mem.eql(u8, command, "/model")) {
+        return commandModel(app);
+    }
+    if (std.mem.eql(u8, command, "/config")) {
+        return commandConfig(app);
+    }
+    if (std.mem.eql(u8, command, "/session")) {
+        return commandSession(app);
+    }
     return false;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Get the default config path (same logic as config module)
+/// Caller owns returned memory
+fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
+    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    const config_home = std.posix.getenv("XDG_CONFIG_HOME");
+    
+    const base: []const u8 = if (config_home) |xch| xch else try std.fmt.allocPrint(allocator, "{s}/.config", .{home});
+    defer if (config_home == null) allocator.free(base);
+    
+    return try std.fmt.allocPrint(allocator, "{s}/nalar/config.json", .{base});
 }
 
 // ─── Command Handlers ────────────────────────────────────────────────────────
@@ -73,5 +96,117 @@ fn commandPing(app: *App) !bool {
     } else {
         std.debug.print("{s}Server is responsive{s}\r\n", .{ dim, reset });
     }
+    return false;
+}
+
+/// Show the current AI model being used
+fn commandModel(app: *App) !bool {
+    std.debug.print("\r\n{s}Current AI Model:{s}\r\n", .{ bold, reset });
+    
+    // Read config file directly
+    const config_path = try getConfigPath(app.allocator);
+    defer app.allocator.free(config_path);
+    
+    const content = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
+        std.debug.print("{s}Error opening config: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        return false;
+    };
+    defer content.close();
+    
+    const json_str = content.readToEndAlloc(app.allocator, 4096) catch |err| {
+        std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        return false;
+    };
+    defer app.allocator.free(json_str);
+    
+    // Parse JSON to find model
+    const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, json_str, .{}) catch |err| {
+        std.debug.print("{s}Error parsing config JSON: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        return false;
+    };
+    defer parsed.deinit();
+    
+    const model = parsed.value.object.get("model") orelse {
+        std.debug.print("{s}No model found in config{s}\r\n", .{ yellow, reset });
+        return false;
+    };
+    
+    const model_str = model.string;
+    std.debug.print("  {s}Model:{s} {s}{s}{s}\r\n", .{ dim, reset, green, model_str, reset });
+    return false;
+}
+
+/// Show configuration settings (with sensitive data masked)
+fn commandConfig(app: *App) !bool {
+    std.debug.print("\r\n{s}Configuration:{s}\r\n", .{ bold, reset });
+    
+    // Read config file directly
+    const config_path = try getConfigPath(app.allocator);
+    defer app.allocator.free(config_path);
+    
+    const content = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
+        std.debug.print("{s}Error opening config: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        return false;
+    };
+    defer content.close();
+    
+    const json_str = content.readToEndAlloc(app.allocator, 4096) catch |err| {
+        std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        return false;
+    };
+    defer app.allocator.free(json_str);
+    
+    // Parse JSON to extract config values
+    const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, json_str, .{}) catch |err| {
+        std.debug.print("{s}Error parsing config JSON: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        return false;
+    };
+    defer parsed.deinit();
+    
+    const obj = parsed.value.object;
+    
+    // Extract and display values
+    const api_key = obj.get("api_key") orelse std.json.Value{ .string = "" };
+    const model = obj.get("model") orelse std.json.Value{ .string = "not set" };
+    const base_url = obj.get("base_url") orelse std.json.Value{ .string = "not set" };
+    const compaction = obj.get("model_compaction_size_kb") orelse std.json.Value{ .integer = 100 };
+    const mcp = obj.get("mcpServers");
+    
+    // Mask API key (show last 4 chars)
+    var masked_key: []u8 = undefined;
+    if (api_key.string.len > 4) {
+        masked_key = try app.allocator.alloc(u8, api_key.string.len);
+        const prefix_len = api_key.string.len - 4;
+        for (0..prefix_len) |i| masked_key[i] = '*';
+        @memcpy(masked_key[prefix_len..], api_key.string[prefix_len..]);
+    } else {
+        masked_key = try app.allocator.alloc(u8, api_key.string.len);
+        @memcpy(masked_key, api_key.string);
+    }
+    defer app.allocator.free(masked_key);
+
+    std.debug.print("  {s}API Key:{s}     {s}{s}{s}\r\n", .{ dim, reset, green, masked_key, reset });
+    std.debug.print("  {s}Model:{s}       {s}{s}{s}\r\n", .{ dim, reset, green, model.string, reset });
+    std.debug.print("  {s}Base URL:{s}    {s}{s}{s}\r\n", .{ dim, reset, green, base_url.string, reset });
+    std.debug.print("  {s}Compaction:{s}  {s}{d} KB{s}\r\n", .{ dim, reset, green, compaction.integer, reset });
+    
+    if (mcp != null) {
+        std.debug.print("  {s}MCP Servers:{s} {s}enabled{s}\r\n", .{ dim, reset, green, reset });
+    } else {
+        std.debug.print("  {s}MCP Servers:{s} {s}disabled{s}\r\n", .{ dim, reset, yellow, reset });
+    }
+    
+    return false;
+}
+
+/// Show current session information
+fn commandSession(app: *App) !bool {
+    std.debug.print("\r\n{s}Session Info:{s}\r\n", .{ bold, reset });
+    std.debug.print("  {s}Session ID:{s} {s}{s}{s}\r\n", .{ dim, reset, green, app.session_id, reset });
+    
+    var cwd_buf: [4096]u8 = undefined;
+    const cwd = std.posix.getcwd(&cwd_buf) catch "unknown";
+    std.debug.print("  {s}Working Dir:{s} {s}{s}{s}\r\n", .{ dim, reset, green, cwd, reset });
+    
     return false;
 }

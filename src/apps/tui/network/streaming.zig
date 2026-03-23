@@ -138,7 +138,7 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         const new_raw = raw_buffer.items[raw_buffer_processed_len..];
         if (new_raw.len == 0) continue;
 
-        if (sse.decodeChunked(app.allocator, new_raw)) |decoded| {
+        if (sse.decode_chuncked(app.allocator, new_raw)) |decoded| {
             defer app.allocator.free(decoded);
             raw_buffer_processed_len = raw_buffer.items.len;
 
@@ -255,7 +255,7 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
 
     // tuiText.print("\n{s}[DEBUG] Raw buffer size: {d}{s}\n", .{ globals.dim, raw_buffer.items.len, globals.reset });
 
-    const final_decoded = sse.decodeChunked(app.allocator, raw_buffer.items) catch "";
+    const final_decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
     // tuiText.print("{s}[DEBUG] Decoded size: {d}{s}\n", .{ globals.dim, final_decoded.len, globals.reset });
 
@@ -372,7 +372,7 @@ pub fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
             continue;
         }
 
-        const decoded = sse.decodeChunked(app.allocator, raw_buffer.items) catch continue;
+        const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch continue;
         defer app.allocator.free(decoded);
         const xml = sse.extractSseData(app.allocator, decoded) catch continue;
 
@@ -382,7 +382,7 @@ pub fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
     tuiText.print("\r\x1b[2K\n", .{});
 
-    const final_decoded = sse.decodeChunked(app.allocator, raw_buffer.items) catch "";
+    const final_decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch "";
     defer app.allocator.free(final_decoded);
     const final_xml = sse.extractSseData(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);

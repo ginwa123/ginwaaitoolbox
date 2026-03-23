@@ -8,7 +8,7 @@ const std = @import("std");
 ///   0\r\n\r\n   <- end
 ///
 /// Strips HTTP headers and chunk size lines, returns raw SSE text.
-pub fn decodeChunked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+pub fn decode_chuncked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
