@@ -13,7 +13,7 @@ pub const GlobTypeFilter = enum {
     empty,
 
     /// Convert to fd CLI argument
-    fn toFdArg(self: GlobTypeFilter) []const u8 {
+    pub fn toFdArg(self: GlobTypeFilter) []const u8 {
         return switch (self) {
             .file => "f",
             .directory => "d",

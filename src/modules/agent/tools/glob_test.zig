@@ -159,8 +159,8 @@ test "globResultToString formats correctly" {
     };
     defer result.deinit(allocator);
 
-    try result.matches.append(.{ .path = "/path/to/file1.zig" });
-    try result.matches.append(.{ .path = "/path/to/file2.zig" });
+    try result.matches.append(allocator, .{ .path = "/path/to/file1.zig" });
+    try result.matches.append(allocator, .{ .path = "/path/to/file2.zig" });
 
     const output = try globResultToString(allocator, result);
 
@@ -192,8 +192,8 @@ test "GlobResult deinit cleans up memory" {
         .matches = std.ArrayList(GlobMatch).empty,
     };
 
-    try result.matches.append(.{ .path = try allocator.dupe(u8, "/test/path.zig") });
-    try result.matches.append(.{ .path = try allocator.dupe(u8, "/test/other.zig") });
+    try result.matches.append(allocator, .{ .path = try allocator.dupe(u8, "/test/path.zig") });
+    try result.matches.append(allocator, .{ .path = try allocator.dupe(u8, "/test/other.zig") });
 
     // deinit should not panic
     result.deinit(allocator);
