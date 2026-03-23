@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
 
     const exe = b.addExecutable(.{
-        .name = "nalarcore",
+        .name = "nalar",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -209,6 +209,60 @@ pub fn build(b: *std.Build) void {
     tui_linux_system_step.dependOn(&copy_tui_to_system.step);
 
     _ = b.step("run:kerjabot", "Kerjabot has been removed");
+
+    // Dev builds - optimized for development with debug symbols
+    const dev_optimize: std.builtin.OptimizeMode = .Debug;
+
+    const dev_linux_system_step = b.step("install:dev:linux:system", "Build nalar-dev (debug) for Linux x86_64 and install to system (/usr/local/bin - requires sudo)");
+    const dev_exe = b.addExecutable(.{
+        .name = "nalar-dev",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = dev_optimize,
+            .imports = &.{
+                .{ .name = "nalarcore", .module = mod },
+            },
+        }),
+    });
+    dev_exe.linkSystemLibrary("sqlite3");
+    dev_exe.linkSystemLibrary("ssl");
+    dev_exe.linkSystemLibrary("crypto");
+    dev_exe.linkLibC();
+    const install_dev = b.addInstallArtifact(dev_exe, .{});
+    dev_linux_system_step.dependOn(&install_dev.step);
+    const copy_dev_to_system = b.addSystemCommand(&.{
+        "cp",
+        "zig-out/bin/nalar-dev",
+        "/usr/local/bin/nalar-dev",
+    });
+    copy_dev_to_system.step.dependOn(&install_dev.step);
+    dev_linux_system_step.dependOn(&copy_dev_to_system.step);
+
+    const dev_tui_linux_system_step = b.step("install:dev:tui:linux:system", "Build nalar-dev-tui (debug) for Linux x86_64 and install to system (/usr/local/bin - requires sudo)");
+    const dev_tui_exe = b.addExecutable(.{
+        .name = "nalar-dev-tui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/tui/main.zig"),
+            .target = target,
+            .optimize = dev_optimize,
+            .imports = &.{
+                .{ .name = "tui-text", .module = tui_text_mod },
+            },
+        }),
+    });
+    dev_tui_exe.linkSystemLibrary("ssl");
+    dev_tui_exe.linkSystemLibrary("crypto");
+    dev_tui_exe.linkLibC();
+    const install_dev_tui = b.addInstallArtifact(dev_tui_exe, .{});
+    dev_tui_linux_system_step.dependOn(&install_dev_tui.step);
+    const copy_dev_tui_to_system = b.addSystemCommand(&.{
+        "cp",
+        "zig-out/bin/nalar-dev-tui",
+        "/usr/local/bin/nalar-dev-tui",
+    });
+    copy_dev_tui_to_system.step.dependOn(&install_dev_tui.step);
+    dev_tui_linux_system_step.dependOn(&copy_dev_tui_to_system.step);
 
     // Desktop executable disabled - desktop source files not present
     // Uncomment when desktop files are added back
