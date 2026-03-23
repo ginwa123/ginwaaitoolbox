@@ -9,7 +9,7 @@ const remove_skill_tool = tree1_mod.remove_skill_tool;
 /// Returns the result as string.
 /// 
 /// Note: DB removal and sending to TUI are side effects that must be handled by caller.
-pub fn run(
+pub fn handle_remove_skill_tool_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {

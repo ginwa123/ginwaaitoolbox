@@ -7,7 +7,7 @@ const list_skills_tool = tree1_mod.list_skills_tool;
 /// Returns the result as string.
 /// 
 /// All side effects (DB, logging, socket, message list) must be handled by caller.
-pub fn run(
+pub fn handle_list_skills_tool_run(
     allocator: std.mem.Allocator,
 ) []const u8 {
     const result = list_skills_tool.executeListSkills(allocator) catch blk: {

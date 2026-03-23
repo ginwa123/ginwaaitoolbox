@@ -9,7 +9,7 @@ const lsp_document_symbol_tool = tree1_mod.tools.lsp_document_symbol;
 /// Returns the result as string or error.
 ///
 /// Note: This tool spawns zls, gets document symbols, and cleans up automatically.
-pub fn run(
+pub fn handle_lsp_document_symbol_tool_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {

@@ -9,7 +9,7 @@ const get_agent_tool = tree1_mod.get_agent;
 /// Returns the result as string or error.
 /// 
 /// Note: Saving agent to DB is a side effect that must be handled by caller.
-pub fn run(
+pub fn handle_get_agent_tool_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {

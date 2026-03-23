@@ -9,7 +9,7 @@ const lsp_definition = tree1_mod.tools.lsp_definition;
 /// Returns the result as string or error.
 /// 
 /// Note: This tool spawns zls, gets definition, and cleans up automatically.
-pub fn run(
+pub fn handle_lsp_definition_tool_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {

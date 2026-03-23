@@ -94,7 +94,10 @@ src/
 
 
 ## to testing ai agentic use cli
- nalar-tui --port 8081 -q "your query" -c
+dont ever kill port 8081, or the process
+
+you allowed to use port 8081 for testing
+ nalar-tui --port 8080 -q "your query" -c
  -c will be continue last session
  -q will be query to llm
 

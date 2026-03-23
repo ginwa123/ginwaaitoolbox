@@ -132,7 +132,7 @@ fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
 
 /// Dispatch an MCP tool call
 fn dispatchMCP(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const result = try handle_mcp_tool.run(
+    const result = try handle_mcp_tool.handle_mcp_tool_run(
         ctx.allocator,
         ctx.logger,
         tool_call,
@@ -172,7 +172,7 @@ pub fn getToolNames(allocator: std.mem.Allocator) ![]const []const u8 {
 
 fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
-    const result = try handle_set_agent_properties.run(ctx.allocator, tool_call);
+    const result = try handle_set_agent_properties.handle_set_agent_properties_run(ctx.allocator, tool_call);
 
     return ToolResult{
         .output = result.arguments,
@@ -189,38 +189,38 @@ fn dispatchBash(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 
 fn dispatchReadFile(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_read_file_tool = @import("handle_read_file_tool.zig");
-    const result = try handle_read_file_tool.run(ctx.allocator, tool_call);
+    const result = try handle_read_file_tool.handle_read_file_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchSearch(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_search_tool = @import("handle_search_tool.zig");
-    const result = try handle_search_tool.run(ctx.allocator, tool_call);
+    const result = try handle_search_tool.handle_search_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchWriteFile(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_write_file_tool = @import("handle_write_file_tool.zig");
-    const result = try handle_write_file_tool.run(ctx.allocator, tool_call);
+    const result = try handle_write_file_tool.handle_write_file_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchTextReplace(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
-    const result = try handle_text_replace_tool.run(ctx.allocator, tool_call);
+    const result = try handle_text_replace_tool.handle_text_replace_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchListSkills(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     _ = tool_call;
     const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
-    const result = handle_list_skills_tool.run(ctx.allocator);
+    const result = handle_list_skills_tool.handle_list_skills_tool_run(ctx.allocator);
     return ToolResult{ .output = result };
 }
 
 fn dispatchGetSkill(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
-    const result = try handle_get_skill_tool.run(ctx.allocator, tool_call);
+    const result = try handle_get_skill_tool.handle_get_skill_tool_run(ctx.allocator, tool_call);
 
     var skill_save: ?SkillSaveInfo = null;
     if (parseSkillFromResult(result)) |info| {
@@ -235,13 +235,13 @@ fn dispatchGetSkill(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 
 fn dispatchRemoveSkill(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
-    const result = try handle_remove_skill_tool.run(ctx.allocator, tool_call);
+    const result = try handle_remove_skill_tool.handle_remove_skill_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchSpawnSubAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
-    const result = try handle_spawn_sub_agent.run(
+    const result = try handle_spawn_sub_agent.handle_spawn_sub_agent_run(
         ctx.allocator,
         ctx.db,
         ctx.logger,
@@ -263,13 +263,13 @@ fn dispatchSpawnSubAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResul
 fn dispatchListAgents(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     _ = tool_call;
     const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
-    const result = try handle_list_agents_tool.run(ctx.allocator);
+    const result = try handle_list_agents_tool.handle_list_agents_tool_run(ctx.allocator);
     return ToolResult{ .output = result };
 }
 
 fn dispatchGetAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
-    const result = try handle_get_agent_tool.run(ctx.allocator, tool_call);
+    const result = try handle_get_agent_tool.handle_get_agent_tool_run(ctx.allocator, tool_call);
 
     var agent_save: ?AgentSaveInfo = null;
     if (parseAgentFromResult(result)) |name| {
@@ -284,31 +284,31 @@ fn dispatchGetAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 
 fn dispatchLspDefinition(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
-    const result = try handle_lsp_definition_tool.run(ctx.allocator, tool_call);
+    const result = try handle_lsp_definition_tool.handle_lsp_definition_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchLspReferences(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_lsp_references_tool = @import("handle_lsp_references_tool.zig");
-    const result = try handle_lsp_references_tool.run(ctx.allocator, tool_call);
+    const result = try handle_lsp_references_tool.handle_lsp_references_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchLspWorkspaceSymbol(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_lsp_workspace_symbol_tool = @import("handle_lsp_workspace_symbol_tool.zig");
-    const result = try handle_lsp_workspace_symbol_tool.run(ctx.allocator, tool_call);
+    const result = try handle_lsp_workspace_symbol_tool.handle_lsp_workspace_symbol_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchLspDocumentSymbol(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_lsp_document_symbol_tool = @import("handle_lsp_document_symbol_tool.zig");
-    const result = try handle_lsp_document_symbol_tool.run(ctx.allocator, tool_call);
+    const result = try handle_lsp_document_symbol_tool.handle_lsp_document_symbol_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
 fn dispatchLspHover(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
-    const result = try handle_lsp_hover_tool.run(ctx.allocator, tool_call);
+    const result = try handle_lsp_hover_tool.handle_lsp_hover_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 
@@ -442,7 +442,7 @@ pub fn handle_tool(
             // Check if this is an MCP tool
             if (isMCPTool(config, tool_call.function.name)) {
                 // Call MCP handler
-                tool_result = handle_mcp_tool.run(
+                tool_result = handle_mcp_tool.handle_mcp_tool_run(
                     allocator,
                     logger,
                     tool_call,

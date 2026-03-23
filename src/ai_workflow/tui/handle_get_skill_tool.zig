@@ -9,7 +9,7 @@ const get_skill_tool = tree1_mod.get_skill_tool;
 /// Returns the result as string or error.
 /// 
 /// Note: Saving skill to DB and sending to TUI are side effects that must be handled by caller.
-pub fn run(
+pub fn handle_get_skill_tool_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {

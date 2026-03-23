@@ -16,7 +16,7 @@ pub const SetAgentPropertiesResult = struct {
 /// Returns SetAgentPropertiesResult with parsed data.
 ///
 /// Note: All side effects (modifying temperature/is_thinking, DB, SSE) must be handled by caller.
-pub fn run(
+pub fn handle_set_agent_properties_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) !SetAgentPropertiesResult {

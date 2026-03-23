@@ -8,7 +8,7 @@ const list_agents_tool = tree1_mod.list_agents_tool;
 /// Returns the result as string or error.
 /// 
 /// Note: This tool lists all available agents.
-pub fn run(
+pub fn handle_list_agents_tool_run(
     allocator: std.mem.Allocator,
 ) ![]const u8 {
     const result = list_agents_tool.executeListAgents(allocator) catch {

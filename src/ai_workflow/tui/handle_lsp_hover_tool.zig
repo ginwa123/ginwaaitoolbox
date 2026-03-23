@@ -9,7 +9,7 @@ const lsp_hover_tool = tree1_mod.tools.lsp_hover;
 /// Returns the result as string or error.
 ///
 /// Note: This tool spawns zls, gets hover info, and cleans up automatically.
-pub fn run(
+pub fn handle_lsp_hover_tool_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {

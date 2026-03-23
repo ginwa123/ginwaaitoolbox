@@ -9,7 +9,7 @@ const write_file_tool = tree1_mod.write_file;
 /// Returns the write result as string or error.
 /// 
 /// All side effects (DB, logging, socket, message list) must be handled by caller.
-pub fn run(
+pub fn handle_write_file_tool_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {

@@ -2,7 +2,7 @@ const std = @import("std");
 const tree1 = @import("nalarcore");
 const sqlite = tree1.sqlite;
 
-pub fn run(
+pub fn mark_message_not_for_llm_run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,

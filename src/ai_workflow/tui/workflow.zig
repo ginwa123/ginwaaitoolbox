@@ -420,7 +420,7 @@ pub const TUIWorkflow = struct {
         base_tools: []const tool_models.AgentTool,
     ) !agent.CallResponse {
         // Fetch MCP tools from configured servers
-        const mcp_tools = buildMcpTools.run(allocator, config) catch |err| blk: {
+        const mcp_tools = buildMcpTools.build_mcp_tools_run(allocator, config) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
             break :blk &[_]tool_models.AgentTool{};
         };
@@ -573,7 +573,7 @@ pub const TUIWorkflow = struct {
         if (total <= 4) return;
 
         // Mark all existing messages in this session as not for LLM (soft-delete)
-        try mark_messages_not_for_llm.run(allocator, self.db, session_id);
+        try mark_messages_not_for_llm.mark_message_not_for_llm_run(allocator, self.db, session_id);
 
         // Build the compacted summary content
         var summary: std.ArrayList(u8) = .empty;

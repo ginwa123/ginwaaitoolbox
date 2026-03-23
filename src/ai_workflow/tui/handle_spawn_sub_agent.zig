@@ -98,63 +98,63 @@ fn execBash(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.Sqlite
 fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_read_file_tool.run(allocator, tc);
+    return handle_read_file_tool.handle_read_file_tool_run(allocator, tc);
 }
 
 fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_search_tool.run(allocator, tc);
+    return handle_search_tool.handle_search_tool_run(allocator, tc);
 }
 
 fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_text_replace_tool.run(allocator, tc);
+    return handle_text_replace_tool.handle_text_replace_tool_run(allocator, tc);
 }
 
 fn execWriteFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_write_file_tool.run(allocator, tc);
+    return handle_write_file_tool.handle_write_file_tool_run(allocator, tc);
 }
 
 fn execListSkills(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = tc;
     _ = db;
     _ = session_id;
-    return handle_list_skills_tool.run(allocator);
+    return handle_list_skills_tool.handle_list_skills_tool_run(allocator);
 }
 
 fn execGetSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_get_skill_tool.run(allocator, tc);
+    return handle_get_skill_tool.handle_get_skill_tool_run(allocator, tc);
 }
 
 fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_remove_skill_tool.run(allocator, tc);
+    return handle_remove_skill_tool.handle_remove_skill_tool_run(allocator, tc);
 }
 
 fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = tc;
     _ = db;
     _ = session_id;
-    return handle_list_agents_tool.run(allocator);
+    return handle_list_agents_tool.handle_list_agents_tool_run(allocator);
 }
 
 fn execGetAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_get_agent_tool.run(allocator, tc);
+    return handle_get_agent_tool.handle_get_agent_tool_run(allocator, tc);
 }
 
 fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_lsp_definition_tool.run(allocator, tc);
+    return handle_lsp_definition_tool.handle_lsp_definition_tool_run(allocator, tc);
 }
 
 /// MCP tool executor - placeholder for dynamic MCP tool handling
@@ -217,7 +217,7 @@ pub fn executeSubAgentTool(
     // Check if it's an MCP tool first (dynamic handling)
     if (isMCPTool(config, tc.function.name)) {
         if (logger) |log| {
-            const mcp_result = try handle_mcp_tool.run(allocator, log, tc, config);
+            const mcp_result = try handle_mcp_tool.handle_mcp_tool_run(allocator, log, tc, config);
             return SubAgentToolResult{ .output = mcp_result };
         } else {
             // Create a minimal logger for MCP calls when no logger is available
@@ -226,7 +226,7 @@ pub fn executeSubAgentTool(
                 .output_mode = .stdout,
             });
             defer minimal_logger.deinit();
-            const mcp_result = try handle_mcp_tool.run(allocator, &minimal_logger, tc, config);
+            const mcp_result = try handle_mcp_tool.handle_mcp_tool_run(allocator, &minimal_logger, tc, config);
             return SubAgentToolResult{ .output = mcp_result };
         }
     }
@@ -268,8 +268,12 @@ pub fn executeSubAgentTool(
 /// Check if a tool name is an MCP tool (format: serverName_toolName)
 fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
     if (config.mcpServers == null) return false;
-    const underscore_idx = std.mem.indexOf(u8, tool_name, "_") orelse return false;
-    const server_name = tool_name[0..underscore_idx];
+    // Tool names must start with "mcp_"
+    if (!std.mem.startsWith(u8, tool_name, "mcp_")) return false;
+    // Find the second underscore to get server_name
+    const after_mcp = tool_name["mcp_".len..];
+    const underscore_idx = std.mem.indexOf(u8, after_mcp, "_") orelse return false;
+    const server_name = after_mcp[0..underscore_idx];
     const mcp_servers = switch (config.mcpServers.?) {
         .object => |obj| obj,
         else => return false,
@@ -389,7 +393,7 @@ fn runSubAgent(
     parent_id: []const u8,
 ) ![]const u8 {
     // Fetch MCP tools for sub-agent
-    const mcp_tools = buildMcpTools.run(parentAllocator, config) catch &[_]tool_models.AgentTool{};
+    const mcp_tools = buildMcpTools.build_mcp_tools_run(parentAllocator, config) catch &[_]tool_models.AgentTool{};
 
     const sessionName = try std.fmt.allocPrint(parentAllocator, "{}", .{std.time.nanoTimestamp()});
 
@@ -685,7 +689,7 @@ fn runSubAgentThread(
 }
 
 /// Parse JSON input and run spawn_sub_agent handler
-pub fn run(
+pub fn handle_spawn_sub_agent_run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,

@@ -8,7 +8,7 @@ const on_event_send_new = @import("on_event_sent.zig").on_event_send_new;
 const session_helpers = @import("session_helpers.zig");
 const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;
 
-pub fn run(
+pub fn handle_content_filter_run(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,

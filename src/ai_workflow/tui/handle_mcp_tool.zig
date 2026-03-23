@@ -8,7 +8,7 @@ const http_client = tree1_mod.http_client;
 const config_mod = tree1_mod.config;
 
 /// Handle an MCP tool call by forwarding it to the MCP server
-pub fn run(
+pub fn handle_mcp_tool_run(
     parent_allocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
     tool_call: agent.ToolCall,
@@ -21,14 +21,22 @@ pub fn run(
     // Debug: log the tool call ID we received
     _ = try logger.infoFmt("[MCP] Tool call START - name: '{s}', id: '{s}'", .{ tool_call.function.name, tool_call.id });
 
-    // Parse tool name: format is "serverName_toolName"
-    const underscore_idx = std.mem.indexOf(u8, tool_call.function.name, "_") orelse {
-        _ = try logger.warnFmt("[MCP] No underscore in tool name: {s}", .{tool_call.function.name});
+    // Parse tool name: format is "mcp_serverName_toolName"
+    // First, verify it starts with "mcp_"
+    if (!std.mem.startsWith(u8, tool_call.function.name, "mcp_")) {
+        _ = try logger.warnFmt("[MCP] Tool name does not start with 'mcp_': {s}", .{tool_call.function.name});
+        return error.InvalidMCPToolName;
+    }
+
+    // Find the second underscore (after "mcp_")
+    const after_mcp = tool_call.function.name["mcp_".len..];
+    const underscore_idx = std.mem.indexOf(u8, after_mcp, "_") orelse {
+        _ = try logger.warnFmt("[MCP] No underscore after server name in tool: {s}", .{tool_call.function.name});
         return error.InvalidMCPToolName;
     };
 
-    const server_name = tool_call.function.name[0..underscore_idx];
-    const actual_tool_name = tool_call.function.name[underscore_idx + 1 ..];
+    const server_name = after_mcp[0..underscore_idx];
+    const actual_tool_name = after_mcp[underscore_idx + 1 ..];
 
     _ = try logger.infoFmt("[MCP] Parsed - server: '{s}', tool: '{s}'", .{ server_name, actual_tool_name });
 

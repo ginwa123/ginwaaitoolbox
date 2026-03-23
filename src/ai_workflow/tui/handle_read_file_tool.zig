@@ -10,7 +10,7 @@ const tool_models = tree1_mod.tool_models;
 /// Returns XML-wrapped result with path and content.
 ///
 /// All side effects (DB, logging, socket, message list) must be handled by caller.
-pub fn run(
+pub fn handle_read_file_tool_run(
     allocator: std.mem.Allocator,
     tool_call: agent.ToolCall,
 ) ![]const u8 {

@@ -42,7 +42,7 @@ const ListToolsResult = struct {
 };
 
 /// Fetch MCP tools from all configured servers
-pub fn run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) ![]AgentTool {
+pub fn build_mcp_tools_run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) ![]AgentTool {
     // Check if mcpServers is configured
     if (config.mcpServers == null) {
         return &[_]AgentTool{};
@@ -137,14 +137,14 @@ fn fetchToolsFromServer(
     // Make HTTP request using our http_client (which has curl fallback)
     const result = client.post(tools_url, request_body, headers_hash) catch |err| {
         std.log.warn("Failed to fetch MCP tools from {s}: {s}", .{ server_name, @errorName(err) });
-        return &[_]AgentTool{}; // this is issue will be fixed in the next release
+        return error.HttpRequestError;
     };
     defer allocator.free(result.body);
 
     // Check status
     if (result.status_code != 200) {
         std.log.warn("MCP server {s} returned status {d}", .{ server_name, result.status_code });
-        return &[_]AgentTool{};
+        return error.InvalidResponse;
     }
 
     // Parse JSON response
@@ -152,7 +152,7 @@ fn fetchToolsFromServer(
         .ignore_unknown_fields = true,
     }) catch |err| {
         std.log.warn("Failed to parse MCP response from {s}: {s}", .{ server_name, @errorName(err) });
-        return &[_]AgentTool{};
+        return error.JsonParseError;
     };
     defer parsed.deinit();
     std.debug.print("MCP response: {s}\n", .{result.body});
@@ -162,33 +162,33 @@ fn fetchToolsFromServer(
         .object => |obj| obj,
         else => {
             std.log.warn("Invalid MCP response from {s}: expected object", .{server_name});
-            return &[_]AgentTool{};
+            return error.InvalidResponse;
         },
     };
 
     const result_value = root.get("result") orelse {
         std.log.warn("Invalid MCP response from {s}: missing result", .{server_name});
-        return &[_]AgentTool{};
+        return error.InvalidResponse;
     };
 
     const result_obj = switch (result_value) {
         .object => |obj| obj,
         else => {
             std.log.warn("Invalid MCP response from {s}: result not an object", .{server_name});
-            return &[_]AgentTool{};
+            return error.InvalidResponse;
         },
     };
 
     const tools_value = result_obj.get("tools") orelse {
         std.log.warn("Invalid MCP response from {s}: missing tools", .{server_name});
-        return &[_]AgentTool{};
+        return error.InvalidResponse;
     };
 
     const tools_array = switch (tools_value) {
         .array => |arr| arr,
         else => {
             std.log.warn("Invalid MCP response from {s}: tools not an array", .{server_name});
-            return &[_]AgentTool{};
+            return error.InvalidResponse;
         },
     };
 
@@ -246,7 +246,7 @@ fn fetchToolsFromServer(
         const agent_tool = AgentTool{
             .type = "function",
             .function = AgentToolFunction{
-                .name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ server_name, name }),
+                .name = try std.fmt.allocPrint(allocator, "mcp_{s}_{s}", .{ server_name, name }),
                 .description = try allocator.dupe(u8, description),
                 .parameters = ToolParameters{
                     .type = "object",
