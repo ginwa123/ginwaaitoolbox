@@ -41,12 +41,13 @@ pub const App = struct {
     state: CompletionState = CompletionState{ .matches = .empty },
     is_noninteractive: bool = false,
     http_port: u16 = 8080,
+    process_name: []const u8 = "nalar",
 
-    pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16) !App {
+    pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16, process_name: []const u8) !App {
         // Spawn the backend if it's not already running
-        backend.spawnBackend(verbose, http_port) catch |err| {
-            std.debug.print("{s}Error: Failed to spawn nalar backend: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
-            std.debug.print("{s}Make sure /usr/local/bin/nalar exists (run: zig build install){s}\n", .{ globals.yellow, globals.reset });
+        backend.spawnBackend(verbose, http_port, process_name) catch |err| {
+            std.debug.print("{s}Error: Failed to spawn {s} backend: {s}{s}\n", .{ globals.red, process_name, @errorName(err), globals.reset });
+            std.debug.print("{s}Make sure /usr/local/bin/{s} exists (run: zig build install){s}\n", .{ globals.yellow, process_name, globals.reset });
             return err;
         };
         // std.log.info("Spawned backend", .{});
@@ -85,6 +86,7 @@ pub const App = struct {
             },
             .is_noninteractive = is_noninteractive,
             .http_port = http_port,
+            .process_name = process_name,
         };
     }
 
@@ -138,6 +140,10 @@ pub fn main() !void {
             tui_text.print("Error: -p/--port must be a valid u16 number\n", .{});
             return error.InvalidPortArgument;
         }
+        if (err == error.MissingProcessArgument) {
+            tui_text.print("Error: --process requires an argument\n", .{});
+            return error.MissingProcessArgument;
+        }
         return err;
     };
 
@@ -163,6 +169,7 @@ pub fn main() !void {
         opts.verbose,
         is_noninteractive,
         opts.port,
+        opts.process,
     );
 
     // Handle session ID: -c alone = auto-detect latest, -c <id> = specific session, no flag = new session

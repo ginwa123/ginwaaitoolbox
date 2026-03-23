@@ -9,6 +9,7 @@ pub const CliOptions = struct {
     show_version: bool = false,
     verbose: bool = false,
     port: u16 = 8080,
+    process: []const u8 = "nalar",  // backend binary name to spawn
 };
 
 /// Parse command line arguments
@@ -56,6 +57,12 @@ pub fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
             opts.port = std.fmt.parseInt(u16, args[i], 10) catch {
                 return error.InvalidPortArgument;
             };
+        } else if (std.mem.eql(u8, arg, "--process")) {
+            if (i + 1 >= args.len) {
+                return error.MissingProcessArgument;
+            }
+            i += 1;
+            opts.process = try allocator.dupe(u8, args[i]);
         } else {
             // Unknown argument, ignore for compatibility
         }
@@ -72,6 +79,7 @@ pub fn printHelp() void {
     std.debug.print("  -c, --continue          Resume latest session (auto-detect)\n", .{});
     std.debug.print("  -c <session_id>         Resume specific session\n", .{});
     std.debug.print("  -p, --port <port>       HTTP server port (default: 8080)\n", .{});
+    std.debug.print("  --process <name>        Backend binary to spawn (default: nalar)\n", .{});
     std.debug.print("  -v, --version           Print version\n", .{});
     std.debug.print("  -h, --help              Show help\n\n", .{});
     std.debug.print("Examples:\n", .{});
@@ -80,4 +88,5 @@ pub fn printHelp() void {
     std.debug.print("  nalar-tui -c abc123     Resume specific session\n", .{});
     std.debug.print("  nalar-tui -q \"What is the capital of France?\"\n", .{});
     std.debug.print("  nalar-tui -c -p 8081    Resume latest session on port 8081\n", .{});
+    std.debug.print("  nalar-tui --process nalar-dev\n", .{});
 }

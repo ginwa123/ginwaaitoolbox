@@ -6,8 +6,10 @@ const yellow = tui_text.ansi.yellow;
 const reset = tui_text.ansi.reset;
 
 /// Spawn the backend server as a daemon process
-pub fn spawnBackend(verbose: bool, port: u16) !void {
-    const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, "/usr/local/bin/nalar");
+pub fn spawnBackend(verbose: bool, port: u16, process_name: []const u8) !void {
+    const backend_path_str = try std.fmt.allocPrint(std.heap.page_allocator, "/usr/local/bin/{s}", .{process_name});
+    defer std.heap.page_allocator.free(backend_path_str);
+    const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, backend_path_str);
     defer std.heap.page_allocator.free(backend_path);
 
     // Check if backend is already running by trying to connect to HTTP port

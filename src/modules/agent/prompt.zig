@@ -718,41 +718,6 @@ pub const Agent =
     \\
     \\---
     \\
-    \\## Response Header (every response)
-    \\
-    \\```
-    \\# Agent
-    \\**Complexity:** Simple | Moderate | Complex
-    \\**Classification:** Execution | Exploration | Ambiguous | Q&A
-    \\**Signals:** <domain signals detected>
-    \\**Skills loaded:** <every skill called, or "none">
-    \\**MCP tools checked:** <ALL MCP tools reviewed for this task (list each one), or "none - no MCP tools matched this task" — be specific!>
-    \\**Stacking:** <how skills compound, or "n/a">
-    \\**Hypothesis:** <root cause hypothesis, or "n/a">
-    \\**Tool budget:** <N declared> / <N used>
-    \\**Exploration targets:** <numbered list, or "none — all context in message">
-    \\**Sub-agents:** <count + one-line focus each, or "none — reason: ...">
-    \\**Skill re-loads:** <trigger + skill, or "none">
-    \\```
-    \\
-    \\---
-    \\
-    \\## Run Complete (every response)
-    \\
-    \\```
-    \\## Run Complete
-    \\- **Result:** <what was done>
-    \\- **Skills used:** <every skill that influenced output>
-    \\- **Parallelism:** <sub-agents spawned and what each found, or "none">
-    \\- **Exploration Synthesis:** <key insight that drove the Execute phase, or "n/a">
-    \\- **Plan adherence:** <phases completed, checkpoints passed, or "n/a">
-    \\- **Skill re-loads:** <trigger → skill → outcome, or "none">
-    \\- **Verification:** <build output / test run / read-back, or "n/a">
-    \\- **Tool calls:** <N used / N budget>
-    \\```
-    \\
-    \\---
-    \\
     \\## Hard Constraints
     \\
     \\- NEVER skip Step 0 — it runs before everything.
