@@ -10,6 +10,7 @@ const bash_tool = root_mod.bash_tool;
 const read_file_tool = root_mod.read_file;
 const write_file_tool = root_mod.write_file;
 const search_tool = root_mod.search_tool;
+const glob_tool = root_mod.glob_tool;
 const text_replace_tool = root_mod.text_replace_tool;
 const list_skills_tool = root_mod.list_skills_tool;
 const get_skill_tool = root_mod.get_skill_tool;
@@ -22,6 +23,7 @@ const handle_tool = @import("handle_tool.zig");
 const BashTool = root_mod.bash_tool;
 const ReadFileTool = root_mod.read_file;
 const SearchTool = root_mod.search_tool;
+const GlobTool = root_mod.glob_tool;
 const TextReplaceTool = root_mod.text_replace_tool;
 const WriteFileTool = root_mod.write_file;
 const ListSkillsTool = root_mod.list_skills_tool;
@@ -32,6 +34,7 @@ const GetAgentTool = root_mod.get_agent;
 const LspDefinitionTool = root_mod.tools.lspDefinitionTool;
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
+const handle_glob_tool = @import("handle_glob_tool.zig");
 const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
 const handle_write_file_tool = @import("handle_write_file_tool.zig");
 const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
@@ -105,6 +108,12 @@ fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.Sqli
     _ = db;
     _ = session_id;
     return handle_search_tool.handle_search_tool_run(allocator, tc);
+}
+
+fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_glob_tool.handle_glob_tool_run(allocator, tc);
 }
 
 fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
@@ -184,6 +193,7 @@ const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
     .{ .name = "bash", .exec = execBash, .tool_def = BashTool.bashTool },
     .{ .name = "read_file", .exec = execReadFile, .tool_def = ReadFileTool.readFileTool },
     .{ .name = "search", .exec = execSearch, .tool_def = SearchTool.searchTool },
+    .{ .name = "glob", .exec = execGlob, .tool_def = GlobTool.globTool },
     .{ .name = "text_replace", .exec = execTextReplace, .tool_def = TextReplaceTool.textReplaceTool },
     .{ .name = "write_file", .exec = execWriteFile, .tool_def = WriteFileTool.writeFileTool },
 
