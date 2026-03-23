@@ -38,6 +38,8 @@ pub const GlobInput = struct {
     max_results: ?usize = null,
     /// Filter by file type
     type_filter: ?GlobTypeFilter = null,
+    /// Skip the first N results (for pagination). Default: 0.
+    offset: ?usize = null,
 };
 
 /// A single glob match result.
@@ -65,9 +67,12 @@ pub const GlobResult = struct {
 /// - `--glob` for glob patterns
 /// - `-H` or `--no-hidden` for hidden files
 /// - `-t <type>` for type filtering
-/// - `-l` (max-results) for limiting results
+/// - `--max-results` for limiting results
+///
+/// Note: `offset` is applied after fetching results, since fd doesn't support offset natively.
 pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
-    const max_results = input.max_results orelse 100;
+    const offset = input.offset orelse 0;
+    const max_results = (input.max_results orelse 100) + offset; // Fetch extra if offset is set
 
     // Build argument list for fd
     var args = std.ArrayListUnmanaged([]const u8){};
@@ -98,7 +103,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
         try args.append(allocator, filter.toFdArg());
     }
 
-    // Limit results
+    // Limit results (include offset if set)
     try args.append(allocator, "--max-results");
     try args.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{max_results}));
 
@@ -128,15 +133,41 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
         if (line_end > line_start) {
             const line = result.stdout[line_start..line_end];
             if (line.len > 0) {
+                try matches.append(allocator, .{ .path = undefined }); // placeholder
+                // Store the path directly (will be copied below)
                 const owned_path = try allocator.dupe(u8, line);
-                errdefer allocator.free(owned_path);
-
-                try matches.append(allocator, .{ .path = owned_path });
-
-                if (matches.items.len >= max_results) break;
+                matches.items[matches.items.len - 1].path = owned_path;
             }
         }
         line_start = line_end + 1;
+    }
+
+    // Apply offset: skip first N results
+    if (offset > 0 and offset < matches.items.len) {
+        const new_len = matches.items.len - offset;
+        // Free skipped items
+        for (offset..matches.items.len) |i| {
+            allocator.free(matches.items[i].path);
+        }
+        // Shift remaining items to front
+        for (0..new_len) |i| {
+            matches.items[i] = matches.items[offset + i];
+        }
+        matches.shrinkRetainingCapacity(new_len);
+    } else if (offset >= matches.items.len) {
+        // All results were skipped
+        for (matches.items) |*m| {
+            allocator.free(m.path);
+        }
+        matches.shrinkRetainingCapacity(0);
+    }
+
+    // Trim to max_results if we have more than needed
+    if (matches.items.len > (input.max_results orelse 100)) {
+        for (matches.items[(input.max_results orelse 100)..]) |*m| {
+            allocator.free(m.path);
+        }
+        matches.shrinkRetainingCapacity(input.max_results orelse 100);
     }
 
     return GlobResult{ .matches = matches };
@@ -198,6 +229,11 @@ pub const globTool = AgentTool{
                     .name = "type_filter",
                     .type = "string",
                     .description = "Filter by file type: 'file', 'directory', 'symlink', 'socket', 'pipe', 'executable', 'empty'. Default: all types.",
+                },
+                .{
+                    .name = "offset",
+                    .type = "number",
+                    .description = "Skip the first N results for pagination. Use with max_results to page through large result sets. Default: 0.",
                 },
             },
             .required = &.{ "pattern", "path" },

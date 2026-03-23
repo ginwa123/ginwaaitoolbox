@@ -132,6 +132,41 @@ test "executeGlob respects max_results" {
     try expect(result.matches.items.len <= max_results);
 }
 
+test "executeGlob with offset pagination" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // First batch: get first 3 results
+    const input1 = GlobInput{
+        .pattern = "*.zig",
+        .path = "src",
+        .max_results = 3,
+        .offset = 0,
+    };
+
+    var result1 = try executeGlob(allocator, input1);
+    defer result1.deinit(allocator);
+
+    // Second batch: skip first 3, get next 3
+    const input2 = GlobInput{
+        .pattern = "*.zig",
+        .path = "src",
+        .max_results = 3,
+        .offset = 3,
+    };
+
+    var result2 = try executeGlob(allocator, input2);
+    defer result2.deinit(allocator);
+
+    // Results should not overlap
+    for (result1.matches.items) |m1| {
+        for (result2.matches.items) |m2| {
+            try expect(!std.mem.eql(u8, m1.path, m2.path));
+        }
+    }
+}
+
 test "executeGlob handles non-existent path" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
