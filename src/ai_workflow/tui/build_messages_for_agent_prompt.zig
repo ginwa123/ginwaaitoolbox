@@ -17,10 +17,8 @@ pub fn BuildMessages(
     agentUsed: []const u8,
 ) ![]agent.AgentMessage {
 
-
     // buildAgentPrompt now handles processMessages internally
     const systemContent = try prompt.buildAgentPrompt(allocator, cwd, "", skills, memoryMd, backgroundProcessmessage, agentUsed);
-    errdefer allocator.free(systemContent);
 
     const systemMessage = agent.AgentMessage{
         .role = .system,
@@ -30,13 +28,11 @@ pub fn BuildMessages(
     var allMessages: std.ArrayList(agent.AgentMessage) = .empty;
 
     try allMessages.append(allocator, systemMessage);
-
     for (historyMessages) |hist| {
         const agentMsgs = try transform_llm_history_to_agent_messages.transform_llm_history_to_agent_message(allocator, hist);
         for (agentMsgs) |msg| {
             try allMessages.append(allocator, msg);
         }
-        allocator.free(agentMsgs);
     }
 
     return try allMessages.toOwnedSlice(allocator);
