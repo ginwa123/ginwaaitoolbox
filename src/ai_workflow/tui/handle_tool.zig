@@ -13,6 +13,7 @@ const session_helpers = @import("session_helpers.zig");
 const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;
 const tool_models = root_mod.tool_models;
 const get_messagesLatest = session_helpers.get_message_latest;
+const handle_mcp_tool = @import("handle_mcp_tool.zig");
 
 // ============================================================================
 // TOOL REGISTRY - Single source of truth for all tool definitions
@@ -116,6 +117,11 @@ pub fn isKnownTool(name: []const u8) bool {
         if (std.mem.eql(u8, name, entry.name)) return true;
     }
     return false;
+}
+
+/// Check if a tool name is an MCP tool (starts with "mcp_")
+pub fn isMcpTool(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "mcp_");
 }
 
 /// Get all tool names as a slice (for compatibility)
@@ -323,14 +329,15 @@ pub fn handle_tool(
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
     base_tools: []const tool_models.AgentTool,
+    messages_list: *std.ArrayList(agent.AgentMessage),
 ) !void {
     _ = base_tools; // Kept for API compatibility, tool validation is now via registry
 
     if (res_dynamic_agent.tool_calls) |tc| {
-        // Check if any tools match registered tools
+        // Check if any tools match registered tools or MCP tools
         var has_known_tools = false;
         for (tc) |tool_call| {
-            if (isKnownTool(tool_call.function.name)) {
+            if (isKnownTool(tool_call.function.name) or isMcpTool(tool_call.function.name)) {
                 has_known_tools = true;
                 break;
             }
@@ -398,6 +405,33 @@ pub fn handle_tool(
             var tool_result: []const u8 = undefined;
             var toolAgentTemp: f32 = agent_temperature.*;
             var toolIsThinking: bool = isThinking.*;
+
+            // Check if this is an MCP tool
+            if (isMcpTool(tool_call.function.name)) {
+                // Call MCP handler directly - it handles the full flow including message append
+                handle_mcp_tool.run(
+                    allocator,
+                    db,
+                    logger,
+                    session_id,
+                    model,
+                    cwd,
+                    session_name,
+                    loop_counter,
+                    messages_list,
+                    tool_call,
+                    agent_temperature.*,
+                    isThinking.*,
+                    config,
+                ) catch |err| {
+                    tool_result = try std.fmt.allocPrint(allocator, "ERROR: MCP tool {s} failed: {s}", .{
+                        tool_call.function.name,
+                        @errorName(err),
+                    });
+                    try saveAndSendToolResult(allocator, db, session_id, model, cwd, session_name, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                    continue; // MCP tool handler manages its own flow
+                };
+            }
 
             // Dispatch to the appropriate handler
             const exec_result = dispatchTool(ctx, tool_call) catch |err| {

@@ -179,6 +179,7 @@ pub fn run(
         .content = tool_result,
         .reasoning_content = null,
         .role = agent.Role.tool.toStr(),
+        .finish_reason = agent.FinishReason.tool.toStr(),
         .tool_calls = null,
         .tool_call_id = tool_call.id,
         .agent_name = tool_call.function.name,

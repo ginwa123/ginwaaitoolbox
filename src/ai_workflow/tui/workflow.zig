@@ -312,12 +312,12 @@ pub const TUIWorkflow = struct {
                     current_max_tokens += 4096;
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                    try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                 } else if (finish_reason == .assistant) {
                     // Some providers return "assistant" instead of "tool_calls" when tool calls are present
                     // Treat it the same as tool_calls - check if there are actual tool calls to process
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools);
+                        try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                     } else {
                         // No tool calls present - treat as normal completion
                         _ = try save_message(allocator, self.db, .{
@@ -419,19 +419,17 @@ pub const TUIWorkflow = struct {
         config: *const config_mod.LlmConfig,
         base_tools: []const tool_models.AgentTool,
     ) !agent.CallResponse {
-        _ = config;
         // Fetch MCP tools from configured servers
-        // const mcp_tools = buildMcpTools.run(allocator, config) catch |err| blk: {
-        //     self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
-        //     break :blk &[_]tool_models.AgentTool{};
-        // };
+        const mcp_tools = buildMcpTools.run(allocator, config) catch |err| blk: {
+            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
+            break :blk &[_]tool_models.AgentTool{};
+        };
         // Note: mcp_tools memory is managed by the arena allocator
-        // mcp still isse
 
         // Merge base tools with MCP tools
         var all_tools: std.ArrayList(tool_models.AgentTool) = .empty;
         try all_tools.appendSlice(allocator, base_tools);
-        // try all_tools.appendSlice(allocator, mcp_tools); // this is issue will be fixed in the next release
+        try all_tools.appendSlice(allocator, mcp_tools);
         const tools = try all_tools.toOwnedSlice(allocator);
 
         var dynamic_agent = try agent.Agent.init(allocator, self.logger);
