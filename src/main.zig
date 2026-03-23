@@ -15,6 +15,8 @@ const sqlite = root_mod.sqlite;
 const migrations = root_mod.migrations;
 const cancellation_registry = root_mod.session.cancellation_registry;
 const helpers = root_mod.helpers;
+const config = root_mod.config;
+const LlmConfig = config.LlmConfig;
 
 pub const CommandMessage = struct {
     command_type: []const u8 = "",
@@ -276,6 +278,48 @@ pub fn main() !void {
                         std.debug.print("Failed to send pong response: {s}\n", .{@errorName(err)});
                     };
                 }
+            }
+
+            if (std.mem.eql(u8, t.command_type, "compact")) {
+                // Manually trigger compaction for the session
+                var response_buf: [256]u8 = undefined;
+                const response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"compact_ack\",\"session_id\":\"{s}\",\"status\":\"processing\"}}", .{t.session_id}) catch unreachable;
+                if (http_server.getGlobalSseManager()) |sse_manager| {
+                    const event = http_server.SseEvent{
+                        .event_type = "compact_ack",
+                        .data = response,
+                    };
+                    sse_manager.sendEvent(t.session_id, event) catch |err| {
+                        std.debug.print("Failed to send compact_ack response: {s}\n", .{@errorName(err)});
+                    };
+                }
+                // Run the compaction workflow in a separate task
+                std.debug.print("[COMPACTION] Manual compaction triggered for session {s}\n", .{t.session_id});
+                var workflow_compact = ai_workflow.TUIWorkflow.init(ctxTui.db, ctxTui.logger);
+                // Run compaction asynchronously - this will send results via SSE
+                // Use the llm_config already loaded in ctxTui
+                _ = std.Thread.spawn(.{}, struct {
+                    fn run(workflow: *ai_workflow.TUIWorkflow, session_id: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, compaction_kb: usize) void {
+                        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                        defer arena.deinit();
+                        const alloc = arena.allocator();
+                        // Get cwd from session
+                        var cwd_buf: [4096]u8 = undefined;
+                        const cwd = std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";
+                        // Create a minimal LlmConfig for the workflow
+                        var llm_cfg = LlmConfig{
+                            .allocator = alloc,
+                            .api_key = api_key,
+                            .model = model,
+                            .base_url = base_url,
+                            .model_compaction_size_kb = compaction_kb,
+                            .mcpServers = null,
+                        };
+                        workflow.run(alloc, session_id, "", cwd, api_key, model, base_url, &llm_cfg);
+                    }
+                }.run, .{ &workflow_compact, t.session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb }) catch |err| {
+                    std.debug.print("[COMPACTION] Failed to spawn thread: {s}\n", .{@errorName(err)});
+                };
             }
         }
     }.handler);

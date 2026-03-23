@@ -80,10 +80,11 @@ src/
 ## Important Conventions
 
 - `const tree1 = @import("nalarcore");` — module imports
-- snake_case for variables, PascalCase for structs
+- **Naming:** snake_case for variables and functions, PascalCase for structs/types
 - `ArrayList.empty` replaces `ArrayList.init` (Zig 0.15)
 - `ArrayList.deinit(allocator)` — allocator required
 - Never return stack-allocated slices from functions
+- **Memory management:** Prefer `ArenaAllocator` over manual `free()` calls — simpler, less error-prone
 
 ## Related
 
@@ -93,11 +94,21 @@ src/
 
 
 
-## to testing ai agentic use cli
-dont ever kill port 8081, or the process
+## Testing
 
-you allowed to use port 8081 for testing
- ./zigout/bin/nalar-tui --port 8080 -q "your query" -c
- -c will be continue last session
- -q will be query to llm
+Use the TUI CLI to test AI agentic behavior:
+
+```bash
+./zigout/bin/nalar-dev-tui --port 8080 -q "your query"
+```
+
+**Options:**
+- `-q "query"` — Send a single query to the LLM, then exit
+- `-c` — Continue the last session
+- `-c <session_id>` — Continue a specific session
+
+**Important:**
+- Never kill port 8081 or its associated process
+- Port 8081 is reserved for testing
+- Never kill process name nalar, your process to testing is nalar-dev
 

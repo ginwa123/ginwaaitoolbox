@@ -42,6 +42,9 @@ pub fn executeCommand(app: *App, command: []const u8) !bool {
     if (std.mem.eql(u8, command, "/disabledebug")) {
         return commandDisableDebug(app);
     }
+    if (std.mem.eql(u8, command, "/compact")) {
+        return commandCompact(app);
+    }
     return false;
 }
 
@@ -240,5 +243,17 @@ fn commandDisableDebug(app: *App) !bool {
     std.debug.print("{s}╚════════════════════════════════════════╝{s}\r\n", .{ bold, reset });
     std.debug.print("\r\n{s}Debug logging is now off.{s}\r\n", .{ dim, reset });
     std.debug.print("\r\n{s}Use {s}/enabledebug{s} to turn on debug mode.{s}\r\n", .{ dim, bold, reset, dim });
+    return false;
+}
+
+/// Trigger manual conversation history compaction
+fn commandCompact(app: *App) !bool {
+    std.debug.print("\r\n{s}Compacting conversation history...{s}\r\n", .{ dim, reset });
+    const messaging = @import("../network/messaging.zig");
+    messaging.sendCompactCommand(app) catch |err| {
+        std.debug.print("{s}Error sending compact command: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        return false;
+    };
+    std.debug.print("{s}Compaction request sent. The server will process it.{s}\r\n", .{ green, reset });
     return false;
 }

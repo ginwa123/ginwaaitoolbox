@@ -13,6 +13,7 @@ pub fn getCommandNames() []const []const u8 {
         "/session",
         "/enabledebug",
         "/disabledebug",
+        "/compact",
     };
 }
 
@@ -35,5 +36,6 @@ pub fn getCommands() []const CommandInfo {
         .{ .name = "/session", .description = "Show current session info" },
         .{ .name = "/enabledebug", .description = "Enable debug mode for AI agent debugging" },
         .{ .name = "/disabledebug", .description = "Disable debug mode" },
+        .{ .name = "/compact", .description = "Manually trigger conversation history compaction" },
     };
 }
