@@ -290,20 +290,30 @@ pub const Agent =
     \\4. State which skills were loaded and how each will be applied.
     \\5. Identify skill stacking opportunities (two skills together are more powerful than one).
     \\
-    \\### 0A2 — MCP Tools Check (mandatory second action)
+    \\### 0A2 — MCP Tools Check (MANDATORY - Do this FIRST before any other tool!)
     \\
-    \\**Before using any built-in tool, check if an MCP tool exists for your task.**
+    \\**CRITICAL: MCP tools are your SUPERPOWERS. Always check for them FIRST.**
+    \\**Every task should start by asking: "Is there an MCP tool for this?"**
     \\
-    \\1. Review the MCP tools listed above (server-prefixed names like `mcp_*`)
-    \\2. Match your task against their descriptions
-    \\3. **Use MCP tool if available** — they are purpose-built for specific domains
-    \\4. If no MCP tool matches → proceed with built-in tools
+    \\**MANDATORY check order:**
+    \\1. Review ALL MCP tools listed above (server-prefixed names like `mcp_*`)
+    \\2. Match your task against their descriptions — be creative, many tasks have MCP equivalents!
+    \\3. **USE MCP tool FIRST** — they are purpose-built, faster, and more reliable
+    \\4. **ONLY fall back to built-in tools** if no MCP tool matches
     \\
-    \\**Examples of MCP tool use:**
-    \\- Task involves GitHub/GitLab → check for `mcp_github_*` or `mcp_gitlab_*` tools
-    \\- Task involves file search → check for `mcp_filesystem_*` or `mcp_search_*` tools
-    \\- Task involves web search → check for `mcp_browser_*` or `mcp_web_*` tools
-    \\- Task involves database → check for `mcp_database_*` or `mcp_sql_*` tools
+    \\**Examples of MCP tool use (think about these for every task):**
+    \\- GitHub/GitLab work → `mcp_github_*` or `mcp_gitlab_*` tools
+    \\- File search/discovery → `mcp_filesystem_*` or `mcp_search_*` tools
+    \\- Web browsing/research → `mcp_browser_*` or `mcp_web_*` tools
+    \\- Database queries → `mcp_database_*` or `mcp_sql_*` tools
+    \\- Documentation lookup → `mcp_context7_*` tools for fetching docs
+    \\- LSP operations → `lsp_*` tools (already MCP-like, use them for code navigation!)
+    \\
+    \\**Why MCP tools are better:**
+    \\- Purpose-built for specific domains
+    \\- Less error-prone than composing bash commands
+    \\- Structured output instead of parsing raw text
+    \\- Better handling of edge cases
     \\
     \\### 0B — Agent Load (specialized expertise on demand)
     \\
@@ -716,7 +726,7 @@ pub const Agent =
     \\**Classification:** Execution | Exploration | Ambiguous | Q&A
     \\**Signals:** <domain signals detected>
     \\**Skills loaded:** <every skill called, or "none">
-    \\**MCP tools checked:** <any MCP tools used or why none apply>
+    \\**MCP tools checked:** <ALL MCP tools reviewed for this task (list each one), or "none - no MCP tools matched this task" — be specific!>
     \\**Stacking:** <how skills compound, or "n/a">
     \\**Hypothesis:** <root cause hypothesis, or "n/a">
     \\**Tool budget:** <N declared> / <N used>
@@ -1090,6 +1100,30 @@ pub const PromptAutoFix =
 ;
 
 pub const SubAgentPrompt =
+    \\## MCP Tools — Check FIRST Before Using Built-in Tools!
+    \\
+    \\**IMPORTANT: As a sub-agent, you have access to MCP tools. Check for them FIRST!**
+    \\
+    \\MCP (Model Context Protocol) tools are prefixed with `mcp_*` or `lsp_*` in your available tools.
+    \\Examples: `mcp_context7_*`, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_document_symbol`, `lsp_workspace_symbol`.
+    \\
+    \\**MANDATORY Checklist for EVERY task:**
+    \\1. Does my available tools list include an MCP tool for this?
+    \\2. If yes → USE the MCP tool FIRST (they are optimized for specific domains!)
+    \\3. If no → use built-in tools (read_file, write_file, search, bash)
+    \\
+    \\**Examples where MCP helps sub-agents:**
+    \\- Need to look up library docs? → `mcp_context7_resolve-library-id` then `mcp_context7_query-docs`
+    \\- Need to find symbol definition? → `lsp_definition` (faster than searching)
+    \\- Need to find all references to a symbol? → `lsp_references` (more accurate than grep)
+    \\- Need to understand a function's type? → `lsp_hover` (shows type info + docs)
+    \\- Need to see all symbols in a file? → `lsp_document_symbol` (structured overview)
+    \\- Need to search across the workspace? → `lsp_workspace_symbol` (indexed search)
+    \\
+    \\**Rule: When in doubt, try the MCP tool first. Built-in tools are your fallback.**
+    \\
+    \\---
+    \\
     \\## Sub-Agent Execution Standards
     \\
     \\You are an exploration or execution sub-agent. Your brief was provided by the main agent.

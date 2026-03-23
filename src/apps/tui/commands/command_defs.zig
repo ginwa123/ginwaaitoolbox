@@ -11,6 +11,8 @@ pub fn getCommandNames() []const []const u8 {
         "/model",
         "/config",
         "/session",
+        "/enabledebug",
+        "/disabledebug",
     };
 }
 
@@ -31,5 +33,7 @@ pub fn getCommands() []const CommandInfo {
         .{ .name = "/model", .description = "Show current AI model" },
         .{ .name = "/config", .description = "Show configuration settings" },
         .{ .name = "/session", .description = "Show current session info" },
+        .{ .name = "/enabledebug", .description = "Enable debug mode for AI agent debugging" },
+        .{ .name = "/disabledebug", .description = "Disable debug mode" },
     };
 }

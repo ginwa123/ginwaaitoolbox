@@ -36,6 +36,12 @@ pub fn executeCommand(app: *App, command: []const u8) !bool {
     if (std.mem.eql(u8, command, "/session")) {
         return commandSession(app);
     }
+    if (std.mem.eql(u8, command, "/enabledebug")) {
+        return commandEnableDebug(app);
+    }
+    if (std.mem.eql(u8, command, "/disabledebug")) {
+        return commandDisableDebug(app);
+    }
     return false;
 }
 
@@ -208,5 +214,31 @@ fn commandSession(app: *App) !bool {
     const cwd = std.posix.getcwd(&cwd_buf) catch "unknown";
     std.debug.print("  {s}Working Dir:{s} {s}{s}{s}\r\n", .{ dim, reset, green, cwd, reset });
     
+    return false;
+}
+
+/// Enable debug mode for AI agent debugging
+fn commandEnableDebug(app: *App) !bool {
+    app.verbose = true;
+    std.debug.print("\r\n{s}╔════════════════════════════════════════╗{s}\r\n", .{ bold, reset });
+    std.debug.print("{s}║       {s}✓ DEBUG MODE ENABLED{s}             {s}║{s}\r\n", .{ bold, green, reset, bold, reset });
+    std.debug.print("{s}╚════════════════════════════════════════╝{s}\r\n", .{ bold, reset });
+    std.debug.print("\r\n{s}Debug logging is now active. The following will be displayed:{s}\r\n", .{ dim, reset });
+    std.debug.print("  {s}• Network requests and responses{s}\r\n", .{ dim, reset });
+    std.debug.print("  {s}• SSE message parsing details{s}\r\n", .{ dim, reset });
+    std.debug.print("  {s}• Tool calls and results{s}\r\n", .{ dim, reset });
+    std.debug.print("  {s}• HTTP headers and chunked transfer details{s}\r\n", .{ dim, reset });
+    std.debug.print("\r\n{s}Use {s}/disabledebug{s} to turn off debug mode.{s}\r\n", .{ dim, bold, reset, dim });
+    return false;
+}
+
+/// Disable debug mode
+fn commandDisableDebug(app: *App) !bool {
+    app.verbose = false;
+    std.debug.print("\r\n{s}╔════════════════════════════════════════╗{s}\r\n", .{ bold, reset });
+    std.debug.print("{s}║       {s}✗ DEBUG MODE DISABLED{s}           {s}║{s}\r\n", .{ bold, yellow, reset, bold, reset });
+    std.debug.print("{s}╚════════════════════════════════════════╝{s}\r\n", .{ bold, reset });
+    std.debug.print("\r\n{s}Debug logging is now off.{s}\r\n", .{ dim, reset });
+    std.debug.print("\r\n{s}Use {s}/enabledebug{s} to turn on debug mode.{s}\r\n", .{ dim, bold, reset, dim });
     return false;
 }
