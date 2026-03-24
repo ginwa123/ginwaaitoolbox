@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = @import("debug.zig");
 const globals = @import("../globals.zig");
 const tuiText = @import("tui-text");
 const sse = @import("sse.zig");
@@ -68,7 +69,6 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         displayed_tool_ids.deinit(app.allocator);
     }
     // var last_printed_chunk_index: usize = 0;
-    var last_finish_search_pos: usize = 0;
     var raw_buffer_processed_len: usize = 0;
 
     while (true) {
@@ -138,109 +138,101 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         const new_raw = raw_buffer.items[raw_buffer_processed_len..];
         if (new_raw.len == 0) continue;
 
-        if (sse.decode_chuncked(app.allocator, new_raw)) |decoded| {
-            defer app.allocator.free(decoded);
+        const decoded = sse.decode_chuncked(app.allocator, new_raw) catch |err| {
+            debug.logError("streaming: decode_chuncked failed: {}", .{err});
             raw_buffer_processed_len = raw_buffer.items.len;
+            continue;
+        };
+        defer app.allocator.free(decoded);
+        raw_buffer_processed_len = raw_buffer.items.len;
 
-            // Debug: print decoded size
-            // tuiText.print("{s}[DEBUG] Decoded: {d} bytes{s}\n", .{ globals.dim, decoded.len, globals.reset });
+        debug.logVerbose("streaming: decoded {d} bytes", .{decoded.len});
 
-            if (sse.extract_sse_data(app.allocator, decoded)) |xml| {
-                defer app.allocator.free(xml);
+        const xml = sse.extract_sse_data(app.allocator, decoded) catch |err| {
+            debug.logError("streaming: extract_sse_data failed: {}", .{err});
+            continue;
+        };
+        defer app.allocator.free(xml);
 
-                // Debug: print XML preview
-                // const xml_preview = xml[0..@min(xml.len, 500)];
-                // tuiText.print("{s}[DEBUG] XML ({d} bytes): {s}{s}\n", .{ globals.dim, xml.len, xml_preview, globals.reset });
+        debug.logVerbose("streaming: extracted {d} bytes of XML", .{xml.len});
 
-                if (try response.extract_content_result(app.allocator, xml)) |extract_result| {
-                    // Check finish_reason to decide whether to display content
-                    const should_display = if (extract_result.finish_reason) |fr|
-                        !std.mem.eql(u8, fr, "tool_calls")
-                    else
-                        true; // null finish_reason means show content (normal completion)
+        if (response.extract_content_result(app.allocator, xml)) |extract_result| {
+            // Check finish_reason to decide whether to display content
+            const should_display = if (extract_result.finish_reason) |fr|
+                !std.mem.eql(u8, fr, "tool_calls")
+            else
+                true; // null finish_reason means show content (normal completion)
 
-                    if (should_display) {
-                        var content_list = extract_result.content_results;
-                        defer content_list.deinit(app.allocator);
+            if (should_display) {
+                var content_list = extract_result.content_results;
+                defer content_list.deinit(app.allocator);
 
-                        for (content_list.items) |result| {
-                            if (result.content.len > 0) {
-                                streaming_started = true;
-                                tuiText.print("{s}", .{result.content});
-                            }
-                        }
+                for (content_list.items) |result| {
+                    if (result.content.len > 0) {
+                        streaming_started = true;
+                        tuiText.print("{s}", .{result.content});
                     }
                 }
+            }
+        } else |err| {
+            debug.logError("streaming: extract_content_result failed: {}", .{err});
+        }
 
-                if (tool_results.extractToolResults(app.allocator, xml)) |tr_val| {
-                    var tool_results_list = tr_val;
-                    defer tool_results_list.deinit(app.allocator);
+        if (tool_results.extractToolResults(app.allocator, xml)) |tr_val| {
+            var tool_results_list = tr_val;
+            defer tool_results_list.deinit(app.allocator);
 
-                    for (tool_results_list.items) |result| {
-                        var already_displayed = false;
-                        for (displayed_tool_ids.items) |id| {
-                            if (std.mem.eql(u8, id, result.id)) {
-                                already_displayed = true;
-                                break;
-                            }
-                        }
-                        if (!already_displayed) {
-                            tuiText.print("\r\x1b[2K", .{});
-                            const max_result_len: usize = 500;
-                            tool_results.displayToolResultByName(result.result, result.name, max_result_len);
-                            if (utils.extractTag(result.result, "set_agent_properties")) |_| {
-                                tuiText.print("\n{s}[agent properties]{s} → updated\n", .{ globals.cyan, globals.reset });
-                            }
-                            const id_copy = app.allocator.dupe(u8, result.id) catch continue;
-                            displayed_tool_ids.append(app.allocator, id_copy) catch {
-                                app.allocator.free(id_copy);
-                                continue;
-                            };
-                        }
+            for (tool_results_list.items) |result| {
+                var already_displayed = false;
+                for (displayed_tool_ids.items) |id| {
+                    if (std.mem.eql(u8, id, result.id)) {
+                        already_displayed = true;
+                        break;
                     }
-                } else |_| {}
-            } else |_| {}
-        } else |_| {}
+                }
+                if (!already_displayed) {
+                    tuiText.print("\r\x1b[2K", .{});
+                    const max_result_len: usize = 500;
+                    tool_results.displayToolResultByName(result.result, result.name, max_result_len);
+                    if (utils.extractTag(result.result, "set_agent_properties")) |_| {
+                        tuiText.print("\n{s}[agent properties]{s} → updated\n", .{ globals.cyan, globals.reset });
+                    }
+                    const id_copy = app.allocator.dupe(u8, result.id) catch continue;
+                    displayed_tool_ids.append(app.allocator, id_copy) catch {
+                        app.allocator.free(id_copy);
+                        continue;
+                    };
+                }
+            }
+        } else |err| {
+            debug.logError("streaming: extractToolResults failed: {}", .{err});
+        }
 
         var finish_reason_stop = false;
-        // finish_reason
-        const search_start = @min(last_finish_search_pos, raw_buffer.items.len);
-        if (std.mem.indexOfPos(u8, raw_buffer.items, search_start, "</finish_reason>")) |pos| {
-            last_finish_search_pos = raw_buffer.items.len;
-            // Find the corresponding opening tag to extract content
-            if (utils.extractTag(raw_buffer.items, "finish_reason")) |fr| {
-                if (std.mem.eql(u8, fr, "notification_error")) {
-                    retry_count += 1;
-                    continue;
-                }
-                if (std.mem.eql(u8, fr, "cancelled")) {
-                    tuiText.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
-                    finish_reason_stop = true;
-                }
-                if (std.mem.eql(u8, fr, "user_choice")) {
-                    finish_reason_stop = true;
-                }
-                if (std.mem.eql(u8, fr, "stop")) {
-                    finish_reason_stop = true;
-                }
-                if (finish_reason_stop) {
-                    // Verify this is the LAST finish_reason in buffer before breaking
-                    // Count total finish_reason tags - if this is the only one, it's the latest
-                    const total_tags = std.mem.count(u8, raw_buffer.items, "</finish_reason>");
-                    if (total_tags == 1) {
-                        // Only one finish_reason - this is definitely the latest
-                        break;
-                    }
-                    // Multiple tags - check if there's another one after this position
-                    const after_this_end = pos + "</finish_reason>".len;
-                    if (after_this_end >= raw_buffer.items.len or
-                        std.mem.indexOf(u8, raw_buffer.items[after_this_end..], "</finish_reason>") == null)
-                    {
-                        // check get session to make sure we loop
-                        // call api get session
-                        break;
-                    }
-                }
+        
+        // Look for finish_reason tag in buffer
+        if (utils.extractTag(raw_buffer.items, "finish_reason")) |fr| {
+            debug.logVerbose("streaming: detected finish_reason={s}", .{fr});
+            
+            if (std.mem.eql(u8, fr, "notification_error")) {
+                debug.logInfo("streaming: notification_error, retrying", .{});
+                retry_count += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, fr, "cancelled")) {
+                tuiText.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
+                finish_reason_stop = true;
+            }
+            if (std.mem.eql(u8, fr, "user_choice")) {
+                debug.logInfo("streaming: user_choice detected", .{});
+                finish_reason_stop = true;
+            }
+            if (std.mem.eql(u8, fr, "stop")) {
+                debug.logInfo("streaming: stop detected, ending stream", .{});
+                finish_reason_stop = true;
+            }
+            if (finish_reason_stop) {
+                break;
             }
         }
     }

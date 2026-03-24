@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = @import("debug.zig");
 
 /// Chunked transfer encoding decoder
 ///
@@ -22,9 +23,13 @@ pub fn decode_chuncked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
 
     if (maybe_chunked and header_end != null) {
         // Parse chunked encoding
+        debug.logVerbose("decode_chuncked: parsing chunked encoding, pos={d}, raw_len={d}", .{pos, raw.len});
         while (pos < raw.len) {
             // Find end of chunk size line
-            const size_end = std.mem.indexOfPos(u8, raw, pos, "\r\n") orelse break;
+            const size_end = std.mem.indexOfPos(u8, raw, pos, "\r\n") orelse {
+                debug.logError("decode_chuncked: failed to find CRLF at pos={d}", .{pos});
+                break;
+            };
             const size_str = std.mem.trim(u8, raw[pos..size_end], " \t");
             if (size_str.len == 0) {
                 pos = size_end + 2;
@@ -33,6 +38,7 @@ pub fn decode_chuncked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
 
             // Parse hex chunk size
             const chunk_size = std.fmt.parseInt(usize, size_str, 16) catch {
+                debug.logError("decode_chuncked: failed to parse chunk size '{s}'", .{size_str});
                 pos = size_end + 2;
                 continue;
             };
@@ -52,6 +58,7 @@ pub fn decode_chuncked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
         }
     } else {
         // No chunked encoding - just return body (or entire input if no headers)
+        debug.logVerbose("decode_chuncked: no chunked encoding detected, returning {d} bytes", .{raw.len});
         try out.appendSlice(allocator, raw[pos..]);
     }
 
@@ -70,6 +77,8 @@ pub fn extract_sse_data(allocator: std.mem.Allocator, sse_text: []const u8) ![]u
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
+    debug.logVerbose("extract_sse_data: processing {d} bytes of SSE text", .{sse_text.len});
+
     var lines = std.mem.splitScalar(u8, sse_text, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, "\r");
@@ -86,6 +95,7 @@ pub fn extract_sse_data(allocator: std.mem.Allocator, sse_text: []const u8) ![]u
         // Extract data lines
         if (std.mem.startsWith(u8, trimmed, "data:")) {
             const payload = trimmed["data:".len..];
+            debug.logVerbose("extract_sse_data: found data line, payload_len={d}", .{payload.len});
             // Add newline separator between data lines (SSE spec)
             if (out.items.len > 0) {
                 try out.append(allocator, '\n');
@@ -93,6 +103,8 @@ pub fn extract_sse_data(allocator: std.mem.Allocator, sse_text: []const u8) ![]u
             try out.appendSlice(allocator, payload);
         }
     }
+
+    debug.logVerbose("extract_sse_data: extracted {d} bytes", .{out.items.len});
 
     return out.toOwnedSlice(allocator);
 }

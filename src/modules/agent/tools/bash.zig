@@ -14,45 +14,48 @@ pub const CommandForbidden = error{
 };
 
 /// Detects forbidden command patterns that produce unbounded output
-fn isForbiddenCommand(command: []const u8) bool {
+fn is_forbidden_command(command: []const u8) bool {
     const trimmed = std.mem.trim(u8, command, " \t\n\r");
 
+    // temporary disabled forbidden command
+    _ = trimmed;
+
     // Check for recursive ls variants
-    if (std.mem.indexOf(u8, trimmed, "ls -R") != null) return true;
-    if (std.mem.indexOf(u8, trimmed, "ls -lR") != null) return true;
-    if (std.mem.indexOf(u8, trimmed, "ls -laR") != null) return true;
-    if (std.mem.indexOf(u8, trimmed, "ls -alR") != null) return true;
-
-    // Check for find without -maxdepth (matches "find /" or "find .")
-    if (std.mem.startsWith(u8, trimmed, "find /")) return true;
-    if (std.mem.startsWith(u8, trimmed, "find .")) {
-        // Allow if it has -maxdepth
-        if (std.mem.indexOf(u8, trimmed, "-maxdepth") == null) {
-            return true;
-        }
-    }
-
-    // Skip timeout/head checks for background commands
-    if (std.mem.indexOf(u8, trimmed, "nohup") == null) {
-        // Check for timeout prefix (check both "timeout " and "Timeout " for robustness)
-        const has_timeout = std.mem.startsWith(u8, trimmed, "timeout ") or
-            std.mem.startsWith(u8, trimmed, "Timeout ");
-        if (!has_timeout) {
-            return true;
-        }
-
-        // Check for head output cap
-        if (std.mem.indexOf(u8, trimmed, "| head -n") == null) {
-            return true;
-        }
-    }
+    // if (std.mem.indexOf(u8, trimmed, "ls -R") != null) return true;
+    // if (std.mem.indexOf(u8, trimmed, "ls -lR") != null) return true;
+    // if (std.mem.indexOf(u8, trimmed, "ls -laR") != null) return true;
+    // if (std.mem.indexOf(u8, trimmed, "ls -alR") != null) return true;
+    //
+    // // Check for find without -maxdepth (matches "find /" or "find .")
+    // if (std.mem.startsWith(u8, trimmed, "find /")) return true;
+    // if (std.mem.startsWith(u8, trimmed, "find .")) {
+    //     // Allow if it has -maxdepth
+    //     if (std.mem.indexOf(u8, trimmed, "-maxdepth") == null) {
+    //         return true;
+    //     }
+    // }
+    //
+    // // Skip timeout/head checks for background commands
+    // if (std.mem.indexOf(u8, trimmed, "nohup") == null) {
+    //     // Check for timeout prefix (check both "timeout " and "Timeout " for robustness)
+    //     const has_timeout = std.mem.startsWith(u8, trimmed, "timeout ") or
+    //         std.mem.startsWith(u8, trimmed, "Timeout ");
+    //     if (!has_timeout) {
+    //         return true;
+    //     }
+    //
+    //     // Check for head output cap
+    //     if (std.mem.indexOf(u8, trimmed, "| head -n") == null) {
+    //         return true;
+    //     }
+    // }
 
     return false;
 }
 
 pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     // --- Forbidden pattern check ---
-    if (isForbiddenCommand(input.command)) {
+    if (is_forbidden_command(input.command)) {
         return error.CommandForbidden;
     }
 

@@ -301,12 +301,12 @@ pub fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, cont
     const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
     const name_begin = name_start + "<skill_name>".len;
     const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
-    const skill_name = result[name_begin..name_begin + name_end];
+    const skill_name = result[name_begin .. name_begin + name_end];
 
     const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
     const content_begin = content_start + "<content>".len;
     const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
-    const skill_content = result[content_begin..content_begin + content_end];
+    const skill_content = result[content_begin .. content_begin + content_end];
 
     return .{ .name = skill_name, .content = skill_content };
 }
@@ -317,7 +317,7 @@ pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
     const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
     const name_begin = name_start + "<agent_name>".len;
     const name_end = std.mem.indexOf(u8, result[name_begin..], "</agent_name>") orelse return null;
-    return result[name_begin..name_begin + name_end];
+    return result[name_begin .. name_begin + name_end];
 }
 
 // ============================================================================
@@ -448,6 +448,8 @@ fn runSubAgent(
 
     var last_response: ?agent.CallResponse = null;
 
+    var max_tokens: usize = 4000;
+
     while (true) {
         var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parentAllocator);
         defer arenaAllocatorWhileLoop.deinit();
@@ -475,7 +477,7 @@ fn runSubAgent(
             .tools = sub_agent_tools,
             .messages = messages.items,
             .temperature = 0.5,
-            .max_tokens = 4000,
+            .max_tokens = max_tokens,
         };
 
         var stream_ctx = StreamingContext{
@@ -599,8 +601,10 @@ fn runSubAgent(
                         });
                     }
                 }
+            } else if (response.finish_reason == .length) {
+                max_tokens += 4096;
+                continue;
             } else {
-                // Other finish reasons (length, etc.)
                 if (response.content) |content| {
                     return try allocator.dupe(u8, content);
                 }
@@ -611,13 +615,12 @@ fn runSubAgent(
         }
     }
 
-    // Max tool calls reached
     if (last_response) |response| {
         if (response.content) |content| {
             return try parentAllocator.dupe(u8, content);
         }
     }
-    return try parentAllocator.dupe(u8, "(max tool calls reached)");
+    return try parentAllocator.dupe(u8, "unknown error subagent result, please spawn sub-agent again or just do without sub-agent");
 }
 
 // ============================================================================

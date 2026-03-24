@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = @import("../network/debug.zig");
 
 /// XML type enum for identifying source of extracted content
 pub const XmlType = enum {
@@ -24,6 +25,7 @@ pub const ExtractResult = struct {
 /// Finds all <content>...</content> tags and the last <finish_reason>...</finish_reason>
 /// Returns null if no content found
 pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) std.mem.Allocator.Error!?ExtractResult {
+    debug.logVerbose("extract_content_result: parsing {d} bytes of XML", .{xml.len});
     var results = std.ArrayList(ContentResult).empty;
     errdefer results.deinit(allocator);
 
@@ -106,7 +108,11 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) std
     }
 
     // Return null if no content found
-    if (results.items.len == 0 and finish_reason == null) return null;
+    if (results.items.len == 0 and finish_reason == null) {
+        debug.logVerbose("extract_content_result: no content found in XML", .{});
+        return null;
+    }
+    debug.logVerbose("extract_content_result: extracted {d} results, finish_reason={s}", .{results.items.len, finish_reason orelse "null"});
     return ExtractResult{
         .content_results = results,
         .finish_reason = finish_reason,
