@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Debug logging levels
 pub const DebugLevel = enum(u8) {
@@ -24,23 +25,22 @@ const colors = struct {
 pub fn log(level: DebugLevel, comptime fmt: []const u8, args: anytype) void {
     if (@intFromEnum(level) > @intFromEnum(global_debug_level)) return;
     
-    const level_str = switch (level) {
-        .err => "ERROR",
-        .info => "INFO ",
-        .verbose => "VERB ",
-    };
+    const timestamp = @as(i64, @intCast(std.time.timestamp()));
     
-    const color = switch (level) {
-        .err => colors.red,
-        .info => colors.cyan,
-        .verbose => colors.dim,
-        .off => colors.reset,
-    };
-    
-    const timestamp = std.time.timestamp();
-    std.debug.print("{s}[{s}][{d}] {s}" ++ fmt ++ "{s}\n", .{
-        color, level_str, timestamp, "", args, colors.reset,
-    });
+    switch (level) {
+        .off => {
+            std.debug.print(colors.reset ++ "[OFF ][" ++ "{d}" ++ "] " ++ fmt ++ colors.reset ++ "\n", .{ timestamp } ++ args);
+        },
+        .err => {
+            std.debug.print(colors.red ++ "[ERROR][" ++ "{d}" ++ "] " ++ fmt ++ colors.reset ++ "\n", .{ timestamp } ++ args);
+        },
+        .info => {
+            std.debug.print(colors.cyan ++ "[INFO ][" ++ "{d}" ++ "] " ++ fmt ++ colors.reset ++ "\n", .{ timestamp } ++ args);
+        },
+        .verbose => {
+            std.debug.print(colors.dim ++ "[VERB ][" ++ "{d}" ++ "] " ++ fmt ++ colors.reset ++ "\n", .{ timestamp } ++ args);
+        },
+    }
 }
 
 /// Log an error with context

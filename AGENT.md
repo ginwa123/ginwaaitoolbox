@@ -31,13 +31,21 @@ src/
 ├── root.zig              # nalarcore module exports
 ├── helpers/              # Utility helpers
 ├── apps/
-│   └── tui/              # Terminal UI app
-│       ├── main.zig
-│       ├── commands/     # Command handlers
-│       ├── display/      # Response rendering
-│       ├── input/       # Keyboard input
-│       ├── network/     # SSE, messaging, streaming
-│       └── terminal/    # Raw mode, backend
+│   ├── tui/              # Terminal UI app (Zig)
+│   │   ├── main.zig
+│   │   ├── commands/     # Command handlers
+│   │   ├── display/      # Response rendering
+│   │   ├── input/       # Keyboard input
+│   │   ├── network/     # SSE, messaging, streaming
+│   │   └── terminal/    # Raw mode, backend
+│   └── Desktop/          # Desktop app (C#/Uno)
+│       ├── Desktop/
+│       │   ├── MainPage.cs         # Main page + workspace sidebar
+│       │   ├── ViewModels/
+│       │   │   └── WorkspaceStore.cs  # Workspace persistence (session_dir)
+│       │   └── Views/
+│       │       ├── SessionsView.cs     # Chat interface
+│       │       └── WorkspaceBrowserDialog.cs  # Folder picker
 ├── modules/
 │   ├── agent/            # AI agent core
 │   │   └── tools/        # 20+ tools (bash, read_file, write_file, etc.)

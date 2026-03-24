@@ -24,7 +24,7 @@ pub const ExtractResult = struct {
 /// Also extracts inner <content> tags from the extracted content
 /// Finds all <content>...</content> tags and the last <finish_reason>...</finish_reason>
 /// Returns null if no content found
-pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) std.mem.Allocator.Error!?ExtractResult {
+pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) ?ExtractResult {
     debug.logVerbose("extract_content_result: parsing {d} bytes of XML", .{xml.len});
     var results = std.ArrayList(ContentResult).empty;
     errdefer results.deinit(allocator);
@@ -112,7 +112,7 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) std
         debug.logVerbose("extract_content_result: no content found in XML", .{});
         return null;
     }
-    debug.logVerbose("extract_content_result: extracted {d} results, finish_reason={s}", .{results.items.len, finish_reason orelse "null"});
+    debug.logVerbose("extract_content_result: extracted {d} results", .{results.items.len});
     return ExtractResult{
         .content_results = results,
         .finish_reason = finish_reason,

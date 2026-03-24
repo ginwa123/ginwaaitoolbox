@@ -337,7 +337,6 @@ pub const bashTool = AgentTool{
                     .type = "string",
                     .description =
                     \\Command to execute.
-                    \\Required format: `timeout <seconds> <command> | head -n <N>`
                     \\
                     \\ fd is a faster alternative to find and rg is a faster alternative to grep.
                     \\GOOD: `timeout 10 zig build 2>&1 | head -n 50`

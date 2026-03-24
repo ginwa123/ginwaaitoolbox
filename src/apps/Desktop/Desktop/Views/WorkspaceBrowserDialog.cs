@@ -13,7 +13,7 @@ using Microsoft.UI.Xaml.Input;
 /// </summary>
 public sealed partial class WorkspaceBrowserDialog : ContentDialog
 {
-    private readonly StackPanel _treePanel;
+    private readonly ListView _folderList;
     private readonly TextBlock _currentPathBlock;
     private readonly string _rootPath;
     private string _currentPath;
@@ -67,30 +67,33 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
         // Breadcrumb navigation
         var breadcrumb = CreateBreadcrumb();
         
-        // Folder tree container
-        var treeContainer = new Border
+        // Folder list container with proper sizing
+        var listContainer = new Grid
         {
             Background = DarkGray,
             BorderBrush = Gray,
             BorderThickness = new Thickness(2),
-            Padding = new Thickness(8),
-            MaxHeight = 400,
+            MinHeight = 300,
             MinWidth = 450
         };
 
-        _treePanel = new StackPanel { Spacing = 0 };
-        treeContainer.Child = new ScrollViewer
+        _folderList = new ListView
         {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = _treePanel
+            Background = DarkGray,
+            BorderThickness = new Thickness(0),
+            ItemTemplate = CreateItemTemplate(),
+            ItemsSource = _items
         };
+        _folderList.SelectionChanged += OnFolderSelected;
+        _folderList.DoubleTapped += OnFolderDoubleTapped;
+        listContainer.Children.Add(_folderList);
 
         // Quick navigation buttons
         var quickNav = CreateQuickNavButtons();
 
         content.Children.Add(breadcrumb);
         content.Children.Add(_currentPathBlock);
-        content.Children.Add(treeContainer);
+        content.Children.Add(listContainer);
         content.Children.Add(quickNav);
 
         Content = content;
@@ -235,11 +238,11 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
     private void LoadDirectory(string path)
     {
         _items.Clear();
-        _treePanel.Children.Clear();
+        _folderList.SelectedItem = null;
 
         if (!Directory.Exists(path))
         {
-            AddItem(new FileSystemItem { Name = "[PATH NOT FOUND]", IsDirectory = true, FullPath = path, IsDisabled = true });
+            _items.Add(new FileSystemItem { Name = "[PATH NOT FOUND]", IsDirectory = true, FullPath = path, IsDisabled = true });
             return;
         }
 
@@ -263,7 +266,6 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
                     HasChildren = HasSubDirectories(dir)
                 };
                 _items.Add(item);
-                AddTreeItem(item, 0);
             }
 
             // Then get files (limited to common workspace files)
@@ -282,21 +284,89 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
                     FullPath = file
                 };
                 _items.Add(item);
-                AddTreeItem(item, 0);
             }
 
             if (_items.Count == 0)
             {
-                AddItem(new FileSystemItem { Name = "[EMPTY]", IsDirectory = true, FullPath = path, IsDisabled = true });
+                _items.Add(new FileSystemItem { Name = "[EMPTY]", IsDirectory = true, FullPath = path, IsDisabled = true });
             }
         }
         catch (UnauthorizedAccessException)
         {
-            AddItem(new FileSystemItem { Name = "[ACCESS DENIED]", IsDirectory = true, FullPath = path, IsDisabled = true });
+            _items.Add(new FileSystemItem { Name = "[ACCESS DENIED]", IsDirectory = true, FullPath = path, IsDisabled = true });
         }
         catch (Exception ex)
         {
-            AddItem(new FileSystemItem { Name = $"[ERROR: {ex.Message}]", IsDirectory = true, FullPath = path, IsDisabled = true });
+            _items.Add(new FileSystemItem { Name = $"[ERROR: {ex.Message}]", IsDirectory = true, FullPath = path, IsDisabled = true });
+        }
+    }
+
+    private DataTemplate CreateItemTemplate()
+    {
+        var template = new DataTemplate(() =>
+        {
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var icon = new TextBlock
+            {
+                FontFamily = MonoFont,
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 6, 8, 6)
+            };
+            icon.SetBinding(TextBlock.TextProperty, new Microsoft.UI.Xaml.Data.Binding 
+            { 
+                Converter = new IconConverter() 
+            });
+            icon.SetBinding(TextBlock.ForegroundProperty, new Microsoft.UI.Xaml.Data.Binding
+            {
+                Converter = new IconColorConverter()
+            });
+
+            var name = new TextBlock
+            {
+                FontFamily = MonoFont,
+                FontSize = 13,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 6, 16, 6)
+            };
+            // Use string path directly instead of PropertyPath
+            var nameBinding = new Microsoft.UI.Xaml.Data.Binding { Path = "Name" };
+            name.SetBinding(TextBlock.TextProperty, nameBinding);
+            name.SetBinding(TextBlock.ForegroundProperty, new Microsoft.UI.Xaml.Data.Binding
+            {
+                Converter = new NameColorConverter()
+            });
+
+            Grid.SetColumn(icon, 0);
+            Grid.SetColumn(name, 1);
+            grid.Children.Add(icon);
+            grid.Children.Add(name);
+
+            return new ListViewItem { Content = grid };
+        });
+        return template;
+    }
+
+    private void OnFolderSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (_folderList.SelectedItem is FileSystemItem item && item.IsDirectory && !item.IsDisabled)
+        {
+            _currentPath = item.FullPath;
+            UpdatePathDisplay();
+            RefreshBreadcrumb();
+            LoadDirectory(item.FullPath);
+        }
+    }
+
+    private void OnFolderDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        if (_folderList.SelectedItem is FileSystemItem item && item.IsDirectory && !item.IsDisabled)
+        {
+            SelectedPath = item.FullPath;
+            Hide();
         }
     }
 
@@ -310,131 +380,6 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
         {
             return false;
         }
-    }
-
-    private void AddTreeItem(FileSystemItem item, int depth)
-    {
-        var container = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 0,
-            Margin = new Thickness(depth * 16 + 4, 2, 4, 2)
-        };
-
-        // Indent
-        if (depth > 0)
-        {
-            container.Children.Add(new Border { Width = 8 });
-        }
-
-        // Icon
-        var icon = new TextBlock
-        {
-            Text = item.IsDirectory ? (item.HasChildren ? "[+]" : "[■]") : "[·]",
-            FontFamily = MonoFont,
-            FontSize = 11,
-            Foreground = item.IsDirectory ? Orange : Gray,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 8, 0)
-        };
-
-        // Name
-        var nameBlock = new TextBlock
-        {
-            Text = item.Name,
-            FontFamily = MonoFont,
-            FontSize = 12,
-            Foreground = item.IsDisabled ? Gray : (item.IsDirectory ? White : LightGray),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        container.Children.Add(icon);
-        container.Children.Add(nameBlock);
-
-        // Make it interactive if directory
-        if (item.IsDirectory && !item.IsDisabled)
-        {
-            var button = new Button
-            {
-                Content = container,
-                Background = DarkGray,
-                BorderThickness = new Thickness(0),
-                Padding = new Thickness(0),
-                HorizontalAlignment = HorizontalAlignment.Stretch
-            };
-
-            // Track which directories have been expanded
-            button.Click += (s, e) =>
-            {
-                if (!item.IsExpanded)
-                {
-                    ExpandDirectory(item, depth);
-                }
-                else
-                {
-                    CollapseDirectory(item);
-                }
-            };
-
-            // Double click to select
-            button.DoubleTapped += (s, e) =>
-            {
-                SelectedPath = item.FullPath;
-                Hide();
-            };
-
-            _treePanel.Children.Add(button);
-        }
-        else
-        {
-            var border = new Border
-            {
-                Background = DarkGray,
-                Child = container
-            };
-            _treePanel.Children.Add(border);
-        }
-    }
-
-    private void ExpandDirectory(FileSystemItem item, int parentDepth)
-    {
-        item.IsExpanded = true;
-
-        try
-        {
-            var dirs = Directory.GetDirectories(item.FullPath);
-            Array.Sort(dirs, StringComparer.OrdinalIgnoreCase);
-
-            foreach (var dir in dirs.Take(20))
-            {
-                var name = System.IO.Path.GetFileName(dir);
-                if (name.StartsWith(".")) continue;
-
-                var childItem = new FileSystemItem
-                {
-                    Name = name,
-                    IsDirectory = true,
-                    FullPath = dir,
-                    Parent = item,
-                    HasChildren = HasSubDirectories(dir)
-                };
-                item.Children.Add(childItem);
-                AddTreeItem(childItem, parentDepth + 1);
-            }
-        }
-        catch { }
-    }
-
-    private void CollapseDirectory(FileSystemItem item)
-    {
-        item.IsExpanded = false;
-        // For simplicity, we remove all children from display
-        // A more sophisticated implementation would cache and restore
-    }
-
-    private void AddItem(FileSystemItem item)
-    {
-        AddTreeItem(item, 0);
     }
 
     private Style CreateButtonStyle(SolidColorBrush bg, SolidColorBrush fg)
@@ -467,4 +412,49 @@ public class FileSystemItem
     public bool IsDisabled { get; set; }
     public FileSystemItem? Parent { get; set; }
     public List<FileSystemItem> Children { get; set; } = new();
+}
+
+public class IconConverter : Microsoft.UI.Xaml.Data.IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        if (value is FileSystemItem item)
+        {
+            if (item.IsDisabled) return "[?]";
+            return item.IsDirectory ? (item.HasChildren ? "[+]" : "[■]") : "[·]";
+        }
+        return "[·]";
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language) => throw new NotImplementedException();
+}
+
+public class IconColorConverter : Microsoft.UI.Xaml.Data.IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        if (value is FileSystemItem item)
+        {
+            if (item.IsDisabled) return new SolidColorBrush(Colors.Parse("#8b9198"));
+            return item.IsDirectory ? new SolidColorBrush(Colors.Parse("#d19a66")) : new SolidColorBrush(Colors.Parse("#464b50"));
+        }
+        return new SolidColorBrush(Colors.Parse("#464b50"));
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language) => throw new NotImplementedException();
+}
+
+public class NameColorConverter : Microsoft.UI.Xaml.Data.IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        if (value is FileSystemItem item)
+        {
+            if (item.IsDisabled) return new SolidColorBrush(Colors.Parse("#8b9198"));
+            return item.IsDirectory ? new SolidColorBrush(Colors.Parse("#c5c8c9")) : new SolidColorBrush(Colors.Parse("#8b9198"));
+        }
+        return new SolidColorBrush(Colors.Parse("#c5c8c9"));
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, string language) => throw new NotImplementedException();
 }

@@ -138,8 +138,8 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         const new_raw = raw_buffer.items[raw_buffer_processed_len..];
         if (new_raw.len == 0) continue;
 
-        const decoded = sse.decode_chuncked(app.allocator, new_raw) catch |err| {
-            debug.logError("streaming: decode_chuncked failed: {}", .{err});
+        const decoded = sse.decode_chuncked(app.allocator, new_raw) catch {
+            debug.logError("streaming: decode_chuncked failed", .{});
             raw_buffer_processed_len = raw_buffer.items.len;
             continue;
         };
@@ -148,8 +148,8 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
 
         debug.logVerbose("streaming: decoded {d} bytes", .{decoded.len});
 
-        const xml = sse.extract_sse_data(app.allocator, decoded) catch |err| {
-            debug.logError("streaming: extract_sse_data failed: {}", .{err});
+        const xml = sse.extract_sse_data(app.allocator, decoded) catch {
+            debug.logError("streaming: extract_sse_data failed", .{});
             continue;
         };
         defer app.allocator.free(xml);
@@ -174,45 +174,40 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                     }
                 }
             }
-        } else |err| {
-            debug.logError("streaming: extract_content_result failed: {}", .{err});
         }
 
-        if (tool_results.extractToolResults(app.allocator, xml)) |tr_val| {
-            var tool_results_list = tr_val;
-            defer tool_results_list.deinit(app.allocator);
+        const tr_val = try tool_results.extractToolResults(app.allocator, xml);
+        var tool_results_list = tr_val;
+        defer tool_results_list.deinit(app.allocator);
 
-            for (tool_results_list.items) |result| {
-                var already_displayed = false;
-                for (displayed_tool_ids.items) |id| {
-                    if (std.mem.eql(u8, id, result.id)) {
-                        already_displayed = true;
-                        break;
-                    }
-                }
-                if (!already_displayed) {
-                    tuiText.print("\r\x1b[2K", .{});
-                    const max_result_len: usize = 500;
-                    tool_results.displayToolResultByName(result.result, result.name, max_result_len);
-                    if (utils.extractTag(result.result, "set_agent_properties")) |_| {
-                        tuiText.print("\n{s}[agent properties]{s} → updated\n", .{ globals.cyan, globals.reset });
-                    }
-                    const id_copy = app.allocator.dupe(u8, result.id) catch continue;
-                    displayed_tool_ids.append(app.allocator, id_copy) catch {
-                        app.allocator.free(id_copy);
-                        continue;
-                    };
+        for (tool_results_list.items) |result| {
+            var already_displayed = false;
+            for (displayed_tool_ids.items) |id| {
+                if (std.mem.eql(u8, id, result.id)) {
+                    already_displayed = true;
+                    break;
                 }
             }
-        } else |err| {
-            debug.logError("streaming: extractToolResults failed: {}", .{err});
+            if (!already_displayed) {
+                tuiText.print("\r\x1b[2K", .{});
+                const max_result_len: usize = 500;
+                tool_results.displayToolResultByName(result.result, result.name, max_result_len);
+                if (utils.extractTag(result.result, "set_agent_properties")) |_| {
+                    tuiText.print("\n{s}[agent properties]{s} → updated\n", .{ globals.cyan, globals.reset });
+                }
+                const id_copy = app.allocator.dupe(u8, result.id) catch continue;
+                displayed_tool_ids.append(app.allocator, id_copy) catch {
+                    app.allocator.free(id_copy);
+                    continue;
+                };
+            }
         }
 
         var finish_reason_stop = false;
         
         // Look for finish_reason tag in buffer
         if (utils.extractTag(raw_buffer.items, "finish_reason")) |fr| {
-            debug.logVerbose("streaming: detected finish_reason={s}", .{fr});
+            debug.logVerbose("streaming: detected finish_reason", .{});
             
             if (std.mem.eql(u8, fr, "notification_error")) {
                 debug.logInfo("streaming: notification_error, retrying", .{});

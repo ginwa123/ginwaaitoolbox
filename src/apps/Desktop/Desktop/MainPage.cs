@@ -1,6 +1,7 @@
 namespace Desktop;
 
 using Desktop.Views;
+using Desktop.ViewModels;
 using Microsoft.UI;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
@@ -14,6 +15,7 @@ public sealed partial class MainPage : Page
 {
     private Frame _contentFrame = null!;
     private StackPanel? _sidebar;
+    private readonly WorkspaceStore _workspaceStore;
 
     // Moonfly palette
     private static readonly SolidColorBrush Black = new(Colors.Parse("#1b1d22"));
@@ -28,8 +30,15 @@ public sealed partial class MainPage : Page
 
     public MainPage()
     {
+        // Initialize workspace store
+        _workspaceStore = new WorkspaceStore();
+        _workspaceStore.OnWorkspaceChanged += OnWorkspaceChanged;
+        
         // Frame must be created before Content is set
         _contentFrame = new Frame();
+        
+        // Load existing workspaces from store
+        LoadExistingWorkspaces();
 
         // Main layout grid
         var root = new Grid();
@@ -194,26 +203,26 @@ public sealed partial class MainPage : Page
         
         if (result == ContentDialogResult.Primary && dialog.SelectedPath != null)
         {
-            // Handle workspace selection - for now, just log it
-            // TODO: Integrate with workspace management system
-            System.Diagnostics.Debug.WriteLine($"Workspace selected: {dialog.SelectedPath}");
+            // Add workspace to store (which persists to ~/config/nalar/workspaces.json)
+            var workspace = _workspaceStore.AddWorkspace(dialog.SelectedPath);
             
-            // Add to sidebar as a new workspace item
-            AddWorkspaceToSidebar(dialog.SelectedPath);
+            if (workspace != null)
+            {
+                // Select it as the active workspace (session_dir)
+                _workspaceStore.SelectWorkspace(workspace);
+                
+                // Add to sidebar as a new workspace item
+                AddWorkspaceToSidebar(workspace);
+            }
         }
     }
 
-    private void AddWorkspaceToSidebar(string path)
+    private void AddWorkspaceToSidebar(Workspace workspace)
     {
         if (_sidebar == null) return;
 
-        // Extract folder name from path
-        var name = System.IO.Path.GetFileName(path);
-        if (string.IsNullOrEmpty(name))
-            name = path.Replace("\\", "/").Split('/').LastOrDefault() ?? "Workspace";
-
-        // Create workspace nav item
-        var workspaceItem = CreateNavItem(name.ToUpper(), "○", false);
+        // Create workspace nav item with click handler
+        var workspaceItem = CreateWorkspaceNavItem(workspace);
         
         // Insert before the spacer (after sessions header)
         var insertIndex = 3; // After header, button, and sessions
@@ -224,6 +233,110 @@ public sealed partial class MainPage : Page
         else
         {
             _sidebar.Children.Add(workspaceItem);
+        }
+    }
+    
+    private Border CreateWorkspaceNavItem(Workspace workspace)
+    {
+        var isSelected = _workspaceStore.SelectedWorkspace?.Id == workspace.Id;
+        var bg = isSelected ? Gray : DarkGray;
+        var textColor = isSelected ? Teal : LightGray;
+        var indicatorColor = isSelected ? Teal : Gray;
+
+        var container = new Border
+        {
+            Background = bg,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(16, 12, 16, 12)
+        };
+        
+        // Tag the border with workspace for later access
+        container.Tag = workspace;
+
+        var stack = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+
+        var ind = new TextBlock
+        {
+            Text = isSelected ? "▸" : "○",
+            FontFamily = MonoFont,
+            FontSize = 10,
+            Foreground = indicatorColor,
+            VerticalAlignment = VerticalAlignment.Center,
+            Width = 16
+        };
+
+        var lbl = new TextBlock
+        {
+            Text = workspace.Name.ToUpper(),
+            FontFamily = MonoFont,
+            FontSize = 11,
+            FontWeight = isSelected ? FontWeights.Bold : FontWeights.Normal,
+            Foreground = textColor,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        stack.Children.Add(ind);
+        stack.Children.Add(lbl);
+        container.Child = stack;
+        
+        // Click to select workspace
+        container.PointerPressed += (s, e) =>
+        {
+            _workspaceStore.SelectWorkspace(workspace);
+        };
+
+        return container;
+    }
+    
+    private void OnWorkspaceChanged(object? sender, Workspace? workspace)
+    {
+        // Update sidebar selection indicators
+        RefreshWorkspaceSelection();
+        
+        if (workspace != null)
+        {
+            System.Diagnostics.Debug.WriteLine($"Session dir set to: {workspace.Path}");
+            // TODO: Notify SessionsView to use this workspace's path
+        }
+    }
+    
+    private void RefreshWorkspaceSelection()
+    {
+        if (_sidebar == null) return;
+        
+        foreach (var child in _sidebar.Children)
+        {
+            if (child is Border border && border.Tag is Workspace workspace)
+            {
+                var isSelected = _workspaceStore.SelectedWorkspace?.Id == workspace.Id;
+                
+                // Update visual state
+                border.Background = isSelected ? Gray : DarkGray;
+                
+                // Update indicator text color
+                if (border.Child is StackPanel stack && stack.Children.Count > 0)
+                {
+                    if (stack.Children[0] is TextBlock indicator)
+                    {
+                        indicator.Text = isSelected ? "▸" : "○";
+                        indicator.Foreground = isSelected ? Teal : Gray;
+                    }
+                    if (stack.Children[1] is TextBlock label)
+                    {
+                        label.Foreground = isSelected ? Teal : LightGray;
+                        label.FontWeight = isSelected ? FontWeights.Bold : FontWeights.Normal;
+                    }
+                }
+            }
+        }
+    }
+    
+    private void LoadExistingWorkspaces()
+    {
+        // Add existing workspaces from store to sidebar
+        foreach (var workspace in _workspaceStore.Workspaces)
+        {
+            AddWorkspaceToSidebar(workspace);
         }
     }
 }
