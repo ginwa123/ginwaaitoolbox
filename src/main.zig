@@ -17,6 +17,7 @@ const cancellation_registry = root_mod.session.cancellation_registry;
 const helpers = root_mod.helpers;
 const config = root_mod.config;
 const LlmConfig = config.LlmConfig;
+const kerjabot_get_session = root_mod.kerjabot_get_session;
 
 pub const CommandMessage = struct {
     command_type: []const u8 = "",
@@ -299,13 +300,22 @@ pub fn main() !void {
                 // Run compaction asynchronously - this will send results via SSE
                 // Use the llm_config already loaded in ctxTui
                 _ = std.Thread.spawn(.{}, struct {
-                    fn run(workflow: *ai_workflow.TUIWorkflow, session_id: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, compaction_kb: usize) void {
+                    fn run(workflow: *ai_workflow.TUIWorkflow, db: *sqlite.SqliteBackend, session_id: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, compaction_kb: usize) void {
                         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                         defer arena.deinit();
                         const alloc = arena.allocator();
                         // Get cwd from session
                         var cwd_buf: [4096]u8 = undefined;
-                        const cwd = std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";
+                        const cwd = blk: {
+                            const result = kerjabot_get_session.getSession(alloc, db, session_id) catch null;
+                            if (result) |session| {
+                                defer session.deinit(alloc);
+                                if (session.session_dir.len > 0) {
+                                    break :blk std.fmt.bufPrint(&cwd_buf, "{s}", .{session.session_dir}) catch ".";
+                                }
+                            }
+                            break :blk std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";
+                        };
                         // Create a minimal LlmConfig for the workflow
                         var llm_cfg = LlmConfig{
                             .allocator = alloc,
@@ -317,7 +327,7 @@ pub fn main() !void {
                         };
                         workflow.run(alloc, session_id, "", cwd, api_key, model, base_url, &llm_cfg);
                     }
-                }.run, .{ &workflow_compact, t.session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb }) catch |err| {
+                }.run, .{ &workflow_compact, ctxTui.db, t.session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb }) catch |err| {
                     std.debug.print("[COMPACTION] Failed to spawn thread: {s}\n", .{@errorName(err)});
                 };
             }

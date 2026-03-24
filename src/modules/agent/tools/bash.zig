@@ -8,7 +8,54 @@ const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
 
+pub const CommandForbidden = error{
+    /// Command contains forbidden patterns that produce unbounded output
+    CommandForbidden,
+};
+
+/// Detects forbidden command patterns that produce unbounded output
+fn isForbiddenCommand(command: []const u8) bool {
+    const trimmed = std.mem.trim(u8, command, " \t\n\r");
+
+    // Check for recursive ls variants
+    if (std.mem.indexOf(u8, trimmed, "ls -R") != null) return true;
+    if (std.mem.indexOf(u8, trimmed, "ls -lR") != null) return true;
+    if (std.mem.indexOf(u8, trimmed, "ls -laR") != null) return true;
+    if (std.mem.indexOf(u8, trimmed, "ls -alR") != null) return true;
+
+    // Check for find without -maxdepth (matches "find /" or "find .")
+    if (std.mem.startsWith(u8, trimmed, "find /")) return true;
+    if (std.mem.startsWith(u8, trimmed, "find .")) {
+        // Allow if it has -maxdepth
+        if (std.mem.indexOf(u8, trimmed, "-maxdepth") == null) {
+            return true;
+        }
+    }
+
+    // Skip timeout/head checks for background commands
+    if (std.mem.indexOf(u8, trimmed, "nohup") == null) {
+        // Check for timeout prefix (check both "timeout " and "Timeout " for robustness)
+        const has_timeout = std.mem.startsWith(u8, trimmed, "timeout ") or
+            std.mem.startsWith(u8, trimmed, "Timeout ");
+        if (!has_timeout) {
+            return true;
+        }
+
+        // Check for head output cap
+        if (std.mem.indexOf(u8, trimmed, "| head -n") == null) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
+    // --- Forbidden pattern check ---
+    if (isForbiddenCommand(input.command)) {
+        return error.CommandForbidden;
+    }
+
     // --- Background mode ---
     if (input.background) {
         const ts = std.time.milliTimestamp();
@@ -266,7 +313,7 @@ pub const bashTool = AgentTool{
         \\Execute a bash command and return:
         \\stdout, stderr, exit_code, truncated, timeout flags.
         \\
-        \\## Command Rules
+        \\## Command Rules (enforced in code)
         \\Every command MUST:
         \\- start with `timeout <seconds>`
         \\- limit output using `| head -n <N>`
@@ -274,16 +321,6 @@ pub const bashTool = AgentTool{
         \\- use ripgrep (rg) instead of grep/find when available
         \\## Web Browsing
         \\To browse the web or fetch URLs, use the `agent-browser` CLI:
-        \\
-        \\## FORBIDDEN Commands
-        \\NEVER use any of the following — they produce unbounded output:
-        \\- `ls -R`, `ls -lR`, `ls -laR`, `ls -alR`, or any recursive `ls` variant
-        \\- `find /`, `find .` without `-maxdepth`
-        \\- `cat <file>` for large files — use read_file tool instead
-        \\- `grep -r` without scoping to a specific directory with depth limits
-        \\- `sed -n '...'` for reading file ranges — use read_file tool instead
-        \\- Any command without an explicit `timeout` prefix
-        \\- Any command without `| head -n <N>` output cap
         \\
         \\## Safety
         \\Avoid destructive or system-modifying commands.
@@ -305,12 +342,6 @@ pub const bashTool = AgentTool{
                     \\GOOD: `timeout 10 fd MyStruct src/ | head -n 50`
                     \\GOOD: `timeout 10 fd -e zig src/ | head -n 50`
                     \\GOOD: `timeout 5 ls -la /some/dir | head -n 30`
-                    \\BAD:  `ls -R`         ← FORBIDDEN, unbounded recursive listing
-                    \\BAD:  `ls -laR`       ← FORBIDDEN, unbounded recursive listing
-                    \\BAD:  `ls -alR`       ← FORBIDDEN, unbounded recursive listing
-                    \\BAD:  `cat src/main.zig`  ← use read_file instead
-                    \\BAD:  `sed -n '10,20p'`   ← use read_file instead
-                    \\BAD:  commands without timeout or output cap
                     ,
                 },
                 .{

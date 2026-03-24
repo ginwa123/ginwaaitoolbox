@@ -93,7 +93,6 @@ src/
 - [docs/superpowers/](docs/superpowers/) — Skills
 
 
-
 ## Testing
 
 Use the TUI CLI to test AI agentic behavior:

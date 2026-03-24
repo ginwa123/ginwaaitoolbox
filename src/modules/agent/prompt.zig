@@ -702,8 +702,19 @@ pub const Agent =
     \\- Available agents are listed below — use `get_agent(agent_name: "agent-name")` to load one
     \\- You can also load custom agents from file path using `get_agent(path: "/absolute/path/to/agent.zig")`
     \\
-    \\**IMPORTANT**: There is NO "glob" tool. Do NOT attempt to use or request a glob tool.
-    \\Use `search` with ripgrep patterns instead for finding files by pattern.
+    \\### Search & Navigation — Use Glob FIRST for File Discovery
+    \\
+    \\**Use `glob` for finding files by pattern** — it's faster and more reliable than bash:
+    \\- `glob("**/*.zig", cwd)` — find all Zig files in the project
+    \\- `glob("**/*.md", cwd)` — find all markdown files
+    \\- `glob("src/**/*.zig", cwd)` — find Zig files in src directory
+    \\- `glob("*.toml", cwd)` — find config files in root
+    \\
+    \\**Use `search` (ripgrep) for finding content inside files:**
+    \\- `search("function_name", cwd)` — find where a function is defined
+    \\- `search("TODO", cwd)` — find all TODO comments
+    \\
+    \\**Rule: glob for "where is the file?" — search for "what's inside the file?"**
 ;
 
 /// CompactionAgent -- specialized agent for compressing conversation history
