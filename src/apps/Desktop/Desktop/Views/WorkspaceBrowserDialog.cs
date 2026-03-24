@@ -1,6 +1,7 @@
 namespace Desktop.Views;
 
 using System.Collections.ObjectModel;
+using Desktop.Services;
 using Microsoft.UI;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
@@ -35,6 +36,9 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
 
     public WorkspaceBrowserDialog()
     {
+        // Initialize WASM detection
+        FileSystemService.Init();
+
         // Default to user's home directory or common paths
         _rootPath = GetDefaultRootPath();
         _currentPath = _rootPath;
@@ -240,64 +244,10 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
         _items.Clear();
         _folderList.SelectedItem = null;
 
-        if (!Directory.Exists(path))
+        var items = FileSystemService.ListDirectory(path);
+        foreach (var item in items)
         {
-            _items.Add(new FileSystemItem { Name = "[PATH NOT FOUND]", IsDirectory = true, FullPath = path, IsDisabled = true });
-            return;
-        }
-
-        try
-        {
-            // Get directories first
-            var dirs = Directory.GetDirectories(path);
-            Array.Sort(dirs, StringComparer.OrdinalIgnoreCase);
-
-            foreach (var dir in dirs)
-            {
-                var name = System.IO.Path.GetFileName(dir);
-                // Skip hidden/system directories
-                if (name.StartsWith(".")) continue;
-
-                var item = new FileSystemItem
-                {
-                    Name = name,
-                    IsDirectory = true,
-                    FullPath = dir,
-                    HasChildren = HasSubDirectories(dir)
-                };
-                _items.Add(item);
-            }
-
-            // Then get files (limited to common workspace files)
-            var files = Directory.GetFiles(path);
-            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
-
-            foreach (var file in files.Take(50)) // Limit file display
-            {
-                var name = System.IO.Path.GetFileName(file);
-                if (name.StartsWith(".")) continue;
-
-                var item = new FileSystemItem
-                {
-                    Name = name,
-                    IsDirectory = false,
-                    FullPath = file
-                };
-                _items.Add(item);
-            }
-
-            if (_items.Count == 0)
-            {
-                _items.Add(new FileSystemItem { Name = "[EMPTY]", IsDirectory = true, FullPath = path, IsDisabled = true });
-            }
-        }
-        catch (UnauthorizedAccessException)
-        {
-            _items.Add(new FileSystemItem { Name = "[ACCESS DENIED]", IsDirectory = true, FullPath = path, IsDisabled = true });
-        }
-        catch (Exception ex)
-        {
-            _items.Add(new FileSystemItem { Name = $"[ERROR: {ex.Message}]", IsDirectory = true, FullPath = path, IsDisabled = true });
+            _items.Add(item);
         }
     }
 
@@ -370,18 +320,6 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
         }
     }
 
-    private bool HasSubDirectories(string path)
-    {
-        try
-        {
-            return Directory.GetDirectories(path).Length > 0;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private Style CreateButtonStyle(SolidColorBrush bg, SolidColorBrush fg)
     {
         var style = new Style(typeof(Button));
@@ -400,18 +338,6 @@ public sealed partial class WorkspaceBrowserDialog : ContentDialog
         // Use current path as selected workspace
         SelectedPath = _currentPath;
     }
-}
-
-public class FileSystemItem
-{
-    public string Name { get; set; } = string.Empty;
-    public bool IsDirectory { get; set; }
-    public string FullPath { get; set; } = string.Empty;
-    public bool HasChildren { get; set; }
-    public bool IsExpanded { get; set; }
-    public bool IsDisabled { get; set; }
-    public FileSystemItem? Parent { get; set; }
-    public List<FileSystemItem> Children { get; set; } = new();
 }
 
 public class IconConverter : Microsoft.UI.Xaml.Data.IValueConverter

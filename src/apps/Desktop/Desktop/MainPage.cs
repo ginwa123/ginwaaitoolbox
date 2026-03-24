@@ -37,8 +37,8 @@ public sealed partial class MainPage : Page
         // Frame must be created before Content is set
         _contentFrame = new Frame();
         
-        // Load existing workspaces from store
-        LoadExistingWorkspaces();
+        // Initialize async (for WASM OPFS) and load existing workspaces
+        _ = InitializeAsync();
 
         // Main layout grid
         var root = new Grid();
@@ -149,6 +149,15 @@ public sealed partial class MainPage : Page
         // Navigate to Sessions on load
         _contentFrame.Navigate(typeof(SessionsView));
     }
+    
+    private async Task InitializeAsync()
+    {
+        // Initialize WASM OPFS and load workspaces
+        await _workspaceStore.InitializeAsync();
+        
+        // Add existing workspaces to sidebar
+        LoadExistingWorkspaces();
+    }
 
     private static FrameworkElement CreateNavItem(string label, string indicator, bool isSelected)
     {
@@ -203,8 +212,8 @@ public sealed partial class MainPage : Page
         
         if (result == ContentDialogResult.Primary && dialog.SelectedPath != null)
         {
-            // Add workspace to store (which persists to ~/config/nalar/workspaces.json)
-            var workspace = _workspaceStore.AddWorkspace(dialog.SelectedPath);
+            // Add workspace to store (which persists to OPFS on WASM, or filesystem on native)
+            var workspace = await _workspaceStore.AddWorkspaceAsync(dialog.SelectedPath);
             
             if (workspace != null)
             {

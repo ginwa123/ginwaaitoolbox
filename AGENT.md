@@ -87,6 +87,7 @@ src/
 
 ## Important Conventions
 
+- **Max lines per file:** 400 lines — split larger files into modules
 - `const tree1 = @import("nalarcore");` — module imports
 - **Naming:** snake_case for variables and functions, PascalCase for structs/types
 - `ArrayList.empty` replaces `ArrayList.init` (Zig 0.15)

@@ -2,6 +2,9 @@
   <PropertyGroup>
       <TargetFrameworks>net10.0-android;net10.0-ios;net10.0-browserwasm;net10.0-desktop</TargetFrameworks>
 
+        <!-- Allow unsafe code for WASM JS interop -->
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
         <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
         <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
           <!-- <DefineConstants>$(DefineConstants);__SKIA__</DefineConstants> -->
@@ -36,6 +39,32 @@
   <!-- MVVM Toolkit for ObservableObject, ObservableProperty, RelayCommand -->
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" />
+  </ItemGroup>
+
+  <!-- Exclude test files from regular builds (include only with BuildWithTests or RunTests) -->
+  <ItemGroup Condition="'$(BuildWithTests)' != 'true'">
+    <Compile Remove="**/*Tests.cs" />
+  </ItemGroup>
+
+  <!-- Test config -->
+  <PropertyGroup Condition="'$(BuildWithTests)' == 'true'">
+    <DefineConstants>$(DefineConstants);TESTING</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Test packages - only when building with tests -->
+  <ItemGroup Condition="'$(BuildWithTests)' == 'true'">
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!-- WASM specific files -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-browserwasm'">
+    <Content Include="Platforms\WebAssembly\WasmScripts\*.js" />
+    <Content Include="Platforms\WebAssembly\WasmScripts\*.mjs" />
   </ItemGroup>
 
 </Project>
