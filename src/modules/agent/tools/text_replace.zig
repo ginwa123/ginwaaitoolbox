@@ -98,6 +98,9 @@ pub fn text_replaceWithHash(
 
     new_content.deinit(allocator);
 
+    // Free sha256_hex before returning - we only needed it for validation
+    allocator.free(sha256_hex);
+
     return TextReplaceResult{
         .sha256_after = sha256_after,
     };

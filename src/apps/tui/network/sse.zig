@@ -93,13 +93,15 @@ pub fn extract_sse_data(allocator: std.mem.Allocator, sse_text: []const u8) ![]u
         // Skip comment lines (keepalive, etc.)
         if (std.mem.startsWith(u8, trimmed, ":")) continue;
 
-        // Skip event type lines - we just want the data
+        // Skip SSE metadata fields - we only want data content
         if (std.mem.startsWith(u8, trimmed, "event:")) continue;
+        if (std.mem.startsWith(u8, trimmed, "id:")) continue;
+        if (std.mem.startsWith(u8, trimmed, "retry:")) continue;
 
-        // Strip "data:" prefix if present
+        // Strip "data:" prefix if present (keep space after data:)
         var content = trimmed;
         if (std.mem.startsWith(u8, content, "data:")) {
-            content = std.mem.trimLeft(u8, content["data:".len..], " \t");
+            content = content["data:".len..];
         }
 
         // Pass through raw content after stripping data: prefix

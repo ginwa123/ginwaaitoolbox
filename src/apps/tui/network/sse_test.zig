@@ -122,8 +122,9 @@ test "extract_sse_data: mixed content real SSE format" {
     ;
     const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
     defer std.testing.allocator.free(result);
+    // Space after "data:" is preserved
     try std.testing.expectEqualStrings(
-        \\{"event":"chunk","data":"<xml>escaped</xml>"}
+        \\ {"event":"chunk","data":"<xml>escaped</xml>"}
     , result);
 }
 
@@ -145,6 +146,7 @@ test "extract_sse_data: data with carriage returns" {
     const sse_text = "data: <xml>hello</xml>\r\n\n";
     const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
     defer std.testing.allocator.free(result);
+    // Space after "data:" is preserved
     try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
 }
 
@@ -152,7 +154,7 @@ test "extract_sse_data: three data lines" {
     const sse_text = "data: line1\ndata: line2\ndata: line3\n\n";
     const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
     defer std.testing.allocator.free(result);
-    // Note: output includes the space after "data:" prefix
+    // Space after "data:" is preserved
     try std.testing.expectEqualStrings(" line1\n line2\n line3", result);
 }
 
@@ -160,7 +162,7 @@ test "extract_sse_data: strips carriage return from data payload" {
     const sse_text = "data: payload\r\n\n";
     const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
     defer std.testing.allocator.free(result);
-    // Note: output includes the space after "data:" prefix
+    // Space after "data:" is preserved
     try std.testing.expectEqualStrings(" payload", result);
 }
 
@@ -176,6 +178,7 @@ test "extract_sse_data: id field is skipped" {
     const sse_text = "id: 123\nevent: message\ndata: <xml>hello</xml>\n\n";
     const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
     defer std.testing.allocator.free(result);
+    // Space after "data:" is preserved
     try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
 }
 
@@ -183,6 +186,7 @@ test "extract_sse_data: consecutive empty lines are skipped" {
     const sse_text = "\n\ndata: <xml>hello</xml>\n\n\n\n";
     const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
     defer std.testing.allocator.free(result);
+    // Space after "data:" is preserved
     try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
 }
 
@@ -190,6 +194,7 @@ test "extract_sse_data: retry field is skipped" {
     const sse_text = "retry: 5000\nevent: message\ndata: <xml>hello</xml>\n\n";
     const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
     defer std.testing.allocator.free(result);
+    // Space after "data:" is preserved
     try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
 }
 
@@ -197,5 +202,6 @@ test "extract_sse_data: comment with space after colon is skipped" {
     const sse_text = ": This is a comment\ndata: <xml>hello</xml>\n\n";
     const result = try sse.extract_sse_data(std.testing.allocator, sse_text);
     defer std.testing.allocator.free(result);
+    // Space after "data:" is preserved
     try std.testing.expectEqualStrings(" <xml>hello</xml>", result);
 }

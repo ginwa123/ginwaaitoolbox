@@ -100,3 +100,18 @@ src/
 
 - always use skills frontend-design
 - always use skills zig-expert
+
+
+## Dev Test
+
+for testing use this command always
+    you can use -q to use cli
+
+- ./zig-out/bin/nalar-dev-tui --port 8082 --process nalar-dev
+
+
+## Unit testing
+### Zig
+- use `zig build test` to run all tests
+- put the test in test_runner.zig and import it in root.zig
+

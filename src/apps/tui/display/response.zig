@@ -38,9 +38,10 @@ fn strip_think_blocks(text: []const u8) []const u8 {
     return std.mem.trim(u8, text, " \t\n\r");
 }
 
-/// ToolCallInfo holds the name of a tool call
+/// ToolCallInfo holds the name and arguments of a tool call
 pub const ToolCallInfo = struct {
     name: []const u8,
+    arguments: []const u8,
 };
 
 /// Extract content from XML - handles both <response> and <tool_result> tags.
@@ -49,7 +50,6 @@ pub const ToolCallInfo = struct {
 pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?ExtractResult {
     var results = std.ArrayListUnmanaged(ContentResult){};
     errdefer results.deinit(allocator);
-
 
     try extract_tag_content(allocator, &results, xml, "<response>", "</response>", .response);
     try extract_tag_content(allocator, &results, xml, "<tool_result>", "</tool_result>", .tool_result);
@@ -65,6 +65,7 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?E
     }
 
     if (results.items.len == 0 and finish_reason == null) {
+        std.debug.print("No results found\n", .{});
         return null;
     }
 
@@ -79,14 +80,23 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?E
         tc_pos = tc_end + "</tool_call>".len;
 
         // Extract name from tool_call block
+        var tool_name: []const u8 = "";
+        var tool_args: []const u8 = "";
         if (std.mem.indexOf(u8, tc_block, "<name>")) |name_start| {
             const name_start_tag = name_start + "<name>".len;
             if (std.mem.indexOfPos(u8, tc_block, name_start_tag, "</name>")) |name_end| {
-                const name = tc_block[name_start_tag..name_end];
-                if (name.len > 0) {
-                    try tool_calls.append(allocator, .{ .name = name });
-                }
+                tool_name = tc_block[name_start_tag..name_end];
             }
+        }
+        // Extract arguments from tool_call block
+        if (std.mem.indexOf(u8, tc_block, "<arguments>")) |args_start| {
+            const args_start_tag = args_start + "<arguments>".len;
+            if (std.mem.indexOfPos(u8, tc_block, args_start_tag, "</arguments>")) |args_end| {
+                tool_args = tc_block[args_start_tag..args_end];
+            }
+        }
+        if (tool_name.len > 0) {
+            try tool_calls.append(allocator, .{ .name = tool_name, .arguments = tool_args });
         }
     }
 
@@ -129,6 +139,7 @@ fn extract_tag_content(
             } else {
                 // Empty <content></content>: fall back to raw inner XML as outer type
                 try results.append(allocator, .{ .content = inner, .xml_type = outer_type });
+                // extracted_any = true;
                 extracted_any = true;
             }
         }

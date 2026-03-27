@@ -86,7 +86,11 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
         const xml = sse.extract_sse_data(app.allocator, decoded) catch "";
         defer app.allocator.free(xml);
 
-        const extract_result = response.extract_content_result(app.allocator, xml) catch null;
+        const extract_result = response.extract_content_result(app.allocator, xml) catch |err| {
+            std.debug.print("Failed to extract content result: {s}\n", .{@errorName(err)});
+            return null;
+        };
+
         if (extract_result) |er| {
             var should_display_assistant_thinking = false;
             var should_display_tool_output = false;
@@ -108,15 +112,15 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 var content_list = er.content_results;
                 defer content_list.deinit(app.allocator);
                 for (content_list.items) |result| {
-                    std.debug.print("{s}", .{result.content});
+                    std.debug.print("assistant: \n {s}\n\n", .{result.content});
                 }
             }
 
             if (should_display_tool_output) {
                 if (er.tool_calls) |tcs| {
-                    std.debug.print("\r\n{s}[Tool calls]{s}\n", .{ globals.cyan, globals.reset });
+                    std.debug.print("\r\n{s}[Tool calls]{s}\n\n", .{ globals.cyan, globals.reset });
                     for (tcs) |tc| {
-                        std.debug.print("  {s}→{s} {s}\n", .{ globals.green, globals.reset, tc.name });
+                        std.debug.print("  {s} ->>> {s}{s}\n\n", .{ tc.name, globals.reset, tc.arguments });
                     }
                 }
             }
