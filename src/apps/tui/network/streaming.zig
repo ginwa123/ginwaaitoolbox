@@ -88,16 +88,36 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
 
         const extract_result = response.extract_content_result(app.allocator, xml) catch null;
         if (extract_result) |er| {
-            var content_list = er.content_results;
-            defer content_list.deinit(app.allocator);
-            for (content_list.items) |result| {
-                std.debug.print("{s}", .{result.content});
+            var should_display_assistant_thinking = false;
+            var should_display_tool_output = false;
+            if (er.finish_reason) |fr| {
+                if (std.mem.eql(u8, fr, "stop")) {
+                    should_display_assistant_thinking = true;
+                }
+
+                if (std.mem.eql(u8, fr, "tool_calls")) {
+                    should_display_assistant_thinking = true;
+                }
+
+                if (std.mem.eql(u8, fr, "tool")) {
+                    should_display_tool_output = true;
+                }
             }
 
-            if (er.tool_calls) |tcs| {
-                std.debug.print("\r\n{s}[Tool calls]{s}\n", .{ globals.cyan, globals.reset });
-                for (tcs) |tc| {
-                    std.debug.print("  {s}→{s} {s}\n", .{ globals.green, globals.reset, tc.name });
+            if (should_display_assistant_thinking) {
+                var content_list = er.content_results;
+                defer content_list.deinit(app.allocator);
+                for (content_list.items) |result| {
+                    std.debug.print("{s}", .{result.content});
+                }
+            }
+
+            if (should_display_tool_output) {
+                if (er.tool_calls) |tcs| {
+                    std.debug.print("\r\n{s}[Tool calls]{s}\n", .{ globals.cyan, globals.reset });
+                    for (tcs) |tc| {
+                        std.debug.print("  {s}→{s} {s}\n", .{ globals.green, globals.reset, tc.name });
+                    }
                 }
             }
         }

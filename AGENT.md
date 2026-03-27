@@ -7,8 +7,8 @@
 
 ## Project Overview
 
-**Name:** nalarcore  
-**Language:** Zig 0.15.2  
+**Name:** nalarcore
+**Language:** Zig 0.15.2
 **Type:** AI agentic coding toolbox with HTTP server + TUI interfaces
 
 ## Build System
@@ -95,3 +95,8 @@ src/
 - [.nalar/plans/](.nalar/plans/) — Design documents
 - [docs/superpowers/](docs/superpowers/) — Skills
 
+
+## Skills and learning
+
+- always use skills frontend-design
+- always use skills zig-expert
