@@ -88,16 +88,16 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
 
         const extract_result = response.extract_content_result(app.allocator, xml) catch null;
         if (extract_result) |er| {
-            const should_display = if (er.finish_reason) |fr|
-                !std.mem.eql(u8, fr, "tool_calls")
-            else
-                true;
+            var content_list = er.content_results;
+            defer content_list.deinit(app.allocator);
+            for (content_list.items) |result| {
+                std.debug.print("{s}", .{result.content});
+            }
 
-            if (should_display) {
-                var content_list = er.content_results;
-                defer content_list.deinit(app.allocator);
-                for (content_list.items) |result| {
-                    std.debug.print("{s}", .{result.content});
+            if (er.tool_calls) |tcs| {
+                std.debug.print("\r\n{s}[Tool calls]{s}\n", .{ globals.cyan, globals.reset });
+                for (tcs) |tc| {
+                    std.debug.print("  {s}→{s} {s}\n", .{ globals.green, globals.reset, tc.name });
                 }
             }
         }

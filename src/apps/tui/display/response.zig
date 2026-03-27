@@ -17,6 +17,7 @@ pub const ContentResult = struct {
 pub const ExtractResult = struct {
     content_results: std.ArrayListUnmanaged(ContentResult),
     finish_reason: ?[]const u8,
+    tool_calls: ?[]ToolCallInfo,
 };
 
 /// Strip <think>...</think> block (if any) and trim surrounding whitespace.
@@ -36,6 +37,11 @@ fn strip_think_blocks(text: []const u8) []const u8 {
 
     return std.mem.trim(u8, text, " \t\n\r");
 }
+
+/// ToolCallInfo holds the name of a tool call
+pub const ToolCallInfo = struct {
+    name: []const u8,
+};
 
 /// Extract content from XML - handles both <response> and <tool_result> tags.
 /// Strips <think> blocks from extracted content.
@@ -62,9 +68,32 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?E
         return null;
     }
 
+    // Extract tool calls if present
+    var tool_calls: std.ArrayListUnmanaged(ToolCallInfo) = .{};
+    errdefer tool_calls.deinit(allocator);
+    var tc_pos: usize = 0;
+    while (tc_pos < xml.len) {
+        const tc_start = std.mem.indexOfPos(u8, xml, tc_pos, "<tool_call>") orelse break;
+        const tc_end = std.mem.indexOfPos(u8, xml, tc_start, "</tool_call>") orelse break;
+        const tc_block = xml[tc_start..tc_end];
+        tc_pos = tc_end + "</tool_call>".len;
+
+        // Extract name from tool_call block
+        if (std.mem.indexOf(u8, tc_block, "<name>")) |name_start| {
+            const name_start_tag = name_start + "<name>".len;
+            if (std.mem.indexOfPos(u8, tc_block, name_start_tag, "</name>")) |name_end| {
+                const name = tc_block[name_start_tag..name_end];
+                if (name.len > 0) {
+                    try tool_calls.append(allocator, .{ .name = name });
+                }
+            }
+        }
+    }
+
     return ExtractResult{
         .content_results = results,
         .finish_reason = finish_reason,
+        .tool_calls = if (tool_calls.items.len > 0) try tool_calls.toOwnedSlice(allocator) else null,
     };
 }
 
