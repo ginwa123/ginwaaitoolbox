@@ -13,8 +13,8 @@ const App = @import("../main.zig").App;
 pub const ToolResult = tool_results.ToolResult;
 
 /// Read response and stream LLM output
-/// This is the main streaming function for chatting with the AI
-pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
+/// Simplified: collects raw buffer, displays content at the end
+pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
     var raw_buffer = std.ArrayList(u8).empty;
     errdefer raw_buffer.deinit(app.allocator);
     var arena = std.heap.ArenaAllocator.init(app.allocator);
@@ -22,16 +22,11 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     const alloc = arena.allocator();
 
     var buf: [4096]u8 = undefined;
-    var retry_count: usize = 0;
-    var streaming_started = false;
-
-    var last_data_received_ms: i64 = std.time.milliTimestamp();
-    var reconnection_attempts: u32 = 0;
 
     const PING_INTERVAL_MS: i64 = 1000;
     var last_ping_ms: i64 = std.time.milliTimestamp();
 
-    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
+    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
     var enable: u32 = 1;
@@ -53,15 +48,10 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
         .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
     };
 
-    var stream_interrupted = false;
-    var displayed_tool_ids = std.ArrayList([]const u8).empty;
-    defer {
-        for (displayed_tool_ids.items) |id| app.allocator.free(id);
-        displayed_tool_ids.deinit(app.allocator);
-    }
-    var raw_buffer_processed_len: usize = 0;
-
     while (true) {
+        defer {
+            raw_buffer.clearAndFree(app.allocator);
+        }
         const now = std.time.milliTimestamp();
         const ready = std.posix.poll(&poll_fds, 100) catch 0;
 
@@ -69,7 +59,6 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
             if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
                     messaging.sendDoubleEscapeCommand(app) catch {};
-                    stream_interrupted = true;
                     break;
                 }
                 poll_fds[1].revents = 0;
@@ -80,134 +69,52 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 if (n == 0) break;
                 try raw_buffer.appendSlice(app.allocator, buf[0..n]);
                 poll_fds[0].revents = 0;
-                last_data_received_ms = now;
             }
 
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         } else {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
-                const needs_reconnect = messaging.sendPingCommand(app) catch false;
-                if (needs_reconnect) {
-                    reconnection_attempts += 1;
-                    const new_socket = connection.reconnectSseStream(app, alloc, stream_socket);
-                    if (new_socket < 0) {
-                        std.debug.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
-                        last_data_received_ms = now;
-                        continue;
-                    }
-
-                    stream_socket = new_socket;
-                    poll_fds[0].fd = stream_socket;
-                    last_data_received_ms = std.time.milliTimestamp();
-                    continue;
-                }
+                _ = messaging.sendPingCommand(app) catch false;
                 last_ping_ms = now;
             }
         }
 
-        const new_raw = raw_buffer.items[raw_buffer_processed_len..];
-        if (new_raw.len == 0) continue;
-
-        const decoded = sse.decode_chuncked(app.allocator, new_raw) catch {
-            debug.logError("streaming: decode_chuncked failed", .{});
-            raw_buffer_processed_len = raw_buffer.items.len;
-            continue;
-        };
+        // Extract and display content per chunk
+        const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch "";
         defer app.allocator.free(decoded);
-        raw_buffer_processed_len = raw_buffer.items.len;
 
-        debug.logVerbose("streaming: decoded {d} bytes", .{decoded.len});
-
-        const xml = sse.extract_sse_data(app.allocator, decoded) catch {
-            debug.logError("streaming: extract_sse_data failed", .{});
-            continue;
-        };
+        const xml = sse.extract_sse_data(app.allocator, decoded) catch "";
         defer app.allocator.free(xml);
 
-        debug.logVerbose("streaming: extracted {d} bytes of XML", .{xml.len});
+        const extract_result = response.extract_content_result(app.allocator, xml) catch null;
+        if (extract_result) |er| {
+            const should_display = if (er.finish_reason) |fr|
+                !std.mem.eql(u8, fr, "tool_calls")
+            else
+                true;
 
-        // Tool results are displayed per-chunk (they are discrete events)
-        const tr_val = try tool_results.extractToolResults(app.allocator, xml);
-        var tool_results_list = tr_val;
-        defer tool_results_list.deinit(app.allocator);
-
-        for (tool_results_list.items) |result| {
-            var already_displayed = false;
-            for (displayed_tool_ids.items) |id| {
-                if (std.mem.eql(u8, id, result.id)) {
-                    already_displayed = true;
-                    break;
+            if (should_display) {
+                var content_list = er.content_results;
+                defer content_list.deinit(app.allocator);
+                for (content_list.items) |result| {
+                    std.debug.print("{s}", .{result.content});
                 }
-            }
-            if (!already_displayed) {
-                std.debug.print("\r\x1b[2K", .{});
-                const max_result_len: usize = 500;
-                tool_results.displayToolResultByName(result.result, result.name, max_result_len);
-                if (utils.extractTag(result.result, "set_agent_properties")) |_| {
-                    std.debug.print("\n{s}[agent properties]{s} → updated\n", .{ globals.cyan, globals.reset });
-                }
-                const id_copy = app.allocator.dupe(u8, result.id) catch continue;
-                displayed_tool_ids.append(app.allocator, id_copy) catch {
-                    app.allocator.free(id_copy);
-                    continue;
-                };
             }
         }
 
-        // Check finish_reason to decide whether to break the loop
-        if (utils.extractTag(raw_buffer.items, "finish_reason")) |fr| {
-            debug.logVerbose("streaming: detected finish_reason", .{});
-
-            if (std.mem.eql(u8, fr, "notification_error")) {
-                debug.logInfo("streaming: notification_error, retrying", .{});
-                retry_count += 1;
-                continue;
+        // Simple end condition check
+        if (utils.extract_tag(raw_buffer.items, "finish_reason")) |fr| {
+            if (std.mem.eql(u8, fr, "stop") or std.mem.eql(u8, fr, "user_choice")) {
+                break;
             }
             if (std.mem.eql(u8, fr, "cancelled")) {
-                std.debug.print("\r\x1b[2K\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
-                break;
-            }
-            if (std.mem.eql(u8, fr, "user_choice")) {
-                debug.logInfo("streaming: user_choice detected", .{});
-                break;
-            }
-            if (std.mem.eql(u8, fr, "stop")) {
-                debug.logInfo("streaming: stop detected, ending stream", .{});
+                std.debug.print("\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
                 break;
             }
         }
     }
 
-    std.debug.print("\r\x1b[2K", .{});
-    if (stream_interrupted) {
-        std.debug.print("\n{s}Interrupted (double ESC){s}\n", .{ globals.yellow, globals.reset });
-    }
-
-    // Decode and extract the full accumulated response once, then print
-    const final_decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch "";
-    defer app.allocator.free(final_decoded);
-
-    const final_xml = sse.extract_sse_data(app.allocator, final_decoded) catch "";
-    defer app.allocator.free(final_xml);
-
-    const final_extract = try response.extract_content_result(app.allocator, final_xml);
-    if (final_extract) |extract_result| {
-        const should_display = if (extract_result.finish_reason) |fr|
-            !std.mem.eql(u8, fr, "tool_calls")
-        else
-            true;
-
-        if (should_display) {
-            var content_list = extract_result.content_results;
-            defer content_list.deinit(app.allocator);
-            for (content_list.items) |result| {
-                streaming_started = true;
-                std.debug.print("{s}", .{result.content});
-            }
-        }
-    }
-
-    std.debug.print("\n", .{});
+    raw_buffer.clearRetainingCapacity();
     return try raw_buffer.toOwnedSlice(app.allocator);
 }
 
@@ -322,15 +229,15 @@ pub fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
     const final_xml = sse.extract_sse_data(app.allocator, final_decoded) catch "";
     defer app.allocator.free(final_xml);
 
-    if (utils.extractTag(final_xml, "sessions")) |md| {
+    if (utils.extract_tag(final_xml, "sessions")) |md| {
         const trimmed = utils.trim(md);
         std.debug.print("{s}Session ID           Directory                        Created{s}\n", .{ globals.bold, globals.reset });
         std.debug.print("─────────────────────────────────────────────────────────────────────\n", .{});
         var rest = trimmed;
-        while (utils.extractTag(rest, "session")) |session| {
-            const id = utils.extractTag(session, "id") orelse "";
-            const dir = utils.extractTag(session, "dir") orelse "";
-            const ts = utils.extractTag(session, "created") orelse "";
+        while (utils.extract_tag(rest, "session")) |session| {
+            const id = utils.extract_tag(session, "id") orelse "";
+            const dir = utils.extract_tag(session, "dir") orelse "";
+            const ts = utils.extract_tag(session, "created") orelse "";
             std.debug.print("{s:<20} {s:<32} {s}\n", .{ id, dir, ts });
             const end = std.mem.indexOf(u8, rest, "</session>") orelse break;
             rest = rest[end + "</session>".len ..];

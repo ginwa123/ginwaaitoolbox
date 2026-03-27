@@ -10,7 +10,7 @@ pub const ToolResult = struct {
 };
 
 /// Extract tool results from XML response
-pub fn extractToolResults(allocator: std.mem.Allocator, xml: []const u8) !std.ArrayList(ToolResult) {
+pub fn extract_tool_results(allocator: std.mem.Allocator, xml: []const u8) !std.ArrayList(ToolResult) {
     var results = std.ArrayList(ToolResult).empty;
     errdefer results.deinit(allocator);
     var pos: usize = 0;
@@ -19,9 +19,9 @@ pub fn extractToolResults(allocator: std.mem.Allocator, xml: []const u8) !std.Ar
         const tool_result_end = std.mem.indexOfPos(u8, xml, tool_result_start, "</tool_result>") orelse break;
         const tool_result_block = xml[tool_result_start .. tool_result_end + "</tool_result>".len];
         pos = tool_result_end + "</tool_result>".len;
-        const id = if (utils.extractTag(tool_result_block, "tool_call_id")) |v| v else "";
-        const name = if (utils.extractTag(tool_result_block, "tool_name")) |v| v else "";
-        const result = if (utils.extractTag(tool_result_block, "result")) |v| v else "";
+        const id = if (utils.extract_tag(tool_result_block, "tool_call_id")) |v| v else "";
+        const name = if (utils.extract_tag(tool_result_block, "tool_name")) |v| v else "";
+        const result = if (utils.extract_tag(tool_result_block, "result")) |v| v else "";
         if (id.len > 0) {
             try results.append(allocator, .{ .id = id, .name = name, .result = result });
         }
@@ -30,7 +30,7 @@ pub fn extractToolResults(allocator: std.mem.Allocator, xml: []const u8) !std.Ar
 }
 
 /// Display tool result based on tool name
-pub fn displayToolResultByName(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
+pub fn display_tool_result_by_name(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
     if (std.mem.eql(u8, tool_name, "bash")) {
         displayBashResult(result_xml, tool_name, max_result_len);
     } else if (std.mem.eql(u8, tool_name, "write_file")) {
@@ -69,10 +69,10 @@ pub fn displayToolResultByName(result_xml: []const u8, tool_name: []const u8, ma
 
 /// Display bash command result
 pub fn displayBashResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
-    const std_out = std.mem.trim(u8, utils.extractTag(result_xml, "stdout") orelse "", &std.ascii.whitespace);
-    const cmd = utils.extractTag(result_xml, "command");
+    const std_out = std.mem.trim(u8, utils.extract_tag(result_xml, "stdout") orelse "", &std.ascii.whitespace);
+    const cmd = utils.extract_tag(result_xml, "command");
     if (std.mem.eql(u8, std_out, "")) return;
-    const stderr = utils.extractTag(result_xml, "stderr");
+    const stderr = utils.extract_tag(result_xml, "stderr");
     const truncated = std_out.len > max_result_len;
     const display = if (truncated) std_out[0..max_result_len] else std_out;
     const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
@@ -92,7 +92,7 @@ pub fn displayBashResult(result_xml: []const u8, tool_name: []const u8, max_resu
 /// Display search result
 pub fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
     _ = max_result_len;
-    const results = utils.extractTag(result_xml, "results") orelse "";
+    const results = utils.extract_tag(result_xml, "results") orelse "";
     if (std.mem.eql(u8, results, "")) return;
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ globals.cyan, tool_name, globals.reset });
     var remaining = results;
@@ -102,9 +102,9 @@ pub fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_re
         const match_end = std.mem.indexOf(u8, remaining, "</m>") orelse break;
         const match_block = remaining[match_start .. match_end + "</m>".len];
         remaining = remaining[match_end + "</m>".len ..];
-        const file = utils.extractTag(match_block, "f") orelse "";
-        const line_num = utils.extractTag(match_block, "l") orelse "0";
-        const snippet = utils.extractTag(match_block, "s") orelse "";
+        const file = utils.extract_tag(match_block, "f") orelse "";
+        const line_num = utils.extract_tag(match_block, "l") orelse "0";
+        const snippet = utils.extract_tag(match_block, "s") orelse "";
         std.debug.print("  {s}:{s}:{s}\n", .{ file, line_num, snippet });
         total_shown += 1;
     }
@@ -115,52 +115,52 @@ pub fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_re
 
 /// Display read_file result
 pub fn displayReadFileResult(result_xml: []const u8, tool_name: []const u8) void {
-    const path = utils.extractTag(result_xml, "path") orelse "unknown";
+    const path = utils.extract_tag(result_xml, "path") orelse "unknown";
     if (std.mem.eql(u8, path, "")) return;
-    
-    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} {s}\n", .{ 
-        globals.cyan, 
-        tool_name, 
-        globals.reset, 
-        path 
+
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} {s}\n", .{
+        globals.cyan,
+        tool_name,
+        globals.reset,
+        path
     });
 }
 
 /// Display write_file result
 pub fn displayWriteFileResult(result_xml: []const u8, tool_name: []const u8) void {
-    const path = utils.extractTag(result_xml, "path") orelse "";
-    const bytes_written = utils.extractTag(result_xml, "bytes_written") orelse "0";
-    const lines_written = utils.extractTag(result_xml, "lines_written") orelse "0";
+    const path = utils.extract_tag(result_xml, "path") orelse "";
+    const bytes_written = utils.extract_tag(result_xml, "bytes_written") orelse "0";
+    const lines_written = utils.extract_tag(result_xml, "lines_written") orelse "0";
     if (std.mem.eql(u8, path, "")) return;
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s} wrote {s} bytes ({s} lines) → {s}\n", .{ globals.cyan, tool_name, globals.reset, bytes_written, lines_written, path });
-    if (utils.extractTag(result_xml, "before")) |before| {
+    if (utils.extract_tag(result_xml, "before")) |before| {
         if (!std.mem.eql(u8, before, "")) std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", globals.reset, before });
     }
-    if (utils.extractTag(result_xml, "after")) |after| {
+    if (utils.extract_tag(result_xml, "after")) |after| {
         if (!std.mem.eql(u8, after, "")) std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", globals.reset, after });
     }
 }
 
 /// Display text_replace result
 pub fn displayTextReplaceResult(result_xml: []const u8, tool_name: []const u8) void {
-    const path = utils.extractTag(result_xml, "path") orelse "";
-    const replaced_at_byte = utils.extractTag(result_xml, "replaced_at_byte") orelse "?";
+    const path = utils.extract_tag(result_xml, "path") orelse "";
+    const replaced_at_byte = utils.extract_tag(result_xml, "replaced_at_byte") orelse "?";
     if (std.mem.eql(u8, path, "")) return;
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{ globals.cyan, tool_name, globals.reset, replaced_at_byte, path });
-    if (utils.extractTag(result_xml, "old_str")) |old_str| {
+    if (utils.extract_tag(result_xml, "old_str")) |old_str| {
         if (!std.mem.eql(u8, old_str, "")) std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", globals.reset, old_str });
     }
-    if (utils.extractTag(result_xml, "new_str")) |new_str| {
+    if (utils.extract_tag(result_xml, "new_str")) |new_str| {
         if (!std.mem.eql(u8, new_str, "")) std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", globals.reset, new_str });
     }
 }
 
 /// Display get_skill result
 pub fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
-    const skill_name = utils.extractTag(result_xml, "skill_name") orelse "";
-    const content = utils.extractTag(result_xml, "content") orelse "";
-    const loaded = utils.extractTag(result_xml, "loaded") orelse "false";
-    const error_msg = utils.extractTag(result_xml, "error");
+    const skill_name = utils.extract_tag(result_xml, "skill_name") orelse "";
+    const content = utils.extract_tag(result_xml, "content") orelse "";
+    const loaded = utils.extract_tag(result_xml, "loaded") orelse "false";
+    const error_msg = utils.extract_tag(result_xml, "error");
 
     if (skill_name.len == 0) return;
 
@@ -177,7 +177,7 @@ pub fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
         if (err.len > 0) {
             std.debug.print("  \x1b[31mError: {s}\x1b[0m\n", .{err});
             // Show available skills if present
-            if (utils.extractTag(result_xml, "available_skills")) |available| {
+            if (utils.extract_tag(result_xml, "available_skills")) |available| {
                 if (available.len > 0) {
                     std.debug.print("  \x1b[90mAvailable skills:\x1b[0m\n", .{});
                     var pos: usize = 0;
@@ -281,7 +281,7 @@ pub fn displayListSkillsResult(result_json: []const u8, tool_name: []const u8) v
 
 /// Display list_agents result
 pub fn displayListAgentsResult(result_xml: []const u8, tool_name: []const u8) void {
-    const agents_xml = utils.extractTag(result_xml, "agents") orelse "";
+    const agents_xml = utils.extract_tag(result_xml, "agents") orelse "";
     if (std.mem.eql(u8, agents_xml, "")) {
         std.debug.print("\r\x1b[2K\n{s}[{s}]{s} No agents available\n", .{ globals.cyan, tool_name, globals.reset });
         return;
@@ -297,8 +297,8 @@ pub fn displayListAgentsResult(result_xml: []const u8, tool_name: []const u8) vo
         const agent_block = agents_xml[agent_start + "<agent>".len .. agent_end];
         pos = agent_end + "</agent>".len;
 
-        const name = utils.extractTag(agent_block, "name") orelse "";
-        const desc = utils.extractTag(agent_block, "description") orelse "";
+        const name = utils.extract_tag(agent_block, "name") orelse "";
+        const desc = utils.extract_tag(agent_block, "description") orelse "";
 
         if (name.len > 0) {
             count += 1;
@@ -318,10 +318,10 @@ pub fn displayListAgentsResult(result_xml: []const u8, tool_name: []const u8) vo
 
 /// Display get_agent result
 pub fn displayGetAgentResult(result_xml: []const u8, tool_name: []const u8) void {
-    const agent_name = utils.extractTag(result_xml, "agent_name") orelse "";
-    const content = utils.extractTag(result_xml, "content") orelse "";
-    const loaded = utils.extractTag(result_xml, "loaded") orelse "false";
-    const error_msg = utils.extractTag(result_xml, "error");
+    const agent_name = utils.extract_tag(result_xml, "agent_name") orelse "";
+    const content = utils.extract_tag(result_xml, "content") orelse "";
+    const loaded = utils.extract_tag(result_xml, "loaded") orelse "false";
+    const error_msg = utils.extract_tag(result_xml, "error");
 
     if (agent_name.len == 0 and content.len == 0) {
         std.debug.print("\r\x1b[2K\n{s}[{s}]{s} No agent content\n", .{ globals.cyan, tool_name, globals.reset });
@@ -362,9 +362,9 @@ pub fn displayGetAgentResult(result_xml: []const u8, tool_name: []const u8) void
 
 /// Display spawn_sub_agent result
 pub fn displaySpawnSubAgentResult(result_xml: []const u8, tool_name: []const u8) void {
-    const sub_agent_id = utils.extractTag(result_xml, "sub_agent_id") orelse "";
-    const status = utils.extractTag(result_xml, "status") orelse "";
-    const message = utils.extractTag(result_xml, "message") orelse "";
+    const sub_agent_id = utils.extract_tag(result_xml, "sub_agent_id") orelse "";
+    const status = utils.extract_tag(result_xml, "status") orelse "";
+    const message = utils.extract_tag(result_xml, "message") orelse "";
 
     if (std.mem.eql(u8, sub_agent_id, "") and std.mem.eql(u8, message, "")) {
         std.debug.print("\r\x1b[2K\n{s}[{s}]{s} Sub-agent spawned\n", .{ globals.cyan, tool_name, globals.reset });
@@ -392,8 +392,8 @@ pub fn displaySpawnSubAgentResult(result_xml: []const u8, tool_name: []const u8)
 
 /// Display lsp_definition result
 pub fn displayLspDefinitionResult(result_xml: []const u8, tool_name: []const u8) void {
-    const found = utils.extractTag(result_xml, "found") orelse "false";
-    const definitions = utils.extractTag(result_xml, "definitions") orelse "";
+    const found = utils.extract_tag(result_xml, "found") orelse "false";
+    const definitions = utils.extract_tag(result_xml, "definitions") orelse "";
 
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
@@ -407,9 +407,9 @@ pub fn displayLspDefinitionResult(result_xml: []const u8, tool_name: []const u8)
             const loc_block = definitions[loc_start + "<loc>".len .. loc_end];
             pos = loc_end + "</loc>".len;
 
-            const file_path = utils.extractTag(loc_block, "file_path") orelse "";
-            const line = utils.extractTag(loc_block, "line") orelse "0";
-            const character = utils.extractTag(loc_block, "character") orelse "0";
+            const file_path = utils.extract_tag(loc_block, "file_path") orelse "";
+            const line = utils.extract_tag(loc_block, "line") orelse "0";
+            const character = utils.extract_tag(loc_block, "character") orelse "0";
 
             std.debug.print("  \x1b[33m→\x1b[0m {s}:{s}:{s}\n", .{ file_path, line, character });
             count += 1;
@@ -424,8 +424,8 @@ pub fn displayLspDefinitionResult(result_xml: []const u8, tool_name: []const u8)
 
 /// Display lsp_references result
 pub fn displayLspReferencesResult(result_xml: []const u8, tool_name: []const u8) void {
-    const found = utils.extractTag(result_xml, "found") orelse "false";
-    const references = utils.extractTag(result_xml, "references") orelse "";
+    const found = utils.extract_tag(result_xml, "found") orelse "false";
+    const references = utils.extract_tag(result_xml, "references") orelse "";
 
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
@@ -440,8 +440,8 @@ pub fn displayLspReferencesResult(result_xml: []const u8, tool_name: []const u8)
             const loc_block = references[loc_start + "<loc>".len .. loc_end];
             pos = loc_end + "</loc>".len;
 
-            const file_path = utils.extractTag(loc_block, "file_path") orelse "";
-            const line = utils.extractTag(loc_block, "line") orelse "0";
+            const file_path = utils.extract_tag(loc_block, "file_path") orelse "";
+            const line = utils.extract_tag(loc_block, "line") orelse "0";
 
             std.debug.print("  \x1b[36m→\x1b[0m {s}:{s}\n", .{ file_path, line });
             count += 1;
@@ -456,8 +456,8 @@ pub fn displayLspReferencesResult(result_xml: []const u8, tool_name: []const u8)
 
 /// Display lsp_hover result
 pub fn displayLspHoverResult(result_xml: []const u8, tool_name: []const u8) void {
-    const found = utils.extractTag(result_xml, "found") orelse "false";
-    const contents = utils.extractTag(result_xml, "contents") orelse "";
+    const found = utils.extract_tag(result_xml, "found") orelse "false";
+    const contents = utils.extract_tag(result_xml, "contents") orelse "";
 
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
@@ -486,8 +486,8 @@ pub fn displayLspHoverResult(result_xml: []const u8, tool_name: []const u8) void
 
 /// Display lsp_workspace_symbol result
 pub fn displayLspWorkspaceSymbolResult(result_xml: []const u8, tool_name: []const u8) void {
-    const found = utils.extractTag(result_xml, "found") orelse "false";
-    const symbols = utils.extractTag(result_xml, "symbols") orelse "";
+    const found = utils.extract_tag(result_xml, "found") orelse "false";
+    const symbols = utils.extract_tag(result_xml, "symbols") orelse "";
 
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
@@ -502,10 +502,10 @@ pub fn displayLspWorkspaceSymbolResult(result_xml: []const u8, tool_name: []cons
             const sym_block = symbols[sym_start + "<symbol>".len .. sym_end];
             pos = sym_end + "</symbol>".len;
 
-            const name = utils.extractTag(sym_block, "name") orelse "";
-            const kind = utils.extractTag(sym_block, "kind") orelse "";
-            const file_path = utils.extractTag(sym_block, "file_path") orelse "";
-            const line = utils.extractTag(sym_block, "line") orelse "0";
+            const name = utils.extract_tag(sym_block, "name") orelse "";
+            const kind = utils.extract_tag(sym_block, "kind") orelse "";
+            const file_path = utils.extract_tag(sym_block, "file_path") orelse "";
+            const line = utils.extract_tag(sym_block, "line") orelse "0";
 
             const kind_icon: []const u8 = switch (std.fmt.parseInt(u32, kind, 10) catch 0) {
                 1 => "\x1b[33m⚙\x1b[0m", // File
@@ -538,8 +538,8 @@ pub fn displayLspWorkspaceSymbolResult(result_xml: []const u8, tool_name: []cons
 
 /// Display lsp_document_symbol result
 pub fn displayLspDocumentSymbolResult(result_xml: []const u8, tool_name: []const u8) void {
-    const found = utils.extractTag(result_xml, "found") orelse "false";
-    const symbols = utils.extractTag(result_xml, "symbols") orelse "";
+    const found = utils.extract_tag(result_xml, "found") orelse "false";
+    const symbols = utils.extract_tag(result_xml, "symbols") orelse "";
 
     std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
@@ -556,9 +556,9 @@ pub fn displayLspDocumentSymbolResult(result_xml: []const u8, tool_name: []const
             const sym_block = symbols[sym_start + "<symbol>".len .. sym_end];
             pos = sym_end + "</symbol>".len;
 
-            const name = utils.extractTag(sym_block, "name") orelse "";
-            const kind = utils.extractTag(sym_block, "kind") orelse "";
-            const line = utils.extractTag(sym_block, "line") orelse "0";
+            const name = utils.extract_tag(sym_block, "name") orelse "";
+            const kind = utils.extract_tag(sym_block, "kind") orelse "";
+            const line = utils.extract_tag(sym_block, "line") orelse "0";
 
             const kind_color: []const u8 = switch (std.fmt.parseInt(u32, kind, 10) catch 0) {
                 1 => "\x1b[33m", // File
@@ -592,7 +592,7 @@ pub fn displayLspDocumentSymbolResult(result_xml: []const u8, tool_name: []const
 
 /// Generic fallback for unknown tools
 pub fn displayGenericResult(result_xml: []const u8, tool_name: []const u8, max_result_len: usize) void {
-    const result = utils.extractTag(result_xml, "result") orelse result_xml;
+    const result = utils.extract_tag(result_xml, "result") orelse result_xml;
     const truncated = result.len > max_result_len;
     const display = if (truncated) result[0..max_result_len] else result;
 

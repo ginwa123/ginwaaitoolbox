@@ -124,46 +124,15 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
     defer buf.deinit(allocator);
     var w = buf.writer(allocator);
 
-    // Determine event type based on presence of tool_call_id
-    const is_tool_result = input.tool_call_id != null;
+    _ = try w.writeAll("<response>");
+    try writeTag(w, "session_id", input.session_id);
+    try writeTag(w, "model", input.model);
+    try writeTag(w, "cwd", input.cwd);
+    if (input.content) |v| try writeTag(w, "content", v);
+    if (input.reasoning_content) |v| try writeTag(w, "reasoning_content", v);
+    try writeTag(w, "role", input.role orelse "assistant");
+    if (input.finish_reason) |v| try writeTag(w, "finish_reason", v);
 
-    // Write opening tag
-    if (is_tool_result) {
-        _ = try w.writeAll("<tool_result>");
-    } else {
-        _ = try w.writeAll("<response>");
-    }
-
-    // Write response-only fields (not present in tool_result)
-    if (!is_tool_result) {
-        try writeTag(w, "session_id", input.session_id);
-        try writeTag(w, "model", input.model);
-        try writeTag(w, "cwd", input.cwd);
-    }
-
-    // Write content field (different tag name for tool_result)
-    if (input.content) |v| {
-        if (is_tool_result) {
-            try writeTag(w, "result", v);
-        } else {
-            try writeTag(w, "content", v);
-        }
-    }
-
-    // Write optional fields
-    if (input.reasoning_content) |v| {
-        try writeTag(w, "reasoning_content", v);
-    }
-
-    if (!is_tool_result) {
-        try writeTag(w, "role", input.role orelse "assistant");
-    }
-
-    if (input.finish_reason) |v| {
-        try writeTag(w, "finish_reason", v);
-    }
-
-    // Write tool calls (only in response events)
     if (input.tool_calls) |calls| {
         _ = try w.writeAll("<tool_calls>");
         for (calls) |call| {
@@ -176,45 +145,22 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
         _ = try w.writeAll("</tool_calls>");
     }
 
-    // Write tool metadata fields
-    if (input.tool_call_id) |v| {
-        try writeTag(w, "tool_call_id", v);
-    }
+    if (input.tool_call_id) |v| try writeTag(w, "tool_call_id", v);
+    if (input.tool_name) |v| try writeTag(w, "tool_name", v);
+    if (input.agent_name) |v| try writeTag(w, "agent_name", v);
+    if (input.session_name) |v| try writeTag(w, "session_name", v);
 
-    if (input.tool_name) |v| {
-        try writeTag(w, "tool_name", v);
-    }
+    _ = try w.print("<loop_index>{d}</loop_index>", .{input.loop_index});
+    _ = try w.print("<temperature>{d}</temperature>", .{input.temperature});
+    _ = try w.print("<is_thinking>{}</is_thinking>", .{input.is_thinking});
+    _ = try w.print("<is_input>{}</is_input>", .{input.is_input});
+    _ = try w.print("<is_output>{}</is_output>", .{input.is_output});
 
-    // Write response-only fields (metadata)
-    if (!is_tool_result) {
-        if (input.agent_name) |v| {
-            try writeTag(w, "agent_name", v);
-        }
+    if (input.parent_session_id) |v| try writeTag(w, "parent_session_id", v);
+    if (input.parent_id) |v| try writeTag(w, "parent_id", v);
 
-        if (input.session_name) |v| {
-            try writeTag(w, "session_name", v);
-        }
+    _ = try w.writeAll("</response>");
 
-        _ = try w.print("<loop_index>{d}</loop_index>", .{input.loop_index});
-        _ = try w.print("<temperature>{d}</temperature>", .{input.temperature});
-        _ = try w.print("<is_thinking>{}</is_thinking>", .{input.is_thinking});
-        _ = try w.print("<is_input>{}</is_input>", .{input.is_input});
-        _ = try w.print("<is_output>{}</is_output>", .{input.is_output});
-
-        if (input.parent_session_id) |v| {
-            try writeTag(w, "parent_session_id", v);
-        }
-
-        if (input.parent_id) |v| {
-            try writeTag(w, "parent_id", v);
-        }
-
-        _ = try w.writeAll("</response>");
-    } else {
-        _ = try w.writeAll("</tool_result>");
-    }
-
-    // Send the event via SSE manager
     const event = http_server.SseEvent{
         .event_type = "response",
         .data = buf.items,

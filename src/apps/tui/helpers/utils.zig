@@ -11,7 +11,7 @@ pub fn trim(s: []const u8) []const u8 {
 
 /// Extract content between XML-like tags
 /// Uses stack buffer for better performance
-pub fn extractTag(xml: []const u8, tag: []const u8) ?[]const u8 {
+pub fn extract_tag(xml: []const u8, tag: []const u8) ?[]const u8 {
     // Use stack buffer instead of heap allocation for better performance
     var close_tag_buf: [128]u8 = undefined;
     var open_tag_buf: [128]u8 = undefined;
@@ -43,5 +43,5 @@ pub fn extractContentFromResponse(response_xml: []const u8) ?[]const u8 {
         }
     }
     // Fallback: try the old method
-    return extractTag(response_xml, "content");
+    return extract_tag(response_xml, "content");
 }

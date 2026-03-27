@@ -96,12 +96,18 @@ pub fn extract_sse_data(allocator: std.mem.Allocator, sse_text: []const u8) ![]u
         // Skip event type lines - we just want the data
         if (std.mem.startsWith(u8, trimmed, "event:")) continue;
 
-        // Pass through raw content directly (no "data:" prefix to strip)
-        debug.logVerbose("extract_sse_data: found content line, len={d}", .{trimmed.len});
+        // Strip "data:" prefix if present
+        var content = trimmed;
+        if (std.mem.startsWith(u8, content, "data:")) {
+            content = std.mem.trimLeft(u8, content["data:".len..], " \t");
+        }
+
+        // Pass through raw content after stripping data: prefix
+        debug.logVerbose("extract_sse_data: found content line, len={d}", .{content.len});
         if (out.items.len > 0) {
             try out.append(allocator, '\n');
         }
-        try out.appendSlice(allocator, trimmed);
+        try out.appendSlice(allocator, content);
     }
 
     debug.logVerbose("extract_sse_data: extracted {d} bytes", .{out.items.len});
