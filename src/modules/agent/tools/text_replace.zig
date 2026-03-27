@@ -15,18 +15,9 @@ pub const TextReplaceInput = struct {
 };
 
 pub const TextReplaceResult = struct {
-    path: []u8,
-    old_str: []u8,
-    new_str: []u8,
-    sha256_before: []u8,
     sha256_after: []u8,
-    replaced_at_byte: usize,
 
     pub fn deinit(self: TextReplaceResult, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
-        allocator.free(self.old_str);
-        allocator.free(self.new_str);
-        allocator.free(self.sha256_before);
         allocator.free(self.sha256_after);
     }
 };
@@ -86,9 +77,6 @@ pub fn text_replaceWithHash(
         return TextReplaceError.OldStrNotUnique;
     }
 
-    // Transfer ownership of sha256_hex to sha256_before (no longer need to free separately)
-    const sha256_before = sha256_hex;
-
     // Build new file content: before + new_str + after
     var new_content = std.ArrayList(u8).empty;
     errdefer new_content.deinit(allocator);
@@ -111,29 +99,14 @@ pub fn text_replaceWithHash(
     new_content.deinit(allocator);
 
     return TextReplaceResult{
-        .path = try allocator.dupe(u8, path),
-        .old_str = try allocator.dupe(u8, old_str),
-        .new_str = try allocator.dupe(u8, new_str),
-        .sha256_before = sha256_before,
         .sha256_after = sha256_after,
-        .replaced_at_byte = first,
     };
 }
 
 pub fn textReplaceToStringXML(allocator: std.mem.Allocator, result: TextReplaceResult) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
-        \\<path>{s}</path>
-        \\<replaced_at_byte>{d}</replaced_at_byte>
-        \\<old_str>{s}</old_str>
-        \\<new_str>{s}</new_str>
-        \\<sha256_before>{s}</sha256_before>
         \\<sha256_after>{s}</sha256_after>
     , .{
-        result.path,
-        result.replaced_at_byte,
-        result.old_str,
-        result.new_str,
-        result.sha256_before,
         result.sha256_after,
     });
 }

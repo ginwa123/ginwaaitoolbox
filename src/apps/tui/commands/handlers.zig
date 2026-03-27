@@ -1,13 +1,7 @@
 const std = @import("std");
 const command_defs = @import("command_defs.zig");
-const tui_text = @import("tui-text");
+const globals = @import("../globals.zig");
 const App = @import("../main.zig").App;
-
-const reset = tui_text.ansi.reset;
-const bold = tui_text.ansi.bold;
-const dim = tui_text.ansi.dim;
-const green = tui_text.ansi.green;
-const yellow = tui_text.ansi.yellow;
 
 /// Execute a command by name
 /// Returns true if the app should exit, false otherwise
@@ -70,7 +64,7 @@ fn commandSessions(app: *App) !bool {
     const streaming = @import("../network/streaming.zig");
     const response = streaming.readResponseAndStreamGetSessions(app) catch "";
     defer app.allocator.free(response);
-    if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ dim, reset });
+    if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ globals.dim, globals.reset });
     return false;
 }
 
@@ -79,19 +73,19 @@ fn commandExit(_: *App) !bool {
 }
 
 fn commandHelp(_: *App) !bool {
-    std.debug.print("\r\n{s}Available commands:{s}\r\n", .{ bold, reset });
+    std.debug.print("\r\n{s}Available commands:{s}\r\n", .{ globals.bold, globals.reset });
     const commands = command_defs.getCommands();
     for (commands) |cmd| {
-        std.debug.print("  {s}{s:<12}{s}{s} - {s}\r\n", .{ bold, cmd.name, reset, dim, cmd.description });
+        std.debug.print("  {s}{s:<12}{s}{s} - {s}\r\n", .{ globals.bold, cmd.name, globals.reset, globals.dim, cmd.description });
     }
-    std.debug.print("{s}Type / followed by a command name to execute{s}\r\n", .{ dim, reset });
+    std.debug.print("{s}Type / followed by a command name to execute{s}\r\n", .{ globals.dim, globals.reset });
     return false;
 }
 
 fn commandClear(app: *App) !bool {
-    // Clear screen and reset cursor
-    tui_text.print("\x1b[2J\x1b[H", .{});
-    std.debug.print("{s}>{s} ", .{ bold, reset });
+    // Clear screen and globals.reset cursor
+    std.debug.print("\x1b[2J\x1b[H", .{});
+    std.debug.print("{s}>{s} ", .{ globals.bold, globals.reset });
     _ = app;
     return false;
 }
@@ -101,73 +95,73 @@ fn commandPing(app: *App) !bool {
     const messaging = @import("../network/messaging.zig");
     const should_reconnect = messaging.sendPingCommand(app) catch false;
     if (should_reconnect) {
-        std.debug.print("{s}Server session stale, will reconnect on next request{s}\r\n", .{ dim, reset });
+        std.debug.print("{s}Server session stale, will reconnect on next request{s}\r\n", .{ globals.dim, globals.reset });
     } else {
-        std.debug.print("{s}Server is responsive{s}\r\n", .{ dim, reset });
+        std.debug.print("{s}Server is responsive{s}\r\n", .{ globals.dim, globals.reset });
     }
     return false;
 }
 
 /// Show the current AI model being used
 fn commandModel(app: *App) !bool {
-    std.debug.print("\r\n{s}Current AI Model:{s}\r\n", .{ bold, reset });
+    std.debug.print("\r\n{s}Current AI Model:{s}\r\n", .{ globals.bold, globals.reset });
     
     // Read config file directly
     const config_path = try getConfigPath(app.allocator);
     defer app.allocator.free(config_path);
     
     const content = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
-        std.debug.print("{s}Error opening config: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        std.debug.print("{s}Error opening config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
     defer content.close();
     
     const json_str = content.readToEndAlloc(app.allocator, 4096) catch |err| {
-        std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
     defer app.allocator.free(json_str);
     
     // Parse JSON to find model
     const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, json_str, .{}) catch |err| {
-        std.debug.print("{s}Error parsing config JSON: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        std.debug.print("{s}Error parsing config JSON: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
     defer parsed.deinit();
     
     const model = parsed.value.object.get("model") orelse {
-        std.debug.print("{s}No model found in config{s}\r\n", .{ yellow, reset });
+        std.debug.print("{s}No model found in config{s}\r\n", .{ globals.yellow, globals.reset });
         return false;
     };
     
     const model_str = model.string;
-    std.debug.print("  {s}Model:{s} {s}{s}{s}\r\n", .{ dim, reset, green, model_str, reset });
+    std.debug.print("  {s}Model:{s} {s}{s}{s}\r\n", .{ globals.dim, globals.reset, globals.green, model_str, globals.reset });
     return false;
 }
 
 /// Show configuration settings (with sensitive data masked)
 fn commandConfig(app: *App) !bool {
-    std.debug.print("\r\n{s}Configuration:{s}\r\n", .{ bold, reset });
+    std.debug.print("\r\n{s}Configuration:{s}\r\n", .{ globals.bold, globals.reset });
     
     // Read config file directly
     const config_path = try getConfigPath(app.allocator);
     defer app.allocator.free(config_path);
     
     const content = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
-        std.debug.print("{s}Error opening config: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        std.debug.print("{s}Error opening config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
     defer content.close();
     
     const json_str = content.readToEndAlloc(app.allocator, 4096) catch |err| {
-        std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
     defer app.allocator.free(json_str);
     
     // Parse JSON to extract config values
     const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, json_str, .{}) catch |err| {
-        std.debug.print("{s}Error parsing config JSON: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        std.debug.print("{s}Error parsing config JSON: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
     defer parsed.deinit();
@@ -194,15 +188,15 @@ fn commandConfig(app: *App) !bool {
     }
     defer app.allocator.free(masked_key);
 
-    std.debug.print("  {s}API Key:{s}     {s}{s}{s}\r\n", .{ dim, reset, green, masked_key, reset });
-    std.debug.print("  {s}Model:{s}       {s}{s}{s}\r\n", .{ dim, reset, green, model.string, reset });
-    std.debug.print("  {s}Base URL:{s}    {s}{s}{s}\r\n", .{ dim, reset, green, base_url.string, reset });
-    std.debug.print("  {s}Compaction:{s}  {s}{d} KB{s}\r\n", .{ dim, reset, green, compaction.integer, reset });
+    std.debug.print("  {s}API Key:{s}     {s}{s}{s}\r\n", .{ globals.dim, globals.reset, globals.green, masked_key, globals.reset });
+    std.debug.print("  {s}Model:{s}       {s}{s}{s}\r\n", .{ globals.dim, globals.reset, globals.green, model.string, globals.reset });
+    std.debug.print("  {s}Base URL:{s}    {s}{s}{s}\r\n", .{ globals.dim, globals.reset, globals.green, base_url.string, globals.reset });
+    std.debug.print("  {s}Compaction:{s}  {s}{d} KB{s}\r\n", .{ globals.dim, globals.reset, globals.green, compaction.integer, globals.reset });
     
     if (mcp != null) {
-        std.debug.print("  {s}MCP Servers:{s} {s}enabled{s}\r\n", .{ dim, reset, green, reset });
+        std.debug.print("  {s}MCP Servers:{s} {s}enabled{s}\r\n", .{ globals.dim, globals.reset, globals.green, globals.reset });
     } else {
-        std.debug.print("  {s}MCP Servers:{s} {s}disabled{s}\r\n", .{ dim, reset, yellow, reset });
+        std.debug.print("  {s}MCP Servers:{s} {s}disabled{s}\r\n", .{ globals.dim, globals.reset, globals.yellow, globals.reset });
     }
     
     return false;
@@ -210,12 +204,12 @@ fn commandConfig(app: *App) !bool {
 
 /// Show current session information
 fn commandSession(app: *App) !bool {
-    std.debug.print("\r\n{s}Session Info:{s}\r\n", .{ bold, reset });
-    std.debug.print("  {s}Session ID:{s} {s}{s}{s}\r\n", .{ dim, reset, green, app.session_id, reset });
+    std.debug.print("\r\n{s}Session Info:{s}\r\n", .{ globals.bold, globals.reset });
+    std.debug.print("  {s}Session ID:{s} {s}{s}{s}\r\n", .{ globals.dim, globals.reset, globals.green, app.session_id, globals.reset });
     
     var cwd_buf: [4096]u8 = undefined;
     const cwd = std.posix.getcwd(&cwd_buf) catch "unknown";
-    std.debug.print("  {s}Working Dir:{s} {s}{s}{s}\r\n", .{ dim, reset, green, cwd, reset });
+    std.debug.print("  {s}Working Dir:{s} {s}{s}{s}\r\n", .{ globals.dim, globals.reset, globals.green, cwd, globals.reset });
     
     return false;
 }
@@ -223,37 +217,37 @@ fn commandSession(app: *App) !bool {
 /// Enable debug mode for AI agent debugging
 fn commandEnableDebug(app: *App) !bool {
     app.verbose = true;
-    std.debug.print("\r\n{s}╔════════════════════════════════════════╗{s}\r\n", .{ bold, reset });
-    std.debug.print("{s}║       {s}✓ DEBUG MODE ENABLED{s}             {s}║{s}\r\n", .{ bold, green, reset, bold, reset });
-    std.debug.print("{s}╚════════════════════════════════════════╝{s}\r\n", .{ bold, reset });
-    std.debug.print("\r\n{s}Debug logging is now active. The following will be displayed:{s}\r\n", .{ dim, reset });
-    std.debug.print("  {s}• Network requests and responses{s}\r\n", .{ dim, reset });
-    std.debug.print("  {s}• SSE message parsing details{s}\r\n", .{ dim, reset });
-    std.debug.print("  {s}• Tool calls and results{s}\r\n", .{ dim, reset });
-    std.debug.print("  {s}• HTTP headers and chunked transfer details{s}\r\n", .{ dim, reset });
-    std.debug.print("\r\n{s}Use {s}/disabledebug{s} to turn off debug mode.{s}\r\n", .{ dim, bold, reset, dim });
+    std.debug.print("\r\n{s}╔════════════════════════════════════════╗{s}\r\n", .{ globals.bold, globals.reset });
+    std.debug.print("{s}║       {s}✓ DEBUG MODE ENABLED{s}             {s}║{s}\r\n", .{ globals.bold, globals.green, globals.reset, globals.bold, globals.reset });
+    std.debug.print("{s}╚════════════════════════════════════════╝{s}\r\n", .{ globals.bold, globals.reset });
+    std.debug.print("\r\n{s}Debug logging is now active. The following will be displayed:{s}\r\n", .{ globals.dim, globals.reset });
+    std.debug.print("  {s}• Network requests and responses{s}\r\n", .{ globals.dim, globals.reset });
+    std.debug.print("  {s}• SSE message parsing details{s}\r\n", .{ globals.dim, globals.reset });
+    std.debug.print("  {s}• Tool calls and results{s}\r\n", .{ globals.dim, globals.reset });
+    std.debug.print("  {s}• HTTP headers and chunked transfer details{s}\r\n", .{ globals.dim, globals.reset });
+    std.debug.print("\r\n{s}Use {s}/disabledebug{s} to turn off debug mode.{s}\r\n", .{ globals.dim, globals.bold, globals.reset, globals.dim });
     return false;
 }
 
 /// Disable debug mode
 fn commandDisableDebug(app: *App) !bool {
     app.verbose = false;
-    std.debug.print("\r\n{s}╔════════════════════════════════════════╗{s}\r\n", .{ bold, reset });
-    std.debug.print("{s}║       {s}✗ DEBUG MODE DISABLED{s}           {s}║{s}\r\n", .{ bold, yellow, reset, bold, reset });
-    std.debug.print("{s}╚════════════════════════════════════════╝{s}\r\n", .{ bold, reset });
-    std.debug.print("\r\n{s}Debug logging is now off.{s}\r\n", .{ dim, reset });
-    std.debug.print("\r\n{s}Use {s}/enabledebug{s} to turn on debug mode.{s}\r\n", .{ dim, bold, reset, dim });
+    std.debug.print("\r\n{s}╔════════════════════════════════════════╗{s}\r\n", .{ globals.bold, globals.reset });
+    std.debug.print("{s}║       {s}✗ DEBUG MODE DISABLED{s}           {s}║{s}\r\n", .{ globals.bold, globals.yellow, globals.reset, globals.bold, globals.reset });
+    std.debug.print("{s}╚════════════════════════════════════════╝{s}\r\n", .{ globals.bold, globals.reset });
+    std.debug.print("\r\n{s}Debug logging is now off.{s}\r\n", .{ globals.dim, globals.reset });
+    std.debug.print("\r\n{s}Use {s}/enabledebug{s} to turn on debug mode.{s}\r\n", .{ globals.dim, globals.bold, globals.reset, globals.dim });
     return false;
 }
 
 /// Trigger manual conversation history compaction
 fn commandCompact(app: *App) !bool {
-    std.debug.print("\r\n{s}Compacting conversation history...{s}\r\n", .{ dim, reset });
+    std.debug.print("\r\n{s}Compacting conversation history...{s}\r\n", .{ globals.dim, globals.reset });
     const messaging = @import("../network/messaging.zig");
     messaging.sendCompactCommand(app) catch |err| {
-        std.debug.print("{s}Error sending compact command: {s}{s}\r\n", .{ yellow, @errorName(err), reset });
+        std.debug.print("{s}Error sending compact command: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
-    std.debug.print("{s}Compaction request sent. The server will process it.{s}\r\n", .{ green, reset });
+    std.debug.print("{s}Compaction request sent. The server will process it.{s}\r\n", .{ globals.green, globals.reset });
     return false;
 }

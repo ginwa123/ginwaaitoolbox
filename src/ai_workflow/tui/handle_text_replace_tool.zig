@@ -33,7 +33,6 @@ pub fn handle_text_replace_tool_run(
     // Convert text_replace result to string format
     const res_replace = try text_replace_tool.textReplaceToStringXML(allocator, text_replace_result);
     // Caller is responsible for freeing this returned string
-    text_replace_result.deinit(allocator);
 
     return res_replace;
 }

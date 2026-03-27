@@ -67,12 +67,16 @@ pub fn decode_chuncked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
 
 /// SSE parser
 ///
-/// After chunked decode, SSE lines look like:
-///   data: {"event":"chunk","data":"<xml escaped>"}\n\n
-///   : keepalive\n\n
+/// After chunked decode, SSE events look like:
+///   event: <type>
+///   <raw xml content>
 ///
-/// This extracts and unescapes the "data" JSON field value from each data: line,
-/// concatenating all of them into one XML string.
+///
+///   : keepalive
+///
+///
+/// This extracts the raw XML content from each event, skipping
+/// the event: line and comment lines.
 pub fn extract_sse_data(allocator: std.mem.Allocator, sse_text: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -92,16 +96,12 @@ pub fn extract_sse_data(allocator: std.mem.Allocator, sse_text: []const u8) ![]u
         // Skip event type lines - we just want the data
         if (std.mem.startsWith(u8, trimmed, "event:")) continue;
 
-        // Extract data lines
-        if (std.mem.startsWith(u8, trimmed, "data:")) {
-            const payload = trimmed["data:".len..];
-            debug.logVerbose("extract_sse_data: found data line, payload_len={d}", .{payload.len});
-            // Add newline separator between data lines (SSE spec)
-            if (out.items.len > 0) {
-                try out.append(allocator, '\n');
-            }
-            try out.appendSlice(allocator, payload);
+        // Pass through raw content directly (no "data:" prefix to strip)
+        debug.logVerbose("extract_sse_data: found content line, len={d}", .{trimmed.len});
+        if (out.items.len > 0) {
+            try out.append(allocator, '\n');
         }
+        try out.appendSlice(allocator, trimmed);
     }
 
     debug.logVerbose("extract_sse_data: extracted {d} bytes", .{out.items.len});

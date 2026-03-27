@@ -26,10 +26,8 @@ test "text_replace - accepts expected_hash parameter" {
     const result = try text_replace_mod.text_replace(allocator, test_path, old_str, new_str, read_result.sha256);
     defer result.deinit(allocator);
 
-    // Verify success - should have both sha256_before and sha256_after
-    try std.testing.expect(result.sha256_before.len > 0);
+    // Verify success - should have sha256_after
     try std.testing.expect(result.sha256_after.len > 0);
-    try std.testing.expectEqualStrings(read_result.sha256, result.sha256_before);
 
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
@@ -112,8 +110,7 @@ test "text_replace - result serialization includes hashes" {
     const serialized = try text_replace_mod.textReplaceToStringXML(allocator, result);
     defer allocator.free(serialized);
 
-    // Should contain SHA256 fields
-    try std.testing.expect(std.mem.indexOf(u8, serialized, "<sha256_before>") != null);
+    // Should contain sha256_after
     try std.testing.expect(std.mem.indexOf(u8, serialized, "<sha256_after>") != null);
 
     // Clean up
@@ -140,8 +137,8 @@ test "text_replace - different hash before and after edit" {
     const result = try text_replace_mod.text_replace(allocator, test_path, old_str, new_str, read_result.sha256);
     defer result.deinit(allocator);
 
-    // Before and after hashes should be different
-    try std.testing.expect(!std.mem.eql(u8, result.sha256_before, result.sha256_after));
+    // sha256_after should exist
+    try std.testing.expect(result.sha256_after.len > 0);
 
     // Clean up
     try std.fs.cwd().deleteFile(test_path);

@@ -1,6 +1,5 @@
 const std = @import("std");
 const globals = @import("../globals.zig");
-const tui_text = @import("tui-text");
 const command_defs = @import("../commands/command_defs.zig");
 const command_handlers = @import("../commands/handlers.zig");
 const escape = @import("escape.zig");
@@ -17,10 +16,10 @@ pub fn clearCompletions(app: *App) void {
     if (app.state.last_match_count == 0) return;
     var i: usize = 0;
     while (i < app.state.last_match_count) : (i += 1) {
-        tui_text.print("\x1b[1B", .{});
-        tui_text.print("\x1b[2K", .{});
+        std.debug.print("\x1b[1B", .{});
+        std.debug.print("\x1b[2K", .{});
     }
-    tui_text.print("\x1b[{}A", .{app.state.last_match_count});
+    std.debug.print("\x1b[{}A", .{app.state.last_match_count});
     app.state.visible = false;
     app.state.last_match_count = 0;
 }
@@ -30,22 +29,22 @@ pub fn renderCompletions(app: *App) void {
     if (app.state.last_match_count > 0) {
         var i: usize = 0;
         while (i < app.state.last_match_count) : (i += 1) {
-            tui_text.print("\x1b[1B", .{});
-            tui_text.print("\x1b[2K", .{});
+            std.debug.print("\x1b[1B", .{});
+            std.debug.print("\x1b[2K", .{});
         }
-        tui_text.print("\x1b[{}A", .{app.state.last_match_count});
+        std.debug.print("\x1b[{}A", .{app.state.last_match_count});
     }
 
     // Show command bar at bottom with descriptions
-    tui_text.print("\x1b[s", .{});
+    std.debug.print("\x1b[s", .{});
 
     // Move to bottom of screen
-    tui_text.print("\x1b[999;1H", .{});
-    tui_text.print("\x1b[2K", .{}); // Clear the line
+    std.debug.print("\x1b[999;1H", .{});
+    std.debug.print("\x1b[2K", .{}); // Clear the line
 
     // Draw command bar border
-    tui_text.print("\x1b[7m", .{}); // Inverse colors
-    tui_text.print(" Commands: ", .{});
+    std.debug.print("\x1b[7m", .{}); // Inverse colors
+    std.debug.print(" Commands: ", .{});
 
     // Print each matching command with its description
     const commands = command_defs.getCommands();
@@ -60,20 +59,19 @@ pub fn renderCompletions(app: *App) void {
         }
 
         if (i == app.state.selected) {
-            tui_text.print("\x1b[0m\x1b[42m {s} ", .{cmd_name}); // Green highlight
-            tui_text.print("\x1b[90m{s}\x1b[0m ", .{desc});
-            tui_text.print("\x1b[7m", .{});
+            std.debug.print("\x1b[0m\x1b[42m {s} ", .{cmd_name}); // Green highlight
+            std.debug.print("\x1b[90m{s}\x1b[0m ", .{desc});
+            std.debug.print("\x1b[7m", .{});
         } else {
-            tui_text.print("\x1b[0m {s} ", .{cmd_name});
-            tui_text.print("\x1b[90m{s}\x1b[0m ", .{desc});
+            std.debug.print("\x1b[0m {s} ", .{cmd_name});
+            std.debug.print("\x1b[90m{s}\x1b[0m ", .{desc});
         }
     }
 
     // Restore cursor position
-    tui_text.print("\x1b[u", .{});
+    std.debug.print("\x1b[u", .{});
 
     app.state.last_match_count = app.state.matches.items.len;
-    std.debug.print("\x1b[u", .{});
 }
 
 /// Handle keyboard input

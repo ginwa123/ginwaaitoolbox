@@ -30,11 +30,6 @@ test "text_replace - basic replace single occurrence" {
     const expected = "Goodbye, World!\n";
     try std.testing.expectEqualStrings(expected, read_content);
     
-    // Verify result fields
-    try std.testing.expectEqual(@as(usize, 0), result.replaced_at_byte);
-    try std.testing.expectEqualStrings(old_str, result.old_str);
-    try std.testing.expectEqualStrings(new_str, result.new_str);
-    
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
 }
@@ -134,9 +129,8 @@ test "text_replace - result serialization" {
     const serialized = try text_replace_mod.textReplaceToStringXML(allocator, result);
     defer allocator.free(serialized);
     
-    // Should contain path and replaced_at_byte
-    try std.testing.expect(std.mem.indexOf(u8, serialized, test_path) != null);
-    try std.testing.expect(std.mem.indexOf(u8, serialized, "<replaced_at_byte>") != null);
+    // Should contain sha256_after
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "<sha256_after>") != null);
     
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
@@ -228,8 +222,8 @@ test "text_replace - replace at end of file" {
     const result = try text_replace_mod.text_replace(allocator, test_path, "end", "FINISH", read_result.sha256);
     defer result.deinit(allocator);
     
-    // Verify replaced_at_byte points to end
-    try std.testing.expectEqual(@as(usize, 6), result.replaced_at_byte);
+    // Verify sha256_after is set
+    try std.testing.expect(result.sha256_after.len > 0);
     
     // Verify content
     const file = try std.fs.cwd().openFile(test_path, .{});

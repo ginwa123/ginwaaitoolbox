@@ -35,7 +35,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
         return;
     };
 
-    const connected_data = std.fmt.allocPrint(ctx.server.allocator, "event: connected\ndata: {{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id}) catch {
+    const connected_data = std.fmt.allocPrint(ctx.server.allocator, "event: connected\n{{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id}) catch {
         std.log.err("SSE: Failed to format connected event", .{});
         ctx.server.sse_manager.remove(ctx.session_id);
         return;

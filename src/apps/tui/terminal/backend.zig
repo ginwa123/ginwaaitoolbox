@@ -1,9 +1,5 @@
 const std = @import("std");
-const tui_text = @import("tui-text");
-
-const green = tui_text.ansi.green;
-const yellow = tui_text.ansi.yellow;
-const reset = tui_text.ansi.reset;
+const globals = @import("../globals.zig");
 
 /// Spawn the backend server as a daemon process
 pub fn spawnBackend(verbose: bool, port: u16, process_name: []const u8) !void {
@@ -28,11 +24,11 @@ pub fn spawnBackend(verbose: bool, port: u16, process_name: []const u8) !void {
     }
 
     if (already_running) {
-        if (verbose) std.debug.print("{s}Backend already running, skipping spawn{s}\n", .{ green, reset });
+        if (verbose) std.debug.print("{s}Backend already running, skipping spawn{s}\n", .{ globals.green, globals.reset });
         return;
     }
 
-    if (verbose) std.debug.print("{s}Spawning backend on port {d}{s}\n", .{ yellow, port, reset });
+    if (verbose) std.debug.print("{s}Spawning backend on port {d}{s}\n", .{ globals.yellow, port, globals.reset });
 
     // Fork a child process to run the backend
     const c = @cImport({

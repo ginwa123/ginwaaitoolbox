@@ -1,5 +1,4 @@
 const std = @import("std");
-const debug = @import("../network/debug.zig");
 
 /// XML type enum for identifying source of extracted content
 pub const XmlType = enum {
@@ -16,88 +15,40 @@ pub const ContentResult = struct {
 
 /// Result structure containing extracted content and finish reason
 pub const ExtractResult = struct {
-    content_results: std.ArrayList(ContentResult),
+    content_results: std.ArrayListUnmanaged(ContentResult),
     finish_reason: ?[]const u8,
 };
 
-/// Extract content from XML - handles both <response> and <tool_result> tags
-/// Also extracts inner <content> tags from the extracted content
-/// Finds all <content>...</content> tags and the last <finish_reason>...</finish_reason>
-/// Returns null if no content found
-pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) ?ExtractResult {
-    debug.logVerbose("extract_content_result: parsing {d} bytes of XML", .{xml.len});
-    var results = std.ArrayList(ContentResult).empty;
+/// Strip <think>...</think> block (if any) and trim surrounding whitespace.
+/// Only strips ONE leading think block — the model always emits it first.
+fn strip_think_blocks(text: []const u8) []const u8 {
+    const think_open = "<think>";
+    const think_close = "</think>";
+
+    const trimmed = std.mem.trimLeft(u8, text, " \t\n\r");
+
+    if (std.mem.startsWith(u8, trimmed, think_open)) {
+        const close_pos = std.mem.indexOf(u8, trimmed, think_close) orelse
+            return std.mem.trim(u8, text, " \t\n\r");
+        const after = trimmed[close_pos + think_close.len ..];
+        return std.mem.trim(u8, after, " \t\n\r");
+    }
+
+    return std.mem.trim(u8, text, " \t\n\r");
+}
+
+/// Extract content from XML - handles both <response> and <tool_result> tags.
+/// Strips <think> blocks from extracted content.
+/// Returns null if no matching tags found.
+pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?ExtractResult {
+    var results = std.ArrayListUnmanaged(ContentResult){};
     errdefer results.deinit(allocator);
 
-    // Try both <response> and <tool_result> tags
-    const open_response = "<response>";
-    const close_response = "</response>";
-    const open_tool_result = "<tool_result>";
-    const close_tool_result = "</tool_result>";
 
-    // Extract from <response> tags
-    var pos: usize = 0;
-    while (pos < xml.len) {
-        const content_start = std.mem.indexOfPos(u8, xml, pos, open_response) orelse break;
-        const content_end = std.mem.indexOfPos(u8, xml, content_start, close_response) orelse break;
-        const inner_content = xml[content_start + open_response.len .. content_end];
-        pos = content_end + close_response.len;
+    try extract_tag_content(allocator, &results, xml, "<response>", "</response>", .response);
+    try extract_tag_content(allocator, &results, xml, "<tool_result>", "</tool_result>", .tool_result);
 
-        if (inner_content.len > 0) {
-            // First, try to extract <content> tags from the inner content
-            var extracted_something = false;
-            var inner_pos: usize = 0;
-            while (inner_pos < inner_content.len) {
-                const c_start = std.mem.indexOfPos(u8, inner_content, inner_pos, "<content>") orelse break;
-                const c_end = std.mem.indexOfPos(u8, inner_content, c_start, "</content>") orelse break;
-                const c_text = inner_content[c_start + "<content>".len .. c_end];
-                inner_pos = c_end + "</content>".len;
-
-                if (c_text.len > 0) {
-                    results.append(allocator, .{ .content = c_text, .xml_type = .content }) catch break;
-                    extracted_something = true;
-                }
-            }
-
-            // If no <content> tags found, use the raw inner content
-            if (!extracted_something and inner_content.len > 0) {
-                results.append(allocator, .{ .content = inner_content, .xml_type = .response }) catch break;
-            }
-        }
-    }
-
-    // Extract from <tool_result> tags
-    pos = 0;
-    while (pos < xml.len) {
-        const content_start = std.mem.indexOfPos(u8, xml, pos, open_tool_result) orelse break;
-        const content_end = std.mem.indexOfPos(u8, xml, content_start, close_tool_result) orelse break;
-        const inner_content = xml[content_start + open_tool_result.len .. content_end];
-        pos = content_end + close_tool_result.len;
-
-        if (inner_content.len > 0) {
-            // First, try to extract <content> tags from the inner content
-            var extracted_something = false;
-            var inner_pos: usize = 0;
-            while (inner_pos < inner_content.len) {
-                const c_start = std.mem.indexOfPos(u8, inner_content, inner_pos, "<content>") orelse break;
-                const c_end = std.mem.indexOfPos(u8, inner_content, c_start, "</content>") orelse break;
-                const c_text = inner_content[c_start + "<content>".len .. c_end];
-                inner_pos = c_end + "</content>".len;
-
-                if (c_text.len > 0) {
-                    results.append(allocator, .{ .content = c_text, .xml_type = .content }) catch break;
-                    extracted_something = true;
-                }
-            }
-
-            // If no <content> tags found, use the raw inner content
-            if (!extracted_something and inner_content.len > 0) {
-                results.append(allocator, .{ .content = inner_content, .xml_type = .tool_result }) catch break;
-            }
-        }
-    }
-
-    // Extract the LAST finish_reason tag (there may be multiple from streaming chunks)
+    // Extract the LAST <finish_reason> tag (streaming may produce multiple)
     var finish_reason: ?[]const u8 = null;
     var fr_pos: usize = 0;
     while (fr_pos < xml.len) {
@@ -107,15 +58,57 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) ?Ex
         fr_pos = fr_end + "</finish_reason>".len;
     }
 
-    // Return null if no content found
     if (results.items.len == 0 and finish_reason == null) {
-        debug.logVerbose("extract_content_result: no content found in XML", .{});
         return null;
     }
-    debug.logVerbose("extract_content_result: extracted {d} results", .{results.items.len});
+
     return ExtractResult{
         .content_results = results,
         .finish_reason = finish_reason,
     };
 }
 
+fn extract_tag_content(
+    allocator: std.mem.Allocator,
+    results: *std.ArrayListUnmanaged(ContentResult),
+    xml: []const u8,
+    open_tag: []const u8,
+    close_tag: []const u8,
+    outer_type: XmlType,
+) !void {
+    var pos: usize = 0;
+    while (pos < xml.len) {
+        const start = std.mem.indexOfPos(u8, xml, pos, open_tag) orelse break;
+        const end = std.mem.indexOfPos(u8, xml, start + open_tag.len, close_tag) orelse break;
+        const inner = xml[start + open_tag.len .. end];
+        pos = end + close_tag.len;
+
+        var inner_pos: usize = 0;
+        var extracted_any = false;
+        while (inner_pos < inner.len) {
+            const c_start = std.mem.indexOfPos(u8, inner, inner_pos, "<content>") orelse break;
+            const c_end = std.mem.indexOfPos(u8, inner, c_start + "<content>".len, "</content>") orelse break;
+            const c_text = inner[c_start + "<content>".len .. c_end];
+            inner_pos = c_end + "</content>".len;
+
+            if (c_text.len > 0) {
+                const cleaned = strip_think_blocks(c_text);
+                if (cleaned.len > 0) {
+                    try results.append(allocator, .{ .content = cleaned, .xml_type = .content });
+                    extracted_any = true;
+                }
+            } else {
+                // Empty <content></content>: fall back to raw inner XML as outer type
+                try results.append(allocator, .{ .content = inner, .xml_type = outer_type });
+                extracted_any = true;
+            }
+        }
+
+        if (!extracted_any and inner.len > 0) {
+            const cleaned = strip_think_blocks(inner);
+            if (cleaned.len > 0) {
+                try results.append(allocator, .{ .content = cleaned, .xml_type = outer_type });
+            }
+        }
+    }
+}

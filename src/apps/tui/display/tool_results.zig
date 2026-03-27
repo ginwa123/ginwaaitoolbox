@@ -1,6 +1,5 @@
 const std = @import("std");
 const globals = @import("../globals.zig");
-const tui_text = @import("tui-text");
 const utils = @import("../helpers/utils.zig");
 
 /// Tool result structure
@@ -79,15 +78,15 @@ pub fn displayBashResult(result_xml: []const u8, tool_name: []const u8, max_resu
     const is_error = if (stderr) |ec| std.mem.eql(u8, ec, "0") else false;
     const color = if (is_error) "\x1b[31m" else "";
     if (cmd) |c| {
-        tui_text.print(globals.crlf ++ globals.erase_line ++ "[{s}] $ {s}\n", .{ tool_name, c });
+        std.debug.print(globals.crlf ++ globals.erase_line ++ "[{s}] $ {s}\n", .{ tool_name, c });
     } else {
-        tui_text.print(globals.crlf ++ globals.erase_line ++ "[{s}]\n", .{tool_name});
+        std.debug.print(globals.crlf ++ globals.erase_line ++ "[{s}]\n", .{tool_name});
     }
     var lines = std.mem.splitScalar(u8, display, '\n');
     while (lines.next()) |line| {
-        tui_text.print("{s}  {s}{s}\n", .{ color, line, if (is_error) globals.reset else "" });
+        std.debug.print("{s}  {s}{s}\n", .{ color, line, if (is_error) globals.reset else "" });
     }
-    if (truncated) tui_text.print("  {s}[truncated...]{s}\n", .{ globals.cyan, globals.reset });
+    if (truncated) std.debug.print("  {s}[truncated...]{s}\n", .{ globals.cyan, globals.reset });
 }
 
 /// Display search result
@@ -95,7 +94,7 @@ pub fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_re
     _ = max_result_len;
     const results = utils.extractTag(result_xml, "results") orelse "";
     if (std.mem.eql(u8, results, "")) return;
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ globals.cyan, tool_name, globals.reset });
     var remaining = results;
     var total_shown: usize = 0;
     while (total_shown < 20) {
@@ -106,11 +105,11 @@ pub fn displaySearchResult(result_xml: []const u8, tool_name: []const u8, max_re
         const file = utils.extractTag(match_block, "f") orelse "";
         const line_num = utils.extractTag(match_block, "l") orelse "0";
         const snippet = utils.extractTag(match_block, "s") orelse "";
-        tui_text.print("  {s}:{s}:{s}\n", .{ file, line_num, snippet });
+        std.debug.print("  {s}:{s}:{s}\n", .{ file, line_num, snippet });
         total_shown += 1;
     }
     if (std.mem.indexOf(u8, remaining, "<m>") != null) {
-        tui_text.print("  {s}[more matches...]{s}\n", .{ globals.cyan, globals.reset });
+        std.debug.print("  {s}[more matches...]{s}\n", .{ globals.cyan, globals.reset });
     }
 }
 
@@ -119,7 +118,7 @@ pub fn displayReadFileResult(result_xml: []const u8, tool_name: []const u8) void
     const path = utils.extractTag(result_xml, "path") orelse "unknown";
     if (std.mem.eql(u8, path, "")) return;
     
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} {s}\n", .{ 
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} {s}\n", .{ 
         globals.cyan, 
         tool_name, 
         globals.reset, 
@@ -133,12 +132,12 @@ pub fn displayWriteFileResult(result_xml: []const u8, tool_name: []const u8) voi
     const bytes_written = utils.extractTag(result_xml, "bytes_written") orelse "0";
     const lines_written = utils.extractTag(result_xml, "lines_written") orelse "0";
     if (std.mem.eql(u8, path, "")) return;
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} wrote {s} bytes ({s} lines) → {s}\n", .{ globals.cyan, tool_name, globals.reset, bytes_written, lines_written, path });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} wrote {s} bytes ({s} lines) → {s}\n", .{ globals.cyan, tool_name, globals.reset, bytes_written, lines_written, path });
     if (utils.extractTag(result_xml, "before")) |before| {
-        if (!std.mem.eql(u8, before, "")) tui_text.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", globals.reset, before });
+        if (!std.mem.eql(u8, before, "")) std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", globals.reset, before });
     }
     if (utils.extractTag(result_xml, "after")) |after| {
-        if (!std.mem.eql(u8, after, "")) tui_text.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", globals.reset, after });
+        if (!std.mem.eql(u8, after, "")) std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", globals.reset, after });
     }
 }
 
@@ -147,12 +146,12 @@ pub fn displayTextReplaceResult(result_xml: []const u8, tool_name: []const u8) v
     const path = utils.extractTag(result_xml, "path") orelse "";
     const replaced_at_byte = utils.extractTag(result_xml, "replaced_at_byte") orelse "?";
     if (std.mem.eql(u8, path, "")) return;
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{ globals.cyan, tool_name, globals.reset, replaced_at_byte, path });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} replaced at byte {s} → {s}\n", .{ globals.cyan, tool_name, globals.reset, replaced_at_byte, path });
     if (utils.extractTag(result_xml, "old_str")) |old_str| {
-        if (!std.mem.eql(u8, old_str, "")) tui_text.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", globals.reset, old_str });
+        if (!std.mem.eql(u8, old_str, "")) std.debug.print("  {s}[-]{s} {s}\n", .{ "\x1b[31m", globals.reset, old_str });
     }
     if (utils.extractTag(result_xml, "new_str")) |new_str| {
-        if (!std.mem.eql(u8, new_str, "")) tui_text.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", globals.reset, new_str });
+        if (!std.mem.eql(u8, new_str, "")) std.debug.print("  {s}[+]{s} {s}\n", .{ "\x1b[32m", globals.reset, new_str });
     }
 }
 
@@ -171,23 +170,23 @@ pub fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
     else
         "\x1b[31m✗\x1b[0m";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} {s} {s}\n", .{ globals.cyan, tool_name, globals.reset, loaded_status, skill_name });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} {s} {s}\n", .{ globals.cyan, tool_name, globals.reset, loaded_status, skill_name });
 
     // Display error if present
     if (error_msg) |err| {
         if (err.len > 0) {
-            tui_text.print("  \x1b[31mError: {s}\x1b[0m\n", .{err});
+            std.debug.print("  \x1b[31mError: {s}\x1b[0m\n", .{err});
             // Show available skills if present
             if (utils.extractTag(result_xml, "available_skills")) |available| {
                 if (available.len > 0) {
-                    tui_text.print("  \x1b[90mAvailable skills:\x1b[0m\n", .{});
+                    std.debug.print("  \x1b[90mAvailable skills:\x1b[0m\n", .{});
                     var pos: usize = 0;
                     while (pos < available.len) {
                         const skill_start = std.mem.indexOfPos(u8, available, pos, "<skill>") orelse break;
                         const skill_end = std.mem.indexOfPos(u8, available, skill_start, "</skill>") orelse break;
                         const skill_name_inner = available[skill_start + "<skill>".len .. skill_end];
                         pos = skill_end + "</skill>".len;
-                        tui_text.print("    \x1b[32m•\x1b[0m {s}\n", .{skill_name_inner});
+                        std.debug.print("    \x1b[32m•\x1b[0m {s}\n", .{skill_name_inner});
                     }
                 }
             }
@@ -197,7 +196,7 @@ pub fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
 
     // Display skill content with proper formatting
     if (content.len > 0) {
-        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+        std.debug.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
 
         // Show first few lines of content (preview)
         const max_preview_lines: usize = 15;
@@ -206,16 +205,16 @@ pub fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
 
         while (lines.next()) |line| {
             if (count >= max_preview_lines) {
-                tui_text.print("  \x1b[90m... (more lines)\x1b[0m\n", .{});
+                std.debug.print("  \x1b[90m... (more lines)\x1b[0m\n", .{});
                 break;
             }
             // Truncate long lines
             const display_line = if (line.len > 70) line[0..70] else line;
-            tui_text.print("  {s}\n", .{display_line});
+            std.debug.print("  {s}\n", .{display_line});
             count += 1;
         }
 
-        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+        std.debug.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
     }
 }
 
@@ -223,18 +222,18 @@ pub fn displaySkillResult(result_xml: []const u8, tool_name: []const u8) void {
 pub fn displayListSkillsResult(result_json: []const u8, tool_name: []const u8) void {
     // Parse JSON array of skills
     const skills_start = std.mem.indexOf(u8, result_json, "[") orelse {
-        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n", .{ globals.cyan, tool_name, globals.reset });
+        std.debug.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n", .{ globals.cyan, tool_name, globals.reset });
         return;
     };
     const skills_end = std.mem.lastIndexOf(u8, result_json, "]") orelse result_json.len;
     const skills_array = result_json[skills_start .. skills_end + 1];
 
     if (skills_array.len <= 2) { // Empty array "[]"
-        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n", .{ globals.cyan, tool_name, globals.reset });
+        std.debug.print("\r\x1b[2K\n{s}[{s}]{s} No skills available\n", .{ globals.cyan, tool_name, globals.reset });
         return;
     }
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} Available skills:\n", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} Available skills:\n", .{ globals.cyan, tool_name, globals.reset });
 
     // Parse each skill object
     var pos: usize = 0;
@@ -261,18 +260,18 @@ pub fn displayListSkillsResult(result_json: []const u8, tool_name: []const u8) v
 
         if (name.len > 0) {
             count += 1;
-            tui_text.print("  \x1b[32m•\x1b[0m {s}", .{name});
+            std.debug.print("  \x1b[32m•\x1b[0m {s}", .{name});
             if (desc.len > 0) {
                 // Truncate description if too long
                 const short_desc = if (desc.len > 50) desc[0..50] else desc;
-                tui_text.print(" \x1b[90m- {s}...\x1b[0m", .{short_desc});
+                std.debug.print(" \x1b[90m- {s}...\x1b[0m", .{short_desc});
             }
-            tui_text.print("\n", .{});
+            std.debug.print("\n", .{});
         }
     }
 
     if (count == 0) {
-        tui_text.print("  \x1b[90m(no skills found)\x1b[0m\n", .{});
+        std.debug.print("  \x1b[90m(no skills found)\x1b[0m\n", .{});
     }
 }
 
@@ -284,11 +283,11 @@ pub fn displayListSkillsResult(result_json: []const u8, tool_name: []const u8) v
 pub fn displayListAgentsResult(result_xml: []const u8, tool_name: []const u8) void {
     const agents_xml = utils.extractTag(result_xml, "agents") orelse "";
     if (std.mem.eql(u8, agents_xml, "")) {
-        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No agents available\n", .{ globals.cyan, tool_name, globals.reset });
+        std.debug.print("\r\x1b[2K\n{s}[{s}]{s} No agents available\n", .{ globals.cyan, tool_name, globals.reset });
         return;
     }
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} Available agents:\n", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} Available agents:\n", .{ globals.cyan, tool_name, globals.reset });
 
     var pos: usize = 0;
     var count: usize = 0;
@@ -303,17 +302,17 @@ pub fn displayListAgentsResult(result_xml: []const u8, tool_name: []const u8) vo
 
         if (name.len > 0) {
             count += 1;
-            tui_text.print("  \x1b[36m•\x1b[0m {s}", .{name});
+            std.debug.print("  \x1b[36m•\x1b[0m {s}", .{name});
             if (desc.len > 0) {
                 const short_desc = if (desc.len > 50) desc[0..50] else desc;
-                tui_text.print(" \x1b[90m- {s}...\x1b[0m", .{short_desc});
+                std.debug.print(" \x1b[90m- {s}...\x1b[0m", .{short_desc});
             }
-            tui_text.print("\n", .{});
+            std.debug.print("\n", .{});
         }
     }
 
     if (count == 0) {
-        tui_text.print("  \x1b[90m(no agents found)\x1b[0m\n", .{});
+        std.debug.print("  \x1b[90m(no agents found)\x1b[0m\n", .{});
     }
 }
 
@@ -325,7 +324,7 @@ pub fn displayGetAgentResult(result_xml: []const u8, tool_name: []const u8) void
     const error_msg = utils.extractTag(result_xml, "error");
 
     if (agent_name.len == 0 and content.len == 0) {
-        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} No agent content\n", .{ globals.cyan, tool_name, globals.reset });
+        std.debug.print("\r\x1b[2K\n{s}[{s}]{s} No agent content\n", .{ globals.cyan, tool_name, globals.reset });
         return;
     }
 
@@ -334,30 +333,30 @@ pub fn displayGetAgentResult(result_xml: []const u8, tool_name: []const u8) void
     else
         "\x1b[31m✗\x1b[0m";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} {s} {s}\n", .{ globals.cyan, tool_name, globals.reset, loaded_status, if (agent_name.len > 0) agent_name else "agent" });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} {s} {s}\n", .{ globals.cyan, tool_name, globals.reset, loaded_status, if (agent_name.len > 0) agent_name else "agent" });
 
     if (error_msg) |err| {
         if (err.len > 0) {
-            tui_text.print("  \x1b[31mError: {s}\x1b[0m\n", .{err});
+            std.debug.print("  \x1b[31mError: {s}\x1b[0m\n", .{err});
             return;
         }
     }
 
     if (content.len > 0) {
-        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+        std.debug.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
         const max_preview_lines: usize = 15;
         var lines = std.mem.splitScalar(u8, content, '\n');
         var count: usize = 0;
         while (lines.next()) |line| {
             if (count >= max_preview_lines) {
-                tui_text.print("  \x1b[90m... (more lines)\x1b[0m\n", .{});
+                std.debug.print("  \x1b[90m... (more lines)\x1b[0m\n", .{});
                 break;
             }
             const display_line = if (line.len > 70) line[0..70] else line;
-            tui_text.print("  {s}\n", .{display_line});
+            std.debug.print("  {s}\n", .{display_line});
             count += 1;
         }
-        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+        std.debug.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
     }
 }
 
@@ -368,7 +367,7 @@ pub fn displaySpawnSubAgentResult(result_xml: []const u8, tool_name: []const u8)
     const message = utils.extractTag(result_xml, "message") orelse "";
 
     if (std.mem.eql(u8, sub_agent_id, "") and std.mem.eql(u8, message, "")) {
-        tui_text.print("\r\x1b[2K\n{s}[{s}]{s} Sub-agent spawned\n", .{ globals.cyan, tool_name, globals.reset });
+        std.debug.print("\r\x1b[2K\n{s}[{s}]{s} Sub-agent spawned\n", .{ globals.cyan, tool_name, globals.reset });
         return;
     }
 
@@ -377,14 +376,14 @@ pub fn displaySpawnSubAgentResult(result_xml: []const u8, tool_name: []const u8)
     else
         "\x1b[31m";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
     if (sub_agent_id.len > 0) {
-        tui_text.print("{s}{s}\x1b[0m", .{ status_color, sub_agent_id });
+        std.debug.print("{s}{s}\x1b[0m", .{ status_color, sub_agent_id });
     }
     if (message.len > 0) {
-        tui_text.print(" - {s}", .{message});
+        std.debug.print(" - {s}", .{message});
     }
-    tui_text.print("\n", .{});
+    std.debug.print("\n", .{});
 }
 
 // =============================================================================
@@ -396,10 +395,10 @@ pub fn displayLspDefinitionResult(result_xml: []const u8, tool_name: []const u8)
     const found = utils.extractTag(result_xml, "found") orelse "false";
     const definitions = utils.extractTag(result_xml, "definitions") orelse "";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
     if (std.mem.eql(u8, found, "true")) {
-        tui_text.print("\x1b[32m✓ Found definitions:\x1b[0m\n", .{});
+        std.debug.print("\x1b[32m✓ Found definitions:\x1b[0m\n", .{});
         var pos: usize = 0;
         var count: usize = 0;
         while (pos < definitions.len and count < 10) {
@@ -412,14 +411,14 @@ pub fn displayLspDefinitionResult(result_xml: []const u8, tool_name: []const u8)
             const line = utils.extractTag(loc_block, "line") orelse "0";
             const character = utils.extractTag(loc_block, "character") orelse "0";
 
-            tui_text.print("  \x1b[33m→\x1b[0m {s}:{s}:{s}\n", .{ file_path, line, character });
+            std.debug.print("  \x1b[33m→\x1b[0m {s}:{s}:{s}\n", .{ file_path, line, character });
             count += 1;
         }
         if (std.mem.indexOfPos(u8, definitions, pos, "<loc>") != null) {
-            tui_text.print("  \x1b[90m... (more definitions)\x1b[0m\n", .{});
+            std.debug.print("  \x1b[90m... (more definitions)\x1b[0m\n", .{});
         }
     } else {
-        tui_text.print("\x1b[31m✗ No definition found\x1b[0m\n", .{});
+        std.debug.print("\x1b[31m✗ No definition found\x1b[0m\n", .{});
     }
 }
 
@@ -428,10 +427,10 @@ pub fn displayLspReferencesResult(result_xml: []const u8, tool_name: []const u8)
     const found = utils.extractTag(result_xml, "found") orelse "false";
     const references = utils.extractTag(result_xml, "references") orelse "";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
     if (std.mem.eql(u8, found, "true")) {
-        tui_text.print("\x1b[32m✓ Found {d} references:\x1b[0m\n", .{
+        std.debug.print("\x1b[32m✓ Found {d} references:\x1b[0m\n", .{
             @as(usize, @intCast(std.mem.count(u8, references, "<loc>")))});
         var pos: usize = 0;
         var count: usize = 0;
@@ -444,14 +443,14 @@ pub fn displayLspReferencesResult(result_xml: []const u8, tool_name: []const u8)
             const file_path = utils.extractTag(loc_block, "file_path") orelse "";
             const line = utils.extractTag(loc_block, "line") orelse "0";
 
-            tui_text.print("  \x1b[36m→\x1b[0m {s}:{s}\n", .{ file_path, line });
+            std.debug.print("  \x1b[36m→\x1b[0m {s}:{s}\n", .{ file_path, line });
             count += 1;
         }
         if (std.mem.indexOfPos(u8, references, pos, "<loc>") != null) {
-            tui_text.print("  \x1b[90m... (more references)\x1b[0m\n", .{});
+            std.debug.print("  \x1b[90m... (more references)\x1b[0m\n", .{});
         }
     } else {
-        tui_text.print("\x1b[31m✗ No references found\x1b[0m\n", .{});
+        std.debug.print("\x1b[31m✗ No references found\x1b[0m\n", .{});
     }
 }
 
@@ -460,11 +459,11 @@ pub fn displayLspHoverResult(result_xml: []const u8, tool_name: []const u8) void
     const found = utils.extractTag(result_xml, "found") orelse "false";
     const contents = utils.extractTag(result_xml, "contents") orelse "";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
     if (std.mem.eql(u8, found, "true") and contents.len > 0) {
-        tui_text.print("\x1b[32m✓ Hover info:\x1b[0m\n", .{});
-        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+        std.debug.print("\x1b[32m✓ Hover info:\x1b[0m\n", .{});
+        std.debug.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
 
         // Parse markdown/code blocks
         var lines = std.mem.splitScalar(u8, contents, '\n');
@@ -472,16 +471,16 @@ pub fn displayLspHoverResult(result_xml: []const u8, tool_name: []const u8) void
         const max_lines: usize = 12;
         while (lines.next()) |line| {
             if (count >= max_lines) {
-                tui_text.print("  \x1b[90m...\x1b[0m\n", .{});
+                std.debug.print("  \x1b[90m...\x1b[0m\n", .{});
                 break;
             }
             const display_line = if (line.len > 80) line[0..80] else line;
-            tui_text.print("  {s}\n", .{display_line});
+            std.debug.print("  {s}\n", .{display_line});
             count += 1;
         }
-        tui_text.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
+        std.debug.print("  \x1b[90m───────────────────────────────\x1b[0m\n", .{});
     } else {
-        tui_text.print("\x1b[31m✗ No hover info found\x1b[0m\n", .{});
+        std.debug.print("\x1b[31m✗ No hover info found\x1b[0m\n", .{});
     }
 }
 
@@ -490,11 +489,11 @@ pub fn displayLspWorkspaceSymbolResult(result_xml: []const u8, tool_name: []cons
     const found = utils.extractTag(result_xml, "found") orelse "false";
     const symbols = utils.extractTag(result_xml, "symbols") orelse "";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
     if (std.mem.eql(u8, found, "true")) {
         const total = std.mem.count(u8, symbols, "<symbol>");
-        tui_text.print("\x1b[32m✓ Found {d} symbols:\x1b[0m\n", .{total});
+        std.debug.print("\x1b[32m✓ Found {d} symbols:\x1b[0m\n", .{total});
         var pos: usize = 0;
         var count: usize = 0;
         while (pos < symbols.len and count < 15) {
@@ -526,14 +525,14 @@ pub fn displayLspWorkspaceSymbolResult(result_xml: []const u8, tool_name: []cons
                 else => "\x1b[90m•\x1b[0m",
             };
 
-            tui_text.print("  {s} {s} \x1b[90m{s}:{s}\x1b[0m\n", .{ kind_icon, name, file_path, line });
+            std.debug.print("  {s} {s} \x1b[90m{s}:{s}\x1b[0m\n", .{ kind_icon, name, file_path, line });
             count += 1;
         }
         if (std.mem.indexOfPos(u8, symbols, pos, "<symbol>") != null) {
-            tui_text.print("  \x1b[90m... (more symbols)\x1b[0m\n", .{});
+            std.debug.print("  \x1b[90m... (more symbols)\x1b[0m\n", .{});
         }
     } else {
-        tui_text.print("\x1b[31m✗ No symbols found\x1b[0m\n", .{});
+        std.debug.print("\x1b[31m✗ No symbols found\x1b[0m\n", .{});
     }
 }
 
@@ -542,11 +541,11 @@ pub fn displayLspDocumentSymbolResult(result_xml: []const u8, tool_name: []const
     const found = utils.extractTag(result_xml, "found") orelse "false";
     const symbols = utils.extractTag(result_xml, "symbols") orelse "";
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s} ", .{ globals.cyan, tool_name, globals.reset });
 
     if (std.mem.eql(u8, found, "true")) {
         const total = std.mem.count(u8, symbols, "<symbol>");
-        tui_text.print("\x1b[32m✓ Document symbols ({d}):\x1b[0m\n", .{total});
+        std.debug.print("\x1b[32m✓ Document symbols ({d}):\x1b[0m\n", .{total});
 
         // Simple tree display
         var pos: usize = 0;
@@ -572,7 +571,7 @@ pub fn displayLspDocumentSymbolResult(result_xml: []const u8, tool_name: []const
                 else => "\x1b[90m",
             };
 
-            tui_text.print("  \x1b[90m{s}:\x1b[0m {s}{s}\x1b[0m\n", .{
+            std.debug.print("  \x1b[90m{s}:\x1b[0m {s}{s}\x1b[0m\n", .{
                 line,
                 kind_color,
                 name,
@@ -580,10 +579,10 @@ pub fn displayLspDocumentSymbolResult(result_xml: []const u8, tool_name: []const
             count += 1;
         }
         if (std.mem.indexOfPos(u8, symbols, pos, "<symbol>") != null) {
-            tui_text.print("  \x1b[90m... (more symbols)\x1b[0m\n", .{});
+            std.debug.print("  \x1b[90m... (more symbols)\x1b[0m\n", .{});
         }
     } else {
-        tui_text.print("\x1b[31m✗ No document symbols found\x1b[0m\n", .{});
+        std.debug.print("\x1b[31m✗ No document symbols found\x1b[0m\n", .{});
     }
 }
 
@@ -597,10 +596,10 @@ pub fn displayGenericResult(result_xml: []const u8, tool_name: []const u8, max_r
     const truncated = result.len > max_result_len;
     const display = if (truncated) result[0..max_result_len] else result;
 
-    tui_text.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ globals.cyan, tool_name, globals.reset });
-    tui_text.print("  {s}\n", .{display});
+    std.debug.print("\r\x1b[2K\n{s}[{s}]{s}\n", .{ globals.cyan, tool_name, globals.reset });
+    std.debug.print("  {s}\n", .{display});
 
     if (truncated) {
-        tui_text.print("  {s}[truncated...]{s}\n", .{ globals.cyan, globals.reset });
+        std.debug.print("  {s}[truncated...]{s}\n", .{ globals.cyan, globals.reset });
     }
 }

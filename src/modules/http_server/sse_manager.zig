@@ -24,15 +24,12 @@ pub const SseEvent = struct {
         buf[pos] = '\n';
         pos += 1;
 
-        // Write data lines: "data: <line>\n" for each line
+        // Write data lines: "<line>\n" for each line (raw XML, no "data:" prefix)
         var iter = std.mem.splitScalar(u8, self.data, '\n');
         while (iter.next()) |line| {
             if (line.len == 0) continue; // Skip empty lines from split
-            const data_prefix = "data: ";
-            const needed_for_line = data_prefix.len + line.len + 1;
+            const needed_for_line = line.len + 1;
             if (pos + needed_for_line > buf.len) return error.BufferTooSmall;
-            @memcpy(buf[pos..][0..data_prefix.len], data_prefix);
-            pos += data_prefix.len;
             @memcpy(buf[pos..][0..line.len], line);
             pos += line.len;
             buf[pos] = '\n';
@@ -53,12 +50,9 @@ pub const SseEvent = struct {
 
         try result.writer(allocator).print("event: {s}\n", .{self.event_type});
 
-        // Split data by newlines and prefix each with "data: "
-        var iter = std.mem.splitScalar(u8, self.data, '\n');
-        while (iter.next()) |line| {
-            try result.writer(allocator).print("data: {s}\n", .{line});
-        }
-        try result.appendSlice(allocator, "\n");
+        // Write raw XML data (no "data:" prefix)
+        try result.appendSlice(allocator, self.data);
+        try result.appendSlice(allocator, "\n\n");
 
         return result.toOwnedSlice(allocator);
     }

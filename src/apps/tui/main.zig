@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const keybindings = @import("keybindings.zig");
-const tui_text = @import("tui-text");
 
 // Enable TLS support for HTTP client
 pub const std_options: std.Options = .{
@@ -105,7 +104,7 @@ pub const App = struct {
 /// Run query mode - send single query and exit
 fn runQueryMode(app: *App, query: []const u8) !void {
     const response = network.readResponseAndStreamRunLLM(app, query) catch |err| {
-        tui_text.print("Error: {s}\n", .{@errorName(err)});
+        std.debug.print("Error: {s}\n", .{@errorName(err)});
         return;
     };
     defer app.allocator.free(response);
@@ -119,29 +118,26 @@ pub fn main() !void {
     defer arena_allocator.deinit();
     const allocator = arena_allocator.allocator();
 
-    // Initialize the text module's global allocator
-    tui_text.setGlobalAllocator(allocator);
-
     // Parse CLI arguments
     const opts = cli.parseCliArgs(allocator) catch |err| {
         if (err == error.MissingQueryArgument) {
-            tui_text.print("Error: -q/--query requires an argument\n", .{});
+            std.debug.print("Error: -q/--query requires an argument\n", .{});
             return error.MissingQueryArgument;
         }
         if (err == error.MissingSessionArgument) {
-            tui_text.print("Error: -c/--continue requires an argument\n", .{});
+            std.debug.print("Error: -c/--continue requires an argument\n", .{});
             return error.MissingSessionArgument;
         }
         if (err == error.MissingPortArgument) {
-            tui_text.print("Error: -p/--port requires an argument\n", .{});
+            std.debug.print("Error: -p/--port requires an argument\n", .{});
             return error.MissingPortArgument;
         }
         if (err == error.InvalidPortArgument) {
-            tui_text.print("Error: -p/--port must be a valid u16 number\n", .{});
+            std.debug.print("Error: -p/--port must be a valid u16 number\n", .{});
             return error.InvalidPortArgument;
         }
         if (err == error.MissingProcessArgument) {
-            tui_text.print("Error: --process requires an argument\n", .{});
+            std.debug.print("Error: --process requires an argument\n", .{});
             return error.MissingProcessArgument;
         }
         return err;
@@ -154,7 +150,7 @@ pub fn main() !void {
     }
 
     if (opts.show_version) {
-        tui_text.print("nalar-tui version {s}\n", .{globals.VERSION});
+        std.debug.print("nalar-tui version {s}\n", .{globals.VERSION});
         return;
     }
 
@@ -179,19 +175,19 @@ pub fn main() !void {
 
         // Check if session exists in database before continuing
         const session_found = messaging.check_session_exists(&app) catch |err| {
-            tui_text.print("{s}Error: Failed to check session: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
+            std.debug.print("{s}Error: Failed to check session: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
             return err;
         };
         if (!session_found) {
-            tui_text.print("{s}Error: Session '{s}' not found.{s}\n", .{ globals.red, session_id, globals.reset });
-            tui_text.print("{s}Use /sessions to see available sessions or start a new session.{s}\n", .{ globals.yellow, globals.reset });
+            std.debug.print("{s}Error: Session '{s}' not found.{s}\n", .{ globals.red, session_id, globals.reset });
+            std.debug.print("{s}Use /sessions to see available sessions or start a new session.{s}\n", .{ globals.yellow, globals.reset });
             return error.SessionNotFound;
         }
     } else if (opts.continue_session) {
         // -c alone = auto-detect latest session
         var cwd_buf: [4096]u8 = undefined;
         const cwd = std.posix.getcwd(&cwd_buf) catch |err| {
-            tui_text.print("{s}Error: Failed to get current directory: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
+            std.debug.print("{s}Error: Failed to get current directory: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
             return err;
         };
         const cwd_slice = std.mem.sliceTo(cwd, 0);
@@ -200,9 +196,9 @@ pub fn main() !void {
         opt_session_id = try messaging.get_latest_session_by_dir(app.allocator, app.http_port, cwd_slice);
         if (opt_session_id) |session_id| {
             app.session_id = try app.allocator.dupe(u8, session_id);
-            tui_text.print("{s}Resuming latest session for this directory: {s}{s}\n", .{ globals.green, session_id, globals.reset });
+            std.debug.print("{s}Resuming latest session for this directory: {s}{s}\n", .{ globals.green, session_id, globals.reset });
         } else {
-            tui_text.print("{s}Warning: No previous session found for this directory. Starting new session.{s}\n", .{ globals.yellow, globals.reset });
+            std.debug.print("{s}Warning: No previous session found for this directory. Starting new session.{s}\n", .{ globals.yellow, globals.reset });
         }
     }
     // else: no -c flag = new session (will be created below if session_id is empty)
