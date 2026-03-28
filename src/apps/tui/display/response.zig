@@ -64,11 +64,6 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?E
         fr_pos = fr_end + "</finish_reason>".len;
     }
 
-    if (results.items.len == 0 and finish_reason == null) {
-        std.debug.print("No results found\n", .{});
-        return null;
-    }
-
     // Extract tool calls if present
     var tool_calls: std.ArrayListUnmanaged(ToolCallInfo) = .{};
     errdefer tool_calls.deinit(allocator);
@@ -98,6 +93,11 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?E
         if (tool_name.len > 0) {
             try tool_calls.append(allocator, .{ .name = tool_name, .arguments = tool_args });
         }
+    }
+
+    // Return null only if there are no content_results, finish_reason, AND tool_calls
+    if (results.items.len == 0 and finish_reason == null and tool_calls.items.len == 0) {
+        return null;
     }
 
     return ExtractResult{

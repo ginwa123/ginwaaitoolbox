@@ -9,6 +9,7 @@ const kerjabot_get_session = nalarcore.kerjabot_get_session;
 const kerjabot_get_list_session = nalarcore.kerjabot_get_list_session;
 const tui_check_session_exists = nalarcore.tui_check_session_exists;
 const session_helpers = nalarcore.session_helpers;
+const session_db = nalarcore.session_db;
 
 const httpz = http_server.httpz;
 const SseEvent = http_server.SseEvent;
@@ -159,18 +160,58 @@ pub fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!
     res.body = "{\"error\":\"No session handler\"}";
 }
 
-/// List all sessions - stub implementation returning empty list
+/// List all sessions - returns sessions from database
 pub fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    _ = req;
+    res.content_type = .JSON;
+
+    const query = try req.query();
+    const limit_str = query.get("limit") orelse "50";
+    const offset_str = query.get("offset") orelse "0";
+    const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 50;
+    const offset_val = std.fmt.parseInt(u32, offset_str, 10) catch 0;
+
     if (http_server.global_server) |server| {
-        if (server.session_handler) |_| {
+        if (server.db) |db| {
+            // Use arena allocator scoped to this handler - freed after response
+            var arena = std.heap.ArenaAllocator.init(server.allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+
+            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+            const result = session_db.getSessionList(alloc, sqlite_db, null, null, limit_val, offset_val) catch {
+                res.status = 500;
+                res.body = "{\"error\":\"Database query failed\"}";
+                return;
+            };
+            defer {
+                for (result.sessions) |s| s.deinit(alloc);
+                alloc.free(result.sessions);
+            }
+
+            // Build JSON response
+            var json_sessions = std.ArrayList(u8).empty;
+            try json_sessions.appendSlice(alloc, "[");
+            for (result.sessions, 0..) |sess, i| {
+                if (i > 0) try json_sessions.append(alloc, ',');
+                const sess_json = try std.fmt.allocPrint(alloc,
+                    "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}",
+                    .{ sess.session_id, sess.session_dir, sess.created_at, sess.agent, sess.session_name });
+                try json_sessions.appendSlice(alloc, sess_json);
+                alloc.free(sess_json);
+            }
+            try json_sessions.append(alloc, ']');
+
+            const response = try std.fmt.allocPrint(alloc,
+                "{{\"sessions\":{s},\"total\":{d}}}",
+                .{ json_sessions.items, result.total });
+
             res.status = 200;
-            res.body = "{\"sessions\":[]}";
+            res.body = response;
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"No session handler\"}";
+    res.body = "{\"error\":\"Server not initialized\"}";
 }
 
 /// Check if a session exists in the database
@@ -413,9 +454,22 @@ pub fn kerjabotListSessionsHandler(req: *httpz.Request, res: *httpz.Response) an
             arena.allocator().free(result.sessions);
         }
 
+        // Build JSON response with actual session data
+        var json_sessions = std.ArrayList(u8).empty;
+        try json_sessions.appendSlice(arena.allocator(), "[");
+        for (result.sessions, 0..) |sess, i| {
+            if (i > 0) try json_sessions.append(arena.allocator(), ',');
+            const sess_json = try std.fmt.allocPrint(arena.allocator(),
+                "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}",
+                .{ sess.session_id, sess.session_dir, sess.created_at, sess.agent, sess.session_name });
+            defer arena.allocator().free(sess_json);
+            try json_sessions.appendSlice(arena.allocator(), sess_json);
+        }
+        try json_sessions.append(arena.allocator(), ']');
+
         const response = try std.fmt.allocPrint(arena.allocator(),
-            "{{\"sessions\":[],\"total\":{d},\"limit\":{d},\"offset\":{d}}}",
-            .{ result.total, limit_val, offset_val });
+            "{{\"sessions\":{s},\"total\":{d},\"limit\":{d},\"offset\":{d}}}",
+            .{ json_sessions.items, result.total, limit_val, offset_val });
 
         res.status = 200;
         res.body = response;

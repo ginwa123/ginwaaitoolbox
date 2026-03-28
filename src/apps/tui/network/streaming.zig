@@ -88,7 +88,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
 
         const extract_result = response.extract_content_result(app.allocator, xml) catch |err| {
             std.debug.print("Failed to extract content result: {s}\n", .{@errorName(err)});
-            return null;
+            return raw_buffer.toOwnedSlice(app.allocator);
         };
 
         if (extract_result) |er| {
@@ -126,14 +126,17 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
-        // Simple end condition check
-        if (utils.extract_tag(raw_buffer.items, "finish_reason")) |fr| {
-            if (std.mem.eql(u8, fr, "stop") or std.mem.eql(u8, fr, "user_choice")) {
-                break;
-            }
-            if (std.mem.eql(u8, fr, "cancelled")) {
-                std.debug.print("\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
-                break;
+        // Simple end condition check - only extract if closing tag is present
+        const closing_tag = "</finish_reason>";
+        if (std.mem.indexOf(u8, raw_buffer.items, closing_tag)) |_| {
+            if (utils.extract_tag(raw_buffer.items, "finish_reason")) |fr| {
+                if (std.mem.eql(u8, fr, "stop") or std.mem.eql(u8, fr, "user_choice")) {
+                    break;
+                }
+                if (std.mem.eql(u8, fr, "cancelled")) {
+                    std.debug.print("\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
+                    break;
+                }
             }
         }
     }

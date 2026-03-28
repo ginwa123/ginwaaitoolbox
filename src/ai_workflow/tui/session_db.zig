@@ -27,10 +27,10 @@ pub fn getSessionList(
     var rows = try db.query(allocator, sql, &.{ limit_str, offset_str });
     defer rows.deinit();
 
-    var sessions = std.ArrayList(SessionInfo).init(allocator);
+    var sessions = std.ArrayList(SessionInfo).empty;
     errdefer {
         for (sessions.items) |s| s.deinit(allocator);
-        sessions.deinit();
+        sessions.deinit(allocator);
     }
 
     while (try rows.next()) |row| {
