@@ -26,7 +26,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
     const PING_INTERVAL_MS: i64 = 1000;
     var last_ping_ms: i64 = std.time.milliTimestamp();
 
-    const stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
+    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
     var enable: u32 = 1;
@@ -76,7 +76,14 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
                 const is_need_reconnect = messaging.sendPingCommand(app) catch false;
                 if (is_need_reconnect) {
-                    std.debug.print("try connecting SSE session expired, reconnecting...\n", .{});
+                    std.debug.print("SSE session expired, reconnecting...\n", .{});
+                    const new_socket = connection.reconnectSseStream(app, app.allocator, stream_socket);
+                    if (new_socket < 0) {
+                        std.debug.print("Reconnection failed, exiting...\n", .{});
+                        break;
+                    }
+                    stream_socket = new_socket;
+                    poll_fds[0].fd = stream_socket;
                 }
                 last_ping_ms = now;
             }
