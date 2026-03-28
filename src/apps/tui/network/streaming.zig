@@ -89,71 +89,9 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
-        // Extract and display content per chunk
-        const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch "";
-        defer app.allocator.free(decoded);
-
-        const xml = sse.extract_sse_data(app.allocator, decoded) catch "";
-        defer app.allocator.free(xml);
-
-        const extract_result = response.extract_content_result(app.allocator, xml) catch |err| {
-            std.debug.print("Failed to extract content result: {s}\n", .{@errorName(err)});
-            return raw_buffer.toOwnedSlice(app.allocator);
-        };
-
-        if (extract_result) |er| {
-            var should_display_assistant_thinking = false;
-            var should_display_tool_output = false;
-            if (er.finish_reason) |fr| {
-                if (std.mem.eql(u8, fr, "stop")) {
-                    should_display_assistant_thinking = true;
-                }
-
-                if (std.mem.eql(u8, fr, "tool_calls")) {
-                    should_display_assistant_thinking = true;
-                }
-
-                if (std.mem.eql(u8, fr, "tool")) {
-                    should_display_tool_output = true;
-                }
-            }
-
-            if (should_display_assistant_thinking) {
-                var content_list = er.content_results;
-                defer content_list.deinit(app.allocator);
-                for (content_list.items) |result| {
-                    std.debug.print("assistant: \n {s}\n\n", .{result.content});
-                }
-            }
-
-            if (should_display_tool_output) {
-                if (er.tool_calls) |tcs| {
-                    std.debug.print("\r\n{s}[Tool calls]{s}\n\n", .{ globals.cyan, globals.reset });
-                    for (tcs) |tc| {
-                        std.debug.print("  {s} ->>> {s}{s}\n\n", .{ tc.name, globals.reset, tc.arguments });
-                    }
-                }
-            }
-        }
-
-        // Simple end condition check - only extract if closing tag is present
-        const closing_tag = "</finish_reason>";
-        if (std.mem.indexOf(u8, raw_buffer.items, closing_tag)) |_| {
-            if (utils.extract_tag(raw_buffer.items, "finish_reason")) |fr| {
-                if (std.mem.eql(u8, fr, "stop") or std.mem.eql(u8, fr, "user_choice")) {
-                    std.debug.print("\x1b[90m", .{});
-                    for (raw_buffer.items) |c| {
-                        std.debug.print("{c}", .{c});
-                    }
-                    std.debug.print("\x1b[0m", .{});
-                    break;
-                }
-                if (std.mem.eql(u8, fr, "cancelled")) {
-                    std.debug.print("\n{s}Task cancelled{s}\n", .{ globals.yellow, globals.reset });
-                    break;
-                }
-            }
-        }
+        // Print raw content as-is from backend
+        std.debug.print("{s}", .{raw_buffer.items});
+        raw_buffer.clearAndFree(app.allocator);
     }
 
     raw_buffer.clearRetainingCapacity();

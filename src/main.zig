@@ -386,7 +386,7 @@ pub fn main() !void {
             // Session management endpoints (synchronous - returns response directly)
             router.post("/api/session/create", http_handlers.sessionCreateHandler, .{});
             router.get("/api/session", http_handlers.sessionListHandler, .{});
-            router.get("/api/session/:session_id", http_handlers.sessionGetHandler, .{});
+            router.get("/api/session/:session_id", http_handlers.session_get_handler, .{});
             router.get("/api/session/:session_id/messages", http_handlers.sessionMessagesHandler, .{});
             router.get("/api/session/exists/:session_id", http_handlers.sessionExistsHandler, .{});
             router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, .{});

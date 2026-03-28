@@ -282,37 +282,6 @@ pub fn serializeToolCallDeltas(allocator: std.mem.Allocator, chunk: ToolCallDelt
     return try buf.toOwnedSlice(allocator);
 }
 
-/// Legacy sendResponse function - wraps on_event_send_new for backward compatibility
-pub fn sendResponse(
-    allocator: std.mem.Allocator,
-    session_id: []const u8,
-    response_type: ResponseType,
-    resp: Response,
-) void {
-    const input = OnEventInput{
-        .session_id = session_id,
-        .model = "",
-        .cwd = "",
-        .content = resp.content,
-        .reasoning_content = resp.reasoning_content,
-        .role = if (response_type == .err) "assistant" else null,
-        .finish_reason = if (resp.override_finish_reason) |fr| fr else if (resp.finish_reason) |fr| fr.toStr() else null,
-        .tool_calls = null,
-        .tool_call_id = resp.tool_call_id,
-        .tool_name = resp.tool_name,
-        .agent_name = null,
-        .session_name = null,
-        .loop_index = 0,
-        .temperature = 0.0,
-        .is_thinking = false,
-        .is_input = false,
-        .is_output = false,
-        .parent_session_id = null,
-        .parent_id = null,
-    };
-    on_event_send_new(allocator, input) catch return;
-}
-
 // ============================================================================
 // Streaming helpers (using structured serialization)
 // ============================================================================
