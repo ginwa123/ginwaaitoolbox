@@ -99,7 +99,7 @@ pub fn buildSessionListJson(
 
 /// Escape a string for JSON - wraps in quotes and escapes special characters
 fn jsonEscape(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var escaped = std.ArrayList(u8).init(allocator);
+    var escaped = std.ArrayList(u8).empty;
     errdefer escaped.deinit(allocator);
 
     try escaped.append(allocator, '"');
