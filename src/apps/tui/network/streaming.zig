@@ -74,9 +74,8 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         } else {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
-                const is_need_reconnect = messaging.sendPingCommand(app) catch false;
+                const is_need_reconnect = messaging.send_ping_command(app) catch false;
                 if (is_need_reconnect) {
-                    std.debug.print("SSE session expired, reconnecting...\n", .{});
                     const new_socket = connection.reconnectSseStream(app, app.allocator, stream_socket);
                     if (new_socket < 0) {
                         std.debug.print("Reconnection failed, exiting...\n", .{});
@@ -90,7 +89,11 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
         }
 
         // Print raw content as-is from backend
-        std.debug.print("{s}", .{raw_buffer.items});
+        if (std.mem.eql(u8, raw_buffer.items, ": keepalive")) {
+            std.debug.print("should remove {s}", .{raw_buffer.items});
+        } else {
+            std.debug.print("{s}", .{raw_buffer.items});
+        }
         raw_buffer.clearAndFree(app.allocator);
     }
 
@@ -158,7 +161,7 @@ pub fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
 
         if (!new_data) {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
-                const needs_reconnect = messaging.sendPingCommand(app) catch false;
+                const needs_reconnect = messaging.send_ping_command(app) catch false;
                 if (needs_reconnect) {
                     std.debug.print("SSE session expired, reconnecting...\n", .{});
                     reconnection_attempts += 1;

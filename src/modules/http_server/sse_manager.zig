@@ -2,7 +2,6 @@ const std = @import("std");
 const httpz = @import("httpz");
 
 pub const SseEvent = struct {
-    event_type: []const u8,
     data: []const u8,
 
     /// Maximum size for SSE event formatting (16KB - should be enough for any chunk)
@@ -12,17 +11,6 @@ pub const SseEvent = struct {
     /// Returns the formatted bytes or error.BufferTooSmall if buffer is insufficient
     pub fn formatInto(self: SseEvent, buf: []u8) error{BufferTooSmall}![]u8 {
         var pos: usize = 0;
-
-        // Write event type: "event: <type>\n"
-        const event_prefix = "event: ";
-        const needed_for_event = event_prefix.len + self.event_type.len + 1;
-        if (pos + needed_for_event > buf.len) return error.BufferTooSmall;
-        @memcpy(buf[pos..][0..event_prefix.len], event_prefix);
-        pos += event_prefix.len;
-        @memcpy(buf[pos..][0..self.event_type.len], self.event_type);
-        pos += self.event_type.len;
-        buf[pos] = '\n';
-        pos += 1;
 
         // Write data lines: "<line>\n" for each line (raw XML, no "data:" prefix)
         var iter = std.mem.splitScalar(u8, self.data, '\n');
@@ -47,8 +35,6 @@ pub const SseEvent = struct {
     pub fn format(self: SseEvent, allocator: std.mem.Allocator) ![]const u8 {
         var result = std.ArrayList(u8).empty;
         errdefer result.deinit(allocator);
-
-        try result.writer(allocator).print("event: {s}\n", .{self.event_type});
 
         // Write raw XML data (no "data:" prefix)
         try result.appendSlice(allocator, self.data);

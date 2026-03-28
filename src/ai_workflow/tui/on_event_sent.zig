@@ -162,7 +162,6 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
     _ = try w.writeAll("</response>");
 
     const event = http_server.SseEvent{
-        .event_type = "response",
         .data = buf.items,
     };
     try sse_manager.sendEvent(input.session_id, event);
@@ -297,7 +296,6 @@ pub fn sendStreamChunkContent(
     defer allocator.free(data);
 
     const event = http_server.SseEvent{
-        .event_type = "chunk",
         .data = data,
     };
     sse_manager.sendEvent(session_id, event) catch {};
@@ -314,7 +312,6 @@ pub fn sendStreamChunkReasoning(
     defer allocator.free(data);
 
     const event = http_server.SseEvent{
-        .event_type = "reasoning",
         .data = data,
     };
     sse_manager.sendEvent(session_id, event) catch {};
@@ -331,7 +328,6 @@ pub fn sendStreamChunkFinal(
     defer allocator.free(data);
 
     const event = http_server.SseEvent{
-        .event_type = "chunk_final",
         .data = data,
     };
     sse_manager.sendEvent(session_id, event) catch {};
@@ -348,7 +344,6 @@ pub fn sendStreamToolCallDelta(
     defer allocator.free(data);
 
     const event = http_server.SseEvent{
-        .event_type = "tool_call_delta",
         .data = data,
     };
     sse_manager.sendEvent(session_id, event) catch {};

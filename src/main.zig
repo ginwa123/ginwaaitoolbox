@@ -249,7 +249,6 @@ pub fn main() !void {
                 const response = std.fmt.bufPrint(&response_buf, "{{\"sessionId\":\"{s}\"}}", .{session_id}) catch unreachable;
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     const event = http_server.SseEvent{
-                        .event_type = "session_created",
                         .data = response,
                     };
                     sse_manager.sendEvent(session_id, event) catch |err| {
@@ -272,7 +271,6 @@ pub fn main() !void {
                 // Send the response back to the TUI via SSE event
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     const event = http_server.SseEvent{
-                        .event_type = "pong",
                         .data = response,
                     };
                     sse_manager.sendEvent(t.session_id, event) catch |err| {
@@ -287,7 +285,6 @@ pub fn main() !void {
                 const response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"compact_ack\",\"session_id\":\"{s}\",\"status\":\"processing\"}}", .{t.session_id}) catch unreachable;
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     const event = http_server.SseEvent{
-                        .event_type = "compact_ack",
                         .data = response,
                     };
                     sse_manager.sendEvent(t.session_id, event) catch |err| {
@@ -393,11 +390,6 @@ pub fn main() !void {
 
             // Ping endpoint - checks if session is connected via SSE
             router.get("/api/ping/:session_id", http_handlers.pingHandler, .{});
-
-            // Kerjabot session endpoints
-            router.post("/api/kerjabot/session/create", http_handlers.kerjabotSessionCreateHandler, .{});
-            router.get("/api/kerjabot/session/:id", http_handlers.kerjabotGetSessionHandler, .{});
-            router.get("/api/kerjabot/sessions", http_handlers.kerjabotListSessionsHandler, .{});
         }
     };
     try server.runWithConfig(HttpRoutes.setup);

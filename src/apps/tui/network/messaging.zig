@@ -79,7 +79,7 @@ pub fn sendSessionsCommand(app: *App) !void {
 /// This prevents "session not found" errors when the server's SSE stream handler
 /// thread exits while the TUI is still running a long operation
 /// Returns true if reconnect is needed, false otherwise
-pub fn sendPingCommand(app: *App) !bool {
+pub fn send_ping_command(app: *App) !bool {
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -139,7 +139,7 @@ pub fn get_latest_session_by_dir(allocator: std.mem.Allocator, http_port: u16, c
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    
+
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, http_port);

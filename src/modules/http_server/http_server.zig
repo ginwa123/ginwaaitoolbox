@@ -31,7 +31,6 @@ pub fn getGlobalSseManager() ?*SseConnectionManager {
 pub fn broadcastPanic(panic_info: []const u8) void {
     if (global_server) |server| {
         const event = SseEvent{
-            .event_type = "panic",
             .data = panic_info,
         };
         server.sse_manager.broadcast(event);
