@@ -24,6 +24,13 @@ pub const TUIHistory = struct {
     loop_index: u32 = 0,
     tool_name: []const u8 = "",
     parent_session_id: ?[]const u8 = null,
+    temperature: f32 = 0.2,
+    is_thinking: bool = false,
+    prompt_tokens: u32 = 0,
+    completion_tokens: u32 = 0,
+    total_tokens: u32 = 0,
+    is_input: bool = false,
+    is_output: bool = false,
 
     pub fn deinit(self: *TUIHistory, allocator: std.mem.Allocator) void {
         allocator.free(self.id);

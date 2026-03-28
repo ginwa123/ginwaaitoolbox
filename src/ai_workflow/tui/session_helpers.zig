@@ -16,7 +16,7 @@ pub fn get_messages(
 ) ![]TUIHistory {
     var results: std.ArrayList(TUIHistory) = .empty;
 
-    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(parent_session_id, '') FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at ASC";
+    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(tool_name, ''), COALESCE(parent_session_id, ''), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(is_input, 0), COALESCE(is_output, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at ASC";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -35,7 +35,15 @@ pub fn get_messages(
             .agent = try allocator.dupe(u8, row.values[9]),
             .session_name = try allocator.dupe(u8, row.values[10]),
             .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[12]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
+            .temperature = std.fmt.parseFloat(f32, row.values[15]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[16], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .is_input = std.mem.eql(u8, row.values[20], "1"),
+            .is_output = std.mem.eql(u8, row.values[21], "1"),
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -49,7 +57,7 @@ pub fn get_message_latest(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?TUIHistory {
-    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(parent_session_id, ''), COALESCE(tool_name, '') FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at DESC LIMIT 1";
+    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(tool_name, ''), COALESCE(parent_session_id, ''), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(is_input, 0), COALESCE(is_output, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at DESC LIMIT 1";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -68,8 +76,15 @@ pub fn get_message_latest(
             .agent = try allocator.dupe(u8, row.values[9]),
             .session_name = try allocator.dupe(u8, row.values[10]),
             .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[12]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .tool_name = try allocator.dupe(u8, row.values[15]),
+            .temperature = std.fmt.parseFloat(f32, row.values[15]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[16], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .is_input = std.mem.eql(u8, row.values[20], "1"),
+            .is_output = std.mem.eql(u8, row.values[21], "1"),
         };
         row.deinit(allocator);
         return history;
