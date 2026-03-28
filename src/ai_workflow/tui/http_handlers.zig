@@ -54,10 +54,10 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
     while (ctx.server.sse_manager.hasSession(ctx.session_id)) {
         std.Thread.sleep(30_000_000_000);
 
-        stream.writeAll(": keepalive\n\n") catch |err| {
-            std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
-            break;
-        };
+        // stream.writeAll(": keepalive\n\n") catch |err| {
+        //     std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
+        //     break;
+        // };
 
         var i: usize = 0;
         while (i < 300 and ctx.server.sse_manager.hasSession(ctx.session_id)) : (i += 1) {
@@ -145,7 +145,7 @@ const HandlerArgs = struct {
 // =============================================================================
 
 /// Create a new session - delegates to registered session handler
-pub fn sessionCreateHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (http_server.global_server) |server| {
         if (server.session_handler) |sess_handler| {
             const body = req.body() orelse "";
@@ -161,7 +161,7 @@ pub fn sessionCreateHandler(_: *http_server.HttpServer.ServerHandler, req: *http
 }
 
 /// List all sessions - returns sessions from database
-pub fn sessionListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
 
@@ -198,7 +198,7 @@ pub fn sessionListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.
 }
 
 /// Check if a session exists in the database
-pub fn sessionExistsHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn session_exist_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;
     const session_id = req.param("session_id") orelse {
         res.status = 400;
@@ -258,7 +258,7 @@ pub fn session_get_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz
 }
 
 /// Get messages for a session
-pub fn sessionMessagesHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
 
@@ -272,20 +272,39 @@ pub fn sessionMessagesHandler(_: *http_server.HttpServer.ServerHandler, req: *ht
     const limit_str = query.get("limit") orelse "100";
     const cursor = query.get("cursor");
     const sort_by_str = query.get("sort_by") orelse "created_at";
+    const direction_str = query.get("direction") orelse "asc";
     const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 100;
 
-    // Parse sort_by parameter
-    const sort_by: session_db.SortField = if (std.mem.eql(u8, sort_by_str, "id"))
-        .id
-    else if (std.mem.eql(u8, sort_by_str, "role"))
-        .role
-    else
-        .created_at; // default
+    // Determine sort direction (default: asc)
+    const is_desc = std.mem.eql(u8, direction_str, "desc");
+
+    // Parse sort_by parameter and combine with direction
+    // Use block to allow runtime conditions for union tag selection
+    const sort_spec: session_db.SortSpec = blk: {
+        if (std.mem.eql(u8, sort_by_str, "id")) {
+            break :blk if (is_desc)
+                session_db.SortSpec{ .id_desc = {} }
+            else
+                session_db.SortSpec{ .id_asc = {} };
+        } else if (std.mem.eql(u8, sort_by_str, "role")) {
+            break :blk if (is_desc)
+                session_db.SortSpec{ .role_desc = {} }
+            else
+                session_db.SortSpec{ .role_asc = {} };
+        } else {
+            // Default to created_at
+            break :blk if (is_desc)
+                session_db.SortSpec{ .created_at_desc = {} }
+            else
+                session_db.SortSpec{ .created_at_asc = {} };
+        }
+    };
 
     if (http_server.global_server) |server| {
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
-            const messages = session_db.get_session_messages(alloc, sqlite_db, session_id, limit_val, cursor, sort_by) catch {
+
+            const messages = session_db.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Database query failed\"}";
                 return;
@@ -304,8 +323,6 @@ pub fn sessionMessagesHandler(_: *http_server.HttpServer.ServerHandler, req: *ht
     res.status = 500;
     res.body = "{\"error\":\"Server not initialized\"}";
 }
-
-/// Get the latest session for a given working directory
 pub fn getLatestSessionByDirHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;
 
@@ -355,7 +372,7 @@ pub fn getLatestSessionByDirHandler(_: *http_server.HttpServer.ServerHandler, re
 
 /// Ping endpoint for connection health checks
 /// Returns connection status for a given session
-pub fn pingHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn ping_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;
     const session_id = req.param("session_id") orelse {
         res.status = 400;

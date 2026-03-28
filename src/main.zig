@@ -381,15 +381,15 @@ pub fn main() !void {
             router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
 
             // Session management endpoints (synchronous - returns response directly)
-            router.post("/api/session/create", http_handlers.sessionCreateHandler, .{});
-            router.get("/api/session", http_handlers.sessionListHandler, .{});
+            router.post("/api/session/create", http_handlers.session_create_handler, .{});
+            router.get("/api/session", http_handlers.session_list_handler, .{});
             router.get("/api/session/:session_id", http_handlers.session_get_handler, .{});
-            router.get("/api/session/:session_id/messages", http_handlers.sessionMessagesHandler, .{});
-            router.get("/api/session/exists/:session_id", http_handlers.sessionExistsHandler, .{});
+            router.get("/api/session/:session_id/messages", http_handlers.session_message_handler, .{});
+            router.get("/api/session/exists/:session_id", http_handlers.session_exist_handler, .{});
             router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, .{});
 
             // Ping endpoint - checks if session is connected via SSE
-            router.get("/api/ping/:session_id", http_handlers.pingHandler, .{});
+            router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
         }
     };
     try server.runWithConfig(HttpRoutes.setup);

@@ -77,6 +77,10 @@ test "buildSessionMessagesJson with messages" {
             .role = "user",
             .content = "Hello",
             .timestamp = "2024-01-15T10:00:00",
+            .is_input = "0",
+            .is_output = "0",
+            .tool_name = "",
+            .finish_reason = "",
         },
         .{
             .id = "msg2",
@@ -84,6 +88,10 @@ test "buildSessionMessagesJson with messages" {
             .role = "assistant",
             .content = "Hi there!",
             .timestamp = "2024-01-15T10:00:01",
+            .is_input = "0",
+            .is_output = "1",
+            .tool_name = "",
+            .finish_reason = "stop",
         },
     };
 
@@ -120,6 +128,10 @@ test "buildSessionMessagesJson escapes content" {
             .role = "user",
             .content = "Hello \"world\"\nwith newlines",
             .timestamp = "2024-01-15T10:00:00",
+            .is_input = "1",
+            .is_output = "0",
+            .tool_name = "bash",
+            .finish_reason = "tool_calls",
         },
     };
 
@@ -131,21 +143,115 @@ test "buildSessionMessagesJson escapes content" {
     try std.testing.expect(std.mem.indexOf(u8, result, "\\n") != null);
 }
 
-test "getSessionMessages accepts sort_by parameter" {
+test "getSessionMessages accepts sort_by with direction parameter" {
     const time = std.time.timestamp();
-    std.debug.print("test {s}\n", .{"getSessionMessages accepts sort_by parameter"});
-    defer std.debug.print("test {s} took {d}ms\n", .{ "getSessionMessages accepts sort_by parameter", std.time.timestamp() - time });
-    // Test that SortField enum exists with expected values
-    const field = session_db.SortField.created_at;
-    _ = field;
+    std.debug.print("test {s}\n", .{"getSessionMessages accepts sort_by with direction parameter"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "getSessionMessages accepts sort_by with direction parameter", std.time.timestamp() - time });
 
-    // Verify all sort fields are available
-    const fields = &[_]session_db.SortField{
-        session_db.SortField.created_at,
-        session_db.SortField.id,
-        session_db.SortField.role,
+    // Test that SortDirection enum exists
+    try std.testing.expect(@hasDecl(session_db, "SortDirection"));
+    try std.testing.expect(@as(session_db.SortDirection, .asc) == .asc);
+    try std.testing.expect(@as(session_db.SortDirection, .desc) == .desc);
+
+    // Test that SortSpec tagged union exists with all field+direction combinations
+    const specs = &[_]session_db.SortSpec{
+        session_db.SortSpec{ .created_at_asc = {} },
+        session_db.SortSpec{ .created_at_desc = {} },
+        session_db.SortSpec{ .id_asc = {} },
+        session_db.SortSpec{ .id_desc = {} },
+        session_db.SortSpec{ .role_asc = {} },
+        session_db.SortSpec{ .role_desc = {} },
     };
-    try std.testing.expect(fields.len == 3);
+    try std.testing.expect(specs.len == 6);
+
+    // Test that get_session_messages_sorted function exists
+    try std.testing.expect(@hasDecl(session_db, "get_session_messages_sorted"));
+}
+
+test "getSessionMessages sorts descending by created_at" {
+    const sqlite = @import("nalarcore").sqlite;
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"getSessionMessages sorts descending by created_at"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "getSessionMessages sorts descending by created_at", std.time.timestamp() - time });
+
+    var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    try db.exec(std.testing.allocator, 
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
+    // Insert messages with different timestamps
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) VALUES (?, ?, ?, ?, ?)",
+        &.{ "msg1", "sess_desc", "user", "First", "2024-01-15T10:00:00" });
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) VALUES (?, ?, ?, ?, ?)",
+        &.{ "msg2", "sess_desc", "assistant", "Second", "2024-01-15T10:00:01" });
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) VALUES (?, ?, ?, ?, ?)",
+        &.{ "msg3", "sess_desc", "user", "Third", "2024-01-15T10:00:02" });
+
+    // Sort descending - newest first
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "sess_desc", 10, null, .created_at_desc);
+    defer {
+        for (messages) |m| m.deinit(std.testing.allocator);
+        std.testing.allocator.free(messages);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), messages.len);
+    // Descending order: msg3 (newest) first
+    try std.testing.expectEqualSlices(u8, "msg3", messages[0].id);
+    try std.testing.expectEqualSlices(u8, "msg2", messages[1].id);
+    try std.testing.expectEqualSlices(u8, "msg1", messages[2].id);
+}
+
+test "getSessionMessages sorts ascending by id" {
+    const sqlite = @import("nalarcore").sqlite;
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"getSessionMessages sorts ascending by id"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "getSessionMessages sorts ascending by id", std.time.timestamp() - time });
+
+    var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    try db.exec(std.testing.allocator, 
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
+    // Insert messages with non-sequential IDs
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) VALUES (?, ?, ?, ?, ?)",
+        &.{ "msg_z", "sess_id", "user", "Z first", "2024-01-15T10:00:00" });
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) VALUES (?, ?, ?, ?, ?)",
+        &.{ "msg_a", "sess_id", "assistant", "A second", "2024-01-15T10:00:01" });
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) VALUES (?, ?, ?, ?, ?)",
+        &.{ "msg_m", "sess_id", "user", "M third", "2024-01-15T10:00:02" });
+
+    // Sort descending by id - 'z' > 'm' > 'a'
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "sess_id", 10, null, .id_desc);
+    defer {
+        for (messages) |m| m.deinit(std.testing.allocator);
+        std.testing.allocator.free(messages);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), messages.len);
+    // Descending: msg_z (z) > msg_m (m) > msg_a (a)
+    try std.testing.expectEqualSlices(u8, "msg_z", messages[0].id);
+    try std.testing.expectEqualSlices(u8, "msg_m", messages[1].id);
+    try std.testing.expectEqualSlices(u8, "msg_a", messages[2].id);
 }
 
 test "getSessionMessages cursor validation" {
@@ -172,21 +278,26 @@ test "getSessionMessages in-memory - basic pagination" {
     try db.init(":memory:");
     defer db.deinit();
 
+    // Create table matching the columns used by get_session_messages query
     try db.exec(std.testing.allocator, 
-        "CREATE TABLE llm_history (id TEXT, session_id TEXT, role TEXT, content TEXT, created_at TEXT)", 
-        &.{});
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg1", "sess123", "user", "Hello", "2024-01-15T10:00:00" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg1", "sess123", "user", "Hello", "2024-01-15T10:00:00", "0", "0", "", "" });
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg2", "sess123", "assistant", "Hi!", "2024-01-15T10:00:01" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg2", "sess123", "assistant", "Hi!", "2024-01-15T10:00:01", "0", "1", "", "stop" });
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg3", "sess123", "user", "How?", "2024-01-15T10:00:02" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg3", "sess123", "user", "How?", "2024-01-15T10:00:02", "1", "0", "bash", "tool_calls" });
 
-    const messages = try session_db.getSessionMessages(
-        std.testing.allocator, &db, "sess123", 10, null, .created_at);
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "sess123", 10, null, .created_at_asc);
     defer {
         for (messages) |m| m.deinit(std.testing.allocator);
         std.testing.allocator.free(messages);
@@ -196,6 +307,11 @@ test "getSessionMessages in-memory - basic pagination" {
     try std.testing.expectEqualSlices(u8, "msg1", messages[0].id);
     try std.testing.expectEqualSlices(u8, "msg2", messages[1].id);
     try std.testing.expectEqualSlices(u8, "msg3", messages[2].id);
+    // Verify new columns
+    try std.testing.expectEqualSlices(u8, "0", messages[0].is_input);
+    try std.testing.expectEqualSlices(u8, "1", messages[1].is_output);
+    try std.testing.expectEqualSlices(u8, "bash", messages[2].tool_name);
+    try std.testing.expectEqualSlices(u8, "tool_calls", messages[2].finish_reason);
 }
 
 test "getSessionMessages in-memory - cursor pagination" {
@@ -209,20 +325,24 @@ test "getSessionMessages in-memory - cursor pagination" {
     defer db.deinit();
 
     try db.exec(std.testing.allocator, 
-        "CREATE TABLE llm_history (id TEXT, session_id TEXT, role TEXT, content TEXT, created_at TEXT)", 
-        &.{});
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg1", "sess123", "user", "Hello", "2024-01-15T10:00:00" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg1", "sess123", "user", "Hello", "2024-01-15T10:00:00", "0", "0", "", "" });
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg2", "sess123", "assistant", "Hi!", "2024-01-15T10:00:01" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg2", "sess123", "assistant", "Hi!", "2024-01-15T10:00:01", "0", "1", "", "stop" });
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg3", "sess123", "user", "How?", "2024-01-15T10:00:02" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg3", "sess123", "user", "How?", "2024-01-15T10:00:02", "1", "0", "bash", "tool_calls" });
 
-    const messages = try session_db.getSessionMessages(
-        std.testing.allocator, &db, "sess123", 10, "msg1", .created_at);
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "sess123", 10, "msg1", .created_at_asc);
     defer {
         for (messages) |m| m.deinit(std.testing.allocator);
         std.testing.allocator.free(messages);
@@ -244,20 +364,24 @@ test "getSessionMessages in-memory - sort by id" {
     defer db.deinit();
 
     try db.exec(std.testing.allocator, 
-        "CREATE TABLE llm_history (id TEXT, session_id TEXT, role TEXT, content TEXT, created_at TEXT)", 
-        &.{});
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg3", "sess123", "user", "Third", "2024-01-15T10:00:03" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg3", "sess123", "user", "Third", "2024-01-15T10:00:03", "0", "0", "", "" });
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg1", "sess123", "user", "First", "2024-01-15T10:00:01" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg1", "sess123", "user", "First", "2024-01-15T10:00:01", "0", "0", "", "" });
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg2", "sess123", "assistant", "Second", "2024-01-15T10:00:02" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg2", "sess123", "assistant", "Second", "2024-01-15T10:00:02", "0", "1", "", "stop" });
 
-    const messages = try session_db.getSessionMessages(
-        std.testing.allocator, &db, "sess123", 10, null, .id);
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "sess123", 10, null, .id_asc);
     defer {
         for (messages) |m| m.deinit(std.testing.allocator);
         std.testing.allocator.free(messages);
@@ -280,20 +404,24 @@ test "getSessionMessages in-memory - sort by role" {
     defer db.deinit();
 
     try db.exec(std.testing.allocator, 
-        "CREATE TABLE llm_history (id TEXT, session_id TEXT, role TEXT, content TEXT, created_at TEXT)", 
-        &.{});
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg3", "sess123", "user", "Third", "2024-01-15T10:00:03" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg3", "sess123", "user", "Third", "2024-01-15T10:00:03", "1", "0", "", "" });
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg1", "sess123", "assistant", "First", "2024-01-15T10:00:01" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg1", "sess123", "assistant", "First", "2024-01-15T10:00:01", "0", "1", "", "stop" });
     try db.exec(std.testing.allocator,
-        "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-        &.{ "msg2", "sess123", "user", "Second", "2024-01-15T10:00:02" });
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg2", "sess123", "user", "Second", "2024-01-15T10:00:02", "1", "0", "read_file", "" });
 
-    const messages = try session_db.getSessionMessages(
-        std.testing.allocator, &db, "sess123", 10, null, .role);
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "sess123", 10, null, .role_asc);
     defer {
         for (messages) |m| m.deinit(std.testing.allocator);
         std.testing.allocator.free(messages);
@@ -316,18 +444,22 @@ test "getSessionMessages in-memory - limit" {
     defer db.deinit();
 
     try db.exec(std.testing.allocator, 
-        "CREATE TABLE llm_history (id TEXT, session_id TEXT, role TEXT, content TEXT, created_at TEXT)", 
-        &.{});
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
     inline for (&[_]struct { id: []const u8 }{
         .{ .id = "msg1" }, .{ .id = "msg2" }, .{ .id = "msg3" }, .{ .id = "msg4" }, .{ .id = "msg5" },
     }) |msg| {
         try db.exec(std.testing.allocator,
-            "INSERT INTO llm_history VALUES (?, ?, ?, ?, ?)",
-            &.{ msg.id, "sess123", "user", "", "2024-01-15T10:00:00" });
+            "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &.{ msg.id, "sess123", "user", "", "2024-01-15T10:00:00", "0", "0", "", "" });
     }
 
-    const messages = try session_db.getSessionMessages(
-        std.testing.allocator, &db, "sess123", 2, null, .created_at);
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "sess123", 2, null, .created_at_asc);
     defer {
         for (messages) |m| m.deinit(std.testing.allocator);
         std.testing.allocator.free(messages);
@@ -347,15 +479,65 @@ test "getSessionMessages in-memory - empty session" {
     defer db.deinit();
 
     try db.exec(std.testing.allocator, 
-        "CREATE TABLE llm_history (id TEXT, session_id TEXT, role TEXT, content TEXT, created_at TEXT)", 
-        &.{});
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
 
-    const messages = try session_db.getSessionMessages(
-        std.testing.allocator, &db, "nonexistent", 10, null, .created_at);
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "nonexistent", 10, null, .created_at_asc);
     defer {
         for (messages) |m| m.deinit(std.testing.allocator);
         std.testing.allocator.free(messages);
     }
 
     try std.testing.expectEqual(@as(usize, 0), messages.len);
+}
+
+test "getSessionMessages returns all columns including is_input is_output tool_name finish_reason" {
+    const sqlite = @import("nalarcore").sqlite;
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"getSessionMessages returns all columns including is_input is_output tool_name finish_reason"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "getSessionMessages returns all columns including is_input is_output tool_name finish_reason", std.time.timestamp() - time });
+
+    var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    try db.exec(std.testing.allocator, 
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT ''
+        \\)
+        , &.{});
+    
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, is_input, is_output, tool_name, finish_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg1", "sess123", "user", "Hello world", "2024-01-15T10:00:00", "1", "0", "bash", "stop" });
+
+    const messages = try session_db.get_session_messages_sorted(
+        std.testing.allocator, &db, "sess123", 10, null, .created_at_asc);
+    defer {
+        for (messages) |m| m.deinit(std.testing.allocator);
+        std.testing.allocator.free(messages);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), messages.len);
+    
+    // Verify all columns are returned
+    const msg = messages[0];
+    try std.testing.expectEqualSlices(u8, "msg1", msg.id);
+    try std.testing.expectEqualSlices(u8, "sess123", msg.session_id);
+    try std.testing.expectEqualSlices(u8, "user", msg.role);
+    try std.testing.expectEqualSlices(u8, "Hello world", msg.content);
+    try std.testing.expectEqualSlices(u8, "2024-01-15T10:00:00", msg.timestamp);
+    
+    // Verify new columns exist and have correct values
+    try std.testing.expectEqualSlices(u8, "1", msg.is_input);
+    try std.testing.expectEqualSlices(u8, "0", msg.is_output);
+    try std.testing.expectEqualSlices(u8, "bash", msg.tool_name);
+    try std.testing.expectEqualSlices(u8, "stop", msg.finish_reason);
 }

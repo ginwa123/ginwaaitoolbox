@@ -203,3 +203,37 @@ pub fn sendCompactCommand(app: *App) !void {
     const request = try std.fmt.allocPrint(allocator, "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
+
+/// Get the latest message with finish_reason="stop" for a session
+/// Returns true if the latest message has finish_reason="stop"
+/// This is used during streaming to detect when the LLM has finished
+pub fn get_latest_message_by_created_at(app: *App) !bool {
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+    defer std.posix.close(sock);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
+    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+
+    const request = try std.fmt.allocPrint(allocator,
+        "GET /api/session/{s}/messages?sort_by=created_at&direction=desc&limit=1 HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n",
+        .{ app.session_id, globals.HTTP_HOST, app.http_port });
+    _ = try std.posix.write(sock, request);
+
+    // Read response
+    var buf: [8192]u8 = undefined;
+    const n = std.posix.read(sock, &buf) catch return false;
+    if (n == 0) return false;
+
+    const response = buf[0..n];
+
+    // Check if we got a message with finish_reason="stop"
+    // Response format: {"messages":[{"id":"123",...,"finish_reason":"stop",...}]}
+    if (std.mem.indexOf(u8, response, "\"finish_reason\":\"stop\"")) |_| {
+        return true;
+    }
+
+    return false;
+}

@@ -190,6 +190,11 @@ pub const SessionMessage = struct {
     role: []const u8,
     content: []const u8,
     timestamp: []const u8,
+    // New columns
+    is_input: []const u8,
+    is_output: []const u8,
+    tool_name: []const u8,
+    finish_reason: []const u8,
 
     pub fn deinit(self: *const SessionMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -197,20 +202,34 @@ pub const SessionMessage = struct {
         allocator.free(self.role);
         allocator.free(self.content);
         allocator.free(self.timestamp);
+        allocator.free(self.is_input);
+        allocator.free(self.is_output);
+        allocator.free(self.tool_name);
+        allocator.free(self.finish_reason);
     }
 };
 
-/// Sort fields for session messages
-pub const SortField = enum { created_at, id, role };
+/// Sort direction
+pub const SortDirection = enum { asc, desc };
+
+/// Sort specification with field and direction combined
+pub const SortSpec = union(enum) {
+    created_at_asc: void,
+    created_at_desc: void,
+    id_asc: void,
+    id_desc: void,
+    role_asc: void,
+    role_desc: void,
+};
 
 /// Get messages for a session with cursor-based pagination and sorting
-pub fn get_session_messages(
+pub fn get_session_messages_sorted(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
     limit: u32,
     cursor: ?[]const u8,
-    sort_by: SortField,
+    sort_spec: SortSpec,
 ) ![]SessionMessage {
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     defer allocator.free(limit_str);
@@ -220,25 +239,37 @@ pub fn get_session_messages(
 
     if (cursor) |c| {
         // With cursor
-        const order_part = switch (sort_by) {
-            .created_at => " ORDER BY created_at ASC, id ASC",
-            .id => " ORDER BY id ASC",
-            .role => " ORDER BY role ASC, created_at ASC, id ASC",
+        const order_part = switch (sort_spec) {
+            .created_at_asc => " ORDER BY created_at ASC, id ASC",
+            .created_at_desc => " ORDER BY created_at DESC, id DESC",
+            .id_asc => " ORDER BY id ASC",
+            .id_desc => " ORDER BY id DESC",
+            .role_asc => " ORDER BY role ASC, created_at ASC, id ASC",
+            .role_desc => " ORDER BY role DESC, created_at DESC, id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
-            "SELECT id, session_id, role, content, created_at FROM llm_history WHERE session_id = ? AND id > ?{s} LIMIT ?",
-            .{order_part});
+            \\SELECT id, session_id, role, response_content, created_at,
+            \\       COALESCE(is_input, 0), COALESCE(is_output, 0), COALESCE(tool_name, ''),
+            \\       COALESCE(finish_reason, '')
+            \\FROM llm_history WHERE session_id = ? AND id > ?{s} LIMIT ?
+            , .{order_part});
         argv = &.{ session_id, c, limit_str };
     } else {
         // Without cursor
-        const order_part = switch (sort_by) {
-            .created_at => " ORDER BY created_at ASC, id ASC",
-            .id => " ORDER BY id ASC",
-            .role => " ORDER BY role ASC, created_at ASC, id ASC",
+        const order_part = switch (sort_spec) {
+            .created_at_asc => " ORDER BY created_at ASC, id ASC",
+            .created_at_desc => " ORDER BY created_at DESC, id DESC",
+            .id_asc => " ORDER BY id ASC",
+            .id_desc => " ORDER BY id DESC",
+            .role_asc => " ORDER BY role ASC, created_at ASC, id ASC",
+            .role_desc => " ORDER BY role DESC, created_at DESC, id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
-            "SELECT id, session_id, role, content, created_at FROM llm_history WHERE session_id = ?{s} LIMIT ?",
-            .{order_part});
+            \\SELECT id, session_id, role, response_content, created_at,
+            \\       COALESCE(is_input, 0), COALESCE(is_output, 0), COALESCE(tool_name, ''),
+            \\       COALESCE(finish_reason, '')
+            \\FROM llm_history WHERE session_id = ?{s} LIMIT ?
+            , .{order_part});
         argv = &.{ session_id, limit_str };
     }
     defer allocator.free(sql);
@@ -259,6 +290,10 @@ pub fn get_session_messages(
             .role = try allocator.dupe(u8, row.values[2]),
             .content = try allocator.dupe(u8, row.values[3]),
             .timestamp = try allocator.dupe(u8, row.values[4]),
+            .is_input = try allocator.dupe(u8, row.values[5]),
+            .is_output = try allocator.dupe(u8, row.values[6]),
+            .tool_name = try allocator.dupe(u8, row.values[7]),
+            .finish_reason = try allocator.dupe(u8, row.values[8]),
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);
@@ -292,8 +327,10 @@ pub fn buildSessionMessagesJson(
             }
         }
         const msg_json = try std.fmt.allocPrint(allocator,
-            "{{\"id\":\"{s}\",\"sessionId\":\"{s}\",\"role\":\"{s}\",\"content\":\"{s}\",\"timestamp\":\"{s}\"}}",
-            .{ msg.id, msg.session_id, msg.role, escaped_content.items, msg.timestamp });
+            \\{{"id":"{s}","session_id":"{s}","role":"{s}","content":"{s}","timestamp":"{s}",
+            \\"is_input":"{s}","is_output":"{s}","tool_name":"{s}","finish_reason":"{s}"}}
+            ,
+            .{ msg.id, msg.session_id, msg.role, escaped_content.items, msg.timestamp, msg.is_input, msg.is_output, msg.tool_name, msg.finish_reason });
         defer allocator.free(msg_json);
         try json_messages.appendSlice(allocator, msg_json);
         escaped_content.deinit(allocator);
