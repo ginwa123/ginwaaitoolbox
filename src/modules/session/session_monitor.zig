@@ -32,7 +32,7 @@ pub const SessionMonitor = struct {
             if (!running.load(.seq_cst)) break;
 
             // Check registry status
-            const registry = cancellation_registry.getGlobalRegistry();
+            const registry = cancellation_registry.get_global_registry();
             // for now we will disabled this
             // if (registry == null) {
             //     std.log.info("SessionMonitor: No registry found, exiting process", .{});

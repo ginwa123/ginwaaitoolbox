@@ -160,12 +160,12 @@ pub const TUIWorkflow = struct {
 
     fn runInternal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
         defer {
-            if (cancellation_registry.getGlobalRegistry()) |registry| {
+            if (cancellation_registry.get_global_registry()) |registry| {
                 registry.unregister(session_id);
             }
         }
         // Register this session for cancellation tracking
-        if (cancellation_registry.getGlobalRegistry()) |registry| {
+        if (cancellation_registry.get_global_registry()) |registry| {
             try registry.register(session_id);
         }
 
@@ -207,9 +207,8 @@ pub const TUIWorkflow = struct {
         defer parent_allocator.free(base_tools);
 
         while (true) {
-            if (cancellation_registry.getGlobalRegistry()) |registry| {
-                if (registry.isCancelled(session_id)) {
-                    self.logger.infoFmt("WORKFLOW CANCELLED: session_id={s}", .{session_id}) catch {};
+            if (cancellation_registry.get_global_registry()) |registry| {
+                if (registry.is_cancelled(session_id)) {
                     break;
                 }
             }
