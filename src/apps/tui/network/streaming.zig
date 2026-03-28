@@ -74,7 +74,10 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
         } else {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
-                _ = messaging.sendPingCommand(app) catch false;
+                const is_need_reconnect = messaging.sendPingCommand(app) catch false;
+                if (is_need_reconnect) {
+                    std.debug.print("try connecting SSE session expired, reconnecting...\n", .{});
+                }
                 last_ping_ms = now;
             }
         }
@@ -131,6 +134,11 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
         if (std.mem.indexOf(u8, raw_buffer.items, closing_tag)) |_| {
             if (utils.extract_tag(raw_buffer.items, "finish_reason")) |fr| {
                 if (std.mem.eql(u8, fr, "stop") or std.mem.eql(u8, fr, "user_choice")) {
+                    std.debug.print("\x1b[90m", .{});
+                    for (raw_buffer.items) |c| {
+                        std.debug.print("{c}", .{c});
+                    }
+                    std.debug.print("\x1b[0m", .{});
                     break;
                 }
                 if (std.mem.eql(u8, fr, "cancelled")) {

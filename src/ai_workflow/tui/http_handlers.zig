@@ -162,6 +162,7 @@ pub fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!
 
 /// List all sessions - returns sessions from database
 pub fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    const alloc = req.arena;
     res.content_type = .JSON;
 
     const query = try req.query();
@@ -172,11 +173,6 @@ pub fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!vo
 
     if (http_server.global_server) |server| {
         if (server.db) |db| {
-            // Use arena allocator scoped to this handler - freed after response
-            var arena = std.heap.ArenaAllocator.init(server.allocator);
-            defer arena.deinit();
-            const alloc = arena.allocator();
-
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
             const result = session_db.getSessionList(alloc, sqlite_db, null, null, limit_val, offset_val) catch {
                 res.status = 500;
@@ -189,21 +185,8 @@ pub fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!vo
             }
 
             // Build JSON response
-            var json_sessions = std.ArrayList(u8).empty;
-            try json_sessions.appendSlice(alloc, "[");
-            for (result.sessions, 0..) |sess, i| {
-                if (i > 0) try json_sessions.append(alloc, ',');
-                const sess_json = try std.fmt.allocPrint(alloc,
-                    "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}",
-                    .{ sess.session_id, sess.session_dir, sess.created_at, sess.agent, sess.session_name });
-                try json_sessions.appendSlice(alloc, sess_json);
-                alloc.free(sess_json);
-            }
-            try json_sessions.append(alloc, ']');
-
-            const response = try std.fmt.allocPrint(alloc,
-                "{{\"sessions\":{s},\"total\":{d}}}",
-                .{ json_sessions.items, result.total });
+            const response = try session_db.buildSessionListJson(
+                alloc, result.sessions, result.total);
 
             res.status = 200;
             res.body = response;

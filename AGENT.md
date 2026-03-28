@@ -114,4 +114,8 @@ for testing use this command always
 ### Zig
 - use `zig build test` to run all tests
 - put the test in test_runner.zig and import it in root.zig
+- the test should be in the same folder as the file it's testing and end with `_test.zig`
 
+
+# Mandatory
+- Dont ever kill the process port 8081 !!!

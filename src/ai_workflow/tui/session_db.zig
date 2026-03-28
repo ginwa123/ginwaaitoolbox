@@ -62,6 +62,33 @@ pub fn getSessionList(
     };
 }
 
+/// Build JSON response for a list of sessions
+pub fn buildSessionListJson(
+    allocator: std.mem.Allocator,
+    sessions: []const SessionInfo,
+    total: u32,
+) ![]u8 {
+    var json_sessions = std.ArrayList(u8).empty;
+    errdefer json_sessions.deinit(allocator);
+
+    try json_sessions.appendSlice(allocator, "[");
+    for (sessions, 0..) |sess, i| {
+        if (i > 0) try json_sessions.append(allocator, ',');
+        const sess_json = try std.fmt.allocPrint(allocator,
+            "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}",
+            .{ sess.session_id, sess.session_dir, sess.created_at, sess.agent, sess.session_name });
+        defer allocator.free(sess_json);
+        try json_sessions.appendSlice(allocator, sess_json);
+    }
+    try json_sessions.append(allocator, ']');
+
+    const result = try std.fmt.allocPrint(allocator,
+        "{{\"sessions\":{s},\"total\":{d}}}",
+        .{ json_sessions.items, total });
+    json_sessions.deinit(allocator);
+    return result;
+}
+
 /// Get a single session by ID
 pub fn getSession(
     allocator: std.mem.Allocator,
