@@ -270,14 +270,22 @@ pub fn sessionMessagesHandler(_: *http_server.HttpServer.ServerHandler, req: *ht
 
     const query = try req.query();
     const limit_str = query.get("limit") orelse "100";
-    const offset_str = query.get("offset") orelse "0";
+    const cursor = query.get("cursor");
+    const sort_by_str = query.get("sort_by") orelse "created_at";
     const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 100;
-    const offset_val = std.fmt.parseInt(u32, offset_str, 10) catch 0;
+
+    // Parse sort_by parameter
+    const sort_by: session_db.SortField = if (std.mem.eql(u8, sort_by_str, "id"))
+        .id
+    else if (std.mem.eql(u8, sort_by_str, "role"))
+        .role
+    else
+        .created_at; // default
 
     if (http_server.global_server) |server| {
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
-            const messages = session_db.getSessionMessages(alloc, sqlite_db, session_id, limit_val, offset_val) catch {
+            const messages = session_db.get_session_messages(alloc, sqlite_db, session_id, limit_val, cursor, sort_by) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Database query failed\"}";
                 return;

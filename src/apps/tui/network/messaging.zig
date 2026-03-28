@@ -100,7 +100,7 @@ pub fn send_ping_command(app: *App) !bool {
     if (n > 0) {
         const response = buf[0..n];
         if (std.mem.indexOf(u8, response, "\"reconnect\":true") != null) {
-            return true; // Need to reconnect
+            return true;
         }
     }
     return false;

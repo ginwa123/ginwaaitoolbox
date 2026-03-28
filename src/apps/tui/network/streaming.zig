@@ -88,8 +88,8 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
-        // Print raw content as-is from backend
-        if (std.mem.eql(u8, raw_buffer.items, ": keepalive")) {
+        const trimmed = std.mem.trim(u8, raw_buffer.items, &std.ascii.whitespace);
+        if (std.mem.eql(u8, trimmed, ": keepalive")) {
             std.debug.print("should remove {s}", .{raw_buffer.items});
         } else {
             std.debug.print("{s}", .{raw_buffer.items});

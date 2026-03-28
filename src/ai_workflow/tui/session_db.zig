@@ -75,18 +75,23 @@ pub fn buildSessionListJson(
     for (sessions, 0..) |sess, i| {
         if (i > 0) try json_sessions.append(allocator, ',');
 
-        // Escape JSON strings
-        const sess_json = try std.fmt.allocPrint(allocator,
-            "{{\"sessionId\":{s},\"sessionDir\":{s},\"createdAt\":{s},\"agent\":{s},\"sessionName\":{s}}}",
-            .{
-                try jsonEscape(allocator, sess.session_id),
-                try jsonEscape(allocator, sess.session_dir),
-                try jsonEscape(allocator, sess.created_at),
-                try jsonEscape(allocator, sess.agent),
-                try jsonEscape(allocator, sess.session_name),
-            });
-        defer allocator.free(sess_json);
-        try json_sessions.appendSlice(allocator, sess_json);
+        // Build each field with JSON escaping
+        try json_sessions.append(allocator, '{');
+        try json_sessions.appendSlice(allocator, "\"sessionId\":");
+        try jsonAppendEscaped(allocator, &json_sessions, sess.session_id);
+        try json_sessions.append(allocator, ',');
+        try json_sessions.appendSlice(allocator, "\"sessionDir\":");
+        try jsonAppendEscaped(allocator, &json_sessions, sess.session_dir);
+        try json_sessions.append(allocator, ',');
+        try json_sessions.appendSlice(allocator, "\"createdAt\":");
+        try jsonAppendEscaped(allocator, &json_sessions, sess.created_at);
+        try json_sessions.append(allocator, ',');
+        try json_sessions.appendSlice(allocator, "\"agent\":");
+        try jsonAppendEscaped(allocator, &json_sessions, sess.agent);
+        try json_sessions.append(allocator, ',');
+        try json_sessions.appendSlice(allocator, "\"sessionName\":");
+        try jsonAppendEscaped(allocator, &json_sessions, sess.session_name);
+        try json_sessions.append(allocator, '}');
     }
     try json_sessions.append(allocator, ']');
 
@@ -97,25 +102,20 @@ pub fn buildSessionListJson(
     return result;
 }
 
-/// Escape a string for JSON - wraps in quotes and escapes special characters
-fn jsonEscape(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var escaped = std.ArrayList(u8).empty;
-    errdefer escaped.deinit(allocator);
-
-    try escaped.append(allocator, '"');
+/// Append escaped JSON string (with quotes) to an ArrayList
+fn jsonAppendEscaped(allocator: std.mem.Allocator, out: *std.ArrayList(u8), input: []const u8) !void {
+    try out.append(allocator, '"');
     for (input) |c| {
         switch (c) {
-            '"' => try escaped.appendSlice(allocator, "\\\""),
-            '\\' => try escaped.appendSlice(allocator, "\\\\"),
-            '\n' => try escaped.appendSlice(allocator, "\\n"),
-            '\r' => try escaped.appendSlice(allocator, "\\r"),
-            '\t' => try escaped.appendSlice(allocator, "\\t"),
-            else => try escaped.append(allocator, c),
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            else => try out.append(allocator, c),
         }
     }
-    try escaped.append(allocator, '"');
-
-    return try escaped.toOwnedSlice(allocator);
+    try out.append(allocator, '"');
 }
 
 /// Get a single session by ID
@@ -200,24 +200,50 @@ pub const SessionMessage = struct {
     }
 };
 
-/// Get messages for a session
-pub fn getSessionMessages(
+/// Sort fields for session messages
+pub const SortField = enum { created_at, id, role };
+
+/// Get messages for a session with cursor-based pagination and sorting
+pub fn get_session_messages(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
     limit: u32,
-    offset: u32,
+    cursor: ?[]const u8,
+    sort_by: SortField,
 ) ![]SessionMessage {
-    const sql = "SELECT id, session_id, role, content, created_at FROM llm_history WHERE session_id = ? ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?";
-
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
-    const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{offset});
-    defer {
-        allocator.free(limit_str);
-        allocator.free(offset_str);
-    }
+    defer allocator.free(limit_str);
 
-    var rows = try db.query(allocator, sql, &.{ session_id, limit_str, offset_str });
+    var sql: []u8 = undefined;
+    var argv: []const []const u8 = undefined;
+
+    if (cursor) |c| {
+        // With cursor
+        const order_part = switch (sort_by) {
+            .created_at => " ORDER BY created_at ASC, id ASC",
+            .id => " ORDER BY id ASC",
+            .role => " ORDER BY role ASC, created_at ASC, id ASC",
+        };
+        sql = try std.fmt.allocPrint(allocator,
+            "SELECT id, session_id, role, content, created_at FROM llm_history WHERE session_id = ? AND id > ?{s} LIMIT ?",
+            .{order_part});
+        argv = &.{ session_id, c, limit_str };
+    } else {
+        // Without cursor
+        const order_part = switch (sort_by) {
+            .created_at => " ORDER BY created_at ASC, id ASC",
+            .id => " ORDER BY id ASC",
+            .role => " ORDER BY role ASC, created_at ASC, id ASC",
+        };
+        sql = try std.fmt.allocPrint(allocator,
+            "SELECT id, session_id, role, content, created_at FROM llm_history WHERE session_id = ?{s} LIMIT ?",
+            .{order_part});
+        argv = &.{ session_id, limit_str };
+    }
+    defer allocator.free(sql);
+
+    var rows = try db.query(allocator, sql, argv);
     defer rows.deinit();
 
     var messages = std.ArrayList(SessionMessage).empty;
