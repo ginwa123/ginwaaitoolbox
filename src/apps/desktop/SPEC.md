@@ -69,8 +69,9 @@ A minimal, high-performance desktop application built with SolidJS and Tauri. Th
 
 ### Core Features
 1. **Window Management** — Native title bar with minimize, maximize, close
-2. **Navigation** — Sidebar with 3 sections: Home, Settings, About
-3. **Dark Theme** — Always dark, no toggle needed
+2. **Navigation** — Sidebar with Sessions list
+3. **Session Chat** — Click session in sidebar to view chat history with LLM messages
+4. **Dark Theme** — Always dark, no toggle needed
 
 ### Interactions
 | Element | Hover | Active | Disabled |
@@ -110,6 +111,12 @@ A minimal, high-performance desktop application built with SolidJS and Tauri. Th
 - Fixed height `32px`
 - Version info, status indicators
 
+### SessionChat
+- Session header with name, agent type, ID
+- Scrollable message list with role-based coloring
+- Role icons: `>` (user), `◆` (assistant), `★` (system), `⚙` (tool)
+- Role colors: blue (user), yellow (assistant), purple (system), green (tool)
+
 ## 6. Technical Approach
 
 ### Stack
@@ -137,14 +144,19 @@ src/apps/desktop/
 │   │   ├── Footer.tsx
 │   │   └── NavItem.tsx
 │   └── pages/
-│       ├── Home.tsx
-│       ├── Settings.tsx
-│       └── About.tsx
+│       ├── Welcome.tsx
+│       └── SessionChat.tsx
 └── src-tauri/
     ├── Cargo.toml
     ├── tauri.conf.json
     └── src/main.rs
 ```
+
+### Routing
+| Route | Component | Description |
+|-------|-----------|-------------|
+| `/` | `Welcome` | Welcome page with app info |
+| `/session/:sessionId` | `SessionChat` | Session chat history with LLM messages |
 
 ### Architecture
 - File-based routing via SolidJS Router

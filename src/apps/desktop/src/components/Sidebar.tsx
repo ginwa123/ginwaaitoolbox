@@ -1,5 +1,5 @@
 import { createSignal, onMount, For, type Component } from "solid-js";
-import { fetch } from "@tauri-apps/plugin-http";
+import { useNavigate } from "@solidjs/router";
 
 interface Session {
   sessionId: string;
@@ -8,8 +8,6 @@ interface Session {
   agent: string;
   sessionName: string;
 }
-
-// Sessions only - Home and Settings removed per user request
 
 // Helper to get base URL - both dev and prod use the backend API at 8080
 const getBaseUrl = () => {
@@ -20,15 +18,36 @@ const Sidebar: Component = () => {
   const [sessions, setSessions] = createSignal<Session[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [expanded, setExpanded] = createSignal(true);
+  const [error, setError] = createSignal<string | null>(null);
+  const navigate = useNavigate();
 
   onMount(async () => {
     try {
       const baseUrl = getBaseUrl();
-      const res = await fetch(`${baseUrl}/api/session?limit=50&offset=0`);
-      const data = await res.json() as { sessions?: Session[] };
+      console.log("Fetching sessions from:", `${baseUrl}/api/session?limit=50&offset=0`);
+      
+      const res = await fetch(`${baseUrl}/api/session?limit=50&offset=0`, {
+        method: "GET",
+        headers: {
+          "Accept": "application/json",
+        },
+      });
+      
+      console.log("Response status:", res.status);
+      console.log("Response headers:", Object.fromEntries(res.headers.entries()));
+      
+      const text = await res.text();
+      console.log("Response text:", text.substring(0, 500));
+      
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+      
+      const data = JSON.parse(text) as { sessions?: Session[] };
       setSessions(data.sessions || []);
     } catch (err) {
       console.error("Failed to load sessions:", err);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -69,6 +88,10 @@ const Sidebar: Component = () => {
     return parts[parts.length - 1] || session.sessionId.slice(0, 8);
   };
 
+  const handleSessionClick = (sessionId: string) => {
+    navigate(`/session/${sessionId}`);
+  };
+
   return (
     <aside class="w-60 bg-[#0a0a0a] border-r border-[#2a2a2a] flex flex-col">
       <nav class="flex-1 py-4 flex flex-col">
@@ -96,6 +119,10 @@ const Sidebar: Component = () => {
                 <div class="px-2 py-4 text-[#525252] text-xs font-mono text-center">
                   Loading...
                 </div>
+              ) : error() ? (
+                <div class="px-2 py-2 text-[#ef4444] text-xs font-mono">
+                  Error: {error()}
+                </div>
               ) : sessions().length === 0 ? (
                 <div class="px-2 py-4 text-[#525252] text-xs font-mono text-center">
                   No sessions
@@ -103,9 +130,9 @@ const Sidebar: Component = () => {
               ) : (
                 <For each={sessions()}>
                   {(session) => (
-                    <a
-                      href={`/session/${session.sessionId}`}
-                      class="block group"
+                    <button
+                      onClick={() => handleSessionClick(session.sessionId)}
+                      class="block group w-full text-left"
                     >
                       <div class="px-2 py-2 rounded hover:bg-[#141414] transition-colors">
                         <div class="flex items-start gap-2">
@@ -120,7 +147,7 @@ const Sidebar: Component = () => {
                           </div>
                         </div>
                       </div>
-                    </a>
+                    </button>
                   )}
                 </For>
               )}

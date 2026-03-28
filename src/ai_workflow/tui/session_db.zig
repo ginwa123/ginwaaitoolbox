@@ -74,9 +74,17 @@ pub fn buildSessionListJson(
     try json_sessions.appendSlice(allocator, "[");
     for (sessions, 0..) |sess, i| {
         if (i > 0) try json_sessions.append(allocator, ',');
+        
+        // Escape JSON strings
         const sess_json = try std.fmt.allocPrint(allocator,
-            "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}",
-            .{ sess.session_id, sess.session_dir, sess.created_at, sess.agent, sess.session_name });
+            "{{\"sessionId\":{s},\"sessionDir\":{s},\"createdAt\":{s},\"agent\":{s},\"sessionName\":{s}}}",
+            .{
+                try jsonEscape(allocator, sess.session_id),
+                try jsonEscape(allocator, sess.session_dir),
+                try jsonEscape(allocator, sess.created_at),
+                try jsonEscape(allocator, sess.agent),
+                try jsonEscape(allocator, sess.session_name),
+            });
         defer allocator.free(sess_json);
         try json_sessions.appendSlice(allocator, sess_json);
     }
@@ -87,6 +95,27 @@ pub fn buildSessionListJson(
         .{ json_sessions.items, total });
     json_sessions.deinit(allocator);
     return result;
+}
+
+/// Escape a string for JSON - wraps in quotes and escapes special characters
+fn jsonEscape(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var escaped = std.ArrayList(u8).empty;
+    errdefer escaped.deinit(allocator);
+    
+    try escaped.append(allocator, '"');
+    for (input) |c| {
+        switch (c) {
+            '"' => try escaped.appendSlice(allocator, "\\\""),
+            '\\' => try escaped.appendSlice(allocator, "\\\\"),
+            '\n' => try escaped.appendSlice(allocator, "\\n"),
+            '\r' => try escaped.appendSlice(allocator, "\\r"),
+            '\t' => try escaped.appendSlice(allocator, "\\t"),
+            else => try escaped.append(allocator, c),
+        }
+    }
+    try escaped.append(allocator, '"');
+    
+    return try escaped.toOwnedSlice(allocator);
 }
 
 /// Get a single session by ID
@@ -153,3 +182,101 @@ pub const SessionDetail = struct {
         allocator.free(self.model);
     }
 };
+
+/// Chat message for a session
+pub const SessionMessage = struct {
+    id: []const u8,
+    session_id: []const u8,
+    role: []const u8,
+    content: []const u8,
+    timestamp: []const u8,
+
+    pub fn deinit(self: *const SessionMessage, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.session_id);
+        allocator.free(self.role);
+        allocator.free(self.content);
+        allocator.free(self.timestamp);
+    }
+};
+
+/// Get messages for a session
+pub fn getSessionMessages(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    limit: u32,
+    offset: u32,
+) ![]SessionMessage {
+    const sql = "SELECT id, session_id, role, content, created_at FROM llm_history WHERE session_id = ? ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?";
+    
+    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
+    const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{offset});
+    defer {
+        allocator.free(limit_str);
+        allocator.free(offset_str);
+    }
+    
+    var rows = try db.query(allocator, sql, &.{ session_id, limit_str, offset_str });
+    defer rows.deinit();
+
+    var messages = std.ArrayList(SessionMessage).empty;
+    errdefer {
+        for (messages.items) |m| m.deinit(allocator);
+        messages.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const msg = SessionMessage{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .role = try allocator.dupe(u8, row.values[2]),
+            .content = try allocator.dupe(u8, row.values[3]),
+            .timestamp = try allocator.dupe(u8, row.values[4]),
+        };
+        try messages.append(allocator, msg);
+        row.deinit(allocator);
+    }
+
+    return try messages.toOwnedSlice(allocator);
+}
+
+/// Build JSON response for session messages
+pub fn buildSessionMessagesJson(
+    allocator: std.mem.Allocator,
+    messages: []const SessionMessage,
+) ![]u8 {
+    var json_messages = std.ArrayList(u8).empty;
+    errdefer json_messages.deinit(allocator);
+
+    try json_messages.appendSlice(allocator, "[");
+    for (messages, 0..) |msg, i| {
+        if (i > 0) try json_messages.append(allocator, ',');
+        // Escape content for JSON
+        var escaped_content = std.ArrayList(u8).empty;
+        errdefer escaped_content.deinit(allocator);
+        for (msg.content) |c| {
+            switch (c) {
+                '"' => try escaped_content.appendSlice(allocator, "\\\""),
+                '\\' => try escaped_content.appendSlice(allocator, "\\\\"),
+                '\n' => try escaped_content.appendSlice(allocator, "\\n"),
+                '\r' => try escaped_content.appendSlice(allocator, "\\r"),
+                '\t' => try escaped_content.appendSlice(allocator, "\\t"),
+                else => try escaped_content.append(allocator, c),
+            }
+        }
+        const msg_json = try std.fmt.allocPrint(allocator,
+            "{{\"id\":\"{s}\",\"sessionId\":\"{s}\",\"role\":\"{s}\",\"content\":\"{s}\",\"timestamp\":\"{s}\"}}",
+            .{ msg.id, msg.session_id, msg.role, escaped_content.items, msg.timestamp });
+        defer allocator.free(msg_json);
+        try json_messages.appendSlice(allocator, msg_json);
+        escaped_content.deinit(allocator);
+    }
+    try json_messages.append(allocator, ']');
+
+    const result = try std.fmt.allocPrint(allocator,
+        "{{\"messages\":{s}}}",
+        .{json_messages.items});
+    json_messages.deinit(allocator);
+    return result;
+}

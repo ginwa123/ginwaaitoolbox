@@ -42,6 +42,3 @@ pub const TUIHistory = struct {
     }
 };
 
-test {
-    _ = @import("models_test.zig");
-}

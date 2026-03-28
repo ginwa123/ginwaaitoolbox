@@ -71,7 +71,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
 }
 
 /// SSE stream endpoint - establishes persistent connection for real-time events
-pub fn streamHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn streamHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const session_id = req.param("session_id") orelse {
         res.status = 400;
         res.body = "Missing session_id";
@@ -102,7 +102,7 @@ pub fn streamHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
 
 /// Handle incoming command messages asynchronously
 /// Messages are processed in a detached thread for non-blocking operation
-pub fn commandHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn commandHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (http_server.global_server) |server| {
         if (server.message_handler) |msg_handler| {
             const body = req.body() orelse "";
@@ -145,7 +145,7 @@ const HandlerArgs = struct {
 // =============================================================================
 
 /// Create a new session - delegates to registered session handler
-pub fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn sessionCreateHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (http_server.global_server) |server| {
         if (server.session_handler) |sess_handler| {
             const body = req.body() orelse "";
@@ -161,7 +161,7 @@ pub fn sessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!
 }
 
 /// List all sessions - returns sessions from database
-pub fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn sessionListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
 
@@ -198,7 +198,7 @@ pub fn sessionListHandler(req: *httpz.Request, res: *httpz.Response) anyerror!vo
 }
 
 /// Check if a session exists in the database
-pub fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn sessionExistsHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;
     const session_id = req.param("session_id") orelse {
         res.status = 400;
@@ -219,8 +219,86 @@ pub fn sessionExistsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!
     res.body = "{\"error\":\"Server not initialized\"}";
 }
 
+/// Get a session by ID
+pub fn sessionGetHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    const alloc = req.arena;
+    res.content_type = .JSON;
+
+    const session_id = req.param("session_id") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing session_id\"}";
+        return;
+    };
+
+    if (http_server.global_server) |server| {
+        if (server.db) |db| {
+            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+            const session = session_db.getSession(alloc, sqlite_db, session_id) catch {
+                res.status = 500;
+                res.body = "{\"error\":\"Database query failed\"}";
+                return;
+            };
+
+            if (session) |s| {
+                const response = try std.fmt.allocPrint(alloc,
+                    "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}",
+                    .{ s.session_id, s.session_dir, s.created_at, s.agent, s.session_name });
+                s.deinit(alloc);
+                res.status = 200;
+                res.body = response;
+            } else {
+                res.status = 404;
+                res.body = "{\"error\":\"Session not found\"}";
+            }
+            return;
+        }
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server not initialized\"}";
+}
+
+/// Get messages for a session
+pub fn sessionMessagesHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    const alloc = req.arena;
+    res.content_type = .JSON;
+
+    const session_id = req.param("session_id") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing session_id\"}";
+        return;
+    };
+
+    const query = try req.query();
+    const limit_str = query.get("limit") orelse "100";
+    const offset_str = query.get("offset") orelse "0";
+    const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 100;
+    const offset_val = std.fmt.parseInt(u32, offset_str, 10) catch 0;
+
+    if (http_server.global_server) |server| {
+        if (server.db) |db| {
+            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+            const messages = session_db.getSessionMessages(alloc, sqlite_db, session_id, limit_val, offset_val) catch {
+                res.status = 500;
+                res.body = "{\"error\":\"Database query failed\"}";
+                return;
+            };
+            defer {
+                for (messages) |m| m.deinit(alloc);
+                alloc.free(messages);
+            }
+
+            const response = try session_db.buildSessionMessagesJson(alloc, messages);
+            res.status = 200;
+            res.body = response;
+            return;
+        }
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server not initialized\"}";
+}
+
 /// Get the latest session for a given working directory
-pub fn getLatestSessionByDirHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn getLatestSessionByDirHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;
 
     const query = try req.query();
@@ -269,7 +347,7 @@ pub fn getLatestSessionByDirHandler(req: *httpz.Request, res: *httpz.Response) a
 
 /// Ping endpoint for connection health checks
 /// Returns connection status for a given session
-pub fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn pingHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;
     const session_id = req.param("session_id") orelse {
         res.status = 400;
@@ -293,7 +371,7 @@ pub fn pingHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
 // Kerjabot Session Handlers
 // =============================================================================
 
-pub fn kerjabotSessionCreateHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn kerjabotSessionCreateHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (http_server.global_server) |server| {
         const db = server.db orelse {
             res.status = 500;
@@ -358,7 +436,7 @@ pub fn kerjabotSessionCreateHandler(req: *httpz.Request, res: *httpz.Response) a
     res.body = "{\"error\":\"Server error\"}";
 }
 
-pub fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn kerjabotGetSessionHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (http_server.global_server) |server| {
         const db = server.db orelse {
             res.status = 500;
@@ -408,7 +486,7 @@ pub fn kerjabotGetSessionHandler(req: *httpz.Request, res: *httpz.Response) anye
     res.body = "{\"error\":\"Server error\"}";
 }
 
-pub fn kerjabotListSessionsHandler(req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn kerjabotListSessionsHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     if (http_server.global_server) |server| {
         const db = server.db orelse {
             res.status = 500;

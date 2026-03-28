@@ -81,9 +81,13 @@ pub const HttpServer = struct {
         global_server = self;
         defer global_server = null;
 
-        var server = try httpz.Server(void).init(self.allocator, .{
+        // Use a handler struct to enable middleware support
+        var handler = ServerHandler{
+            .server = self,
+        };
+        var server = try httpz.Server(*ServerHandler).init(self.allocator, .{
             .address = .localhost(self.port),
-        }, {});
+        }, &handler);
         defer server.deinit();
 
         const router = try server.router(.{});
@@ -93,6 +97,28 @@ pub const HttpServer = struct {
 
         try server.listen();
     }
+
+    /// Handler struct for httpz server - enables middleware support
+    pub const ServerHandler = struct {
+        server: *Self,
+
+        /// Custom dispatch to add CORS headers to every response
+        pub fn dispatch(self: *ServerHandler, action: httpz.Action(*ServerHandler), req: *httpz.Request, res: *httpz.Response) !void {
+            // Add CORS headers to all responses
+            res.header("Access-Control-Allow-Origin", "*");
+            res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+            res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+            // Handle preflight OPTIONS requests
+            if (req.method == .OPTIONS) {
+                res.status = 204;
+                return;
+            }
+
+            // Call the actual action
+            try action(self, req, res);
+        }
+    };
 };
 
 test {

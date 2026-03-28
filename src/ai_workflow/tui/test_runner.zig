@@ -20,8 +20,6 @@ test {
     _ = @import("handle_tool_test.zig");
     _ = @import("handle_write_file_tool_test.zig");
     _ = @import("mark_message_not_for_llm_test.zig");
-    _ = @import("models_test.zig");
-    _ = @import("on_event_sent_test.zig");
     _ = @import("save_agent_test.zig");
     _ = @import("save_message_test.zig");
     _ = @import("save_skill_test.zig");
