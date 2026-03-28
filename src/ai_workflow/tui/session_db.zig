@@ -13,17 +13,17 @@ pub fn getSessionList(
 ) !struct { sessions: []SessionInfo, total: u32 } {
     _ = status;
     _ = agent_type;
-    
+
     // Query to get distinct sessions with their latest message info
     const sql = "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?";
-    
+
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{offset});
     defer {
         allocator.free(limit_str);
         allocator.free(offset_str);
     }
-    
+
     var rows = try db.query(allocator, sql, &.{ limit_str, offset_str });
     defer rows.deinit();
 
@@ -49,7 +49,7 @@ pub fn getSessionList(
     const count_sql = "SELECT COUNT(DISTINCT session_id) FROM llm_history";
     var count_rows = try db.query(allocator, count_sql, &.{});
     defer count_rows.deinit();
-    
+
     var total: u32 = 0;
     if (try count_rows.next()) |row| {
         total = std.fmt.parseInt(u32, row.values[0], 10) catch 0;
@@ -74,7 +74,7 @@ pub fn buildSessionListJson(
     try json_sessions.appendSlice(allocator, "[");
     for (sessions, 0..) |sess, i| {
         if (i > 0) try json_sessions.append(allocator, ',');
-        
+
         // Escape JSON strings
         const sess_json = try std.fmt.allocPrint(allocator,
             "{{\"sessionId\":{s},\"sessionDir\":{s},\"createdAt\":{s},\"agent\":{s},\"sessionName\":{s}}}",
@@ -99,9 +99,9 @@ pub fn buildSessionListJson(
 
 /// Escape a string for JSON - wraps in quotes and escapes special characters
 fn jsonEscape(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var escaped = std.ArrayList(u8).empty;
+    var escaped = std.ArrayList(u8).init(allocator);
     errdefer escaped.deinit(allocator);
-    
+
     try escaped.append(allocator, '"');
     for (input) |c| {
         switch (c) {
@@ -114,18 +114,18 @@ fn jsonEscape(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
         }
     }
     try escaped.append(allocator, '"');
-    
+
     return try escaped.toOwnedSlice(allocator);
 }
 
 /// Get a single session by ID
-pub fn getSession(
+pub fn get_session(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?SessionDetail {
     const sql = "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(model, 'gpt-4'), COALESCE(temperature, 0.2) FROM llm_history WHERE session_id = ? GROUP BY session_id";
-    
+
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -209,14 +209,14 @@ pub fn getSessionMessages(
     offset: u32,
 ) ![]SessionMessage {
     const sql = "SELECT id, session_id, role, content, created_at FROM llm_history WHERE session_id = ? ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?";
-    
+
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{offset});
     defer {
         allocator.free(limit_str);
         allocator.free(offset_str);
     }
-    
+
     var rows = try db.query(allocator, sql, &.{ session_id, limit_str, offset_str });
     defer rows.deinit();
 

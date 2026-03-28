@@ -220,7 +220,7 @@ pub fn sessionExistsHandler(_: *http_server.HttpServer.ServerHandler, req: *http
 }
 
 /// Get a session by ID
-pub fn sessionGetHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn session_get_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
 
@@ -233,7 +233,7 @@ pub fn sessionGetHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.R
     if (http_server.global_server) |server| {
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
-            const session = session_db.getSession(alloc, sqlite_db, session_id) catch {
+            const session = session_db.get_session(alloc, sqlite_db, session_id) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Database query failed\"}";
                 return;

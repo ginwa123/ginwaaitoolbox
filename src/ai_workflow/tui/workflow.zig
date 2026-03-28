@@ -29,7 +29,7 @@ const transform_llm_history_to_agent_message = @import("transform_llm_history_to
 const save_message = @import("save_message.zig").save_message;
 const BuildMessages = @import("build_messages_for_agent_prompt.zig").BuildMessages;
 const get_messages = session_helpers.get_messages;
-const get_messagesLatest = session_helpers.get_message_latest;
+const get_message_latest = session_helpers.get_message_latest;
 const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
@@ -283,7 +283,7 @@ pub const TUIWorkflow = struct {
                     });
 
                     // Send SSE event using get_messagesLatest
-                    const latestMessage = try get_messagesLatest(allocator, self.db, session_id);
+                    const latestMessage = try get_message_latest(allocator, self.db, session_id);
                     if (latestMessage) |msg| {
                         _ = try on_event_send_new(allocator, .{
                             .session_id = msg.session_id,
@@ -343,7 +343,7 @@ pub const TUIWorkflow = struct {
                         });
 
                         // Send SSE event using get_messagesLatest
-                        const latestMessage = try get_messagesLatest(allocator, self.db, session_id);
+                        const latestMessage = try get_message_latest(allocator, self.db, session_id);
                         if (latestMessage) |msg| {
                             _ = try on_event_send_new(allocator, .{
                                 .session_id = msg.session_id,
