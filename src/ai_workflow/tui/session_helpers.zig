@@ -21,7 +21,7 @@ pub fn get_messages(
     defer rows.deinit();
 
     while (try rows.next()) |row| {
-        const parent_session_id_str = row.values[14];
+        const parent_session_id_str = row.values[13];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -37,13 +37,13 @@ pub fn get_messages(
             .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
             .tool_name = try allocator.dupe(u8, row.values[12]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[15]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[16], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
-            .is_input = std.mem.eql(u8, row.values[20], "1"),
-            .is_output = std.mem.eql(u8, row.values[21], "1"),
+            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .is_input = std.mem.eql(u8, row.values[19], "1"),
+            .is_output = std.mem.eql(u8, row.values[20], "1"),
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -62,7 +62,7 @@ pub fn get_message_latest(
     defer rows.deinit();
 
     if (try rows.next()) |row| {
-        const parent_session_id_str = row.values[14];
+        const parent_session_id_str = row.values[13];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -78,13 +78,13 @@ pub fn get_message_latest(
             .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
             .tool_name = try allocator.dupe(u8, row.values[12]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[15]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[16], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
-            .is_input = std.mem.eql(u8, row.values[20], "1"),
-            .is_output = std.mem.eql(u8, row.values[21], "1"),
+            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .is_input = std.mem.eql(u8, row.values[19], "1"),
+            .is_output = std.mem.eql(u8, row.values[20], "1"),
         };
         row.deinit(allocator);
         return history;
