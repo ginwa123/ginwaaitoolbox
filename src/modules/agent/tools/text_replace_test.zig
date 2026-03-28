@@ -2,12 +2,14 @@ const std = @import("std");
 const text_replace_mod = @import("text_replace.zig");
 const read_file_mod = @import("read_file.zig");
 
+// Convenience type aliases
+const TextReplaceOp = text_replace_mod.TextReplaceOp;
+const text_replace_batch = text_replace_mod.text_replace_batch;
+
 test "text_replace - basic replace single occurrence" {
     const allocator = std.testing.allocator;
     const test_path = "test_replace_basic.txt";
     const original_content = "Hello, World!\n";
-    const old_str = "Hello";
-    const new_str = "Goodbye";
     
     // Create original file
     const orig_file = try std.fs.cwd().createFile(test_path, .{});
@@ -18,7 +20,9 @@ test "text_replace - basic replace single occurrence" {
     const read_result = try read_file_mod.read_file(allocator, test_path, .{});
     defer read_result.deinit(allocator);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, old_str, new_str, read_result.sha256);
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "Hello", .new_str = "Goodbye" },
+    }, read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify file content was changed
@@ -48,7 +52,9 @@ test "text_replace - old_str not found returns error" {
     const read_result = try read_file_mod.read_file(allocator, test_path, .{});
     defer read_result.deinit(allocator);
     
-    const result = text_replace_mod.text_replace(allocator, test_path, "nonexistent", "new", read_result.sha256);
+    const result = text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "nonexistent", .new_str = "new" },
+    }, read_result.sha256);
     
     try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotFound, result);
     
@@ -71,7 +77,9 @@ test "text_replace - old_str appears twice returns OldStrNotUnique" {
     defer read_result.deinit(allocator);
     
     // This should fail because "const x = 0;" appears twice (both lines are identical)
-    const result = text_replace_mod.text_replace(allocator, test_path, "const x = 0;", "const z = 1;", read_result.sha256);
+    const result = text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "const x = 0;", .new_str = "const z = 1;" },
+    }, read_result.sha256);
     
     try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotUnique, result);
     
@@ -93,7 +101,9 @@ test "text_replace - replace with empty string" {
     const read_result = try read_file_mod.read_file(allocator, test_path, .{});
     defer read_result.deinit(allocator);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, ", World!", "", read_result.sha256);
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = ", World!", .new_str = "" },
+    }, read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify content
@@ -123,10 +133,12 @@ test "text_replace - result serialization" {
     const read_result = try read_file_mod.read_file(allocator, test_path, .{});
     defer read_result.deinit(allocator);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, "test", "new", read_result.sha256);
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "test", .new_str = "new" },
+    }, read_result.sha256);
     defer result.deinit(allocator);
     
-    const serialized = try text_replace_mod.textReplaceToStringXML(allocator, result);
+    const serialized = try text_replace_mod.textReplaceBatchToStringXML(allocator, result);
     defer allocator.free(serialized);
     
     // Should contain sha256_after
@@ -158,7 +170,9 @@ test "text_replace - unique match with surrounding context" {
     const old_str_with_context = "fn setup() void {\n    const x = 0;";
     const new_str = "fn setup() void {\n    const z = 1;";
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, old_str_with_context, new_str, read_result.sha256);
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = old_str_with_context, .new_str = new_str },
+    }, read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify file was modified correctly
@@ -189,7 +203,9 @@ test "text_replace - multiline replace" {
     const read_result = try read_file_mod.read_file(allocator, test_path, .{});
     defer read_result.deinit(allocator);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, "old line 1\nold line 2", "new line A\nnew line B", read_result.sha256);
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "old line 1\nold line 2", .new_str = "new line A\nnew line B" },
+    }, read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify content
@@ -219,7 +235,9 @@ test "text_replace - replace at end of file" {
     const read_result = try read_file_mod.read_file(allocator, test_path, .{});
     defer read_result.deinit(allocator);
     
-    const result = try text_replace_mod.text_replace(allocator, test_path, "end", "FINISH", read_result.sha256);
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "end", .new_str = "FINISH" },
+    }, read_result.sha256);
     defer result.deinit(allocator);
     
     // Verify sha256_after is set

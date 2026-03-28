@@ -420,10 +420,10 @@ pub const TUIWorkflow = struct {
         base_tools: []const tool_models.AgentTool,
     ) !agent.CallResponse {
         // Fetch MCP tools from configured servers
-        const mcp_tools = buildMcpTools.build_mcp_tools_run(allocator, config) catch |err| blk: {
+        const mcp_tools = (buildMcpTools.build_mcp_tools_run(allocator, config) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
-            break :blk &[_]tool_models.AgentTool{};
-        };
+            break :blk null;
+        }) orelse &[_]tool_models.AgentTool{};
         // Note: mcp_tools memory is managed by the arena allocator
 
         // Merge base tools with MCP tools

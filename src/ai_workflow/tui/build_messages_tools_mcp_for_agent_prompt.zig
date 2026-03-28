@@ -42,7 +42,7 @@ const ListToolsResult = struct {
 };
 
 /// Fetch MCP tools from all configured servers
-pub fn build_mcp_tools_run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) ![]AgentTool {
+pub fn build_mcp_tools_run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) !?[]AgentTool {
     // Check if mcpServers is configured
     if (config.mcpServers == null) {
         return &[_]AgentTool{};
@@ -150,6 +150,7 @@ fn fetchToolsFromServer(
     // Parse JSON response
     const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{
         .ignore_unknown_fields = true,
+        .duplicate_field_behavior = .use_last,
     }) catch |err| {
         std.log.warn("Failed to parse MCP response from {s}: {s}", .{ server_name, @errorName(err) });
         return error.JsonParseError;

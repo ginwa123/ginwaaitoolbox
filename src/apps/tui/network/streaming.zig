@@ -88,19 +88,14 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
-        std.debug.print("{s}", .{raw_buffer.items});
-
-        // const trimmed = std.mem.trim(u8, raw_buffer.items, &std.ascii.whitespace);
-        // if (std.mem.eql(u8, trimmed, ": keepalive")) {
-        //     // Call endpoint to check if LLM finished with finish_reason="stop"
-        //     const is_done = try messaging.get_latest_message_by_created_at(app);
-        //     if (is_done) {
-        //         break;
-        //     }
-        // } else {}
-        const is_done = try messaging.get_latest_message_by_created_at(app);
-        if (is_done) {
-            break;
+        const trimmed = std.mem.trim(u8, raw_buffer.items, &std.ascii.whitespace);
+        if (std.mem.eql(u8, trimmed, ": keepalive")) {
+            const is_done = try messaging.get_latest_message_by_created_at(app);
+            if (is_done) {
+                break;
+            }
+        } else {
+            std.debug.print("{s}", .{raw_buffer.items});
         }
 
         raw_buffer.clearAndFree(app.allocator);

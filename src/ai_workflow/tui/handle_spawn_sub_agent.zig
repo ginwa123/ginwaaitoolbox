@@ -383,7 +383,7 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 }
 
 /// Run a single sub-agent with basic tools (but no spawn_sub_agent or set_agent_properties)
-fn runSubAgent(
+fn run_sub_agent(
     parentAllocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
     db: *sqlite.SqliteBackend,
@@ -403,7 +403,7 @@ fn runSubAgent(
     parent_id: []const u8,
 ) ![]const u8 {
     // Fetch MCP tools for sub-agent
-    const mcp_tools = buildMcpTools.build_mcp_tools_run(parentAllocator, config) catch &[_]tool_models.AgentTool{};
+    const mcp_tools = (try buildMcpTools.build_mcp_tools_run(parentAllocator, config)) orelse &[_]tool_models.AgentTool{};
 
     const sessionName = try std.fmt.allocPrint(parentAllocator, "{}", .{std.time.nanoTimestamp()});
 
@@ -669,7 +669,7 @@ fn runSubAgentThread(
         return;
     };
 
-    const run_result = runSubAgent(
+    const run_result = run_sub_agent(
         thread_alloc,
         log,
         database,

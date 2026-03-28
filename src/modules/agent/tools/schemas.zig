@@ -65,3 +65,31 @@ pub const AgentTool = struct {
     type: []const u8,
     function: AgentToolFunction,
 };
+
+// =============================================================================
+// List struct for batch building tool properties
+// =============================================================================
+
+pub const List = struct {
+    items: std.ArrayList(ToolProperty),
+
+    pub fn init() List {
+        return .{ .items = std.ArrayList(ToolProperty).empty };
+    }
+
+    pub fn deinit(self: *List) void {
+        self.items.deinit();
+    }
+
+    pub fn append(self: *List, allocator: std.mem.Allocator, name: []const u8, type_: []const u8, description: []const u8) !void {
+        try self.items.append(allocator, .{
+            .name = name,
+            .type = type_,
+            .description = description,
+        });
+    }
+
+    pub fn toOwnedSlice(self: *List, allocator: std.mem.Allocator) ![]ToolProperty {
+        return try self.items.toOwnedSlice(allocator);
+    }
+};

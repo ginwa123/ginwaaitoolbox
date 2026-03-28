@@ -52,12 +52,12 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
     std.log.info("SSE: Connected event sent for session: {s}", .{ctx.session_id});
 
     while (ctx.server.sse_manager.hasSession(ctx.session_id)) {
-        std.Thread.sleep(30_000_000_000);
+        std.Thread.sleep(5_000_000_000); // 5 seconds
 
-        // stream.writeAll(": keepalive\n\n") catch |err| {
-        //     std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
-        //     break;
-        // };
+        stream.writeAll(": keepalive\n\n") catch |err| {
+            std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
+            break;
+        };
 
         var i: usize = 0;
         while (i < 300 and ctx.server.sse_manager.hasSession(ctx.session_id)) : (i += 1) {
