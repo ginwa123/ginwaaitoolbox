@@ -217,3 +217,101 @@ test "ActivityRegistry queue_message on unregistered session does nothing" {
     const messages = registry.get_queue_messages("session-123");
     try std.testing.expect(messages == null);
 }
+
+test "ActivityRegistry delete_queue_messages removes specific message" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    registry.queue_message("session-123", "Hello");
+    registry.queue_message("session-123", "World");
+    registry.queue_message("session-123", "Foo");
+    
+    // Delete "World"
+    registry.delete_queue_messages("session-123", "World");
+    
+    // Get remaining messages
+    const messages_opt = registry.get_queue_messages("session-123");
+    try std.testing.expect(messages_opt != null);
+    
+    var messages = messages_opt.?;
+    defer {
+        for (messages.items) |msg| allocator.free(msg);
+        messages.deinit(allocator);
+    }
+    
+    // Should have 2 messages left
+    try std.testing.expectEqual(@as(usize, 2), messages.items.len);
+    
+    // Verify "World" is gone (order may change due to swapRemove)
+    try std.testing.expect(messages.items[0].len > 0); // at least something
+    try std.testing.expect(!std.mem.containsAtLeast(u8, messages.items[0], 1, "World"));
+}
+
+test "ActivityRegistry delete_queue_messages does nothing if message not found" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    registry.queue_message("session-123", "Hello");
+    registry.queue_message("session-123", "World");
+    
+    // Try to delete non-existent message
+    registry.delete_queue_messages("session-123", "NonExistent");
+    
+    // Get messages
+    const messages_opt = registry.get_queue_messages("session-123");
+    try std.testing.expect(messages_opt != null);
+    
+    var messages = messages_opt.?;
+    defer {
+        for (messages.items) |msg| allocator.free(msg);
+        messages.deinit(allocator);
+    }
+    
+    // Should still have 2 messages
+    try std.testing.expectEqual(@as(usize, 2), messages.items.len);
+}
+
+test "ActivityRegistry delete_queue_messages on unregistered session does nothing" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Don't register session-123
+    
+    // Should not crash
+    registry.delete_queue_messages("session-123", "Hello");
+}
+
+test "ActivityRegistry delete_queue_messages reduces count by 1" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    registry.queue_message("session-123", "Hello");
+    registry.queue_message("session-123", "World");
+    registry.queue_message("session-123", "Foo");
+    registry.queue_message("session-123", "Bar");
+    
+    // Delete one message
+    registry.delete_queue_messages("session-123", "World");
+    
+    const messages_opt = registry.get_queue_messages("session-123");
+    try std.testing.expect(messages_opt != null);
+    
+    var messages = messages_opt.?;
+    defer {
+        for (messages.items) |msg| allocator.free(msg);
+        messages.deinit(allocator);
+    }
+    
+    // Should have 3 messages left
+    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
+}

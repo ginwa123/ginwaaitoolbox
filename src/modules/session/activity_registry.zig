@@ -1,21 +1,21 @@
 //! ## Session Activity Registry
-//! 
+//!
 //! Thread-safe registry for tracking which sessions are currently running their main while-loop.
 //! Mirrors the CancellationRegistry pattern but uses atomic counters for nested/recursive tracking.
 //! Also supports message queuing for paused/interrupted sessions.
-//! 
+//!
 //! ## Usage Example
-//! 
+//!
 //! ```zig
 //! // At session start - register the session
 //! try activity_registry.get_global_registry().?.register(session_id);
-//! 
+//!
 //! // At start of while-loop
 //! activity_registry.get_global_registry().?.mark_running(session_id);
 //! defer {
 //!     activity_registry.get_global_registry().?.mark_idle(session_id);
 //! }
-//! 
+//!
 //! while (true) {
 //!     // Check if still active
 //!     if (activity_registry.get_global_registry()) |registry| {
@@ -167,6 +167,20 @@ pub const ActivityRegistry = struct {
         }
         return null;
     }
+
+    /// Delete a specific message from the queue (removes first occurrence)
+    pub fn delete_queue_messages(self: *Self, session_id: []const u8, message: []const u8) void {
+        if (self.message_queues.get(session_id)) |queue| {
+            for (queue.items, 0..) |msg, i| {
+                if (std.mem.eql(u8, msg, message)) {
+                    self.allocator.free(msg);
+                    _ = queue.swapRemove(i);
+                    return;
+                }
+            }
+        }
+    }
+
 };
 
 // Global registry singleton
