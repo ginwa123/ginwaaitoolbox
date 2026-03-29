@@ -348,6 +348,7 @@ pub const TUIWorkflow = struct {
                     break;
                 } else if (finish_reason == .length) {
                     current_max_tokens += 4096;
+                    _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
                     try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);

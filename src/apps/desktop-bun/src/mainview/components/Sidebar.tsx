@@ -84,7 +84,10 @@ const Sidebar: Component = () => {
     }
     const dir = session.session_dir || "";
     const parts = dir.split("/");
-    return parts[parts.length - 1] || session.session_id.slice(0, 8);
+    const dirName = parts[parts.length - 1] || "";
+    if (dirName) return dirName;
+    if (session.session_id) return session.session_id.slice(0, 8);
+    return "Untitled Session";
   };
 
   const handleSessionClick = (sessionId: string) => {

@@ -138,12 +138,17 @@ const text_replace_props: []const ToolProperty = &.{
     .{
         .name = "ops",
         .type = "array",
-        .description = "Array of replacement operations, each with old_str and new_str. Each old_str must appear exactly once in the file.",
+        .description =
+        \\Array of replacement operations. Each element must be an object with exactly two fields:
+        \\  - "old_str": string — the exact text to find (must appear exactly once in the file)
+        \\  - "new_str": string — the replacement text (use empty string "" to delete)
+        \\Both field names are snake_case. Do NOT use camelCase (e.g. newStr is invalid).
+        ,
     },
     .{
         .name = "expected_hash",
         .type = "string",
-        .description = "SHA256 hash from read_file result. If provided, edit is rejected if file changed.",
+        .description = "SHA256 hash from read_file result. Edit is rejected with HashMismatch if file changed since last read.",
     },
 };
 
