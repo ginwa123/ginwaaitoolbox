@@ -10,11 +10,11 @@ test "CancellationRegistry can register and check cancellation" {
     try registry.register(session_id);
     
     // Initially not cancelled
-    try std.testing.expect(!registry.isCancelled(session_id));
+    try std.testing.expect(!registry.is_cancelled(session_id));
     
     // Cancel the session
     registry.cancel(session_id);
-    try std.testing.expect(registry.isCancelled(session_id));
+    try std.testing.expect(registry.is_cancelled(session_id));
 }
 
 test "CancellationRegistry supports multiple sessions independently" {
@@ -32,9 +32,9 @@ test "CancellationRegistry supports multiple sessions independently" {
     registry.cancel(session_a);
     
     // Session A should be cancelled
-    try std.testing.expect(registry.isCancelled(session_a));
+    try std.testing.expect(registry.is_cancelled(session_a));
     // Session B should NOT be cancelled
-    try std.testing.expect(!registry.isCancelled(session_b));
+    try std.testing.expect(!registry.is_cancelled(session_b));
 }
 
 test "CancellationRegistry can reset session" {
@@ -46,10 +46,10 @@ test "CancellationRegistry can reset session" {
     try registry.register(session_id);
     
     registry.cancel(session_id);
-    try std.testing.expect(registry.isCancelled(session_id));
+    try std.testing.expect(registry.is_cancelled(session_id));
     
     registry.reset(session_id);
-    try std.testing.expect(!registry.isCancelled(session_id));
+    try std.testing.expect(!registry.is_cancelled(session_id));
 }
 
 test "CancellationRegistry can unregister session" {
