@@ -200,21 +200,20 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     res.body = "{\"error\":\"No session handler\"}";
 }
 
-/// List all sessions - returns sessions from database
+/// List all sessions - returns sessions from database with cursor pagination
 pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
 
     const query = try req.query();
     const limit_str = query.get("limit") orelse "50";
-    const offset_str = query.get("offset") orelse "0";
+    const cursor = query.get("cursor");
     const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 50;
-    const offset_val = std.fmt.parseInt(u32, offset_str, 10) catch 0;
 
     if (http_server.global_server) |server| {
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
-            const result = session_db.getSessionList(alloc, sqlite_db, null, null, limit_val, offset_val) catch {
+            const result = session_db.getSessionListWithCursor(alloc, sqlite_db, null, null, limit_val, cursor) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Database query failed\"}";
                 return;
@@ -224,9 +223,17 @@ pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *http
                 alloc.free(result.sessions);
             }
 
-            // Build JSON response
+            // Determine if there are more results
+            const has_more = result.sessions.len == @as(usize, limit_val);
+            // Next cursor is the created_at of the last session
+            const next_cursor: ?[]const u8 = if (result.sessions.len > 0)
+                result.sessions[result.sessions.len - 1].created_at
+            else
+                null;
+
+            // Build JSON response with cursor pagination
             const response = try session_db.buildSessionListJson(
-                alloc, result.sessions, result.total);
+                alloc, result.sessions, result.total, has_more, next_cursor);
 
             res.status = 200;
             res.body = response;

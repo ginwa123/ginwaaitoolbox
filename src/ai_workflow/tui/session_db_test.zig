@@ -23,7 +23,7 @@ test "buildSessionListJson with multiple sessions" {
         },
     };
 
-    const result = try session_db.buildSessionListJson(std.testing.allocator, sessions, 42);
+    const result = try session_db.buildSessionListJson(std.testing.allocator, sessions, 42, false, null);
     defer std.testing.allocator.free(result);
 
     // Verify JSON structure
@@ -39,10 +39,10 @@ test "buildSessionListJson with empty sessions" {
     defer std.debug.print("test {s} took {d}ms\n", .{ "buildSessionListJson with empty sessions", std.time.timestamp() - time });
     const sessions: []const SessionInfo = &.{};
 
-    const result = try session_db.buildSessionListJson(std.testing.allocator, sessions, 0);
+    const result = try session_db.buildSessionListJson(std.testing.allocator, sessions, 0, false, null);
     defer std.testing.allocator.free(result);
 
-    try std.testing.expectEqualSlices(u8, "{\"sessions\":[],\"total\":0}", result);
+    try std.testing.expectEqualSlices(u8, "{\"sessions\":[],\"total\":0,\"has_more\":false}", result);
 }
 
 test "buildSessionListJson with single session" {
@@ -59,11 +59,11 @@ test "buildSessionListJson with single session" {
         },
     };
 
-    const result = try session_db.buildSessionListJson(std.testing.allocator, sessions, 1);
+    const result = try session_db.buildSessionListJson(std.testing.allocator, sessions, 1, false, null);
     defer std.testing.allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "{\"sessions\":[") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "],\"total\":1}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "],\"total\":1,\"has_more\":false}") != null);
 }
 
 test "buildSessionMessagesJson with messages" {
@@ -540,6 +540,197 @@ test "getSessionMessages returns all columns including is_input is_output tool_n
     try std.testing.expectEqualSlices(u8, "0", msg.is_output);
     try std.testing.expectEqualSlices(u8, "bash", msg.tool_name);
     try std.testing.expectEqualSlices(u8, "stop", msg.finish_reason);
+}
+
+// === TDD: Cursor-based Session List Pagination Tests ===
+
+test "getSessionList with cursor returns sessions after cursor timestamp" {
+    const sqlite = @import("nalarcore").sqlite;
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"getSessionList with cursor returns sessions after cursor timestamp"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "getSessionList with cursor returns sessions after cursor timestamp", std.time.timestamp() - time });
+
+    var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    // Create table matching the columns used by getSessionList query
+    try db.exec(std.testing.allocator, 
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT '',
+        \\    session_dir TEXT, agent TEXT, session_name TEXT
+        \\)
+        , &.{});
+    
+    // Insert sessions with different timestamps (newest to oldest)
+    // Session A - newest (1743001234567)
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, session_dir, agent, session_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg1", "sess_a", "user", "Hello A", "1743001234567", "/tmp/sessions/a", "Agent", "Session A" });
+    // Session B - middle (1743001234560)
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, session_dir, agent, session_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg2", "sess_b", "user", "Hello B", "1743001234560", "/tmp/sessions/b", "Agent", "Session B" });
+    // Session C - oldest (1743001234550)
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, session_dir, agent, session_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg3", "sess_c", "user", "Hello C", "1743001234550", "/tmp/sessions/c", "Agent", "Session C" });
+
+    // Query with cursor = "1743001234560" (after session B)
+    // Should return session C only
+    const result = try session_db.getSessionListWithCursor(
+        std.testing.allocator, &db, null, null, 10, "1743001234560");
+    defer {
+        for (result.sessions) |s| s.deinit(std.testing.allocator);
+        std.testing.allocator.free(result.sessions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), result.sessions.len);
+    try std.testing.expectEqualSlices(u8, "sess_c", result.sessions[0].session_id);
+    try std.testing.expectEqualSlices(u8, "1743001234550", result.sessions[0].created_at);
+}
+
+test "getSessionList with cursor returns first page when cursor is null" {
+    const sqlite = @import("nalarcore").sqlite;
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"getSessionList with cursor returns first page when cursor is null"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "getSessionList with cursor returns first page when cursor is null", std.time.timestamp() - time });
+
+    var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    try db.exec(std.testing.allocator, 
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT '',
+        \\    session_dir TEXT, agent TEXT, session_name TEXT
+        \\)
+        , &.{});
+    
+    // Insert sessions with different timestamps
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, session_dir, agent, session_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg1", "sess_a", "user", "Hello A", "1743001234567", "/tmp/sessions/a", "Agent", "Session A" });
+    try db.exec(std.testing.allocator,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, session_dir, agent, session_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        &.{ "msg2", "sess_b", "user", "Hello B", "1743001234560", "/tmp/sessions/b", "Agent", "Session B" });
+
+    // Query with null cursor - should return all sessions
+    const result = try session_db.getSessionListWithCursor(
+        std.testing.allocator, &db, null, null, 10, null);
+    defer {
+        for (result.sessions) |s| s.deinit(std.testing.allocator);
+        std.testing.allocator.free(result.sessions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), result.sessions.len);
+}
+
+test "getSessionList with cursor respects limit" {
+    const sqlite = @import("nalarcore").sqlite;
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"getSessionList with cursor respects limit"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "getSessionList with cursor respects limit", std.time.timestamp() - time });
+
+    var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
+    try db.init(":memory:");
+    defer db.deinit();
+
+    try db.exec(std.testing.allocator, 
+        \\CREATE TABLE llm_history (
+        \\    id TEXT, session_id TEXT, role TEXT, response_content TEXT, created_at TEXT,
+        \\    is_input INTEGER DEFAULT 0, is_output INTEGER DEFAULT 0, 
+        \\    tool_name TEXT DEFAULT '', finish_reason TEXT DEFAULT '',
+        \\    session_dir TEXT, agent TEXT, session_name TEXT
+        \\)
+        , &.{});
+    
+    // Insert 5 sessions
+    inline for (&[_]struct { id: []const u8, created: []const u8 }{
+        .{ .id = "sess_1", .created = "1743001234569" },
+        .{ .id = "sess_2", .created = "1743001234568" },
+        .{ .id = "sess_3", .created = "1743001234567" },
+        .{ .id = "sess_4", .created = "1743001234566" },
+        .{ .id = "sess_5", .created = "1743001234565" },
+    }) |sess| {
+        try db.exec(std.testing.allocator,
+            "INSERT INTO llm_history (id, session_id, role, response_content, created_at, session_dir, agent, session_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            &.{ sess.id, sess.id, "user", "Hello", sess.created, "/tmp/sessions", "Agent", sess.id });
+    }
+
+    // Query with cursor = sess_4's timestamp, limit 2
+    // Should return sessions with created_at < "1743001234566" (i.e., only sess_5)
+    const result = try session_db.getSessionListWithCursor(
+        std.testing.allocator, &db, null, null, 2, "1743001234566");
+    defer {
+        for (result.sessions) |s| s.deinit(std.testing.allocator);
+        std.testing.allocator.free(result.sessions);
+    }
+
+    // Should return only sess_5 (sess_4 equals cursor, not less than)
+    try std.testing.expectEqual(@as(usize, 1), result.sessions.len);
+    try std.testing.expectEqualSlices(u8, "sess_5", result.sessions[0].session_id);
+}
+
+test "buildSessionListJson with cursor pagination returns has_more and next_cursor" {
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"buildSessionListJson with cursor pagination returns has_more and next_cursor"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "buildSessionListJson with cursor pagination returns has_more and next_cursor", std.time.timestamp() - time });
+    
+    const sessions = &[_]SessionInfo{
+        .{
+            .session_id = "abc123",
+            .session_dir = "/tmp/sessions/abc123",
+            .created_at = "1743001234567",
+            .agent = "Agent",
+            .session_name = "Test Session",
+        },
+        .{
+            .session_id = "def456",
+            .session_dir = "/tmp/sessions/def456",
+            .created_at = "1743001234566",
+            .agent = "Agent",
+            .session_name = "Older Session",
+        },
+    };
+
+    // has_more=true, next_cursor is last session's created_at
+    const result = try session_db.buildSessionListJson(
+        std.testing.allocator, sessions, 10, true, "1743001234566");
+    defer std.testing.allocator.free(result);
+
+    // Verify JSON contains has_more and next_cursor
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"has_more\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"next_cursor\":\"1743001234566\"") != null);
+}
+
+test "buildSessionListJson with no more results returns has_more false" {
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"buildSessionListJson with no more results returns has_more false"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "buildSessionListJson with no more results returns has_more false", std.time.timestamp() - time });
+    
+    const sessions = &[_]SessionInfo{
+        .{
+            .session_id = "abc123",
+            .session_dir = "/tmp/sessions/abc123",
+            .created_at = "1743001234567",
+            .agent = "Agent",
+            .session_name = "Test Session",
+        },
+    };
+
+    // has_more=false, next_cursor is null
+    const result = try session_db.buildSessionListJson(
+        std.testing.allocator, sessions, 1, false, null);
+    defer std.testing.allocator.free(result);
+
+    // Verify JSON contains has_more:false and no next_cursor
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"has_more\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "next_cursor") == null);
 }
 
 // === TDD: XML Response Support Tests ===

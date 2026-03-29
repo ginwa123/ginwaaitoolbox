@@ -62,11 +62,78 @@ pub fn getSessionList(
     };
 }
 
-/// Build JSON response for a list of sessions
+/// Get a list of sessions with cursor-based pagination
+pub fn getSessionListWithCursor(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    status: ?[]const u8,
+    agent_type: ?[]const u8,
+    limit: u32,
+    cursor: ?[]const u8,
+) !struct { sessions: []SessionInfo, total: u32 } {
+    _ = status;
+    _ = agent_type;
+
+    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
+    defer allocator.free(limit_str);
+
+    // Build query with cursor condition if provided
+    const sql_final: []u8 = if (cursor) |c| blk: {
+        break :blk try std.fmt.allocPrint(allocator,
+            "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 AND created_at < '{s}' GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
+            .{c, limit});
+    } else blk: {
+        break :blk try std.fmt.allocPrint(allocator,
+            "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
+            .{limit});
+    };
+    defer allocator.free(sql_final);
+
+    var rows = try db.query(allocator, sql_final, &.{});
+    defer rows.deinit();
+
+    var sessions = std.ArrayList(SessionInfo).empty;
+    errdefer {
+        for (sessions.items) |s| s.deinit(allocator);
+        sessions.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const session = SessionInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .created_at = try allocator.dupe(u8, row.values[2]),
+            .agent = try allocator.dupe(u8, row.values[3]),
+            .session_name = try allocator.dupe(u8, row.values[4]),
+        };
+        try sessions.append(allocator, session);
+        row.deinit(allocator);
+    }
+
+    // Get total count
+    const count_sql = "SELECT COUNT(DISTINCT session_id) FROM llm_history";
+    var count_rows = try db.query(allocator, count_sql, &.{});
+    defer count_rows.deinit();
+
+    var total: u32 = 0;
+    if (try count_rows.next()) |row| {
+        total = std.fmt.parseInt(u32, row.values[0], 10) catch 0;
+        row.deinit(allocator);
+    }
+
+    return .{
+        .sessions = try sessions.toOwnedSlice(allocator),
+        .total = total,
+    };
+}
+
+/// Build JSON response for a list of sessions with cursor pagination
 pub fn buildSessionListJson(
     allocator: std.mem.Allocator,
     sessions: []const SessionInfo,
     total: u32,
+    has_more: bool,
+    next_cursor: ?[]const u8,
 ) ![]u8 {
     var json_sessions = std.ArrayList(u8).empty;
     errdefer json_sessions.deinit(allocator);
@@ -95,9 +162,17 @@ pub fn buildSessionListJson(
     }
     try json_sessions.append(allocator, ']');
 
+    // Build has_more and next_cursor JSON
+    const has_more_str = if (has_more) "true" else "false";
+    const next_cursor_json = if (next_cursor) |c|
+        try std.fmt.allocPrint(allocator, ",\"next_cursor\":\"{s}\"", .{c})
+    else
+        "";
+    defer if (next_cursor) |_| allocator.free(next_cursor_json);
+
     const result = try std.fmt.allocPrint(allocator,
-        "{{\"sessions\":{s},\"total\":{d}}}",
-        .{ json_sessions.items, total });
+        "{{\"sessions\":{s},\"total\":{d},\"has_more\":{s}{s}}}",
+        .{ json_sessions.items, total, has_more_str, next_cursor_json });
     json_sessions.deinit(allocator);
     return result;
 }

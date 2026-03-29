@@ -1,4 +1,4 @@
-import { createSignal, onMount, For, type Component } from "solid-js";
+import { createSignal, onMount, onCleanup, For, type Component } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 
 interface Session {
@@ -19,37 +19,74 @@ const Sidebar: Component = () => {
   const [loading, setLoading] = createSignal(true);
   const [expanded, setExpanded] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
+  const [hasMore, setHasMore] = createSignal(true);
+  const [loadingMore, setLoadingMore] = createSignal(false);
+  const [nextCursor, setNextCursor] = createSignal<string | null>(null);
   const navigate = useNavigate();
+  let sentinelRef: HTMLDivElement | undefined;
 
-  onMount(async () => {
+  const fetchSessions = async (cursor?: string) => {
     try {
       const baseUrl = getBaseUrl();
-      console.log("Fetching sessions from:", `${baseUrl}/api/session?limit=50&offset=0`);
-      
-      const res = await fetch(`${baseUrl}/api/session?limit=50&offset=0`, {
+      const url = cursor
+        ? `${baseUrl}/api/session?limit=20&cursor=${encodeURIComponent(cursor)}`
+        : `${baseUrl}/api/session?limit=20`;
+
+      const res = await fetch(url, {
         method: "GET",
-        headers: {
-          "Accept": "application/json",
-        },
+        headers: { "Accept": "application/json" },
       });
-      
-      console.log("Response status:", res.status);
-      
-      const text = await res.text();
-      console.log("Response text:", text.substring(0, 500));
-      
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${text}`);
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const data = await res.json() as {
+        sessions?: Session[];
+        has_more?: boolean;
+        next_cursor?: string;
+      };
+
+      if (cursor) {
+        // Append to existing sessions when loading more
+        setSessions((prev) => [...prev, ...(data.sessions || [])]);
+      } else {
+        setSessions(data.sessions || []);
       }
-      
-      const data = JSON.parse(text) as { sessions?: Session[] };
-      setSessions(data.sessions || []);
+      setHasMore(data.has_more ?? false);
+      setNextCursor(data.next_cursor ?? null);
     } catch (err) {
       console.error("Failed to load sessions:", err);
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
     }
+  };
+
+  // Lazy load more when sentinel enters viewport
+  const lazyLoadMore = async () => {
+    if (!hasMore() || loadingMore() || !nextCursor()) return;
+    setLoadingMore(true);
+    await fetchSessions(nextCursor()!);
+    setLoadingMore(false);
+  };
+
+  onMount(async () => {
+    setLoading(true);
+    await fetchSessions();
+    setLoading(false);
+
+    // Set up IntersectionObserver for lazy loading
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          lazyLoadMore();
+        }
+      },
+      { threshold: 0.1, rootMargin: "100px" }
+    );
+
+    if (sentinelRef) {
+      observer.observe(sentinelRef);
+    }
+
+    onCleanup(() => observer.disconnect());
   });
 
   const formatDate = (dateStr: string) => {
@@ -95,10 +132,10 @@ const Sidebar: Component = () => {
   };
 
   return (
-    <aside class="w-64 bg-[#0a0a0a] border-r border-[#2a2a2a] flex flex-col">
-      <nav class="flex-1 py-6 flex flex-col">
+    <aside class="w-64 h-full bg-[#0a0a0a] border-r border-[#2a2a2a] flex flex-col">
+      <nav class="flex-1 h-full py-6 flex flex-col">
         {/* Sessions Section */}
-        <div class="mt-8 px-4 flex-1 overflow-hidden flex flex-col">
+        <div class="mt-8 px-4 flex-1 flex flex-col min-h-0">
           <button
             onClick={() => setExpanded(!expanded())}
             class="flex items-center justify-between w-full px-3 py-2 text-xs font-mono uppercase tracking-wider text-[#525252] hover:text-[#737373] transition-colors"
@@ -116,7 +153,7 @@ const Sidebar: Component = () => {
           </button>
           
           {expanded() && (
-            <div class="flex-1 overflow-y-auto mt-2 space-y-1">
+            <div class="flex-1 min-h-0 overflow-y-auto mt-2 space-y-1">
               {loading() ? (
                 <div class="px-3 py-6 text-[#525252] text-xs font-mono text-center">
                   Loading...
@@ -130,28 +167,35 @@ const Sidebar: Component = () => {
                   No sessions
                 </div>
               ) : (
-                <For each={sessions()}>
-                  {(session) => (
-                    <button
-                      onClick={() => handleSessionClick(session.session_id)}
-                      class="block group w-full text-left"
-                    >
-                      <div class="px-3 py-3 rounded-lg hover:bg-[#141414] transition-colors">
-                        <div class="flex items-start gap-3">
-                          <div class="w-2 h-2 rounded-full bg-[#262626] mt-1.5 group-hover:bg-[#facc15] transition-colors flex-shrink-0" />
-                          <div class="min-w-0 flex-1">
-                            <div class="text-[#a3a3a3] text-sm font-mono truncate group-hover:text-[#e5e5e5] transition-colors">
-                              {getSessionDisplayName(session)}
-                            </div>
-                            <div class="text-[#404040] text-xs mt-1">
-                              {formatDate(session.created_at)}
+                <>
+                  <For each={sessions()}>
+                    {(session) => (
+                      <button
+                        onClick={() => handleSessionClick(session.session_id)}
+                        class="block group w-full text-left"
+                      >
+                        <div class="px-3 py-3 rounded-lg hover:bg-[#141414] transition-colors">
+                          <div class="flex items-start gap-3">
+                            <div class="w-2 h-2 rounded-full bg-[#262626] mt-1.5 group-hover:bg-[#facc15] transition-colors flex-shrink-0" />
+                            <div class="min-w-0 flex-1">
+                              <div class="text-[#a3a3a3] text-sm font-mono truncate group-hover:text-[#e5e5e5] transition-colors">
+                                {getSessionDisplayName(session)}
+                              </div>
+                              <div class="text-[#404040] text-xs mt-1">
+                                {formatDate(session.created_at)}
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    </button>
-                  )}
-                </For>
+                      </button>
+                    )}
+                  </For>
+                  {/* Sentinel for lazy loading */}
+                  <div
+                    ref={sentinelRef}
+                    class="h-1 flex-shrink-0"
+                  />
+                </>
               )}
             </div>
           )}

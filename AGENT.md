@@ -57,8 +57,9 @@ src/
 
 ### AI Workflow (`src/ai_workflow/tui/`)
 - `workflow.zig` — Main TUI workflow orchestration
-- `session_db.zig` — Session persistence
+- `session_db.zig` — Session persistence with cursor-based pagination
 - `http_handlers.zig` — HTTP request handlers
+- `/api/session` — Cursor-based pagination: `?limit=20&cursor=<timestamp>` → `{sessions, has_more, next_cursor}`
 - 30+ tool handlers (bash, file ops, search, skills, agents, LSP)
 
 ### Logger (`src/modules/logger/`)
