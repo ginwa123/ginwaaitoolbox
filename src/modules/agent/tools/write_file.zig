@@ -11,12 +11,10 @@ pub const WriteFileInput = struct {
 };
 
 pub const WriteFileResult = struct {
-    path: []u8,
-    bytes_written: usize,
-    lines_written: usize,
+    sha256: []u8,
 
     pub fn deinit(self: WriteFileResult, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
+        allocator.free(self.sha256);
     }
 };
 
@@ -31,11 +29,9 @@ pub fn write_file(
 ) !WriteFileResult {
     const file = std.fs.cwd().createFile(path, .{}) catch |err| {
         if (err == error.FileNotFound) {
-            // Try to create parent directories
             var path_copy = try allocator.dupe(u8, path);
             defer allocator.free(path_copy);
 
-            // Find the directory part
             const last_slash = std.mem.lastIndexOf(u8, path_copy, "/");
             if (last_slash) |idx| {
                 const dir_path = path_copy[0..idx];
@@ -44,12 +40,10 @@ pub fn write_file(
                 defer file.close();
 
                 try file.writeAll(opts.content);
-
-                const lines_written = countLines(opts.content);
+                var hash: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+                std.crypto.hash.sha2.Sha256.hash(opts.content, &hash, .{});
                 return WriteFileResult{
-                    .path = try allocator.dupe(u8, path),
-                    .bytes_written = opts.content.len,
-                    .lines_written = lines_written,
+                    .sha256 = std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(hash, .lower)}) catch unreachable,
                 };
             }
         }
@@ -58,37 +52,15 @@ pub fn write_file(
     defer file.close();
 
     try file.writeAll(opts.content);
-
-    const lines_written = countLines(opts.content);
-
+    var hash: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(opts.content, &hash, .{});
     return WriteFileResult{
-        .path = try allocator.dupe(u8, path),
-        .bytes_written = opts.content.len,
-        .lines_written = lines_written,
+        .sha256 = std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(hash, .lower)}) catch unreachable,
     };
 }
 
-fn countLines(content: []const u8) usize {
-    var count: usize = 0;
-    for (content) |c| {
-        if (c == '\n') count += 1;
-    }
-    if (content.len > 0 and content[content.len - 1] != '\n') {
-        count += 1;
-    }
-    return count;
-}
-
 pub fn writeFileToString(allocator: std.mem.Allocator, result: WriteFileResult) ![]const u8 {
-    return try std.fmt.allocPrint(allocator,
-        \\<path>{s}</path>
-        \\<bytes_written>{d}</bytes_written>
-        \\<lines_written>{d}</lines_written>
-    , .{
-        result.path,
-        result.bytes_written,
-        result.lines_written,
-    });
+    return std.fmt.allocPrint(allocator, "<sha256>{s}</sha256>", .{result.sha256});
 }
 
 pub const writeFileTool = AgentTool{

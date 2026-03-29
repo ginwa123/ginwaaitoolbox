@@ -83,8 +83,8 @@ test "write_file - result serialization" {
     const serialized = try write_file_mod.writeFileToString(allocator, result);
     defer allocator.free(serialized);
     
-    // Should contain path and success indicator
-    try std.testing.expect(std.mem.indexOf(u8, serialized, test_path) != null);
+    // Should contain sha256
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "<sha256>") != null);
     
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
