@@ -119,11 +119,19 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     return error.UnknownTool;
 }
 
-/// Check if a tool name is an MCP tool (format: serverName_toolName)
+/// Check if a tool name is an MCP tool (format: mcp_serverName_toolName)
 fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
     if (config.mcpServers == null) return false;
-    const underscore_idx = std.mem.indexOf(u8, tool_name, "_") orelse return false;
-    const server_name = tool_name[0..underscore_idx];
+
+    // MCP tool names have format: mcp_{serverName}_{toolName}
+    // e.g., mcp_context7_query-docs
+    if (!std.mem.startsWith(u8, tool_name, "mcp_")) return false;
+
+    // Find second underscore (after "mcp_") to get server name
+    const after_mcp = tool_name["mcp_".len..];
+    const underscore_idx = std.mem.indexOf(u8, after_mcp, "_") orelse return false;
+    const server_name = after_mcp[0..underscore_idx];
+
     const mcp_servers = switch (config.mcpServers.?) {
         .object => |obj| obj,
         else => return false,
@@ -384,7 +392,6 @@ pub fn handle_tool(
         }
         if (!has_known_tools) {
             logger.infoFmt("[HANDLE_TOOL] Skipping saving assistant message, no tools matched", .{}) catch {};
-            return;
         }
 
         // Build tool names list and save assistant message
