@@ -215,7 +215,7 @@ test "globResultToString handles empty result" {
 
     const output = try globResultToString(allocator, result);
 
-    try expectEqualSlices(u8, "", output);
+    try std.testing.expect(std.mem.indexOf(u8, output, "No files found") != null);
 }
 
 test "GlobResult deinit cleans up memory" {

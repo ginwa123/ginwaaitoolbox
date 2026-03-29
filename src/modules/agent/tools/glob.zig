@@ -174,6 +174,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
 }
 
 /// Convert GlobResult to XML string format with <f> tags.
+/// Returns a warning message if no matches are found.
 pub fn globResultToString(allocator: std.mem.Allocator, result: GlobResult) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
@@ -184,6 +185,11 @@ pub fn globResultToString(allocator: std.mem.Allocator, result: GlobResult) ![]c
         , .{m.path});
         try output.appendSlice(allocator, match_xml);
         allocator.free(match_xml);
+    }
+
+    // Return a warning if no matches found
+    if (output.items.len == 0) {
+        return try std.fmt.allocPrint(allocator, "<warning>No files found matching the glob pattern.</warning>", .{});
     }
 
     return try output.toOwnedSlice(allocator);

@@ -1,5 +1,6 @@
 import { createSignal, onMount, onCleanup, For, type Component } from "solid-js";
 import { useNavigate } from "@solidjs/router";
+import { getBaseUrl } from "../../utils/baseUrl";
 
 interface Session {
   session_id: string;
@@ -8,11 +9,6 @@ interface Session {
   agent: string;
   session_name: string;
 }
-
-// Helper to get base URL - both dev and prod use the backend API at 8080
-const getBaseUrl = () => {
-  return "http://127.0.0.1:8080";
-};
 
 const Sidebar: Component = () => {
   const [sessions, setSessions] = createSignal<Session[]>([]);
@@ -27,7 +23,7 @@ const Sidebar: Component = () => {
 
   const fetchSessions = async (cursor?: string) => {
     try {
-      const baseUrl = getBaseUrl();
+      const baseUrl = await getBaseUrl();
       const url = cursor
         ? `${baseUrl}/api/session?limit=20&cursor=${encodeURIComponent(cursor)}`
         : `${baseUrl}/api/session?limit=20`;

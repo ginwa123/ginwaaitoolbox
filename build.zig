@@ -201,6 +201,12 @@ pub fn build(b: *std.Build) void {
 
     _ = b.step("run:kerjabot", "Kerjabot has been removed");
 
+    // Desktop Bun tests step - runs bun test in src/apps/desktop-bun
+    const test_desktop_step = b.step("test:desktop", "Run desktop app tests (bun test)");
+    const run_bun_test = b.addSystemCommand(&.{"bun", "test"});
+    run_bun_test.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
+    test_desktop_step.dependOn(&run_bun_test.step);
+
     // Dev builds - optimized for development with debug symbols
     const dev_optimize: std.builtin.OptimizeMode = .Debug;
 

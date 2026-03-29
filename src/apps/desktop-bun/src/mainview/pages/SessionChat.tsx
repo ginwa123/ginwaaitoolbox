@@ -1,6 +1,7 @@
 import { createSignal, createResource, Show, For, createEffect, onMount, type Component } from "solid-js";
 import { useParams } from "@solidjs/router";
 import { parseMessages, decodeXmlEntities, type XmlMessage } from "../utils/xmlParser";
+import { getBaseUrl } from "../../utils/baseUrl";
 
 interface ChatMessage {
   id: string;
@@ -20,8 +21,6 @@ interface SessionInfo {
   agent: string;
   session_name: string;
 }
-
-const getBaseUrl = () => "http://127.0.0.1:8080";
 
 const normalizeMessage = (msg: XmlMessage): ChatMessage => ({
   id: msg?.id || "",
@@ -149,7 +148,8 @@ const SessionChat: Component = () => {
 
   const [sessionInfo] = createResource(() => params.sessionId, async (sessionId) => {
     try {
-      const res = await fetch(`${getBaseUrl()}/api/session/${sessionId}`, {
+      const baseUrl = await getBaseUrl();
+      const res = await fetch(`${baseUrl}/api/session/${sessionId}`, {
         headers: { Accept: "application/json" },
       });
       if (!res.ok) return null;
@@ -170,7 +170,8 @@ const SessionChat: Component = () => {
     const fetchMessages = async () => {
       try {
         const format = responseFormat();
-        const url = `${getBaseUrl()}/api/session/${sessionId}/messages?format=${format}`;
+        const baseUrl = await getBaseUrl();
+        const url = `${baseUrl}/api/session/${sessionId}/messages?format=${format}`;
         const res = await fetch(url, {
           headers: { Accept: format === "xml" ? "text/xml" : "application/json" },
         });
