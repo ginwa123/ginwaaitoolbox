@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "fs";
+import { join } from "path";
+
 const PROCESS_NAME = "nalar";
 const DEFAULT_PORT = 8080;
 
@@ -15,7 +18,7 @@ export function parsePortFromCmdline(cmdline: string): number | null {
 export function findNalarPort(): number {
   try {
     const procPath = "/proc";
-    const entries = Array.fromDirstream(procPath);
+    const entries = readdirSync(procPath, { withFileTypes: true });
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
@@ -24,8 +27,9 @@ export function findNalarPort(): number {
       if (!/^\d+$/.test(pid)) continue;
 
       try {
-        const cmdlinePath = `${procPath}/${pid}/cmdline`;
-        const cmdline = Bun.file(cmdlinePath).text();
+        const cmdlinePath = join(procPath, pid, "cmdline");
+        // cmdline is null-separated, replace with space for parsing
+        const cmdline = readFileSync(cmdlinePath, "utf-8").replace(/\0/g, " ");
         const port = parsePortFromCmdline(cmdline);
 
         if (port !== null) {
