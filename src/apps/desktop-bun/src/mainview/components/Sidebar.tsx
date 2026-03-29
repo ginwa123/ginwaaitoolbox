@@ -20,6 +20,7 @@ const Sidebar: Component = () => {
   const [nextCursor, setNextCursor] = createSignal<string | null>(null);
   const navigate = useNavigate();
   let sentinelRef: HTMLDivElement | undefined;
+  let initialized = false;
 
   const fetchSessions = async (cursor?: string) => {
     try {
@@ -60,13 +61,15 @@ const Sidebar: Component = () => {
     setLoadingMore(false);
   };
 
-  onMount(async () => {
-    // Initialize baseUrl from Bun via RPC
-    await initBaseUrl();
+  onMount(() => {
+    // Initialize baseUrl from Bun (synchronous)
+    if (!initialized) {
+      initBaseUrl();
+      initialized = true;
+    }
     
     setLoading(true);
-    await fetchSessions();
-    setLoading(false);
+    fetchSessions().finally(() => setLoading(false));
 
     const observer = new IntersectionObserver(
       (entries) => {
