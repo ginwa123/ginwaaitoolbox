@@ -160,20 +160,14 @@ pub const TUIWorkflow = struct {
     }
 
     fn runInternal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
-        defer {
-            if (cancellation_registry.get_global_registry()) |registry| {
-                registry.unregister(session_id);
-            }
-            if (activity_registry.get_global_registry()) |registry| {
-                registry.unregister(session_id);
-            }
-        }
         // Register this session for cancellation tracking
         if (cancellation_registry.get_global_registry()) |registry| {
             try registry.register(session_id);
         }
         if (activity_registry.get_global_registry()) |registry| {
-            try registry.register(session_id);
+            if (registry.is_registered(session_id) == false) {
+                try registry.register(session_id);
+            }
         }
 
         const session_name = message;
@@ -183,6 +177,14 @@ pub const TUIWorkflow = struct {
             session_id,
         );
         const initial_agent = initial_agent_state.agent;
+
+        if (activity_registry.get_global_registry()) |registry| {
+            const is_running = registry.is_running(session_id);
+            if (is_running) {
+                _ = registry.queue_message(session_id, message);
+                return;
+            }
+        }
 
         try save_message(parent_allocator, self.db, .{
             .session_id = session_id,
@@ -211,23 +213,43 @@ pub const TUIWorkflow = struct {
         var loopCounter: u32 = 0;
         const base_base_tools: []const tool_models.AgentTool = all_agent_tools;
         const base_tools = try parent_allocator.dupe(tool_models.AgentTool, base_base_tools);
-        defer parent_allocator.free(base_tools);
 
         while (true) {
-            // Mark session as running (activity tracking)
-            if (activity_registry.get_global_registry()) |registry| {
-                registry.mark_running(session_id);
-            }
-            defer {
-                if (activity_registry.get_global_registry()) |registry| {
-                    registry.mark_idle(session_id);
-                }
-            }
-
             if (cancellation_registry.get_global_registry()) |registry| {
                 if (registry.is_cancelled(session_id)) {
                     break;
                 }
+            }
+
+            if (activity_registry.get_global_registry()) |registry| {
+                const queued_messages = registry.get_queue_messages(session_id);
+                if (queued_messages) |messages| {
+                    for (messages.items) |msg| {
+                        _ = try save_message(parent_allocator, self.db, .{
+                            .session_id = session_id,
+                            .model = model,
+                            .cwd = cwd,
+                            .content = msg,
+                            .reasoning_content = null,
+                            .role = agent.Role.user.toStr(),
+                            .finish_reason = "null",
+                            .tool_calls = null,
+                            .tool_call_id = null,
+                            .agent_name = initial_agent,
+                            .session_name = session_name,
+                            .loop_index = 0,
+                            .temperature = initial_agent_state.temperature,
+                            .is_thinking = initial_agent_state.is_thinking,
+                            .prompt_tokens = 0,
+                            .completion_tokens = 0,
+                            .total_tokens = 0,
+                            .parent_id = session_id,
+                            .parent_session_id = session_id,
+                        });
+                        _ = registry.delete_queue_messages(session_id, msg);
+                    }
+                }
+                registry.mark_running(session_id);
             }
 
             var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
@@ -419,6 +441,17 @@ pub const TUIWorkflow = struct {
             if (res_dynamic_agent.finish_reason == null) {
                 self.logger.warnFmt("WORKFLOW: finish_reason is NULL!", .{}) catch {};
             }
+        }
+
+        if (activity_registry.get_global_registry()) |registry| {
+            registry.mark_stopped(session_id);
+        }
+
+        if (cancellation_registry.get_global_registry()) |registry| {
+            registry.unregister(session_id);
+        }
+        if (activity_registry.get_global_registry()) |registry| {
+            registry.unregister(session_id);
         }
     }
     fn callDynamicAgent(
