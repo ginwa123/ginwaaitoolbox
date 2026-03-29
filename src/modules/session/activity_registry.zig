@@ -1,3 +1,29 @@
+//! ## Session Activity Registry
+//! 
+//! Thread-safe registry for tracking which sessions are currently running their main while-loop.
+//! Mirrors the CancellationRegistry pattern but uses atomic counters for nested/recursive tracking.
+//! 
+//! ## Usage Example
+//! 
+//! ```zig
+//! // At session start - register the session
+//! try activity_registry.get_global_registry().?.register(session_id);
+//! 
+//! // At start of while-loop
+//! activity_registry.get_global_registry().?.mark_running(session_id);
+//! defer {
+//!     activity_registry.get_global_registry().?.mark_idle(session_id);
+//! }
+//! 
+//! while (true) {
+//!     // Check if still active
+//!     if (activity_registry.get_global_registry()) |registry| {
+//!         if (!registry.is_running(session_id)) break;
+//!     }
+//!     // ... loop body
+//! }
+//! ```
+
 const std = @import("std");
 
 pub const ActivityRegistry = struct {
