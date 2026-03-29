@@ -1,7 +1,7 @@
 import { createSignal, createResource, Show, For, createEffect, onMount, type Component } from "solid-js";
 import { useParams } from "@solidjs/router";
 import { parseMessages, decodeXmlEntities, type XmlMessage } from "../utils/xmlParser";
-import { getBaseUrl } from "../../utils/baseUrl";
+import { baseUrl } from "../utils/baseUrl";
 
 interface ChatMessage {
   id: string;
@@ -52,14 +52,12 @@ const MessageList: Component<MessageListProps> = (props) => {
   let containerRef: HTMLDivElement | undefined;
 
   onMount(() => {
-    // Scroll to bottom when component mounts
     if (containerRef) {
       containerRef.scrollTop = containerRef.scrollHeight;
     }
   });
 
   createEffect(() => {
-    // Track messages length to scroll when new messages arrive
     const _ = props.messages.length;
     if (containerRef) {
       requestAnimationFrame(() => {
@@ -107,7 +105,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       class="h-full overflow-y-auto overflow-x-hidden"
     >
       <For each={props.messages}>
-        {(msg, index) => (
+        {(msg) => (
           <div class="px-4 py-3 hover:bg-neutral-900/50 transition-colors border-b border-neutral-900/50">
             <div class="flex gap-4">
               <span class={`font-mono text-base w-5 flex-shrink-0 mt-0.5 ${getRoleColor(msg.role)}`}>
@@ -148,8 +146,7 @@ const SessionChat: Component = () => {
 
   const [sessionInfo] = createResource(() => params.sessionId, async (sessionId) => {
     try {
-      const baseUrl = await getBaseUrl();
-      const res = await fetch(`${baseUrl}/api/session/${sessionId}`, {
+      const res = await fetch(`${baseUrl()}/api/session/${sessionId}`, {
         headers: { Accept: "application/json" },
       });
       if (!res.ok) return null;
@@ -170,8 +167,7 @@ const SessionChat: Component = () => {
     const fetchMessages = async () => {
       try {
         const format = responseFormat();
-        const baseUrl = await getBaseUrl();
-        const url = `${baseUrl}/api/session/${sessionId}/messages?format=${format}`;
+        const url = `${baseUrl()}/api/session/${sessionId}/messages?format=${format}`;
         const res = await fetch(url, {
           headers: { Accept: format === "xml" ? "text/xml" : "application/json" },
         });

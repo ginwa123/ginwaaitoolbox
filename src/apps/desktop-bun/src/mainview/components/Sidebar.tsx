@@ -1,6 +1,6 @@
 import { createSignal, onMount, onCleanup, For, type Component } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { getBaseUrl } from "../../utils/baseUrl";
+import { baseUrl, initBaseUrl } from "../utils/baseUrl";
 
 interface Session {
   session_id: string;
@@ -23,10 +23,9 @@ const Sidebar: Component = () => {
 
   const fetchSessions = async (cursor?: string) => {
     try {
-      const baseUrl = await getBaseUrl();
       const url = cursor
-        ? `${baseUrl}/api/session?limit=20&cursor=${encodeURIComponent(cursor)}`
-        : `${baseUrl}/api/session?limit=20`;
+        ? `${baseUrl()}/api/session?limit=20&cursor=${encodeURIComponent(cursor)}`
+        : `${baseUrl()}/api/session?limit=20`;
 
       const res = await fetch(url, {
         method: "GET",
@@ -42,7 +41,6 @@ const Sidebar: Component = () => {
       };
 
       if (cursor) {
-        // Append to existing sessions when loading more
         setSessions((prev) => [...prev, ...(data.sessions || [])]);
       } else {
         setSessions(data.sessions || []);
@@ -55,7 +53,6 @@ const Sidebar: Component = () => {
     }
   };
 
-  // Lazy load more when sentinel enters viewport
   const lazyLoadMore = async () => {
     if (!hasMore() || loadingMore() || !nextCursor()) return;
     setLoadingMore(true);
@@ -64,11 +61,13 @@ const Sidebar: Component = () => {
   };
 
   onMount(async () => {
+    // Initialize baseUrl from Bun via RPC
+    await initBaseUrl();
+    
     setLoading(true);
     await fetchSessions();
     setLoading(false);
 
-    // Set up IntersectionObserver for lazy loading
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting) {
@@ -87,13 +86,11 @@ const Sidebar: Component = () => {
 
   const formatDate = (dateStr: string) => {
     try {
-      // Handle Unix timestamp in milliseconds (from Zig std.time.milliTimestamp())
       const numericDate = Number(dateStr);
       const date = isNaN(numericDate) 
         ? new Date(dateStr) 
         : new Date(numericDate);
       
-      // Check for invalid date
       if (isNaN(date.getTime())) {
         return "";
       }
@@ -130,7 +127,6 @@ const Sidebar: Component = () => {
   return (
     <aside class="w-64 h-full bg-[#0a0a0a] border-r border-[#2a2a2a] flex flex-col">
       <nav class="flex-1 h-full py-6 flex flex-col">
-        {/* Sessions Section */}
         <div class="mt-8 px-4 flex-1 flex flex-col min-h-0">
           <button
             onClick={() => setExpanded(!expanded())}
@@ -186,7 +182,6 @@ const Sidebar: Component = () => {
                       </button>
                     )}
                   </For>
-                  {/* Sentinel for lazy loading */}
                   <div
                     ref={sentinelRef}
                     class="h-1 flex-shrink-0"
