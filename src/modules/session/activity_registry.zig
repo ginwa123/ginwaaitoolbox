@@ -2,6 +2,7 @@
 //! 
 //! Thread-safe registry for tracking which sessions are currently running their main while-loop.
 //! Mirrors the CancellationRegistry pattern but uses atomic counters for nested/recursive tracking.
+//! Also supports message queuing for paused/interrupted sessions.
 //! 
 //! ## Usage Example
 //! 
@@ -30,16 +31,33 @@ pub const ActivityRegistry = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
+    /// Activity count per session (0 = idle/not registered)
     sessions: std.StringHashMap(*std.atomic.Value(usize)),
+    /// Message queue per session
+    message_queues: std.StringHashMap(*std.ArrayList([]const u8)),
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
             .sessions = std.StringHashMap(*std.atomic.Value(usize)).init(allocator),
+            .message_queues = std.StringHashMap(*std.ArrayList([]const u8)).init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
+        // Clean up message queues
+        var queue_iter = self.message_queues.iterator();
+        while (queue_iter.next()) |entry| {
+            // Free all messages in the queue
+            for (entry.value_ptr.*.items) |msg| {
+                self.allocator.free(msg);
+            }
+            entry.value_ptr.*.deinit(self.allocator);
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.message_queues.deinit();
+
+        // Clean up session activity counters
         var iter = self.sessions.iterator();
         while (iter.next()) |entry| {
             self.allocator.destroy(entry.value_ptr.*);
@@ -49,14 +67,35 @@ pub const ActivityRegistry = struct {
     }
 
     pub fn register(self: *Self, session_id: []const u8) !void {
+        // If already registered, reset it
+        if (self.sessions.get(session_id)) |atomic| {
+            atomic.store(0, .seq_cst);
+            return;
+        }
+
         const atomic = try self.allocator.create(std.atomic.Value(usize));
         atomic.* = std.atomic.Value(usize).init(0);
 
         const key = try self.allocator.dupe(u8, session_id);
         try self.sessions.put(key, atomic);
+
+        // Also create message queue for this session
+        const queue = try self.allocator.create(std.ArrayList([]const u8));
+        queue.* = std.ArrayList([]const u8).empty;
+        try self.message_queues.put(key, queue);
     }
 
     pub fn unregister(self: *Self, session_id: []const u8) void {
+        // Clean up message queue
+        if (self.message_queues.fetchRemove(session_id)) |entry| {
+            for (entry.value.items) |msg| {
+                self.allocator.free(msg);
+            }
+            entry.value.deinit(self.allocator);
+            self.allocator.destroy(entry.value);
+        }
+
+        // Clean up session activity counter
         if (self.sessions.fetchRemove(session_id)) |entry| {
             self.allocator.destroy(entry.value);
             self.allocator.free(entry.key);
@@ -91,6 +130,54 @@ pub const ActivityRegistry = struct {
             return atomic.load(.seq_cst) > 0;
         }
         return false;
+    }
+
+    /// Queue a message for a session
+    pub fn queue_message(self: *Self, session_id: []const u8, message: []const u8) void {
+        if (self.message_queues.get(session_id)) |queue| {
+            const msg_copy = self.allocator.dupe(u8, message) catch return;
+            queue.append(self.allocator, msg_copy) catch {
+                self.allocator.free(msg_copy);
+            };
+        }
+    }
+
+    /// Check if session has queued messages
+    pub fn is_have_queue_message(self: *Self, session_id: []const u8) bool {
+        if (self.message_queues.get(session_id)) |queue| {
+            return queue.items.len > 0;
+        }
+        return false;
+    }
+
+    /// Get and clear all queued messages (returns null-joined string)
+    /// Caller owns the returned memory.
+    pub fn get_queue_messages(self: *Self, session_id: []const u8) ?[]u8 {
+        if (self.message_queues.get(session_id)) |queue| {
+            if (queue.items.len == 0) {
+                return null;
+            }
+
+            // Join all messages with newline
+            var result = std.ArrayList(u8).empty;
+            errdefer result.deinit(self.allocator);
+
+            for (queue.items, 0..) |msg, i| {
+                if (i > 0) {
+                    result.append(self.allocator, '\n') catch unreachable;
+                }
+                result.appendSlice(self.allocator, msg) catch unreachable;
+            }
+
+            // Clear the queue
+            for (queue.items) |msg| {
+                self.allocator.free(msg);
+            }
+            queue.clearRetainingCapacity();
+
+            return result.toOwnedSlice(self.allocator) catch return null;
+        }
+        return null;
     }
 };
 

@@ -125,3 +125,88 @@ test "ActivityRegistry mark_stopped sets is_running false immediately" {
     registry.mark_stopped("session-123");
     try std.testing.expect(!registry.is_running("session-123")); // Count = 0
 }
+
+// ============ Message Queue Tests ============
+
+test "ActivityRegistry queue_message adds message to queue" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    // Initially no queued messages
+    try std.testing.expect(!registry.is_have_queue_message("session-123"));
+    
+    // Queue a message
+    registry.queue_message("session-123", "Hello world");
+    
+    // Now should have queued messages
+    try std.testing.expect(registry.is_have_queue_message("session-123"));
+}
+
+test "ActivityRegistry can queue multiple messages" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    registry.queue_message("session-123", "Message 1");
+    registry.queue_message("session-123", "Message 2");
+    registry.queue_message("session-123", "Message 3");
+    
+    try std.testing.expect(registry.is_have_queue_message("session-123"));
+}
+
+test "ActivityRegistry get_queue_messages returns and clears messages" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    registry.queue_message("session-123", "Hello");
+    registry.queue_message("session-123", "World");
+    
+    // Get and clear messages
+    const messages = registry.get_queue_messages("session-123");
+    try std.testing.expect(messages != null);
+    
+    // After getting, queue should be empty
+    try std.testing.expect(!registry.is_have_queue_message("session-123"));
+    
+    // Messages should contain both messages
+    const msgs = messages.?;
+    try std.testing.expect(std.mem.containsAtLeast(u8, msgs, 1, "Hello"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, msgs, 1, "World"));
+    
+    // Free the returned messages
+    allocator.free(msgs);
+}
+
+test "ActivityRegistry get_queue_messages returns null when empty" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    const messages = registry.get_queue_messages("session-123");
+    try std.testing.expect(messages == null);
+}
+
+test "ActivityRegistry queue_message on unregistered session does nothing" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Don't register session-123
+    
+    // Queue should not crash, just do nothing
+    registry.queue_message("session-123", "Hello");
+    
+    // get_queue_messages should return null
+    const messages = registry.get_queue_messages("session-123");
+    try std.testing.expect(messages == null);
+}
