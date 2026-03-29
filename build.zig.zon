@@ -34,7 +34,7 @@
     .dependencies = .{
         .http = .{
             .url = "https://github.com/karlseguin/http.zig/archive/refs/heads/master.tar.gz",
-            .hash = "1220dfdb19e920f0915ee16d3bea8aea1d95ae5f27eff5235d9235d0fd081f88cb32",
+            .hash = "122092e360e9c8d9d8f164e5c1cbb36a79c17832eeaa4515f07efe18dcb94a5913d2",
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{

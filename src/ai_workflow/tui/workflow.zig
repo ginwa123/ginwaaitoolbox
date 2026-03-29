@@ -57,6 +57,7 @@ const save_skill_mod = @import("save_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 const config_mod = root_mod.config;
 pub const cancellation_registry = root_mod.session.cancellation_registry;
+pub const activity_registry = root_mod.session.activity_registry;
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const SpawnSubAgentTool = root_mod.agents;
 const all_agent_tools = @import("all_agent_tools.zig").all_agent_tools;
@@ -163,9 +164,15 @@ pub const TUIWorkflow = struct {
             if (cancellation_registry.get_global_registry()) |registry| {
                 registry.unregister(session_id);
             }
+            if (activity_registry.get_global_registry()) |registry| {
+                registry.unregister(session_id);
+            }
         }
         // Register this session for cancellation tracking
         if (cancellation_registry.get_global_registry()) |registry| {
+            try registry.register(session_id);
+        }
+        if (activity_registry.get_global_registry()) |registry| {
             try registry.register(session_id);
         }
 
@@ -207,6 +214,16 @@ pub const TUIWorkflow = struct {
         defer parent_allocator.free(base_tools);
 
         while (true) {
+            // Mark session as running (activity tracking)
+            if (activity_registry.get_global_registry()) |registry| {
+                registry.mark_running(session_id);
+            }
+            defer {
+                if (activity_registry.get_global_registry()) |registry| {
+                    registry.mark_idle(session_id);
+                }
+            }
+
             if (cancellation_registry.get_global_registry()) |registry| {
                 if (registry.is_cancelled(session_id)) {
                     break;
