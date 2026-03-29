@@ -14,6 +14,7 @@ const ai_workflow_mod = root_mod.ai_workflow;
 const sqlite = root_mod.sqlite;
 const migrations = root_mod.migrations;
 const cancellation_registry = root_mod.session.cancellation_registry;
+const activity_registry = root_mod.session.activity_registry;
 const helpers = root_mod.helpers;
 const config = root_mod.config;
 const LlmConfig = config.LlmConfig;
@@ -171,6 +172,10 @@ pub fn main() !void {
     // Initialize global cancellation registry
     ai_workflow.cancellation_registry.initGlobalRegistry(parentAllocator);
     defer ai_workflow.cancellation_registry.deinitGlobalRegistry();
+
+    // Initialize global activity registry
+    activity_registry.initGlobalRegistry(parentAllocator);
+    defer activity_registry.deinitGlobalRegistry();
 
     // Spawn session monitor to exit if no active sessions
     var monitor = session_monitor.SessionMonitor.spawn() catch |err| {
