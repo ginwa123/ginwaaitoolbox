@@ -292,14 +292,12 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
 
 pub fn bashResultToString(allocator: std.mem.Allocator, result: BashOutput) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
-        \\<command>{s}</command>
         \\<stdout>{s}</stdout>
         \\<stderr>{s}</stderr>
         \\<exit_code>{d}</exit_code>
         \\<truncated>{}</truncated>
         \\<timeout>{}</timeout>
     , .{
-        result.command,
         result.stdout,
         result.stderr,
         result.exit_code,
