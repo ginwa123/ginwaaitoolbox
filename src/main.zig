@@ -251,7 +251,7 @@ pub fn main() !void {
                 var session_id_buf: [64]u8 = undefined;
                 const session_id = std.fmt.bufPrint(&session_id_buf, "session_{}", .{std.time.timestamp()}) catch "session_error";
                 var response_buf: [256]u8 = undefined;
-                const response = std.fmt.bufPrint(&response_buf, "{{\"sessionId\":\"{s}\"}}", .{session_id}) catch unreachable;
+                const response = std.fmt.bufPrint(&response_buf, "{{\"session_id\":\"{s}\"}}", .{session_id}) catch unreachable;
                 if (http_server.getGlobalSseManager()) |sse_manager| {
                     const event = http_server.SseEvent{
                         .data = response,
@@ -366,7 +366,7 @@ pub fn main() !void {
 
             // Return JSON response
             var response_buf: [256]u8 = undefined;
-            const response = std.fmt.bufPrint(&response_buf, "{{\"sessionId\":\"{s}\",\"agentType\":\"{s}\"}}", .{ session_id, agent_type }) catch unreachable;
+            const response = std.fmt.bufPrint(&response_buf, "{{\"session_id\":\"{s}\",\"agent_type\":\"{s}\"}}", .{ session_id, agent_type }) catch unreachable;
 
             res.status = 200;
             res.body = response;

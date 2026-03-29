@@ -77,19 +77,19 @@ pub fn buildSessionListJson(
 
         // Build each field with JSON escaping
         try json_sessions.append(allocator, '{');
-        try json_sessions.appendSlice(allocator, "\"sessionId\":");
+        try json_sessions.appendSlice(allocator, "\"session_id\":");
         try jsonAppendEscaped(allocator, &json_sessions, sess.session_id);
         try json_sessions.append(allocator, ',');
-        try json_sessions.appendSlice(allocator, "\"sessionDir\":");
+        try json_sessions.appendSlice(allocator, "\"session_dir\":");
         try jsonAppendEscaped(allocator, &json_sessions, sess.session_dir);
         try json_sessions.append(allocator, ',');
-        try json_sessions.appendSlice(allocator, "\"createdAt\":");
+        try json_sessions.appendSlice(allocator, "\"created_at\":");
         try jsonAppendEscaped(allocator, &json_sessions, sess.created_at);
         try json_sessions.append(allocator, ',');
         try json_sessions.appendSlice(allocator, "\"agent\":");
         try jsonAppendEscaped(allocator, &json_sessions, sess.agent);
         try json_sessions.append(allocator, ',');
-        try json_sessions.appendSlice(allocator, "\"sessionName\":");
+        try json_sessions.appendSlice(allocator, "\"session_name\":");
         try jsonAppendEscaped(allocator, &json_sessions, sess.session_name);
         try json_sessions.append(allocator, '}');
     }
@@ -342,4 +342,70 @@ pub fn buildSessionMessagesJson(
         .{json_messages.items});
     json_messages.deinit(allocator);
     return result;
+}
+
+/// Escape XML special characters for safe output
+pub fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    for (s) |c| {
+        switch (c) {
+            '<' => try result.appendSlice(allocator, "&lt;"),
+            '>' => try result.appendSlice(allocator, "&gt;"),
+            '&' => try result.appendSlice(allocator, "&amp;"),
+            '"' => try result.appendSlice(allocator, "&quot;"),
+            '\'' => try result.appendSlice(allocator, "&apos;"),
+            else => try result.append(allocator, c),
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Build XML response for session messages
+pub fn buildSessionMessagesXml(
+    allocator: std.mem.Allocator,
+    messages: []const SessionMessage,
+) ![]u8 {
+    var xml_messages = std.ArrayList(u8).empty;
+    errdefer xml_messages.deinit(allocator);
+
+    try xml_messages.appendSlice(allocator, "<messages>");
+    for (messages) |msg| {
+        const escaped_id = try xmlEscape(allocator, msg.id);
+        defer allocator.free(escaped_id);
+        const escaped_session_id = try xmlEscape(allocator, msg.session_id);
+        defer allocator.free(escaped_session_id);
+        const escaped_role = try xmlEscape(allocator, msg.role);
+        defer allocator.free(escaped_role);
+        const escaped_content = try xmlEscape(allocator, msg.content);
+        defer allocator.free(escaped_content);
+        const escaped_timestamp = try xmlEscape(allocator, msg.timestamp);
+        defer allocator.free(escaped_timestamp);
+        const escaped_tool_name = try xmlEscape(allocator, msg.tool_name);
+        defer allocator.free(escaped_tool_name);
+        const escaped_finish_reason = try xmlEscape(allocator, msg.finish_reason);
+        defer allocator.free(escaped_finish_reason);
+
+        const msg_xml = try std.fmt.allocPrint(allocator,
+            \\<message id="{s}">
+            \\<session_id>{s}</session_id>
+            \\<role>{s}</role>
+            \\<content>{s}</content>
+            \\<timestamp>{s}</timestamp>
+            \\<is_input>{s}</is_input>
+            \\<is_output>{s}</is_output>
+            \\<tool_name>{s}</tool_name>
+            \\<finish_reason>{s}</finish_reason>
+            \\</message>
+            ,
+            .{ escaped_id, escaped_session_id, escaped_role, escaped_content,
+               escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason });
+        defer allocator.free(msg_xml);
+        try xml_messages.appendSlice(allocator, msg_xml);
+    }
+    try xml_messages.appendSlice(allocator, "</messages>");
+
+    return try xml_messages.toOwnedSlice(allocator);
 }

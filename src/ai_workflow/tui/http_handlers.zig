@@ -20,6 +20,46 @@ pub const MessageHandler = http_server.MessageHandler;
 pub const SessionHandler = http_server.SessionHandler;
 
 // =============================================================================
+// Response Format Helpers
+// =============================================================================
+
+/// Response format types
+const ResponseFormat = enum { json, xml };
+
+/// Determine response format from Accept header or query param
+fn getResponseFormat(req: *httpz.Request) ResponseFormat {
+    // First check Accept header (higher priority)
+    if (req.header("accept")) |accept| {
+        if (std.mem.indexOf(u8, accept, "text/xml") != null or
+            std.mem.indexOf(u8, accept, "application/xml") != null)
+        {
+            return .xml;
+        }
+        if (std.mem.indexOf(u8, accept, "application/json") != null) {
+            return .json;
+        }
+    }
+
+    // Fallback to query parameter
+    const query = req.query() catch return .json;
+    const format_param = query.get("format") orelse return .json;
+
+    if (std.mem.eql(u8, format_param, "xml")) {
+        return .xml;
+    }
+    return .json;
+}
+
+/// Build error response based on format
+fn buildErrorResponse(allocator: std.mem.Allocator, format: ResponseFormat, error_msg: []const u8) ![]u8 {
+    if (format == .xml) {
+        return std.fmt.allocPrint(allocator, "<error>{s}</error>", .{error_msg});
+    } else {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"{s}\"}}", .{error_msg});
+    }
+}
+
+// =============================================================================
 // SSE Stream Handlers
 // =============================================================================
 
@@ -260,7 +300,6 @@ pub fn session_get_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz
 /// Get messages for a session
 pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
-    res.content_type = .JSON;
 
     const session_id = req.param("session_id") orelse {
         res.status = 400;
@@ -274,6 +313,16 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
     const sort_by_str = query.get("sort_by") orelse "created_at";
     const direction_str = query.get("direction") orelse "asc";
     const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 100;
+
+    // Determine response format from Accept header or query param
+    const format = getResponseFormat(req);
+
+    // Set content type based on format
+    if (format == .xml) {
+        res.content_type = .XML;
+    } else {
+        res.content_type = .JSON;
+    }
 
     // Determine sort direction (default: asc)
     const is_desc = std.mem.eql(u8, direction_str, "desc");
@@ -306,7 +355,7 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
 
             const messages = session_db.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
                 res.status = 500;
-                res.body = "{\"error\":\"Database query failed\"}";
+                res.body = try buildErrorResponse(alloc, format, "Database query failed");
                 return;
             };
             defer {
@@ -314,14 +363,17 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
                 alloc.free(messages);
             }
 
-            const response = try session_db.buildSessionMessagesJson(alloc, messages);
+            const response = if (format == .xml)
+                try session_db.buildSessionMessagesXml(alloc, messages)
+            else
+                try session_db.buildSessionMessagesJson(alloc, messages);
             res.status = 200;
             res.body = response;
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = try buildErrorResponse(alloc, format, "Server not initialized");
 }
 pub fn getLatestSessionByDirHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     res.content_type = .JSON;

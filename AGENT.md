@@ -81,6 +81,11 @@ src/
 - Never return stack-allocated slices from functions
 - **Memory:** Prefer `ArenaAllocator` over manual `free()`
 
+## JSON Conventions
+
+- **JSON keys:** Always `snake_case` (e.g., `session_id`, `created_at`, `is_input`)
+- This applies to all HTTP API responses and internal JSON builders
+
 ## Data Locations
 
 | Data | Path |

@@ -146,7 +146,7 @@ src/apps/desktop/
 │   └── pages/
 │       ├── Welcome.tsx
 │       └── SessionChat.tsx
-└── src-tauri/
+├── utils/
     ├── Cargo.toml
     ├── tauri.conf.json
     └── src/main.rs

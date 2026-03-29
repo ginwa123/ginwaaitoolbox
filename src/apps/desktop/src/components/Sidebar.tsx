@@ -2,11 +2,11 @@ import { createSignal, onMount, For, type Component } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 
 interface Session {
-  sessionId: string;
-  sessionDir: string;
-  createdAt: string;
+  session_id: string;
+  session_dir: string;
+  created_at: string;
   agent: string;
-  sessionName: string;
+  session_name: string;
 }
 
 // Helper to get base URL - both dev and prod use the backend API at 8080
@@ -80,12 +80,12 @@ const Sidebar: Component = () => {
   };
 
   const getSessionDisplayName = (session: Session) => {
-    if (session.sessionName && session.sessionName.trim()) {
-      return session.sessionName;
+    if (session.session_name && session.session_name.trim()) {
+      return session.session_name;
     }
-    const dir = session.sessionDir || "";
+    const dir = session.session_dir || "";
     const parts = dir.split("/");
-    return parts[parts.length - 1] || session.sessionId.slice(0, 8);
+    return parts[parts.length - 1] || session.session_id.slice(0, 8);
   };
 
   const handleSessionClick = (sessionId: string) => {
@@ -93,13 +93,13 @@ const Sidebar: Component = () => {
   };
 
   return (
-    <aside class="w-60 bg-[#0a0a0a] border-r border-[#2a2a2a] flex flex-col">
-      <nav class="flex-1 py-4 flex flex-col">
+    <aside class="w-64 bg-[#0a0a0a] border-r border-[#2a2a2a] flex flex-col">
+      <nav class="flex-1 py-6 flex flex-col">
         {/* Sessions Section */}
-        <div class="mt-6 px-2 flex-1 overflow-hidden flex flex-col">
+        <div class="mt-8 px-4 flex-1 overflow-hidden flex flex-col">
           <button
             onClick={() => setExpanded(!expanded())}
-            class="flex items-center justify-between w-full px-2 py-1.5 text-xs font-mono uppercase tracking-wider text-[#525252] hover:text-[#737373] transition-colors"
+            class="flex items-center justify-between w-full px-3 py-2 text-xs font-mono uppercase tracking-wider text-[#525252] hover:text-[#737373] transition-colors"
           >
             <span>Sessions</span>
             <svg
@@ -114,35 +114,35 @@ const Sidebar: Component = () => {
           </button>
           
           {expanded() && (
-            <div class="flex-1 overflow-y-auto mt-1 space-y-0.5">
+            <div class="flex-1 overflow-y-auto mt-2 space-y-1">
               {loading() ? (
-                <div class="px-2 py-4 text-[#525252] text-xs font-mono text-center">
+                <div class="px-3 py-6 text-[#525252] text-xs font-mono text-center">
                   Loading...
                 </div>
               ) : error() ? (
-                <div class="px-2 py-2 text-[#ef4444] text-xs font-mono">
+                <div class="px-3 py-3 text-[#ef4444] text-xs font-mono">
                   Error: {error()}
                 </div>
               ) : sessions().length === 0 ? (
-                <div class="px-2 py-4 text-[#525252] text-xs font-mono text-center">
+                <div class="px-3 py-6 text-[#525252] text-xs font-mono text-center">
                   No sessions
                 </div>
               ) : (
                 <For each={sessions()}>
                   {(session) => (
                     <button
-                      onClick={() => handleSessionClick(session.sessionId)}
+                      onClick={() => handleSessionClick(session.session_id)}
                       class="block group w-full text-left"
                     >
-                      <div class="px-2 py-2 rounded hover:bg-[#141414] transition-colors">
-                        <div class="flex items-start gap-2">
-                          <div class="w-1.5 h-1.5 rounded-full bg-[#262626] mt-1.5 group-hover:bg-[#facc15] transition-colors flex-shrink-0" />
+                      <div class="px-3 py-3 rounded-lg hover:bg-[#141414] transition-colors">
+                        <div class="flex items-start gap-3">
+                          <div class="w-2 h-2 rounded-full bg-[#262626] mt-1.5 group-hover:bg-[#facc15] transition-colors flex-shrink-0" />
                           <div class="min-w-0 flex-1">
                             <div class="text-[#a3a3a3] text-sm font-mono truncate group-hover:text-[#e5e5e5] transition-colors">
                               {getSessionDisplayName(session)}
                             </div>
-                            <div class="text-[#404040] text-xs mt-0.5">
-                              {formatDate(session.createdAt)}
+                            <div class="text-[#404040] text-xs mt-1">
+                              {formatDate(session.created_at)}
                             </div>
                           </div>
                         </div>

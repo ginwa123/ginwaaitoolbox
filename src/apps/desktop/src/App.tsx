@@ -12,7 +12,7 @@ const AppLayout: Component<{ children?: any }> = (props) => {
       <Header />
       <div class="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main class="flex-1 overflow-auto p-6">
+        <main class="flex-1 overflow-auto p-8">
           {props.children}
         </main>
       </div>

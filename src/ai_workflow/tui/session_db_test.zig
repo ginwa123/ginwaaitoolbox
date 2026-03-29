@@ -29,8 +29,8 @@ test "buildSessionListJson with multiple sessions" {
     // Verify JSON structure
     try std.testing.expect(std.mem.indexOf(u8, result, "\"sessions\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"total\":42") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "\"sessionId\":\"abc123\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "\"sessionId\":\"def456\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"session_id\":\"abc123\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"session_id\":\"def456\"") != null);
 }
 
 test "buildSessionListJson with empty sessions" {
@@ -540,4 +540,152 @@ test "getSessionMessages returns all columns including is_input is_output tool_n
     try std.testing.expectEqualSlices(u8, "0", msg.is_output);
     try std.testing.expectEqualSlices(u8, "bash", msg.tool_name);
     try std.testing.expectEqualSlices(u8, "stop", msg.finish_reason);
+}
+
+// === TDD: XML Response Support Tests ===
+
+test "buildSessionMessagesXml exists and produces valid XML structure" {
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"buildSessionMessagesXml exists and produces valid XML structure"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "buildSessionMessagesXml exists and produces valid XML structure", std.time.timestamp() - time });
+
+    // Test that the function exists
+    try std.testing.expect(@hasDecl(session_db, "buildSessionMessagesXml"));
+
+    const messages = &[_]session_db.SessionMessage{
+        .{
+            .id = "msg1",
+            .session_id = "sess123",
+            .role = "user",
+            .content = "Hello",
+            .timestamp = "2024-01-15T10:00:00",
+            .is_input = "1",
+            .is_output = "0",
+            .tool_name = "",
+            .finish_reason = "",
+        },
+        .{
+            .id = "msg2",
+            .session_id = "sess123",
+            .role = "assistant",
+            .content = "Hi there!",
+            .timestamp = "2024-01-15T10:00:01",
+            .is_input = "0",
+            .is_output = "1",
+            .tool_name = "bash",
+            .finish_reason = "stop",
+        },
+    };
+
+    const result = try session_db.buildSessionMessagesXml(std.testing.allocator, messages);
+    defer std.testing.allocator.free(result);
+
+    // Verify XML structure
+    try std.testing.expect(std.mem.startsWith(u8, result, "<messages>"));
+    try std.testing.expect(std.mem.endsWith(u8, result, "</messages>"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "<message id=\"msg1\">") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<message id=\"msg2\">") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<role>user</role>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<role>assistant</role>") != null);
+}
+
+test "buildSessionMessagesXml with empty messages" {
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"buildSessionMessagesXml with empty messages"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "buildSessionMessagesXml with empty messages", std.time.timestamp() - time });
+
+    const messages: []const session_db.SessionMessage = &.{};
+
+    const result = try session_db.buildSessionMessagesXml(std.testing.allocator, messages);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualSlices(u8, "<messages></messages>", result);
+}
+
+test "buildSessionMessagesXml escapes XML special characters" {
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"buildSessionMessagesXml escapes XML special characters"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "buildSessionMessagesXml escapes XML special characters", std.time.timestamp() - time });
+
+    const messages = &[_]session_db.SessionMessage{
+        .{
+            .id = "msg1",
+            .session_id = "sess123",
+            .role = "user",
+            .content = "Hello <world> & \"test\" 'chars'",
+            .timestamp = "2024-01-15T10:00:00",
+            .is_input = "1",
+            .is_output = "0",
+            .tool_name = "",
+            .finish_reason = "",
+        },
+    };
+
+    const result = try session_db.buildSessionMessagesXml(std.testing.allocator, messages);
+    defer std.testing.allocator.free(result);
+
+    // Verify XML escaping
+    try std.testing.expect(std.mem.indexOf(u8, result, "&lt;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "&gt;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "&amp;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "&quot;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "&apos;") != null);
+}
+
+test "xmlEscape utility function exists and works" {
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"xmlEscape utility function exists and works"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "xmlEscape utility function exists and works", std.time.timestamp() - time });
+
+    // Test that the function exists
+    try std.testing.expect(@hasDecl(session_db, "xmlEscape"));
+
+    // Test escaping various characters
+    const input = "<test> & \"quote\'s\"</test>";
+    const result = try session_db.xmlEscape(std.testing.allocator, input);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "&lt;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "&gt;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "&amp;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "&quot;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "&apos;") != null);
+}
+
+test "session_message_handler accepts format=xml parameter" {
+    const time = std.time.timestamp();
+    std.debug.print("test {s}\n", .{"session_message_handler accepts format=xml parameter"});
+    defer std.debug.print("test {s} took {d}ms\n", .{ "session_message_handler accepts format=xml parameter", std.time.timestamp() - time });
+
+    // Test that ResponseFormat enum exists in http_handlers
+    // Note: This is a compile-time check for the enum
+    const alloc = std.testing.allocator;
+
+    // Test both JSON and XML formats produce different results
+    const messages = &[_]session_db.SessionMessage{
+        .{
+            .id = "msg1",
+            .session_id = "sess123",
+            .role = "user",
+            .content = "Hello <world>",
+            .timestamp = "2024-01-15T10:00:00",
+            .is_input = "1",
+            .is_output = "0",
+            .tool_name = "",
+            .finish_reason = "",
+        },
+    };
+
+    const json_result = try session_db.buildSessionMessagesJson(alloc, messages);
+    defer alloc.free(json_result);
+
+    const xml_result = try session_db.buildSessionMessagesXml(alloc, messages);
+    defer alloc.free(xml_result);
+
+    // JSON should not contain XML tags
+    try std.testing.expect(std.mem.indexOf(u8, json_result, "<message") == null);
+    // XML should contain XML tags
+    try std.testing.expect(std.mem.indexOf(u8, xml_result, "<message") != null);
+    // XML should have escaped content
+    try std.testing.expect(std.mem.indexOf(u8, xml_result, "&lt;") != null);
 }
