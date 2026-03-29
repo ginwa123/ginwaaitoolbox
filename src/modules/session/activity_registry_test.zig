@@ -107,3 +107,21 @@ test "ActivityRegistry has global singleton" {
     // Clean up
     activity_registry.deinitGlobalRegistry();
 }
+
+test "ActivityRegistry mark_stopped sets is_running false immediately" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    // Mark as running multiple times (nested)
+    registry.mark_running("session-123");
+    registry.mark_running("session-123");
+    registry.mark_running("session-123");
+    try std.testing.expect(registry.is_running("session-123")); // Count = 3
+    
+    // mark_stopped should reset count to 0 immediately (not decrement)
+    registry.mark_stopped("session-123");
+    try std.testing.expect(!registry.is_running("session-123")); // Count = 0
+}

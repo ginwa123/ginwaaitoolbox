@@ -79,6 +79,13 @@ pub const ActivityRegistry = struct {
         }
     }
 
+    /// Reset activity count to 0 immediately (e.g., when session stops completely)
+    pub fn mark_stopped(self: *Self, session_id: []const u8) void {
+        if (self.sessions.get(session_id)) |atomic| {
+            atomic.store(0, .seq_cst);
+        }
+    }
+
     pub fn is_running(self: *Self, session_id: []const u8) bool {
         if (self.sessions.get(session_id)) |atomic| {
             return atomic.load(.seq_cst) > 0;
