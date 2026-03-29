@@ -150,32 +150,20 @@ pub const ActivityRegistry = struct {
         return false;
     }
 
-    /// Get and clear all queued messages (returns null-joined string)
-    /// Caller owns the returned memory.
-    pub fn get_queue_messages(self: *Self, session_id: []const u8) ?[]u8 {
+    /// Get and clear all queued messages
+    /// Returns null if queue is empty.
+    /// Caller must call deinit() on the returned list.
+    pub fn get_queue_messages(self: *Self, session_id: []const u8) ?std.ArrayList([]const u8) {
         if (self.message_queues.get(session_id)) |queue| {
             if (queue.items.len == 0) {
                 return null;
             }
 
-            // Join all messages with newline
-            var result = std.ArrayList(u8).empty;
-            errdefer result.deinit(self.allocator);
+            // Take ownership of the queue
+            const result = queue.*;
+            queue.* = std.ArrayList([]const u8).empty;
 
-            for (queue.items, 0..) |msg, i| {
-                if (i > 0) {
-                    result.append(self.allocator, '\n') catch unreachable;
-                }
-                result.appendSlice(self.allocator, msg) catch unreachable;
-            }
-
-            // Clear the queue
-            for (queue.items) |msg| {
-                self.allocator.free(msg);
-            }
-            queue.clearRetainingCapacity();
-
-            return result.toOwnedSlice(self.allocator) catch return null;
+            return result;
         }
         return null;
     }

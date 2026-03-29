@@ -159,7 +159,7 @@ test "ActivityRegistry can queue multiple messages" {
     try std.testing.expect(registry.is_have_queue_message("session-123"));
 }
 
-test "ActivityRegistry get_queue_messages returns and clears messages" {
+test "ActivityRegistry get_queue_messages returns ArrayList of strings" {
     const allocator = std.testing.allocator;
     var registry = activity_registry.ActivityRegistry.init(allocator);
     defer registry.deinit();
@@ -170,19 +170,26 @@ test "ActivityRegistry get_queue_messages returns and clears messages" {
     registry.queue_message("session-123", "World");
     
     // Get and clear messages
-    const messages = registry.get_queue_messages("session-123");
-    try std.testing.expect(messages != null);
+    const messages_opt = registry.get_queue_messages("session-123");
+    try std.testing.expect(messages_opt != null);
+    
+    var messages = messages_opt.?;
     
     // After getting, queue should be empty
     try std.testing.expect(!registry.is_have_queue_message("session-123"));
     
-    // Messages should contain both messages
-    const msgs = messages.?;
-    try std.testing.expect(std.mem.containsAtLeast(u8, msgs, 1, "Hello"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, msgs, 1, "World"));
+    // Should return list of 2 messages
+    try std.testing.expectEqual(@as(usize, 2), messages.items.len);
     
-    // Free the returned messages
-    allocator.free(msgs);
+    // Verify order is preserved
+    try std.testing.expectEqualStrings("Hello", messages.items[0]);
+    try std.testing.expectEqualStrings("World", messages.items[1]);
+    
+    // Clean up - free individual items then the list
+    for (messages.items) |msg| {
+        allocator.free(msg);
+    }
+    messages.deinit(allocator);
 }
 
 test "ActivityRegistry get_queue_messages returns null when empty" {
