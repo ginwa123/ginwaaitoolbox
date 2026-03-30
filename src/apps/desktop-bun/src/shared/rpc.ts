@@ -1,6 +1,6 @@
 /**
  * Shared RPC Schema - Defines what can be called between Bun and Webview
- * 
+ *
  * This file is imported by BOTH sides, ensuring type safety!
  */
 import { RPCSchema } from 'electrobun/bun';
@@ -8,7 +8,7 @@ import { RPCSchema } from 'electrobun/bun';
 // ============================================================================
 // Full-Duplex RPC Schema
 // ============================================================================
-// 
+//
 // The schema has TWO sides:
 // - "bun": What BUN handles (webview calls these)
 // - "webview": What WEBVIEW handles (bun calls these)
@@ -30,37 +30,37 @@ export type DemoRPCType = {
         params: { a: number; b: number };
         response: number;
       };
-      
+
       // Get system information
       getSystemInfo: {
-        params: void;
+        params: undefined;
         response: {
           platform: string;
           arch: string;
           version: string;
         };
       };
-      
+
       // Echo back text (for testing)
       echo: {
         params: { text: string };
         response: string;
       };
-      
+
       // === PORT PASSING (Pull approach) ===
       // Webview calls this to get the backend port
       getBackendPort: {
-        params: void;
+        params: undefined;
         response: number;
       };
-      
+
       // Webview calls this to get the full backend URL
       getBackendUrl: {
-        params: void;
+        params: undefined;
         response: string;
       };
     };
-    
+
     messages: {
       // Log a message (no response needed)
       logMessage: { text: string; level: 'info' | 'warn' | 'error' };
@@ -79,21 +79,21 @@ export type DemoRPCType = {
         params: { a: number; b: number };
         response: number;
       };
-      
+
       // Get page title
       getPageTitle: {
-        params: void;
+        params: undefined;
         response: string;
       };
     };
-    
+
     messages: {
       // Notify browser of something
       notifyBrowser: { title: string; body: string };
-      
+
       // Update UI counter
       updateCounter: { value: number };
-      
+
       // === PORT PASSING (Push approach) ===
       // Bun pushes the backend info to webview
       backendPortUpdate: { port: number; url: string };

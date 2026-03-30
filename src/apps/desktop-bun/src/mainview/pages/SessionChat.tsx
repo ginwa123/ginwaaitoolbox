@@ -10,6 +10,7 @@ import {
 } from 'solid-js';
 import { baseUrl } from '../utils/baseUrl';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
+import ChatInput from '../components/ChatInput';
 
 interface ChatMessage {
   id: string;
@@ -65,9 +66,7 @@ const MessageList: Component<MessageListProps> = (props) => {
     }
   });
 
-
   createEffect(() => {
-
     if (containerRef) {
       requestAnimationFrame(() => {
         if (containerRef) {
@@ -296,6 +295,9 @@ const SessionChat: Component = () => {
           <MessageList messages={messages()} />
         </Show>
       </div>
+
+      {/* Chat Input */}
+      <ChatInput onSend={(msg) => console.log('Send:', msg)} />
     </div>
   );
 };

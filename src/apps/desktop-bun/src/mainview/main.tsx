@@ -1,14 +1,14 @@
 /**
  * Webview Side - Browser entry point
- * 
+ *
  * This runs in the embedded Chromium browser.
  * We define RPC handlers for functions Bun can call,
  * and use effects to demonstrate Webview → Bun calls!
  */
 import { Route, Router } from '@solidjs/router';
+import { Component, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 /* @refresh reload */
 import { render } from 'solid-js/web';
-import { Component, createSignal, createEffect, onMount, onCleanup } from 'solid-js';
 import { AppLayout } from './AppLayout';
 import SessionChat from './pages/SessionChat';
 import Welcome from './pages/Welcome';
@@ -46,22 +46,22 @@ const rpc = Electroview.defineRPC<DemoRPCType>({
         console.log(`[Webview] multiplyNumbers called with ${a} * ${b}`);
         return a * b;
       },
-      
+
       // Get current page title
       getPageTitle: () => {
         return document.title;
       },
     },
-    
+
     // -----------------------------------------------------------------
     // MESSAGES - One-way messages from BUN (no response needed)
     // -----------------------------------------------------------------
     messages: {
       // Wildcard handler - catches ALL messages
-      "*": (messageName, payload) => {
+      '*': (messageName, payload) => {
         console.log(`[Webview] Received message "${messageName}":`, payload);
       },
-      
+
       // Show browser notification
       notifyBrowser: ({ title, body }) => {
         if ('Notification' in window && Notification.permission === 'granted') {
@@ -69,13 +69,13 @@ const rpc = Electroview.defineRPC<DemoRPCType>({
         }
         console.log(`[Webview] Notification: ${title} - ${body}`);
       },
-      
+
       // Update counter display
       updateCounter: ({ value }) => {
         // Dispatch custom event for UI to listen
         window.dispatchEvent(new CustomEvent('counter-update', { detail: value }));
       },
-      
+
       // === PORT PASSING: Bun pushes the backend info to us! ===
       backendPortUpdate: ({ port, url }) => {
         console.log(`[Webview] Received backend info from Bun: port=${port}, url=${url}`);
@@ -95,27 +95,27 @@ export const electroview = new Electroview({ rpc });
 const App: Component = () => {
   // Counter state (updated from Bun via messages)
   const [counter, setCounter] = createSignal(0);
-  
+
   // RPC result display
   const [lastResult, setLastResult] = createSignal<string | null>(null);
-  
+
   // === PORT PASSING: Store backend info received from Bun ===
   const [backendInfo, setBackendInfo] = createSignal<BackendInfo | null>(null);
-  
+
   // Listen for counter updates from Bun
   onMount(() => {
     const counterHandler = (e: CustomEvent) => {
       setCounter(e.detail);
     };
-    
+
     // === PORT PASSING: Listen for backend info from Bun ===
     const backendHandler = (e: CustomEvent<BackendInfo>) => {
       setBackendInfo(e.detail);
     };
-    
+
     window.addEventListener('counter-update', counterHandler as EventListener);
     window.addEventListener('backend-info', backendHandler as EventListener);
-    
+
     onCleanup(() => {
       window.removeEventListener('counter-update', counterHandler as EventListener);
       window.removeEventListener('backend-info', backendHandler as EventListener);
@@ -130,10 +130,10 @@ const App: Component = () => {
       console.log('\n========================================');
       console.log('[Webview] Demo: Webview calling Bun functions');
       console.log('========================================\n');
-      
+
       // Type-safe RPC access via type assertion
       const rpcInstance = rpc as any;
-      
+
       // === PORT PASSING: Request port from Bun (Pull approach) ===
       try {
         const port = await rpcInstance.request.getBackendPort();
@@ -141,7 +141,7 @@ const App: Component = () => {
       } catch (err) {
         console.error('[Webview] Error getting port:', err);
       }
-      
+
       // Example: Call addNumbers (request/response)
       try {
         const sum = await rpcInstance.request.addNumbers({ a: 10, b: 20 });
@@ -150,13 +150,13 @@ const App: Component = () => {
       } catch (err) {
         console.error('[Webview] Error:', err);
       }
-      
+
       // Example: Send a message to Bun (fire and forget)
-      rpcInstance.send.logMessage({ 
-        text: 'Hello from Webview! 🖐️', 
-        level: 'info' 
+      rpcInstance.send.logMessage({
+        text: 'Hello from Webview! 🖐️',
+        level: 'info',
       });
-      
+
       // Example: Get system info from Bun
       try {
         const info = await rpcInstance.request.getSystemInfo();
@@ -164,7 +164,7 @@ const App: Component = () => {
       } catch (err) {
         console.error('[Webview] Error getting system info:', err);
       }
-      
+
       // Example: Echo test
       try {
         const echoed = await rpcInstance.request.echo({ text: 'Testing RPC!' });
@@ -177,14 +177,17 @@ const App: Component = () => {
 
   return (
     <Router root={AppLayout}>
-      <Route path="/" component={() => (
-        <Welcome 
-          counter={counter()} 
-          lastResult={lastResult()} 
-          electroview={rpc}
-          backendInfo={backendInfo()}
-        />
-      )} />
+      <Route
+        path="/"
+        component={() => (
+          <Welcome
+            counter={counter()}
+            lastResult={lastResult()}
+            electroview={rpc}
+            backendInfo={backendInfo()}
+          />
+        )}
+      />
       <Route path="/session/:sessionId" component={SessionChat} />
     </Router>
   );

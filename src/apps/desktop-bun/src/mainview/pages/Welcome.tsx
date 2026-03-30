@@ -1,6 +1,6 @@
 /**
  * Welcome Page - Interactive RPC Demo UI
- * 
+ *
  * This component demonstrates all RPC communication patterns:
  * - Webview → Bun: requests (call & wait)
  * - Webview → Bun: messages (fire & forget)
@@ -8,7 +8,7 @@
  * - Bun → Webview: messages (fire & forget) [Bun sends to this page]
  * - PORT PASSING: Bun pushes port to webview via message
  */
-import { type Component, createSignal, For } from 'solid-js';
+import { type Component, For, createSignal } from 'solid-js';
 import type { BackendInfo } from '../main';
 
 // Props interface - using 'any' for RPC due to complex type inference issues
@@ -23,7 +23,7 @@ const Welcome: Component<WelcomeProps> = (props) => {
   // Local state for UI
   const [logs, setLogs] = createSignal<string[]>([]);
   const [loading, setLoading] = createSignal(false);
-  
+
   // Helper to add log entries
   const addLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -114,9 +114,7 @@ const Welcome: Component<WelcomeProps> = (props) => {
     <div class="max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <div class="mb-8">
-        <h1 class="font-mono text-3xl font-semibold text-[#e5e5e5] mb-3">
-          Electrobun RPC Demo 🎯
-        </h1>
+        <h1 class="font-mono text-3xl font-semibold text-[#e5e5e5] mb-3">Electrobun RPC Demo 🎯</h1>
         <p class="text-[#737373] text-base">
           Test full-duplex RPC communication between Webview and Bun!
         </p>
@@ -124,13 +122,10 @@ const Welcome: Component<WelcomeProps> = (props) => {
 
       {/* Two Column Layout */}
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
         {/* Left Column: Webview → Bun */}
         <div class="bg-[#141414] border border-[#2a2a2a] p-6 rounded-lg">
-          <h2 class="font-mono text-lg font-medium text-[#22c55e] mb-4">
-            🌐 Webview → Bun
-          </h2>
-          
+          <h2 class="font-mono text-lg font-medium text-[#22c55e] mb-4">🌐 Webview → Bun</h2>
+
           {/* Requests (call & wait) */}
           <div class="mb-6">
             <h3 class="text-sm text-[#a1a1a1] mb-3 font-medium">Requests (call & wait)</h3>
@@ -143,7 +138,7 @@ const Welcome: Component<WelcomeProps> = (props) => {
                 <span class="text-[#22c55e] font-mono text-sm">addNumbers(42, 58)</span>
                 <span class="text-[#666] text-xs ml-2">→ returns sum</span>
               </button>
-              
+
               <button
                 onClick={handleGetSystemInfo}
                 disabled={loading()}
@@ -152,7 +147,7 @@ const Welcome: Component<WelcomeProps> = (props) => {
                 <span class="text-[#22c55e] font-mono text-sm">getSystemInfo()</span>
                 <span class="text-[#666] text-xs ml-2">→ returns platform info</span>
               </button>
-              
+
               <button
                 onClick={handleEcho}
                 disabled={loading()}
@@ -195,7 +190,7 @@ const Welcome: Component<WelcomeProps> = (props) => {
           <h2 class="font-mono text-lg font-medium text-[#f59e0b] mb-4">
             🖥️ Bun → Webview (automatic)
           </h2>
-          
+
           {/* Counter from Bun */}
           <div class="bg-[#1a1a1a] border border-[#333] p-4 rounded mb-4">
             <div class="text-xs text-[#666] mb-1">Counter from Bun</div>
@@ -255,14 +250,10 @@ const Welcome: Component<WelcomeProps> = (props) => {
 
       {/* Activity Log */}
       <div class="bg-[#141414] border border-[#2a2a2a] p-6 rounded-lg">
-        <h2 class="font-mono text-lg font-medium text-[#a855f7] mb-4">
-          📋 Activity Log
-        </h2>
+        <h2 class="font-mono text-lg font-medium text-[#a855f7] mb-4">📋 Activity Log</h2>
         <div class="bg-black/50 border border-[#333] p-4 rounded font-mono text-xs h-48 overflow-y-auto">
           <For each={logs()} fallback={<span class="text-[#444]">No activity yet...</span>}>
-            {(log) => (
-              <div class="text-[#a855f7] mb-1 break-all">{log}</div>
-            )}
+            {(log) => <div class="text-[#a855f7] mb-1 break-all">{log}</div>}
           </For>
         </div>
       </div>
@@ -273,7 +264,7 @@ const Welcome: Component<WelcomeProps> = (props) => {
           📖 RPC Schema Reference (click to expand)
         </summary>
         <pre class="mt-4 text-xs text-[#555] overflow-x-auto leading-relaxed">
-{`// Shared Schema (src/shared/rpc.ts)
+          {`// Shared Schema (src/shared/rpc.ts)
 
 export type DemoRPCType = {
   // Functions BUN handles (webview calls these)

@@ -1,9 +1,9 @@
 /**
  * Backend URL utility
- * 
+ *
  * Provides the base URL for connecting to the backend server.
  * The port is received via RPC from Bun.
- * 
+ *
  * Flow:
  * 1. App starts with a default port (8081 - most common for nalar)
  * 2. Bun sends the actual port via RPC message
@@ -24,7 +24,7 @@ const [port, setPort] = createSignal<number>(DEFAULT_PORT);
  */
 export function initBaseUrl(): void {
   console.log(`[baseUrl] Starting with default port: ${DEFAULT_PORT}`);
-  
+
   // Listen for backend-info event from Bun (sent via RPC)
   window.addEventListener('backend-info', ((e: CustomEvent<{ port: number; url: string }>) => {
     const { port: newPort, url } = e.detail;
@@ -33,11 +33,11 @@ export function initBaseUrl(): void {
     console.log(`[baseUrl] ✅ Updated from Bun via RPC: ${url}`);
     setIsLoading(false);
   }) as EventListener);
-  
+
   // Mark as loaded after a short delay (Bun sends port within 2 seconds)
   setTimeout(() => {
     if (isLoading()) {
-      console.log(`[baseUrl] Using default port (no update from Bun)`);
+      console.log('[baseUrl] Using default port (no update from Bun)');
       setIsLoading(false);
     }
   }, 3000);
