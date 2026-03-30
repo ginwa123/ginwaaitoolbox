@@ -360,22 +360,23 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
 
-            const messages = session_db.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
+            const msg_response = session_db.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
                 res.status = 500;
                 res.body = try buildErrorResponse(alloc, format, "Database query failed");
                 return;
             };
             defer {
-                for (messages) |m| m.deinit(alloc);
-                alloc.free(messages);
+                for (msg_response.messages) |m| m.deinit(alloc);
+                alloc.free(msg_response.messages);
+                if (msg_response.next_cursor) |c| alloc.free(c);
             }
 
-            const response = if (format == .xml)
-                try session_db.buildSessionMessagesXml(alloc, messages)
+            const response_body = if (format == .xml)
+                try session_db.buildSessionMessagesXml(alloc, &msg_response)
             else
-                try session_db.buildSessionMessagesJson(alloc, messages);
+                try session_db.buildSessionMessagesJson(alloc, &msg_response);
             res.status = 200;
-            res.body = response;
+            res.body = response_body;
             return;
         }
     }

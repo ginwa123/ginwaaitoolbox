@@ -4,24 +4,17 @@ import {
   For,
   Show,
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   onMount,
 } from 'solid-js';
+import { createInfiniteQuery } from '@tanstack/solid-query';
+import { createVirtualizer } from '@tanstack/solid-virtual';
 import ChatInput from '../components/ChatInput';
 import { baseUrl } from '../utils/baseUrl';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
-
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
-  timestamp: string;
-  is_input?: string;
-  is_output?: string;
-  tool_name?: string;
-  finish_reason?: string;
-}
+import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
 
 interface SessionInfo {
   session_id: string;
@@ -53,25 +46,7 @@ const normalizeJsonMessage = (msg: Record<string, unknown>): ChatMessage => ({
   finish_reason: String(msg.finish_reason || ''),
 });
 
-const MessageList: Component<{ messages: ChatMessage[] }> = (props) => {
-  let containerRef: HTMLDivElement | undefined;
-
-  onMount(() => {
-    if (containerRef) {
-      containerRef.scrollTop = containerRef.scrollHeight;
-    }
-  });
-
-  createEffect(() => {
-    if (containerRef) {
-      requestAnimationFrame(() => {
-        if (containerRef) {
-          containerRef.scrollTop = containerRef.scrollHeight;
-        }
-      });
-    }
-  });
-
+const MessageRow: Component<{ message: ChatMessage }> = (props) => {
   const formatTimestamp = (ts: string) => {
     try {
       const numericTs = Number(ts);
@@ -114,42 +89,32 @@ const MessageList: Component<{ messages: ChatMessage[] }> = (props) => {
   };
 
   return (
-    <div ref={containerRef} class="flex-1 overflow-y-auto">
-      <For each={props.messages}>
-        {(msg) => (
-          <div class="group border-l-2 border-l-transparent hover:border-l-[#fbbf24] transition-colors">
-            <div class="px-6 py-4 border-b border-[#1a1a1a]">
-              <div class="flex gap-4">
-                <span
-                  class={`font-mono text-sm w-5 flex-shrink-0 mt-0.5 ${getRoleColor(msg.role)}`}
-                >
-                  {getRoleIcon(msg.role)}
+    <div class="group border-l-2 border-l-transparent hover:border-l-[#fbbf24] transition-colors">
+      <div class="px-6 py-4 border-b border-[#1a1a1a]">
+        <div class="flex gap-4">
+          <span class={`font-mono text-sm w-5 flex-shrink-0 mt-0.5 ${getRoleColor(props.message.role)}`}>
+            {getRoleIcon(props.message.role)}
+          </span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-baseline gap-3 mb-2">
+              <span class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(props.message.role)}`}>
+                {props.message.role}
+              </span>
+              <span class="font-mono text-xs text-[#3f3f46]">
+                {formatTimestamp(props.message.timestamp)}
+              </span>
+              <Show when={props.message.tool_name}>
+                <span class="font-mono text-xs text-[#52525b] bg-[#18181b] px-2 py-0.5 border border-[#27272a] uppercase tracking-wider">
+                  {props.message.tool_name}
                 </span>
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-baseline gap-3 mb-2">
-                    <span
-                      class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(msg.role)}`}
-                    >
-                      {msg.role}
-                    </span>
-                    <span class="font-mono text-xs text-[#3f3f46]">
-                      {formatTimestamp(msg.timestamp)}
-                    </span>
-                    <Show when={msg.tool_name}>
-                      <span class="font-mono text-xs text-[#52525b] bg-[#18181b] px-2 py-0.5 border border-[#27272a] uppercase tracking-wider">
-                        {msg.tool_name}
-                      </span>
-                    </Show>
-                  </div>
-                  <div class="font-mono text-sm text-[#a1a1aa] whitespace-pre-wrap break-words leading-relaxed">
-                    {msg.content}
-                  </div>
-                </div>
-              </div>
+              </Show>
+            </div>
+            <div class="font-mono text-sm text-[#a1a1aa] whitespace-pre-wrap break-words leading-relaxed">
+              {props.message.content}
             </div>
           </div>
-        )}
-      </For>
+        </div>
+      </div>
     </div>
   );
 };
@@ -160,10 +125,11 @@ const SessionChat: Component = () => {
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(true);
   const [responseFormat, setResponseFormat] = createSignal<'json' | 'xml'>('xml');
+  let scrollRef: HTMLDivElement | undefined;
 
   const [sessionInfo] = createResource(
     () => params.sessionId,
-    async (sessionId) => {
+    async (sessionId: string) => {
       try {
         const res = await fetch(`${baseUrl()}/api/session/${sessionId}`, {
           headers: { Accept: 'application/json' },
@@ -176,6 +142,79 @@ const SessionChat: Component = () => {
     }
   );
 
+  const messagesQuery = createInfiniteQuery(() => ({
+    queryKey: ['session-messages', params.sessionId],
+    queryFn: async ({ pageParam }: { pageParam?: string }) => {
+      const format = responseFormat();
+      const url = new URL(`${baseUrl()}/api/session/${params.sessionId}/messages`);
+      url.searchParams.set('format', format);
+      url.searchParams.set('limit', '50');
+
+      if (pageParam !== undefined) {
+        url.searchParams.set('cursor', pageParam);
+      }
+
+      const res = await fetch(url.toString(), {
+        headers: { Accept: format === 'xml' ? 'text/xml' : 'application/json' },
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      if (format === 'xml') {
+        const text = await res.text();
+        const parsed = parseMessages(text);
+        const msgs = parsed.map(normalizeMessage);
+        return {
+          messages: msgs,
+          has_more: msgs.length === 50,
+          next_cursor: msgs.length > 0 ? msgs[msgs.length - 1].id : null,
+        } as SessionMessagesResponse;
+      } else {
+        const data = JSON.parse(await res.text()) as SessionMessagesResponse;
+        return data;
+      }
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage: SessionMessagesResponse) => lastPage.next_cursor ?? undefined,
+    enabled: !!params.sessionId,
+  }));
+
+  // Aggregate all messages from pages
+  const allMessages = createMemo(() =>
+    messagesQuery.data?.pages.flatMap((p) => p.messages) ?? []
+  );
+
+  // Virtual list setup
+  const virtualizer = createVirtualizer({
+    get count() {
+      return allMessages().length;
+    },
+    getScrollElement: () => scrollRef ?? null,
+    estimateSize: () => 80,
+    overscan: 5,
+  });
+
+  const handleScroll = () => {
+    if (!scrollRef) return;
+
+    // Trigger load more when scrolled near top
+    if (
+      scrollRef.scrollTop < 200 &&
+      messagesQuery.hasNextPage &&
+      !messagesQuery.isFetchingNextPage
+    ) {
+      messagesQuery.fetchNextPage();
+    }
+  };
+
+  // Scroll to bottom on mount (latest messages)
+  onMount(() => {
+    if (scrollRef) {
+      scrollRef.scrollTop = scrollRef.scrollHeight;
+    }
+  });
+
+  // Fetch initial messages on session change
   createEffect(() => {
     const sessionId = params.sessionId;
     if (!sessionId) return;
@@ -298,7 +337,45 @@ const SessionChat: Component = () => {
             </div>
           }
         >
-          <MessageList messages={messages()} />
+          <div
+            ref={(el) => {
+              scrollRef = el;
+            }}
+            class="flex-1 overflow-y-auto"
+            onScroll={handleScroll}
+          >
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                position: 'relative',
+              }}
+            >
+              <For each={virtualizer.getVirtualItems()}>
+                {(virtualRow) => (
+                  <div
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <MessageRow message={allMessages()[virtualRow.index]} />
+                  </div>
+                )}
+              </For>
+            </div>
+          </div>
+
+          <Show when={messagesQuery.isFetchingNextPage}>
+            <div class="p-2 text-center text-sm text-[#52525b] uppercase tracking-widest animate-pulse">
+              Loading older messages...
+            </div>
+          </Show>
         </Show>
       </div>
 

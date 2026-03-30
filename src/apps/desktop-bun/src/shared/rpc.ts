@@ -6,6 +6,27 @@
 import { RPCSchema } from 'electrobun/bun';
 
 // ============================================================================
+// Shared Types
+// ============================================================================
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  timestamp: string;
+  is_input?: string;
+  is_output?: string;
+  tool_name?: string;
+  finish_reason?: string;
+}
+
+export interface SessionMessagesResponse {
+  messages: ChatMessage[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+// ============================================================================
 // Full-Duplex RPC Schema
 // ============================================================================
 //

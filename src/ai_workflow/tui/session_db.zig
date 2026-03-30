@@ -284,6 +284,13 @@ pub const SessionMessage = struct {
     }
 };
 
+/// Response for session messages with cursor pagination
+pub const SessionMessageResponse = struct {
+    messages: []SessionMessage,
+    has_more: bool,
+    next_cursor: ?[]const u8,
+};
+
 /// Sort direction
 pub const SortDirection = enum { asc, desc };
 
@@ -305,8 +312,10 @@ pub fn get_session_messages_sorted(
     limit: u32,
     cursor: ?[]const u8,
     sort_spec: SortSpec,
-) ![]SessionMessage {
-    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
+) !SessionMessageResponse {
+    // Query limit + 1 to check if more results exist
+    const query_limit = limit + 1;
+    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{query_limit});
     defer allocator.free(limit_str);
 
     var sql: []u8 = undefined;
@@ -374,19 +383,35 @@ pub fn get_session_messages_sorted(
         row.deinit(allocator);
     }
 
-    return try messages.toOwnedSlice(allocator);
+    // Check if there are more results
+    const has_more = messages.items.len > @as(usize, limit);
+    
+    // Get next cursor from last message if has_more
+    const next_cursor: ?[]const u8 = if (has_more and messages.items.len > 0)
+        messages.items[@as(usize, limit) - 1].id
+    else
+        null;
+    
+    // Return only limit messages if has_more
+    const result_messages = if (has_more) messages.items[0..limit] else messages.items;
+    
+    return SessionMessageResponse{
+        .messages = result_messages,
+        .has_more = has_more,
+        .next_cursor = next_cursor,
+    };
 }
 
-/// Build JSON response for session messages
+/// Build JSON response for session messages with pagination info
 pub fn buildSessionMessagesJson(
     allocator: std.mem.Allocator,
-    messages: []const SessionMessage,
+    response: *const SessionMessageResponse,
 ) ![]u8 {
     var json_messages = std.ArrayList(u8).empty;
     errdefer json_messages.deinit(allocator);
 
     try json_messages.appendSlice(allocator, "[");
-    for (messages, 0..) |msg, i| {
+    for (response.messages, 0..) |msg, i| {
         if (i > 0) try json_messages.append(allocator, ',');
         // Escape content for JSON
         var escaped_content = std.ArrayList(u8).empty;
@@ -412,9 +437,17 @@ pub fn buildSessionMessagesJson(
     }
     try json_messages.append(allocator, ']');
 
+    // Build pagination fields
+    const has_more_str = if (response.has_more) "true" else "false";
+    const next_cursor_str = if (response.next_cursor) |c|
+        try std.fmt.allocPrint(allocator, "\"{s}\"", .{c})
+    else
+        try std.fmt.allocPrint(allocator, "null", .{});
+    defer allocator.free(next_cursor_str);
+
     const result = try std.fmt.allocPrint(allocator,
-        "{{\"messages\":{s}}}",
-        .{json_messages.items});
+        "{{\"messages\":{s},\"has_more\":{s},\"next_cursor\":{s}}}",
+        .{json_messages.items, has_more_str, next_cursor_str});
     json_messages.deinit(allocator);
     return result;
 }
@@ -438,16 +471,16 @@ pub fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     return try result.toOwnedSlice(allocator);
 }
 
-/// Build XML response for session messages
+/// Build XML response for session messages with pagination info
 pub fn buildSessionMessagesXml(
     allocator: std.mem.Allocator,
-    messages: []const SessionMessage,
+    response: *const SessionMessageResponse,
 ) ![]u8 {
     var xml_messages = std.ArrayList(u8).empty;
     errdefer xml_messages.deinit(allocator);
 
     try xml_messages.appendSlice(allocator, "<messages>");
-    for (messages) |msg| {
+    for (response.messages) |msg| {
         const escaped_id = try xmlEscape(allocator, msg.id);
         defer allocator.free(escaped_id);
         const escaped_session_id = try xmlEscape(allocator, msg.session_id);
@@ -480,6 +513,17 @@ pub fn buildSessionMessagesXml(
         defer allocator.free(msg_xml);
         try xml_messages.appendSlice(allocator, msg_xml);
     }
+
+    // Add pagination info
+    const has_more_str = if (response.has_more) "true" else "false";
+    try xml_messages.appendSlice(allocator, "<has_more>");
+    try xml_messages.appendSlice(allocator, has_more_str);
+    try xml_messages.appendSlice(allocator, "</has_more>");
+    try xml_messages.appendSlice(allocator, "<next_cursor>");
+    if (response.next_cursor) |c| {
+        try xml_messages.appendSlice(allocator, c);
+    }
+    try xml_messages.appendSlice(allocator, "</next_cursor>");
     try xml_messages.appendSlice(allocator, "</messages>");
 
     return try xml_messages.toOwnedSlice(allocator);
