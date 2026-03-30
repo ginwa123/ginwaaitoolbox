@@ -11,6 +11,7 @@ pub const BashInput = struct {
     max_output: ?usize = 1024 * 1024, // default 1MB
     stdin_data: ?[]const u8 = null, // optional stdin input, null = close stdin
     background: bool = false, // run in background using nohup
+    max_lines: ?usize = 1000, // default 1000 lines per output stream
 };
 
 pub const BashResult = struct {
@@ -26,6 +27,8 @@ pub const BashOutput = struct {
     exit_code: i32,
     truncated: bool,
     timeout: bool,
+    stdout_lines: usize = 0, // total lines produced (before truncation)
+    stderr_lines: usize = 0, // total lines produced (before truncation)
 };
 
 // =============================================================================
