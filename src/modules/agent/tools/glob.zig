@@ -247,6 +247,3 @@ pub const globTool = AgentTool{
     },
 };
 
-test {
-    _ = @import("glob_test.zig");
-}

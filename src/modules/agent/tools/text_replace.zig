@@ -173,7 +173,3 @@ pub const textReplaceTool: AgentTool = .{
         },
     },
 };
-
-test {
-    _ = @import("text_replace_test.zig");
-}

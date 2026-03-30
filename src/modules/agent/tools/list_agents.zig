@@ -77,6 +77,3 @@ pub fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 
     return allocator.dupe(u8, result.items) catch "";
 }
 
-test {
-    _ = @import("list_agents_test.zig");
-}

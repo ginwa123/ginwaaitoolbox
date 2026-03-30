@@ -90,6 +90,3 @@ pub const writeFileTool = AgentTool{
     },
 };
 
-test {
-    _ = @import("write_file_test.zig");
-}

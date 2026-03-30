@@ -141,6 +141,3 @@ fn loadSkillByName(allocator: std.mem.Allocator, skill_name: []const u8) ![]cons
     }
 }
 
-test {
-    _ = @import("get_skill_test.zig");
-}

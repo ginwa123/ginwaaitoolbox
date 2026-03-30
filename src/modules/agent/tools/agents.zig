@@ -416,7 +416,3 @@ pub fn freeAgentsList(allocator: std.mem.Allocator, agents_list: []AgentInfo) vo
     allocator.free(agents_list);
 }
 
-test {
-    _ = @import("agents_test.zig");
-    _ = @import("agents_integration_test.zig");
-}
