@@ -46,6 +46,7 @@ const lspReferencesTool = root_mod.tools.lspReferencesTool;
 const lspWorkspaceSymbolTool = root_mod.tools.lspWorkspaceSymbolTool;
 const lspDocumentSymbolTool = root_mod.tools.lspDocumentSymbolTool;
 const lspHoverTool = root_mod.tools.lspHoverTool;
+const change_agent_tool = root_mod.change_agent;
 
 pub const all_agent_tools: []const tool_models.AgentTool = &.{
     bash_tool.bashTool,
@@ -60,10 +61,14 @@ pub const all_agent_tools: []const tool_models.AgentTool = &.{
     glob_tool.globTool,
     spawn_sub_agent_tool.spawnSubAgentTool,
     list_agents_tool.listAgentsTool,
-    get_agent_tool.GetAgentTool,
     lspDefinitionTool,
     lspReferencesTool,
     lspWorkspaceSymbolTool,
     lspDocumentSymbolTool,
     lspHoverTool,
+    change_agent_tool.ChangeAgentTool,
 };
+
+test {
+    _ = @import("all_agent_tools_change_agent_test.zig");
+}
