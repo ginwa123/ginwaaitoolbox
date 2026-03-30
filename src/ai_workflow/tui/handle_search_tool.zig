@@ -28,6 +28,13 @@ pub fn handle_search_tool_run(
 
     var search_result = try search_tool.executeSearch(allocator, parsed.value);
     
+    // If there are no matches, return the raw content (which may contain warning)
+    if (search_result.matches.items.len == 0) {
+        const content = try allocator.dupe(u8, search_result.content);
+        search_result.deinit(allocator);
+        return content;
+    }
+    
     // Convert search result to string format
     const res_search = try search_tool.searchResultToString(allocator, search_result);
     // Caller is responsible for freeing this returned string
