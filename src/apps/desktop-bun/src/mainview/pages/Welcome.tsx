@@ -111,127 +111,145 @@ const Welcome: Component<WelcomeProps> = (props) => {
   };
 
   return (
-    <div class="max-w-5xl mx-auto space-y-6">
+    <div class="space-y-6">
       {/* Header */}
-      <div class="mb-8">
-        <h1 class="font-mono text-3xl font-semibold text-[#e5e5e5] mb-3">Electrobun RPC Demo 🎯</h1>
-        <p class="text-[#737373] text-base">
-          Test full-duplex RPC communication between Webview and Bun!
+      <div class="mb-2">
+        <h1 class="font-mono text-2xl font-semibold text-[#fafafa] mb-1 tracking-tight uppercase">
+          Electrobun RPC Demo
+        </h1>
+        <p class="text-[#52525b] text-xs font-mono uppercase tracking-widest">
+          Full-duplex RPC communication between Webview and Bun
         </p>
       </div>
 
       {/* Two Column Layout */}
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Left Column: Webview → Bun */}
-        <div class="bg-[#141414] border border-[#2a2a2a] p-6 rounded-lg">
-          <h2 class="font-mono text-lg font-medium text-[#22c55e] mb-4">🌐 Webview → Bun</h2>
+        <div class="bg-[#0a0a0a] border border-[#18181b] p-5">
+          <h2 class="font-mono text-xs font-semibold text-[#22c55e] mb-4 uppercase tracking-[0.15em]">
+            Webview → Bun
+          </h2>
 
           {/* Requests (call & wait) */}
-          <div class="mb-6">
-            <h3 class="text-sm text-[#a1a1a1] mb-3 font-medium">Requests (call & wait)</h3>
-            <div class="space-y-2">
+          <div class="mb-5">
+            <h3 class="text-[10px] text-[#71717a] mb-2 font-mono uppercase tracking-widest">
+              Requests
+            </h3>
+            <div class="space-y-1">
               <button
                 onClick={handleAddNumbers}
                 disabled={loading()}
-                class="w-full bg-[#1a1a1a] hover:bg-[#252525] border border-[#333] px-4 py-2 rounded text-left transition-colors disabled:opacity-50"
+                class="w-full bg-[#09090b] hover:bg-[#18181b] border border-[#27272a] px-3 py-2 text-left transition-colors disabled:opacity-50"
               >
-                <span class="text-[#22c55e] font-mono text-sm">addNumbers(42, 58)</span>
-                <span class="text-[#666] text-xs ml-2">→ returns sum</span>
+                <span class="text-[#22c55e] font-mono text-xs">addNumbers(42, 58)</span>
+                <span class="text-[#52525b] text-[10px] ml-2">→ sum</span>
               </button>
 
               <button
                 onClick={handleGetSystemInfo}
                 disabled={loading()}
-                class="w-full bg-[#1a1a1a] hover:bg-[#252525] border border-[#333] px-4 py-2 rounded text-left transition-colors disabled:opacity-50"
+                class="w-full bg-[#09090b] hover:bg-[#18181b] border border-[#27272a] px-3 py-2 text-left transition-colors disabled:opacity-50"
               >
-                <span class="text-[#22c55e] font-mono text-sm">getSystemInfo()</span>
-                <span class="text-[#666] text-xs ml-2">→ returns platform info</span>
+                <span class="text-[#22c55e] font-mono text-xs">getSystemInfo()</span>
+                <span class="text-[#52525b] text-[10px] ml-2">→ platform</span>
               </button>
 
               <button
                 onClick={handleEcho}
                 disabled={loading()}
-                class="w-full bg-[#1a1a1a] hover:bg-[#252525] border border-[#333] px-4 py-2 rounded text-left transition-colors disabled:opacity-50"
+                class="w-full bg-[#09090b] hover:bg-[#18181b] border border-[#27272a] px-3 py-2 text-left transition-colors disabled:opacity-50"
               >
-                <span class="text-[#22c55e] font-mono text-sm">echo("Hello!")</span>
-                <span class="text-[#666] text-xs ml-2">→ returns echoed text</span>
+                <span class="text-[#22c55e] font-mono text-xs">echo("Hello!")</span>
+                <span class="text-[#52525b] text-[10px] ml-2">→ text</span>
               </button>
             </div>
           </div>
 
           {/* Messages (fire & forget) */}
           <div>
-            <h3 class="text-sm text-[#a1a1a1] mb-3 font-medium">Messages (fire & forget)</h3>
-            <div class="flex gap-2 flex-wrap">
+            <h3 class="text-[10px] text-[#71717a] mb-2 font-mono uppercase tracking-widest">
+              Messages
+            </h3>
+            <div class="flex gap-1">
               <button
                 onClick={() => handleSendLogMessage('info')}
-                class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm text-white transition-colors"
+                class="bg-[#1d4ed8] hover:bg-[#2563eb] px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-white transition-colors"
               >
-                📢 Send Info
+                Info
               </button>
               <button
                 onClick={() => handleSendLogMessage('warn')}
-                class="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded text-sm text-white transition-colors"
+                class="bg-[#d97706] hover:bg-[#ea580c] px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-white transition-colors"
               >
-                ⚠️ Send Warning
+                Warn
               </button>
               <button
                 onClick={() => handleSendLogMessage('error')}
-                class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm text-white transition-colors"
+                class="bg-[#dc2626] hover:bg-[#ef4444] px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-white transition-colors"
               >
-                ❌ Send Error
+                Error
               </button>
             </div>
           </div>
         </div>
 
         {/* Right Column: Bun → Webview (passive) */}
-        <div class="bg-[#141414] border border-[#2a2a2a] p-6 rounded-lg">
-          <h2 class="font-mono text-lg font-medium text-[#f59e0b] mb-4">
-            🖥️ Bun → Webview (automatic)
+        <div class="bg-[#0a0a0a] border border-[#18181b] p-5">
+          <h2 class="font-mono text-xs font-semibold text-[#fbbf24] mb-4 uppercase tracking-[0.15em]">
+            Bun → Webview
           </h2>
 
           {/* Counter from Bun */}
-          <div class="bg-[#1a1a1a] border border-[#333] p-4 rounded mb-4">
-            <div class="text-xs text-[#666] mb-1">Counter from Bun</div>
-            <div class="font-mono text-3xl text-[#f59e0b]">{props.counter}</div>
-            <div class="text-xs text-[#444] mt-1">Updates every 3 seconds</div>
+          <div class="bg-[#09090b] border border-[#27272a] p-3 mb-3">
+            <div class="text-[10px] text-[#52525b] mb-1 font-mono uppercase tracking-widest">
+              Counter
+            </div>
+            <div class="font-mono text-2xl text-[#fbbf24]">{props.counter}</div>
+            <div class="text-[10px] text-[#3f3f46] mt-1 font-mono uppercase tracking-wider">
+              Updates every 3s
+            </div>
           </div>
 
           {/* Backend Info from Bun (PUSHED via message) */}
-          <div class="bg-[#1a1a1a] border border-[#333] p-4 rounded mb-4">
-            <div class="text-xs text-[#666] mb-1">Backend Info (Pushed from Bun)</div>
+          <div class="bg-[#09090b] border border-[#27272a] p-3 mb-3">
+            <div class="text-[10px] text-[#52525b] mb-2 font-mono uppercase tracking-widest">
+              Backend (Pushed)
+            </div>
             {props.backendInfo ? (
               <div class="space-y-1">
-                <div class="font-mono text-sm">
-                  <span class="text-[#666]">Port: </span>
-                  <span class="text-[#f59e0b]">{props.backendInfo.port}</span>
+                <div class="font-mono text-[11px]">
+                  <span class="text-[#52525b]">Port: </span>
+                  <span class="text-[#fbbf24]">{props.backendInfo.port}</span>
                 </div>
-                <div class="font-mono text-sm">
-                  <span class="text-[#666]">URL: </span>
-                  <span class="text-[#f59e0b]">{props.backendInfo.url}</span>
+                <div class="font-mono text-[11px]">
+                  <span class="text-[#52525b]">URL: </span>
+                  <span class="text-[#fbbf24]">{props.backendInfo.url}</span>
                 </div>
               </div>
             ) : (
-              <div class="text-sm text-[#444]">Waiting for Bun to push info...</div>
+              <div class="text-[10px] text-[#3f3f46] font-mono uppercase tracking-wider">
+                Waiting...
+              </div>
             )}
           </div>
 
           {/* Request port from Bun (PULL approach) */}
-          <div class="bg-[#1a1a1a] border border-[#333] p-4 rounded mb-4">
-            <div class="text-xs text-[#666] mb-2">Or request port from Bun (Pull)</div>
-            <div class="flex gap-2">
+          <div class="bg-[#09090b] border border-[#27272a] p-3 mb-3">
+            <div class="text-[10px] text-[#52525b] mb-2 font-mono uppercase tracking-widest">
+              Backend (Pull)
+            </div>
+            <div class="flex gap-1">
               <button
                 onClick={handleGetPort}
                 disabled={loading()}
-                class="bg-[#333] hover:bg-[#444] px-3 py-1 rounded text-xs text-white transition-colors disabled:opacity-50"
+                class="bg-[#27272a] hover:bg-[#3f3f46] px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-[#a1a1aa] transition-colors disabled:opacity-50"
               >
                 Get Port
               </button>
               <button
                 onClick={handleGetUrl}
                 disabled={loading()}
-                class="bg-[#333] hover:bg-[#444] px-3 py-1 rounded text-xs text-white transition-colors disabled:opacity-50"
+                class="bg-[#27272a] hover:bg-[#3f3f46] px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-[#a1a1aa] transition-colors disabled:opacity-50"
               >
                 Get URL
               </button>
@@ -240,30 +258,39 @@ const Welcome: Component<WelcomeProps> = (props) => {
 
           {/* Last result */}
           {props.lastResult && (
-            <div class="bg-[#1a1a1a] border border-[#333] p-4 rounded">
-              <div class="text-xs text-[#666] mb-1">Last RPC Result</div>
-              <div class="font-mono text-sm text-[#22c55e]">{props.lastResult}</div>
+            <div class="bg-[#09090b] border border-[#27272a] p-3">
+              <div class="text-[10px] text-[#52525b] mb-1 font-mono uppercase tracking-widest">
+                Last Result
+              </div>
+              <div class="font-mono text-[11px] text-[#22c55e]">{props.lastResult}</div>
             </div>
           )}
         </div>
       </div>
 
       {/* Activity Log */}
-      <div class="bg-[#141414] border border-[#2a2a2a] p-6 rounded-lg">
-        <h2 class="font-mono text-lg font-medium text-[#a855f7] mb-4">📋 Activity Log</h2>
-        <div class="bg-black/50 border border-[#333] p-4 rounded font-mono text-xs h-48 overflow-y-auto">
-          <For each={logs()} fallback={<span class="text-[#444]">No activity yet...</span>}>
-            {(log) => <div class="text-[#a855f7] mb-1 break-all">{log}</div>}
+      <div class="bg-[#0a0a0a] border border-[#18181b] p-5">
+        <h2 class="font-mono text-xs font-semibold text-[#a78bfa] mb-3 uppercase tracking-[0.15em]">
+          Activity Log
+        </h2>
+        <div class="bg-[#09090b] border border-[#18181b] p-3 font-mono text-[10px] h-32 overflow-y-auto">
+          <For
+            each={logs()}
+            fallback={
+              <span class="text-[#3f3f46] uppercase tracking-widest">No activity yet...</span>
+            }
+          >
+            {(log) => <div class="text-[#a78bfa] mb-1 break-all">{log}</div>}
           </For>
         </div>
       </div>
 
       {/* Schema Reference */}
-      <details class="bg-[#141414] border border-[#2a2a2a] p-6 rounded-lg">
-        <summary class="font-mono text-sm text-[#666] cursor-pointer hover:text-[#888]">
-          📖 RPC Schema Reference (click to expand)
+      <details class="bg-[#0a0a0a] border border-[#18181b] p-5">
+        <summary class="font-mono text-[10px] text-[#52525b] cursor-pointer hover:text-[#71717a] uppercase tracking-widest">
+          RPC Schema Reference
         </summary>
-        <pre class="mt-4 text-xs text-[#555] overflow-x-auto leading-relaxed">
+        <pre class="mt-4 text-[10px] text-[#3f3f46] overflow-x-auto leading-relaxed font-mono">
           {`// Shared Schema (src/shared/rpc.ts)
 
 export type DemoRPCType = {

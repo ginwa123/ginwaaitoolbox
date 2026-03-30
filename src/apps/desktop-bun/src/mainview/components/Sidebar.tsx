@@ -62,7 +62,6 @@ const Sidebar: Component = () => {
   };
 
   onMount(() => {
-    // Initialize baseUrl from Bun (synchronous)
     if (!initialized) {
       initBaseUrl();
       initialized = true;
@@ -102,7 +101,7 @@ const Sidebar: Component = () => {
 
       if (days === 0) return 'Today';
       if (days === 1) return 'Yesterday';
-      if (days < 7) return `${days} days ago`;
+      if (days < 7) return `${days}d ago`;
       return date.toLocaleDateString();
     } catch {
       return '';
@@ -118,7 +117,7 @@ const Sidebar: Component = () => {
     const dirName = parts[parts.length - 1] || '';
     if (dirName) return dirName;
     if (session.session_id) return session.session_id.slice(0, 8);
-    return 'Untitled Session';
+    return 'Untitled';
   };
 
   const handleSessionClick = (sessionId: string) => {
@@ -126,16 +125,16 @@ const Sidebar: Component = () => {
   };
 
   return (
-    <aside class="w-64 h-full bg-[#0a0a0a] border-r border-[#2a2a2a] flex flex-col">
-      <nav class="flex-1 h-full py-6 flex flex-col">
-        <div class="mt-8 px-4 flex-1 flex flex-col min-h-0">
+    <aside class="w-56 h-full bg-[#050505] border-r border-[#18181b] flex flex-col flex-shrink-0">
+      <nav class="flex-1 h-full py-4 flex flex-col">
+        <div class="mt-4 px-4 flex-1 flex flex-col min-h-0">
           <button
             onClick={() => setExpanded(!expanded())}
-            class="flex items-center justify-between w-full px-3 py-2 text-xs font-mono uppercase tracking-wider text-[#525252] hover:text-[#737373] transition-colors"
+            class="flex items-center justify-between w-full px-2 py-1.5 text-[10px] font-mono uppercase tracking-[0.2em] text-[#52525b] hover:text-[#71717a] transition-colors"
           >
             <span>Sessions</span>
             <svg
-              class={`w-3 h-3 transition-transform ${expanded() ? 'rotate-90' : ''}`}
+              class={`w-2.5 h-2.5 transition-transform ${expanded() ? 'rotate-90' : ''}`}
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -146,13 +145,15 @@ const Sidebar: Component = () => {
           </button>
 
           {expanded() && (
-            <div class="flex-1 min-h-0 overflow-y-auto mt-2 space-y-1">
+            <div class="flex-1 min-h-0 overflow-y-auto mt-2 space-y-0">
               {loading() ? (
-                <div class="px-3 py-6 text-[#525252] text-xs font-mono text-center">Loading...</div>
+                <div class="px-2 py-4 text-[#3f3f46] text-[10px] font-mono uppercase tracking-widest text-center">
+                  Loading...
+                </div>
               ) : error() ? (
-                <div class="px-3 py-3 text-[#ef4444] text-xs font-mono">Error: {error()}</div>
+                <div class="px-2 py-3 text-[#ef4444] text-[10px] font-mono">Error: {error()}</div>
               ) : sessions().length === 0 ? (
-                <div class="px-3 py-6 text-[#525252] text-xs font-mono text-center">
+                <div class="px-2 py-4 text-[#3f3f46] text-[10px] font-mono uppercase tracking-widest text-center">
                   No sessions
                 </div>
               ) : (
@@ -163,14 +164,14 @@ const Sidebar: Component = () => {
                         onClick={() => handleSessionClick(session.session_id)}
                         class="block group w-full text-left"
                       >
-                        <div class="px-3 py-3 rounded-lg hover:bg-[#141414] transition-colors">
-                          <div class="flex items-start gap-3">
-                            <div class="w-2 h-2 rounded-full bg-[#262626] mt-1.5 group-hover:bg-[#facc15] transition-colors flex-shrink-0" />
+                        <div class="px-2 py-3 border-l-2 border-l-transparent hover:border-l-[#fbbf24] transition-colors">
+                          <div class="flex items-start gap-2">
+                            <div class="w-1 h-1 bg-[#27272a] mt-1.5 group-hover:bg-[#fbbf24] transition-colors flex-shrink-0" />
                             <div class="min-w-0 flex-1">
-                              <div class="text-[#a3a3a3] text-sm font-mono truncate group-hover:text-[#e5e5e5] transition-colors">
+                              <div class="text-[#71717a] text-[11px] font-mono truncate group-hover:text-[#e4e4e7] transition-colors">
                                 {getSessionDisplayName(session)}
                               </div>
-                              <div class="text-[#404040] text-xs mt-1">
+                              <div class="text-[#3f3f46] text-[10px] mt-0.5 font-mono uppercase tracking-wider">
                                 {formatDate(session.created_at)}
                               </div>
                             </div>

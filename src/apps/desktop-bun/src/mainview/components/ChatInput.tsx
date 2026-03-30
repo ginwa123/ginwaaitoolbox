@@ -13,7 +13,6 @@ const ChatInput: Component<ChatInputProps> = (props) => {
     if (!text) return;
     props.onSend?.(text);
     setMessage('');
-    // Reset textarea height
     if (textareaRef) {
       textareaRef.style.height = 'auto';
     }
@@ -28,7 +27,6 @@ const ChatInput: Component<ChatInputProps> = (props) => {
 
   const handleInput = () => {
     if (textareaRef) {
-      // Auto-expand up to 4 lines (approx 96px with 24px line-height)
       textareaRef.style.height = 'auto';
       textareaRef.style.height = `${Math.min(textareaRef.scrollHeight, 96)}px`;
     }
@@ -37,7 +35,7 @@ const ChatInput: Component<ChatInputProps> = (props) => {
   const canSend = () => message().trim().length > 0;
 
   return (
-    <div class="flex items-end gap-3 px-4 pb-4 bg-neutral-950">
+    <div class="flex items-end gap-3 pt-4 bg-[#050505] border-t border-[#18181b]">
       <div class="flex-1 relative">
         <textarea
           ref={textareaRef}
@@ -51,19 +49,16 @@ const ChatInput: Component<ChatInputProps> = (props) => {
           rows={1}
           class={`
             w-full
-            bg-neutral-900
-            border border-neutral-800
-            rounded-xl
+            bg-[#0a0a0a]
+            border border-[#27272a]
             px-4 py-3
-            text-sm text-neutral-200
+            text-[13px] text-[#e4e4e7]
             font-mono
-            placeholder:text-neutral-600
+            placeholder:text-[#52525b]
             resize-none
             outline-none
-            transition-all
-            duration-200
-            focus:border-yellow-400/50
-            focus:shadow-[0_0_0_2px_rgba(250,204,21,0.15)]
+            transition-colors
+            focus:border-[#fbbf24]
             disabled:opacity-50
             disabled:cursor-not-allowed
             max-h-24
@@ -78,27 +73,25 @@ const ChatInput: Component<ChatInputProps> = (props) => {
         class={`
           w-12 h-12
           flex items-center justify-center
-          rounded-xl
-          transition-all
-          duration-200
-          disabled:opacity-40 disabled:cursor-not-allowed
+          transition-colors
+          disabled:opacity-30 disabled:cursor-not-allowed
           ${
             canSend()
-              ? 'bg-gradient-to-br from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 hover:scale-105 active:scale-95 shadow-lg shadow-amber-500/20'
-              : 'bg-neutral-800'
+              ? 'bg-[#fbbf24] hover:bg-[#fcd34d] active:bg-[#f59e0b] text-[#09090b]'
+              : 'bg-[#18181b] text-[#52525b]'
           }
         `}
         title="Send message"
       >
         <svg
-          width="20"
-          height="20"
+          width="18"
+          height="18"
           viewBox="0 0 24 24"
           fill="none"
-          stroke={canSend() ? '#0a0a0a' : '#525252'}
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="square"
+          stroke-linejoin="miter"
         >
           <line x1="22" y1="2" x2="11" y2="13" />
           <polygon points="22 2 15 22 11 13 2 9 22 2" />

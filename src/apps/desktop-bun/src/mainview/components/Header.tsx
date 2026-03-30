@@ -2,7 +2,6 @@ import type { Component } from 'solid-js';
 
 const Header: Component = () => {
   const handleMinimize = () => {
-    // Electrobun API for window controls
     console.log('Minimize clicked');
   };
 
@@ -15,16 +14,18 @@ const Header: Component = () => {
   };
 
   return (
-    <header class="flex items-center justify-between h-12 px-4 bg-[#0a0a0a] border-b border-[#2a2a2a] select-none">
-      <div class="flex items-center gap-3">
-        <div class="w-3 h-3 bg-[#facc15]" />
-        <span class="font-mono text-sm font-medium text-[#e5e5e5]">DESKTOP BUN</span>
+    <header class="flex items-center justify-between h-10 px-4 bg-[#050505] border-b border-[#18181b] select-none">
+      <div class="flex items-center gap-2">
+        <div class="w-2 h-2 bg-[#fbbf24]" />
+        <span class="font-mono text-xs font-semibold text-[#a1a1aa] uppercase tracking-[0.15em]">
+          Desktop Bun
+        </span>
       </div>
 
-      <div class="flex items-center gap-1">
+      <div class="flex items-center">
         <button
           onClick={handleMinimize}
-          class="w-10 h-8 flex items-center justify-center text-[#737373] hover:bg-[#141414] hover:text-[#e5e5e5] transition-colors duration-150"
+          class="w-10 h-8 flex items-center justify-center text-[#52525b] hover:bg-[#18181b] hover:text-[#a1a1aa] transition-colors"
           title="Minimize"
         >
           <svg
@@ -40,7 +41,7 @@ const Header: Component = () => {
         </button>
         <button
           onClick={handleMaximize}
-          class="w-10 h-8 flex items-center justify-center text-[#737373] hover:bg-[#141414] hover:text-[#e5e5e5] transition-colors duration-150"
+          class="w-10 h-8 flex items-center justify-center text-[#52525b] hover:bg-[#18181b] hover:text-[#a1a1aa] transition-colors"
           title="Maximize"
         >
           <svg
@@ -56,7 +57,7 @@ const Header: Component = () => {
         </button>
         <button
           onClick={handleClose}
-          class="w-10 h-8 flex items-center justify-center text-[#737373] hover:bg-[#ef4444] hover:text-white transition-colors duration-150"
+          class="w-10 h-8 flex items-center justify-center text-[#52525b] hover:bg-[#ef4444] hover:text-white transition-colors"
           title="Close"
         >
           <svg

@@ -8,9 +8,9 @@ import {
   createSignal,
   onMount,
 } from 'solid-js';
+import ChatInput from '../components/ChatInput';
 import { baseUrl } from '../utils/baseUrl';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
-import ChatInput from '../components/ChatInput';
 
 interface ChatMessage {
   id: string;
@@ -53,11 +53,7 @@ const normalizeJsonMessage = (msg: Record<string, unknown>): ChatMessage => ({
   finish_reason: String(msg.finish_reason || ''),
 });
 
-interface MessageListProps {
-  messages: ChatMessage[];
-}
-
-const MessageList: Component<MessageListProps> = (props) => {
+const MessageList: Component<{ messages: ChatMessage[] }> = (props) => {
   let containerRef: HTMLDivElement | undefined;
 
   onMount(() => {
@@ -90,15 +86,15 @@ const MessageList: Component<MessageListProps> = (props) => {
   const getRoleColor = (role: string) => {
     switch (role) {
       case 'user':
-        return 'text-sky-400';
+        return 'text-[#38bdf8]';
       case 'assistant':
-        return 'text-yellow-400';
+        return 'text-[#fbbf24]';
       case 'system':
-        return 'text-violet-400';
+        return 'text-[#a78bfa]';
       case 'tool':
-        return 'text-emerald-400';
+        return 'text-[#34d399]';
       default:
-        return 'text-zinc-500';
+        return 'text-[#71717a]';
     }
   };
 
@@ -111,41 +107,43 @@ const MessageList: Component<MessageListProps> = (props) => {
       case 'system':
         return '★';
       case 'tool':
-        return '⚙';
+        return '▣';
       default:
         return '·';
     }
   };
 
   return (
-    <div ref={containerRef} class="h-full overflow-y-auto overflow-x-hidden">
+    <div ref={containerRef} class="flex-1 overflow-y-auto">
       <For each={props.messages}>
         {(msg) => (
-          <div class="px-4 py-3 hover:bg-neutral-900/50 transition-colors border-b border-neutral-900/50">
-            <div class="flex gap-4">
-              <span
-                class={`font-mono text-base w-5 flex-shrink-0 mt-0.5 ${getRoleColor(msg.role)}`}
-              >
-                {getRoleIcon(msg.role)}
-              </span>
-              <div class="flex-1 min-w-0">
-                <div class="flex items-baseline gap-3 mb-2">
-                  <span
-                    class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(msg.role)}`}
-                  >
-                    {msg.role}
-                  </span>
-                  <span class="font-mono text-xs text-zinc-600">
-                    {formatTimestamp(msg.timestamp)}
-                  </span>
-                  <Show when={msg.tool_name}>
-                    <span class="font-mono text-xs text-zinc-500 bg-neutral-900 px-2 py-0.5 border border-neutral-800">
-                      {msg.tool_name}
+          <div class="group border-l-2 border-l-transparent hover:border-l-[#fbbf24] transition-colors">
+            <div class="px-6 py-4 border-b border-[#1a1a1a]">
+              <div class="flex gap-4">
+                <span
+                  class={`font-mono text-sm w-5 flex-shrink-0 mt-0.5 ${getRoleColor(msg.role)}`}
+                >
+                  {getRoleIcon(msg.role)}
+                </span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-baseline gap-3 mb-2">
+                    <span
+                      class={`font-mono text-[10px] uppercase tracking-[0.2em] font-semibold ${getRoleColor(msg.role)}`}
+                    >
+                      {msg.role}
                     </span>
-                  </Show>
-                </div>
-                <div class="font-mono text-sm text-zinc-400 whitespace-pre-wrap break-words leading-relaxed">
-                  {msg.content}
+                    <span class="font-mono text-[10px] text-[#3f3f46]">
+                      {formatTimestamp(msg.timestamp)}
+                    </span>
+                    <Show when={msg.tool_name}>
+                      <span class="font-mono text-[10px] text-[#52525b] bg-[#18181b] px-2 py-0.5 border border-[#27272a] uppercase tracking-wider">
+                        {msg.tool_name}
+                      </span>
+                    </Show>
+                  </div>
+                  <div class="font-mono text-[13px] text-[#a1a1aa] whitespace-pre-wrap break-words leading-relaxed">
+                    {msg.content}
+                  </div>
                 </div>
               </div>
             </div>
@@ -229,36 +227,42 @@ const SessionChat: Component = () => {
   const sessionId = () => sessionInfo()?.session_id?.slice(0, 8);
 
   return (
-    <div class="h-full flex flex-col bg-neutral-950 font-mono">
+    <div class="h-full flex flex-col">
       {/* Session Header */}
-      <div class="border-b border-neutral-800 pb-6 mb-6 flex-shrink-0">
+      <div class="border-b-2 border-[#27272a] pb-4 flex-shrink-0">
         <div class="flex items-center justify-between">
           <div>
             <Show
               when={sessionName()}
               fallback={
-                <h1 class="text-2xl font-semibold text-zinc-200 mb-2">
+                <h1 class="text-xl font-semibold text-[#fafafa] mb-1 tracking-tight">
                   Session {params.sessionId?.slice(0, 8)}...
                 </h1>
               }
             >
-              <h1 class="text-2xl font-semibold text-zinc-200 mb-2">{sessionName()}</h1>
+              <h1 class="text-xl font-semibold text-[#fafafa] mb-1 tracking-tight">
+                {sessionName()}
+              </h1>
             </Show>
-            <div class="flex items-center gap-4 text-xs text-zinc-600">
-              <span>Agent: {sessionAgent()}</span>
+            <div class="flex items-center gap-3 text-[10px] text-[#52525b] uppercase tracking-widest">
+              <span>
+                Agent: <span class="text-[#71717a]">{sessionAgent()}</span>
+              </span>
               <Show when={sessionId()}>
-                <span class="text-neutral-800">·</span>
-                <span>ID: {sessionId()}...</span>
+                <span class="text-[#27272a]">·</span>
+                <span>
+                  ID: <span class="text-[#71717a]">{sessionId()}</span>...
+                </span>
               </Show>
             </div>
           </div>
 
           <button
             onClick={toggleFormat}
-            class="px-3 py-1.5 text-xs bg-neutral-900 border border-neutral-800 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+            class="px-3 py-1.5 text-[10px] bg-[#09090b] border border-[#27272a] hover:border-[#fbbf24] hover:text-[#fbbf24] transition-colors uppercase tracking-wider"
           >
-            <span class="text-zinc-500">Format:</span>{' '}
-            <span class={responseFormat() === 'xml' ? 'text-yellow-400' : 'text-zinc-200'}>
+            <span class="text-[#52525b]">Fmt:</span>{' '}
+            <span class={responseFormat() === 'xml' ? 'text-[#fbbf24]' : 'text-[#a1a1aa]'}>
               {responseFormat() === 'xml' ? 'XML' : 'JSON'}
             </span>
           </button>
@@ -266,27 +270,31 @@ const SessionChat: Component = () => {
       </div>
 
       {/* Messages */}
-      <div class="flex-1 min-h-0">
+      <div class="flex-1 min-h-0 mt-4 border border-[#18181b] bg-[#0a0a0a]">
         <Show when={loading()}>
-          <div class="flex items-center justify-center h-full">
-            <span class="text-zinc-600 text-sm animate-pulse">Loading messages...</span>
+          <div class="h-full flex items-center justify-center">
+            <span class="text-[#52525b] text-xs uppercase tracking-widest animate-pulse">
+              Loading messages...
+            </span>
           </div>
         </Show>
 
         <Show when={error()}>
-          <div class="flex items-center justify-center h-full">
+          <div class="h-full flex items-center justify-center">
             <div class="text-center">
-              <div class="text-red-500 text-lg mb-2">Error</div>
-              <div class="text-zinc-600 text-sm">{error()}</div>
+              <div class="text-[#ef4444] text-sm mb-1 uppercase tracking-wider">Error</div>
+              <div class="text-[#52525b] text-xs">{error()}</div>
             </div>
           </div>
         </Show>
 
         <Show when={!loading() && !error() && messages().length === 0}>
-          <div class="flex items-center justify-center h-full">
+          <div class="h-full flex items-center justify-center">
             <div class="text-center">
-              <div class="text-zinc-600 text-lg mb-2">No messages yet</div>
-              <div class="text-zinc-700 text-sm">Start a conversation to see messages here</div>
+              <div class="text-[#52525b] text-sm mb-1 uppercase tracking-wider">
+                No messages yet
+              </div>
+              <div class="text-[#3f3f46] text-xs">Start a conversation</div>
             </div>
           </div>
         </Show>
@@ -297,7 +305,9 @@ const SessionChat: Component = () => {
       </div>
 
       {/* Chat Input */}
-      <ChatInput onSend={(msg) => console.log('Send:', msg)} />
+      <div class="pt-4 flex-shrink-0">
+        <ChatInput onSend={(msg) => console.log('Send:', msg)} />
+      </div>
     </div>
   );
 };

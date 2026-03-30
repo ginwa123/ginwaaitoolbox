@@ -5,6 +5,9 @@
 
 ---
 
+# Mandatory
+- Always update this file AGENT.md make sure its match with actual project or codebase
+
 ## Project Overview
 
 **Name:** nalarcore

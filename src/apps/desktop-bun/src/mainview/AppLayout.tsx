@@ -4,13 +4,14 @@ import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 
 export const AppLayout: ParentComponent = (props) => {
-  //
   return (
-    <div class="flex flex-col h-screen w-full bg-[#0a0a0a]">
+    <div class="flex flex-col h-screen w-full bg-[#050505]">
       <Header />
       <div class="flex flex-1 min-h-0 overflow-hidden">
         <Sidebar />
-        <main class="flex-1 min-h-0 p-8 overflow-auto">{props.children}</main>
+        <main class="flex-1 min-h-0 overflow-auto flex justify-center">
+          <div class="w-full max-w-[85%] px-6">{props.children}</div>
+        </main>
       </div>
       <Footer />
     </div>
