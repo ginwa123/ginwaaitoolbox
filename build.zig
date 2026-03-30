@@ -207,6 +207,24 @@ pub fn build(b: *std.Build) void {
     run_bun_test.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
     test_desktop_step.dependOn(&run_bun_test.step);
 
+    // Biome lint step - runs biome check on TypeScript files
+    const lint_step = b.step("lint", "Run Biome linter on TypeScript/JS files");
+    const run_biome_lint = b.addSystemCommand(&.{"bun", "run", "lint"});
+    run_biome_lint.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
+    lint_step.dependOn(&run_biome_lint.step);
+
+    // Biome lint:fix step - runs biome check --write
+    const lint_fix_step = b.step("lint:fix", "Run Biome linter with auto-fix on TypeScript/JS files");
+    const run_biome_lint_fix = b.addSystemCommand(&.{"bun", "run", "lint:fix"});
+    run_biome_lint_fix.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
+    lint_fix_step.dependOn(&run_biome_lint_fix.step);
+
+    // Biome format step
+    const format_step = b.step("format", "Format TypeScript/JS files with Biome");
+    const run_biome_format = b.addSystemCommand(&.{"bun", "run", "format"});
+    run_biome_format.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
+    format_step.dependOn(&run_biome_format.step);
+
     // Dev builds - optimized for development with debug symbols
     const dev_optimize: std.builtin.OptimizeMode = .Debug;
 
