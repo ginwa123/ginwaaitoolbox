@@ -128,20 +128,20 @@ const MessageList: Component<{ messages: ChatMessage[] }> = (props) => {
                 <div class="flex-1 min-w-0">
                   <div class="flex items-baseline gap-3 mb-2">
                     <span
-                      class={`font-mono text-[10px] uppercase tracking-[0.2em] font-semibold ${getRoleColor(msg.role)}`}
+                      class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(msg.role)}`}
                     >
                       {msg.role}
                     </span>
-                    <span class="font-mono text-[10px] text-[#3f3f46]">
+                    <span class="font-mono text-xs text-[#3f3f46]">
                       {formatTimestamp(msg.timestamp)}
                     </span>
                     <Show when={msg.tool_name}>
-                      <span class="font-mono text-[10px] text-[#52525b] bg-[#18181b] px-2 py-0.5 border border-[#27272a] uppercase tracking-wider">
+                      <span class="font-mono text-xs text-[#52525b] bg-[#18181b] px-2 py-0.5 border border-[#27272a] uppercase tracking-wider">
                         {msg.tool_name}
                       </span>
                     </Show>
                   </div>
-                  <div class="font-mono text-[13px] text-[#a1a1aa] whitespace-pre-wrap break-words leading-relaxed">
+                  <div class="font-mono text-sm text-[#a1a1aa] whitespace-pre-wrap break-words leading-relaxed">
                     {msg.content}
                   </div>
                 </div>
@@ -229,7 +229,7 @@ const SessionChat: Component = () => {
   return (
     <div class="h-full flex flex-col">
       {/* Session Header */}
-      <div class="border-b-2 border-[#27272a] pb-4 flex-shrink-0">
+      <div class="flex-shrink-0 pb-4">
         <div class="flex items-center justify-between">
           <div>
             <Show
@@ -244,7 +244,7 @@ const SessionChat: Component = () => {
                 {sessionName()}
               </h1>
             </Show>
-            <div class="flex items-center gap-3 text-[10px] text-[#52525b] uppercase tracking-widest">
+            <div class="flex items-center gap-3 text-xs text-[#52525b] uppercase tracking-widest">
               <span>
                 Agent: <span class="text-[#71717a]">{sessionAgent()}</span>
               </span>
@@ -259,7 +259,7 @@ const SessionChat: Component = () => {
 
           <button
             onClick={toggleFormat}
-            class="px-3 py-1.5 text-[10px] bg-[#09090b] border border-[#27272a] hover:border-[#fbbf24] hover:text-[#fbbf24] transition-colors uppercase tracking-wider"
+            class="px-3 py-1.5 text-xs bg-[#09090b] border border-[#27272a] hover:border-[#fbbf24] hover:text-[#fbbf24] transition-colors uppercase tracking-wider"
           >
             <span class="text-[#52525b]">Fmt:</span>{' '}
             <span class={responseFormat() === 'xml' ? 'text-[#fbbf24]' : 'text-[#a1a1aa]'}>
@@ -267,45 +267,43 @@ const SessionChat: Component = () => {
             </span>
           </button>
         </div>
+        <div class="border-b-2 border-[#27272a] mt-4" />
       </div>
 
       {/* Messages */}
-      <div class="flex-1 min-h-0 mt-4 border border-[#18181b] bg-[#0a0a0a]">
-        <Show when={loading()}>
-          <div class="h-full flex items-center justify-center">
-            <span class="text-[#52525b] text-xs uppercase tracking-widest animate-pulse">
-              Loading messages...
-            </span>
-          </div>
-        </Show>
-
-        <Show when={error()}>
-          <div class="h-full flex items-center justify-center">
-            <div class="text-center">
-              <div class="text-[#ef4444] text-sm mb-1 uppercase tracking-wider">Error</div>
-              <div class="text-[#52525b] text-xs">{error()}</div>
+      <div class="flex-1 min-h-0 flex flex-col mt-4 border border-[#18181b] bg-[#0a0a0a]">
+        <Show
+          when={!loading() && !error() && messages().length > 0}
+          fallback={
+            <div class="flex-1 flex items-center justify-center">
+              <Show when={loading()}>
+                <span class="text-[#52525b] text-xs uppercase tracking-widest animate-pulse">
+                  Loading messages...
+                </span>
+              </Show>
+              <Show when={error()}>
+                <div class="text-center">
+                  <div class="text-[#ef4444] text-sm mb-1 uppercase tracking-wider">Error</div>
+                  <div class="text-[#52525b] text-xs">{error()}</div>
+                </div>
+              </Show>
+              <Show when={!loading() && !error() && messages().length === 0}>
+                <div class="text-center">
+                  <div class="text-[#52525b] text-sm mb-1 uppercase tracking-wider">
+                    No messages yet
+                  </div>
+                  <div class="text-[#3f3f46] text-xs">Start a conversation</div>
+                </div>
+              </Show>
             </div>
-          </div>
-        </Show>
-
-        <Show when={!loading() && !error() && messages().length === 0}>
-          <div class="h-full flex items-center justify-center">
-            <div class="text-center">
-              <div class="text-[#52525b] text-sm mb-1 uppercase tracking-wider">
-                No messages yet
-              </div>
-              <div class="text-[#3f3f46] text-xs">Start a conversation</div>
-            </div>
-          </div>
-        </Show>
-
-        <Show when={!loading() && !error() && messages().length > 0}>
+          }
+        >
           <MessageList messages={messages()} />
         </Show>
       </div>
 
       {/* Chat Input */}
-      <div class="pt-4 flex-shrink-0">
+      <div class="flex-shrink-0 pt-4">
         <ChatInput onSend={(msg) => console.log('Send:', msg)} />
       </div>
     </div>

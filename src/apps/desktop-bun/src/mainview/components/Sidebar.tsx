@@ -19,8 +19,21 @@ const Sidebar: Component = () => {
   const [loadingMore, setLoadingMore] = createSignal(false);
   const [nextCursor, setNextCursor] = createSignal<string | null>(null);
   const navigate = useNavigate();
+  
+  // Refs for DOM elements
+  let scrollContainerRef: HTMLDivElement | undefined;
   let sentinelRef: HTMLDivElement | undefined;
+  let observer: IntersectionObserver | undefined;
   let initialized = false;
+
+  // Callback ref pattern for sentinel - more reliable than let ref
+  const setSentinelRef = (el: HTMLDivElement | null) => {
+    sentinelRef = el || undefined;
+    // Set up observer when sentinel is available
+    if (el && observer) {
+      observer.observe(el);
+    }
+  };
 
   const fetchSessions = async (cursor?: string) => {
     try {
@@ -61,6 +74,19 @@ const Sidebar: Component = () => {
     setLoadingMore(false);
   };
 
+  // Fallback: scroll event listener
+  const handleScroll = () => {
+    if (!scrollContainerRef || !hasMore() || loadingMore() || !nextCursor()) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    
+    // Trigger when within 100px of bottom
+    if (distanceFromBottom < 100) {
+      lazyLoadMore();
+    }
+  };
+
   onMount(() => {
     if (!initialized) {
       initBaseUrl();
@@ -70,20 +96,30 @@ const Sidebar: Component = () => {
     setLoading(true);
     fetchSessions().finally(() => setLoading(false));
 
-    const observer = new IntersectionObserver(
+    // Set up IntersectionObserver
+    observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting) {
+        if (entries[0]?.isIntersecting) {
           lazyLoadMore();
         }
       },
-      { threshold: 0.1, rootMargin: '100px' }
+      { 
+        root: scrollContainerRef, // scroll container as root
+        threshold: 0
+      }
     );
 
+    // Observe sentinel if already available
     if (sentinelRef) {
       observer.observe(sentinelRef);
     }
 
-    onCleanup(() => observer.disconnect());
+    onCleanup(() => {
+      if (observer) {
+        observer.disconnect();
+        observer = undefined;
+      }
+    });
   });
 
   const formatDate = (dateStr: string) => {
@@ -125,16 +161,16 @@ const Sidebar: Component = () => {
   };
 
   return (
-    <aside class="w-56 h-full bg-[#050505] border-r border-[#18181b] flex flex-col flex-shrink-0">
-      <nav class="flex-1 h-full py-4 flex flex-col">
-        <div class="mt-4 px-4 flex-1 flex flex-col min-h-0">
+    <aside class="w-56 flex-shrink-0 bg-[#050505] border-r border-[#18181b] flex flex-col overflow-hidden" style="height: 100%;">
+      <div class="flex-1 flex flex-col py-3 overflow-hidden">
+        <div class="px-4 mb-2">
           <button
             onClick={() => setExpanded(!expanded())}
-            class="flex items-center justify-between w-full px-2 py-1.5 text-[10px] font-mono uppercase tracking-[0.2em] text-[#52525b] hover:text-[#71717a] transition-colors"
+            class="flex items-center justify-between w-full px-2 py-2 text-xs font-mono uppercase tracking-[0.15em] text-[#71717a] hover:text-[#a1a1aa] transition-colors"
           >
             <span>Sessions</span>
             <svg
-              class={`w-2.5 h-2.5 transition-transform ${expanded() ? 'rotate-90' : ''}`}
+              class={`w-3 h-3 transition-transform ${expanded() ? 'rotate-90' : ''}`}
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -143,50 +179,59 @@ const Sidebar: Component = () => {
               <path d="M9 18l6-6-6-6" />
             </svg>
           </button>
+        </div>
 
-          {expanded() && (
-            <div class="flex-1 min-h-0 overflow-y-auto mt-2 space-y-0">
-              {loading() ? (
-                <div class="px-2 py-4 text-[#3f3f46] text-[10px] font-mono uppercase tracking-widest text-center">
-                  Loading...
-                </div>
-              ) : error() ? (
-                <div class="px-2 py-3 text-[#ef4444] text-[10px] font-mono">Error: {error()}</div>
-              ) : sessions().length === 0 ? (
-                <div class="px-2 py-4 text-[#3f3f46] text-[10px] font-mono uppercase tracking-widest text-center">
-                  No sessions
-                </div>
-              ) : (
-                <>
-                  <For each={sessions()}>
-                    {(session) => (
-                      <button
-                        onClick={() => handleSessionClick(session.session_id)}
-                        class="block group w-full text-left"
-                      >
-                        <div class="px-2 py-3 border-l-2 border-l-transparent hover:border-l-[#fbbf24] transition-colors">
-                          <div class="flex items-start gap-2">
-                            <div class="w-1 h-1 bg-[#27272a] mt-1.5 group-hover:bg-[#fbbf24] transition-colors flex-shrink-0" />
-                            <div class="min-w-0 flex-1">
-                              <div class="text-[#71717a] text-[11px] font-mono truncate group-hover:text-[#e4e4e7] transition-colors">
-                                {getSessionDisplayName(session)}
-                              </div>
-                              <div class="text-[#3f3f46] text-[10px] mt-0.5 font-mono uppercase tracking-wider">
-                                {formatDate(session.created_at)}
-                              </div>
+        {expanded() && (
+          <div 
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            class="flex-1 px-4 overflow-y-auto sidebar-scroll"
+          >
+            {loading() ? (
+              <div class="py-6 text-[#52525b] text-xs font-mono uppercase tracking-widest text-center">
+                Loading...
+              </div>
+            ) : error() ? (
+              <div class="py-4 text-[#ef4444] text-xs font-mono">Error: {error()}</div>
+            ) : sessions().length === 0 ? (
+              <div class="py-6 text-[#52525b] text-xs font-mono uppercase tracking-widest text-center">
+                No sessions
+              </div>
+            ) : (
+              <>
+                <For each={sessions()}>
+                  {(session) => (
+                    <button
+                      onClick={() => handleSessionClick(session.session_id)}
+                      class="block group w-full text-left py-2"
+                    >
+                      <div class="px-2 py-2 border-l-2 border-l-transparent hover:border-l-[#fbbf24] transition-colors">
+                        <div class="flex items-start gap-2">
+                          <div class="w-1.5 h-1.5 bg-[#3f3f46] mt-1.5 group-hover:bg-[#fbbf24] transition-colors flex-shrink-0 rounded-sm" />
+                          <div class="min-w-0 flex-1">
+                            <div class="text-[#a1a1aa] text-sm font-mono truncate group-hover:text-[#e4e4e7] transition-colors">
+                              {getSessionDisplayName(session)}
+                            </div>
+                            <div class="text-[#52525b] text-xs mt-1 font-mono">
+                              {formatDate(session.created_at)}
                             </div>
                           </div>
                         </div>
-                      </button>
-                    )}
-                  </For>
-                  <div ref={sentinelRef} class="h-1 flex-shrink-0" />
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      </nav>
+                      </div>
+                    </button>
+                  )}
+                </For>
+                {loadingMore() ? (
+                  <div class="py-3 text-[#71717a] text-xs font-mono uppercase tracking-widest text-center animate-pulse">
+                    Loading more...
+                  </div>
+                ) : null}
+                <div ref={setSentinelRef} class="h-10 flex-shrink-0" />
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </aside>
   );
 };
