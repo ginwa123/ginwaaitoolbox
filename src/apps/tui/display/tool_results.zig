@@ -57,8 +57,8 @@ pub fn display_tool_result_by_name(result_xml: []const u8, tool_name: []const u8
         displayLspDocumentSymbolResult(result_xml, tool_name);
     } else if (std.mem.eql(u8, tool_name, "list_agents")) {
         displayListAgentsResult(result_xml, tool_name);
-    } else if (std.mem.eql(u8, tool_name, "get_agent")) {
-        displayGetAgentResult(result_xml, tool_name);
+    } else if (std.mem.eql(u8, tool_name, "change_agent")) {
+        displayChangeAgentResult(result_xml, tool_name);
     } else if (std.mem.eql(u8, tool_name, "spawn_sub_agent")) {
         displaySpawnSubAgentResult(result_xml, tool_name);
     } else {
@@ -316,8 +316,8 @@ pub fn displayListAgentsResult(result_xml: []const u8, tool_name: []const u8) vo
     }
 }
 
-/// Display get_agent result
-pub fn displayGetAgentResult(result_xml: []const u8, tool_name: []const u8) void {
+/// Display change_agent result
+pub fn displayChangeAgentResult(result_xml: []const u8, tool_name: []const u8) void {
     const agent_name = utils.extract_tag(result_xml, "agent_name") orelse "";
     const content = utils.extract_tag(result_xml, "content") orelse "";
     const loaded = utils.extract_tag(result_xml, "loaded") orelse "false";
