@@ -152,5 +152,8 @@ pub fn handle_mcp_tool_run(
         }
     }
 
-    return tool_result;
+    // CRITICAL: Copy result to parent_allocator before arena is deallocated
+    // Without this, tool_result points to memory that will be freed on defer
+    const owned_result = try parent_allocator.dupe(u8, tool_result);
+    return owned_result;
 }

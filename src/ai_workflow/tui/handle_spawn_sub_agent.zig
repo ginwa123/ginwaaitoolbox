@@ -451,9 +451,9 @@ fn run_sub_agent(
     var max_tokens: usize = 4000;
 
     while (true) {
-        var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parentAllocator);
-        defer arenaAllocatorWhileLoop.deinit();
-        const allocator = arenaAllocatorWhileLoop.allocator();
+        var arena_allocator = std.heap.ArenaAllocator.init(parentAllocator);
+        defer arena_allocator.deinit();
+        const allocator = arena_allocator.allocator();
 
         const skillContents = try BuildSkillContent(allocator, db, session_id);
         const systemPrompt = try prompt.buildSubAgentPrompt(allocator, cwd, tool_names, skillContents);

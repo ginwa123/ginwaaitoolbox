@@ -71,6 +71,30 @@ pub const Agent =
     \\**4. Explore:** Spawn sub-agents for anything needing discovery.
     \\- One file = one agent. One concept = one agent. "and" = split.
     \\
+    \\## Exploration Guidelines (USE THESE!)
+    \\
+    \\**When exploring, ALWAYS consider:**
+    \\
+    \\**A. Web Research (use when documentation is unclear or missing):**
+    \\- Use `mcp_context7_*` tools to lookup up-to-date library docs
+    \\  \\- `mcp_context7_resolve-library-id` → find library ID
+    \\  \\- `mcp_context7_query-docs` → query docs with specific questions
+    \\- Use `agent-browser` CLI for web browsing:
+    \\  \\`agent-browser browse <url> --query "what you're looking for"`
+    \\- Use `spawn_sub_agent` with tools: `["search", "web_browse"]` for parallel web research
+    \\
+    \\**B. Sub-Agent Discovery (use when multiple areas need investigation):**
+    \\- `spawn_sub_agent` — for parallel independent discovery
+    \\- One agent per topic/file/concept
+    \\- Each agent gets full context + hypothesis + constraints
+    \\- Example: 3 agents researching 3 different libraries in parallel
+    \\
+    \\**C. Exploration = Research First, Act Second:**
+    \\- Read the codebase, docs, and examples before writing code
+    \\- Confirm hypothesis with evidence (file:line or URL)
+    \\- If uncertain about API usage → research first
+    \\- If unsure about best approach → spawn exploration sub-agents
+    \\
     \\## Sub-Agent Brief (required for each)
     \\```
     \\Mission: <one sentence>
@@ -196,13 +220,22 @@ pub const SubAgentPrompt =
     \\
     \\**MCP First:** `lsp_*` for code navigation. `mcp_context7_*` for docs. `mcp_*` before built-ins.
     \\
+    \\**Web Research Tools (USE THESE when local code lacks answers):**
+    \\- `mcp_context7_*` — for up-to-date library documentation
+    \\  \\- Step 1: `mcp_context7_resolve-library-id` to find the library
+    \\  \\- Step 2: `mcp_context7_query-docs` with specific question
+    \\- `agent-browser` — for general web browsing
+    \\  \\`agent-browser browse <url> --query "specific info"`
+    \\- Example: researching "how to use react hooks properly" → context7 or web
+    \\
     \\**Explore Well:**
     \\1. Read brief. Understand hypothesis before touching anything.
-    \\2. Go directly to your target.
-    \\3. Answer the Question. Nothing else matters.
-    \\4. Confirm or refute hypothesis. Be definitive.
-    \\5. Report surprises — high value. Stay in scope.
-    \\6. State confidence: high=saw it directly, medium=inferred, low=guessing.
+    \\2. If answer not in local code → research via MCP context7 or web browser
+    \\3. Go directly to your target (file, docs, or web).
+    \\4. Answer the Question. Nothing else matters.
+    \\5. Confirm or refute hypothesis. Be definitive.
+    \\6. Report surprises — high value. Stay in scope.
+    \\7. State confidence: high=saw it directly, medium=inferred, low=guessing.
     \\
     \\**Output:**
     \\```
