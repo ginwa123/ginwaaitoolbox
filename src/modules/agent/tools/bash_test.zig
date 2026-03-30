@@ -409,3 +409,80 @@ test "bash background long running" {
     try std.testing.expect(std.mem.indexOf(u8, r.stdout, "PID:") != null);
     try std.testing.expectEqual(r.exit_code, 0);
 }
+
+test "bash max_lines stdout truncation" {
+    const allocator = std.testing.allocator;
+    // Generate 20 lines but cap at 5
+    const input = BashInput{
+        .command = "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do echo \"line $i\"; done",
+        .timeout = 5,
+        .cwd = null,
+        .max_output = null,
+        .max_lines = 5,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r.stdout);
+    defer {
+        allocator.free(r.stderr);
+        allocator.free(r.command);
+    }
+
+    // Should have 20 lines produced but only 5 returned
+    try std.testing.expectEqual(@as(usize, 20), r.stdout_lines);
+    try std.testing.expect(r.truncated);
+    // The returned output should have exactly 5 lines
+    const line_count = std.mem.count(u8, r.stdout, "\n");
+    try std.testing.expectEqual(@as(usize, 5), line_count);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "line 5") != null);
+}
+
+test "bash max_lines default is 1000" {
+    const allocator = std.testing.allocator;
+    // Generate 50 lines with default max_lines (1000)
+    const input = BashInput{
+        .command = "for i in $(seq 1 50); do echo \"line $i\"; done",
+        .timeout = 5,
+        .cwd = null,
+        .max_output = null,
+        // max_lines not set - should default to 1000
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r.stdout);
+    defer {
+        allocator.free(r.stderr);
+        allocator.free(r.command);
+    }
+
+    // All 50 lines should be returned, not truncated
+    try std.testing.expectEqual(@as(usize, 50), r.stdout_lines);
+    try std.testing.expect(!r.truncated);
+    // Verify all lines present
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "line 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "line 50") != null);
+}
+
+test "bash max_lines stderr truncation" {
+    const allocator = std.testing.allocator;
+    // Generate 10 stderr lines but cap at 3
+    const input = BashInput{
+        .command = "for i in 1 2 3 4 5 6 7 8 9 10; do echo \"error $i\" >&2; done",
+        .timeout = 5,
+        .cwd = null,
+        .max_output = null,
+        .max_lines = 3,
+    };
+    const r = try bashMod.executeBash(allocator, input);
+    defer allocator.free(r.stdout);
+    defer {
+        allocator.free(r.stderr);
+        allocator.free(r.command);
+    }
+
+    // Should have 10 stderr lines produced but only 3 returned
+    try std.testing.expectEqual(@as(usize, 10), r.stderr_lines);
+    try std.testing.expect(r.truncated);
+    // The returned stderr should have exactly 3 lines
+    const line_count = std.mem.count(u8, r.stderr, "\n");
+    try std.testing.expectEqual(@as(usize, 3), line_count);
+    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "error 3") != null);
+}
