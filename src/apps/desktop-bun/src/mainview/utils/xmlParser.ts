@@ -1,6 +1,6 @@
 /**
  * XML Parser Utilities
- * 
+ *
  * Provides XML parsing and decoding functionality for the desktop app
  * to handle responses from the backend API with format=xml parameter.
  */
@@ -21,11 +21,11 @@ export interface XmlMessage {
  * Safely decode XML entities in a string
  */
 export const decodeXmlEntities = (str: string | undefined | null): string => {
-  if (!str) return "";
+  if (!str) return '';
   return str
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'");
 };
@@ -38,9 +38,12 @@ const getTagValue = (content: string, tag: string): string => {
   // Match opening tag, then any content until we find the exact closing tag
   // This handles nested content better than non-greedy matching
   const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const regex = new RegExp(`<${escapedTag}>([^<]*(?:<(?!/${escapedTag}>)[^<]*)*)<\\/${escapedTag}>`, 'i');
+  const regex = new RegExp(
+    `<${escapedTag}>([^<]*(?:<(?!/${escapedTag}>)[^<]*)*)<\\/${escapedTag}>`,
+    'i'
+  );
   const match = content.match(regex);
-  return match ? match[1].trim() : "";
+  return match ? match[1].trim() : '';
 };
 
 /**
@@ -67,18 +70,18 @@ export const parseXmlMessages = (xml: string): XmlMessage[] => {
 
       messages.push({
         id,
-        session_id: getTagValue(messageContent, "session_id"),
-        role: getTagValue(messageContent, "role"),
-        content: getTagValue(messageContent, "content"),
-        timestamp: getTagValue(messageContent, "timestamp"),
-        is_input: getTagValue(messageContent, "is_input"),
-        is_output: getTagValue(messageContent, "is_output"),
-        tool_name: getTagValue(messageContent, "tool_name"),
-        finish_reason: getTagValue(messageContent, "finish_reason"),
+        session_id: getTagValue(messageContent, 'session_id'),
+        role: getTagValue(messageContent, 'role'),
+        content: getTagValue(messageContent, 'content'),
+        timestamp: getTagValue(messageContent, 'timestamp'),
+        is_input: getTagValue(messageContent, 'is_input'),
+        is_output: getTagValue(messageContent, 'is_output'),
+        tool_name: getTagValue(messageContent, 'tool_name'),
+        finish_reason: getTagValue(messageContent, 'finish_reason'),
       });
     }
   } catch (err) {
-    console.error("Error parsing XML messages:", err);
+    console.error('Error parsing XML messages:', err);
   }
 
   return messages;
@@ -87,15 +90,15 @@ export const parseXmlMessages = (xml: string): XmlMessage[] => {
 /**
  * Detect if a string is XML or JSON
  */
-export const detectFormat = (text: string): "xml" | "json" | "unknown" => {
-  const trimmed = (text || "").trim();
-  if (trimmed.startsWith("<")) {
-    return "xml";
+export const detectFormat = (text: string): 'xml' | 'json' | 'unknown' => {
+  const trimmed = (text || '').trim();
+  if (trimmed.startsWith('<')) {
+    return 'xml';
   }
-  if (trimmed.startsWith("{")) {
-    return "json";
+  if (trimmed.startsWith('{')) {
+    return 'json';
   }
-  return "unknown";
+  return 'unknown';
 };
 
 /**
@@ -105,9 +108,9 @@ export const parseMessages = (response: string): XmlMessage[] => {
   const format = detectFormat(response);
 
   switch (format) {
-    case "xml":
+    case 'xml':
       return parseXmlMessages(response);
-    case "json":
+    case 'json':
       try {
         const data = JSON.parse(response);
         return data.messages || [];

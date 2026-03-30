@@ -1,7 +1,7 @@
-import { readdirSync, readFileSync } from "fs";
-import { join } from "path";
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
-const PROCESS_NAME = "nalar";
+const PROCESS_NAME = 'nalar';
 const DEFAULT_PORT = 8080;
 
 export function parsePortFromCmdline(cmdline: string): number | null {
@@ -10,26 +10,26 @@ export function parsePortFromCmdline(cmdline: string): number | null {
   }
   const portMatch = cmdline.match(/--port\s+(\d+)/);
   if (portMatch) {
-    return parseInt(portMatch[1], 10);
+    return Number.parseInt(portMatch[1], 10);
   }
   return null;
 }
 
 export function findNalarPort(): number {
   try {
-    const procPath = "/proc";
+    const procPath = '/proc';
     const entries = readdirSync(procPath, { withFileTypes: true });
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      
+
       const pid = entry.name;
       if (!/^\d+$/.test(pid)) continue;
 
       try {
-        const cmdlinePath = join(procPath, pid, "cmdline");
+        const cmdlinePath = join(procPath, pid, 'cmdline');
         // cmdline is null-separated, replace with space for parsing
-        const cmdline = readFileSync(cmdlinePath, "utf-8").replace(/\0/g, " ");
+        const cmdline = readFileSync(cmdlinePath, 'utf-8').replace(/\0/g, ' ');
         const port = parsePortFromCmdline(cmdline);
 
         if (port !== null) {
@@ -41,7 +41,7 @@ export function findNalarPort(): number {
       }
     }
   } catch (err) {
-    console.error("[processDiscovery] Error scanning /proc:", err);
+    console.error('[processDiscovery] Error scanning /proc:', err);
   }
 
   console.log(`[processDiscovery] nalar not found, using default port ${DEFAULT_PORT}`);

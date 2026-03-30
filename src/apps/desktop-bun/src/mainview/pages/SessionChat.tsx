@@ -1,11 +1,19 @@
-import { createSignal, createResource, Show, For, createEffect, onMount, type Component } from "solid-js";
-import { useParams } from "@solidjs/router";
-import { parseMessages, decodeXmlEntities, type XmlMessage } from "../utils/xmlParser";
-import { baseUrl } from "../utils/baseUrl";
+import { useParams } from '@solidjs/router';
+import {
+  type Component,
+  For,
+  Show,
+  createEffect,
+  createResource,
+  createSignal,
+  onMount,
+} from 'solid-js';
+import { baseUrl } from '../utils/baseUrl';
+import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
 
 interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "system" | "tool";
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   timestamp: string;
   is_input?: string;
@@ -23,10 +31,10 @@ interface SessionInfo {
 }
 
 const normalizeMessage = (msg: XmlMessage): ChatMessage => ({
-  id: msg?.id || "",
-  role: (msg?.role || "unknown") as ChatMessage["role"],
+  id: msg?.id || '',
+  role: (msg?.role || 'unknown') as ChatMessage['role'],
   content: decodeXmlEntities(msg?.content),
-  timestamp: msg?.timestamp || "",
+  timestamp: msg?.timestamp || '',
   is_input: msg?.is_input,
   is_output: msg?.is_output,
   tool_name: msg?.tool_name,
@@ -34,14 +42,14 @@ const normalizeMessage = (msg: XmlMessage): ChatMessage => ({
 });
 
 const normalizeJsonMessage = (msg: Record<string, unknown>): ChatMessage => ({
-  id: String(msg.id || ""),
-  role: String(msg.role || "unknown") as ChatMessage["role"],
-  content: String(msg.content || ""),
-  timestamp: String(msg.timestamp || ""),
-  is_input: String(msg.is_input || "0"),
-  is_output: String(msg.is_output || "0"),
-  tool_name: String(msg.tool_name || ""),
-  finish_reason: String(msg.finish_reason || ""),
+  id: String(msg.id || ''),
+  role: String(msg.role || 'unknown') as ChatMessage['role'],
+  content: String(msg.content || ''),
+  timestamp: String(msg.timestamp || ''),
+  is_input: String(msg.is_input || '0'),
+  is_output: String(msg.is_output || '0'),
+  tool_name: String(msg.tool_name || ''),
+  finish_reason: String(msg.finish_reason || ''),
 });
 
 interface MessageListProps {
@@ -71,49 +79,60 @@ const MessageList: Component<MessageListProps> = (props) => {
   const formatTimestamp = (ts: string) => {
     try {
       const numericTs = Number(ts);
-      const date = isNaN(numericTs) ? new Date(ts) : new Date(numericTs);
-      if (isNaN(date.getTime())) return "";
-      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const date = Number.isNaN(numericTs) ? new Date(ts) : new Date(numericTs);
+      if (Number.isNaN(date.getTime())) return '';
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch {
-      return "";
+      return '';
     }
   };
 
   const getRoleColor = (role: string) => {
     switch (role) {
-      case "user": return "text-sky-400";
-      case "assistant": return "text-yellow-400";
-      case "system": return "text-violet-400";
-      case "tool": return "text-emerald-400";
-      default: return "text-zinc-500";
+      case 'user':
+        return 'text-sky-400';
+      case 'assistant':
+        return 'text-yellow-400';
+      case 'system':
+        return 'text-violet-400';
+      case 'tool':
+        return 'text-emerald-400';
+      default:
+        return 'text-zinc-500';
     }
   };
 
   const getRoleIcon = (role: string) => {
     switch (role) {
-      case "user": return "▸";
-      case "assistant": return "◆";
-      case "system": return "★";
-      case "tool": return "⚙";
-      default: return "·";
+      case 'user':
+        return '▸';
+      case 'assistant':
+        return '◆';
+      case 'system':
+        return '★';
+      case 'tool':
+        return '⚙';
+      default:
+        return '·';
     }
   };
 
   return (
-    <div
-      ref={containerRef}
-      class="h-full overflow-y-auto overflow-x-hidden"
-    >
+    <div ref={containerRef} class="h-full overflow-y-auto overflow-x-hidden">
       <For each={props.messages}>
         {(msg) => (
           <div class="px-4 py-3 hover:bg-neutral-900/50 transition-colors border-b border-neutral-900/50">
             <div class="flex gap-4">
-              <span class={`font-mono text-base w-5 flex-shrink-0 mt-0.5 ${getRoleColor(msg.role)}`}>
+              <span
+                class={`font-mono text-base w-5 flex-shrink-0 mt-0.5 ${getRoleColor(msg.role)}`}
+              >
                 {getRoleIcon(msg.role)}
               </span>
               <div class="flex-1 min-w-0">
                 <div class="flex items-baseline gap-3 mb-2">
-                  <span class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(msg.role)}`}>
+                  <span
+                    class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(msg.role)}`}
+                  >
                     {msg.role}
                   </span>
                   <span class="font-mono text-xs text-zinc-600">
@@ -142,19 +161,22 @@ const SessionChat: Component = () => {
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(true);
-  const [responseFormat, setResponseFormat] = createSignal<"json" | "xml">("xml");
+  const [responseFormat, setResponseFormat] = createSignal<'json' | 'xml'>('xml');
 
-  const [sessionInfo] = createResource(() => params.sessionId, async (sessionId) => {
-    try {
-      const res = await fetch(`${baseUrl()}/api/session/${sessionId}`, {
-        headers: { Accept: "application/json" },
-      });
-      if (!res.ok) return null;
-      return JSON.parse(await res.text()) as SessionInfo;
-    } catch {
-      return null;
+  const [sessionInfo] = createResource(
+    () => params.sessionId,
+    async (sessionId) => {
+      try {
+        const res = await fetch(`${baseUrl()}/api/session/${sessionId}`, {
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) return null;
+        return JSON.parse(await res.text()) as SessionInfo;
+      } catch {
+        return null;
+      }
     }
-  });
+  );
 
   createEffect(() => {
     const sessionId = params.sessionId;
@@ -169,13 +191,13 @@ const SessionChat: Component = () => {
         const format = responseFormat();
         const url = `${baseUrl()}/api/session/${sessionId}/messages?format=${format}`;
         const res = await fetch(url, {
-          headers: { Accept: format === "xml" ? "text/xml" : "application/json" },
+          headers: { Accept: format === 'xml' ? 'text/xml' : 'application/json' },
         });
 
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
         const text = await res.text();
-        if (format === "xml") {
+        if (format === 'xml') {
           setMessages(parseMessages(text).map(normalizeMessage));
         } else {
           const data = JSON.parse(text) as { messages?: Record<string, unknown>[] };
@@ -192,7 +214,7 @@ const SessionChat: Component = () => {
   });
 
   const toggleFormat = () => {
-    setResponseFormat((prev) => (prev === "xml" ? "json" : "xml"));
+    setResponseFormat((prev) => (prev === 'xml' ? 'json' : 'xml'));
   };
 
   const sessionName = () => {
@@ -203,7 +225,7 @@ const SessionChat: Component = () => {
     return null;
   };
 
-  const sessionAgent = () => sessionInfo()?.agent || "default";
+  const sessionAgent = () => sessionInfo()?.agent || 'default';
   const sessionId = () => sessionInfo()?.session_id?.slice(0, 8);
 
   return (
@@ -212,14 +234,15 @@ const SessionChat: Component = () => {
       <div class="border-b border-neutral-800 pb-6 mb-6 flex-shrink-0">
         <div class="flex items-center justify-between">
           <div>
-            <Show when={sessionName()} fallback={
-              <h1 class="text-2xl font-semibold text-zinc-200 mb-2">
-                Session {params.sessionId?.slice(0, 8)}...
-              </h1>
-            }>
-              <h1 class="text-2xl font-semibold text-zinc-200 mb-2">
-                {sessionName()}
-              </h1>
+            <Show
+              when={sessionName()}
+              fallback={
+                <h1 class="text-2xl font-semibold text-zinc-200 mb-2">
+                  Session {params.sessionId?.slice(0, 8)}...
+                </h1>
+              }
+            >
+              <h1 class="text-2xl font-semibold text-zinc-200 mb-2">{sessionName()}</h1>
             </Show>
             <div class="flex items-center gap-4 text-xs text-zinc-600">
               <span>Agent: {sessionAgent()}</span>
@@ -234,9 +257,9 @@ const SessionChat: Component = () => {
             onClick={toggleFormat}
             class="px-3 py-1.5 text-xs bg-neutral-900 border border-neutral-800 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
           >
-            <span class="text-zinc-500">Format:</span>{" "}
-            <span class={responseFormat() === "xml" ? "text-yellow-400" : "text-zinc-200"}>
-              {responseFormat() === "xml" ? "XML" : "JSON"}
+            <span class="text-zinc-500">Format:</span>{' '}
+            <span class={responseFormat() === 'xml' ? 'text-yellow-400' : 'text-zinc-200'}>
+              {responseFormat() === 'xml' ? 'XML' : 'JSON'}
             </span>
           </button>
         </div>

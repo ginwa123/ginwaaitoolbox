@@ -327,7 +327,7 @@ pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
 /// Get all sub-agent tools as a filtered list
 /// If allowed_tools is null, returns all sub-agent tools
 /// Always excludes spawn_sub_agent and set_agent_properties for security
-pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8, mcp_tools: []const tool_models.AgentTool) ![]const tool_models.AgentTool {
+pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8, mcp_tools: ?[]const tool_models.AgentTool) ![]const tool_models.AgentTool {
     var result = std.ArrayList(tool_models.AgentTool).empty;
 
     for (SUB_AGENT_TOOL_REGISTRY) |entry| {
@@ -348,14 +348,18 @@ pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []c
     // Add MCP tools to the list
     if (allowed_tools == null) {
         // If no filter, include all MCP tools
-        try result.appendSlice(allocator, mcp_tools);
+        if (mcp_tools) |mcp_tools_arr| {
+            try result.appendSlice(allocator, mcp_tools_arr);
+        }
     } else {
         // If there's a filter, only include MCP tools that match
-        for (mcp_tools) |mcp_tool| {
-            for (allowed_tools.?) |allowed| {
-                if (std.mem.eql(u8, mcp_tool.function.name, allowed)) {
-                    try result.append(allocator, mcp_tool);
-                    break;
+        if (mcp_tools) |mcp_tools_arr| {
+            for (mcp_tools_arr) |mcp_tool| {
+                for (allowed_tools.?) |allowed| {
+                    if (std.mem.eql(u8, mcp_tool.function.name, allowed)) {
+                        try result.append(allocator, mcp_tool);
+                        break;
+                    }
                 }
             }
         }
@@ -403,7 +407,7 @@ fn run_sub_agent(
     parent_id: []const u8,
 ) ![]const u8 {
     // Fetch MCP tools for sub-agent
-    const mcp_tools = (try buildMcpTools.build_mcp_tools_run(parentAllocator, config)) orelse &[_]tool_models.AgentTool{};
+    const mcp_tools = try buildMcpTools.build_mcp_tools_run(parentAllocator, config);
 
     const sessionName = try std.fmt.allocPrint(parentAllocator, "{}", .{std.time.nanoTimestamp()});
 
@@ -664,6 +668,13 @@ fn runSubAgentThread(
     defer thread_arena.deinit();
     const thread_alloc = thread_arena.allocator();
 
+    // Clone config for thread-safe use (avoids hash map lock contention/corruption)
+    const thread_config = cfg.clone() catch |err| {
+        log.errFmt("spawn_sub_agent[{}]: failed to clone config: {}", .{ idx, err }) catch {};
+        return;
+    };
+    errdefer thread_config.deinit();
+
     const sessionId = std.fmt.allocPrint(thread_alloc, "{}", .{std.time.nanoTimestamp()}) catch |err| {
         log.errFmt("spawn_sub_agent[{}]: failed to generate sessionId: {}", .{ idx, err }) catch {};
         return;
@@ -679,7 +690,7 @@ fn runSubAgentThread(
         llm_api_key,
         llm_model,
         url,
-        cfg,
+        &thread_config,
         tools,
         loop_idx,
         temp,

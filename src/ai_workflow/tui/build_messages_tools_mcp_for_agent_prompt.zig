@@ -45,13 +45,13 @@ const ListToolsResult = struct {
 pub fn build_mcp_tools_run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) !?[]AgentTool {
     // Check if mcpServers is configured
     if (config.mcpServers == null) {
-        return &[_]AgentTool{};
+        return null;
     }
 
     const mcp_value = config.mcpServers.?;
     const mcp_servers = switch (mcp_value) {
         .object => |obj| obj,
-        else => return &[_]AgentTool{},
+        else => return null,
     };
 
     var all_tools: std.ArrayList(AgentTool) = .empty;

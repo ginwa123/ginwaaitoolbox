@@ -1,28 +1,24 @@
-import type { Component } from "solid-js";
+import type { Component } from 'solid-js';
 
 const Header: Component = () => {
   const handleMinimize = () => {
     // Electrobun API for window controls
-    console.log("Minimize clicked");
+    console.log('Minimize clicked');
   };
-  
+
   const handleMaximize = () => {
-    console.log("Maximize clicked");
+    console.log('Maximize clicked');
   };
-  
+
   const handleClose = () => {
-    console.log("Close clicked");
+    console.log('Close clicked');
   };
 
   return (
-    <header
-      class="flex items-center justify-between h-12 px-4 bg-[#0a0a0a] border-b border-[#2a2a2a] select-none"
-    >
+    <header class="flex items-center justify-between h-12 px-4 bg-[#0a0a0a] border-b border-[#2a2a2a] select-none">
       <div class="flex items-center gap-3">
         <div class="w-3 h-3 bg-[#facc15]" />
-        <span class="font-mono text-sm font-medium text-[#e5e5e5]">
-          DESKTOP BUN
-        </span>
+        <span class="font-mono text-sm font-medium text-[#e5e5e5]">DESKTOP BUN</span>
       </div>
 
       <div class="flex items-center gap-1">

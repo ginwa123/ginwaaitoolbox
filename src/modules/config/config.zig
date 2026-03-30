@@ -113,6 +113,50 @@ pub const LlmConfig = struct {
         // The memory will be freed when the arena is reset
     }
 
+    /// Deep clone this config for thread-safe use
+    /// Each thread needs its own copy of mcpServers to avoid hash map corruption
+    pub fn clone(self: *const LlmConfig) LoadError!LlmConfig {
+        var config = LlmConfig{
+            .allocator = self.allocator,
+            .api_key = try self.allocator.dupe(u8, self.api_key),
+            .model = try self.allocator.dupe(u8, self.model),
+            .base_url = try self.allocator.dupe(u8, self.base_url),
+            .model_compaction_size_kb = self.model_compaction_size_kb,
+            .mcpServers = null,
+        };
+        errdefer {
+            self.allocator.free(config.api_key);
+            self.allocator.free(config.model);
+            self.allocator.free(config.base_url);
+        }
+
+        // Deep clone mcpServers if present
+        if (self.mcpServers) |mcp| {
+            // Serialize to JSON string, then parse back to get independent copy
+            var mcp_str: std.ArrayList(u8) = .empty;
+            defer mcp_str.deinit(config.allocator);
+
+            mcp_str.writer(config.allocator).print("{f}", .{std.json.fmt(mcp, .{})}) catch {
+                self.allocator.free(config.api_key);
+                self.allocator.free(config.model);
+                self.allocator.free(config.base_url);
+                return error.InvalidJson;
+            };
+
+            const reparsed = json.parseFromSlice(json.Value, config.allocator, mcp_str.items, .{
+                .ignore_unknown_fields = true,
+            }) catch {
+                self.allocator.free(config.api_key);
+                self.allocator.free(config.model);
+                self.allocator.free(config.base_url);
+                return error.InvalidJson;
+            };
+            config.mcpServers = reparsed.value;
+        }
+
+        return config;
+    }
+
     /// Validate required fields are present
     pub fn validate(self: *const LlmConfig) LoadError!void {
         if (self.api_key.len == 0) {
