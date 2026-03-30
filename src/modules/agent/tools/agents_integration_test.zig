@@ -1,8 +1,8 @@
 const std = @import("std");
 const agents = @import("agents.zig");
 const list_agents = @import("list_agents.zig");
-const get_agent = @import("get_agent.zig");
-const GetAgentInput = get_agent.GetAgentInput;
+const change_agent = @import("change_agent.zig");
+const ChangeAgentInput = change_agent.ChangeAgentInput;
 
 // Helper function to create a test agent file with YAML frontmatter
 fn createTestAgentFile(dir: std.fs.Dir, agent_name: []const u8, description: []const u8, content: []const u8) !void {
@@ -156,12 +156,12 @@ test "parseAgent returns valid XML" {
     const agent_file_path = try tmp_dir.dir.realpath(".nalar/agents/xml-test-agent/AGENT.md", &path_buf);
 
     // Test loading via path
-    const input = GetAgentInput{
+    const input = ChangeAgentInput{
         .path = agent_file_path,
         .agent_name = null,
     };
 
-    const result = try get_agent.executeGetAgentToString(allocator, input);
+    const result = try change_agent.executeChangeAgentToString(allocator, input);
     defer allocator.free(result);
 
     // Verify XML structure
@@ -181,17 +181,17 @@ test "parseAgent returns valid XML" {
 }
 
 // Test: parseAgent handles missing agent
-// Verifies that executeGetAgentToString returns appropriate error XML for non-existent agents
+// Verifies that executeChangeAgentToString returns appropriate error XML for non-existent agents
 test "parseAgent handles missing agent" {
     const allocator = std.testing.allocator;
 
     // Test with a non-existent agent name
-    const input = GetAgentInput{
+    const input = ChangeAgentInput{
         .agent_name = "non-existent-agent-xyz123",
         .path = null,
     };
 
-    const result = try get_agent.executeGetAgentToString(allocator, input);
+    const result = try change_agent.executeChangeAgentToString(allocator, input);
     defer allocator.free(result);
 
     // Verify error XML structure

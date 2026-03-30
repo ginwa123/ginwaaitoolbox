@@ -14,7 +14,6 @@ const get_skill_tool = root_mod.get_skill_tool;
 const remove_skill_tool = root_mod.remove_skill_tool;
 const skills = root_mod.skills;
 const list_agents_tool = root_mod.list_agents_tool;
-const get_agent_tool = root_mod.get_agent_tool;
 const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
 const get_tree_dir = @import("get_tree_dir.zig");
