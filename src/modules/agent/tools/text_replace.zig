@@ -162,10 +162,7 @@ pub const textReplaceTool: AgentTool = .{
         \\- Each old_str must match file content exactly (whitespace included).
         \\- Each old_str must appear exactly once — error if not found or ambiguous.
         \\- If OldStrNotUnique: expand old_str to include surrounding lines for context.
-        \\- Prefer longer, more specific old_str over minimal matches.
         \\- new_str can be any length, multiline, or empty (empty = delete).
-        \\- Always read_file first to confirm the exact strings to match.
-        \\- Prefer over write_file for editing existing files.
         \\- Pass expected_hash from read_file result to prevent blind edits.
         \\- If file changed since read, edit will be rejected with HashMismatch error.
         ,
