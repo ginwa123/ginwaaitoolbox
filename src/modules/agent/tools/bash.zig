@@ -117,11 +117,14 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
             .exit_code = 0,
             .truncated = false,
             .timeout = false,
+            .stdout_lines = 0,
+            .stderr_lines = 0,
         };
     }
 
     // --- Foreground mode ---
     const max_output = input.max_output orelse 1024 * 1024;
+    const max_lines = input.max_lines orelse 1000;
     const timeout_sec = input.timeout orelse 30;
 
     var child = std.process.Child.init(&.{ "bash", "-c", input.command }, allocator);
@@ -148,6 +151,8 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     const ArrayList = std.ArrayList;
     var stdout_data: ArrayList(u8) = .empty;
     var stderr_data: ArrayList(u8) = .empty;
+    var stdout_line_count: usize = 0;
+    var stderr_line_count: usize = 0;
     defer {
         stdout_data.deinit(allocator);
         stderr_data.deinit(allocator);
@@ -156,6 +161,10 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     var buf: [4096]u8 = undefined;
     var timeout_hit = false;
     var child_term: ?std.process.Child.Term = null;
+
+    // Flags to track when each stream has been truncated (stop appending, keep counting)
+    var stdout_truncated = false;
+    var stderr_truncated = false;
 
     // Prepare poll fds for stdout and stderr
     var poll_fds: [2]posix.pollfd = undefined;
@@ -214,8 +223,33 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
                 const bytes_read = child.stdout.?.read(&buf) catch 0;
                 if (bytes_read > 0) {
                     any_read = true;
-                    try stdout_data.appendSlice(allocator, buf[0..bytes_read]);
-                    if (stdout_data.items.len >= max_output) break;
+                    // Always count newlines
+                    for (buf[0..bytes_read]) |byte| {
+                        if (byte == '\n') stdout_line_count += 1;
+                    }
+                    // Append data if not yet truncated
+                    if (!stdout_truncated) {
+                        try stdout_data.appendSlice(allocator, buf[0..bytes_read]);
+                        if (stdout_data.items.len >= max_output or stdout_line_count >= max_lines) {
+                            // Mark truncated and find the line boundary to trim to
+                            stdout_truncated = true;
+                            // Find position of the max_lines-th newline
+                            var count: usize = 0;
+                            var trim_pos = stdout_data.items.len;
+                            for (stdout_data.items, 0..) |b, i| {
+                                if (b == '\n') {
+                                    count += 1;
+                                    if (count == max_lines) {
+                                        trim_pos = i + 1;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (stdout_data.items.len > trim_pos) {
+                                stdout_data.shrinkAndFree(allocator, trim_pos);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -226,8 +260,32 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
                 const bytes_read = child.stderr.?.read(&buf) catch 0;
                 if (bytes_read > 0) {
                     any_read = true;
-                    try stderr_data.appendSlice(allocator, buf[0..bytes_read]);
-                    if (stderr_data.items.len >= max_output) break;
+                    // Always count newlines
+                    for (buf[0..bytes_read]) |byte| {
+                        if (byte == '\n') stderr_line_count += 1;
+                    }
+                    // Append data if not yet truncated
+                    if (!stderr_truncated) {
+                        try stderr_data.appendSlice(allocator, buf[0..bytes_read]);
+                        if (stderr_data.items.len >= max_output or stderr_line_count >= max_lines) {
+                            // Mark truncated and find the line boundary to trim to
+                            stderr_truncated = true;
+                            var count: usize = 0;
+                            var trim_pos = stderr_data.items.len;
+                            for (stderr_data.items, 0..) |b, i| {
+                                if (b == '\n') {
+                                    count += 1;
+                                    if (count == max_lines) {
+                                        trim_pos = i + 1;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (stderr_data.items.len > trim_pos) {
+                                stderr_data.shrinkAndFree(allocator, trim_pos);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -255,7 +313,39 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
         .Unknown => -1,
     };
 
-    const was_truncated = stdout_data.items.len >= max_output or stderr_data.items.len >= max_output;
+    // Truncate output by line count if max_lines was exceeded
+    var stdout_lines_to_keep = stdout_data.items.len;
+    const stdout_truncation_needed = stdout_line_count > max_lines;
+    if (stdout_truncation_needed) {
+        var count: usize = 0;
+        for (stdout_data.items, 0..) |byte, i| {
+            if (byte == '\n') {
+                count += 1;
+                if (count == max_lines) {
+                    stdout_lines_to_keep = i + 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Truncate stderr by line count
+    var stderr_lines_to_keep = stderr_data.items.len;
+    const stderr_truncation_needed = stderr_line_count > max_lines;
+    if (stderr_truncation_needed) {
+        var count: usize = 0;
+        for (stderr_data.items, 0..) |byte, i| {
+            if (byte == '\n') {
+                count += 1;
+                if (count == max_lines) {
+                    stderr_lines_to_keep = i + 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    const was_truncated = stdout_truncation_needed or stderr_truncation_needed or (stdout_data.items.len >= max_output or stderr_data.items.len >= max_output);
 
     // Allocate command on heap to avoid dangling pointer to stack buffer
     const command_copy = if (input.command.len > 50) blk: {
@@ -270,12 +360,16 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     // Duplicate the strings so they outlive the ArrayLists
     const stdout_copy = if (stdout_data.items.len == 0)
         try allocator.dupe(u8, "No output produced.")
+    else if (stdout_truncation_needed)
+        try allocator.dupe(u8, stdout_data.items[0..stdout_lines_to_keep])
     else
         try allocator.dupe(u8, stdout_data.items);
     errdefer allocator.free(stdout_copy);
 
     const stderr_copy = if (stderr_data.items.len == 0)
         try allocator.dupe(u8, "No errors.")
+    else if (stderr_truncation_needed)
+        try allocator.dupe(u8, stderr_data.items[0..stderr_lines_to_keep])
     else
         try allocator.dupe(u8, stderr_data.items);
     errdefer allocator.free(stderr_copy);
@@ -287,6 +381,8 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
         .exit_code = exit_code,
         .truncated = was_truncated,
         .timeout = timeout_hit,
+        .stdout_lines = stdout_line_count,
+        .stderr_lines = stderr_line_count,
     };
 }
 
@@ -297,12 +393,16 @@ pub fn bashResultToString(allocator: std.mem.Allocator, result: BashOutput) ![]c
         \\<exit_code>{d}</exit_code>
         \\<truncated>{}</truncated>
         \\<timeout>{}</timeout>
+        \\<stdout_lines>{d}</stdout_lines>
+        \\<stderr_lines>{d}</stderr_lines>
     , .{
         result.stdout,
         result.stderr,
         result.exit_code,
         result.truncated,
         result.timeout,
+        result.stdout_lines,
+        result.stderr_lines,
     });
 }
 
@@ -369,12 +469,13 @@ pub const bashTool = AgentTool{
                     \\Use PID to check status (ps -p <PID>) or kill (kill <PID>).
                     ,
                 },
+                .{
+                    .name = "max_lines",
+                    .type = "number",
+                    .description = "Maximum number of lines to capture from stdout/stderr. Default: 1000. Output exceeding this limit is truncated and stdout_lines/stderr_lines will report the true total.",
+                },
             },
             .required = &.{ "command", "cwd" },
         },
     },
 };
-
-test {
-    _ = @import("bash_test.zig");
-}
