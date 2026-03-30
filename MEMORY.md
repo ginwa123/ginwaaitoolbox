@@ -23,3 +23,14 @@
 - [zig@0.15] `std.posix.execveZ()` returns error union directly — use `catch` without `|err|`
 - [zig@0.15] `std.posix.sigemptyset()` returns `sigset_t` for signal mask initialization
 
+## Search Tool Features
+
+When the search tool finds no matches, it returns:
+```xml
+<warning>pattern not found</warning>
+```
+
+This follows the same pattern as `glob.zig` and helps agents detect when searches yield no results.
+
+**Implementation:** `src/modules/agent/tools/search.zig`
+
