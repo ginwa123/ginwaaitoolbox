@@ -30,7 +30,7 @@ const ListSkillsTool = root_mod.list_skills_tool;
 const GetSkillTool = root_mod.get_skill_tool;
 const RemoveSkillTool = root_mod.remove_skill_tool;
 const ListAgentsTool = root_mod.list_agents;
-const GetAgentTool = root_mod.get_agent;
+const ChangeAgentTool = root_mod.change_agent;
 const LspDefinitionTool = root_mod.tools.lspDefinitionTool;
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
@@ -41,7 +41,7 @@ const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
 const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
-const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
+const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
 const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
@@ -154,10 +154,10 @@ fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.
     return handle_list_agents_tool.handle_list_agents_tool_run(allocator);
 }
 
-fn execGetAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_get_agent_tool.handle_get_agent_tool_run(allocator, tc);
+    return handle_change_agent_tool.handle_change_agent_tool_run(allocator, tc);
 }
 
 fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
@@ -188,7 +188,7 @@ const SubAgentToolInfo = struct {
     auto_save_agent: bool = false,
 };
 
-const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
+pub const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
     // File operations
     .{ .name = "bash", .exec = execBash, .tool_def = BashTool.bashTool },
     .{ .name = "read_file", .exec = execReadFile, .tool_def = ReadFileTool.readFileTool },
@@ -204,7 +204,7 @@ const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
 
     // Agent management
     .{ .name = "list_agents", .exec = execListAgents, .tool_def = ListAgentsTool.listAgentsTool },
-    .{ .name = "get_agent", .exec = execGetAgent, .tool_def = GetAgentTool.GetAgentTool, .auto_save_agent = true },
+    .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = ChangeAgentTool.ChangeAgentTool, .auto_save_agent = true },
 
     // LSP tools
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = LspDefinitionTool },
@@ -853,4 +853,5 @@ pub fn handle_spawn_sub_agent_run(
 
 test {
     _ = @import("handle_spawn_sub_agent_test.zig");
+    _ = @import("handle_spawn_sub_agent_change_agent_test.zig");
 }

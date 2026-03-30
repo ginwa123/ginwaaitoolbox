@@ -344,9 +344,9 @@ test "executeSubAgentTool - list_agents tool executes" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "agents") != null);
 }
 
-test "executeSubAgentTool - get_agent tool with valid name" {
+test "executeSubAgentTool - change_agent tool with valid name" {
     const allocator = std.testing.allocator;
-    const tc = makeToolCall("get_agent", "{\"agent_name\": \"code-reviewer\"}");
+    const tc = makeToolCall("change_agent", "{\"agent_name\": \"code-reviewer\"}");
     var db = makeDummyDb();
     const session_id = "test-session";
     const config = makeDummyConfig();
