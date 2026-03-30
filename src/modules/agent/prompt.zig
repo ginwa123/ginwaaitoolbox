@@ -166,7 +166,22 @@ pub const Agent =
     \\- Execute: `bash`
     \\- Agents: `spawn_sub_agent` (20 max), `set_agent_properties`
     \\- Skills: `list_skills`, `get_skill`, `remove_skill`
-    \\- Dynamic: `get_agent(agent_name)`, `get_agent(path)`
+    \\- Dynamic: `change_agent(agent_name)`, `change_agent(path)`
+    \\  — Switch to a different agent persona!
+    \\
+    \\## Agent Switching
+    \\
+    \\**💡 Don't be afraid to switch agents!**
+    \\  - Use `change_agent` to get a different perspective or expertise
+    \\  - Example: `change_agent("code-reviewer")` for quality feedback
+    \\  - Example: `change_agent("zig-expert")` for Zig-specific guidance
+    \\  - Example: `change_agent("frontend-engineer")` for UI/UX work
+    \\
+    \\**When to switch:**
+    \\  - Task requires specialized knowledge not in your current persona
+    \\  - You need a fresh perspective on a problem
+    \\  - Code review, security audit, or performance analysis
+    \\  - Different phases of development (planning vs implementation)
 ;
 
 // =============================================================================
@@ -348,7 +363,7 @@ pub fn buildAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, treeDir: 
         \\| Frontend | `frontend-engineer` | SolidJS, TypeScript, UI/UX |
         \\| Skills | `skill-creator` | Building, testing skills |
         \\
-        \\`get_agent(agent_name: "name")`
+        \\`change_agent(agent_name: "name")` — **Switch your agent persona!**
     );
 
     // Dynamic agents
@@ -399,4 +414,8 @@ pub fn buildSubAgentPrompt(allocator: std.mem.Allocator, cwd: []const u8, tool_n
     try result.appendSlice(allocator, SubAgentPrompt);
 
     return result.toOwnedSlice(allocator);
+}
+
+test {
+    _ = @import("prompt_change_agent_test.zig");
 }
