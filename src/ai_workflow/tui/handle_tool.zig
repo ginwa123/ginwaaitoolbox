@@ -75,7 +75,7 @@ const TOOL_REGISTRY: []const ToolEntry = &.{
     .{ .name = "set_agent_properties", .dispatch = dispatchSetAgentProperties },
     .{ .name = "spawn_sub_agent", .dispatch = dispatchSpawnSubAgent },
     .{ .name = "list_agents", .dispatch = dispatchListAgents },
-    .{ .name = "get_agent", .dispatch = dispatchGetAgent },
+    .{ .name = "change_agent", .dispatch = dispatchChangeAgent },
 
     // Skill management
     .{ .name = "list_skills", .dispatch = dispatchListSkills },
@@ -282,9 +282,9 @@ fn dispatchListAgents(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     return ToolResult{ .output = result };
 }
 
-fn dispatchGetAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_get_agent_tool = @import("handle_get_agent_tool.zig");
-    const result = try handle_get_agent_tool.handle_get_agent_tool_run(ctx.allocator, tool_call);
+fn dispatchChangeAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
+    const result = try handle_change_agent_tool.handle_change_agent_tool_run(ctx.allocator, tool_call);
 
     var agent_save: ?AgentSaveInfo = null;
     if (parseAgentFromResult(result)) |name| {
@@ -592,4 +592,5 @@ fn sendSSEForLatestMessage(
 
 test {
     _ = @import("handle_tool_test.zig");
+    _ = @import("handle_tool_change_agent_test.zig");
 }

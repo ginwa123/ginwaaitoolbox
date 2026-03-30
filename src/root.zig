@@ -74,14 +74,13 @@ pub const tool_models = @import("modules/agent/tools/schemas.zig");
 pub const lsp_types = @import("modules/agent/tools/lsp_types.zig");
 pub const tools = @import("modules/agent/tools/tools.zig");
 pub const change_agent = @import("modules/agent/tools/change_agent.zig");
+pub const change_agent_tool = @import("modules/agent/tools/change_agent.zig");
 pub const get_skill_tool = @import("modules/agent/tools/get_skill.zig");
 pub const remove_skill_tool = @import("modules/agent/tools/remove_skill.zig");
 pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");
 pub const list_agents = @import("modules/agent/tools/list_agents.zig");
-pub const get_agent = @import("modules/agent/tools/get_agent.zig");
 pub const list_agents_tool = @import("modules/agent/tools/list_agents.zig");
-pub const get_agent_tool = @import("modules/agent/tools/get_agent.zig");
 pub const set_agent_properties = @import("modules/agent/tools/set_agent_properties.zig");
 pub const set_agent_properties_tool = @import("modules/agent/tools/set_agent_properties.zig");
 pub const http_server = @import("modules/http_server/http_server.zig");
@@ -118,4 +117,5 @@ test {
     _ = @import("modules/agent/test_runner.zig");
     _ = @import("apps/tui/test_runner.zig");
     _ = @import("modules/session/test_runner.zig");
+    _ = @import("root_change_agent_test.zig");
 }
