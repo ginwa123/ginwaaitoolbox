@@ -126,6 +126,19 @@ src/
 - always use skills frontend-design
 - always use skills zig-expert
 
+## Agent Prompt — change_agent Rule
+
+**CRITICAL:** The main Agent MUST always use `change_agent` when:
+- Saying "you" or "I" in any response
+- Performing specialized work (Zig, frontend, code review, etc.)
+
+Never do specialized work directly — delegate to specialized agents:
+- Zig code → `change_agent("zig-expert")`
+- Frontend/UI → `change_agent("frontend-engineer")`
+- Code review → `change_agent("code-reviewer")`
+- Memory/security → `change_agent("memory-security-engineer")`
+- Skill creation → `change_agent("skill-creator")`
+
 
 ## Dev Test
 
