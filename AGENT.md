@@ -11,6 +11,22 @@
 **Language:** Zig 0.15.2
 **Type:** AI agentic coding toolbox with HTTP server + TUI interfaces
 
+## Research Rule
+
+> **MANDATORY: Use Context7 for library/module research!**
+
+When needing **latest documentation, examples, or best practices** for any library or technology:
+1. `mcp_context7_resolve-library-id` — Find the library ID (e.g., `/mongodb/mongoose`)
+2. `mcp_context7_query-docs` — Query specific questions with examples
+
+**Use Cases:**
+- How to use a library API correctly
+- Latest patterns/best practices
+- Real code examples with proper syntax
+- Version-specific documentation
+
+**Never guess library APIs — research them first! If Context7 lacks results, use web search.**
+
 ## Build System
 
 ```bash
@@ -52,7 +68,7 @@ src/
 
 ### Agent (`src/modules/agent/`)
 - **Tools:** bash, read_file, write_file, text_replace, search, glob, LSP tools
-- **Skills/Agents:** list_skill, get_skill, remove_skill, list_agents, get_agent, spawn_sub_agent
+- **Skills/Agents:** list_skill, get_skill, remove_skill, list_agents, change_agent, spawn_sub_agent
 - **MCP:** LSP definition/references/hover/workspace_symbol/document_symbol
 
 ### AI Workflow (`src/ai_workflow/tui/`)
