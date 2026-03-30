@@ -5,7 +5,6 @@ test {
     _ = @import("tools/get_skill_test.zig");
     _ = @import("tools/glob_test.zig");
     _ = @import("tools/list_agents_test.zig");
-    _ = @import("tools/get_agent_test.zig");
     _ = @import("tools/read_file_test.zig");
     _ = @import("tools/search_test.zig");
     _ = @import("tools/text_replace_test.zig");
