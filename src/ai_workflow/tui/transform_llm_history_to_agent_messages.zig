@@ -23,8 +23,8 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
 
     // Handle assistant/user/system messages - always create a message if role is valid
     // (but not tool role which is handled above)
-    const finishReason = agent.FinishReason.fromStr(message.finish_reason);
-    const isToolCalls = finishReason == .tool_calls;
+    // const finishReason = agent.FinishReason.fromStr(message.finish_reason);
+    // const isToolCalls = finishReason == .tool_calls;
 
     // For assistant/user/system roles, always create a message (even if content is empty)
     // Tool role is handled separately above
@@ -63,10 +63,8 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
             }
         }
 
-        const content: ?[]const u8 = if (isToolCalls)
-            (if (message.reasoning_content) |rc| try allocator.dupe(u8, rc) else null)
-        else
-            try allocator.dupe(u8, message.response_content);
+        const content = try allocator.dupe(u8, message.response_content);
+
 
         const reasoning_content: ?[]const u8 = if (message.reasoning_content) |rc| try allocator.dupe(u8, rc) else null;
 

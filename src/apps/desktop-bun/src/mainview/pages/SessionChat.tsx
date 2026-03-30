@@ -65,8 +65,9 @@ const MessageList: Component<MessageListProps> = (props) => {
     }
   });
 
+
   createEffect(() => {
-    const _ = props.messages.length;
+
     if (containerRef) {
       requestAnimationFrame(() => {
         if (containerRef) {
