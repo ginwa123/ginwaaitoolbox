@@ -227,9 +227,14 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
         allocator.free(line);
     }
 
-    if (matches.items.len == 0 and result.stderr.len > 0) {
-        try output.appendSlice(allocator, "No matches found. ");
-        try output.appendSlice(allocator, result.stderr);
+    if (matches.items.len == 0) {
+        if (result.stderr.len > 0) {
+            try output.appendSlice(allocator, "<warning>");
+            try output.appendSlice(allocator, result.stderr);
+            try output.appendSlice(allocator, "</warning>");
+        } else {
+            try output.appendSlice(allocator, "<warning>pattern not found</warning>");
+        }
     }
 
     return SearchResult{
