@@ -268,25 +268,20 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     if (http_server.global_server) |server| {
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+            var session: session_table.SessionInfo = undefined;
 
             // Check if session already exists
             const existing = session_table.get_session(alloc, sqlite_db, session_id) catch null;
             if (existing) |s| {
-                s.deinit(alloc);
-                res.status = 409;
-                res.body = try std.fmt.allocPrint(alloc,
-                    "{{\"error\":\"Session already exists\",\"session_id\":\"{s}\"}}",
-                    .{session_id});
-                return;
+                session = s.*;
+            } else {
+                session = session_table.create_session(alloc, sqlite_db, session_id, session_name) catch {
+                    res.status = 500;
+                    res.body = "{\"error\":\"Failed to create session\"}";
+                    return;
+                };
+                defer session.deinit(alloc);
             }
-
-            // Create the session
-            const session = session_table.create_session(alloc, sqlite_db, session_id, session_name) catch {
-                res.status = 500;
-                res.body = "{\"error\":\"Failed to create session\"}";
-                return;
-            };
-            defer session.deinit(alloc);
 
             // Create queue message if provided
             if (queue_message) |msg| {
@@ -299,9 +294,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
 
             // Return created session info
             res.status = 201;
-            res.body = try std.fmt.allocPrint(alloc,
-                "{{\"id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\"}}",
-                .{ session.id, session.name, session.status });
+            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\"}}", .{ session.id, session.name, session.status });
             return;
         }
     }
@@ -341,8 +334,7 @@ pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *http
                 null;
 
             // Build JSON response with cursor pagination
-            const response = try session_db.buildSessionListJson(
-                alloc, result.sessions, result.total, has_more, next_cursor);
+            const response = try session_db.buildSessionListJson(alloc, result.sessions, result.total, has_more, next_cursor);
 
             res.status = 200;
             res.body = response;
@@ -396,9 +388,7 @@ pub fn session_get_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz
             };
 
             if (session) |s| {
-                const response = try std.fmt.allocPrint(alloc,
-                    "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}",
-                    .{ s.session_id, s.session_dir, s.created_at, s.agent, s.session_name });
+                const response = try std.fmt.allocPrint(alloc, "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}", .{ s.session_id, s.session_dir, s.created_at, s.agent, s.session_name });
                 s.deinit(alloc);
                 res.status = 200;
                 res.body = response;
@@ -521,9 +511,7 @@ pub fn getLatestSessionByDirHandler(_: *http_server.HttpServer.ServerHandler, re
                     arena.allocator().free(session.created_at);
                 }
                 res.status = 200;
-                res.body = try std.fmt.allocPrint(req.arena,
-                    "{{\"session_id\":\"{s}\",\"session_dir\":\"{s}\",\"created_at\":\"{s}\",\"found\":true}}"
-                , .{ session.session_id, session.session_dir, session.created_at });
+                res.body = try std.fmt.allocPrint(req.arena, "{{\"session_id\":\"{s}\",\"session_dir\":\"{s}\",\"created_at\":\"{s}\",\"found\":true}}", .{ session.session_id, session.session_dir, session.created_at });
             } else {
                 res.status = 200;
                 res.body = "{\"found\":false}";
