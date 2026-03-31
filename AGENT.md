@@ -71,6 +71,7 @@ src/
 
 ### Agent (`src/modules/agent/`)
 - **Tools:** bash, read_file, write_file, text_replace, search, glob, **tree_dir**, LSP tools
+- **write_file:** Tool with `create_with_dir` option for automatic directory creation
 - **Skills/Agents:** list_skill, get_skill, remove_skill, list_agents, change_agent, spawn_sub_agent
 - **MCP:** LSP definition/references/hover/workspace_symbol/document_symbol
 - **Self-Kill Protection:** `bash_selfkill.zig` — blocks dangerous commands (kill, killall, pkill, exit) that target self PID
