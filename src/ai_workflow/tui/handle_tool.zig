@@ -89,6 +89,7 @@ const TOOL_REGISTRY: []const ToolEntry = &.{
     .{ .name = "text_replace", .dispatch = dispatchTextReplace },
     .{ .name = "search", .dispatch = dispatchSearch },
     .{ .name = "glob", .dispatch = dispatchGlob },
+    .{ .name = "tree_dir", .dispatch = dispatchTreeDir },
 
     // LSP tools
     .{ .name = "lsp_definition", .dispatch = dispatchLspDefinition },
@@ -211,6 +212,12 @@ fn dispatchSearch(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 fn dispatchGlob(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_glob_tool = @import("handle_glob_tool.zig");
     const result = try handle_glob_tool.handle_glob_tool_run(ctx.allocator, tool_call);
+    return ToolResult{ .output = result };
+}
+
+fn dispatchTreeDir(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const handle_tree_dir_tool = @import("handle_tree_dir_tool.zig");
+    const result = try handle_tree_dir_tool.handle_tree_dir_tool_run(ctx.allocator, tool_call);
     return ToolResult{ .output = result };
 }
 

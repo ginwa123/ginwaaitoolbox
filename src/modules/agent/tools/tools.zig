@@ -7,6 +7,7 @@ pub const lsp_references = @import("lsp_references.zig");
 pub const lsp_workspace_symbol = @import("lsp_workspace_symbol.zig");
 pub const lsp_document_symbol = @import("lsp_document_symbol.zig");
 pub const lsp_hover = @import("lsp_hover.zig");
+pub const tree_dir = @import("tree_dir.zig");
 
 pub const listAgentsTool = list_agents.listAgentsTool;
 pub const changeAgentTool = change_agent.ChangeAgentTool;
@@ -15,3 +16,4 @@ pub const lspReferencesTool = lsp_references.lspReferencesTool;
 pub const lspWorkspaceSymbolTool = lsp_workspace_symbol.lspWorkspaceSymbolTool;
 pub const lspDocumentSymbolTool = lsp_document_symbol.lspDocumentSymbolTool;
 pub const lspHoverTool = lsp_hover.lspHoverTool;
+pub const treeDirTool = tree_dir.tree_dir_tool;

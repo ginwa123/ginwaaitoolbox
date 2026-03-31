@@ -18,12 +18,9 @@ test "TreeDirInput default values" {
     };
 
     // Check defaults
-    try expect(input.min_depth == 0);
     try expect(input.max_depth == 4);
-    try expect(input.max_nodes_visited == 10_000);
+    try expect(input.max_results == null);
     try expect(input.hidden == .exclude);
-    try expect(input.include_files == true);
-    try expect(input.include_dirs == true);
     try expect(input.ignore_globs == null);
 }
 
@@ -48,8 +45,7 @@ test "execute_tree_dir basic traversal of src with max_depth=2" {
 
     // Should have some output
     try expect(result.entries.items.len > 0);
-    // Should not be truncated with reasonable depth
-    try expect(!result.truncated);
+    try expect(result.total_entries > 0);
 }
 
 test "execute_tree_dir with hidden files excluded" {
@@ -70,41 +66,22 @@ test "execute_tree_dir with hidden files excluded" {
     try expect(result.entries.items.len >= 0);
 }
 
-test "execute_tree_dir with directories only" {
+test "execute_tree_dir respects max_results" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     const input = TreeDirInput{
         .root_path = "src",
-        .max_depth = 1,
-        .include_files = false,
+        .max_depth = 3,
+        .max_results = 5,
     };
 
     var result = try execute_tree_dir(allocator, input);
     defer result.deinit(allocator);
 
-    // Should complete without error
-    try expect(result.entries.items.len >= 0);
-}
-
-test "execute_tree_dir respects max_nodes_visited" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const input = TreeDirInput{
-        .root_path = "src",
-        .max_depth = 10,
-        .max_nodes_visited = 10,
-    };
-
-    var result = try execute_tree_dir(allocator, input);
-    defer result.deinit(allocator);
-
-    // Should complete without error even with low limit
-    // May be truncated if there are more than 10 entries
-    try expect(result.nodes_visited > 0);
+    // Should not exceed max_results
+    try expect(result.entries.items.len <= 5);
 }
 
 test "tree_dir_result_to_string formats correctly" {
@@ -114,8 +91,7 @@ test "tree_dir_result_to_string formats correctly" {
 
     var result = TreeDirResult{
         .entries = std.ArrayListUnmanaged(TreeDirEntry){},
-        .nodes_visited = 2,
-        .truncated = false,
+        .total_entries = 2,
     };
     defer result.deinit(allocator);
 
@@ -137,25 +113,10 @@ test "tree_dir_result_to_string formats correctly" {
     // Should contain the entry names
     try expect(std.mem.containsAtLeast(u8, output, 1, "modules"));
     try expect(std.mem.containsAtLeast(u8, output, 1, "main.zig"));
-}
-
-test "tree_dir_result_to_string includes truncation notice" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var result = TreeDirResult{
-        .entries = std.ArrayListUnmanaged(TreeDirEntry){},
-        .nodes_visited = 100,
-        .truncated = true,
-    };
-    defer result.deinit(allocator);
-
-    const output = try tree_dir_result_to_string(allocator, result);
-
-    // Should contain truncation notice
-    try expect(std.mem.containsAtLeast(u8, output, 1, "truncated"));
-    try expect(std.mem.containsAtLeast(u8, output, 1, "100"));
+    // Should show directory marker
+    try expect(std.mem.containsAtLeast(u8, output, 1, "/"));
+    // Should show entry count
+    try expect(std.mem.containsAtLeast(u8, output, 1, "2 entries"));
 }
 
 test "tree_dir_result_to_string handles empty entries" {
@@ -165,28 +126,13 @@ test "tree_dir_result_to_string handles empty entries" {
 
     const result = TreeDirResult{
         .entries = std.ArrayListUnmanaged(TreeDirEntry){},
-        .nodes_visited = 0,
-        .truncated = false,
+        .total_entries = 0,
     };
 
     const output = try tree_dir_result_to_string(allocator, result);
 
-    // Should return empty output (just truncation message if truncated)
-    try expect(!result.truncated);
-    _ = output;
-}
-
-test "TreeDirResult struct fields" {
-    var result = TreeDirResult{
-        .entries = std.ArrayListUnmanaged(TreeDirEntry){},
-        .nodes_visited = 42,
-        .truncated = true,
-    };
-    defer result.deinit(std.testing.allocator);
-
-    try expectEqual(@as(usize, 42), result.nodes_visited);
-    try expect(result.truncated == true);
-    try expect(result.entries.items.len == 0);
+    // Should return empty output with zero entries
+    try expect(std.mem.containsAtLeast(u8, output, 1, "0 entries"));
 }
 
 test "TreeDirEntry struct fields" {
