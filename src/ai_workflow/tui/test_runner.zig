@@ -29,4 +29,5 @@ test {
     _ = @import("workflow_test.zig");
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
     _ = @import("get_session_test.zig");
+    _ = @import("session_queue_messages_test.zig");
 }

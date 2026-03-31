@@ -246,6 +246,27 @@ pub const Migration017CreateSessionsTable = struct {
     }
 };
 
+pub const Migration018CreateSessionQueueMessages = struct {
+    pub const version: u32 = 18;
+    pub const name = "create_session_queue_messages";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS session_queue_messages (
+            \\    id TEXT NOT NULL,
+            \\    session_id TEXT NOT NULL,
+            \\    message TEXT NOT NULL,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+        
+        try db.exec(allocator, 
+            "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session ON session_queue_messages(session_id)", 
+            &[_][]const u8{}
+        );
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -315,6 +336,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration015AddSessionAgents.version, .name = Migration015AddSessionAgents.name, .up = Migration015AddSessionAgents.up },
     .{ .version = Migration016AddInputOutputColumns.version, .name = Migration016AddInputOutputColumns.name, .up = Migration016AddInputOutputColumns.up },
     .{ .version = Migration017CreateSessionsTable.version, .name = Migration017CreateSessionsTable.name, .up = Migration017CreateSessionsTable.up },
+    .{ .version = Migration018CreateSessionQueueMessages.version, .name = Migration018CreateSessionQueueMessages.name, .up = Migration018CreateSessionQueueMessages.up },
 };
 
 /// Register all migrations with a MigrationManager

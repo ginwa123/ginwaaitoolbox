@@ -111,3 +111,45 @@ test "write_file - WriteFileInput with create_with_dir" {
     };
     try std.testing.expect(input.create_with_dir == true);
 }
+
+test "write_file tool definition includes create_with_dir parameter" {
+    const tool_def = write_file_mod.writeFileTool;
+    const props = tool_def.function.parameters.properties;
+    
+    // Find create_with_dir in properties
+    var found = false;
+    for (props) |prop| {
+        if (std.mem.eql(u8, prop.name, "create_with_dir")) {
+            found = true;
+            try std.testing.expectEqualStrings("boolean", prop.type);
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "write_file - create file with nested directories (create_with_dir=true)" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_nested/deeply/nested/dir/file.txt";
+    const test_content = "Nested content\n";
+    
+    // Ensure parent directories DON'T exist
+    std.fs.cwd().deleteTree("test_nested") catch {};
+    
+    const result = try write_file_mod.write_file(allocator, test_path, .{
+        .content = test_content,
+        .create_with_dir = true,
+    });
+    defer result.deinit(allocator);
+    
+    // Verify file was created with correct content
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    try std.testing.expectEqualStrings(test_content, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteTree("test_nested");
+}

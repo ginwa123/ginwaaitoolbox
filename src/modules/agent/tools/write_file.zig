@@ -45,7 +45,7 @@ pub fn write_file(
             const last_slash = std.mem.lastIndexOf(u8, path_copy, "/");
             if (last_slash) |idx| {
                 const dir_path = path_copy[0..idx];
-                try std.fs.cwd().makePath(dir_path);
+                try std.fs.cwd().makeDir(dir_path);
                 const file = try std.fs.cwd().createFile(path, .{});
                 defer file.close();
 
