@@ -35,17 +35,6 @@ const normalizeMessage = (msg: XmlMessage): ChatMessage => ({
   finish_reason: msg?.finish_reason,
 });
 
-const normalizeJsonMessage = (msg: Record<string, unknown>): ChatMessage => ({
-  id: String(msg.id || ''),
-  role: String(msg.role || 'unknown') as ChatMessage['role'],
-  content: String(msg.content || ''),
-  timestamp: String(msg.timestamp || ''),
-  is_input: String(msg.is_input || '0'),
-  is_output: String(msg.is_output || '0'),
-  tool_name: String(msg.tool_name || ''),
-  finish_reason: String(msg.finish_reason || ''),
-});
-
 const MessageRow: Component<{ message: ChatMessage }> = (props) => {
   const formatTimestamp = (ts: string) => {
     try {
@@ -121,11 +110,9 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
 
 const SessionChat: Component = () => {
   const params = useParams<{ sessionId: string }>();
-  const [messages, setMessages] = createSignal<ChatMessage[]>([]);
-  const [error, setError] = createSignal<string | null>(null);
-  const [loading, setLoading] = createSignal(true);
-  const [responseFormat, setResponseFormat] = createSignal<'json' | 'xml'>('xml');
   let scrollRef: HTMLDivElement | undefined;
+  const [responseFormat, setResponseFormat] = createSignal<'json' | 'xml'>('json');
+  const [hasScrolledToBottom, setHasScrolledToBottom] = createSignal(false);
 
   const [sessionInfo] = createResource(
     () => params.sessionId,
@@ -142,8 +129,9 @@ const SessionChat: Component = () => {
     }
   );
 
+  // Single source of truth: use messagesQuery for all message data
   const messagesQuery = createInfiniteQuery(() => ({
-    queryKey: ['session-messages', params.sessionId],
+    queryKey: ['session-messages', params.sessionId, responseFormat()],
     queryFn: async ({ pageParam }: { pageParam?: string }) => {
       const format = responseFormat();
       const url = new URL(`${baseUrl()}/api/session/${params.sessionId}/messages`);
@@ -152,6 +140,10 @@ const SessionChat: Component = () => {
 
       if (pageParam !== undefined) {
         url.searchParams.set('cursor', pageParam);
+        url.searchParams.set('direction', 'asc');
+      } else {
+        // First load: get latest messages
+        url.searchParams.set('direction', 'desc');
       }
 
       const res = await fetch(url.toString(), {
@@ -170,16 +162,17 @@ const SessionChat: Component = () => {
           next_cursor: msgs.length > 0 ? msgs[msgs.length - 1].id : null,
         } as SessionMessagesResponse;
       } else {
-        const data = JSON.parse(await res.text()) as SessionMessagesResponse;
+        const data = await res.json() as SessionMessagesResponse;
         return data;
       }
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage: SessionMessagesResponse) => lastPage.next_cursor ?? undefined,
     enabled: !!params.sessionId,
+    staleTime: 0,
   }));
 
-  // Aggregate all messages from pages
+  // Flatten all pages into single messages array
   const allMessages = createMemo(() =>
     messagesQuery.data?.pages.flatMap((p) => p.messages) ?? []
   );
@@ -190,8 +183,29 @@ const SessionChat: Component = () => {
       return allMessages().length;
     },
     getScrollElement: () => scrollRef ?? null,
-    estimateSize: () => 80,
-    overscan: 5,
+    estimateSize: () => 120,
+    overscan: 3,
+  });
+
+  // Scroll to bottom when messages change (only on initial load)
+  createEffect(() => {
+    const messages = allMessages();
+    if (messages.length > 0 && scrollRef && !hasScrolledToBottom()) {
+      requestAnimationFrame(() => {
+        if (scrollRef) {
+          scrollRef.scrollTop = scrollRef.scrollHeight;
+          setHasScrolledToBottom(true);
+        }
+      });
+    }
+  });
+
+  // Reset scroll flag when session changes
+  createEffect(() => {
+    const sessionId = params.sessionId;
+    if (sessionId) {
+      setHasScrolledToBottom(false);
+    }
   });
 
   const handleScroll = () => {
@@ -199,7 +213,7 @@ const SessionChat: Component = () => {
 
     // Trigger load more when scrolled near top
     if (
-      scrollRef.scrollTop < 200 &&
+      scrollRef.scrollTop < 300 &&
       messagesQuery.hasNextPage &&
       !messagesQuery.isFetchingNextPage
     ) {
@@ -207,51 +221,8 @@ const SessionChat: Component = () => {
     }
   };
 
-  // Scroll to bottom on mount (latest messages)
-  onMount(() => {
-    if (scrollRef) {
-      scrollRef.scrollTop = scrollRef.scrollHeight;
-    }
-  });
-
-  // Fetch initial messages on session change
-  createEffect(() => {
-    const sessionId = params.sessionId;
-    if (!sessionId) return;
-
-    setMessages([]);
-    setError(null);
-    setLoading(true);
-
-    const fetchMessages = async () => {
-      try {
-        const format = responseFormat();
-        const url = `${baseUrl()}/api/session/${sessionId}/messages?format=${format}`;
-        const res = await fetch(url, {
-          headers: { Accept: format === 'xml' ? 'text/xml' : 'application/json' },
-        });
-
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        const text = await res.text();
-        if (format === 'xml') {
-          setMessages(parseMessages(text).map(normalizeMessage));
-        } else {
-          const data = JSON.parse(text) as { messages?: Record<string, unknown>[] };
-          setMessages((data.messages || []).map(normalizeJsonMessage));
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchMessages();
-  });
-
   const toggleFormat = () => {
-    setResponseFormat((prev) => (prev === 'xml' ? 'json' : 'xml'));
+    setResponseFormat((prev) => (prev === 'json' ? 'xml' : 'json'));
   };
 
   const sessionName = () => {
@@ -312,21 +283,21 @@ const SessionChat: Component = () => {
       {/* Messages */}
       <div class="flex-1 min-h-0 flex flex-col mt-4 border border-[#18181b] bg-[#0a0a0a]">
         <Show
-          when={!loading() && !error() && messages().length > 0}
+          when={!messagesQuery.isPending && allMessages().length > 0}
           fallback={
             <div class="flex-1 flex items-center justify-center">
-              <Show when={loading()}>
+              <Show when={messagesQuery.isPending}>
                 <span class="text-[#52525b] text-xs uppercase tracking-widest animate-pulse">
                   Loading messages...
                 </span>
               </Show>
-              <Show when={error()}>
+              <Show when={messagesQuery.isError}>
                 <div class="text-center">
                   <div class="text-[#ef4444] text-sm mb-1 uppercase tracking-wider">Error</div>
-                  <div class="text-[#52525b] text-xs">{error()}</div>
+                  <div class="text-[#52525b] text-xs">{String(messagesQuery.error)}</div>
                 </div>
               </Show>
-              <Show when={!loading() && !error() && messages().length === 0}>
+              <Show when={!messagesQuery.isPending && !messagesQuery.isError && allMessages().length === 0}>
                 <div class="text-center">
                   <div class="text-[#52525b] text-sm mb-1 uppercase tracking-wider">
                     No messages yet
@@ -338,9 +309,7 @@ const SessionChat: Component = () => {
           }
         >
           <div
-            ref={(el) => {
-              scrollRef = el;
-            }}
+            ref={(el) => { scrollRef = el; }}
             class="flex-1 overflow-y-auto"
             onScroll={handleScroll}
           >
