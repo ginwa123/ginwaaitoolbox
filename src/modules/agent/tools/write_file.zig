@@ -8,6 +8,7 @@ const AgentTool = schemas.AgentTool;
 pub const WriteFileInput = struct {
     path: []const u8,
     content: []const u8,
+    create_with_dir: bool = false,
 };
 
 pub const WriteFileResult = struct {
@@ -20,6 +21,7 @@ pub const WriteFileResult = struct {
 
 pub const WriteFileOptions = struct {
     content: []const u8,
+    create_with_dir: bool = false,
 };
 
 pub fn write_file(

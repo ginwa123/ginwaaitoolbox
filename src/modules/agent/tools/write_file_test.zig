@@ -90,7 +90,24 @@ test "write_file - result serialization" {
     try std.fs.cwd().deleteFile(test_path);
 }
 
+test "write_file - WriteFileOptions with create_with_dir" {
+    const opts = write_file_mod.WriteFileOptions{
+        .content = "hello",
+        .create_with_dir = true,
+    };
+    try std.testing.expect(opts.create_with_dir == true);
+}
+
 test "write_file tool definition exists" {
     // Verify the tool definition matches expected structure
     try std.testing.expectEqualStrings("write_file", write_file_mod.writeFileTool.function.name);
+}
+
+test "write_file - WriteFileInput with create_with_dir" {
+    const input = write_file_mod.WriteFileInput{
+        .path = "/tmp/test/nested/dir/file.txt",
+        .content = "hello",
+        .create_with_dir = true,
+    };
+    try std.testing.expect(input.create_with_dir == true);
 }
