@@ -25,6 +25,7 @@ pub fn handle_write_file_tool_run(
     // Convert WriteFileInput to WriteFileOptions for the write_file function
     const opts = write_file_tool.WriteFileOptions{
         .content = parsed.value.content,
+        .create_with_dir = parsed.value.create_with_dir,
     };
 
     const write_result = try write_file_tool.write_file(allocator, parsed.value.path, opts);

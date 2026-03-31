@@ -11,6 +11,7 @@ const tui_check_session_exists = nalarcore.tui_check_session_exists;
 const session_helpers = nalarcore.session_helpers;
 const session_db = nalarcore.session_db;
 const session_table = nalarcore.session_table;
+const session_queue_messages = nalarcore.session_queue_messages;
 
 const httpz = http_server.httpz;
 const SseEvent = http_server.SseEvent;
@@ -208,6 +209,7 @@ fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
 /// Request body (JSON, optional):
 ///   - name: session name (string, defaults to "New Session")
 ///   - session_id: custom session ID (string, optional, auto-generated if not provided)
+///   - queue_message: initial message to add to session queue (string, optional)
 /// Returns JSON with created session info
 pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
@@ -216,6 +218,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     // Generate or parse session ID
     var session_id: []u8 = undefined;
     var session_name: []const u8 = "New Session";
+    var queue_message: ?[]const u8 = null;
 
     const body = req.body() orelse "";
 
@@ -250,6 +253,13 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                 session_name = val.string;
             }
         }
+
+        // Extract queue_message if provided
+        if (root.get("queue_message")) |val| {
+            if (val == .string) {
+                queue_message = val.string;
+            }
+        }
     } else {
         // No body provided, generate session ID
         session_id = try generateSessionId(alloc);
@@ -277,6 +287,15 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                 return;
             };
             defer session.deinit(alloc);
+
+            // Create queue message if provided
+            if (queue_message) |msg| {
+                const msg_id = try generateSessionId(alloc);
+                _ = session_queue_messages.create_queue_message(alloc, sqlite_db, msg_id, session_id, msg) catch {
+                    // Log but don't fail - session was created successfully
+                    std.log.err("Failed to create queue message for session {s}", .{session_id});
+                };
+            }
 
             // Return created session info
             res.status = 201;
