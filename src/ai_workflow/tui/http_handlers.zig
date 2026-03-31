@@ -273,7 +273,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
             // Check if session already exists
             const existing = session_table.get_session(alloc, sqlite_db, session_id) catch null;
             if (existing) |s| {
-                session = s.*;
+                session = s;
             } else {
                 session = session_table.create_session(alloc, sqlite_db, session_id, session_name) catch {
                     res.status = 500;
