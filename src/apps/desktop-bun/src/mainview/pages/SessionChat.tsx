@@ -7,10 +7,8 @@ import {
   createMemo,
   createResource,
   createSignal,
-  onMount,
 } from 'solid-js';
 import { createInfiniteQuery } from '@tanstack/solid-query';
-import { createVirtualizer } from '@tanstack/solid-virtual';
 import ChatInput from '../components/ChatInput';
 import { baseUrl } from '../utils/baseUrl';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
@@ -112,7 +110,6 @@ const SessionChat: Component = () => {
   const params = useParams<{ sessionId: string }>();
   let scrollRef: HTMLDivElement | undefined;
   const [responseFormat, setResponseFormat] = createSignal<'json' | 'xml'>('json');
-  const [hasScrolledToBottom, setHasScrolledToBottom] = createSignal(false);
 
   const [sessionInfo] = createResource(
     () => params.sessionId,
@@ -177,34 +174,19 @@ const SessionChat: Component = () => {
     messagesQuery.data?.pages.flatMap((p) => p.messages) ?? []
   );
 
-  // Virtual list setup
-  const virtualizer = createVirtualizer({
-    get count() {
-      return allMessages().length;
-    },
-    getScrollElement: () => scrollRef ?? null,
-    estimateSize: () => 120,
-    overscan: 3,
-  });
+  console.log('[SessionChat] messagesQuery:', messagesQuery);
+  console.log('[SessionChat] allMessages:', allMessages());
 
-  // Scroll to bottom when messages change (only on initial load)
+  // Scroll to bottom when messages change
   createEffect(() => {
     const messages = allMessages();
-    if (messages.length > 0 && scrollRef && !hasScrolledToBottom()) {
-      requestAnimationFrame(() => {
+    if (messages.length > 0 && scrollRef) {
+      // Use setTimeout to ensure DOM is rendered
+      setTimeout(() => {
         if (scrollRef) {
           scrollRef.scrollTop = scrollRef.scrollHeight;
-          setHasScrolledToBottom(true);
         }
-      });
-    }
-  });
-
-  // Reset scroll flag when session changes
-  createEffect(() => {
-    const sessionId = params.sessionId;
-    if (sessionId) {
-      setHasScrolledToBottom(false);
+      }, 100);
     }
   });
 
@@ -288,7 +270,7 @@ const SessionChat: Component = () => {
             <div class="flex-1 flex items-center justify-center">
               <Show when={messagesQuery.isPending}>
                 <span class="text-[#52525b] text-xs uppercase tracking-widest animate-pulse">
-                  Loading messages...
+                  Loading messages... ({allMessages().length})
                 </span>
               </Show>
               <Show when={messagesQuery.isError}>
@@ -309,35 +291,16 @@ const SessionChat: Component = () => {
           }
         >
           <div
-            ref={(el) => { scrollRef = el; }}
+            ref={(el) => { scrollRef = el; console.log('[SessionChat] scrollRef set:', el); }}
             class="flex-1 overflow-y-auto"
             onScroll={handleScroll}
           >
-            <div
-              style={{
-                height: `${virtualizer.getTotalSize()}px`,
-                position: 'relative',
+            <For each={allMessages()}>
+              {(message, index) => {
+                console.log('[SessionChat] Rendering message', index(), message.id);
+                return <MessageRow message={message} />;
               }}
-            >
-              <For each={virtualizer.getVirtualItems()}>
-                {(virtualRow) => (
-                  <div
-                    data-index={virtualRow.index}
-                    ref={virtualizer.measureElement}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      height: `${virtualRow.size}px`,
-                      transform: `translateY(${virtualRow.start}px)`,
-                    }}
-                  >
-                    <MessageRow message={allMessages()[virtualRow.index]} />
-                  </div>
-                )}
-              </For>
-            </div>
+            </For>
           </div>
 
           <Show when={messagesQuery.isFetchingNextPage}>
