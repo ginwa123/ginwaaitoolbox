@@ -92,9 +92,20 @@ pub fn execute_tree_dir(allocator: std.mem.Allocator, input: TreeDirInput) !Tree
     // fd path
     try args.append(allocator, "/usr/sbin/fd");
 
-    // Use type 'all' to include both files and directories
-    try args.append(allocator, "--type");
-    try args.append(allocator, "all");
+    // Include both files and directories (fd returns both by default, so add type flags for filtering)
+    if (!input.include_files) {
+        try args.append(allocator, "--type");
+        try args.append(allocator, "directory");
+    } else if (!input.include_dirs) {
+        try args.append(allocator, "--type");
+        try args.append(allocator, "file");
+    } else {
+        // Both files and directories - use --type file and --type directory
+        try args.append(allocator, "--type");
+        try args.append(allocator, "file");
+        try args.append(allocator, "--type");
+        try args.append(allocator, "directory");
+    }
 
     // Max depth
     if (input.max_depth) |depth| {
