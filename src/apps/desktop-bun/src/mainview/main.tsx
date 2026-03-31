@@ -9,6 +9,7 @@ import { Route, Router } from '@solidjs/router';
 import { Component, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 /* @refresh reload */
 import { render } from 'solid-js/web';
+import { QueryClient, QueryClientProvider } from '@tanstack/solid-query';
 import { AppLayout } from './AppLayout';
 import SessionChat from './pages/SessionChat';
 import Welcome from './pages/Welcome';
@@ -16,6 +17,9 @@ import './app.css';
 import { Electroview } from 'electrobun/view';
 import { DemoRPCType } from 'src/shared/rpc';
 import { initBaseUrl } from './utils/baseUrl';
+
+// Create QueryClient for TanStack Query
+const queryClient = new QueryClient({});
 
 // ============================================================================
 // Initialize baseUrl - listen for port from Bun via RPC
@@ -193,4 +197,11 @@ const App: Component = () => {
   );
 };
 
-render(() => <App />, document.getElementById('app')!);
+render(
+  () => (
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>
+  ),
+  document.getElementById('app')!
+);
