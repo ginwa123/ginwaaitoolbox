@@ -46,6 +46,7 @@ const lspWorkspaceSymbolTool = root_mod.tools.lspWorkspaceSymbolTool;
 const lspDocumentSymbolTool = root_mod.tools.lspDocumentSymbolTool;
 const lspHoverTool = root_mod.tools.lspHoverTool;
 const change_agent_tool = root_mod.change_agent;
+const tree_dir_tool = root_mod.tree_dir;
 
 pub const all_agent_tools: []const tool_models.AgentTool = &.{
     bash_tool.bashTool,
@@ -66,6 +67,7 @@ pub const all_agent_tools: []const tool_models.AgentTool = &.{
     lspDocumentSymbolTool,
     lspHoverTool,
     change_agent_tool.ChangeAgentTool,
+    tree_dir_tool.tree_dir_tool,
 };
 
 test {

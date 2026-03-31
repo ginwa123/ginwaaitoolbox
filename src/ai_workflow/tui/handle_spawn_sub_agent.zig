@@ -31,6 +31,7 @@ const GetSkillTool = root_mod.get_skill_tool;
 const RemoveSkillTool = root_mod.remove_skill_tool;
 const ListAgentsTool = root_mod.list_agents;
 const ChangeAgentTool = root_mod.change_agent;
+const TreeDirTool = root_mod.tree_dir;
 const LspDefinitionTool = root_mod.tools.lspDefinitionTool;
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
@@ -166,6 +167,15 @@ fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqli
     return handle_lsp_definition_tool.handle_lsp_definition_tool_run(allocator, tc);
 }
 
+fn execTreeDir(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    const parsed = try TreeDirTool.parseTreeDirInput(allocator, tc.function.arguments);
+    var result = try TreeDirTool.execute_tree_dir(allocator, parsed);
+    defer result.deinit(allocator);
+    return TreeDirTool.tree_dir_result_to_string(allocator, result);
+}
+
 /// MCP tool executor - placeholder for dynamic MCP tool handling
 /// Note: MCP tools are actually handled dynamically in executeSubAgentTool
 /// This function is kept for API completeness but is not used
@@ -208,6 +218,9 @@ pub const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
 
     // LSP tools
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = LspDefinitionTool },
+
+    // File system tools
+    .{ .name = "tree_dir", .exec = execTreeDir, .tool_def = TreeDirTool.tree_dir_tool },
     // TODO: Restore remaining LSP tools when lsp.zig is complete
 };
 
