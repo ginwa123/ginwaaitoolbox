@@ -1,6 +1,6 @@
 # AGENT.md — Project Summary
 
-> **Last Updated:** 2025-03-27
+> **Last Updated:** 2025-03-31
 > **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
 
 ---
@@ -73,6 +73,7 @@ src/
 - **Tools:** bash, read_file, write_file, text_replace, search, glob, LSP tools
 - **Skills/Agents:** list_skill, get_skill, remove_skill, list_agents, change_agent, spawn_sub_agent
 - **MCP:** LSP definition/references/hover/workspace_symbol/document_symbol
+- **Self-Kill Protection:** `bash_selfkill.zig` — blocks dangerous commands (kill, killall, pkill, exit) that target self PID
 
 ### AI Workflow (`src/ai_workflow/tui/`)
 - `workflow.zig` — Main TUI workflow orchestration

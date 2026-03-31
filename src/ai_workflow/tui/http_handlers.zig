@@ -10,6 +10,7 @@ const kerjabot_get_list_session = nalarcore.kerjabot_get_list_session;
 const tui_check_session_exists = nalarcore.tui_check_session_exists;
 const session_helpers = nalarcore.session_helpers;
 const session_db = nalarcore.session_db;
+const session_table = nalarcore.session_table;
 
 const httpz = http_server.httpz;
 const SseEvent = http_server.SseEvent;
@@ -184,20 +185,109 @@ const HandlerArgs = struct {
 // Session Handlers (TUI)
 // =============================================================================
 
-/// Create a new session - delegates to registered session handler
-pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    if (http_server.global_server) |server| {
-        if (server.session_handler) |sess_handler| {
-            const body = req.body() orelse "";
+/// Hex digits for session ID generation
+const hexDigits = "0123456789abcdef";
 
-            var arena = std.heap.ArenaAllocator.init(server.allocator);
-            defer arena.deinit();
-            sess_handler(arena.allocator(), body, server.ctx, res);
+/// Generate a unique session ID using timestamp and random suffix
+fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
+    const timestamp = std.time.timestamp();
+    var random_bytes: [8]u8 = undefined;
+    std.crypto.random.bytes(&random_bytes);
+
+    // Convert random bytes to hex string
+    var hex_chars: [16]u8 = undefined;
+    for (random_bytes, 0..) |b, i| {
+        hex_chars[i * 2] = hexDigits[b >> 4];
+        hex_chars[i * 2 + 1] = hexDigits[b & 0xF];
+    }
+
+    return std.fmt.allocPrint(allocator, "sess_{d}_{s}", .{ timestamp, hex_chars });
+}
+
+/// Create a new session
+/// Request body (JSON, optional):
+///   - name: session name (string, defaults to "New Session")
+///   - session_id: custom session ID (string, optional, auto-generated if not provided)
+/// Returns JSON with created session info
+pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    const alloc = req.arena;
+    res.content_type = .JSON;
+
+    // Generate or parse session ID
+    var session_id: []u8 = undefined;
+    var session_name: []const u8 = "New Session";
+
+    const body = req.body() orelse "";
+
+    if (body.len > 0) {
+        // Parse JSON body for optional parameters
+        const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
+            res.status = 400;
+            res.body = "{\"error\":\"Invalid JSON body\"}";
+            return;
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value.object;
+
+        // Extract session_id if provided
+        if (root.get("session_id")) |val| {
+            if (val == .string) {
+                session_id = try alloc.dupe(u8, val.string);
+            } else {
+                res.status = 400;
+                res.body = "{\"error\":\"session_id must be a string\"}";
+                return;
+            }
+        } else {
+            // Generate unique session ID
+            session_id = try generateSessionId(alloc);
+        }
+
+        // Extract name if provided
+        if (root.get("name")) |val| {
+            if (val == .string) {
+                session_name = val.string;
+            }
+        }
+    } else {
+        // No body provided, generate session ID
+        session_id = try generateSessionId(alloc);
+    }
+
+    if (http_server.global_server) |server| {
+        if (server.db) |db| {
+            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+
+            // Check if session already exists
+            const existing = session_table.get_session(alloc, sqlite_db, session_id) catch null;
+            if (existing) |s| {
+                s.deinit(alloc);
+                res.status = 409;
+                res.body = try std.fmt.allocPrint(alloc,
+                    "{{\"error\":\"Session already exists\",\"session_id\":\"{s}\"}}",
+                    .{session_id});
+                return;
+            }
+
+            // Create the session
+            const session = session_table.create_session(alloc, sqlite_db, session_id, session_name) catch {
+                res.status = 500;
+                res.body = "{\"error\":\"Failed to create session\"}";
+                return;
+            };
+            defer session.deinit(alloc);
+
+            // Return created session info
+            res.status = 201;
+            res.body = try std.fmt.allocPrint(alloc,
+                "{{\"id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\"}}",
+                .{ session.id, session.name, session.status });
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"No session handler\"}";
+    res.body = "{\"error\":\"Server not initialized\"}";
 }
 
 /// List all sessions - returns sessions from database with cursor pagination

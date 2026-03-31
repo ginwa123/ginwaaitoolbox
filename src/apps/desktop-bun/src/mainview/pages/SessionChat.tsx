@@ -1,4 +1,5 @@
 import { useParams } from '@solidjs/router';
+import { createInfiniteQuery } from '@tanstack/solid-query';
 import {
   type Component,
   For,
@@ -6,13 +7,11 @@ import {
   createEffect,
   createMemo,
   createResource,
-  createSignal,
 } from 'solid-js';
-import { createInfiniteQuery } from '@tanstack/solid-query';
+import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
 import ChatInput from '../components/ChatInput';
 import { baseUrl } from '../utils/baseUrl';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
-import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
 
 interface SessionInfo {
   session_id: string;
@@ -79,12 +78,16 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
     <div class="group border-l-2 border-l-transparent hover:border-l-[#fbbf24] transition-colors">
       <div class="px-6 py-4 border-b border-[#1a1a1a]">
         <div class="flex gap-4">
-          <span class={`font-mono text-sm w-5 flex-shrink-0 mt-0.5 ${getRoleColor(props.message.role)}`}>
+          <span
+            class={`font-mono text-sm w-5 flex-shrink-0 mt-0.5 ${getRoleColor(props.message.role)}`}
+          >
             {getRoleIcon(props.message.role)}
           </span>
           <div class="flex-1 min-w-0">
             <div class="flex items-baseline gap-3 mb-2">
-              <span class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(props.message.role)}`}>
+              <span
+                class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(props.message.role)}`}
+              >
                 {props.message.role}
               </span>
               <span class="font-mono text-xs text-[#3f3f46]">
@@ -109,7 +112,6 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
 const SessionChat: Component = () => {
   const params = useParams<{ sessionId: string }>();
   let scrollRef: HTMLDivElement | undefined;
-  const [responseFormat, setResponseFormat] = createSignal<'json' | 'xml'>('json');
 
   const [sessionInfo] = createResource(
     () => params.sessionId,
@@ -128,11 +130,9 @@ const SessionChat: Component = () => {
 
   // Single source of truth: use messagesQuery for all message data
   const messagesQuery = createInfiniteQuery(() => ({
-    queryKey: ['session-messages', params.sessionId, responseFormat()],
+    queryKey: ['session-messages', params.sessionId],
     queryFn: async ({ pageParam }: { pageParam?: string }) => {
-      const format = responseFormat();
       const url = new URL(`${baseUrl()}/api/session/${params.sessionId}/messages`);
-      url.searchParams.set('format', format);
       url.searchParams.set('limit', '50');
 
       if (pageParam !== undefined) {
@@ -144,24 +144,19 @@ const SessionChat: Component = () => {
       }
 
       const res = await fetch(url.toString(), {
-        headers: { Accept: format === 'xml' ? 'text/xml' : 'application/json' },
+        headers: { Accept: 'text/xml' },
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      if (format === 'xml') {
-        const text = await res.text();
-        const parsed = parseMessages(text);
-        const msgs = parsed.map(normalizeMessage);
-        return {
-          messages: msgs,
-          has_more: msgs.length === 50,
-          next_cursor: msgs.length > 0 ? msgs[msgs.length - 1].id : null,
-        } as SessionMessagesResponse;
-      } else {
-        const data = await res.json() as SessionMessagesResponse;
-        return data;
-      }
+      const text = await res.text();
+      const parsed = parseMessages(text);
+      const msgs = parsed.map(normalizeMessage);
+      return {
+        messages: msgs,
+        has_more: msgs.length === 50,
+        next_cursor: msgs.length > 0 ? msgs[msgs.length - 1].id : null,
+      } as SessionMessagesResponse;
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage: SessionMessagesResponse) => lastPage.next_cursor ?? undefined,
@@ -170,9 +165,7 @@ const SessionChat: Component = () => {
   }));
 
   // Flatten all pages into single messages array
-  const allMessages = createMemo(() =>
-    messagesQuery.data?.pages.flatMap((p) => p.messages) ?? []
-  );
+  const allMessages = createMemo(() => messagesQuery.data?.pages.flatMap((p) => p.messages) ?? []);
 
   console.log('[SessionChat] messagesQuery:', messagesQuery);
   console.log('[SessionChat] allMessages:', allMessages());
@@ -201,10 +194,6 @@ const SessionChat: Component = () => {
     ) {
       messagesQuery.fetchNextPage();
     }
-  };
-
-  const toggleFormat = () => {
-    setResponseFormat((prev) => (prev === 'json' ? 'xml' : 'json'));
   };
 
   const sessionName = () => {
@@ -248,16 +237,6 @@ const SessionChat: Component = () => {
               </Show>
             </div>
           </div>
-
-          <button
-            onClick={toggleFormat}
-            class="px-3 py-1.5 text-xs bg-[#09090b] border border-[#27272a] hover:border-[#fbbf24] hover:text-[#fbbf24] transition-colors uppercase tracking-wider"
-          >
-            <span class="text-[#52525b]">Fmt:</span>{' '}
-            <span class={responseFormat() === 'xml' ? 'text-[#fbbf24]' : 'text-[#a1a1aa]'}>
-              {responseFormat() === 'xml' ? 'XML' : 'JSON'}
-            </span>
-          </button>
         </div>
         <div class="border-b-2 border-[#27272a] mt-4" />
       </div>
@@ -279,7 +258,11 @@ const SessionChat: Component = () => {
                   <div class="text-[#52525b] text-xs">{String(messagesQuery.error)}</div>
                 </div>
               </Show>
-              <Show when={!messagesQuery.isPending && !messagesQuery.isError && allMessages().length === 0}>
+              <Show
+                when={
+                  !messagesQuery.isPending && !messagesQuery.isError && allMessages().length === 0
+                }
+              >
                 <div class="text-center">
                   <div class="text-[#52525b] text-sm mb-1 uppercase tracking-wider">
                     No messages yet
@@ -291,7 +274,10 @@ const SessionChat: Component = () => {
           }
         >
           <div
-            ref={(el) => { scrollRef = el; console.log('[SessionChat] scrollRef set:', el); }}
+            ref={(el) => {
+              scrollRef = el;
+              console.log('[SessionChat] scrollRef set:', el);
+            }}
             class="flex-1 overflow-y-auto"
             onScroll={handleScroll}
           >

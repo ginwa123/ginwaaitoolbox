@@ -29,6 +29,7 @@ pub const BashOutput = struct {
     timeout: bool,
     stdout_lines: usize = 0, // total lines produced (before truncation)
     stderr_lines: usize = 0, // total lines produced (before truncation)
+    is_self: bool = false, // command targeted the current process
 };
 
 // =============================================================================

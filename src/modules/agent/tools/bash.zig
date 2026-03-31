@@ -7,6 +7,7 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
+const selfkill = @import("bash_selfkill.zig");
 
 pub const CommandForbidden = error{
     /// Command contains forbidden patterns that produce unbounded output
@@ -57,6 +58,39 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     // --- Forbidden pattern check ---
     if (is_forbidden_command(input.command)) {
         return error.CommandForbidden;
+    }
+
+    // --- Self-kill protection check ---
+    const self_pid = selfkill.get_self_pid();
+    if (try selfkill.detect_self_kill(allocator, input.command, self_pid)) |warning| {
+        // Log the warning
+        std.log.warn("Self-kill detected: {s}", .{warning});
+        
+        // Return blocked output instead of executing
+        const stderr_msg = try std.fmt.allocPrint(
+            allocator,
+            "\n=== SELF-KILL PROTECTION ===\n" ++
+            "Blocked command that would terminate the current process.\n" ++
+            "Reason: {s}\n" ++
+            "Your PID: {d}\n" ++
+            "===========================\n",
+            .{ warning, self_pid });
+        errdefer allocator.free(stderr_msg);
+        
+        const command_copy = try allocator.dupe(u8, input.command);
+        errdefer allocator.free(command_copy);
+        
+        return BashOutput{
+            .command = command_copy,
+            .stdout = "",
+            .stderr = stderr_msg,
+            .exit_code = 1,
+            .truncated = false,
+            .timeout = false,
+            .stdout_lines = 0,
+            .stderr_lines = 1,
+            .is_self = true,
+        };
     }
 
     // --- Background mode ---
@@ -395,6 +429,7 @@ pub fn bashResultToString(allocator: std.mem.Allocator, result: BashOutput) ![]c
         \\<timeout>{}</timeout>
         \\<stdout_lines>{d}</stdout_lines>
         \\<stderr_lines>{d}</stderr_lines>
+        \\<is_self>{}</is_self>
     , .{
         result.stdout,
         result.stderr,
@@ -403,6 +438,7 @@ pub fn bashResultToString(allocator: std.mem.Allocator, result: BashOutput) ![]c
         result.timeout,
         result.stdout_lines,
         result.stderr_lines,
+        result.is_self,
     });
 }
 
