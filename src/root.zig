@@ -98,6 +98,7 @@ pub const write_file = @import("modules/agent/tools/write_file.zig");
 pub const text_replace = @import("modules/agent/tools/text_replace.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
+pub const tree_dir = @import("modules/agent/tools/tree_dir.zig");
 pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
