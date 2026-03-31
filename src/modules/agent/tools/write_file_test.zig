@@ -153,3 +153,32 @@ test "write_file - create file with nested directories (create_with_dir=true)" {
     // Clean up
     try std.fs.cwd().deleteTree("test_nested");
 }
+
+test "write_file - create_with_dir=false returns error on missing directory" {
+    const allocator = std.testing.allocator;
+    const test_path = "/tmp/nonexistent/path/file.txt";
+    
+    const result = write_file_mod.write_file(allocator, test_path, .{
+        .content = "test",
+        .create_with_dir = false,
+    });
+    
+    try std.testing.expectError(error.FileNotFound, result);
+}
+
+test "write_file - create_with_dir=true works when directory exists" {
+    const allocator = std.testing.allocator;
+    const test_path = "/tmp/existing_dir/file.txt";
+    
+    // Create parent directory first
+    try std.fs.cwd().makeDir("/tmp/existing_dir");
+    defer std.fs.cwd().deleteTree("/tmp/existing_dir") catch {};
+    
+    const result = try write_file_mod.write_file(allocator, test_path, .{
+        .content = "test",
+        .create_with_dir = true,
+    });
+    defer result.deinit(allocator);
+    
+    try std.testing.expect(result.sha256.len == 64); // SHA256 hex length
+}
