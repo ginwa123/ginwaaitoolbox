@@ -6,9 +6,17 @@ pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, cwd: []const u8) ![]con
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
 
+    // Ensure cwd is absolute - use "." if empty to get current directory
+    const effective_cwd = if (cwd.len == 0) "." else cwd;
+    const absolute_cwd = if (std.fs.path.isAbsolute(effective_cwd))
+        try allocator.dupe(u8, effective_cwd)
+    else
+        try std.fs.cwd().realpathAlloc(allocator, effective_cwd);
+    defer allocator.free(absolute_cwd);
+
     for (memory_files) |filename| {
         // Build the full path for this file
-        const file_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, filename });
+        const file_path = try std.fs.path.join(allocator, &[_][]const u8{ absolute_cwd, filename });
         defer allocator.free(file_path);
 
         // Try to open the file - if it doesn't exist, create it

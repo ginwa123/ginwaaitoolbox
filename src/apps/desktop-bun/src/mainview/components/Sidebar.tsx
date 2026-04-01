@@ -2,12 +2,29 @@ import { useNavigate } from '@solidjs/router';
 import { type Component, For, createSignal, onCleanup, onMount } from 'solid-js';
 import { baseUrl, initBaseUrl } from '../utils/baseUrl';
 
+// =============================================================================
+// Types
+// =============================================================================
+
 interface Session {
   session_id: string;
   session_dir: string;
   created_at: string;
   agent: string;
   session_name: string;
+}
+
+interface CreateSessionRequest {
+  name?: string;
+  session_id?: string;
+  queue_message?: string;
+  cwd_session?: string;
+}
+
+interface CreateSessionResponse {
+  id: string;
+  name: string;
+  status: string;
 }
 
 const Sidebar: Component = () => {
@@ -19,7 +36,8 @@ const Sidebar: Component = () => {
   const [loadingMore, setLoadingMore] = createSignal(false);
   const [nextCursor, setNextCursor] = createSignal<string | null>(null);
   const navigate = useNavigate();
-  
+  const [creatingSession, setCreatingSession] = createSignal(false);
+
   // Refs for DOM elements
   let scrollContainerRef: HTMLDivElement | undefined;
   let sentinelRef: HTMLDivElement | undefined;
@@ -160,15 +178,19 @@ const Sidebar: Component = () => {
     navigate(`/session/${sessionId}`);
   };
 
+  // Just navigate to new session placeholder - session created when user sends message
+  const handleNewSession = () => {
+    navigate('/session/new');
+  };
+
   return (
     <aside class="w-56 flex-shrink-0 bg-[#050505] border-r border-[#18181b] flex flex-col overflow-hidden" style="height: 100%;">
       <div class="flex-1 flex flex-col py-3 overflow-hidden">
-        <div class="px-4 mb-2">
+        <div class="px-4 mb-2 flex items-center justify-between">
           <button
             onClick={() => setExpanded(!expanded())}
-            class="flex items-center justify-between w-full px-2 py-2 text-xs font-mono uppercase tracking-[0.15em] text-[#71717a] hover:text-[#a1a1aa] transition-colors"
+            class="flex items-center gap-2 px-2 py-2 text-xs font-mono uppercase tracking-[0.15em] text-[#71717a] hover:text-[#a1a1aa] transition-colors"
           >
-            <span>Sessions</span>
             <svg
               class={`w-3 h-3 transition-transform ${expanded() ? 'rotate-90' : ''}`}
               viewBox="0 0 24 24"
@@ -178,6 +200,16 @@ const Sidebar: Component = () => {
             >
               <path d="M9 18l6-6-6-6" />
             </svg>
+            <span>Sessions</span>
+          </button>
+
+          {/* New Session Button - navigates to placeholder, session created on first message */}
+          <button
+            onClick={handleNewSession}
+            class="flex items-center justify-center w-7 h-7 rounded-md bg-[#18181b] hover:bg-[#27272a] border border-[#3f3f46] hover:border-[#fbbf24] text-[#52525b] hover:text-[#fbbf24] transition-all font-mono text-lg font-bold shadow-sm"
+            title="New Chat"
+          >
+            <span class="text-base leading-none">+</span>
           </button>
         </div>
 

@@ -110,6 +110,20 @@ src/
 - Cancellation registry (cancel active sessions)
 - Session monitor (exit when no active sessions)
 
+### Desktop App (`src/apps/desktop-bun/`)
+- Bun + SolidJS desktop application using webview-bun
+- Connects to Zig HTTP server via REST API
+- **Create session:** `POST /api/session` — creates new session, navigates to it
+- **List sessions:** `GET /api/session` — infinite scroll with cursor pagination
+- **Session chat:** `GET /api/session/:session_id/messages` — loads messages with infinite scroll
+- **Run workflow:** `POST /api/llm/run` — sends message to agent
+- Port passed via RPC from Bun to webview
+
+**Run desktop app:**
+```bash
+cd src/apps/desktop-bun && bun run src/index.ts
+```
+
 ## Important Conventions
 
 - **Max lines per file:** 400 lines — split larger files

@@ -1,4 +1,4 @@
-import { useParams } from '@solidjs/router';
+import { useNavigate, useParams } from '@solidjs/router';
 import { createInfiniteQuery } from '@tanstack/solid-query';
 import {
   type Component,
@@ -7,8 +7,9 @@ import {
   createEffect,
   createMemo,
   createResource,
+  createSignal,
 } from 'solid-js';
-import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
+import { type ChatMessage, SessionMessagesResponse, type CreateSessionResponse } from '../../shared/rpc';
 import ChatInput from '../components/ChatInput';
 import { baseUrl } from '../utils/baseUrl';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
@@ -111,7 +112,51 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
 
 const SessionChat: Component = () => {
   const params = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
   let scrollRef: HTMLDivElement | undefined;
+  const [sending, setSending] = createSignal(false);
+
+  // Check if this is a "new" session placeholder
+  const isNewSession = () => params.sessionId === 'new';
+
+  // Create session when user sends first message
+  const createSessionAndSend = async (message: string) => {
+    if (sending()) return;
+    setSending(true);
+
+    try {
+      // 1. Create session
+      const res = await fetch(`${baseUrl()}/api/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ queue_message: message }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to create session: ${res.status}`);
+      }
+
+      const data = (await res.json()) as CreateSessionResponse;
+      console.log('[SessionChat] Created session:', data);
+
+      // 2. Navigate to the new session
+      navigate(`/session/${data.id}`, { replace: true });
+    } catch (err) {
+      console.error('[SessionChat] Failed to create session:', err);
+      alert(`Failed to create session: ${err}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleSend = (msg: string) => {
+    if (isNewSession()) {
+      createSessionAndSend(msg);
+    } else {
+      console.log('Send:', msg);
+      // TODO: Call POST /api/llm/run to send message to existing session
+    }
+  };
 
   const [sessionInfo] = createResource(
     () => params.sessionId,
@@ -214,26 +259,40 @@ const SessionChat: Component = () => {
         <div class="flex items-center justify-between">
           <div>
             <Show
-              when={sessionName()}
+              when={isNewSession()}
               fallback={
-                <h1 class="text-xl font-semibold text-[#fafafa] mb-1 tracking-tight">
-                  Session {params.sessionId?.slice(0, 8)}...
-                </h1>
+                <Show
+                  when={sessionName()}
+                  fallback={
+                    <h1 class="text-xl font-semibold text-[#fafafa] mb-1 tracking-tight">
+                      Session {params.sessionId?.slice(0, 8)}...
+                    </h1>
+                  }
+                >
+                  <h1 class="text-xl font-semibold text-[#fafafa] mb-1 tracking-tight">
+                    {sessionName()}
+                  </h1>
+                </Show>
               }
             >
               <h1 class="text-xl font-semibold text-[#fafafa] mb-1 tracking-tight">
-                {sessionName()}
+                New Chat
               </h1>
             </Show>
             <div class="flex items-center gap-3 text-xs text-[#52525b] uppercase tracking-widest">
-              <span>
-                Agent: <span class="text-[#71717a]">{sessionAgent()}</span>
-              </span>
-              <Show when={sessionId()}>
-                <span class="text-[#27272a]">·</span>
+              <Show when={!isNewSession()}>
                 <span>
-                  ID: <span class="text-[#71717a]">{sessionId()}</span>...
+                  Agent: <span class="text-[#71717a]">{sessionAgent()}</span>
                 </span>
+                <Show when={sessionId()}>
+                  <span class="text-[#27272a]">·</span>
+                  <span>
+                    ID: <span class="text-[#71717a]">{sessionId()}</span>...
+                  </span>
+                </Show>
+              </Show>
+              <Show when={isNewSession()}>
+                <span class="text-[#71717a]">Start a conversation</span>
               </Show>
             </div>
           </div>
@@ -244,15 +303,23 @@ const SessionChat: Component = () => {
       {/* Messages */}
       <div class="flex-1 min-h-0 flex flex-col mt-4 border border-[#18181b] bg-[#0a0a0a]">
         <Show
-          when={!messagesQuery.isPending && allMessages().length > 0}
+          when={!isNewSession() && !messagesQuery.isPending && allMessages().length > 0}
           fallback={
             <div class="flex-1 flex items-center justify-center">
-              <Show when={messagesQuery.isPending}>
+              <Show when={isNewSession()}>
+                <div class="text-center">
+                  <div class="text-[#52525b] text-sm mb-1 uppercase tracking-wider">
+                    Ready to chat
+                  </div>
+                  <div class="text-[#3f3f46] text-xs">Type a message below to start</div>
+                </div>
+              </Show>
+              <Show when={!isNewSession() && messagesQuery.isPending}>
                 <span class="text-[#52525b] text-xs uppercase tracking-widest animate-pulse">
                   Loading messages... ({allMessages().length})
                 </span>
               </Show>
-              <Show when={messagesQuery.isError}>
+              <Show when={!isNewSession() && messagesQuery.isError}>
                 <div class="text-center">
                   <div class="text-[#ef4444] text-sm mb-1 uppercase tracking-wider">Error</div>
                   <div class="text-[#52525b] text-xs">{String(messagesQuery.error)}</div>
@@ -260,7 +327,10 @@ const SessionChat: Component = () => {
               </Show>
               <Show
                 when={
-                  !messagesQuery.isPending && !messagesQuery.isError && allMessages().length === 0
+                  !isNewSession() &&
+                  !messagesQuery.isPending &&
+                  !messagesQuery.isError &&
+                  allMessages().length === 0
                 }
               >
                 <div class="text-center">
@@ -299,7 +369,7 @@ const SessionChat: Component = () => {
 
       {/* Chat Input */}
       <div class="flex-shrink-0 pt-4">
-        <ChatInput onSend={(msg) => console.log('Send:', msg)} />
+        <ChatInput onSend={handleSend} disabled={sending()} />
       </div>
     </div>
   );

@@ -26,6 +26,20 @@ pub const MessageHandler = http_server.MessageHandler;
 pub const SessionHandler = http_server.SessionHandler;
 
 // =============================================================================
+// CORS Preflight Handler
+// =============================================================================
+
+/// Handle OPTIONS preflight requests for CORS
+pub fn corsPreflightHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    _ = req;
+    res.status = 204;
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin");
+    res.header("Access-Control-Max-Age", "86400");
+}
+
+// =============================================================================
 // Response Format Helpers
 // =============================================================================
 
@@ -305,7 +319,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                     .sqlite_db = sqlite_db,
                     .logger = ctxTui.logger,
                     .session_id = try server.allocator.dupe(u8, session_id),
-                    .message = try server.allocator.dupe(u8, queue_message.?),
+                    .message = try server.allocator.dupe(u8, queue_message orelse ""),
                     .cwd = try server.allocator.dupe(u8, cwd_session orelse ""),
                     .api_key = ctxTui.llm_config.api_key,
                     .model = ctxTui.llm_config.model,

@@ -26,6 +26,23 @@ export interface SessionMessagesResponse {
   next_cursor: string | null;
 }
 
+// =============================================================================
+// Session Creation
+// =============================================================================
+
+export interface CreateSessionRequest {
+  name?: string;
+  session_id?: string;
+  queue_message?: string;
+  cwd_session?: string;
+}
+
+export interface CreateSessionResponse {
+  id: string;
+  name: string;
+  status: string;
+}
+
 // ============================================================================
 // Full-Duplex RPC Schema
 // ============================================================================

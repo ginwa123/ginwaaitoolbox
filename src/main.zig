@@ -229,6 +229,7 @@ pub fn main() !void {
             router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
 
             // Session management endpoints
+            router.options("/api/session", http_handlers.corsPreflightHandler, .{});
             router.post("/api/session", http_handlers.session_create_handler, .{});
             router.get("/api/session", http_handlers.session_list_handler, .{});
             router.get("/api/session/:session_id", http_handlers.session_get_handler, .{});

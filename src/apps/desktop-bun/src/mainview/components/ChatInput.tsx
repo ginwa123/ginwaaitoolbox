@@ -2,6 +2,7 @@ import { type Component, createSignal } from 'solid-js';
 
 interface ChatInputProps {
   onSend?: (message: string) => void;
+  disabled?: boolean;
 }
 
 const ChatInput: Component<ChatInputProps> = (props) => {
@@ -47,6 +48,7 @@ const ChatInput: Component<ChatInputProps> = (props) => {
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
           rows={1}
+          disabled={props.disabled}
           class={`
             w-full
             bg-[#0a0a0a]
@@ -69,14 +71,14 @@ const ChatInput: Component<ChatInputProps> = (props) => {
 
       <button
         onClick={handleSubmit}
-        disabled={!canSend()}
+        disabled={!canSend() || props.disabled}
         class={`
           w-12 h-12
           flex items-center justify-center
           transition-colors
           disabled:opacity-30 disabled:cursor-not-allowed
           ${
-            canSend()
+            canSend() && !props.disabled
               ? 'bg-[#fbbf24] hover:bg-[#fcd34d] active:bg-[#f59e0b] text-[#09090b]'
               : 'bg-[#18181b] text-[#52525b]'
           }
