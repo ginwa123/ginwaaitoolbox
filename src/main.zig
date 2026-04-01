@@ -1,24 +1,18 @@
 const std = @import("std");
 
 const root_mod = @import("nalarcore");
-const agentMod = root_mod.agent;
 const http_server = root_mod.http_server;
 const http_handlers = root_mod.http_handlers;
 const httpz = http_server.httpz;
-const agent = root_mod.agent;
 const ai_workflow = root_mod.ai_workflow;
+const ai_workflow_mod = root_mod.ai_workflow;
 const session_monitor = root_mod.session_monitor;
 const cronjob = root_mod.cronjob;
-const tui_workflow = root_mod.ai_workflow;
-const ai_workflow_mod = root_mod.ai_workflow;
 const sqlite = root_mod.sqlite;
 const migrations = root_mod.migrations;
-const cancellation_registry = root_mod.session.cancellation_registry;
 const activity_registry = root_mod.session.activity_registry;
 const helpers = root_mod.helpers;
 const config = root_mod.config;
-const LlmConfig = config.LlmConfig;
-const kerjabot_get_session = root_mod.kerjabot_get_session;
 
 pub const CommandMessage = struct {
     command_type: []const u8 = "",
@@ -224,174 +218,30 @@ pub fn main() !void {
     var server = http_server.HttpServer.init(parentAllocator, ctxParent, port);
     server.setDb(@ptrCast(&dbSqlite));
 
-    // this is for tui only
-    server.setTUIHandler(struct {
-        fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque) void {
-            std.debug.print("message incoming {s}\n", .{data});
-            const ctxTui = @as(*ai_workflow_mod.ContextIPCTui, @ptrCast(@alignCast(ctx)));
-            const t = parseMessage(allocator, data) catch |err| {
-                std.debug.print("parse error: {}\n", .{err});
-                return;
-            };
-
-            var workflowAsk = ai_workflow.TUIWorkflow.init(ctxTui.db, ctxTui.logger);
-            if (std.mem.eql(u8, t.command_type, "run_llm")) {
-                _ = workflowAsk.run(allocator, t.session_id, t.message, t.cwd_session, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config);
-            }
-            if (std.mem.eql(u8, t.command_type, "get_sessions")) {}
-
-            if (std.mem.eql(u8, t.command_type, "double_escape")) {
-                const sessionId = t.session_id;
-                if (cancellation_registry.get_global_registry()) |registry| {
-                    registry.cancel(sessionId);
-                }
-            }
-
-            if (std.mem.eql(u8, t.command_type, "create_session")) {
-                var session_id_buf: [64]u8 = undefined;
-                const session_id = std.fmt.bufPrint(&session_id_buf, "session_{}", .{std.time.timestamp()}) catch "session_error";
-                var response_buf: [256]u8 = undefined;
-                const response = std.fmt.bufPrint(&response_buf, "{{\"session_id\":\"{s}\"}}", .{session_id}) catch unreachable;
-                if (http_server.getGlobalSseManager()) |sse_manager| {
-                    const event = http_server.SseEvent{
-                        .data = response,
-                    };
-                    sse_manager.sendEvent(session_id, event) catch |err| {
-                        std.debug.print("Failed to send session_created response: {s}\n", .{@errorName(err)});
-                    };
-                }
-            }
-            if (std.mem.eql(u8, t.command_type, "ping")) {
-                var response_buf: [256]u8 = undefined;
-                var response: []const u8 = undefined;
-                if (http_server.getGlobalSseManager()) |sse_manager| {
-                    if (sse_manager.hasSession(t.session_id)) {
-                        response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"connected\":true}}", .{t.session_id}) catch unreachable;
-                    } else {
-                        response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{t.session_id}) catch unreachable;
-                    }
-                } else {
-                    response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{t.session_id}) catch unreachable;
-                }
-                // Send the response back to the TUI via SSE event
-                if (http_server.getGlobalSseManager()) |sse_manager| {
-                    const event = http_server.SseEvent{
-                        .data = response,
-                    };
-                    sse_manager.sendEvent(t.session_id, event) catch |err| {
-                        std.debug.print("Failed to send pong response: {s}\n", .{@errorName(err)});
-                    };
-                }
-            }
-
-            if (std.mem.eql(u8, t.command_type, "compact")) {
-                // Manually trigger compaction for the session
-                var response_buf: [256]u8 = undefined;
-                const response = std.fmt.bufPrint(&response_buf, "{{\"app_type\":\"tui\",\"command_type\":\"compact_ack\",\"session_id\":\"{s}\",\"status\":\"processing\"}}", .{t.session_id}) catch unreachable;
-                if (http_server.getGlobalSseManager()) |sse_manager| {
-                    const event = http_server.SseEvent{
-                        .data = response,
-                    };
-                    sse_manager.sendEvent(t.session_id, event) catch |err| {
-                        std.debug.print("Failed to send compact_ack response: {s}\n", .{@errorName(err)});
-                    };
-                }
-                // Run the compaction workflow in a separate task
-                std.debug.print("[COMPACTION] Manual compaction triggered for session {s}\n", .{t.session_id});
-                var workflow_compact = ai_workflow.TUIWorkflow.init(ctxTui.db, ctxTui.logger);
-                // Run compaction asynchronously - this will send results via SSE
-                // Use the llm_config already loaded in ctxTui
-                _ = std.Thread.spawn(.{}, struct {
-                    fn run(workflow: *ai_workflow.TUIWorkflow, db: *sqlite.SqliteBackend, session_id: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, compaction_kb: usize) void {
-                        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                        defer arena.deinit();
-                        const alloc = arena.allocator();
-                        // Get cwd from session
-                        var cwd_buf: [4096]u8 = undefined;
-                        const cwd = blk: {
-                            const result = kerjabot_get_session.getSession(alloc, db, session_id) catch null;
-                            if (result) |session| {
-                                defer session.deinit(alloc);
-                                if (session.session_dir.len > 0) {
-                                    break :blk std.fmt.bufPrint(&cwd_buf, "{s}", .{session.session_dir}) catch ".";
-                                }
-                            }
-                            break :blk std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";
-                        };
-                        // Create a minimal LlmConfig for the workflow
-                        var llm_cfg = LlmConfig{
-                            .allocator = alloc,
-                            .api_key = api_key,
-                            .model = model,
-                            .base_url = base_url,
-                            .model_compaction_size_kb = compaction_kb,
-                            .mcpServers = null,
-                        };
-                        workflow.run(alloc, session_id, "", cwd, api_key, model, base_url, &llm_cfg);
-                    }
-                }.run, .{ &workflow_compact, ctxTui.db, t.session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb }) catch |err| {
-                    std.debug.print("[COMPACTION] Failed to spawn thread: {s}\n", .{@errorName(err)});
-                };
-            }
-        }
-    }.handler);
-
-    // Set session handler for synchronous session operations (create/get sessions)
-    server.setSessionHandler(struct {
-        fn handler(allocator: std.mem.Allocator, data: []const u8, ctx: ?*anyopaque, res: *httpz.Response) void {
-            std.debug.print("session handler called with: {s}\n", .{data});
-
-            // Note: ctx can be used for database access if needed later
-            _ = ctx;
-
-            // Parse the request body as JSON
-            const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch {
-                res.status = 400;
-                res.body = "{\"error\":\"Invalid JSON\"}";
-                return;
-            };
-            defer parsed.deinit();
-
-            const root = parsed.value.object;
-
-            // Get optional agent_type from request
-            var agent_type: []const u8 = "general";
-            if (root.get("agent_type")) |v| {
-                agent_type = v.string;
-            }
-
-            // Generate session ID
-            var session_id_buf: [64]u8 = undefined;
-            const session_id = std.fmt.bufPrint(&session_id_buf, "session_{}", .{std.time.timestamp()}) catch "session_error";
-
-            // Return JSON response
-            var response_buf: [256]u8 = undefined;
-            const response = std.fmt.bufPrint(&response_buf, "{{\"session_id\":\"{s}\",\"agent_type\":\"{s}\"}}", .{ session_id, agent_type }) catch unreachable;
-
-            res.status = 200;
-            res.body = response;
-
-            std.debug.print("Created session: {s} with agentType: {s}\n", .{ session_id, agent_type });
-        }
-    }.handler);
-
     const HttpRoutes = struct {
         pub fn setup(http_port: u16, router: anytype) !void {
             std.log.info("HTTP server listening on http://127.0.0.1:{d}/", .{http_port});
 
-            // Command endpoint
+            // Command endpoint (generic command handler)
             router.post("/api/command", http_handlers.commandHandler, .{});
 
             // SSE stream endpoint
             router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
 
-            // Session management endpoints (synchronous - returns response directly)
+            // Session management endpoints
             router.post("/api/session", http_handlers.session_create_handler, .{});
             router.get("/api/session", http_handlers.session_list_handler, .{});
-            router.get("/api/session/:session_id", http_handlers.session_get_handler, .{}); // i think this code is not used
+            router.get("/api/session/:session_id", http_handlers.session_get_handler, .{});
             router.get("/api/session/:session_id/messages", http_handlers.session_message_handler, .{});
             router.get("/api/session/exists/:session_id", http_handlers.session_exist_handler, .{});
             router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, .{});
+
+            // Session actions
+            router.post("/api/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
+            router.post("/api/session/:session_id/compact", http_handlers.sessionCompactHandler, .{});
+
+            // LLM workflow endpoint
+            router.post("/api/llm/run", http_handlers.llmRunHandler, .{});
 
             // Ping endpoint - checks if session is connected via SSE
             router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});

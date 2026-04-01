@@ -1,0 +1,50 @@
+// =============================================================================
+// PROMPTS — Unified prompt system
+// =============================================================================
+// Split by purpose:
+//   - core: Universal rules, auto-fix
+//   - agent: Main orchestration directive
+//   - research: Auto-research, tools
+//   - specialized: change_agent rules
+//   - subagent: Sub-agent brief
+//   - execution: Classification, execution, escalation
+//   - memory: Tasks, AGENTS.md, git
+// =============================================================================
+
+pub const core = @import("core.zig");
+pub const agent = @import("agent.zig");
+pub const research = @import("research.zig");
+pub const specialized = @import("specialized.zig");
+pub const subagent = @import("subagent.zig");
+pub const execution = @import("execution.zig");
+pub const memory = @import("memory.zig");
+pub const special = @import("special.zig");
+
+// Re-export for convenience
+pub const UniversalRules = core.UniversalRules;
+pub const PromptAutoFix = core.PromptAutoFix;
+
+pub const Agent = agent.Agent;
+
+pub const Research = research.Research;
+pub const ResearchTriggers = research.ResearchTriggers;
+pub const AvailableTools = research.AvailableTools;
+
+pub const ChangeAgent = specialized.ChangeAgent;
+pub const SpecializationTable = specialized.SpecializationTable;
+
+pub const SubAgentPrompt = subagent.SubAgentPrompt;
+pub const SubAgentBrief = subagent.SubAgentBrief;
+
+pub const Classification = execution.Classification;
+pub const Execution = execution.Execution;
+pub const Escalation = execution.Escalation;
+pub const PlanBlock = execution.PlanBlock;
+
+pub const MemoryPrompt = memory.MemoryPrompt;
+pub const GitPrompt = memory.GitPrompt;
+pub const AgentMdAutoUpdate = memory.AgentMdAutoUpdate;
+pub const TaskManagementPrompt = memory.TaskManagementPrompt;
+
+pub const CompactionAgent = special.CompactionAgent;
+pub const DestroyIdea = special.DestroyIdea;

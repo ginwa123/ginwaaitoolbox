@@ -30,31 +30,30 @@ pub fn sendMessage(app: *App, message: []const u8) !void {
     const cwd = std.process.getCwdAlloc(allocator) catch "";
     const escaped_msg = escapeJsonString(allocator, message);
     const escaped_cwd = escapeJsonString(allocator, cwd);
+    // Use new /api/llm/run endpoint directly
     const json_payload = try std.fmt.allocPrint(allocator,
-        \\{{"app_type":"tui","command_type":"run_llm","session_id":"{s}","content":"{s}","cwd_session":"{s}"}}
+        \\{{"session_id":"{s}","message":"{s}","cwd_session":"{s}"}}
     , .{ app.session_id, escaped_msg, escaped_cwd });
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(allocator, "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(allocator, "POST /api/llm/run HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
 
-/// Send a double_escape command to unregister session from cancellation registry
+/// Send a double_escape command to cancel the session
 pub fn sendDoubleEscapeCommand(app: *App) !void {
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const json_payload = try std.fmt.allocPrint(allocator,
-        \\{{"app_type":"tui","command_type":"double_escape","session_id":"{s}"}}
-    , .{app.session_id});
+    // Use new /api/session/:session_id/cancel endpoint directly (no body needed)
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(allocator, "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(allocator, "POST /api/session/{s}/cancel HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(sock, request);
 }
 
@@ -64,14 +63,12 @@ pub fn sendSessionsCommand(app: *App) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const json_payload = try std.fmt.allocPrint(allocator,
-        \\{{"app_type":"tui","command_type":"get_sessions"}}
-    , .{});
+    // Use existing /api/session endpoint (GET list)
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(allocator, "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(allocator, "GET /api/session HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n", .{ globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(sock, request);
 }
 
@@ -176,14 +173,12 @@ pub fn sendHistoryCommand(app: App) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const json_payload = try std.fmt.allocPrint(allocator,
-        \\{{"app_type":"tui","command_type":"get_history","session_id":"{s}"}}
-    , .{app.session_id});
+    // Use existing /api/session/:session_id/messages endpoint
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(allocator, "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(allocator, "GET /api/session/{s}/messages HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(sock, request);
 }
 
@@ -193,14 +188,12 @@ pub fn sendCompactCommand(app: *App) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const json_payload = try std.fmt.allocPrint(allocator,
-        \\{{"app_type":"tui","command_type":"compact","session_id":"{s}"}}
-    , .{app.session_id});
+    // Use new /api/session/:session_id/compact endpoint directly (no body needed)
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(allocator, "POST /api/command HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(allocator, "POST /api/session/{s}/compact HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(sock, request);
 }
 

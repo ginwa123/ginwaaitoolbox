@@ -1,6 +1,6 @@
 # AGENT.md — Project Summary
 
-> **Last Updated:** 2025-03-31
+> **Last Updated:** 2025-04-01
 > **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
 
 ---
@@ -45,7 +45,7 @@ zig build test         # Run tests
 
 ```
 src/
-├── main.zig              # HTTP server entry point (402 lines)
+├── main.zig              # HTTP server entry point (257 lines)
 ├── root.zig              # Module exports
 ├── helpers/              # XML parsing, utilities
 ├── modules/
@@ -70,6 +70,7 @@ src/
 - Panic broadcasting to connected TUI clients
 
 ### Agent (`src/modules/agent/`)
+- **Prompts (`prompts/`):** Modular prompts by purpose — core, agent, research, specialized, subagent, execution, memory, special
 - **Tools:** bash, read_file, write_file, text_replace, search, glob, **tree_dir**, LSP tools
 - **write_file:** Tool with `create_with_dir` option for automatic directory creation
 - **Skills/Agents:** list_skill, get_skill, remove_skill, list_agents, change_agent, spawn_sub_agent
@@ -79,9 +80,25 @@ src/
 ### AI Workflow (`src/ai_workflow/tui/`)
 - `workflow.zig` — Main TUI workflow orchestration
 - `session_db.zig` — Session persistence with cursor-based pagination
-- `http_handlers.zig` — HTTP request handlers
+- `http_handlers.zig` — HTTP request handlers (all TUI operations via REST)
 - `/api/session` — Cursor-based pagination: `?limit=20&cursor=<timestamp>` → `{sessions, has_more, next_cursor}`
 - 30+ tool handlers (bash, file ops, search, skills, agents, LSP)
+
+### HTTP API Routes (`HttpRoutes.setup` in `main.zig`)
+| Method | Endpoint | Purpose |
+|--------|----------|--------|
+| POST | `/api/command` | Generic command handler |
+| GET | `/api/stream/:session_id` | SSE real-time events |
+| POST | `/api/session` | Create session |
+| GET | `/api/session` | List sessions |
+| GET | `/api/session/:session_id` | Get session |
+| GET | `/api/session/:session_id/messages` | Get messages |
+| GET | `/api/session/exists/:session_id` | Check session exists |
+| GET | `/api/session/latest` | Get latest by directory |
+| POST | `/api/session/:session_id/cancel` | Cancel session |
+| POST | `/api/session/:session_id/compact` | Trigger compaction |
+| POST | `/api/llm/run` | Run LLM workflow |
+| GET | `/api/ping/:session_id` | Connection health check |
 
 ### Logger (`src/modules/logger/`)
 - Structured logging with timestamps
@@ -122,6 +139,18 @@ src/
 - [.nalar/plans/](.nalar/plans/) — Design documents
 - [docs/superpowers/](docs/superpowers/) — Skills
 
+
+## Prompt Structure
+
+Prompts split by purpose in `src/modules/agent/prompts/`:
+- `core.zig` — Universal rules, auto-fix
+- `agent.zig` — Main orchestration directive
+- `research.zig` — Auto-research, tools
+- `specialized.zig` — change_agent rules
+- `subagent.zig` — Sub-agent brief
+- `execution.zig` — Classification, execution, escalation
+- `memory.zig` — Tasks, AGENTS.md, git
+- `special.zig` — CompactionAgent, DestroyIdea
 
 ## Skills and learning
 

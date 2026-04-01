@@ -3,6 +3,8 @@ const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
 const nalarcore = root_mod;
 const sqlite = nalarcore.sqlite;
+const ai_workflow = nalarcore.ai_workflow;
+const logger = nalarcore.logger;
 
 const kerjabot_create_session = nalarcore.kerjabot_create_session;
 const kerjabot_get_session = nalarcore.kerjabot_get_session;
@@ -12,6 +14,8 @@ const session_helpers = nalarcore.session_helpers;
 const session_db = nalarcore.session_db;
 const session_table = nalarcore.session_table;
 const session_queue_messages = nalarcore.session_queue_messages;
+const config = nalarcore.config;
+const cancellation_registry = nalarcore.session.cancellation_registry;
 
 const httpz = http_server.httpz;
 const SseEvent = http_server.SseEvent;
@@ -182,6 +186,20 @@ const HandlerArgs = struct {
     ctx: ?*anyopaque,
 };
 
+/// Workflow arguments for async LLM execution
+const WorkflowArgs = struct {
+    allocator: std.mem.Allocator,
+    sqlite_db: *sqlite.SqliteBackend,
+    logger: *logger.Logger,
+    session_id: []u8,
+    message: []u8,
+    cwd: []u8,
+    api_key: []const u8,
+    model: []const u8,
+    base_url: []const u8,
+    llm_config: *const config.LlmConfig,
+};
+
 // =============================================================================
 // Session Handlers (TUI)
 // =============================================================================
@@ -210,6 +228,7 @@ fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
 ///   - name: session name (string, defaults to "New Session")
 ///   - session_id: custom session ID (string, optional, auto-generated if not provided)
 ///   - queue_message: initial message to add to session queue (string, optional)
+///   - cwd_session: working directory (string, optional)
 /// Returns JSON with created session info
 pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
@@ -219,6 +238,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     var session_id: []u8 = undefined;
     var session_name: []const u8 = "New Session";
     var queue_message: ?[]const u8 = null;
+    var cwd_session: ?[]const u8 = null;
 
     const body = req.body() orelse "";
 
@@ -260,6 +280,13 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                 queue_message = val.string;
             }
         }
+
+        // Extract cwd_session if provided
+        if (root.get("cwd_session")) |val| {
+            if (val == .string) {
+                cwd_session = val.string;
+            }
+        }
     } else {
         // No body provided, generate session ID
         session_id = try generateSessionId(alloc);
@@ -268,33 +295,52 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     if (http_server.global_server) |server| {
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
-            var session: session_table.SessionInfo = undefined;
+            if (server.ctx) |ctx| {
+                const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
 
-            // Check if session already exists
-            const existing = session_table.get_session(alloc, sqlite_db, session_id) catch null;
-            if (existing) |s| {
-                session = s;
-            } else {
-                session = session_table.create_session(alloc, sqlite_db, session_id, session_name) catch {
-                    res.status = 500;
-                    res.body = "{\"error\":\"Failed to create session\"}";
-                    return;
+                // Spawn workflow in detached thread (fire-and-forget)
+                const workflow_args = try server.allocator.create(WorkflowArgs);
+                workflow_args.* = .{
+                    .allocator = server.allocator,
+                    .sqlite_db = sqlite_db,
+                    .logger = ctxTui.logger,
+                    .session_id = try server.allocator.dupe(u8, session_id),
+                    .message = try server.allocator.dupe(u8, queue_message.?),
+                    .cwd = try server.allocator.dupe(u8, cwd_session orelse ""),
+                    .api_key = ctxTui.llm_config.api_key,
+                    .model = ctxTui.llm_config.model,
+                    .base_url = ctxTui.llm_config.base_url,
+                    .llm_config = ctxTui.llm_config,
                 };
-                defer session.deinit(alloc);
+
+                const thread = try std.Thread.spawn(.{}, struct {
+                    fn run(args: *WorkflowArgs) void {
+                        defer {
+                            args.allocator.free(args.session_id);
+                            args.allocator.free(args.message);
+                            args.allocator.free(args.cwd);
+                            args.allocator.destroy(args);
+                        }
+                        var arena = std.heap.ArenaAllocator.init(args.allocator);
+                        defer arena.deinit();
+                        var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.logger);
+                        workflow.run(
+                            arena.allocator(),
+                            args.session_id,
+                            args.message,
+                            args.cwd,
+                            args.api_key,
+                            args.model,
+                            args.base_url,
+                            args.llm_config,
+                        );
+                    }
+                }.run, .{workflow_args});
+                thread.detach();
             }
 
-            // Create queue message if provided
-            if (queue_message) |msg| {
-                const msg_id = try generateSessionId(alloc);
-                _ = session_queue_messages.create_queue_message(alloc, sqlite_db, msg_id, session_id, msg) catch {
-                    // Log but don't fail - session was created successfully
-                    std.log.err("Failed to create queue message for session {s}", .{session_id});
-                };
-            }
-
-            // Return created session info
             res.status = 201;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\"}}", .{ session.id, session.name, session.status });
+            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\"}}", .{ session_id, session_name, "send" });
             return;
         }
     }
@@ -544,6 +590,222 @@ pub fn ping_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reques
             res.body = try std.fmt.allocPrint(req.arena, "{{\"app_type\":\"tui\",\"command_type\":\"pong\",\"session_id\":\"{s}\",\"reconnect\":true}}", .{session_id});
         }
         return;
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server not initialized\"}";
+}
+
+// =============================================================================
+// LLM Run Handler (TUI)
+// =============================================================================
+
+/// Run LLM workflow for a session
+/// Request body (JSON):
+///   - session_id: session ID (required)
+///   - message: message to process (required)
+///   - cwd_session: working directory (optional)
+/// Returns JSON with accepted status
+pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    const alloc = req.arena;
+    res.content_type = .JSON;
+
+    const body = req.body() orelse "";
+    if (body.len == 0) {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing request body\"}";
+        return;
+    }
+
+    // Parse JSON body
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
+        res.status = 400;
+        res.body = "{\"error\":\"Invalid JSON\"}";
+        return;
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value.object;
+
+    const session_id = root.get("session_id") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing session_id\"}";
+        return;
+    };
+    if (session_id != .string) {
+        res.status = 400;
+        res.body = "{\"error\":\"session_id must be a string\"}";
+        return;
+    }
+
+    const message = root.get("message") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing message\"}";
+        return;
+    };
+    if (message != .string) {
+        res.status = 400;
+        res.body = "{\"error\":\"message must be a string\"}";
+        return;
+    }
+
+    const cwd_session = if (root.get("cwd_session")) |v| if (v == .string) v.string else "" else "";
+
+    if (http_server.global_server) |server| {
+        if (server.db) |db| {
+            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+            if (server.ctx) |ctx| {
+                const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+
+                // Spawn workflow in detached thread
+                const workflow_args = try server.allocator.create(WorkflowArgs);
+                workflow_args.* = .{
+                    .allocator = server.allocator,
+                    .sqlite_db = sqlite_db,
+                    .logger = ctxTui.logger,
+                    .session_id = try server.allocator.dupe(u8, session_id.string),
+                    .message = try server.allocator.dupe(u8, message.string),
+                    .cwd = try server.allocator.dupe(u8, cwd_session),
+                    .api_key = ctxTui.llm_config.api_key,
+                    .model = ctxTui.llm_config.model,
+                    .base_url = ctxTui.llm_config.base_url,
+                    .llm_config = ctxTui.llm_config,
+                };
+
+                const thread = try std.Thread.spawn(.{}, struct {
+                    fn run(args: *WorkflowArgs) void {
+                        defer {
+                            args.allocator.free(args.session_id);
+                            args.allocator.free(args.message);
+                            args.allocator.free(args.cwd);
+                            args.allocator.destroy(args);
+                        }
+                        var arena = std.heap.ArenaAllocator.init(args.allocator);
+                        defer arena.deinit();
+                        var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.logger);
+                        workflow.run(
+                            arena.allocator(),
+                            args.session_id,
+                            args.message,
+                            args.cwd,
+                            args.api_key,
+                            args.model,
+                            args.base_url,
+                            args.llm_config,
+                        );
+                    }
+                }.run, .{workflow_args});
+                thread.detach();
+
+                res.status = 202;
+                res.body = try std.fmt.allocPrint(alloc, "{{\"status\":\"processing\",\"session_id\":\"{s}\"}}", .{session_id.string});
+                return;
+            }
+        }
+    }
+    res.status = 500;
+    res.body = "{\"error\":\"Server not initialized\"}";
+}
+
+// =============================================================================
+// Session Cancel Handler (TUI)
+// =============================================================================
+
+/// Cancel an active session
+/// Path param: session_id
+/// Returns JSON with cancelled status
+pub fn sessionCancelHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    res.content_type = .JSON;
+    const session_id = req.param("session_id") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing session_id\"}";
+        return;
+    };
+
+    if (cancellation_registry.get_global_registry()) |registry| {
+        registry.cancel(session_id);
+        res.status = 200;
+        res.body = try std.fmt.allocPrint(req.arena, "{{\"status\":\"cancelled\",\"session_id\":\"{s}\"}}", .{session_id});
+        return;
+    }
+
+    res.status = 500;
+    res.body = "{\"error\":\"Cancellation registry not available\"}";
+}
+
+// =============================================================================
+// Session Compact Handler (TUI)
+// =============================================================================
+
+/// Trigger session compaction
+/// Path param: session_id
+/// Returns JSON with processing status
+pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    const alloc = req.arena;
+    res.content_type = .JSON;
+    const session_id = req.param("session_id") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"Missing session_id\"}";
+        return;
+    };
+
+    // Send initial acknowledgment via SSE
+    if (http_server.getGlobalSseManager()) |sse_manager| {
+        const ack_response = try std.fmt.allocPrint(alloc, "{{\"app_type\":\"tui\",\"command_type\":\"compact_ack\",\"session_id\":\"{s}\",\"status\":\"processing\"}}", .{session_id});
+        const event = http_server.SseEvent{ .data = ack_response };
+        sse_manager.sendEvent(session_id, event) catch {
+            std.debug.print("Failed to send compact_ack response: SSE error\n", .{});
+        };
+    }
+
+    // Run compaction in a separate thread
+    if (http_server.global_server) |server| {
+        if (server.db) |db| {
+            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+            if (server.ctx) |ctx| {
+                const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+
+                std.debug.print("[COMPACTION] Manual compaction triggered for session {s}\n", .{session_id});
+
+                const thread = try std.Thread.spawn(.{}, struct {
+                    fn run(sqliteDb: *sqlite.SqliteBackend, sessId: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, compaction_kb: usize, threadAlloc: std.mem.Allocator, loggerPtr: *logger.Logger) void {
+                        var arena = std.heap.ArenaAllocator.init(threadAlloc);
+                        defer arena.deinit();
+                        const threadAlloc2 = arena.allocator();
+
+                        // Get cwd from session
+                        var cwd_buf: [4096]u8 = undefined;
+                        const cwd = blk: {
+                            const result = kerjabot_get_session.getSession(threadAlloc2, sqliteDb, sessId) catch null;
+                            if (result) |session| {
+                                defer session.deinit(threadAlloc2);
+                                if (session.session_dir.len > 0) {
+                                    break :blk std.fmt.bufPrint(&cwd_buf, "{s}", .{session.session_dir}) catch ".";
+                                }
+                            }
+                            break :blk std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";
+                        };
+
+                        // Create LlmConfig for the workflow
+                        var llm_cfg = config.LlmConfig{
+                            .allocator = threadAlloc2,
+                            .api_key = api_key,
+                            .model = model,
+                            .base_url = base_url,
+                            .model_compaction_size_kb = compaction_kb,
+                            .mcpServers = null,
+                        };
+
+                        var workflow = ai_workflow.TUIWorkflow.init(sqliteDb, loggerPtr);
+                        workflow.run(threadAlloc2, sessId, "", cwd, api_key, model, base_url, &llm_cfg);
+                    }
+                }.run, .{ sqlite_db, session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb, server.allocator, ctxTui.logger });
+                thread.detach();
+
+                res.status = 202;
+                res.body = try std.fmt.allocPrint(alloc, "{{\"status\":\"processing\",\"session_id\":\"{s}\"}}", .{session_id});
+                return;
+            }
+        }
     }
     res.status = 500;
     res.body = "{\"error\":\"Server not initialized\"}";
