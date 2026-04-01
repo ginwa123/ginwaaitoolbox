@@ -16,6 +16,9 @@ import { baseUrl } from '../utils/baseUrl';
 import { SSEClient, type SSEMessage } from '../utils/sseClient';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
 
+// Shared SSE client for all session chat instances
+const sharedSseClient = new SSEClient(baseUrl());
+
 interface SessionInfo {
   session_id: string;
   session_dir: string;
@@ -118,9 +121,6 @@ const SessionChat: Component = () => {
   let scrollRef: HTMLDivElement | undefined;
   const [streaming, setStreaming] = createSignal(false);
 
-  // SSE client for real-time updates
-  let sseClient: SSEClient | null = null;
-
   // Check if this is a "new" session placeholder
   const isNewSession = () => params.sessionId === 'new';
 
@@ -181,51 +181,74 @@ const SessionChat: Component = () => {
   console.log('[SessionChat] messagesQuery:', messagesQuery);
   console.log('[SessionChat] allMessages:', allMessages());
 
-  // Connect to SSE stream when session is loaded
+  // Shared SSE handler reference for cleanup
+  let currentHandler: ((event: SSEMessage) => void) | null = null;
+
+  // Connect to SSE stream when session changes - using shared client for proper session switching
   createEffect(() => {
     const sessionId = params.sessionId;
-    if (sessionId && sessionId !== 'new') {
+
+    // If no valid session, disconnect
+    if (!sessionId || sessionId === 'new') {
+      console.log('[SessionChat] No valid session, disconnecting SSE');
+      sharedSseClient.disconnectWithNotification();
+      setStreaming(false);
+      return;
+    }
+
+    // Session switching: disconnect from previous session first
+    const currentSessionId = sharedSseClient.getSessionId();
+    if (currentSessionId && currentSessionId !== sessionId) {
+      console.log('[SessionChat] Switching sessions:', currentSessionId, '->', sessionId);
+      sharedSseClient.disconnectWithNotification();
+      // Small delay to ensure clean disconnect before reconnect
+      setTimeout(() => connectToSession(sessionId), 100);
+    } else if (!currentSessionId) {
+      // No current connection, connect
       console.log('[SessionChat] Connecting to SSE stream for session:', sessionId);
+      connectToSession(sessionId);
+    } else {
+      // Same session, already connected
+      console.log('[SessionChat] Already connected to session:', sessionId);
+    }
 
-      // Create SSE client
-      sseClient = new SSEClient(baseUrl());
+    function connectToSession(sid: string) {
+      // Remove old handler if exists
+      if (currentHandler) {
+        sharedSseClient.removeHandler(currentHandler);
+        currentHandler = null;
+      }
 
-      // Handle SSE events - invalidate messages query to refresh
-      sseClient.addHandler((event: SSEMessage) => {
+      // Create new handler for this session
+      currentHandler = (event: SSEMessage) => {
         console.log('[SessionChat] SSE event received:', event);
         setStreaming(true);
 
         // Refresh messages on any event
         if (event.type === 'done' || event.type === 'step' || event.type === 'message') {
-          queryClient.invalidateQueries({ queryKey: ['session-messages', sessionId] });
+          queryClient.invalidateQueries({ queryKey: ['session-messages', sid] });
         }
 
         // Stop streaming indicator on done
         if (event.type === 'done') {
           setStreaming(false);
         }
-      });
+      };
 
-      // Connect to the stream
-      sseClient.connect(sessionId);
+      sharedSseClient.addHandler(currentHandler);
+      sharedSseClient.connect(sid);
     }
-
-    // Cleanup SSE connection on session change
-    return () => {
-      if (sseClient) {
-        sseClient.disconnect();
-        sseClient = null;
-        setStreaming(false);
-      }
-    };
   });
 
-  // Cleanup on component unmount
+  // Cleanup on component unmount - disconnect SSE and notify server
   onCleanup(() => {
-    if (sseClient) {
-      sseClient.disconnect();
-      sseClient = null;
+    console.log('[SessionChat] Component unmounting, disconnecting SSE');
+    if (currentHandler) {
+      sharedSseClient.removeHandler(currentHandler);
+      currentHandler = null;
     }
+    sharedSseClient.disconnectWithNotification();
+    setStreaming(false);
   });
 
   // Scroll to bottom when messages change

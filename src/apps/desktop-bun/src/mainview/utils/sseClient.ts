@@ -28,6 +28,38 @@ export class SSEClient {
     this.baseUrl = baseUrl;
   }
 
+  /**
+   * Check if currently connected to a session
+   */
+  isConnected(): boolean {
+    return this.eventSource !== null && this.sessionId !== null;
+  }
+
+  /**
+   * Get the current session ID
+   */
+  getSessionId(): string | null {
+    return this.sessionId;
+  }
+
+  /**
+   * Disconnect and notify server to clean up SSE connection
+   */
+  async disconnectWithNotification(): Promise<void> {
+    if (this.sessionId) {
+      console.log('[SSEClient] Notifying server of disconnect:', this.sessionId);
+      try {
+        await fetch(`${this.baseUrl}/api/stream/${encodeURIComponent(this.sessionId)}/disconnect`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(2000),
+        });
+      } catch (err) {
+        console.warn('[SSEClient] Failed to notify server of disconnect:', err);
+      }
+    }
+    this.disconnect();
+  }
+
   connect(sessionId: string): void {
     this.disconnect();
     this.sessionId = sessionId;

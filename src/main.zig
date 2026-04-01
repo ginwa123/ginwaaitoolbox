@@ -227,6 +227,7 @@ pub fn main() !void {
 
             // SSE stream endpoint
             router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
+            router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
 
             // Session management endpoints
             router.options("/api/session", http_handlers.corsPreflightHandler, .{});
