@@ -1,5 +1,5 @@
-import { useNavigate, useParams } from '@solidjs/router';
-import { createInfiniteQuery } from '@tanstack/solid-query';
+import { useParams } from '@solidjs/router';
+import { createInfiniteQuery, useQueryClient } from '@tanstack/solid-query';
 import {
   type Component,
   For,
@@ -8,10 +8,12 @@ import {
   createMemo,
   createResource,
   createSignal,
+  onCleanup,
 } from 'solid-js';
-import { type ChatMessage, SessionMessagesResponse, type CreateSessionResponse } from '../../shared/rpc';
+import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
 import ChatInput from '../components/ChatInput';
 import { baseUrl } from '../utils/baseUrl';
+import { SSEClient, type SSEMessage } from '../utils/sseClient';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
 
 interface SessionInfo {
@@ -112,51 +114,15 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
 
 const SessionChat: Component = () => {
   const params = useParams<{ sessionId: string }>();
-  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   let scrollRef: HTMLDivElement | undefined;
-  const [sending, setSending] = createSignal(false);
+  const [streaming, setStreaming] = createSignal(false);
+
+  // SSE client for real-time updates
+  let sseClient: SSEClient | null = null;
 
   // Check if this is a "new" session placeholder
   const isNewSession = () => params.sessionId === 'new';
-
-  // Create session when user sends first message
-  const createSessionAndSend = async (message: string) => {
-    if (sending()) return;
-    setSending(true);
-
-    try {
-      // 1. Create session
-      const res = await fetch(`${baseUrl()}/api/session`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ queue_message: message }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to create session: ${res.status}`);
-      }
-
-      const data = (await res.json()) as CreateSessionResponse;
-      console.log('[SessionChat] Created session:', data);
-
-      // 2. Navigate to the new session
-      navigate(`/session/${data.id}`, { replace: true });
-    } catch (err) {
-      console.error('[SessionChat] Failed to create session:', err);
-      alert(`Failed to create session: ${err}`);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleSend = (msg: string) => {
-    if (isNewSession()) {
-      createSessionAndSend(msg);
-    } else {
-      console.log('Send:', msg);
-      // TODO: Call POST /api/llm/run to send message to existing session
-    }
-  };
 
   const [sessionInfo] = createResource(
     () => params.sessionId,
@@ -205,7 +171,7 @@ const SessionChat: Component = () => {
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage: SessionMessagesResponse) => lastPage.next_cursor ?? undefined,
-    enabled: !!params.sessionId,
+    enabled: !!params.sessionId && params.sessionId !== 'new',
     staleTime: 0,
   }));
 
@@ -214,6 +180,53 @@ const SessionChat: Component = () => {
 
   console.log('[SessionChat] messagesQuery:', messagesQuery);
   console.log('[SessionChat] allMessages:', allMessages());
+
+  // Connect to SSE stream when session is loaded
+  createEffect(() => {
+    const sessionId = params.sessionId;
+    if (sessionId && sessionId !== 'new') {
+      console.log('[SessionChat] Connecting to SSE stream for session:', sessionId);
+
+      // Create SSE client
+      sseClient = new SSEClient(baseUrl());
+
+      // Handle SSE events - invalidate messages query to refresh
+      sseClient.addHandler((event: SSEMessage) => {
+        console.log('[SessionChat] SSE event received:', event);
+        setStreaming(true);
+
+        // Refresh messages on any event
+        if (event.type === 'done' || event.type === 'step' || event.type === 'message') {
+          queryClient.invalidateQueries({ queryKey: ['session-messages', sessionId] });
+        }
+
+        // Stop streaming indicator on done
+        if (event.type === 'done') {
+          setStreaming(false);
+        }
+      });
+
+      // Connect to the stream
+      sseClient.connect(sessionId);
+    }
+
+    // Cleanup SSE connection on session change
+    return () => {
+      if (sseClient) {
+        sseClient.disconnect();
+        sseClient = null;
+        setStreaming(false);
+      }
+    };
+  });
+
+  // Cleanup on component unmount
+  onCleanup(() => {
+    if (sseClient) {
+      sseClient.disconnect();
+      sseClient = null;
+    }
+  });
 
   // Scroll to bottom when messages change
   createEffect(() => {
@@ -289,6 +302,10 @@ const SessionChat: Component = () => {
                   <span>
                     ID: <span class="text-[#71717a]">{sessionId()}</span>...
                   </span>
+                </Show>
+                <Show when={streaming()}>
+                  <span class="text-[#34d399]">●</span>
+                  <span class="text-[#34d399]">Streaming</span>
                 </Show>
               </Show>
               <Show when={isNewSession()}>
@@ -369,7 +386,7 @@ const SessionChat: Component = () => {
 
       {/* Chat Input */}
       <div class="flex-shrink-0 pt-4">
-        <ChatInput onSend={handleSend} disabled={sending()} />
+        <ChatInput sessionId={params.sessionId !== 'new' ? params.sessionId : undefined} />
       </div>
     </div>
   );

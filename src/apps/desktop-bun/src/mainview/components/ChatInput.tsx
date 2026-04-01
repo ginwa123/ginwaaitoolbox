@@ -1,103 +1,89 @@
 import { type Component, createSignal } from 'solid-js';
+import { useNavigate } from '@solidjs/router';
+import { refreshSessionList } from '../store/sessionStore';
 
 interface ChatInputProps {
-  onSend?: (message: string) => void;
-  disabled?: boolean;
+  sessionId?: string; // If provided, sends to existing session via /api/llm/run
 }
 
 const ChatInput: Component<ChatInputProps> = (props) => {
-  const [message, setMessage] = createSignal('');
-  let textareaRef: HTMLTextAreaElement | undefined;
+  const navigate = useNavigate();
+  const [text, setText] = createSignal('');
+  const [sending, setSending] = createSignal(false);
 
-  const handleSubmit = () => {
-    const text = message().trim();
-    if (!text) return;
-    props.onSend?.(text);
-    setMessage('');
-    if (textareaRef) {
-      textareaRef.style.height = 'auto';
+  const handleSend = async () => {
+    const msg = text().trim();
+    if (!msg || sending()) return;
+    
+    setSending(true);
+    
+    try {
+      if (props.sessionId) {
+        // Send to existing session via /api/llm/run
+        const res = await fetch('http://127.0.0.1:8080/api/llm/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            session_id: props.sessionId,
+            message: msg 
+          }),
+        });
+        
+        if (res.ok) {
+          console.log('[ChatInput] Message sent to session:', props.sessionId);
+          setText('');
+          // Trigger SSE refresh by navigating (or we could use a different mechanism)
+          window.location.reload();
+        } else {
+          console.error('[ChatInput] Error:', await res.text());
+        }
+      } else {
+        // Create new session via /api/session
+        const res = await fetch('http://127.0.0.1:8080/api/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ queue_message: msg }),
+        });
+        
+        if (res.ok) {
+          const data = await res.json();
+          console.log('[ChatInput] Session created:', data);
+          setText('');
+          // Refresh session list in sidebar
+          refreshSessionList();
+          // Navigate to the new session
+          navigate(`/session/${data.id}`, { replace: true });
+        } else {
+          console.error('[ChatInput] Error:', await res.text());
+        }
+      }
+    } catch (err) {
+      console.error('[ChatInput] Network error:', err);
+    } finally {
+      setSending(false);
     }
   };
-
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
-    }
-  };
-
-  const handleInput = () => {
-    if (textareaRef) {
-      textareaRef.style.height = 'auto';
-      textareaRef.style.height = `${Math.min(textareaRef.scrollHeight, 96)}px`;
-    }
-  };
-
-  const canSend = () => message().trim().length > 0;
 
   return (
-    <div class="flex items-end gap-3 pt-4 bg-[#050505] border-t border-[#18181b]">
-      <div class="flex-1 relative">
-        <textarea
-          ref={textareaRef}
-          value={message()}
-          onInput={(e) => {
-            setMessage(e.currentTarget.value);
-            handleInput();
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder="Type a message..."
-          rows={1}
-          disabled={props.disabled}
-          class={`
-            w-full
-            bg-[#0a0a0a]
-            border border-[#27272a]
-            px-4 py-3
-            text-[13px] text-[#e4e4e7]
-            font-mono
-            placeholder:text-[#52525b]
-            resize-none
-            outline-none
-            transition-colors
-            focus:border-[#fbbf24]
-            disabled:opacity-50
-            disabled:cursor-not-allowed
-            max-h-24
-          `}
-          style={{ 'min-height': '48px', 'max-height': '96px' }}
-        />
-      </div>
-
-      <button
-        onClick={handleSubmit}
-        disabled={!canSend() || props.disabled}
-        class={`
-          w-12 h-12
-          flex items-center justify-center
-          transition-colors
-          disabled:opacity-30 disabled:cursor-not-allowed
-          ${
-            canSend() && !props.disabled
-              ? 'bg-[#fbbf24] hover:bg-[#fcd34d] active:bg-[#f59e0b] text-[#09090b]'
-              : 'bg-[#18181b] text-[#52525b]'
+    <div class="flex items-end gap-3 pt-4 bg-[#050505] border-t border-[#18181b] p-4">
+      <input
+        type="text"
+        value={text()}
+        onInput={(e) => setText(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && text().trim() && !sending()) {
+            handleSend();
           }
-        `}
-        title="Send message"
+        }}
+        placeholder={props.sessionId ? "Type a message..." : "Type a message to start..."}
+        class="flex-1 bg-[#0a0a0a] border border-[#27272a] px-4 py-3 text-[13px] text-[#e4e4e7] font-mono outline-none focus:border-[#fbbf24]"
+      />
+      <button
+        onClick={handleSend}
+        disabled={sending()}
+        class={`px-6 py-3 font-bold ${sending() ? 'bg-[#52525b] text-[#27272a]' : 'bg-[#fbbf24] text-[#09090b] hover:bg-[#fcd34d]'}`}
       >
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.5"
-          stroke-linecap="square"
-          stroke-linejoin="miter"
-        >
-          <line x1="22" y1="2" x2="11" y2="13" />
-          <polygon points="22 2 15 22 11 13 2 9 22 2" />
-        </svg>
+        {sending() ? '...' : 'SEND'}
       </button>
     </div>
   );

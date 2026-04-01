@@ -117,11 +117,21 @@ src/
 - **List sessions:** `GET /api/session` — infinite scroll with cursor pagination
 - **Session chat:** `GET /api/session/:session_id/messages` — loads messages with infinite scroll
 - **Run workflow:** `POST /api/llm/run` — sends message to agent
+- **SSE streaming:** `GET /api/stream/:session_id` — real-time updates via SSE (`sseClient.ts`)
+- **cwd_session:** Current working directory sent via RPC from Bun to webview, then to Zig backend
 - Port passed via RPC from Bun to webview
+
+**RPC Schema (`src/shared/rpc.ts`):**
+- `getCwd`: Returns Bun's current working directory (used by webview to send cwd_session)
+
+**SSE Client (`src/mainview/utils/sseClient.ts`):**
+- Connects to `/api/stream/:session_id` for real-time updates
+- Event types: `message`, `tool_result`, `status`, `error`, `done`, `step`, `ping`
+- Auto-reconnect on connection loss
 
 **Run desktop app:**
 ```bash
-cd src/apps/desktop-bun && bun run src/index.ts
+cd src/apps/desktop-bun && bun run src/bun/index.ts
 ```
 
 ## Important Conventions
@@ -166,10 +176,21 @@ Prompts split by purpose in `src/modules/agent/prompts/`:
 - `memory.zig` — Tasks, AGENTS.md, git
 - `special.zig` — CompactionAgent, DestroyIdea
 
-## Skills and learning
+## Skills — Force Multipliers
 
-- always use skills frontend-design
-- always use skills zig-expert
+**Skills are specialized knowledge packs that dramatically improve effectiveness.**
+**ALWAYS load relevant skills BEFORE starting any task.**
+
+### Quick Commands
+- `list_skills` — **Browse all available skills** — use this to discover capabilities!
+- `get_skill("skill_name")` — **Load a skill** — use for specialized work
+
+### ⚡ How to Use Skills
+1. **Don't know what skills exist?** → `list_skills` to browse them all
+2. **Need guidance for a task?** → `get_skill("relevant_skill")` to load it
+3. **Doing unfamiliar work?** → `list_skills` first, then load what fits
+
+**Rule:** Let the LLM discover and choose skills with `list_skills`. Don't hardcode skill names.
 
 ## Agent Prompt — change_agent Rule
 

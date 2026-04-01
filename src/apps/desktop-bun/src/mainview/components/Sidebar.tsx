@@ -1,6 +1,7 @@
 import { useNavigate } from '@solidjs/router';
-import { type Component, For, createSignal, onCleanup, onMount } from 'solid-js';
+import { type Component, For, createSignal, onCleanup, onMount, createEffect } from 'solid-js';
 import { baseUrl, initBaseUrl } from '../utils/baseUrl';
+import { getSessionListVersion } from '../store/sessionStore';
 
 // =============================================================================
 // Types
@@ -14,19 +15,6 @@ interface Session {
   session_name: string;
 }
 
-interface CreateSessionRequest {
-  name?: string;
-  session_id?: string;
-  queue_message?: string;
-  cwd_session?: string;
-}
-
-interface CreateSessionResponse {
-  id: string;
-  name: string;
-  status: string;
-}
-
 const Sidebar: Component = () => {
   const [sessions, setSessions] = createSignal<Session[]>([]);
   const [loading, setLoading] = createSignal(true);
@@ -36,13 +24,24 @@ const Sidebar: Component = () => {
   const [loadingMore, setLoadingMore] = createSignal(false);
   const [nextCursor, setNextCursor] = createSignal<string | null>(null);
   const navigate = useNavigate();
-  const [creatingSession, setCreatingSession] = createSignal(false);
+  const sessionListVersion = getSessionListVersion;
 
   // Refs for DOM elements
   let scrollContainerRef: HTMLDivElement | undefined;
   let sentinelRef: HTMLDivElement | undefined;
   let observer: IntersectionObserver | undefined;
   let initialized = false;
+
+  // Refresh when session list version changes (new session created)
+  createEffect(() => {
+    const version = sessionListVersion();
+    console.log('[Sidebar] Session list version changed:', version);
+    // Reset and reload sessions
+    setSessions([]);
+    setNextCursor(null);
+    setHasMore(true);
+    fetchSessions();
+  });
 
   // Callback ref pattern for sentinel - more reliable than let ref
   const setSentinelRef = (el: HTMLDivElement | null) => {

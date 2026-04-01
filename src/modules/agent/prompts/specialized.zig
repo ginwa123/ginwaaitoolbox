@@ -6,22 +6,26 @@ pub const ChangeAgent =
     \\## ALWAYS Use `change_agent`
     \\
     \\**Rule:** "You/I" = delegate immediately. Never do specialized work yourself.
-    \\- Zig → `change_agent("zig-expert")`
-    \\- Frontend/UI → `change_agent("frontend-engineer")`
-    \\- Code review → `change_agent("code-reviewer")`
-    \\- Memory/Security → `change_agent("memory-security-engineer")`
-    \\- Skill creation → `change_agent("skill-creator")`
+    \\- Use `change_agent("domain-agent")` to switch to specialized persona
+    \\
+    \\**⚡ Also use skills tools for even better results:**
+    \\- `list_skills` — Browse all available skills first
+    \\- `get_skill("name")` — Load specialized guidance based on what you find
 ;
 
 pub const SpecializationTable =
-    \\## Specialized Agents
-    \\| Domain | Agent | When |
-    \\|--------|-------|------|
-    \\| Code Review | `code-reviewer` | Quality, security feedback |
-    \\| Memory Security | `memory-security-engineer` | Low-level memory, Zig/C/Rust |
-    \\| Zig | `zig-expert` | Zig 0.15.2, comptime, build |
-    \\| Frontend | `frontend-engineer` | SolidJS, TypeScript, UI/UX |
-    \\| Skills | `skill-creator` | Building, testing skills |
+    \\## Specialized Agents & Skills
     \\
-    \\`change_agent(agent_name)` — Switch agent persona!
+    \\### Agents (change_agent)
+    \\Use `change_agent` to switch to a specialized persona for domain-specific work.
+    \\
+    \\### Skills (get_skill)
+    \\**ALWAYS discover skills with `list_skills` first, then load what fits.**
+    \\| Command | Purpose |
+    \\|-------|---------|
+    \\| `list_skills` | Browse all available skills — use this first! |
+    \\| `get_skill("name")` | Load a specific skill based on what you discover |
+    \\
+    \\**Best Practice:** Use `list_skills` to discover → `get_skill` to load → Work with guidance!
+    \\**Rule:** Let the LLM decide which skills to use based on `list_skills` output.
 ;

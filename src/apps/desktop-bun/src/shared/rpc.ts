@@ -97,6 +97,12 @@ export type DemoRPCType = {
         params: undefined;
         response: string;
       };
+
+      // Get the current working directory from Bun's main process
+      getCwd: {
+        params: undefined;
+        response: string;
+      };
     };
 
     messages: {

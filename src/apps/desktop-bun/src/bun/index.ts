@@ -107,6 +107,13 @@ const myWebviewRPC = BrowserView.defineRPC<DemoRPCType>({
         console.log(`[Bun] getBackendUrl called, returning: ${BACKEND_URL}`);
         return BACKEND_URL;
       },
+
+      // Get the current working directory from Bun's main process
+      getCwd: () => {
+        const cwd = process.cwd();
+        console.log(`[Bun] getCwd called, returning: ${cwd}`);
+        return cwd;
+      },
     },
 
     // -----------------------------------------------------------------
