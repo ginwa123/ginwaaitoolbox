@@ -116,6 +116,14 @@ export class SSEClient {
     };
   }
 
+  removeHandler(handler: SSEMessageHandler): void {
+    this.handlers = this.handlers.filter((h) => h !== handler);
+  }
+
+  clearHandlers(): void {
+    this.handlers = [];
+  }
+
   private notifyHandlers(event: SSEMessage): void {
     this.handlers.forEach((handler) => {
       try {

@@ -24,6 +24,9 @@ pub const AgentMdAutoUpdate = prompts.AgentMdAutoUpdate;
 pub const TaskManagementPrompt = prompts.TaskManagementPrompt;
 pub const CompactionAgent = prompts.CompactionAgent;
 pub const DestroyIdea = prompts.DestroyIdea;
+pub const SkillsUsage = prompts.SkillsUsage;
+pub const SkillsTriggers = prompts.SkillsTriggers;
+pub const LoadedSkills = prompts.LoadedSkills;
 
 // Legacy exports for backwards compatibility
 pub const BasePrompt = UniversalRules;
@@ -129,6 +132,14 @@ pub fn buildAgentPrompt(
     // Available tools
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, AvailableTools);
+
+    // Skills — MANDATORY usage guide
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, SkillsUsage);
+
+    // Skills triggers — when to load skills
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, SkillsTriggers);
 
     // Change agent rules
     try result.appendSlice(allocator, "\n\n");

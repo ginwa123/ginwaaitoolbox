@@ -141,3 +141,11 @@ pub const SkillsTriggers =
     \\- **Don't know what skill to use?** → `list_skills` first, THEN `get_skill` based on what you find
     \\**Rule: When in doubt, `list_skills` first. Discover → Choose → Load. Skills are free and always improve results.**
 ;
+
+pub const LoadedSkills =
+    \\### Currently Loaded Skills
+    \\
+    \\Skills loaded via get_skill are shown below with full content:
+    \\
+    \\placeholder: No skills loaded yet
+;

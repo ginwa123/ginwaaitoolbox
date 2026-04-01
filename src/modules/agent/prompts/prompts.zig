@@ -31,6 +31,7 @@ pub const ResearchTriggers = research.ResearchTriggers;
 pub const AvailableTools = research.AvailableTools;
 pub const SkillsUsage = research.SkillsUsage;
 pub const SkillsTriggers = research.SkillsTriggers;
+pub const LoadedSkills = research.LoadedSkills;
 
 pub const ChangeAgent = specialized.ChangeAgent;
 pub const SpecializationTable = specialized.SpecializationTable;

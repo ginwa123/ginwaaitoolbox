@@ -18,44 +18,43 @@ const ChatInput: Component<ChatInputProps> = (props) => {
     setSending(true);
     
     try {
+      // Use /api/session for both new and existing sessions
+      // For existing: pass session_id and queue_message
+      // For new: just pass queue_message
+      const body: { session_id?: string; queue_message: string } = {
+        queue_message: msg,
+      };
       if (props.sessionId) {
-        // Send to existing session via /api/llm/run
-        const res = await fetch('http://127.0.0.1:8080/api/llm/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            session_id: props.sessionId,
-            message: msg 
-          }),
-        });
+        body.session_id = props.sessionId;
+      }
+      
+      const res = await fetch('http://127.0.0.1:8080/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        console.log('[ChatInput] Message sent:', data);
+        setText('');
         
-        if (res.ok) {
-          console.log('[ChatInput] Message sent to session:', props.sessionId);
-          setText('');
-          // Trigger SSE refresh by navigating (or we could use a different mechanism)
-          window.location.reload();
+        if (props.sessionId) {
+          // Existing session - refresh sidebar after delay
+          setTimeout(() => {
+            refreshSessionList();
+            console.log('[ChatInput] Sidebar refreshed after delay');
+          }, 1000);
         } else {
-          console.error('[ChatInput] Error:', await res.text());
+          // New session - navigate to it, then refresh sidebar
+          navigate(`/session/${data.id}`, { replace: true });
+          setTimeout(() => {
+            refreshSessionList();
+            console.log('[ChatInput] Sidebar refreshed after delay');
+          }, 1000);
         }
       } else {
-        // Create new session via /api/session
-        const res = await fetch('http://127.0.0.1:8080/api/session', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ queue_message: msg }),
-        });
-        
-        if (res.ok) {
-          const data = await res.json();
-          console.log('[ChatInput] Session created:', data);
-          setText('');
-          // Refresh session list in sidebar
-          refreshSessionList();
-          // Navigate to the new session
-          navigate(`/session/${data.id}`, { replace: true });
-        } else {
-          console.error('[ChatInput] Error:', await res.text());
-        }
+        console.error('[ChatInput] Error:', await res.text());
       }
     } catch (err) {
       console.error('[ChatInput] Network error:', err);

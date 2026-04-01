@@ -41,6 +41,15 @@ zig build test         # Run tests
 
 **Deps:** httpz, libsqlite3, libssl, libcrypto
 
+## Tool Notes
+
+### tree_dir Tool (`src/modules/agent/tools/tree_dir.zig`)
+- Uses `fd` (file discovery) and `stat` to traverse directories
+- **Fixed:** Added proper error handling when `fd` fails (returns error message instead of silent 0 entries)
+- **Fixed:** Improved tree visualization with proper branch indicators (│, ├──, 📁)
+- **Fixed:** Fixed memory leak in error path
+- Uses `/usr/sbin/fd` and `/usr/bin/stat` for file operations
+
 ## Project Structure
 
 ```
