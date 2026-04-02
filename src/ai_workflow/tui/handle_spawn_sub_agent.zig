@@ -246,7 +246,7 @@ pub fn execLspHover(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
 const tool_registry = @import("tool_registry.zig");
 
 /// Execute a tool by name, returning the result
-pub fn executeSubAgentTool(
+pub fn execute_sub_agent_tool(
     allocator: std.mem.Allocator,
     tc: agent.ToolCall,
     db: *sqlite.SqliteBackend,
@@ -259,7 +259,7 @@ pub fn executeSubAgentTool(
     _ = model;
     _ = cwd;
     // Check if it's an MCP tool first (dynamic handling)
-    if (isMCPTool(config, tc.function.name)) {
+    if (is_mcp_tool(config, tc.function.name)) {
         if (logger) |log| {
             const mcp_result = try handle_mcp_tool.handle_mcp_tool_run(allocator, log, tc, config);
             return SubAgentToolResult{ .output = mcp_result };
@@ -310,7 +310,7 @@ pub fn executeSubAgentTool(
 }
 
 /// Check if a tool name is an MCP tool (format: serverName_toolName)
-fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
+fn is_mcp_tool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
     if (config.mcpServers == null) return false;
     // Tool names must start with "mcp_"
     if (!std.mem.startsWith(u8, tool_name, "mcp_")) return false;
@@ -361,7 +361,7 @@ pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
 /// Get all sub-agent tools as a filtered list
 /// If allowed_tools is null, returns all sub-agent tools
 /// Always excludes spawn_sub_agent and set_agent_properties for security
-pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8, mcp_tools: ?[]const tool_models.AgentTool) ![]const tool_models.AgentTool {
+pub fn get_allowed_tools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8, mcp_tools: ?[]const tool_models.AgentTool) ![]const tool_models.AgentTool {
     var result = std.ArrayList(tool_models.AgentTool).empty;
 
     for (tool_registry.SUB_AGENT_TOOL_REGISTRY) |entry| {
@@ -463,7 +463,7 @@ fn run_sub_agent(
     });
 
     // Get tools based on allowed_tools (null = all tools except restricted)
-    const sub_agent_tools = try getAllowedTools(parentAllocator, allowed_tools, mcp_tools);
+    const sub_agent_tools = try get_allowed_tools(parentAllocator, allowed_tools, mcp_tools);
 
     var sub_agent = try agent.Agent.init(parentAllocator, logger);
 
@@ -555,7 +555,7 @@ fn run_sub_agent(
                     for (tcs) |tc| {
                         logger.infoFmt("[SUB_AGENT] Tool: '{s}'", .{tc.function.name}) catch {};
 
-                        const tool_result = executeSubAgentTool(allocator, tc, db, session_id, model, cwd, config, logger) catch |err| blk: {
+                        const tool_result = execute_sub_agent_tool(allocator, tc, db, session_id, model, cwd, config, logger) catch |err| blk: {
                             const msg = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
                                 tc.function.name,
                                 @errorName(err),
@@ -567,14 +567,14 @@ fn run_sub_agent(
                         if (tool_result.skill_save) |info| {
                             SaveSkill(allocator, db, logger, session_id, info.name, info.content) catch |err| {
                                 const err_name = @errorName(err);
-                                logger.errFmt("Error saving skill to database: {s}", .{err_name}) catch {};
+                                logger.errFmt("<error> saving skill to database: {s}</error>", .{err_name}) catch {};
                             };
                         }
 
                         // Auto-save agent if loaded
                         if (tool_result.agent_save) |info| {
                             SaveAgent(allocator, db, logger, session_id, info.name) catch |err| {
-                                logger.errFmt("Error saving agent to database: {s}", .{@errorName(err)}) catch {};
+                                logger.errFmt("<error> saving agent to database: {s}</error>", .{@errorName(err)}) catch {};
                             };
                         }
 
@@ -646,7 +646,7 @@ fn run_sub_agent(
             return try parentAllocator.dupe(u8, content);
         }
     }
-    return try parentAllocator.dupe(u8, "unknown error subagent result, please spawn sub-agent again or just do without sub-agent");
+    return try parentAllocator.dupe(u8, "<error>unknown error subagent result, please spawn sub-agent again or just do without sub-agent</error>");
 }
 
 // ============================================================================
@@ -690,17 +690,14 @@ fn runSubAgentThread(
     defer thread_arena.deinit();
     const thread_alloc = thread_arena.allocator();
 
-    // Create thread-safe config WITHOUT mcpServers to avoid JSON mutex issues
-    // Sub-agents don't need MCP tools, and std.json.Value has internal mutex state
-    // that can cause panics when accessed from multiple threads even after cloning
-    var thread_config = config_mod.LlmConfig{
-        .allocator = thread_alloc,
-        .api_key = llm_api_key,
-        .model = llm_model,
-        .base_url = url,
-        .model_compaction_size_kb = cfg.model_compaction_size_kb,
-        .mcpServers = null, // Sub-agents don't get MCP tools
+    // Create thread-safe config using clone() which deep-clones mcpServers
+    // The clone() method serializes to JSON and parses back for thread safety
+    var thread_config = cfg.clone() catch |err| {
+        log.errFmt("spawn_sub_agent[{}]: failed to clone config for thread: {}", .{ idx, err }) catch {};
+        return;
     };
+    // Update allocator to thread allocator
+    thread_config.allocator = thread_alloc;
 
     const sessionId = std.fmt.allocPrint(thread_alloc, "{}", .{std.time.nanoTimestamp()}) catch |err| {
         log.errFmt("spawn_sub_agent[{}]: failed to generate sessionId: {}", .{ idx, err }) catch {};
