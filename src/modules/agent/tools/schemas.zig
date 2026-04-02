@@ -41,6 +41,7 @@ pub const ReadFileInput = struct {
     offset: ?usize = null,
     limit: ?usize = null,
     show_line_numbers: ?bool = null,
+    hash_only: ?bool = null, // NEW: Only return hash, skip content
 };
 
 // =============================================================================
