@@ -2,6 +2,7 @@ import { useNavigate } from '@solidjs/router';
 import { type Component, For, createSignal, onCleanup, onMount, createEffect } from 'solid-js';
 import { baseUrl, initBaseUrl } from '../utils/baseUrl';
 import { getSessionListVersion } from '../store/sessionStore';
+import { FolderPicker } from './FolderPicker';
 
 // =============================================================================
 // Types
@@ -25,6 +26,10 @@ const Sidebar: Component = () => {
   const [nextCursor, setNextCursor] = createSignal<string | null>(null);
   const navigate = useNavigate();
   const sessionListVersion = getSessionListVersion;
+
+  // Folder picker state
+  const [folderPickerOpen, setFolderPickerOpen] = createSignal(false);
+  const [selectedFolder, setSelectedFolder] = createSignal<string>('/');
 
   // Refs for DOM elements
   let scrollContainerRef: HTMLDivElement | undefined;
@@ -177,9 +182,16 @@ const Sidebar: Component = () => {
     navigate(`/session/${sessionId}`);
   };
 
-  // Just navigate to new session placeholder - session created when user sends message
+  // Just navigate to new session placeholder - session created on first message
   const handleNewSession = () => {
     navigate('/session/new');
+  };
+
+  // Handle folder selection
+  const handleFolderSelect = (path: string) => {
+    console.log('[Sidebar] Folder selected:', path);
+    setSelectedFolder(path);
+    setFolderPickerOpen(false);
   };
 
   return (
@@ -209,6 +221,15 @@ const Sidebar: Component = () => {
             title="New Chat"
           >
             <span class="text-base leading-none">+</span>
+          </button>
+
+          {/* Folder Picker Button */}
+          <button
+            onClick={() => setFolderPickerOpen(true)}
+            class="flex items-center justify-center w-7 h-7 rounded-md bg-[#18181b] hover:bg-[#27272a] border border-[#3f3f46] hover:border-[#fbbf24] text-[#52525b] hover:text-[#fbbf24] transition-all font-mono shadow-sm"
+            title="Pick Folder"
+          >
+            <span class="text-base">📁</span>
           </button>
         </div>
 
@@ -263,6 +284,14 @@ const Sidebar: Component = () => {
           </div>
         )}
       </div>
+
+      {/* Folder Picker Modal */}
+      <FolderPicker
+        isOpen={folderPickerOpen()}
+        initialPath={selectedFolder()}
+        onSelect={handleFolderSelect}
+        onClose={() => setFolderPickerOpen(false)}
+      />
     </aside>
   );
 };

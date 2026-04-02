@@ -12,6 +12,7 @@ import {
 } from 'solid-js';
 import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
 import ChatInput from '../components/ChatInput';
+import { FolderPicker } from '../components/FolderPicker';
 import { baseUrl } from '../utils/baseUrl';
 import { SSEClient, type SSEMessage } from '../utils/sseClient';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
@@ -143,8 +144,28 @@ const SessionChat: Component = () => {
   let scrollRef: HTMLDivElement | undefined;
   const [streaming, setStreaming] = createSignal(false);
 
+  // FolderPicker state
+  const [folderPickerOpen, setFolderPickerOpen] = createSignal(false);
+  const [sessionDir, setSessionDir] = createSignal<string | null>(null);
+
   // Check if this is a "new" session placeholder
   const isNewSession = () => params.sessionId === 'new';
+
+  // Load session directory when sessionInfo changes
+  createEffect(() => {
+    const info = sessionInfo();
+    if (info?.session_dir) {
+      setSessionDir(info.session_dir);
+    }
+  });
+
+  // Handle folder selection
+  const handleFolderSelect = (path: string) => {
+    console.log('[SessionChat] Folder selected:', path);
+    setSessionDir(path);
+    setFolderPickerOpen(false);
+    // TODO: Optionally update session with new directory via API
+  };
 
   const [sessionInfo] = createResource(
     () => params.sessionId,
@@ -439,6 +460,20 @@ const SessionChat: Component = () => {
               </Show>
             </div>
           </div>
+
+          {/* Folder Picker Button */}
+          <Show when={!isNewSession()}>
+            <button
+              onClick={() => setFolderPickerOpen(true)}
+              class="flex items-center gap-2 px-3 py-2 text-xs font-mono uppercase tracking-wider text-[#a1a1aa] bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] hover:border-[#fbbf24] transition-colors"
+              title="Change working directory"
+            >
+              <span class="text-[#fbbf24]">📁</span>
+              <span class="max-w-[200px] truncate">
+                {sessionDir()?.split('/').pop() || 'Select Folder'}
+              </span>
+            </button>
+          </Show>
         </div>
         <div class="border-b-2 border-[#27272a] mt-4" />
       </div>
@@ -512,6 +547,14 @@ const SessionChat: Component = () => {
       <div class="flex-shrink-0 pt-4">
         <ChatInput sessionId={params.sessionId !== 'new' ? params.sessionId : undefined} />
       </div>
+
+      {/* Folder Picker Modal */}
+      <FolderPicker
+        isOpen={folderPickerOpen()}
+        initialPath={sessionDir() || undefined}
+        onSelect={handleFolderSelect}
+        onClose={() => setFolderPickerOpen(false)}
+      />
     </div>
   );
 };

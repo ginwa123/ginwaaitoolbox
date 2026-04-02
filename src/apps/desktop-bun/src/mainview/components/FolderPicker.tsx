@@ -1,5 +1,5 @@
 import { type Component, Show, For, createSignal, createEffect, onCleanup } from 'solid-js';
-import { baseUrl } from '../utils/baseUrl';
+import { electroview } from '../main';
 
 export interface FolderPickerProps {
   isOpen: boolean;
@@ -76,20 +76,15 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${baseUrl()}/api/fs/list?path=${encodeURIComponent(path)}&showHidden=${showHidden()}`
-      );
-      if (res.ok) {
-        const data = await res.json();
-        setEntries(data.entries || []);
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error || `Failed to load directory (${res.status})`);
-        setEntries([]);
-      }
+      // Use Bun RPC instead of HTTP call
+      const entries = await (electroview as any).rpc.request.listDirectory({
+        path,
+        showHidden: showHidden(),
+      });
+      setEntries(entries || []);
     } catch (err) {
       console.error('Failed to fetch directory:', err);
-      setError('Failed to connect to backend');
+      setError('Failed to load directory via RPC');
       setEntries([]);
     }
     setLoading(false);
@@ -158,20 +153,18 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     if (!confirm(`Delete "${target.name}"?`)) return;
 
     try {
-      const res = await fetch(`${baseUrl()}/api/fs/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: target.path }),
+      // Use Bun RPC instead of HTTP call
+      const result = await (electroview as any).rpc.request.deleteFolder({
+        path: target.path,
       });
 
-      if (res.ok) {
+      if (result.success) {
         fetchDirectory(currentPath());
       } else {
-        const data = await res.json();
-        setError(data.error || 'Failed to delete folder');
+        setError(result.error || 'Failed to delete folder');
       }
     } catch (err) {
-      setError('Failed to delete folder');
+      setError('Failed to delete folder via RPC');
     }
 
     setShowContextMenu(false);
@@ -189,38 +182,35 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
 
     try {
       if (editing.type === 'create') {
-        const res = await fetch(`${baseUrl()}/api/fs/create`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: editing.entry.path, name: newName }),
+        // Use Bun RPC instead of HTTP call
+        const result = await (electroview as any).rpc.request.createFolder({
+          path: editing.entry.path,
+          name: newName,
         });
 
-        if (res.ok) {
+        if (result.success) {
           fetchDirectory(currentPath());
         } else {
-          const data = await res.json();
-          setError(data.error || 'Failed to create folder');
+          setError(result.error || 'Failed to create folder');
         }
       } else {
-        const res = await fetch(`${baseUrl()}/api/fs/rename`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ oldPath: editing.entry.path, newName }),
+        // Use Bun RPC instead of HTTP call
+        const result = await (electroview as any).rpc.request.renameFolder({
+          oldPath: editing.entry.path,
+          newName,
         });
 
-        if (res.ok) {
+        if (result.success) {
           fetchDirectory(currentPath());
           if (selectedPath() === editing.entry.path) {
-            const data = await res.json();
-            setSelectedPath(data.newPath);
+            setSelectedPath(result.newPath);
           }
         } else {
-          const data = await res.json();
-          setError(data.error || 'Failed to rename folder');
+          setError(result.error || 'Failed to rename folder');
         }
       }
     } catch (err) {
-      setError('Operation failed');
+      setError('Operation failed via RPC');
     }
 
     setEditingEntry(null);
