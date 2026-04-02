@@ -26,6 +26,15 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
+  // File operation state
+  const [showContextMenu, setShowContextMenu] = createSignal(false);
+  const [contextMenuPosition, setContextMenuPosition] = createSignal({ x: 0, y: 0 });
+  const [contextMenuTarget, setContextMenuTarget] = createSignal<DirectoryEntry | null>(null);
+  const [editingEntry, setEditingEntry] = createSignal<{ entry: DirectoryEntry; type: 'create' | 'rename' } | null>(
+    null
+  );
+  const [editValue, setEditValue] = createSignal('');
+
   const fetchDirectory = async (path: string) => {
     setLoading(true);
     setError(null);
@@ -77,6 +86,112 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     }
   };
 
+  // Context menu handlers
+  const handleContextMenu = (e: MouseEvent, entry: DirectoryEntry) => {
+    e.preventDefault();
+    setContextMenuPosition({ x: e.clientX, y: e.clientY });
+    setContextMenuTarget(entry);
+    setShowContextMenu(true);
+  };
+
+  const handleNewFolder = () => {
+    setEditingEntry({
+      entry: { path: currentPath(), name: '', isDirectory: true } as DirectoryEntry,
+      type: 'create',
+    });
+    setEditValue('');
+    setShowContextMenu(false);
+  };
+
+  const handleRename = () => {
+    const target = contextMenuTarget();
+    if (target) {
+      setEditingEntry({ entry: target, type: 'rename' });
+      setEditValue(target.name);
+    }
+    setShowContextMenu(false);
+  };
+
+  const handleDelete = async () => {
+    const target = contextMenuTarget();
+    if (!target) return;
+
+    if (!confirm(`Delete "${target.name}"?`)) return;
+
+    try {
+      const res = await fetch(`${baseUrl()}/api/fs/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: target.path }),
+      });
+
+      if (res.ok) {
+        fetchDirectory(currentPath());
+      } else {
+        const data = await res.json();
+        setError(data.error || 'Failed to delete folder');
+      }
+    } catch (err) {
+      setError('Failed to delete folder');
+    }
+
+    setShowContextMenu(false);
+  };
+
+  const handleEditSubmit = async () => {
+    const editing = editingEntry();
+    if (!editing) return;
+
+    const newName = editValue().trim();
+    if (!newName) {
+      setEditingEntry(null);
+      return;
+    }
+
+    try {
+      if (editing.type === 'create') {
+        const res = await fetch(`${baseUrl()}/api/fs/create`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: editing.entry.path, name: newName }),
+        });
+
+        if (res.ok) {
+          fetchDirectory(currentPath());
+        } else {
+          const data = await res.json();
+          setError(data.error || 'Failed to create folder');
+        }
+      } else {
+        const res = await fetch(`${baseUrl()}/api/fs/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ oldPath: editing.entry.path, newName }),
+        });
+
+        if (res.ok) {
+          fetchDirectory(currentPath());
+          if (selectedPath() === editing.entry.path) {
+            const data = await res.json();
+            setSelectedPath(data.newPath);
+          }
+        } else {
+          const data = await res.json();
+          setError(data.error || 'Failed to rename folder');
+        }
+      }
+    } catch (err) {
+      setError('Operation failed');
+    }
+
+    setEditingEntry(null);
+  };
+
+  const handleEditCancel = () => {
+    setEditingEntry(null);
+    setError(null);
+  };
+
   // Keyboard navigation
   const handleKeyDown = (e: KeyboardEvent) => {
     const items = entries().filter((e) => e.isDirectory); // Only navigate folders
@@ -104,7 +219,11 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
         break;
       case 'Escape':
         e.preventDefault();
-        props.onClose();
+        if (editingEntry()) {
+          handleEditCancel();
+        } else {
+          props.onClose();
+        }
         break;
     }
   };
@@ -154,18 +273,26 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
             <h2 class="text-sm font-mono font-semibold text-[#fafafa] uppercase tracking-wide">
               Select Folder
             </h2>
-            <label class="flex items-center gap-2 text-xs font-mono text-[#71717a] cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showHidden()}
-                onChange={(e) => {
-                  setShowHidden(e.currentTarget.checked);
-                  fetchDirectory(currentPath());
-                }}
-                class="accent-[#fbbf24]"
-              />
-              Show Hidden
-            </label>
+            <div class="flex items-center gap-4">
+              <button
+                onClick={handleNewFolder}
+                class="px-3 py-1.5 text-xs font-mono text-[#a1a1aa] bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] hover:border-[#fbbf24] transition-colors"
+              >
+                + New Folder
+              </button>
+              <label class="flex items-center gap-2 text-xs font-mono text-[#71717a] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showHidden()}
+                  onChange={(e) => {
+                    setShowHidden(e.currentTarget.checked);
+                    fetchDirectory(currentPath());
+                  }}
+                  class="accent-[#fbbf24]"
+                />
+                Show Hidden
+              </label>
+            </div>
           </div>
 
           {/* Breadcrumb */}
@@ -188,59 +315,126 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
           </div>
 
           {/* Tree Content */}
-          <div class="flex-1 overflow-auto p-4">
-            <Show when={loading()}>
-              <div class="text-center text-[#52525b] text-xs font-mono py-8">
-                Loading...
+          <div class="flex-1 overflow-auto p-4 relative">
+            {/* New folder input at top */}
+            <Show when={editingEntry()?.type === 'create'}>
+              <div class="flex items-center gap-2 px-3 py-2 bg-[#18181b] border border-[#fbbf24] mb-2">
+                <span class="text-[#fbbf24]">📁</span>
+                <input
+                  type="text"
+                  placeholder="New folder name..."
+                  value={editValue()}
+                  onInput={(e) => setEditValue(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleEditSubmit();
+                    if (e.key === 'Escape') handleEditCancel();
+                  }}
+                  onBlur={handleEditSubmit}
+                  autofocus
+                  class="flex-1 bg-transparent text-sm font-mono text-[#e4e4e7] outline-none placeholder:text-[#52525b]"
+                />
               </div>
+            </Show>
+
+            <Show when={loading()}>
+              <div class="text-center text-[#52525b] text-xs font-mono py-8">Loading...</div>
             </Show>
 
             <Show when={error()}>
-              <div class="text-center text-[#ef4444] text-xs font-mono py-8">
-                {error()}
-              </div>
+              <div class="text-center text-[#ef4444] text-xs font-mono py-8">{error()}</div>
             </Show>
 
             <Show when={!loading() && !error() && entries().length === 0}>
-              <div class="text-center text-[#52525b] text-xs font-mono py-8">
-                Empty folder
-              </div>
+              <div class="text-center text-[#52525b] text-xs font-mono py-8">Empty folder</div>
             </Show>
 
             <Show when={!loading() && !error()}>
               <div class="space-y-1">
                 <For each={entries()}>
-                  {(entry, index) => {
-                    const folderIndex = entries()
-                      .slice(0, index())
-                      .filter((e) => e.isDirectory).length;
-                    const isFocused = () => focusedIndex() === folderIndex && entry.isDirectory;
+                  {(entry) => {
+                    const isEditing = () =>
+                      editingEntry()?.entry.path === entry.path && editingEntry()?.type === 'rename';
 
                     return (
-                      <div
-                        onClick={() => handleClick(entry)}
-                        onDblClick={() => handleDoubleClick(entry)}
-                        class={`
-                          flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors
-                          ${
-                            selectedPath() === entry.path
-                              ? 'bg-[#18181b] border border-[#fbbf24]'
-                              : isFocused()
-                                ? 'bg-[#18181b] border border-[#fbbf24]'
-                                : 'border border-transparent hover:bg-[#18181b]'
-                          }
-                          ${!entry.isDirectory ? 'opacity-50' : ''}
-                        `}
+                      <Show
+                        when={isEditing()}
+                        fallback={
+                          <div
+                            onClick={() => handleClick(entry)}
+                            onDblClick={() => handleDoubleClick(entry)}
+                            onContextMenu={(e) => entry.isDirectory && handleContextMenu(e, entry)}
+                            class={`
+                              flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors
+                              ${
+                                selectedPath() === entry.path
+                                  ? 'bg-[#18181b] border border-[#fbbf24]'
+                                  : 'border border-transparent hover:bg-[#18181b]'
+                              }
+                              ${!entry.isDirectory ? 'opacity-50' : ''}
+                            `}
+                          >
+                            <span class="text-[#fbbf24]">
+                              {entry.isDirectory ? '📁' : '📄'}
+                            </span>
+                            <span class="text-sm font-mono text-[#e4e4e7]">{entry.name}</span>
+                          </div>
+                        }
                       >
-                        <span class="text-[#fbbf24]">
-                          {entry.isDirectory ? '📁' : '📄'}
-                        </span>
-                        <span class="text-sm font-mono text-[#e4e4e7]">{entry.name}</span>
-                      </div>
+                        {/* Inline rename input */}
+                        <div class="flex items-center gap-2 px-3 py-2 bg-[#18181b] border border-[#fbbf24]">
+                          <span class="text-[#fbbf24]">📁</span>
+                          <input
+                            type="text"
+                            value={editValue()}
+                            onInput={(e) => setEditValue(e.currentTarget.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleEditSubmit();
+                              if (e.key === 'Escape') handleEditCancel();
+                            }}
+                            onBlur={handleEditSubmit}
+                            autofocus
+                            class="flex-1 bg-transparent text-sm font-mono text-[#e4e4e7] outline-none"
+                          />
+                        </div>
+                      </Show>
                     );
                   }}
                 </For>
               </div>
+            </Show>
+
+            {/* Context Menu */}
+            <Show when={showContextMenu()}>
+              <div
+                class="fixed z-50 bg-[#18181b] border border-[#27272a] py-1 min-w-[160px]"
+                style={`left: ${contextMenuPosition().x}px; top: ${contextMenuPosition().y}px;`}
+              >
+                <button
+                  onClick={handleNewFolder}
+                  class="w-full px-3 py-2 text-left text-xs font-mono text-[#e4e4e7] hover:bg-[#27272a] flex items-center gap-2"
+                >
+                  <span>📁</span> New Folder
+                </button>
+                <Show when={contextMenuTarget()?.isDirectory}>
+                  <button
+                    onClick={handleRename}
+                    class="w-full px-3 py-2 text-left text-xs font-mono text-[#e4e4e7] hover:bg-[#27272a] flex items-center gap-2"
+                  >
+                    <span>✏️</span> Rename
+                  </button>
+                  <button
+                    onClick={handleDelete}
+                    class="w-full px-3 py-2 text-left text-xs font-mono text-[#ef4444] hover:bg-[#27272a] flex items-center gap-2"
+                  >
+                    <span>🗑️</span> Delete
+                  </button>
+                </Show>
+              </div>
+            </Show>
+
+            {/* Close context menu on outside click */}
+            <Show when={showContextMenu()}>
+              <div class="fixed inset-0 z-40" onClick={() => setShowContextMenu(false)} />
             </Show>
           </div>
 

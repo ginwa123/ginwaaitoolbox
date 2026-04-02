@@ -183,4 +183,46 @@ describe('FolderPicker', () => {
     // Should not crash
     expect(true).toBe(true);
   });
+
+  test('shows New Folder button in header', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ entries: [] }),
+    });
+
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+
+    render(() => (
+      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByText('+ New Folder')).toBeDefined();
+    });
+  });
+
+  test('clicking New Folder button shows input field', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ entries: [] }),
+    });
+
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+
+    render(() => (
+      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByText('+ New Folder')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByText('+ New Folder'));
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('New folder name...')).toBeDefined();
+    });
+  });
 });
