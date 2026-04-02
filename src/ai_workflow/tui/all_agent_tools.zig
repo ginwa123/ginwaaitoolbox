@@ -15,6 +15,8 @@ const set_agent_properties = root_mod.set_agent_properties;
 const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
 const tree_dir = root_mod.tree_dir;
 const tools = root_mod.tools;
+const web_search = root_mod.web_search;
+const web_search_help = root_mod.web_search_help;
 
 /// All tools for the main agent
 /// This is the canonical list of tool definitions for the main agent
@@ -38,4 +40,6 @@ pub const all_agent_tools: []const tool_models.AgentTool = &.{
     tools.lsp_workspace_symbol_tool,
     tools.lsp_document_symbol_tool,
     tools.lsp_hover_tool,
+    web_search.web_search_tool,
+    web_search_help.web_search_help_tool,
 };

@@ -99,6 +99,8 @@ fn dispatchByName(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     if (std.mem.eql(u8, name, "lsp_workspace_symbol")) return dispatchLspWorkspaceSymbol(ctx, tool_call);
     if (std.mem.eql(u8, name, "lsp_document_symbol")) return dispatchLspDocumentSymbol(ctx, tool_call);
     if (std.mem.eql(u8, name, "lsp_hover")) return dispatchLspHover(ctx, tool_call);
+    if (std.mem.eql(u8, name, "web_search")) return dispatchWebSearch(ctx, tool_call);
+    if (std.mem.eql(u8, name, "web_search_help")) return dispatchWebSearchHelp(ctx, tool_call);
 
     return error.UnknownTool;
 }
@@ -306,6 +308,18 @@ fn dispatchLspDocumentSymbol(ctx: ToolContext, tool_call: agent.ToolCall) !ToolR
 fn dispatchLspHover(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
     const result = try handle_lsp_hover_tool.handle_lsp_hover_tool_run(ctx.allocator, tool_call);
+    return ToolResult{ .output = result };
+}
+
+fn dispatchWebSearch(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const handle_web_search_tool = @import("handle_web_search_tool.zig");
+    const result = try handle_web_search_tool.runWithContext(ctx.allocator, tool_call, ctx.db, ctx.session_id);
+    return ToolResult{ .output = result };
+}
+
+fn dispatchWebSearchHelp(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const handle_web_search_help_tool = @import("handle_web_search_help_tool.zig");
+    const result = try handle_web_search_help_tool.runWithContext(ctx.allocator, tool_call, ctx.db, ctx.session_id);
     return ToolResult{ .output = result };
 }
 

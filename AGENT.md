@@ -50,6 +50,23 @@ zig build test         # Run tests
 - **Fixed:** Fixed memory leak in error path
 - Uses `/usr/sbin/fd` and `/usr/bin/stat` for file operations
 
+### web_search Tool (`src/modules/agent/tools/web_search.zig`)
+A generic web browser tool using `agent-browser` CLI.
+
+**Parameters:**
+- `query`: Search the web via Google (e.g., "Zig programming language news")
+- `url`: Navigate directly to any URL
+- `action`: Browser action (`open`, `snapshot`, `get`, `click`, `fill`, `press`, `scroll`, `back`, `forward`, `refresh`)
+- `selector`: CSS selector for element operations
+- `args`: Additional arguments for actions
+
+**Examples:**
+- Search: `{query: "Zig programming language"}`
+- Browse URL: `{url: "https://ziglang.org/", action: "open"}`
+- Get content: `{url: "https://example.com", action: "snapshot"}`
+- Click button: `{url: "https://example.com", action: "click", selector: "#submit"}`
+- Fill form: `{url: "https://example.com", action: "fill", selector: "input[name=email]", args: "test@example.com"}`
+
 ## Project Structure
 
 ```

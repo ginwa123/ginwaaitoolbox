@@ -33,6 +33,7 @@ pub const Research =
     \\- Understanding a symbol? → Use `lsp_definition`, `lsp_hover`, `lsp_references`
     \\- Finding files? → Use `glob` (faster than bash find)
     \\- Searching patterns? → Use `search` (ripgrep, faster than bash grep)
+    \\- **Need knowledge from the web?** → Use `web_search` ⭐ (searches google.com)
     \\- Need docs? → Use `mcp_context7_*` tools for latest examples
     \\**Never write code you haven't verified with tools first.**
     \\
@@ -77,10 +78,11 @@ pub const ResearchTriggers =
     \\- **Understanding types/functions?** → `lsp_definition`, `lsp_hover`, `lsp_references`
     \\- **Finding files?** → `glob` — faster and more reliable than bash
     \\- **Searching patterns?** → `search` — ripgrep is faster than grep
-    \\- **Unknown library/API?** → `mcp_context7_*` for latest docs + examples
-    \\- **New language feature?** → look it up with `mcp_context7_*`
-    \\- **Best practices uncertain?** → find current recommendations
-    \\- **Error unfamiliar?** → research error + solution
+    \\- **Need knowledge from the web?** → `web_search` ⭐ (searches google.com)
+    \\- **Unknown library/API?** → `web_search` or `mcp_context7_*` for latest docs + examples
+    \\- **New language feature?** → look it up with `web_search` or `mcp_context7_*`
+    \\- **Best practices uncertain?** → find current recommendations with `web_search`
+    \\- **Error unfamiliar?** → research error + solution with `web_search`
     \\- **About to write code from memory?** → STOP → use tools → verify → write
     \\- **Navigating codebase?** → `tree_dir`, `glob`, `lsp_workspace_symbol`
     \\
@@ -160,11 +162,17 @@ pub const AvailableTools =
     \\- `lsp_workspace_symbol` — search symbols project-wide
     \\- `lsp_document_symbol` — get all symbols in file
     \\
-    \\**External Research:**
+    \\**🌐 WEB SEARCH (PRIMARY RESEARCH):** ⭐
+    \\- `web_search` — Search google.com for ANY knowledge/libraries/answers
+    \\  - Example: `web_search({query: "Zig programming language best practices"})`
+    \\  - Automatically opens Google search and returns results
+    \\  - Use this FIRST when you need to look something up online
+    \\  - Supports: open, snapshot, get, click, fill, press for advanced browsing
+    \\- `web_search_help` — Get agent-browser CLI help
+    \\
+    \\**Library Documentation:**
     \\- `mcp_context7_resolve-library-id` — find library IDs
-    \\- `mcp_context7_query-docs` — query docs with examples
-    \\- `web_search` — browse web pages (open, snapshot, get, click, etc.)
-    \\- `web_search_help` — get agent-browser CLI help
+    \\- `mcp_context7_query-docs` — query library docs with examples
     \\
     \\**Execution & Delegation:**
     \\- `bash` — fallback for complex shell commands
@@ -189,6 +197,7 @@ pub const AvailableTools =
     \\- Need to search text? → `search` (not bash grep)
     \\- Need to explore dirs? → `tree_dir` (not bash ls -R)
     \\- Need to navigate code? → LSP tools (not manual search)
+    \\- **Need knowledge/info from the web?** → `web_search` ⭐ (searches google.com)
     \\- Need to do 2+ things in parallel? → `spawn_sub_agent` (NOT sequential!)
     \\- **Only use `bash` when no tool can do the job.**
 ;
