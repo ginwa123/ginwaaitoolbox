@@ -2,7 +2,7 @@ import { useNavigate } from '@solidjs/router';
 import { type Component, For, createSignal, onCleanup, onMount, createEffect } from 'solid-js';
 import { baseUrl, initBaseUrl } from '../utils/baseUrl';
 import { log } from '../utils/logger';
-import { getSessionListVersion } from '../store/sessionStore';
+import { getSessionListVersion, getSelectedFolder, setSelectedFolderValue } from '../store/sessionStore';
 import { FolderPicker } from './FolderPicker';
 
 // =============================================================================
@@ -28,10 +28,9 @@ const Sidebar: Component = () => {
   const navigate = useNavigate();
   const sessionListVersion = getSessionListVersion;
 
-  // Folder picker state
+  // Folder picker state (modal only - open/close)
   const [folderPickerOpen, setFolderPickerOpen] = createSignal(false);
-  const [selectedFolder, setSelectedFolder] = createSignal<string>('/');
-  // Current session_dir filter (derived from selectedFolder)
+  // Current session_dir filter (derived from shared selectedFolder in sessionStore)
   const [currentSessionDir, setCurrentSessionDir] = createSignal<string | undefined>(undefined);
 
   // Refs for DOM elements
@@ -43,7 +42,7 @@ const Sidebar: Component = () => {
   // Refresh when session list version changes (new session created) OR folder changes
   createEffect(() => {
     const version = sessionListVersion();
-    const folder = selectedFolder();
+    const folder = getSelectedFolder();
     const sessionDir = folder !== '/' ? folder : undefined;
     log.info('[Sidebar] Session list version changed: ' + version + ' Folder: ' + folder);
     // Update current filter and reset
@@ -136,7 +135,8 @@ const Sidebar: Component = () => {
     }
 
     setLoading(true);
-    const sessionDir = selectedFolder() !== '/' ? selectedFolder() : undefined;
+    const folder = getSelectedFolder();
+    const sessionDir = folder !== '/' ? folder : undefined;
     setCurrentSessionDir(sessionDir);
     fetchSessions(undefined, sessionDir).finally(() => setLoading(false));
 
@@ -212,7 +212,7 @@ const Sidebar: Component = () => {
   // Handle folder selection
   const handleFolderSelect = (path: string) => {
     log.info('[Sidebar] Folder selected: ' + path);
-    setSelectedFolder(path);
+    setSelectedFolderValue(path); // Update shared state in sessionStore
     setFolderPickerOpen(false);
     // Pagination state will be reset by createEffect when selectedFolder changes
     log.info('[Sidebar] Selected folder set to: ' + path + ' | currentSessionDir will be: ' + (path !== '/' ? path : 'undefined'));

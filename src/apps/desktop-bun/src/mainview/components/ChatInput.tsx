@@ -1,6 +1,6 @@
 import { type Component, createSignal } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
-import { refreshSessionList } from '../store/sessionStore';
+import { refreshSessionList, getSelectedFolder } from '../store/sessionStore';
 import { electroview } from '../main';
 import { log } from '../utils/logger';
 
@@ -20,26 +20,17 @@ const ChatInput: Component<ChatInputProps> = (props) => {
     setSending(true);
 
     try {
-      // Get cwd from Bun's main process via RPC
-      // electroview.rpc.request.getCwd() calls the Bun handler
-      let cwdSession = '';
-      try {
-        if (electroview?.rpc?.request?.getCwd) {
-          cwdSession = await electroview.rpc.request.getCwd();
-          log.info('[ChatInput] Got cwd from Bun: ' + cwdSession);
-        } else {
-          log.warn('[ChatInput] getCwd not available on electroview.rpc.request');
-        }
-      } catch (err) {
-        log.warn('[ChatInput] Failed to get cwd from Bun: ' + String(err));
-      }
+      // Get cwd_session from the sidebar's selected folder (shared state)
+      // This ensures new sessions are created in the correct directory
+      const cwdSession = getSelectedFolder();
+      log.info('[ChatInput] Using selectedFolder for cwd_session: ' + cwdSession);
 
       // Use /api/session for both new and existing sessions
       // For existing: pass session_id and queue_message
       // For new: just pass queue_message
       const body: { session_id?: string; queue_message: string; cwd_session?: string } = {
         queue_message: msg,
-        cwd_session: cwdSession || undefined,
+        cwd_session: cwdSession !== '/' ? cwdSession : undefined,
       };
       if (props.sessionId) {
         body.session_id = props.sessionId;

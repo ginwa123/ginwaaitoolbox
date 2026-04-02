@@ -10,6 +10,15 @@ export const refreshSessionList = () => {
 // Export the signal getter for use in effects
 export const getSessionListVersion: Accessor<number> = () => sessionListVersion();
 
+// Signal to track selected folder for session_dir filtering
+const [selectedFolder, setSelectedFolder] = createSignal('/');
+
+export const getSelectedFolder: Accessor<string> = () => selectedFolder();
+
+export const setSelectedFolderValue = (path: string) => {
+  setSelectedFolder(path);
+};
+
 export const SessionContext = createContext({
   refresh: refreshSessionList,
 });
