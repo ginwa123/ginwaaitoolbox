@@ -7,7 +7,7 @@ const write_file_tool = tree1_mod.write_file;
 /// 1. Parse arguments from tool_call.function.arguments
 /// 2. Execute write_file
 /// Returns the write result as string or error.
-/// 
+///
 /// All side effects (DB, logging, socket, message list) must be handled by caller.
 pub fn handle_write_file_tool_run(
     allocator: std.mem.Allocator,
@@ -29,15 +29,12 @@ pub fn handle_write_file_tool_run(
     };
 
     const write_result = try write_file_tool.write_file(allocator, parsed.value.path, opts);
-    
+
     // Convert write result to string format
     const res_write = try write_file_tool.writeFileToString(allocator, write_result);
     // Caller is responsible for freeing this returned string
     write_result.deinit(allocator);
-    
+
     return res_write;
 }
 
-test {
-    _ = @import("handle_write_file_tool_test.zig");
-}

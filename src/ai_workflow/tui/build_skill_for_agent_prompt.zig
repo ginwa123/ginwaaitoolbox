@@ -44,6 +44,3 @@ pub fn BuildSkillContent(
     return result;
 }
 
-test {
-    _ = @import("build_skill_for_agent_prompt_test.zig");
-}

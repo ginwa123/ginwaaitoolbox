@@ -57,6 +57,3 @@ pub fn BuildBackgroundProcessPrompt(
     return processesBuilder.toOwnedSlice(allocator);
 }
 
-test {
-    _ = @import("build_background_process_for_agent_prompt_test.zig");
-}

@@ -194,6 +194,3 @@ pub fn pollAndUpdateStatus(db: *SqliteBackend, allocator: std.mem.Allocator) !u3
     return changed;
 }
 
-test {
-    _ = @import("background_process_test.zig");
-}

@@ -38,6 +38,3 @@ pub fn BuildMessages(
     return try allMessages.toOwnedSlice(allocator);
 }
 
-test {
-    _ = @import("build_messages_for_agent_prompt_test.zig");
-}

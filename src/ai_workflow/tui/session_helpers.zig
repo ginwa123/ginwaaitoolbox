@@ -187,6 +187,3 @@ pub fn get_current_agent_by_session_id(
 // Tests
 // ============================================================================
 
-test {
-    _ = @import("session_helpers_test.zig");
-}

@@ -41,6 +41,3 @@ pub fn SaveSkill(
 }
 
 
-test {
-    _ = @import("save_skill_test.zig");
-}

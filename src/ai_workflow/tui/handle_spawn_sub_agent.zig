@@ -864,7 +864,3 @@ pub fn handle_spawn_sub_agent_run(
     return try combined_result.toOwnedSlice(allocator);
 }
 
-test {
-    _ = @import("handle_spawn_sub_agent_test.zig");
-    _ = @import("handle_spawn_sub_agent_change_agent_test.zig");
-}

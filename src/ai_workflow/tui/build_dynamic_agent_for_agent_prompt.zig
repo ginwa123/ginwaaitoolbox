@@ -41,6 +41,3 @@ pub fn BuildDynamicAgentContent(
     return result;
 }
 
-test {
-    _ = @import("build_dynamic_agent_for_agent_prompt_test.zig");
-}

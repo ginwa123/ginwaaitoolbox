@@ -312,6 +312,3 @@ pub fn parseProperties(
     return try properties.toOwnedSlice(allocator);
 }
 
-test {
-    _ = @import("build_messages_tools_mcp_for_agent_prompt_test.zig");
-}

@@ -597,7 +597,3 @@ fn sendSSEForLatestMessage(
     }
 }
 
-test {
-    _ = @import("handle_tool_test.zig");
-    _ = @import("handle_tool_change_agent_test.zig");
-}

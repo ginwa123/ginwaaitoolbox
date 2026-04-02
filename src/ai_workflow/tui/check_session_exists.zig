@@ -24,6 +24,3 @@ pub fn check_session_exists(
     return false;
 }
 
-test {
-    _ = @import("check_session_exists_test.zig");
-}

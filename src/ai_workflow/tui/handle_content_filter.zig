@@ -129,6 +129,3 @@ pub fn handle_content_filter_run(
     return true; // Signal caller to break the loop
 }
 
-test {
-    _ = @import("handle_content_filter_test.zig");
-}

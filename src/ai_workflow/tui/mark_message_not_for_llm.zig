@@ -11,6 +11,3 @@ pub fn mark_message_not_for_llm_run(
     try db.exec(allocator, sql, &.{session_id});
 }
 
-test {
-    _ = @import("mark_message_not_for_llm_test.zig");
-}

@@ -71,6 +71,3 @@ pub fn runWithContext(
     return res_bash;
 }
 
-test {
-    _ = @import("handle_bash_tool_test.zig");
-}

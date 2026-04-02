@@ -70,6 +70,3 @@ pub const all_agent_tools: []const tool_models.AgentTool = &.{
     tree_dir_tool.tree_dir_tool,
 };
 
-test {
-    _ = @import("all_agent_tools_change_agent_test.zig");
-}

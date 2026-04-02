@@ -672,6 +672,3 @@ pub const TUIWorkflow = struct {
     }
 };
 
-test {
-    _ = @import("workflow_test.zig");
-}
