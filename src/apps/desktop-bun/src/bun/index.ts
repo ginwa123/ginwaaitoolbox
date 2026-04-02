@@ -8,6 +8,7 @@
 import { ApplicationMenu, BrowserView, BrowserWindow } from 'electrobun/bun';
 import type { DemoRPCType } from '../shared/rpc';
 import { findNalarPort } from './processDiscovery';
+import { listDirectory, createFolder, renameFolder, deleteFolder } from './filesystem-handlers';
 
 // ============================================================================
 // Application Menu
@@ -113,6 +114,31 @@ const myWebviewRPC = BrowserView.defineRPC<DemoRPCType>({
         const cwd = process.cwd();
         console.log(`[Bun] getCwd called, returning: ${cwd}`);
         return cwd;
+      },
+
+      // === FILESYSTEM OPERATIONS ===
+      // List directory contents
+      listDirectory: ({ path, showHidden }) => {
+        console.log(`[Bun] listDirectory called: ${path}, showHidden=${showHidden}`);
+        return listDirectory(path, showHidden);
+      },
+
+      // Create a new folder
+      createFolder: ({ path, name }) => {
+        console.log(`[Bun] createFolder called: ${path}/${name}`);
+        return createFolder(path, name);
+      },
+
+      // Rename/move a folder
+      renameFolder: ({ oldPath, newName }) => {
+        console.log(`[Bun] renameFolder called: ${oldPath} -> ${newName}`);
+        return renameFolder(oldPath, newName);
+      },
+
+      // Delete an empty folder
+      deleteFolder: ({ path }) => {
+        console.log(`[Bun] deleteFolder called: ${path}`);
+        return deleteFolder(path);
       },
     },
 
