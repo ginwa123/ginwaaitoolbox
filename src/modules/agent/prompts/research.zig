@@ -163,7 +163,8 @@ pub const AvailableTools =
     \\**External Research:**
     \\- `mcp_context7_resolve-library-id` — find library IDs
     \\- `mcp_context7_query-docs` — query docs with examples
-    \\- `agent-browser` — web browsing (open, snapshot, get text/html)
+    \\- `web_search` — browse web pages (open, snapshot, get, click, etc.)
+    \\- `web_search_help` — get agent-browser CLI help
     \\
     \\**Execution & Delegation:**
     \\- `bash` — fallback for complex shell commands
