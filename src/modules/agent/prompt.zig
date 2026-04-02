@@ -53,6 +53,14 @@ pub fn buildAgentPrompt(
     try result.appendSlice(allocator, UniversalRules);
     try result.appendSlice(allocator, "\n\n");
 
+    // ⚡⚡⚡ SKILLS FIRST — Most important section at the top!
+    try result.appendSlice(allocator, SkillsUsage);
+    try result.appendSlice(allocator, "\n\n");
+
+    // ⚡⚡⚡ SKILL TRIGGERS — When to load skills
+    try result.appendSlice(allocator, SkillsTriggers);
+    try result.appendSlice(allocator, "\n\n");
+
     // Memory & tasks
     try result.appendSlice(allocator, MemoryPrompt);
     try result.appendSlice(allocator, "\n\n");
@@ -132,14 +140,6 @@ pub fn buildAgentPrompt(
     // Available tools
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, AvailableTools);
-
-    // Skills — MANDATORY usage guide
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, SkillsUsage);
-
-    // Skills triggers — when to load skills
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, SkillsTriggers);
 
     // Change agent rules
     try result.appendSlice(allocator, "\n\n");

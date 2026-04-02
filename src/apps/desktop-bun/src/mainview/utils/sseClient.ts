@@ -1,6 +1,7 @@
 /**
  * SSE Client for receiving real-time updates from the backend
  */
+import { log } from './logger';
 
 export interface SSEMessage {
   type: 'message' | 'tool_result' | 'status' | 'error' | 'ping' | 'done' | 'step' | 'connected';
@@ -13,48 +14,115 @@ export interface SSEMessage {
   timestamp?: string;
 }
 
+/**
+ * Raw SSE message from server
+ */
+interface RawSSEEvent {
+  session_id?: string;
+  model?: string;
+  cwd?: string;
+  content?: string;
+  reasoning_content?: string;
+  role?: string;
+  finish_reason?: string;
+  tool_calls?: Array<{
+    id: string;
+    name: string;
+    arguments: string;
+  }>;
+  tool_call_id?: string;
+  tool_name?: string;
+  agent_name?: string;
+  session_name?: string;
+  loop_index?: number;
+  temperature?: number;
+  is_thinking?: boolean;
+  is_input?: boolean;
+  is_output?: boolean;
+  parent_session_id?: string;
+  parent_id?: string;
+}
+
 export type SSEMessageHandler = (event: SSEMessage) => void;
+
+/**
+ * Extract text content from a tag in XML
+ */
+function extractXmlTag(xml: string, tag: string): string | undefined {
+  // Simple regex: <tag>content</tag>
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`<${escapedTag}>([^<]*)</${escapedTag}>`, 'i');
+  const match = xml.match(regex);
+  return match ? match[1].trim() : undefined;
+}
 
 /**
  * Parse XML content to extract SSE message data
  */
-function parseSseXml(xmlData: string): SSEMessage {
-  // Check for different response types in XML
+function parseSseXml(xmlData: string): RawSSEEvent {
+  const result: RawSSEEvent = {};
+  
+  // Check if this is a <response> tag (the main event format)
   if (xmlData.includes('<response>')) {
-    // Extract content from <content> tag
-    const contentMatch = xmlData.match(/<content><!\[CDATA\[([\s\S]*?)\]\]><\/content>|<content>([\s\S]*?)<\/content>/);
-    const content = contentMatch ? (contentMatch[1] || contentMatch[2] || '') : undefined;
+    // Extract all known fields from XML
+    result.session_id = extractXmlTag(xmlData, 'session_id');
+    result.model = extractXmlTag(xmlData, 'model');
+    result.cwd = extractXmlTag(xmlData, 'cwd');
+    result.content = extractXmlTag(xmlData, 'content');
+    result.reasoning_content = extractXmlTag(xmlData, 'reasoning_content');
+    result.role = extractXmlTag(xmlData, 'role') || 'assistant';
+    result.finish_reason = extractXmlTag(xmlData, 'finish_reason');
+    result.tool_call_id = extractXmlTag(xmlData, 'tool_call_id');
+    result.tool_name = extractXmlTag(xmlData, 'tool_name');
+    result.agent_name = extractXmlTag(xmlData, 'agent_name');
+    result.session_name = extractXmlTag(xmlData, 'session_name');
     
-    // Extract finish_reason
-    const finishReasonMatch = xmlData.match(/<finish_reason>([\s\S]*?)<\/finish_reason>/);
-    const finish_reason = finishReasonMatch ? finishReasonMatch[1].trim() : undefined;
+    const loopIndex = extractXmlTag(xmlData, 'loop_index');
+    result.loop_index = loopIndex ? parseInt(loopIndex, 10) : undefined;
     
-    // Extract session_id
-    const sessionIdMatch = xmlData.match(/<session_id>([\s\S]*?)<\/session_id>/);
-    const session_id = sessionIdMatch ? sessionIdMatch[1].trim() : undefined;
+    const temp = extractXmlTag(xmlData, 'temperature');
+    result.temperature = temp ? parseFloat(temp) : undefined;
     
-    // Extract role
-    const roleMatch = xmlData.match(/<role>([\s\S]*?)<\/role>/);
-    const role = roleMatch ? roleMatch[1].trim() : 'assistant';
+    result.is_thinking = extractXmlTag(xmlData, 'is_thinking') === 'true';
+    result.is_input = extractXmlTag(xmlData, 'is_input') === 'true';
+    result.is_output = extractXmlTag(xmlData, 'is_output') === 'true';
     
-    // Check if this is a final chunk (has finish_reason)
-    const type = finish_reason ? 'done' : 'message';
+    result.parent_session_id = extractXmlTag(xmlData, 'parent_session_id');
+    result.parent_id = extractXmlTag(xmlData, 'parent_id');
     
-    return {
-      type,
-      content,
-      finish_reason,
-      session_id,
-      role: role as SSEMessage['role'],
-    };
+    // Parse tool_calls if present
+    const toolCallsMatch = xmlData.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/);
+    if (toolCallsMatch) {
+      const toolCallsXml = toolCallsMatch[1];
+      const toolCallMatches = toolCallsXml.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g);
+      result.tool_calls = [];
+      for (const tcMatch of toolCallMatches) {
+        const tcContent = tcMatch[1];
+        result.tool_calls.push({
+          id: extractXmlTag(tcContent, 'id') || '',
+          name: extractXmlTag(tcContent, 'name') || '',
+          arguments: extractXmlTag(tcContent, 'arguments') || '',
+        });
+      }
+    }
   }
   
-  if (xmlData.includes('<tool_result>')) {
-    return { type: 'tool_result' };
+  return result;
+}
+
+/**
+ * Determine event type from parsed XML data
+ */
+function determineEventType(data: RawSSEEvent): SSEMessage['type'] {
+  if (data.finish_reason) {
+    // Has finish_reason means this is a final/done message
+    return 'done';
   }
-  
-  // Default to message type
-  return { type: 'message', content: xmlData };
+  if (data.tool_call_id || data.tool_name) {
+    // Has tool info means this is a tool result
+    return 'tool_result';
+  }
+  return 'message';
 }
 
 export class SSEClient {
@@ -65,6 +133,7 @@ export class SSEClient {
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
   private baseUrl: string;
+  private isIntentionalDisconnect = false;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -89,74 +158,88 @@ export class SSEClient {
    */
   async disconnectWithNotification(): Promise<void> {
     const sessionId = this.sessionId;
+    this.isIntentionalDisconnect = true;
     
     // Disconnect locally first (always succeeds)
     this.disconnect();
     
     // Then notify server (non-blocking, ignore failures)
     if (sessionId) {
-      console.log('[SSEClient] Notifying server of disconnect:', sessionId);
+      log.info('[SSEClient] Notifying server of disconnect:', sessionId);
       fetch(`${this.baseUrl}/api/stream/${encodeURIComponent(sessionId)}/disconnect`, {
         method: 'POST',
       }).catch((err) => {
-        console.warn('[SSEClient] Server disconnect notification failed (ignoring):', err);
+        log.warn('[SSEClient] Server disconnect notification failed (ignoring):', err);
       });
     }
   }
 
   connect(sessionId: string): void {
+    // Skip if already connected to the same session
+    if (this.eventSource && this.sessionId === sessionId) {
+      log.info('[SSEClient] Already connected to session:', sessionId);
+      return;
+    }
+
+    // Reset intentional disconnect flag
+    this.isIntentionalDisconnect = false;
+    
+    // Disconnect any existing connection first
     this.disconnect();
+    
     this.sessionId = sessionId;
     this.reconnectAttempts = 0;
 
     const url = `${this.baseUrl}/api/stream/${encodeURIComponent(sessionId)}`;
-    console.log('[SSEClient] Connecting to:', url);
+    log.info('[SSEClient] Connecting to:', url);
 
     try {
       this.eventSource = new EventSource(url);
 
       this.eventSource.onopen = () => {
-        console.log('[SSEClient] Connected to SSE stream');
+        log.info('[SSEClient] Connected to SSE stream');
         this.reconnectAttempts = 0;
+        // Send connected event
+        this.notifyHandlers({ type: 'connected', session_id: sessionId });
       };
 
       this.eventSource.onerror = (error) => {
-        console.error('[SSEClient] SSE error:', error);
-        this.handleError();
+        log.error('[SSEClient] SSE error:', error);
+        if (!this.isIntentionalDisconnect) {
+          this.handleError();
+        }
       };
 
-      // Listen for 'connected' event (sent by server as JSON)
-      this.eventSource.addEventListener('connected', (event: MessageEvent) => {
-        try {
-          const data = JSON.parse(event.data) as SSEMessage;
-          data.type = 'connected';
-          console.log('[SSEClient] Received connected:', data);
-          this.notifyHandlers(data);
-        } catch (err) {
-          console.error('[SSEClient] Failed to parse connected event:', err);
-        }
-      });
-
-      // Listen for 'message' event (default SSE event type - all unnamed events come through here)
+      // Listen for 'message' event (default SSE event type)
       this.eventSource.addEventListener('message', (event: MessageEvent) => {
         try {
-          console.log('[SSEClient] Received raw message:', event.data);
-          // Parse XML content to determine message type
-          const data = parseSseXml(event.data);
-          console.log('[SSEClient] Parsed message:', data);
-          this.notifyHandlers(data);
+          log.info('[SSEClient] Received message event, data length:', event.data?.length);
+          log.info('[SSEClient] Raw data:', event.data?.substring ? event.data.substring(0, 200) : event.data);
+          const parsed = parseSseXml(event.data);
+          log.info('[SSEClient] Parsed result:', parsed);
+          const sseMsg: SSEMessage = {
+            type: determineEventType(parsed),
+            content: parsed.content,
+            finish_reason: parsed.finish_reason,
+            session_id: parsed.session_id,
+            role: parsed.role,
+            tool_name: parsed.tool_name,
+            timestamp: parsed.session_id ? String(Date.now()) : undefined,
+          };
+          log.info('[SSEClient] Emitting SSE message:', sseMsg.type, sseMsg.content?.substring ? sseMsg.content.substring(0, 50) : sseMsg.content);
+          this.notifyHandlers(sseMsg);
         } catch (err) {
-          console.error('[SSEClient] Failed to parse message event:', err);
+          log.error('[SSEClient Failed to parse message event:', err, err.stack);
         }
       });
     } catch (err) {
-      console.error('[SSEClient] Failed to create EventSource:', err);
+      log.error('[SSEClient Failed to create EventSource:', err);
     }
   }
 
   disconnect(): void {
     if (this.eventSource) {
-      console.log('[SSEClient] Disconnecting SSE stream');
+      log.info('[SSEClient Disconnecting SSE stream');
       this.eventSource.close();
       this.eventSource = null;
     }
@@ -183,25 +266,25 @@ export class SSEClient {
       try {
         handler(event);
       } catch (err) {
-        console.error('[SSEClient] Handler error:', err);
+        log.error('[SSEClient Handler error:', err);
       }
     });
   }
 
   private handleError(): void {
-    if (!this.sessionId) return;
+    if (!this.sessionId || this.isIntentionalDisconnect) return;
 
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = this.reconnectDelay * this.reconnectAttempts;
       console.log(`[SSEClient] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
       setTimeout(() => {
-        if (this.sessionId) {
+        if (this.sessionId && !this.isIntentionalDisconnect) {
           this.connect(this.sessionId);
         }
       }, delay);
     } else {
-      console.error('[SSEClient] Max reconnect attempts reached');
+      log.error('[SSEClient Max reconnect attempts reached');
     }
   }
 }

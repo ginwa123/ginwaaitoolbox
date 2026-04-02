@@ -322,12 +322,19 @@ pub fn get_session_messages_sorted(
     var argv: []const []const u8 = undefined;
 
     if (cursor) |c| {
-        // With cursor
+        // Fix: Use created_at for cursor comparison since IDs are string-based (sess_xxx_hex)
+        // created_at is numeric (milliseconds timestamp), so comparison works correctly
+        const is_asc = switch (sort_spec) {
+            .created_at_asc, .role_asc, .id_asc => true,
+            else => false,
+        };
+        const cursor_cmp = if (is_asc) " AND created_at > ?" else " AND created_at < ?";
+        
         const order_part = switch (sort_spec) {
             .created_at_asc => " ORDER BY created_at ASC, id ASC",
             .created_at_desc => " ORDER BY created_at DESC, id DESC",
-            .id_asc => " ORDER BY id ASC",
-            .id_desc => " ORDER BY id DESC",
+            .id_asc => " ORDER BY created_at ASC, id ASC",
+            .id_desc => " ORDER BY created_at DESC, id DESC",
             .role_asc => " ORDER BY role ASC, created_at ASC, id ASC",
             .role_desc => " ORDER BY role DESC, created_at DESC, id DESC",
         };
@@ -335,8 +342,8 @@ pub fn get_session_messages_sorted(
             \\SELECT id, session_id, role, response_content, created_at,
             \\       COALESCE(is_input, 0), COALESCE(is_output, 0), COALESCE(tool_name, ''),
             \\       COALESCE(finish_reason, '')
-            \\FROM llm_history WHERE session_id = ? AND id > ?{s} LIMIT ?
-            , .{order_part});
+            \\FROM llm_history WHERE session_id = ?{s}{s} LIMIT ?
+            , .{ cursor_cmp, order_part });
         argv = &.{ session_id, c, limit_str };
     } else {
         // Without cursor

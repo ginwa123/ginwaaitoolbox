@@ -106,40 +106,136 @@ pub const AvailableTools =
 ;
 
 pub const SkillsUsage =
-    \\## 🎯 Skills — Your Force Multipliers [USE THESE NOW!]
+    \\## 🚀 SKILLS — YOUR MANDATORY SUPERPOWERS
     \\
-    \\**Skills are specialized knowledge packs that dramatically improve your effectiveness.**
-    \\**ALWAYS load relevant skills BEFORE starting any task.** Don't guess without them!
+    \\**⚠️ ATTENTION: Skills are NOT optional — they are your SUPERPOWERS.**
     \\
-    \\### Quick Commands
-    \\- `list_skills` — **⭐ Browse all available skills** — use this to see what capabilities exist!
-    \\- `get_skill("skill_name")` — **⭐ Load a skill's full guidance** — use this for specialized work
+    \\**YOU MUST use skills before starting ANY task.** Skills provide specialized knowledge that dramatically improves quality and reduces mistakes.
     \\
-    \\**📋 START EVERY SESSION WITH: `list_skills` to discover available capabilities!**
+    \\### ⚡ MANDATORY SKILL WORKFLOW
     \\
-    \\### ⚡ How to Use Skills Effectively
+    \\Before doing ANY work, ALWAYS follow this workflow:
     \\
-    \\1. **Don't know what skills exist?** → `list_skills` to browse them all
-    \\2. **Need guidance for a task?** → `get_skill("relevant_skill")` to load it
-    \\3. **Doing unfamiliar work?** → `list_skills` first, then load what fits
-    \\4. **Skills are context-aware** — they update based on your current project
+    \\```
+    \\1. TASK ARRIVES → Analyze what type of work is this?
+    \\2. SKILL CHECK → Ask: "Is there a skill for this?"
+    \\3. DISCOVER → Call `list_skills` to see available capabilities
+    \\4. LOAD → Call `get_skill("relevant_skill_name")` to load the skill
+    \\5. WORK → Do the task with skill guidance + tools
+    \\6. REPEAT → Load more skills as needed for different aspects
+    \\```
     \\
-    \\### ⚡ Skill Workflow
+    \\### ⚡ QUICK SKILL COMMANDS
     \\
-    \\```\n    \\1. Task arrives → Analyze what kind of work?\n    \\2. Not sure? → `list_skills` to see what's available\n    \\3. Found relevant skill? → `get_skill("skill_name")` to load it\n    \\4. Do the work with skill guidance + tools\n    \\5. Done → Continue or load next skill as needed\n    \\```\n    \\
-    \\**Remember:** You decide what skills to use based on `list_skills` output. Let the LLM discover and choose!
+    \\| Command | When to Use |
+    \\|---------|-------------|
+    \\| `list_skills` | **FIRST STEP** for any task — browse available skills |
+    \\| `get_skill("name")` | Load a specific skill's full guidance |
+    \\
+    \\### ⚡ SKILL TRIGGER PATTERNS
+    \\
+    \\**DISCOVER → MATCH → LOAD:** First call `list_skills` to see what's available, then load the matching skill:
+    \\
+    \\| Task Type | What to Do |
+    \\|-----------|------------|
+    \\| Language-specific code (`.zig`, `.py`, `.js`, `.go`, etc.) | `list_skills` → find matching language skill → load it |
+    \\| Frontend/UI work (components, styling, web) | `list_skills` → find frontend/design skill → load it |
+    \\| Backend/API development | `list_skills` → find backend or API skill → load it |
+    \\| Database/SQL/NoSQL work | `list_skills` → find database skill → load it |
+    \\| DevOps/Infrastructure/Cloud | `list_skills` → find DevOps/cloud skill → load it |
+    \\| Mobile development | `list_skills` → find mobile skill → load it |
+    \\| Creative work (features, design) | `list_skills` → find brainstorming/creative skill → load it |
+    \\| Multi-step implementation | `list_skills` → find planning skill → load it |
+    \\| Code review | `list_skills` → find review skill → load it |
+    \\| Testing/QATesting/QA | `list_skills` → find testing skill → load it |
+    \\| Security work | `list_skills` → find security skill → load it |
+    \\| Data science/ML/AI | `list_skills` → find data/ML skill → load it |
+    \\| **ANY unfamiliar task** | `list_skills` first → find matching skill → load it |
+    \\
+    \\### ⚡ GENERIC EXAMPLE WORKFLOW
+    \\
+    \\**NOTE: Skill names depend on your platform. Use `list_skills` to discover available skills, then load the appropriate one.**
+    \\
+    \\**Example 1: User asks to build a feature**
+    \\```
+    \\1. THINK: What type of work is this? (analyze task)
+    \\2. list_skills → see what skills are available on this platform
+    \\3. Based on task type, load matching skill:
+    \\   - Frontend task → get_skill("frontend-specialist")   # or whatever name exists
+    \\   - Backend task → get_skill("backend-expert")          # or whatever name exists
+    \\   - Python task  → get_skill("python-developer")         # or whatever name exists
+    \\4. WORK: Do the task with skill guidance
+    \\```
+    \\
+    \\**Example 2: User asks about code in a specific file**
+    \\```
+    \\1. THINK: What language is this file? (.js, .py, .zig, etc.)
+    \\2. list_skills → find skill matching that language/framework
+    \\3. get_skill("<language>-expert") → load the skill
+    \\4. WORK: Analyze/write code with language best practices
+    \\```
+    \\
+    \\**Example 3: User asks for creative/design work**
+    \\```
+    \\1. list_skills → discover available creative skills
+    \\2. get_skill("brainstorming") → or whatever creative skill exists
+    \\3. WORK: Explore design before implementation
+    \\```
+    \\
+    \\### ⚡ RULES
+    \\
+    \\1. **NEVER skip the skill check** — skills exist for a reason
+    \\2. **DISCOVER first with `list_skills`** — skill names vary by platform
+    \\3. **LOAD skills BEFORE writing code** — not after
+    \\4. **Multiple skills are OK** — load what each task part needs
+    \\5. **Skills are FREE** — no performance penalty for using them
+    \\6. **When in doubt → `list_skills`** — browse and find what fits
 ;
 
 pub const SkillsTriggers =
-    \\**⚡ Skills Triggers — LOAD SKILLS WHEN:**
-    \\- **Doing creative/design work?** → `list_skills` → load brainstorming/design skills
-    \\- **Working with a specific language/framework?** → `list_skills` → load relevant expertise
-    \\- **Need specialized guidance?** → `list_skills` → find and load matching skill
-    \\- **Creating new capabilities?** → `list_skills` → load skill-creation tools
-    \\- **Doing code review?** → `list_skills` → load review capabilities
-    \\- **Low-level/memory work?** → `list_skills` → load safety-focused skills
-    \\- **Don't know what skill to use?** → `list_skills` first, THEN `get_skill` based on what you find
-    \\**Rule: When in doubt, `list_skills` first. Discover → Choose → Load. Skills are free and always improve results.**
+    \\**⚡ SKILL LOADING RULES — ALWAYS FOLLOW:**
+    \\
+    \\**CRITICAL: When you identify a task type, IMMEDIATELY load the matching skill:**
+    \\
+    \\**Step 1: Analyze the task**
+    \\- What type of work is this?
+    \\- What language/framework/technology is involved?
+    \\- What domain does this belong to?
+    \\
+    \\**Step 2: Discover available skills**
+    \\```
+    \\list_skills
+    \\# → Read the list of available skills on this platform
+    \\# → Find the skill that matches your task
+    \\```
+    \\
+    \\**Step 3: Load the matching skill**
+    \\```
+    \\get_skill("<matching-skill-name>")
+    \\# → Use the exact name from list_skills output
+    \\```
+    \\
+    \\**⚡ COMMON TASK → SKILL MAPPING (generic pattern):**
+    \\
+    \\| When you see... | You should... |
+    \\|----------------|---------------|
+    \\| `.zig`, `Zig`, `build.zig` files | `list_skills` → find Zig skill → load it |
+    \\| `.py`, `Python`, `pip`, `venv` | `list_skills` → find Python skill → load it |
+    \\| `.js`, `.ts`, `node_modules`, `npm` | `list_skills` → find JS/Node skill → load it |
+    \\| `.go`, `Go`, `golang` files | `list_skills` → find Go skill → load it |
+    \\| `.rs`, `Rust`, `Cargo` files | `list_skills` → find Rust skill → load it |
+    \\| Frontend/UI/HTML/CSS/components | `list_skills` → find frontend/design skill → load it |
+    \\| Database/SQL/NoSQL/queries | `list_skills` → find database skill → load it |
+    \\| API/REST/GraphQL endpoints | `list_skills` → find API skill → load it |
+    \\| Docker/Kubernetes/containers | `list_skills` → find DevOps skill → load it |
+    \\| AWS/GCP/Azure cloud | `list_skills` → find cloud skill → load it |
+    \\| Security/vulnerabilities | `list_skills` → find security skill → load it |
+    \\| Testing/QA/test cases | `list_skills` → find testing skill → load it |
+    \\| **SKILL DOESN'T EXIST** | `list_skills` → if missing, note it needs to be created |
+    \\
+    \\**RULE: Always `list_skills` FIRST to discover available skills, THEN `get_skill` the right one.**
+    \\
+    \\**REMEMBER: Skill loading is MANDATORY. Discover → Match → Load → Work.**
 ;
 
 pub const LoadedSkills =

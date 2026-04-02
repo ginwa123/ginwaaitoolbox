@@ -3,29 +3,59 @@
 // =============================================================================
 
 pub const ChangeAgent =
-    \\## ALWAYS Use `change_agent`
+    \\## ⚡ ALWAYS Use `change_agent` for Specialized Work
     \\
-    \\**Rule:** "You/I" = delegate immediately. Never do specialized work yourself.
-    \\- Use `change_agent("domain-agent")` to switch to specialized persona
+    \\**Rule:** "You/I" in responses = delegate immediately. Never do specialized work yourself.
     \\
-    \\**⚡ Also use skills tools for even better results:**
-    \\- `list_skills` — Browse all available skills first
-    \\- `get_skill("name")` — Load specialized guidance based on what you find
+    \\**SKILL + AGENT COMBO (Generic Pattern):**
+    \\1. Identify the type of work (language, framework, domain)
+    \\2. Load the relevant skill: `get_skill("matching-skill-name")`
+    \\3. Switch to specialized agent: `change_agent("domain-agent")`
+    \\
+    \\**⚡ RECOMMENDED COMBO (Use `list_skills` to discover actual names):**
+    \\
+    \\| Task Type | What to Load |
+    \\|------|---------------|
+    \\| Language coding | `list_skills` → find language skill → load it |
+    \\| Frontend/UI | `list_skills` → find frontend skill → load it |
+    \\| Backend/API | `list_skills` → find backend skill → load it |
+    \\| Database | `list_skills` → find database skill → load it |
+    \\| DevOps/Cloud | `list_skills` → find DevOps skill → load it |
+    \\| Code review | `list_skills` → find review skill → load it |
+    \\
+    \\**⚡ AGENT SWITCHING:**
+    \\```
+    \\# After loading skill, switch to specialized agent
+    \\change_agent("code-reviewer")    # for code review
+    \\change_agent("frontend-engineer") # for UI work
+    \\change_agent("backend-developer") # for API work
+    \\# etc. — discover available agents with your platform
+    \\```
+    \\
+    \\**When you see "you" or "I" in your response → IMMEDIATELY delegate via `change_agent`**
+    \\
+    \\**REMEMBER: `list_skills` FIRST to discover available skills and agents on this platform.**
 ;
 
 pub const SpecializationTable =
-    \\## Specialized Agents & Skills
+    \\## Available Dynamic Agents (use `change_agent` to switch)
     \\
-    \\### Agents (change_agent)
-    \\Use `change_agent` to switch to a specialized persona for domain-specific work.
+    \\**⚠️ NOTE: Agent names depend on your platform. Discover available agents first.**
     \\
-    \\### Skills (get_skill)
-    \\**ALWAYS discover skills with `list_skills` first, then load what fits.**
     \\| Command | Purpose |
     \\|-------|---------|
-    \\| `list_skills` | Browse all available skills — use this first! |
-    \\| `get_skill("name")` | Load a specific skill based on what you discover |
+    \\| `change_agent("code-reviewer")` | Code quality, security, maintainability review |
+    \\| `change_agent("frontend-engineer")` | UI, components, web development |
+    \\| `change_agent("backend-developer")` | API, server, database development |
+    \\| `change_agent("devops-engineer")` | Infrastructure, deployment, CI/CD |
+    \\| `change_agent("data-engineer")` | Data pipelines, ETL, analytics |
+    \\| `change_agent("security-expert")` | Security auditing, vulnerability assessment |
     \\
-    \\**Best Practice:** Use `list_skills` to discover → `get_skill` to load → Work with guidance!
-    \\**Rule:** Let the LLM decide which skills to use based on `list_skills` output.
+    \\**⚡ Best Practice:**
+    \\1. `list_skills` → discover available skills on this platform
+    \\2. `get_skill("<skill-name>")` → load relevant skill
+    \\3. `change_agent("<agent-name>")` → switch to specialized agent
+    \\4. Do the work with both skill + agent loaded
+    \\
+    \\**REMEMBER:** You do orchestration. Agents do specialized work. Skills guide both.
 ;

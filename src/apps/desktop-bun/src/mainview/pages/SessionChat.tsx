@@ -15,9 +15,12 @@ import ChatInput from '../components/ChatInput';
 import { baseUrl } from '../utils/baseUrl';
 import { SSEClient, type SSEMessage } from '../utils/sseClient';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
+import { log } from '../utils/logger';
 
 // Shared SSE client for all session chat instances
+log.info('[SessionChat] Module loaded, baseUrl: ' + baseUrl());
 const sharedSseClient = new SSEClient(baseUrl());
+log.info('[SessionChat] SSEClient created');
 
 interface SessionInfo {
   session_id: string;
@@ -27,6 +30,9 @@ interface SessionInfo {
   session_name: string;
 }
 
+/**
+ * Normalize an XML message to ChatMessage format
+ */
 const normalizeMessage = (msg: XmlMessage): ChatMessage => ({
   id: msg?.id || '',
   role: (msg?.role || 'unknown') as ChatMessage['role'],
@@ -37,6 +43,22 @@ const normalizeMessage = (msg: XmlMessage): ChatMessage => ({
   tool_name: msg?.tool_name,
   finish_reason: msg?.finish_reason,
 });
+
+/**
+ * Create a ChatMessage from an SSE event
+ */
+function sseToChatMessage(event: SSEMessage): ChatMessage {
+  return {
+    id: event.message_id || `sse_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    role: (event.role || 'assistant') as ChatMessage['role'],
+    content: event.content || '',
+    timestamp: event.timestamp || String(Date.now()),
+    is_input: false,
+    is_output: true,
+    tool_name: event.tool_name,
+    finish_reason: event.finish_reason,
+  };
+}
 
 const MessageRow: Component<{ message: ChatMessage }> = (props) => {
   const formatTimestamp = (ts: string) => {
@@ -139,6 +161,10 @@ const SessionChat: Component = () => {
     }
   );
 
+  // Track SSE messages with optimistic updates
+  const [sseMessages, setSseMessages] = createSignal<ChatMessage[]>([]);
+  log.info('[SessionChat] Component mounted, sessionId: ' + params.sessionId);
+
   // Single source of truth: use messagesQuery for all message data
   const messagesQuery = createInfiniteQuery(() => ({
     queryKey: ['session-messages', params.sessionId],
@@ -147,10 +173,11 @@ const SessionChat: Component = () => {
       url.searchParams.set('limit', '50');
 
       if (pageParam !== undefined) {
+        // Pagination: load older messages
         url.searchParams.set('cursor', pageParam);
         url.searchParams.set('direction', 'asc');
       } else {
-        // First load: get latest messages
+        // First load: get latest messages (newest at bottom)
         url.searchParams.set('direction', 'desc');
       }
 
@@ -163,6 +190,7 @@ const SessionChat: Component = () => {
       const text = await res.text();
       const parsed = parseMessages(text);
       const msgs = parsed.map(normalizeMessage);
+
       return {
         messages: msgs,
         has_more: msgs.length === 50,
@@ -175,16 +203,44 @@ const SessionChat: Component = () => {
     staleTime: 0,
   }));
 
-  // Flatten all pages into single messages array
-  const allMessages = createMemo(() => messagesQuery.data?.pages.flatMap((p) => p.messages) ?? []);
+  // Collect all messages from pages + SSE messages
+  const allMessages = createMemo(() => {
+    const pages = messagesQuery.data?.pages ?? [];
+    
+    // Collect all messages from pages
+    let msgs: ChatMessage[] = [];
+    for (const page of pages) {
+      msgs = msgs.concat(page.messages);
+    }
+    
+    // Add SSE messages that aren't already in the list (optimistic updates)
+    const sseMsgs = sseMessages();
+    const existingIds = new Set(msgs.map(m => m.id));
+    
+    for (const sseMsg of sseMsgs) {
+      if (!existingIds.has(sseMsg.id)) {
+        msgs.push(sseMsg);
+      }
+    }
+    
+    // Sort by timestamp (ascending - oldest first, newest at bottom)
+    msgs.sort((a, b) => {
+      const tsA = Number(a.timestamp) || 0;
+      const tsB = Number(b.timestamp) || 0;
+      if (tsA !== tsB) return tsA - tsB;
+      return a.id.localeCompare(b.id);
+    });
+    
+    return msgs;
+  });
 
   console.log('[SessionChat] messagesQuery:', messagesQuery);
-  console.log('[SessionChat] allMessages:', allMessages());
+  console.log('[SessionChat] allMessages count:', allMessages().length);
 
   // Shared SSE handler reference for cleanup
   let currentHandler: ((event: SSEMessage) => void) | null = null;
 
-  // Connect to SSE stream when session changes - using shared client for proper session switching
+  // Connect to SSE stream when session changes
   createEffect(() => {
     const sessionId = params.sessionId;
 
@@ -193,6 +249,7 @@ const SessionChat: Component = () => {
       console.log('[SessionChat] No valid session, disconnecting SSE');
       sharedSseClient.disconnectWithNotification();
       setStreaming(false);
+      setSseMessages([]);
       return;
     }
 
@@ -201,14 +258,12 @@ const SessionChat: Component = () => {
     if (currentSessionId && currentSessionId !== sessionId) {
       console.log('[SessionChat] Switching sessions:', currentSessionId, '->', sessionId);
       sharedSseClient.disconnectWithNotification();
-      // Small delay to ensure clean disconnect before reconnect
+      setSseMessages([]);
       setTimeout(() => connectToSession(sessionId), 100);
     } else if (!currentSessionId) {
-      // No current connection, connect
       console.log('[SessionChat] Connecting to SSE stream for session:', sessionId);
       connectToSession(sessionId);
     } else {
-      // Same session, already connected
       console.log('[SessionChat] Already connected to session:', sessionId);
     }
 
@@ -221,17 +276,47 @@ const SessionChat: Component = () => {
 
       // Create new handler for this session
       currentHandler = (event: SSEMessage) => {
-        console.log('[SessionChat] SSE event received:', event);
-        setStreaming(true);
-
-        // Refresh messages on any event
-        if (event.type === 'done' || event.type === 'step' || event.type === 'message') {
-          queryClient.invalidateQueries({ queryKey: ['session-messages', sid] });
+        log.info('[SessionChat] SSE event received, type: ' + event.type);
+        
+        // Set streaming indicator
+        if (event.type === 'message' && !streaming()) {
+          setStreaming(true);
         }
+
+        // Convert SSE event to ChatMessage
+        const chatMsg = sseToChatMessage(event);
+        log.info('[SessionChat] Converted message id: ' + chatMsg.id);
+        
+        // Add as optimistic update if it has content
+        if (chatMsg.content) {
+          log.info('[SessionChat] Adding to sseMessages: ' + chatMsg.id + ' - ' + chatMsg.content.substring(0, 50));
+          setSseMessages(prev => {
+            log.info('[SessionChat] Current sseMessages count: ' + prev.length);
+            // Check if already exists
+            const exists = prev.some(m => m.id === chatMsg.id);
+            if (exists) {
+              // Update existing message (for streaming updates)
+              return prev.map(m => m.id === chatMsg.id ? { ...chatMsg } : m);
+            }
+            // Add new message
+            return [...prev, chatMsg];
+          });
+          log.info('[SessionChat] SSE messages updated');
+        } else {
+          log.info('[SessionChat] No content in message, skipping optimistic update');
+        }
+
+        // Invalidate query to sync with backend
+        queryClient.invalidateQueries({ queryKey: ['session-messages', sid] });
 
         // Stop streaming indicator on done
         if (event.type === 'done') {
+          log.info('[SessionChat] SSE stream done');
           setStreaming(false);
+          // Clear SSE messages after a short delay (let DB sync)
+          setTimeout(() => {
+            setSseMessages([]);
+          }, 500);
         }
       };
 
@@ -240,27 +325,45 @@ const SessionChat: Component = () => {
     }
   });
 
-  // Cleanup on component unmount - disconnect SSE and notify server
+  // Cleanup on component unmount
   onCleanup(() => {
-    console.log('[SessionChat] Component unmounting, disconnecting SSE');
+    log.info('[SessionChat] Component unmounting, disconnecting SSE');
     if (currentHandler) {
       sharedSseClient.removeHandler(currentHandler);
       currentHandler = null;
     }
     sharedSseClient.disconnectWithNotification();
     setStreaming(false);
+    setSseMessages([]);
   });
 
-  // Scroll to bottom when messages change
+  // Scroll to bottom on initial load
   createEffect(() => {
     const messages = allMessages();
-    if (messages.length > 0 && scrollRef) {
-      // Use setTimeout to ensure DOM is rendered
+    const isPending = messagesQuery.isPending;
+    
+    // When messages are loaded (not pending anymore), scroll to bottom
+    if (!isPending && messages.length > 0 && scrollRef) {
+      // Use requestAnimationFrame to ensure DOM is rendered
+      requestAnimationFrame(() => {
+        if (scrollRef) {
+          scrollRef.scrollTop = scrollRef.scrollHeight;
+        }
+      });
+    }
+  });
+
+  // Scroll to bottom when streaming or when new messages arrive
+  createEffect(() => {
+    const messages = allMessages();
+    const isStreaming = streaming();
+    
+    if ((messages.length > 0 && scrollRef) && isStreaming) {
       setTimeout(() => {
         if (scrollRef) {
           scrollRef.scrollTop = scrollRef.scrollHeight;
         }
-      }, 100);
+      }, 50);
     }
   });
 
@@ -386,16 +489,14 @@ const SessionChat: Component = () => {
           <div
             ref={(el) => {
               scrollRef = el;
-              console.log('[SessionChat] scrollRef set:', el);
             }}
             class="flex-1 overflow-y-auto"
             onScroll={handleScroll}
           >
             <For each={allMessages()}>
-              {(message, index) => {
-                console.log('[SessionChat] Rendering message', index(), message.id);
-                return <MessageRow message={message} />;
-              }}
+              {(message, index) => (
+                <MessageRow message={message} />
+              )}
             </For>
           </div>
 

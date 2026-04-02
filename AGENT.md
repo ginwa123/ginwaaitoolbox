@@ -185,34 +185,111 @@ Prompts split by purpose in `src/modules/agent/prompts/`:
 - `memory.zig` — Tasks, AGENTS.md, git
 - `special.zig` — CompactionAgent, DestroyIdea
 
-## Skills — Force Multipliers
+## Skills — MANDATORY SUPERPOWERS ⚡
 
-**Skills are specialized knowledge packs that dramatically improve effectiveness.**
-**ALWAYS load relevant skills BEFORE starting any task.**
+**⚠️ SKILLS USAGE IS MANDATORY — NOT OPTIONAL!**
 
-### Quick Commands
-- `list_skills` — **Browse all available skills** — use this to discover capabilities!
-- `get_skill("skill_name")` — **Load a skill** — use for specialized work
+**Skills are specialized knowledge packs that dramatically improve quality and reduce mistakes.**
+**YOU MUST load relevant skills BEFORE starting ANY task.**
 
-### ⚡ How to Use Skills
-1. **Don't know what skills exist?** → `list_skills` to browse them all
-2. **Need guidance for a task?** → `get_skill("relevant_skill")` to load it
-3. **Doing unfamiliar work?** → `list_skills` first, then load what fits
+### ⚡ MANDATORY SKILL WORKFLOW
 
-**Rule:** Let the LLM discover and choose skills with `list_skills`. Don't hardcode skill names.
+Before doing ANY work, ALWAYS follow this workflow:
+```
+1. TASK ARRIVES → Analyze what type of work is this?
+2. SKILL CHECK → Ask: "Is there a skill for this?"
+3. DISCOVER → Call `list_skills` to see available capabilities
+4. LOAD → Call `get_skill("relevant_skill_name")` to load the skill
+5. WORK → Do the task with skill guidance + tools
+6. REPEAT → Load more skills as needed for different aspects
+```
+
+### ⚡ SKILL TRIGGER PATTERNS
+
+**DISCOVER → MATCH → LOAD:** First call `list_skills` to see what's available, then load the matching skill:
+
+| Task Type | What to Do |
+|-----------|------------|
+| Language-specific code (`.zig`, `.py`, `.js`, `.go`, etc.) | `list_skills` → find matching language skill → load it |
+| Frontend/UI work (components, styling, web) | `list_skills` → find frontend/design skill → load it |
+| Backend/API development | `list_skills` → find backend or API skill → load it |
+| Database/SQL/NoSQL work | `list_skills` → find database skill → load it |
+| DevOps/Infrastructure/Cloud | `list_skills` → find DevOps/cloud skill → load it |
+| Mobile development | `list_skills` → find mobile skill → load it |
+| Creative work (features, design) | `list_skills` → find brainstorming/creative skill → load it |
+| Multi-step implementation | `list_skills` → find planning skill → load it |
+| Code review | `list_skills` → find review skill → load it |
+| Testing/QA | `list_skills` → find testing skill → load it |
+| Security work | `list_skills` → find security skill → load it |
+| Data science/ML/AI | `list_skills` → find data/ML skill → load it |
+| **ANY unfamiliar task** | `list_skills` first → find matching skill → load it |
+
+### ⚡ QUICK COMMANDS
+
+| Command | When to Use |
+|---------|-------------|
+| `list_skills` | **FIRST STEP** for any task — browse available skills |
+| `get_skill("name")` | Load a specific skill's full guidance |
+
+### ⚡ GENERIC EXAMPLE WORKFLOW
+
+**NOTE: Skill names depend on your platform. Use `list_skills` to discover available skills, then load the appropriate one.**
+
+**Example 1: User asks to build a feature**
+```
+1. THINK: What type of work is this?
+2. list_skills → see what skills are available on this platform
+3. Based on task type, load matching skill:
+   - Frontend task → get_skill("frontend-specialist")   # or whatever name exists
+   - Backend task → get_skill("backend-expert")          # or whatever name exists
+   - Python task  → get_skill("python-developer")         # or whatever name exists
+4. WORK: Do the task with skill guidance
+```
+
+**Example 2: User asks about code in a specific file**
+```
+1. THINK: What language is this file? (.js, .py, .zig, etc.)
+2. list_skills → find skill matching that language/framework
+3. get_skill("<language>-expert") → load the skill
+4. WORK: Analyze/write code with language best practices
+```
+
+### ⚡ RULES
+
+1. **NEVER skip the skill check** — skills exist for a reason
+2. **LOAD skills BEFORE writing code** — not after
+3. **Multiple skills are OK** — load what each task part needs
+4. **Skills are FREE** — no performance penalty for using them
+5. **When in doubt → `list_skills`** — browse and find what fits
 
 ## Agent Prompt — change_agent Rule
 
+**⚡ SKILL + AGENT COMBO (Generic Pattern):**
+1. Identify the type of work (language, framework, domain)
+2. Load the relevant skill: `get_skill("matching-skill-name")`
+3. Switch to specialized agent: `change_agent("domain-agent")`
+
 **CRITICAL:** The main Agent MUST always use `change_agent` when:
 - Saying "you" or "I" in any response
-- Performing specialized work (Zig, frontend, code review, etc.)
+- Performing specialized work (coding, review, etc.)
 
-Never do specialized work directly — delegate to specialized agents:
-- Zig code → `change_agent("zig-expert")`
-- Frontend/UI → `change_agent("frontend-engineer")`
-- Code review → `change_agent("code-reviewer")`
-- Memory/security → `change_agent("memory-security-engineer")`
-- Skill creation → `change_agent("skill-creator")`
+**⚡ RECOMMENDED WORKFLOW:**
+```
+1. list_skills → discover available skills on this platform
+2. get_skill("<matching-skill>") → load the relevant skill
+3. change_agent("<agent>") → switch to specialized agent
+4. WORK → do the task with skill + agent guidance
+```
+
+**⚡ COMMON COMBOS (Use `list_skills` to find actual names):**
+| Task | What to Do |
+|------|------------|
+| Language coding | `list_skills` → find language skill → load it |
+| Frontend/UI | `list_skills` → find frontend skill → load it |
+| Backend/API | `list_skills` → find backend skill → load it |
+| Code review | `list_skills` → find review skill → load it |
+
+**REMEMBER:** You do orchestration. Agents do specialized work. Skills guide both.
 
 
 ## Dev Test
