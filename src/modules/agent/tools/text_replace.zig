@@ -120,7 +120,7 @@ pub fn text_replace_batch(
 }
 
 /// Serialize batch result to XML string
-pub fn textReplaceBatchToStringXML(allocator: std.mem.Allocator, result: TextReplaceBatchResult) ![]const u8 {
+pub fn text_replace_batch_to_string_xml(allocator: std.mem.Allocator, result: TextReplaceBatchResult) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<sha256_after>{s}</sha256_after>
     , .{
@@ -152,7 +152,7 @@ const text_replace_props: []const ToolProperty = &.{
     },
 };
 
-pub const textReplaceTool: AgentTool = .{
+pub const text_replace_tool: AgentTool = .{
     .type = "function",
     .function = .{
         .name = "text_replace",

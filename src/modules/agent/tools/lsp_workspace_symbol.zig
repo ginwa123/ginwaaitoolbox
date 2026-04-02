@@ -363,7 +363,7 @@ pub fn lspWorkspaceSymbolToString(allocator: std.mem.Allocator, result: LspWorks
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspWorkspaceSymbolTool = AgentTool{
+pub const lsp_workspace_symbol_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_workspace_symbol",

@@ -6,3 +6,4 @@ test_main
 /src/apps/kerjabot/dist
 /.worktrees
 .nalar/tasks/
+/docs

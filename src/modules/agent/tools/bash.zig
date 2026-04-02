@@ -442,7 +442,7 @@ pub fn bashResultToString(allocator: std.mem.Allocator, result: BashOutput) ![]c
     });
 }
 
-pub const bashTool = AgentTool{
+pub const bash_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "bash",

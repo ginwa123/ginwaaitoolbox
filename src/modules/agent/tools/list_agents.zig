@@ -12,7 +12,7 @@ pub const ListAgentsResult = struct {
 };
 
 /// Tool definition for list_agents
-pub const listAgentsTool = AgentTool{
+pub const list_agents_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "list_agents",

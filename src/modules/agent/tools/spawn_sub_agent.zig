@@ -29,7 +29,7 @@ pub const SubAgentsInput = struct {
     }
 };
 
-pub const spawnSubAgentTool = AgentTool{
+pub const spawn_sub_agent_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "spawn_sub_agent",

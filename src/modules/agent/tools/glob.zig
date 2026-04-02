@@ -196,7 +196,7 @@ pub fn globResultToString(allocator: std.mem.Allocator, result: GlobResult) ![]c
 }
 
 /// OpenAI-compatible glob tool definition.
-pub const globTool = AgentTool{
+pub const glob_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "glob",

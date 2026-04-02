@@ -30,7 +30,7 @@ pub fn handle_text_replace_tool_run(
     );
 
     // Convert batch result to string format
-    const res = try text_replace_mod.textReplaceBatchToStringXML(allocator, result);
+    const res = try text_replace_mod.text_replace_batch_to_string_xml(allocator, result);
     // Caller is responsible for freeing this returned string
 
     return res;

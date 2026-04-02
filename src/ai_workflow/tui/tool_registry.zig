@@ -5,24 +5,24 @@ const tool_models = root_mod.tool_models;
 const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
 
 // Tool imports for exec functions and tool_defs
-const BashTool = root_mod.bash_tool;
-const ReadFileTool = root_mod.read_file;
-const SearchTool = root_mod.search_tool;
-const GlobTool = root_mod.glob_tool;
-const TextReplaceTool = root_mod.text_replace_tool;
-const WriteFileTool = root_mod.write_file;
-const ListSkillsTool = root_mod.list_skills_tool;
-const GetSkillTool = root_mod.get_skill_tool;
-const RemoveSkillTool = root_mod.remove_skill_tool;
-const ListAgentsTool = root_mod.list_agents;
-const ChangeAgentTool = root_mod.change_agent;
-const TreeDirTool = root_mod.tree_dir;
-const LspDefinitionTool = root_mod.tools.lspDefinitionTool;
-const LspReferencesTool = root_mod.tools.lspReferencesTool;
-const LspWorkspaceSymbolTool = root_mod.tools.lspWorkspaceSymbolTool;
-const LspDocumentSymbolTool = root_mod.tools.lspDocumentSymbolTool;
-const LspHoverTool = root_mod.tools.lspHoverTool;
-const SetAgentPropertiesTool = root_mod.set_agent_properties;
+const bash_tool_mod = root_mod.bash_tool;
+const read_file_mod = root_mod.read_file;
+const search_tool_mod = root_mod.search_tool;
+const glob_tool_mod = root_mod.glob_tool;
+const text_replace_mod = root_mod.text_replace_tool;
+const write_file_mod = root_mod.write_file;
+const list_skills_mod = root_mod.list_skills_tool;
+const get_skill_mod = root_mod.get_skill_tool;
+const remove_skill_mod = root_mod.remove_skill_tool;
+const list_agents_mod = root_mod.list_agents;
+const change_agent_mod = root_mod.change_agent;
+const tree_dir_mod = root_mod.tree_dir;
+const lsp_definition_mod = root_mod.tools.lsp_definition;
+const lsp_references_mod = root_mod.tools.lsp_references;
+const lsp_workspace_symbol_mod = root_mod.tools.lsp_workspace_symbol;
+const lsp_document_symbol_mod = root_mod.tools.lsp_document_symbol;
+const lsp_hover_mod = root_mod.tools.lsp_hover;
+const set_agent_properties_mod = root_mod.set_agent_properties;
 
 // Forward declare to avoid circular import (exec functions)
 const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
@@ -48,33 +48,33 @@ pub const ToolInfo = struct {
 /// `allowed_for_subagent = false` excludes dangerous tools (spawn_sub_agent, set_agent_properties).
 pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     // === AGENT CONTROL (not allowed for sub-agents) ===
-    .{ .name = "set_agent_properties", .exec = handle_spawn_sub_agent.execSetAgentProperties, .tool_def = SetAgentPropertiesTool.SetAgentPropertiesTool, .allowed_for_subagent = false },
-    .{ .name = "spawn_sub_agent", .exec = handle_spawn_sub_agent.execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawnSubAgentTool, .allowed_for_subagent = false },
+    .{ .name = "set_agent_properties", .exec = handle_spawn_sub_agent.execSetAgentProperties, .tool_def = set_agent_properties_mod.set_agent_properties_tool, .allowed_for_subagent = false },
+    .{ .name = "spawn_sub_agent", .exec = handle_spawn_sub_agent.execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawn_sub_agent_tool, .allowed_for_subagent = false },
 
     // === AGENT MANAGEMENT (allowed for sub-agents, auto-save) ===
-    .{ .name = "list_agents", .exec = handle_spawn_sub_agent.execListAgents, .tool_def = ListAgentsTool.listAgentsTool, .allowed_for_subagent = true, .auto_save_agent = true },
-    .{ .name = "change_agent", .exec = handle_spawn_sub_agent.execChangeAgent, .tool_def = ChangeAgentTool.ChangeAgentTool, .allowed_for_subagent = true, .auto_save_agent = true },
+    .{ .name = "list_agents", .exec = handle_spawn_sub_agent.execListAgents, .tool_def = list_agents_mod.list_agents_tool, .allowed_for_subagent = true, .auto_save_agent = true },
+    .{ .name = "change_agent", .exec = handle_spawn_sub_agent.execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
 
     // === SKILL MANAGEMENT ===
-    .{ .name = "list_skills", .exec = handle_spawn_sub_agent.execListSkills, .tool_def = ListSkillsTool.listSkillsTool, .allowed_for_subagent = true },
-    .{ .name = "get_skill", .exec = handle_spawn_sub_agent.execGetSkill, .tool_def = GetSkillTool.getSkillTool, .allowed_for_subagent = true, .auto_save_skill = true },
-    .{ .name = "remove_skill", .exec = handle_spawn_sub_agent.execRemoveSkill, .tool_def = RemoveSkillTool.removeSkillTool, .allowed_for_subagent = true },
+    .{ .name = "list_skills", .exec = handle_spawn_sub_agent.execListSkills, .tool_def = list_skills_mod.list_skills_tool, .allowed_for_subagent = true },
+    .{ .name = "get_skill", .exec = handle_spawn_sub_agent.execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
+    .{ .name = "remove_skill", .exec = handle_spawn_sub_agent.execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool, .allowed_for_subagent = true },
 
     // === FILE OPERATIONS ===
-    .{ .name = "bash", .exec = handle_spawn_sub_agent.execBash, .tool_def = BashTool.bashTool, .allowed_for_subagent = true },
-    .{ .name = "read_file", .exec = handle_spawn_sub_agent.execReadFile, .tool_def = ReadFileTool.readFileTool, .allowed_for_subagent = true },
-    .{ .name = "write_file", .exec = handle_spawn_sub_agent.execWriteFile, .tool_def = WriteFileTool.writeFileTool, .allowed_for_subagent = true },
-    .{ .name = "text_replace", .exec = handle_spawn_sub_agent.execTextReplace, .tool_def = TextReplaceTool.textReplaceTool, .allowed_for_subagent = true },
-    .{ .name = "search", .exec = handle_spawn_sub_agent.execSearch, .tool_def = SearchTool.searchTool, .allowed_for_subagent = true },
-    .{ .name = "glob", .exec = handle_spawn_sub_agent.execGlob, .tool_def = GlobTool.globTool, .allowed_for_subagent = true },
-    .{ .name = "tree_dir", .exec = handle_spawn_sub_agent.execTreeDir, .tool_def = TreeDirTool.tree_dir_tool, .allowed_for_subagent = true },
+    .{ .name = "bash", .exec = handle_spawn_sub_agent.execBash, .tool_def = bash_tool_mod.bash_tool, .allowed_for_subagent = true },
+    .{ .name = "read_file", .exec = handle_spawn_sub_agent.execReadFile, .tool_def = read_file_mod.read_file_tool, .allowed_for_subagent = true },
+    .{ .name = "write_file", .exec = handle_spawn_sub_agent.execWriteFile, .tool_def = write_file_mod.write_file_tool, .allowed_for_subagent = true },
+    .{ .name = "text_replace", .exec = handle_spawn_sub_agent.execTextReplace, .tool_def = text_replace_mod.text_replace_tool, .allowed_for_subagent = true },
+    .{ .name = "search", .exec = handle_spawn_sub_agent.execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
+    .{ .name = "glob", .exec = handle_spawn_sub_agent.execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
+    .{ .name = "tree_dir", .exec = handle_spawn_sub_agent.execTreeDir, .tool_def = tree_dir_mod.tree_dir_tool, .allowed_for_subagent = true },
 
     // === LSP TOOLS ===
-    .{ .name = "lsp_definition", .exec = handle_spawn_sub_agent.execLspDefinition, .tool_def = LspDefinitionTool, .allowed_for_subagent = true },
-    .{ .name = "lsp_references", .exec = handle_spawn_sub_agent.execLspReferences, .tool_def = LspReferencesTool, .allowed_for_subagent = true },
-    .{ .name = "lsp_workspace_symbol", .exec = handle_spawn_sub_agent.execLspWorkspaceSymbol, .tool_def = LspWorkspaceSymbolTool, .allowed_for_subagent = true },
-    .{ .name = "lsp_document_symbol", .exec = handle_spawn_sub_agent.execLspDocumentSymbol, .tool_def = LspDocumentSymbolTool, .allowed_for_subagent = true },
-    .{ .name = "lsp_hover", .exec = handle_spawn_sub_agent.execLspHover, .tool_def = LspHoverTool, .allowed_for_subagent = true },
+    .{ .name = "lsp_definition", .exec = handle_spawn_sub_agent.execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_references", .exec = handle_spawn_sub_agent.execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_workspace_symbol", .exec = handle_spawn_sub_agent.execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_document_symbol", .exec = handle_spawn_sub_agent.execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_hover", .exec = handle_spawn_sub_agent.execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool, .allowed_for_subagent = true },
 };
 
 // ============================================================================
@@ -87,29 +87,29 @@ pub const MAIN_AGENT_TOOL_REGISTRY: []const ToolInfo = UNIFIED_TOOL_REGISTRY;
 /// Registry for sub-agents (excludes dangerous tools like spawn_sub_agent, set_agent_properties)
 pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
     // === AGENT MANAGEMENT (allowed for sub-agents, auto-save) ===
-    .{ .name = "list_agents", .exec = handle_spawn_sub_agent.execListAgents, .tool_def = ListAgentsTool.listAgentsTool, .allowed_for_subagent = true, .auto_save_agent = true },
-    .{ .name = "change_agent", .exec = handle_spawn_sub_agent.execChangeAgent, .tool_def = ChangeAgentTool.ChangeAgentTool, .allowed_for_subagent = true, .auto_save_agent = true },
+    .{ .name = "list_agents", .exec = handle_spawn_sub_agent.execListAgents, .tool_def = list_agents_mod.list_agents_tool, .allowed_for_subagent = true, .auto_save_agent = true },
+    .{ .name = "change_agent", .exec = handle_spawn_sub_agent.execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
 
     // === SKILL MANAGEMENT ===
-    .{ .name = "list_skills", .exec = handle_spawn_sub_agent.execListSkills, .tool_def = ListSkillsTool.listSkillsTool, .allowed_for_subagent = true },
-    .{ .name = "get_skill", .exec = handle_spawn_sub_agent.execGetSkill, .tool_def = GetSkillTool.getSkillTool, .allowed_for_subagent = true, .auto_save_skill = true },
-    .{ .name = "remove_skill", .exec = handle_spawn_sub_agent.execRemoveSkill, .tool_def = RemoveSkillTool.removeSkillTool, .allowed_for_subagent = true },
+    .{ .name = "list_skills", .exec = handle_spawn_sub_agent.execListSkills, .tool_def = list_skills_mod.list_skills_tool, .allowed_for_subagent = true },
+    .{ .name = "get_skill", .exec = handle_spawn_sub_agent.execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
+    .{ .name = "remove_skill", .exec = handle_spawn_sub_agent.execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool, .allowed_for_subagent = true },
 
     // === FILE OPERATIONS ===
-    .{ .name = "bash", .exec = handle_spawn_sub_agent.execBash, .tool_def = BashTool.bashTool, .allowed_for_subagent = true },
-    .{ .name = "read_file", .exec = handle_spawn_sub_agent.execReadFile, .tool_def = ReadFileTool.readFileTool, .allowed_for_subagent = true },
-    .{ .name = "write_file", .exec = handle_spawn_sub_agent.execWriteFile, .tool_def = WriteFileTool.writeFileTool, .allowed_for_subagent = true },
-    .{ .name = "text_replace", .exec = handle_spawn_sub_agent.execTextReplace, .tool_def = TextReplaceTool.textReplaceTool, .allowed_for_subagent = true },
-    .{ .name = "search", .exec = handle_spawn_sub_agent.execSearch, .tool_def = SearchTool.searchTool, .allowed_for_subagent = true },
-    .{ .name = "glob", .exec = handle_spawn_sub_agent.execGlob, .tool_def = GlobTool.globTool, .allowed_for_subagent = true },
-    .{ .name = "tree_dir", .exec = handle_spawn_sub_agent.execTreeDir, .tool_def = TreeDirTool.tree_dir_tool, .allowed_for_subagent = true },
+    .{ .name = "bash", .exec = handle_spawn_sub_agent.execBash, .tool_def = bash_tool_mod.bash_tool, .allowed_for_subagent = true },
+    .{ .name = "read_file", .exec = handle_spawn_sub_agent.execReadFile, .tool_def = read_file_mod.read_file_tool, .allowed_for_subagent = true },
+    .{ .name = "write_file", .exec = handle_spawn_sub_agent.execWriteFile, .tool_def = write_file_mod.write_file_tool, .allowed_for_subagent = true },
+    .{ .name = "text_replace", .exec = handle_spawn_sub_agent.execTextReplace, .tool_def = text_replace_mod.text_replace_tool, .allowed_for_subagent = true },
+    .{ .name = "search", .exec = handle_spawn_sub_agent.execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
+    .{ .name = "glob", .exec = handle_spawn_sub_agent.execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
+    .{ .name = "tree_dir", .exec = handle_spawn_sub_agent.execTreeDir, .tool_def = tree_dir_mod.tree_dir_tool, .allowed_for_subagent = true },
 
     // === LSP TOOLS ===
-    .{ .name = "lsp_definition", .exec = handle_spawn_sub_agent.execLspDefinition, .tool_def = LspDefinitionTool, .allowed_for_subagent = true },
-    .{ .name = "lsp_references", .exec = handle_spawn_sub_agent.execLspReferences, .tool_def = LspReferencesTool, .allowed_for_subagent = true },
-    .{ .name = "lsp_workspace_symbol", .exec = handle_spawn_sub_agent.execLspWorkspaceSymbol, .tool_def = LspWorkspaceSymbolTool, .allowed_for_subagent = true },
-    .{ .name = "lsp_document_symbol", .exec = handle_spawn_sub_agent.execLspDocumentSymbol, .tool_def = LspDocumentSymbolTool, .allowed_for_subagent = true },
-    .{ .name = "lsp_hover", .exec = handle_spawn_sub_agent.execLspHover, .tool_def = LspHoverTool, .allowed_for_subagent = true },
+    .{ .name = "lsp_definition", .exec = handle_spawn_sub_agent.execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_references", .exec = handle_spawn_sub_agent.execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_workspace_symbol", .exec = handle_spawn_sub_agent.execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_document_symbol", .exec = handle_spawn_sub_agent.execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_hover", .exec = handle_spawn_sub_agent.execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool, .allowed_for_subagent = true },
 };
 
 /// Get tool metadata by name from registry

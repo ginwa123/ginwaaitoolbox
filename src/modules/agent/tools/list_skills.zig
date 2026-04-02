@@ -12,7 +12,7 @@ pub const ListSkillsResult = struct {
 };
 
 /// Tool definition for list_skills
-pub const listSkillsTool = AgentTool{
+pub const list_skills_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "list_skills",

@@ -14,32 +14,28 @@ const change_agent = root_mod.change_agent;
 const set_agent_properties = root_mod.set_agent_properties;
 const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
 const tree_dir = root_mod.tree_dir;
-const lsp_definition_tool = root_mod.tools.lspDefinitionTool;
-const lsp_references_tool = root_mod.tools.lspReferencesTool;
-const lsp_workspace_symbol_tool = root_mod.tools.lspWorkspaceSymbolTool;
-const lsp_document_symbol_tool = root_mod.tools.lspDocumentSymbolTool;
-const lsp_hover_tool = root_mod.tools.lspHoverTool;
+const tools = root_mod.tools;
 
 /// All tools for the main agent
 /// This is the canonical list of tool definitions for the main agent
 pub const all_agent_tools: []const tool_models.AgentTool = &.{
-    set_agent_properties.SetAgentPropertiesTool,
-    spawn_sub_agent_tool.spawnSubAgentTool,
-    list_agents.listAgentsTool,
-    change_agent.ChangeAgentTool,
-    list_skills_tool.listSkillsTool,
-    get_skill_tool.getSkillTool,
-    remove_skill_tool.removeSkillTool,
-    bash_tool.bashTool,
-    read_file_tool.readFileTool,
-    write_file_tool.writeFileTool,
-    text_replace_tool.textReplaceTool,
-    search_tool.searchTool,
-    glob_tool.globTool,
+    set_agent_properties.set_agent_properties_tool,
+    spawn_sub_agent_tool.spawn_sub_agent_tool,
+    list_agents.list_agents_tool,
+    change_agent.change_agent_tool,
+    list_skills_tool.list_skills_tool,
+    get_skill_tool.get_skill_tool,
+    remove_skill_tool.remove_skill_tool,
+    bash_tool.bash_tool,
+    read_file_tool.read_file_tool,
+    write_file_tool.write_file_tool,
+    text_replace_tool.text_replace_tool,
+    search_tool.search_tool,
+    glob_tool.glob_tool,
     tree_dir.tree_dir_tool,
-    lsp_definition_tool,
-    lsp_references_tool,
-    lsp_workspace_symbol_tool,
-    lsp_document_symbol_tool,
-    lsp_hover_tool,
+    tools.lsp_definition_tool,
+    tools.lsp_references_tool,
+    tools.lsp_workspace_symbol_tool,
+    tools.lsp_document_symbol_tool,
+    tools.lsp_hover_tool,
 };

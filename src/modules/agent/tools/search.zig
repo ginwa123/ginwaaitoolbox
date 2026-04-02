@@ -269,7 +269,7 @@ pub fn searchResultToString(allocator: std.mem.Allocator, result: SearchResult) 
     return try output.toOwnedSlice(allocator);
 }
 
-pub const searchTool = AgentTool{
+pub const search_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "search",

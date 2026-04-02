@@ -400,7 +400,7 @@ pub fn lspHoverToString(allocator: std.mem.Allocator, result: LspHoverOutput) ![
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspHoverTool = AgentTool{
+pub const lsp_hover_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_hover",

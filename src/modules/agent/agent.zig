@@ -1,6 +1,6 @@
 const std = @import("std");
 const json = std.json;
-const bashTool = @import("tools/bash.zig").bashTool;
+const bashTool = @import("tools/bash.zig").bash_tool;
 const bashMod = @import("tools/bash.zig");
 const schemas = @import("tools/schemas.zig");
 const BashInput = schemas.BashInput;

@@ -130,7 +130,7 @@ pub fn read_file(
     };
 }
 
-pub fn readFileToString(allocator: std.mem.Allocator, result: ReadFileResult) ![]const u8 {
+pub fn read_file_to_string(allocator: std.mem.Allocator, result: ReadFileResult) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<content>{s}</content>
         \\<sha256>{s}</sha256>
@@ -146,7 +146,7 @@ pub fn readFileToString(allocator: std.mem.Allocator, result: ReadFileResult) ![
     });
 }
 
-pub const readFileTool = AgentTool{
+pub const read_file_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "read_file",

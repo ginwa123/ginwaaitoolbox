@@ -19,7 +19,7 @@ pub const RemoveSkillResult = struct {
 };
 
 /// Tool definition for remove_skill
-pub const removeSkillTool = AgentTool{
+pub const remove_skill_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "remove_skill",

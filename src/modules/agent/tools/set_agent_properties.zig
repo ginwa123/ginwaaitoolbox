@@ -18,7 +18,7 @@ pub const SetAgentPropertiesResult = struct {
     is_thinking: ?bool,
 };
 
-pub const SetAgentPropertiesTool = AgentTool{
+pub const set_agent_properties_tool = AgentTool{
     .type = "function",
     .function = AgentToolFunction{
         .name = "set_agent_properties",

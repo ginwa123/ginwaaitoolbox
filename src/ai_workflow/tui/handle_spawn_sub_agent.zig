@@ -20,19 +20,19 @@ const save_message = @import("save_message.zig").save_message;
 const session_helpers = @import("session_helpers.zig");
 const getCurrentAgentBySessionId = session_helpers.get_current_agent_by_session_id;
 const handle_tool = @import("handle_tool.zig");
-const BashTool = root_mod.bash_tool;
-const ReadFileTool = root_mod.read_file;
-const SearchTool = root_mod.search_tool;
-const GlobTool = root_mod.glob_tool;
-const TextReplaceTool = root_mod.text_replace_tool;
-const WriteFileTool = root_mod.write_file;
-const ListSkillsTool = root_mod.list_skills_tool;
-const GetSkillTool = root_mod.get_skill_tool;
-const RemoveSkillTool = root_mod.remove_skill_tool;
-const ListAgentsTool = root_mod.list_agents;
-const ChangeAgentTool = root_mod.change_agent;
-const TreeDirTool = root_mod.tree_dir;
-const LspDefinitionTool = root_mod.tools.lspDefinitionTool;
+const bash_tool_mod = root_mod.bash_tool;
+const read_file_mod = root_mod.read_file;
+const search_tool_mod = root_mod.search_tool;
+const glob_tool_mod = root_mod.glob_tool;
+const text_replace_mod = root_mod.text_replace_tool;
+const write_file_mod = root_mod.write_file;
+const list_skills_mod = root_mod.list_skills_tool;
+const get_skill_mod = root_mod.get_skill_tool;
+const remove_skill_mod = root_mod.remove_skill_tool;
+const list_agents_mod = root_mod.list_agents;
+const change_agent_mod = root_mod.change_agent;
+const tree_dir_mod = root_mod.tree_dir;
+const tools_mod = root_mod.tools;
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
 const handle_glob_tool = @import("handle_glob_tool.zig");
@@ -173,10 +173,10 @@ pub fn execTreeDir(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite
     // Handle empty arguments - treat as empty JSON object
     const args = tc.function.arguments;
     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
-    const parsed = try TreeDirTool.parseTreeDirInput(allocator, args_to_parse);
-    var result = try TreeDirTool.execute_tree_dir(allocator, parsed);
+    const parsed = try tree_dir_mod.parseTreeDirInput(allocator, args_to_parse);
+    var result = try tree_dir_mod.execute_tree_dir(allocator, parsed);
     defer result.deinit(allocator);
-    return TreeDirTool.tree_dir_result_to_string(allocator, result);
+    return tree_dir_mod.tree_dir_result_to_string(allocator, result);
 }
 
 /// MCP tool executor - placeholder for dynamic MCP tool handling

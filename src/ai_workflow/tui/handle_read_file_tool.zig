@@ -33,7 +33,7 @@ pub fn handle_read_file_tool_run(
     const read_result = try read_file_mod.read_file(allocator, parsed.value.path, read_opts);
     defer read_result.deinit(allocator);
 
-    const res_content = try read_file_mod.readFileToString(allocator, read_result);
+    const res_content = try read_file_mod.read_file_to_string(allocator, read_result);
 
     // Wrap result in XML with path for proper TUI display
     const xml_result = try std.fmt.allocPrint(allocator,

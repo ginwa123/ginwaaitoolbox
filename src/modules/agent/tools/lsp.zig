@@ -481,7 +481,7 @@ pub fn lspDefinitionToString(allocator: std.mem.Allocator, result: LspDefinition
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspDefinitionTool = AgentTool{
+pub const lsp_definition_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_definition",
@@ -626,7 +626,7 @@ pub fn lspReferencesToString(allocator: std.mem.Allocator, result: LspReferences
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspReferencesTool = AgentTool{
+pub const lsp_references_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_references",
@@ -812,7 +812,7 @@ pub fn lspWorkspaceSymbolToString(allocator: std.mem.Allocator, result: LspWorks
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspWorkspaceSymbolTool = AgentTool{
+pub const lsp_workspace_symbol_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_workspace_symbol",
@@ -1052,7 +1052,7 @@ pub fn lspDocumentSymbolToString(allocator: std.mem.Allocator, result: LspDocume
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspDocumentSymbolTool = AgentTool{
+pub const lsp_document_symbol_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_document_symbol",
@@ -1208,7 +1208,7 @@ pub fn lspHoverToString(allocator: std.mem.Allocator, result: LspHoverOutput) ![
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspHoverTool = AgentTool{
+pub const lsp_hover_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_hover",

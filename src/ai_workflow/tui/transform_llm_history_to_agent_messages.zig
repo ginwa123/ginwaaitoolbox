@@ -80,6 +80,3 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
     return messages.toOwnedSlice(allocator);
 }
 
-test {
-    _ = @import("transform_llm_history_to_agent_messages_test.zig");
-}

@@ -176,7 +176,7 @@ pub const ChangeAgentResult = struct {
 };
 
 /// Tool definition for change_agent
-pub const ChangeAgentTool = AgentTool{
+pub const change_agent_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "change_agent",

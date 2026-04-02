@@ -73,7 +73,7 @@ pub fn writeFileToString(allocator: std.mem.Allocator, result: WriteFileResult) 
     return std.fmt.allocPrint(allocator, "<sha256>{s}</sha256>", .{result.sha256});
 }
 
-pub const writeFileTool = AgentTool{
+pub const write_file_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "write_file",

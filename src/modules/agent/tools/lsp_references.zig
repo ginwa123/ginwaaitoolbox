@@ -368,7 +368,7 @@ pub fn lspReferencesToString(allocator: std.mem.Allocator, result: LspReferences
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspReferencesTool = AgentTool{
+pub const lsp_references_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_references",

@@ -489,7 +489,7 @@ pub fn lspDocumentSymbolToString(allocator: std.mem.Allocator, result: LspDocume
     return try output.toOwnedSlice(allocator);
 }
 
-pub const lspDocumentSymbolTool = AgentTool{
+pub const lsp_document_symbol_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_document_symbol",

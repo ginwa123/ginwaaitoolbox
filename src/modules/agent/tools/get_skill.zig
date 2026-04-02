@@ -23,7 +23,7 @@ pub const GetSkillResult = struct {
 };
 
 /// Tool definition for get_skill
-pub const getSkillTool = AgentTool{
+pub const get_skill_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "get_skill",

@@ -489,7 +489,7 @@ pub fn lspDefinitionToString(allocator: std.mem.Allocator, result: LspDefinition
     }
 }
 
-pub const lspDefinitionTool = AgentTool{
+pub const lsp_definition_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "lsp_definition",
