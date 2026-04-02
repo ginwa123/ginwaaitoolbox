@@ -17,16 +17,11 @@ pub fn handle_tree_dir_tool_run(
     const args = tool_call.function.arguments;
     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
 
-    // Parse arguments JSON to TreeDirInput
-    const parsed = try std.json.parseFromSlice(
-        tree_dir_mod.TreeDirInput,
-        allocator,
-        args_to_parse,
-        .{ .allocate = .alloc_always },
-    );
-    defer parsed.deinit();
+    // Parse arguments JSON to TreeDirInput using owned strings
+    var input = try tree_dir_mod.parseTreeDirInput(allocator, args_to_parse);
+    errdefer tree_dir_mod.freeTreeDirInput(allocator, &input);
 
-    var tree_result = try tree_dir_mod.execute_tree_dir(allocator, parsed.value);
+    var tree_result = try tree_dir_mod.execute_tree_dir(allocator, input);
     defer tree_result.deinit(allocator);
 
     // Convert tree result to string format

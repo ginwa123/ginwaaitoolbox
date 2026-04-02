@@ -209,6 +209,39 @@ pub fn execSetAgentProperties(allocator: std.mem.Allocator, tc: agent.ToolCall, 
     return "set_agent_properties should not be called from sub-agent context";
 }
 
+// Placeholder LSP exec functions (TODO: implement when lsp.zig is complete)
+pub fn execLspReferences(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    return "lsp_references not implemented";
+}
+
+pub fn execLspWorkspaceSymbol(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    return "lsp_workspace_symbol not implemented";
+}
+
+pub fn execLspDocumentSymbol(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    return "lsp_document_symbol not implemented";
+}
+
+pub fn execLspHover(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    return "lsp_hover not implemented";
+}
+
 // Import tool registry for unified tool definitions
 const tool_registry = @import("tool_registry.zig");
 
@@ -331,7 +364,7 @@ pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
 pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []const u8, mcp_tools: ?[]const tool_models.AgentTool) ![]const tool_models.AgentTool {
     var result = std.ArrayList(tool_models.AgentTool).empty;
 
-    for (SUB_AGENT_TOOL_REGISTRY) |entry| {
+    for (tool_registry.SUB_AGENT_TOOL_REGISTRY) |entry| {
         // If no filter specified, include all tools
         if (allowed_tools == null) {
             try result.append(allocator, entry.tool_def);
@@ -835,11 +868,8 @@ pub fn handle_spawn_sub_agent_run(
     const w = combined_result.writer(allocator);
 
     for (parsed.sub_agents, 0..) |sub_agent, i| {
-        try w.print("=== {s} ===\n", .{sub_agent.name});
-        if (i < results.items.len) {
-            try w.writeAll(results.items[i]);
-        }
-        try w.writeByte('\n');
+        try w.print("<name>{s}</name>\n", .{sub_agent.name});
+        try w.print("<result>{s}</result>\n", .{if (i < results.items.len) results.items[i] else ""});
     }
 
     return try combined_result.toOwnedSlice(allocator);

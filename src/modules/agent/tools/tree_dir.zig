@@ -54,12 +54,46 @@ pub const TreeDirResult = struct {
 };
 
 /// Parse tree_dir input from JSON string.
+/// Returns an owned TreeDirInput with duplicated strings to avoid use-after-free.
 pub fn parseTreeDirInput(allocator: std.mem.Allocator, json_str: []const u8) !TreeDirInput {
     const parsed = try std.json.parseFromSlice(TreeDirInput, allocator, json_str, .{
         .allocate = .alloc_always,
     });
     defer parsed.deinit();
-    return parsed.value;
+
+    // Duplicate strings to avoid use-after-free when parsed is deinit'd
+    const root_path_dup = try allocator.dupe(u8, parsed.value.root_path);
+    errdefer allocator.free(root_path_dup);
+
+    var ignore_globs_dup: ?[]const []const u8 = null;
+    if (parsed.value.ignore_globs) |globs| {
+        const globs_dup = try allocator.alloc([]const u8, globs.len);
+        errdefer {
+            for (globs_dup[0..]) |g| allocator.free(g);
+            allocator.free(globs_dup);
+        }
+        for (globs, 0..) |g, i| {
+            globs_dup[i] = try allocator.dupe(u8, g);
+        }
+        ignore_globs_dup = globs_dup;
+    }
+
+    return TreeDirInput{
+        .root_path = root_path_dup,
+        .max_depth = parsed.value.max_depth,
+        .max_results = parsed.value.max_results,
+        .hidden = parsed.value.hidden,
+        .ignore_globs = ignore_globs_dup,
+    };
+}
+
+/// Free resources in TreeDirInput (call after parseTreeDirInput if not passed to execute_tree_dir).
+pub fn freeTreeDirInput(allocator: std.mem.Allocator, input: *TreeDirInput) void {
+    allocator.free(input.root_path);
+    if (input.ignore_globs) |globs| {
+        for (globs) |g| allocator.free(g);
+        allocator.free(globs);
+    }
 }
 
 /// Execute tree_dir traversal using `fd` CLI tool.
@@ -100,12 +134,16 @@ pub fn execute_tree_dir(allocator: std.mem.Allocator, input: TreeDirInput) !Tree
     defer allocator.free(fd_result.stdout);
     defer allocator.free(fd_result.stderr);
 
-    // Check for fd errors (no stdout but has stderr = error)
-    if (fd_result.stderr.len > 0 and fd_result.stdout.len == 0) {
+    // Check for fd errors - fd outputs errors to stdout with "[fd error]" prefix
+    // Also check stderr and exit code for robustness
+    const has_fd_error = std.mem.containsAtLeast(u8, fd_result.stdout, 1, "[fd error]");
+    const has_stderr_error = fd_result.stderr.len > 0;
+    if (has_fd_error or has_stderr_error) {
+        const err_msg = if (has_fd_error) fd_result.stdout else fd_result.stderr;
         return TreeDirResult{
             .entries = .{},
             .total_entries = 0,
-            .err = try allocator.dupe(u8, fd_result.stderr),
+            .err = try allocator.dupe(u8, err_msg),
         };
     }
 
@@ -181,6 +219,13 @@ pub fn execute_tree_dir(allocator: std.mem.Allocator, input: TreeDirInput) !Tree
         if (input.max_results) |max| {
             if (entries.items.len >= max) break;
         }
+    }
+
+    // Free input strings since we no longer need them
+    allocator.free(input.root_path);
+    if (input.ignore_globs) |globs| {
+        for (globs) |g| allocator.free(g);
+        allocator.free(globs);
     }
 
     return TreeDirResult{
