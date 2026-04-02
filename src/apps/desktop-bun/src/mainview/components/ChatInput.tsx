@@ -2,6 +2,7 @@ import { type Component, createSignal } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import { refreshSessionList } from '../store/sessionStore';
 import { electroview } from '../main';
+import { log } from '../utils/logger';
 
 interface ChatInputProps {
   sessionId?: string; // If provided, sends to existing session via /api/llm/run
@@ -25,12 +26,12 @@ const ChatInput: Component<ChatInputProps> = (props) => {
       try {
         if (electroview?.rpc?.request?.getCwd) {
           cwdSession = await electroview.rpc.request.getCwd();
-          console.log('[ChatInput] Got cwd from Bun:', cwdSession);
+          log.info('[ChatInput] Got cwd from Bun: ' + cwdSession);
         } else {
-          console.warn('[ChatInput] getCwd not available on electroview.rpc.request');
+          log.warn('[ChatInput] getCwd not available on electroview.rpc.request');
         }
       } catch (err) {
-        console.warn('[ChatInput] Failed to get cwd from Bun:', err);
+        log.warn('[ChatInput] Failed to get cwd from Bun: ' + String(err));
       }
 
       // Use /api/session for both new and existing sessions
@@ -52,28 +53,28 @@ const ChatInput: Component<ChatInputProps> = (props) => {
 
       if (res.ok) {
         const data = await res.json();
-        console.log('[ChatInput] Message sent:', data);
+        log.info('[ChatInput] Message sent: ' + JSON.stringify(data));
         setText('');
 
         if (props.sessionId) {
           // Existing session - refresh sidebar after delay
           setTimeout(() => {
             refreshSessionList();
-            console.log('[ChatInput] Sidebar refreshed after delay');
+            log.info('[ChatInput] Sidebar refreshed after delay');
           }, 1000);
         } else {
           // New session - navigate to it, then refresh sidebar
           navigate(`/session/${data.id}`, { replace: true });
           setTimeout(() => {
             refreshSessionList();
-            console.log('[ChatInput] Sidebar refreshed after delay');
+            log.info('[ChatInput] Sidebar refreshed after delay');
           }, 1000);
         }
       } else {
-        console.error('[ChatInput] Error:', await res.text());
+        log.error('[ChatInput] Error: ' + await res.text());
       }
     } catch (err) {
-      console.error('[ChatInput] Network error:', err);
+      log.error('[ChatInput] Network error: ' + String(err));
     } finally {
       setSending(false);
     }

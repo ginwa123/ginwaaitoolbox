@@ -1,16 +1,17 @@
 import type { Component } from 'solid-js';
+import { log } from '../utils/logger';
 
 const Header: Component = () => {
   const handleMinimize = () => {
-    console.log('Minimize clicked');
+    log.info('Minimize clicked');
   };
 
   const handleMaximize = () => {
-    console.log('Maximize clicked');
+    log.info('Maximize clicked');
   };
 
   const handleClose = () => {
-    console.log('Close clicked');
+    log.info('Close clicked');
   };
 
   return (

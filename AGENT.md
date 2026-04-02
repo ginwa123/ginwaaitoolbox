@@ -153,6 +153,17 @@ cd src/apps/desktop-bun && bun run src/bun/index.ts
 - Never return stack-allocated slices from functions
 - **Memory:** Prefer `ArenaAllocator` over manual `free()`
 
+## Logging Conventions
+
+**Desktop Bun Frontend (`src/apps/desktop-bun/`):**
+- **Use `logger.ts`** — Never use `console.log/warn/error`
+- Import: `import { log } from '../utils/logger';`
+- Usage: `log.info('message')`, `log.warn('warning')`, `log.error('error')`
+- Logger sends logs to Bun console via RPC for centralized logging
+
+**Zig Backend:**
+- Use `std.log` or the project's structured logger module
+
 ## JSON Conventions
 
 - **JSON keys:** Always `snake_case` (e.g., `session_id`, `created_at`, `is_input`)
@@ -309,3 +320,205 @@ for testing use this command always
 
 # Mandatory
 - Dont ever kill the process port 8081 !!!
+
+---
+
+# 🪞 Self-Learning & Self-Review (MANDATORY)
+
+## ⚡ Self-Review Trigger Rule
+
+**AFTER EVERY TASK COMPLETION**, before declaring success, perform self-review:
+
+```
+## Self-Review Checklist
+1. ✅ TASK COMPLETED — Did I actually solve the user's request?
+2. 🔍 PROCESS AUDIT — Did I follow best practices?
+   - [ ] Loaded relevant skills BEFORE starting?
+   - [ ] Used proper tools (read_file vs bash cat)?
+   - [ ] Researched unknown APIs instead of guessing?
+   - [ ] Spawned sub-agents for parallel work?
+   - [ ] Delegated specialized work via change_agent?
+3. 📝 KNOWLEDGE CAPTURE — What did I learn?
+   - [ ] Any new patterns discovered?
+   - [ ] Any mistakes made that should be documented?
+   - [ ] Any skill gaps identified?
+4. 🔄 IMPROVEMENT — What would I do differently?
+   - [ ] Any tool usage that was suboptimal?
+   - [ ] Any step that could be automated?
+   - [ ] Any prompt improvements needed?
+```
+
+## 📚 Self-Learning Process
+
+### When to Trigger Learning
+| Event | Action |
+|-------|--------|
+| Task completed | Run self-review checklist |
+| Error encountered | Document in MEMORY.md, update relevant skill |
+| New pattern discovered | Add to skill or MEMORY.md |
+| Skill gap found | Flag for skill creation |
+| Repeated mistake | Create prevention rule |
+
+### Learning Capture Format
+
+**For MEMORY.md:**
+```markdown
+## [Category] Lesson Learned
+**Date:** YYYY-MM-DD  
+**Context:** What I was trying to do  
+**Mistake/Insight:** What went wrong/right  
+**Prevention:** How to avoid in future  
+```
+
+**For Skills:**
+- Update skill description if pattern discovered
+- Add new patterns to skill content
+- Flag incomplete skills for enhancement
+
+## 🎯 Agentic Coding Process Review
+
+### Standard Workflow (What I Should Follow)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1. RECEIVE TASK                                                │
+│     └── Analyze: What type? What tools? What skills?           │
+│              ↓                                                   │
+│  2. DISCOVER SKILLS                                             │
+│     └── list_skills → find matching skill → get_skill          │
+│              ↓                                                   │
+│  3. RESEARCH (if needed)                                        │
+│     └── Context7, LSP, web search — NEVER guess               │
+│              ↓                                                   │
+│  4. PLAN (if complex)                                           │
+│     └── Plan block → "yes/proceed" → execute                   │
+│              ↓                                                   │
+│  5. EXECUTE                                                     │
+│     └── Use tools, spawn sub-agents, change_agent for work    │
+│              ↓                                                   │
+│  6. VERIFY                                                      │
+│     └── Build, test, read-back changes                         │
+│              ↓                                                   │
+│  7. SELF-REVIEW ⭐                                               │
+│     └── Run checklist, capture learnings, update memory        │
+│              ↓                                                   │
+│  8. REPORT                                                      │
+│     └── Clear summary with evidence                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Common Process Mistakes to Avoid
+
+| ❌ WRONG | ✅ CORRECT |
+|----------|------------|
+| Starting without loading skills | Always load skills first |
+| Using bash for file reading | Use `read_file` tool |
+| Guessing library APIs | Research with Context7/LSP |
+| Sequential parallel work | Spawn sub-agents |
+| "I'll do this myself" | Delegate with change_agent |
+| Declaring success without proof | Show build/test output |
+| Skipping self-review | Mandatory after every task |
+
+## 💡 Advice for AI Agentic Systems
+
+### Essential Self-Improvement Mechanisms
+
+1. **Persistent Memory (MEMORY.md)**
+   - Capture mistakes immediately when they occur
+   - Document patterns, not just errors
+   - Keep concise — actionable insights only
+
+2. **Skill System**
+   - Skills should be LOADED before work, not during
+   - Skill triggers should be automatic based on file type/task
+   - On-demand skill creation when gap is found
+
+3. **Mistake → Prevention Loop**
+   ```
+   Error occurs → Document in MEMORY.md → 
+   Identify root cause → Update skill/prompt → 
+   Prevention rule in AGENT.md → Future prevention
+   ```
+
+4. **Tool Preference Hierarchy**
+   - Built-in tools first (LSP, read_file, glob, search)
+   - Bash only for complex shell operations
+   - Sub-agents for parallel/independent work
+
+5. **Self-Awareness Prompts**
+   - Explicit "you/I" detection → delegate immediately
+   - "I'm not sure" → trigger research mode
+   - "Done" → trigger self-review
+
+### What Makes Agentic Coding "Easy"
+
+| Factor | Implementation |
+|--------|---------------|
+| **Fast start** | Skills auto-load based on context |
+| **No re-learning** | MEMORY.md persists across sessions |
+| **Clear boundaries** | change_agent for specialized work |
+| **Proof over claims** | Always show evidence |
+| **Continuous improvement** | Self-review after every task |
+| **Error resilience** | Document → Learn → Prevent |
+
+## 🔄 The Self-Learning Loop
+
+```
+    ┌──────────────────────────────────────────┐
+    │                                          │
+    ▼                                          │
+[TASK] → [SKILL LOAD] → [RESEARCH] → [EXECUTE]│
+    ▲                              │           │
+    │                              ▼           │
+    │                         [VERIFIED?]     │
+    │                            │    │       │
+    │                       YES  │    │ NO    │
+    │                        │    │    │       │
+    │                        ▼    │    ▼       │
+    │                    [DONE]   │  [FIX]     │
+    │                        │    │    │       │
+    │                        │    │    ▼       │
+    │                        │    │  [RETRY]   │
+    │                        │    │    │       │
+    │                        ▼    ▼    │       │
+    │                   [SELF-REVIEW]───┘       │
+    │                        │                  │
+    │                        ▼                  │
+    │              ┌─────────────────┐          │
+    │              │ CAPTURE LEARNED │          │
+    │              │ • MEMORY.md     │          │
+    │              │ • Update skills │          │
+    │              │ • New patterns  │          │
+    │              └─────────────────┘          │
+    │                        │                  │
+    └────────────────────────┴──────────────────┘
+              (Next task benefits from learnings)
+```
+
+## 📋 Quick Reference: Self-Review Questions
+
+Before declaring a task complete, ask:
+
+1. **Did I solve the actual problem?**
+   - Not just the symptoms, but the root cause?
+
+2. **Did I use the right approach?**
+   - Could this be simpler?
+   - Did I use skills appropriately?
+
+3. **Did I leave any traces?**
+   - Tests passing?
+   - Build succeeding?
+   - Documentation updated?
+
+4. **What did this teach me?**
+   - New pattern? → Add to skill
+   - Mistake? → Document in MEMORY.md
+   - Gap? → Flag for skill creation
+
+5. **Would I recommend this approach?**
+   - If no, what's the better way?
+
+---
+
+**Remember:** The goal is not just to complete tasks — it's to get better at completing tasks.

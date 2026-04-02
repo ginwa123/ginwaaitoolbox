@@ -1,6 +1,7 @@
 import { useNavigate } from '@solidjs/router';
 import { type Component, For, createSignal, onCleanup, onMount, createEffect } from 'solid-js';
 import { baseUrl, initBaseUrl } from '../utils/baseUrl';
+import { log } from '../utils/logger';
 import { getSessionListVersion } from '../store/sessionStore';
 import { FolderPicker } from './FolderPicker';
 
@@ -44,7 +45,7 @@ const Sidebar: Component = () => {
     const version = sessionListVersion();
     const folder = selectedFolder();
     const sessionDir = folder !== '/' ? folder : undefined;
-    console.log('[Sidebar] Session list version changed:', version, 'Folder:', folder);
+    log.info('[Sidebar] Session list version changed: ' + version + ' Folder: ' + folder);
     // Update current filter and reset
     setCurrentSessionDir(sessionDir);
     setSessions([]);
@@ -78,7 +79,7 @@ const Sidebar: Component = () => {
           : `${baseUrl()}/api/session?limit=20`;
       }
       
-      console.log('[Sidebar] fetchSessions called - url:', url, '| sessionDir:', sessionDir);
+      log.info('[Sidebar] fetchSessions called - url: ' + url + ' | sessionDir: ' + sessionDir);
 
       const res = await fetch(url, {
         method: 'GET',
@@ -101,7 +102,7 @@ const Sidebar: Component = () => {
       setHasMore(data.has_more ?? false);
       setNextCursor(data.next_cursor ?? null);
     } catch (err) {
-      console.error('Failed to load sessions:', err);
+      log.error('[Sidebar] Failed to load sessions: ' + String(err));
       setError(err instanceof Error ? err.message : String(err));
     }
   };
@@ -109,7 +110,7 @@ const Sidebar: Component = () => {
   const lazyLoadMore = async () => {
     if (!hasMore() || loadingMore() || !nextCursor()) return;
     setLoadingMore(true);
-    console.log('[Sidebar] lazyLoadMore - currentSessionDir:', currentSessionDir());
+    log.info('[Sidebar] lazyLoadMore - currentSessionDir: ' + currentSessionDir());
     // Pass current session_dir filter for pagination
     await fetchSessions(nextCursor()!, currentSessionDir());
     setLoadingMore(false);
@@ -210,11 +211,11 @@ const Sidebar: Component = () => {
 
   // Handle folder selection
   const handleFolderSelect = (path: string) => {
-    console.log('[Sidebar] Folder selected:', path);
+    log.info('[Sidebar] Folder selected: ' + path);
     setSelectedFolder(path);
     setFolderPickerOpen(false);
     // Pagination state will be reset by createEffect when selectedFolder changes
-    console.log('[Sidebar] Selected folder set to:', path, '| currentSessionDir will be:', path !== '/' ? path : undefined);
+    log.info('[Sidebar] Selected folder set to: ' + path + ' | currentSessionDir will be: ' + (path !== '/' ? path : 'undefined'));
   };
 
   return (

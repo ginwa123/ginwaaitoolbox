@@ -277,7 +277,7 @@ export class SSEClient {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = this.reconnectDelay * this.reconnectAttempts;
-      console.log(`[SSEClient] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+      log.info('[SSEClient] Reconnecting in ' + delay + 'ms (attempt ' + this.reconnectAttempts + ')');
       setTimeout(() => {
         if (this.sessionId && !this.isIntentionalDisconnect) {
           this.connect(this.sessionId);
