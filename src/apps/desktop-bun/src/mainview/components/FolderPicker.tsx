@@ -1,4 +1,4 @@
-import { type Component, Show, For, createSignal, createEffect } from 'solid-js';
+import { type Component, Show, For, createSignal, createEffect, onCleanup } from 'solid-js';
 import { baseUrl } from '../utils/baseUrl';
 
 export interface FolderPickerProps {
@@ -24,6 +24,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
   const [loading, setLoading] = createSignal(false);
   const [showHidden, setShowHidden] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
   const fetchDirectory = async (path: string) => {
     setLoading(true);
@@ -52,6 +53,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
   createEffect(() => {
     if (props.isOpen) {
       fetchDirectory(currentPath());
+      setFocusedIndex(-1);
     }
   });
 
@@ -65,6 +67,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     if (entry.isDirectory) {
       setCurrentPath(entry.path);
       setSelectedPath(null);
+      setFocusedIndex(-1);
     }
   };
 
@@ -73,6 +76,57 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
       setSelectedPath(entry.path);
     }
   };
+
+  // Keyboard navigation
+  const handleKeyDown = (e: KeyboardEvent) => {
+    const items = entries().filter((e) => e.isDirectory); // Only navigate folders
+    const currentFocused = focusedIndex();
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setFocusedIndex((prev) => Math.min(prev + 1, items.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setFocusedIndex((prev) => Math.max(prev - 1, 0));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (currentFocused >= 0 && items[currentFocused]) {
+          const entry = items[currentFocused];
+          if (entry.isDirectory) {
+            handleDoubleClick(entry);
+          }
+        } else if (selectedPath()) {
+          handleSelect();
+        }
+        break;
+      case 'Escape':
+        e.preventDefault();
+        props.onClose();
+        break;
+    }
+  };
+
+  // Add keyboard listener when modal is open
+  createEffect(() => {
+    if (props.isOpen) {
+      document.addEventListener('keydown', handleKeyDown);
+      onCleanup(() => {
+        document.removeEventListener('keydown', handleKeyDown);
+      });
+    }
+  });
+
+  // Update selected path when focused index changes
+  createEffect(() => {
+    const idx = focusedIndex();
+    const items = entries().filter((e) => e.isDirectory);
+    if (idx >= 0 && items[idx]) {
+      setSelectedPath(items[idx].path);
+    }
+  });
 
   // Breadcrumb navigation
   const pathSegments = () => {
@@ -156,26 +210,35 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
             <Show when={!loading() && !error()}>
               <div class="space-y-1">
                 <For each={entries()}>
-                  {(entry) => (
-                    <div
-                      onClick={() => handleClick(entry)}
-                      onDblClick={() => handleDoubleClick(entry)}
-                      class={`
-                        flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors
-                        ${
-                          selectedPath() === entry.path
-                            ? 'bg-[#18181b] border border-[#fbbf24]'
-                            : 'border border-transparent hover:bg-[#18181b]'
-                        }
-                        ${!entry.isDirectory ? 'opacity-50' : ''}
-                      `}
-                    >
-                      <span class="text-[#fbbf24]">
-                        {entry.isDirectory ? '📁' : '📄'}
-                      </span>
-                      <span class="text-sm font-mono text-[#e4e4e7]">{entry.name}</span>
-                    </div>
-                  )}
+                  {(entry, index) => {
+                    const folderIndex = entries()
+                      .slice(0, index())
+                      .filter((e) => e.isDirectory).length;
+                    const isFocused = () => focusedIndex() === folderIndex && entry.isDirectory;
+
+                    return (
+                      <div
+                        onClick={() => handleClick(entry)}
+                        onDblClick={() => handleDoubleClick(entry)}
+                        class={`
+                          flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors
+                          ${
+                            selectedPath() === entry.path
+                              ? 'bg-[#18181b] border border-[#fbbf24]'
+                              : isFocused()
+                                ? 'bg-[#18181b] border border-[#fbbf24]'
+                                : 'border border-transparent hover:bg-[#18181b]'
+                          }
+                          ${!entry.isDirectory ? 'opacity-50' : ''}
+                        `}
+                      >
+                        <span class="text-[#fbbf24]">
+                          {entry.isDirectory ? '📁' : '📄'}
+                        </span>
+                        <span class="text-sm font-mono text-[#e4e4e7]">{entry.name}</span>
+                      </div>
+                    );
+                  }}
                 </For>
               </div>
             </Show>

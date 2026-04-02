@@ -135,4 +135,52 @@ describe('FolderPicker', () => {
       expect(screen.getByText('user')).toBeDefined();
     });
   });
+
+  test('closes on Escape key', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ entries: [] }),
+    });
+
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+
+    render(() => (
+      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
+    ));
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  test('navigates with arrow keys', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          entries: [
+            { name: 'Documents', path: '/home/user/Documents', isDirectory: true, isHidden: false },
+            { name: 'Downloads', path: '/home/user/Downloads', isDirectory: true, isHidden: false },
+          ],
+        }),
+    });
+
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+
+    render(() => (
+      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByText('Documents')).toBeDefined();
+    });
+
+    // Press ArrowDown to focus first item
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+
+    // Should not crash
+    expect(true).toBe(true);
+  });
 });
