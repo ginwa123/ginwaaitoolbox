@@ -44,6 +44,19 @@ export interface CreateSessionResponse {
 }
 
 // ============================================================================
+// Filesystem Types
+// ============================================================================
+
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  isHidden: boolean;
+  modifiedAt: string;
+  size: number;
+}
+
+// ============================================================================
 // Full-Duplex RPC Schema
 // ============================================================================
 //
@@ -102,6 +115,31 @@ export type DemoRPCType = {
       getCwd: {
         params: undefined;
         response: string;
+      };
+
+      // === FILESYSTEM OPERATIONS ===
+      // List directory contents
+      listDirectory: {
+        params: { path: string; showHidden: boolean };
+        response: DirectoryEntry[];
+      };
+
+      // Create a new folder
+      createFolder: {
+        params: { path: string; name: string };
+        response: { success: boolean; path: string; error?: string };
+      };
+
+      // Rename/move a folder
+      renameFolder: {
+        params: { oldPath: string; newName: string };
+        response: { success: boolean; newPath: string; error?: string };
+      };
+
+      // Delete an empty folder
+      deleteFolder: {
+        params: { path: string };
+        response: { success: boolean; error?: string };
       };
     };
 
