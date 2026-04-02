@@ -312,7 +312,7 @@ const Sidebar: Component = () => {
       {/* Folder Picker Modal */}
       <FolderPicker
         isOpen={folderPickerOpen()}
-        initialPath={selectedFolder()}
+        initialPath={getSelectedFolder()}
         onSelect={handleFolderSelect}
         onClose={() => setFolderPickerOpen(false)}
       />
