@@ -4,6 +4,7 @@
 // Split by purpose:
 //   - core: Universal rules, auto-fix
 //   - agent: Main orchestration directive
+//   - parallel: MANDATORY parallel work rules
 //   - research: Auto-research, tools
 //   - specialized: change_agent rules
 //   - subagent: Sub-agent brief
@@ -13,6 +14,7 @@
 
 pub const core = @import("core.zig");
 pub const agent = @import("agent.zig");
+pub const parallel = @import("parallel.zig");
 pub const research = @import("research.zig");
 pub const specialized = @import("specialized.zig");
 pub const subagent = @import("subagent.zig");
@@ -25,6 +27,15 @@ pub const UniversalRules = core.UniversalRules;
 pub const PromptAutoFix = core.PromptAutoFix;
 
 pub const Agent = agent.Agent;
+
+pub const ParallelMandatory = parallel.ParallelMandatory;
+pub const ParallelWorkflow = parallel.ParallelWorkflow;
+pub const ParallelExamples = parallel.ParallelExamples;
+pub const ParallelAntiPatterns = parallel.ParallelAntiPatterns;
+pub const ParallelSubAgentGuidance = parallel.ParallelSubAgentGuidance;
+pub const ParallelSkillReminder = parallel.ParallelSkillReminder;
+
+pub const ParallelMandatoryIntro = research.ParallelMandatoryIntro;
 
 pub const Research = research.Research;
 pub const ResearchTriggers = research.ResearchTriggers;

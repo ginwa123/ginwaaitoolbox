@@ -188,13 +188,41 @@ cd src/apps/desktop-bun && bun run src/bun/index.ts
 
 Prompts split by purpose in `src/modules/agent/prompts/`:
 - `core.zig` — Universal rules, auto-fix
-- `agent.zig` — Main orchestration directive
-- `research.zig` — Auto-research, tools
+- `agent.zig` — Main orchestration directive (MANDATORY parallel!)
+- `parallel.zig` — **PARALLEL WORK IS MANDATORY** rules
+- `research.zig` — Auto-research, tools (MANDATORY parallel for 2+ tasks!)
 - `specialized.zig` — change_agent rules
 - `subagent.zig` — Sub-agent brief
 - `execution.zig` — Classification, execution, escalation
 - `memory.zig` — Tasks, AGENTS.md, git
 - `special.zig` — CompactionAgent, DestroyIdea
+
+## 🚨 PARALLEL WORK IS MANDATORY ⚠️
+
+**⚠️ CRITICAL: `spawn_sub_agent` is NOT optional for 2+ independent tasks.**
+
+| When | Action (MANDATORY) |
+|------|-------------------|
+| Research 2+ topics | Spawn 1 agent per topic |
+| Read 2+ files | Spawn 1 agent per file |
+| Search 2+ patterns | Spawn 1 agent per pattern |
+| Debug 2+ failures | Spawn 1 agent per failure |
+| Investigate 2+ components | Spawn 1 agent per component |
+| Browse 2+ URLs | Spawn 1 agent per URL |
+
+**❌ WRONG (Sequential - slow!):**
+- "Let me search for X, then Y..."
+- "I'll read file A, then file B..."
+
+**✅ CORRECT (Parallel - fast!):**
+```bash
+spawn_sub_agent([
+  {name: "task1", instruction: "Research X..."},
+  {name: "task2", instruction: "Research Y..."}
+])
+```
+
+**Rule: 2+ independent pieces = MANDATORY spawn_sub_agent**
 
 ## Skills — MANDATORY SUPERPOWERS ⚡
 

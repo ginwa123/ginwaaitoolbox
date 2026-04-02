@@ -2,6 +2,29 @@
 // RESEARCH — Auto-research and tools
 // =============================================================================
 
+pub const ParallelMandatoryIntro =
+    \\## 🚨 PARALLEL WORK IS MANDATORY FOR RESEARCH/SEARCH/INVESTIGATION
+    \\
+    \\**⚠️ CRITICAL RULE:** You MUST use `spawn_sub_agent` for:
+    \\
+    \\| When | Action |
+    \\|-----|--------|
+    \\| Research 2+ topics | Spawn 1 agent per topic |
+    \\| Search 2+ patterns | Spawn 1 agent per pattern |
+    \\| Read 2+ files | Spawn 1 agent per file |
+    \\| Investigate 2+ components | Spawn 1 agent per component |
+    \\| Debug 2+ failures | Spawn 1 agent per failure |
+    \\| Browse 2+ URLs | Spawn 1 agent per URL |
+    \\
+    \\**❌ NEVER do these sequentially:**
+    \\- "Let me search for X, then Y..." → Spawn parallel agents!
+    \\- "I'll read file A, then file B..." → Spawn parallel agents!
+    \\- "I need to research topic 1, 2, 3..." → Spawn parallel agents!
+    \\- "Let me investigate these 3 failures..." → Spawn parallel agents!
+    \\
+    \\**Rule: 2+ independent pieces = MANDATORY parallel execution**
+;
+
 pub const Research =
     \\## ⚡ Tool-First Approach (MANDATORY)
     \\
@@ -13,24 +36,39 @@ pub const Research =
     \\- Need docs? → Use `mcp_context7_*` tools for latest examples
     \\**Never write code you haven't verified with tools first.**
     \\
-    \\## Research (Default Mode)
+    \\## 🚨 PARALLEL WORK IS MANDATORY (NOT OPTIONAL!)
     \\
-    \\Don't know → research immediately. Don't assume APIs or best practices.
+    \\**When you encounter ANY of these, you MUST spawn sub-agents:**
     \\
-    \\**Local:** `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_workspace_symbol`, `glob`, `search`, `read_file`
+    \\| Situation | Required Action |
+    \\|------------|----------------|
+    \\| **2+ research topics** | Spawn 1 agent per topic |
+    \\| **2+ files to read** | Spawn 1 agent per file |
+    \\| **2+ patterns to search** | Spawn 1 agent per pattern |
+    \\| **2+ components to investigate** | Spawn 1 agent per component |
+    \\| **2+ failures to debug** | Spawn 1 agent per failure |
+    \\| **2+ URLs to browse** | Spawn 1 agent per URL |
     \\
-    \\**External:** `mcp_*` (context7 for docs), `agent-browser` (web research)
-    \\- `agent-browser open <url>` — navigate to URL
-    \\- `agent-browser snapshot` — get AI-friendly page content
-    \\- `agent-browser get text|html|url|title` — extract page data
+    \\**❌ WRONG (Sequential -浪费时间!):**
+    \\- "Let me search for X, then Y..."
+    \\- "I'll read file A, then file B..."
+    \\- "I need to research topic 1, 2, 3..."
     \\
-    \\**Parallel:** Use `spawn_sub_agent` to research multiple topics simultaneously.
-    \\**⚡ Delegate to Sub-Agents for Parallel Work:**
-    \\- Research multiple sources → spawn 2-10 sub-agents simultaneously
-    \\- Read multiple files → spawn sub-agents for each
-    \\- Complex investigation → divide and conquer with sub-agents
-    \\- **Rule: If multiple things can be done in parallel, spawn sub-agents.**
-    \\**Sub-agent tip:** Give each agent COMPLETE context — include all needed info in the instruction since sub-agents don't share context with you.
+    \\**✅ CORRECT (Parallel -高效!):**
+    \\```
+    \\spawn_sub_agent([
+    \\  {name: "task1", instruction: "Research X..."},
+    \\  {name: "task2", instruction: "Research Y..."}
+    \\])
+    \\```
+    \\
+    \\**⚡ Parallel Research Examples:**
+    \\- "Research Zig comptime" → spawn agent
+    \\- "Find all usages of functionA AND functionB" → spawn 2 agents
+    \\- "Read files: auth.zig, user.zig, db.zig" → spawn 3 agents
+    \\- "Debug failures: test1, test2, test3" → spawn 3 agents
+    \\
+    \\**Sub-agent tip:** Give each agent COMPLETE context — include all needed info since sub-agents don't share your conversation history.
 ;
 
 pub const ResearchTriggers =
@@ -46,13 +84,30 @@ pub const ResearchTriggers =
     \\- **About to write code from memory?** → STOP → use tools → verify → write
     \\- **Navigating codebase?** → `tree_dir`, `glob`, `lsp_workspace_symbol`
     \\
-    \\**⚡ When to SPAWN Sub-Agents (PREFER OVER SEQUENTIAL WORK):**
-    \\- **Multiple independent research topics?** → spawn 2-5 agents in parallel
-    \\- **Multiple files to read?** → delegate to sub-agents
-    \\- **Multiple URLs to browse?** → each agent handles one URL
-    \\- **Complex investigation?** → break into agents, each handles a piece
-    \\- **Don't have context for something?** → spawn agent to research it
-    \\**Rule: Parallel work = spawn sub-agents. Don't do parallel work yourself sequentially.**
+    \\**🚨 MANDATORY: When to SPAWN Sub-Agents (2+ = MUST SPAWN!):**
+    \\
+    \\| Situation | Required Action |
+    \\|------------|----------------|
+    \\| **2+ research topics** | Spawn 1 agent per topic |
+    \\| **2+ files to read** | Spawn 1 agent per file |
+    \\| **2+ patterns to search** | Spawn 1 agent per pattern |
+    \\| **2+ components to investigate** | Spawn 1 agent per component |
+    \\| **2+ failures to debug** | Spawn 1 agent per failure |
+    \\| **2+ URLs to browse** | Spawn 1 agent per URL |
+    \\
+    \\**❌ WRONG (Sequential -浪费时间!):**
+    \\- "Let me search for X, then Y..."
+    \\- "I'll read file A, then file B..."
+    \\
+    \\**✅ CORRECT (Parallel -高效!):**
+    \\```
+    \\spawn_sub_agent([
+    \\  {name: "task1", instruction: "Do task 1..."},
+    \\  {name: "task2", instruction: "Do task 2..."}
+    \\])
+    \\```
+    \\
+    \\**Rule: 2+ independent pieces = MANDATORY spawn_sub_agent**
 ;
 
 pub const AvailableTools =
@@ -87,14 +142,15 @@ pub const AvailableTools =
     \\- `list_skills` — **BROWSE available skills** ⭐ USE THIS FIRST
     \\- `get_skill("name")` — **LOAD a skill** ⭐ USE THIS FOR SPECIALIZED WORK
     \\
-    \\**⚡ When to SPAN Sub-Agents (USE THIS OFTEN!):**
-    \\- Research multiple topics → spawn agents for each (parallel!)
-    \\- Read multiple files → agents can each read different files
-    \\- Check multiple URLs → each agent browses one URL
-    \\- Complex tasks → break into smaller pieces, assign to agents
-    \\- Investigation deep-dive → delegate reading/searching to agents
-    \\**Rule: If work can be split, spawn sub-agents. Don't do parallel work yourself.**
-    \\**Sub-agent tip:** Always include FULL context in the instruction — sub-agents don't inherit your conversation history.
+    \\**🚨 MANDATORY PARALLEL WORK (NOT OPTIONAL!):**
+    \\
+    \\| When | Action |
+    \\|-----|--------|
+    \\| **2+ research topics** | Spawn 1 agent per topic |
+    \\| **2+ files to read** | Spawn 1 agent per file |
+    \\| **2+ patterns to search** | Spawn 1 agent per pattern |
+    \\| **2+ URLs to browse** | Spawn 1 agent per URL |
+    \\| **2+ failures to debug** | Spawn 1 agent per failure |
     \\
     \\**⚡ Tool Selection Guide:**
     \\- Need to read something? → `read_file` (not bash cat)
@@ -102,6 +158,7 @@ pub const AvailableTools =
     \\- Need to search text? → `search` (not bash grep)
     \\- Need to explore dirs? → `tree_dir` (not bash ls -R)
     \\- Need to navigate code? → LSP tools (not manual search)
+    \\- Need to do 2+ things in parallel? → `spawn_sub_agent` (NOT sequential!)
     \\- **Only use `bash` when no tool can do the job.**
 ;
 
@@ -132,6 +189,15 @@ pub const SkillsUsage =
     \\| `list_skills` | **FIRST STEP** for any task — browse available skills |
     \\| `get_skill("name")` | Load a specific skill's full guidance |
     \\
+    \\### ⚡ SKILL + PARALLEL COMBO
+    \\
+    \\**Always load skills BEFORE spawning agents:**
+    \\```
+    \\1. list_skills → discover available skills
+    \\2. get_skill("dispatching-parallel-agents") → load parallel skill
+    \\3. spawn_sub_agent(...) → spawn parallel agents with guidance
+    \\```
+    \\
     \\### ⚡ SKILL TRIGGER PATTERNS
     \\
     \\**DISCOVER → MATCH → LOAD:** First call `list_skills` to see what's available, then load the matching skill:
@@ -150,37 +216,8 @@ pub const SkillsUsage =
     \\| Testing/QATesting/QA | `list_skills` → find testing skill → load it |
     \\| Security work | `list_skills` → find security skill → load it |
     \\| Data science/ML/AI | `list_skills` → find data/ML skill → load it |
+    \\| Parallel work / Multi-agent tasks | `list_skills` → find `dispatching-parallel-agents` skill → load it |
     \\| **ANY unfamiliar task** | `list_skills` first → find matching skill → load it |
-    \\
-    \\### ⚡ GENERIC EXAMPLE WORKFLOW
-    \\
-    \\**NOTE: Skill names depend on your platform. Use `list_skills` to discover available skills, then load the appropriate one.**
-    \\
-    \\**Example 1: User asks to build a feature**
-    \\```
-    \\1. THINK: What type of work is this? (analyze task)
-    \\2. list_skills → see what skills are available on this platform
-    \\3. Based on task type, load matching skill:
-    \\   - Frontend task → get_skill("frontend-specialist")   # or whatever name exists
-    \\   - Backend task → get_skill("backend-expert")          # or whatever name exists
-    \\   - Python task  → get_skill("python-developer")         # or whatever name exists
-    \\4. WORK: Do the task with skill guidance
-    \\```
-    \\
-    \\**Example 2: User asks about code in a specific file**
-    \\```
-    \\1. THINK: What language is this file? (.js, .py, .zig, etc.)
-    \\2. list_skills → find skill matching that language/framework
-    \\3. get_skill("<language>-expert") → load the skill
-    \\4. WORK: Analyze/write code with language best practices
-    \\```
-    \\
-    \\**Example 3: User asks for creative/design work**
-    \\```
-    \\1. list_skills → discover available creative skills
-    \\2. get_skill("brainstorming") → or whatever creative skill exists
-    \\3. WORK: Explore design before implementation
-    \\```
     \\
     \\### ⚡ RULES
     \\
@@ -231,6 +268,7 @@ pub const SkillsTriggers =
     \\| AWS/GCP/Azure cloud | `list_skills` → find cloud skill → load it |
     \\| Security/vulnerabilities | `list_skills` → find security skill → load it |
     \\| Testing/QA/test cases | `list_skills` → find testing skill → load it |
+    \\| **Parallel work** | `list_skills` → find `dispatching-parallel-agents` → load it |
     \\| **SKILL DOESN'T EXIST** | `list_skills` → if missing, note it needs to be created |
     \\
     \\**RULE: Always `list_skills` FIRST to discover available skills, THEN `get_skill` the right one.**

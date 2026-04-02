@@ -57,8 +57,8 @@ function sseToChatMessage(event: SSEMessage): ChatMessage {
     is_input: false,
     is_output: true,
     tool_name: event.tool_name,
-    finish_reason: event.finish_reason,
-  };
+    finish_reason: event.finish_reason ?? '',
+  } as ChatMessage;
 }
 
 const MessageRow: Component<{ message: ChatMessage }> = (props) => {
@@ -462,18 +462,6 @@ const SessionChat: Component = () => {
           </div>
 
           {/* Folder Picker Button */}
-          <Show when={!isNewSession()}>
-            <button
-              onClick={() => setFolderPickerOpen(true)}
-              class="flex items-center gap-2 px-3 py-2 text-xs font-mono uppercase tracking-wider text-[#a1a1aa] bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] hover:border-[#fbbf24] transition-colors"
-              title="Change working directory"
-            >
-              <span class="text-[#fbbf24]">📁</span>
-              <span class="max-w-[200px] truncate">
-                {sessionDir()?.split('/').pop() || 'Select Folder'}
-              </span>
-            </button>
-          </Show>
         </div>
         <div class="border-b-2 border-[#27272a] mt-4" />
       </div>

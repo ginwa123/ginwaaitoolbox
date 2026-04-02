@@ -7,6 +7,13 @@ const prompts = @import("prompts/prompts.zig");
 pub const UniversalRules = prompts.UniversalRules;
 pub const PromptAutoFix = prompts.PromptAutoFix;
 pub const Agent = prompts.Agent;
+pub const ParallelMandatoryIntro = prompts.ParallelMandatoryIntro;
+pub const ParallelMandatory = prompts.ParallelMandatory;
+pub const ParallelWorkflow = prompts.ParallelWorkflow;
+pub const ParallelExamples = prompts.ParallelExamples;
+pub const ParallelAntiPatterns = prompts.ParallelAntiPatterns;
+pub const ParallelSubAgentGuidance = prompts.ParallelSubAgentGuidance;
+pub const ParallelSkillReminder = prompts.ParallelSkillReminder;
 pub const Research = prompts.Research;
 pub const ResearchTriggers = prompts.ResearchTriggers;
 pub const AvailableTools = prompts.AvailableTools;
@@ -183,38 +190,6 @@ pub fn buildAgentPrompt(
         try result.appendSlice(allocator, "\n\n## Active Specialized Agent\n\n");
         try result.appendSlice(allocator, agent);
     }
-
-    return result.toOwnedSlice(allocator);
-}
-
-/// Build minimal prompt for sub-agents
-pub fn buildSubAgentPrompt(
-    allocator: std.mem.Allocator,
-    cwd: []const u8,
-    tool_names: []const []const u8,
-    skillContents: []const u8,
-) ![]const u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    try result.appendSlice(allocator, UniversalRules);
-    try result.appendSlice(allocator, "\n\n**Working directory:** ");
-    try result.appendSlice(allocator, cwd);
-    try result.appendSlice(allocator, "\n\n## Available Tools\n");
-
-    for (tool_names) |name| {
-        try result.appendSlice(allocator, "- **");
-        try result.appendSlice(allocator, name);
-        try result.appendSlice(allocator, "**\n");
-    }
-
-    if (skillContents.len > 0) {
-        try result.appendSlice(allocator, "\n\n");
-        try result.appendSlice(allocator, skillContents);
-    }
-
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, SubAgentPrompt);
 
     return result.toOwnedSlice(allocator);
 }

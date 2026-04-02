@@ -263,36 +263,6 @@ test "getAllowedTools - single allowed tool" {
 }
 
 // ============================================================================
-// Tests for buildToolNamesList
-// ============================================================================
-
-test "buildToolNamesList - builds list of tool names" {
-    const allocator = std.testing.allocator;
-    const mcp_tools: []const tool_models.AgentTool = &.{};
-
-    // Get some tools first
-    const tools = try handle_spawn_sub_agent.getAllowedTools(allocator, &.{ "bash", "read_file" }, mcp_tools);
-    defer allocator.free(tools);
-
-    const names = try handle_spawn_sub_agent.buildToolNamesList(allocator, tools);
-    defer allocator.free(names);
-
-    try std.testing.expectEqual(@as(usize, 2), names.len);
-    try std.testing.expectEqualStrings("bash", names[0]);
-    try std.testing.expectEqualStrings("read_file", names[1]);
-}
-
-test "buildToolNamesList - empty tool list" {
-    const allocator = std.testing.allocator;
-    const tools: []const root_mod.tool_models.AgentTool = &.{};
-
-    const names = try handle_spawn_sub_agent.buildToolNamesList(allocator, tools);
-    defer allocator.free(names);
-
-    try std.testing.expectEqual(@as(usize, 0), names.len);
-}
-
-// ============================================================================
 // Integration-style tests
 // ============================================================================
 

@@ -381,15 +381,6 @@ pub fn getAllowedTools(allocator: std.mem.Allocator, allowed_tools: ?[]const []c
     return try result.toOwnedSlice(allocator);
 }
 
-/// Build a list of tool names from the allowed tools
-pub fn buildToolNamesList(allocator: std.mem.Allocator, tools: []const tool_models.AgentTool) ![]const []const u8 {
-    var names = std.ArrayList([]const u8).empty;
-    for (tools) |tool| {
-        try names.append(allocator, tool.function.name);
-    }
-    return try names.toOwnedSlice(allocator);
-}
-
 // ============================================================================
 // SUB-AGENT EXECUTION
 // ============================================================================
@@ -460,9 +451,6 @@ fn run_sub_agent(
     sub_agent.baseUrl = base_url;
     sub_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
-    // Build tool names list from allowed tools
-    const tool_names = try buildToolNamesList(parentAllocator, sub_agent_tools);
-
     var last_response: ?agent.CallResponse = null;
 
     var max_tokens: usize = 4000;
@@ -473,7 +461,7 @@ fn run_sub_agent(
         const allocator = arena_allocator.allocator();
 
         const skillContents = try BuildSkillContent(allocator, db, session_id);
-        const systemPrompt = try prompt.buildSubAgentPrompt(allocator, cwd, tool_names, skillContents);
+        const systemPrompt = try prompt.buildAgentPrompt(allocator, cwd, "", skillContents, "", "", "");
 
         var messages: std.ArrayList(agent.AgentMessage) = .empty;
         try messages.append(allocator, .{
