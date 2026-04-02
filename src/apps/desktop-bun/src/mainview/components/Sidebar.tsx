@@ -77,6 +77,8 @@ const Sidebar: Component = () => {
           ? `${baseUrl()}/api/session?limit=20&cursor=${encodeURIComponent(cursor)}`
           : `${baseUrl()}/api/session?limit=20`;
       }
+      
+      console.log('[Sidebar] fetchSessions called - url:', url, '| sessionDir:', sessionDir);
 
       const res = await fetch(url, {
         method: 'GET',
@@ -107,6 +109,7 @@ const Sidebar: Component = () => {
   const lazyLoadMore = async () => {
     if (!hasMore() || loadingMore() || !nextCursor()) return;
     setLoadingMore(true);
+    console.log('[Sidebar] lazyLoadMore - currentSessionDir:', currentSessionDir());
     // Pass current session_dir filter for pagination
     await fetchSessions(nextCursor()!, currentSessionDir());
     setLoadingMore(false);
@@ -211,6 +214,7 @@ const Sidebar: Component = () => {
     setSelectedFolder(path);
     setFolderPickerOpen(false);
     // Pagination state will be reset by createEffect when selectedFolder changes
+    console.log('[Sidebar] Selected folder set to:', path, '| currentSessionDir will be:', path !== '/' ? path : undefined);
   };
 
   return (
