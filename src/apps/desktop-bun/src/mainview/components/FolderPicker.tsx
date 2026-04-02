@@ -17,12 +17,35 @@ interface DirectoryEntry {
   size: number;
 }
 
+// LocalStorage keys
+const STORAGE_KEY_LAST_PATH = 'folder-picker-last-path';
+const STORAGE_KEY_SHOW_HIDDEN = 'folder-picker-show-hidden';
+
+// Helper to get last path from localStorage
+const getLastPath = (): string => {
+  try {
+    return localStorage.getItem(STORAGE_KEY_LAST_PATH) || '/';
+  } catch {
+    return '/';
+  }
+};
+
+// Helper to get show hidden from localStorage
+const getShowHidden = (): boolean => {
+  try {
+    return localStorage.getItem(STORAGE_KEY_SHOW_HIDDEN) === 'true';
+  } catch {
+    return false;
+  }
+};
+
 export const FolderPicker: Component<FolderPickerProps> = (props) => {
-  const [currentPath, setCurrentPath] = createSignal(props.initialPath || '/');
+  // Initialize from localStorage if no initialPath provided
+  const [currentPath, setCurrentPath] = createSignal(props.initialPath ?? getLastPath());
   const [selectedPath, setSelectedPath] = createSignal<string | null>(null);
   const [entries, setEntries] = createSignal<DirectoryEntry[]>([]);
   const [loading, setLoading] = createSignal(false);
-  const [showHidden, setShowHidden] = createSignal(false);
+  const [showHidden, setShowHidden] = createSignal(getShowHidden());
   const [error, setError] = createSignal<string | null>(null);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
@@ -34,6 +57,20 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     null
   );
   const [editValue, setEditValue] = createSignal('');
+
+  // Save current path to localStorage
+  const saveLastPath = (path: string) => {
+    try {
+      localStorage.setItem(STORAGE_KEY_LAST_PATH, path);
+    } catch {}
+  };
+
+  // Save show hidden preference to localStorage
+  const saveShowHidden = (show: boolean) => {
+    try {
+      localStorage.setItem(STORAGE_KEY_SHOW_HIDDEN, String(show));
+    } catch {}
+  };
 
   const fetchDirectory = async (path: string) => {
     setLoading(true);
@@ -74,7 +111,9 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
 
   const handleDoubleClick = (entry: DirectoryEntry) => {
     if (entry.isDirectory) {
-      setCurrentPath(entry.path);
+      const newPath = entry.path;
+      setCurrentPath(newPath);
+      saveLastPath(newPath);
       setSelectedPath(null);
       setFocusedIndex(-1);
     }
@@ -286,6 +325,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
                   checked={showHidden()}
                   onChange={(e) => {
                     setShowHidden(e.currentTarget.checked);
+                    saveShowHidden(e.currentTarget.checked);
                     fetchDirectory(currentPath());
                   }}
                   class="accent-[#fbbf24]"
@@ -304,7 +344,10 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
                     <span class="text-[#3f3f46]">/</span>
                   </Show>
                   <button
-                    onClick={() => setCurrentPath(segment.path)}
+                    onClick={() => {
+                      setCurrentPath(segment.path);
+                      saveLastPath(segment.path);
+                    }}
                     class="text-xs font-mono text-[#71717a] hover:text-[#fbbf24] transition-colors whitespace-nowrap"
                   >
                     {segment.name}

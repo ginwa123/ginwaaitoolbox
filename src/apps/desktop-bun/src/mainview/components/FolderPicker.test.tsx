@@ -225,4 +225,40 @@ describe('FolderPicker', () => {
       expect(screen.getByPlaceholderText('New folder name...')).toBeDefined();
     });
   });
+
+  test('uses localStorage for last path when no initialPath provided', async () => {
+    // Mock localStorage
+    const mockStorage: Record<string, string> = {};
+    Object.defineProperty(window, 'localStorage', {
+      value: {
+        getItem: (key: string) => mockStorage[key] ?? null,
+        setItem: (key: string, value: string) => {
+          mockStorage[key] = value;
+        },
+      },
+      writable: true,
+    });
+
+    // Set a last path
+    mockStorage['folder-picker-last-path'] = '/home/user';
+
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ entries: [] }),
+    });
+
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+
+    render(() => (
+      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
+    ));
+
+    // Should show breadcrumb with the saved path
+    await waitFor(() => {
+      expect(screen.getByText('Root')).toBeDefined();
+      expect(screen.getByText('home')).toBeDefined();
+      expect(screen.getByText('user')).toBeDefined();
+    });
+  });
 });
