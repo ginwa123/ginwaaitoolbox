@@ -121,4 +121,9 @@ pub const WebSearchResult = struct {
     content: []const u8,
     exit_code: i32,
     error_msg: ?[]const u8 = null,
+
+    pub fn deinit(self: *const @This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
+        if (self.error_msg) |msg| allocator.free(msg);
+    }
 };
