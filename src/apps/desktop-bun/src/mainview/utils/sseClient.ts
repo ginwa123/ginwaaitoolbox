@@ -3,7 +3,7 @@
  */
 
 export interface SSEMessage {
-  type: 'message' | 'tool_result' | 'status' | 'error' | 'ping' | 'done' | 'step';
+  type: 'message' | 'tool_result' | 'status' | 'error' | 'ping' | 'done' | 'step' | 'connected';
   content?: string;
   tool_name?: string;
   finish_reason?: string;
@@ -14,6 +14,48 @@ export interface SSEMessage {
 }
 
 export type SSEMessageHandler = (event: SSEMessage) => void;
+
+/**
+ * Parse XML content to extract SSE message data
+ */
+function parseSseXml(xmlData: string): SSEMessage {
+  // Check for different response types in XML
+  if (xmlData.includes('<response>')) {
+    // Extract content from <content> tag
+    const contentMatch = xmlData.match(/<content><!\[CDATA\[([\s\S]*?)\]\]><\/content>|<content>([\s\S]*?)<\/content>/);
+    const content = contentMatch ? (contentMatch[1] || contentMatch[2] || '') : undefined;
+    
+    // Extract finish_reason
+    const finishReasonMatch = xmlData.match(/<finish_reason>([\s\S]*?)<\/finish_reason>/);
+    const finish_reason = finishReasonMatch ? finishReasonMatch[1].trim() : undefined;
+    
+    // Extract session_id
+    const sessionIdMatch = xmlData.match(/<session_id>([\s\S]*?)<\/session_id>/);
+    const session_id = sessionIdMatch ? sessionIdMatch[1].trim() : undefined;
+    
+    // Extract role
+    const roleMatch = xmlData.match(/<role>([\s\S]*?)<\/role>/);
+    const role = roleMatch ? roleMatch[1].trim() : 'assistant';
+    
+    // Check if this is a final chunk (has finish_reason)
+    const type = finish_reason ? 'done' : 'message';
+    
+    return {
+      type,
+      content,
+      finish_reason,
+      session_id,
+      role: role as SSEMessage['role'],
+    };
+  }
+  
+  if (xmlData.includes('<tool_result>')) {
+    return { type: 'tool_result' };
+  }
+  
+  // Default to message type
+  return { type: 'message', content: xmlData };
+}
 
 export class SSEClient {
   private eventSource: EventSource | null = null;
@@ -46,18 +88,20 @@ export class SSEClient {
    * Disconnect and notify server to clean up SSE connection
    */
   async disconnectWithNotification(): Promise<void> {
-    if (this.sessionId) {
-      console.log('[SSEClient] Notifying server of disconnect:', this.sessionId);
-      try {
-        await fetch(`${this.baseUrl}/api/stream/${encodeURIComponent(this.sessionId)}/disconnect`, {
-          method: 'POST',
-          signal: AbortSignal.timeout(2000),
-        });
-      } catch (err) {
-        console.warn('[SSEClient] Failed to notify server of disconnect:', err);
-      }
-    }
+    const sessionId = this.sessionId;
+    
+    // Disconnect locally first (always succeeds)
     this.disconnect();
+    
+    // Then notify server (non-blocking, ignore failures)
+    if (sessionId) {
+      console.log('[SSEClient] Notifying server of disconnect:', sessionId);
+      fetch(`${this.baseUrl}/api/stream/${encodeURIComponent(sessionId)}/disconnect`, {
+        method: 'POST',
+      }).catch((err) => {
+        console.warn('[SSEClient] Server disconnect notification failed (ignoring):', err);
+      });
+    }
   }
 
   connect(sessionId: string): void {
@@ -81,19 +125,29 @@ export class SSEClient {
         this.handleError();
       };
 
-      // Listen for all message types
-      const eventTypes = ['message', 'tool_result', 'status', 'error', 'done', 'step', 'ping'];
-      eventTypes.forEach((type) => {
-        this.eventSource?.addEventListener(type, (event: MessageEvent) => {
-          try {
-            const data = JSON.parse(event.data) as SSEMessage;
-            data.type = type as SSEMessage['type'];
-            console.log(`[SSEClient] Received ${type}:`, data);
-            this.notifyHandlers(data);
-          } catch (err) {
-            console.error(`[SSEClient] Failed to parse ${type} event:`, err);
-          }
-        });
+      // Listen for 'connected' event (sent by server as JSON)
+      this.eventSource.addEventListener('connected', (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data) as SSEMessage;
+          data.type = 'connected';
+          console.log('[SSEClient] Received connected:', data);
+          this.notifyHandlers(data);
+        } catch (err) {
+          console.error('[SSEClient] Failed to parse connected event:', err);
+        }
+      });
+
+      // Listen for 'message' event (default SSE event type - all unnamed events come through here)
+      this.eventSource.addEventListener('message', (event: MessageEvent) => {
+        try {
+          console.log('[SSEClient] Received raw message:', event.data);
+          // Parse XML content to determine message type
+          const data = parseSseXml(event.data);
+          console.log('[SSEClient] Parsed message:', data);
+          this.notifyHandlers(data);
+        } catch (err) {
+          console.error('[SSEClient] Failed to parse message event:', err);
+        }
       });
     } catch (err) {
       console.error('[SSEClient] Failed to create EventSource:', err);

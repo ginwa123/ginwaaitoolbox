@@ -225,9 +225,9 @@ pub fn main() !void {
             // Command endpoint (generic command handler)
             router.post("/api/command", http_handlers.commandHandler, .{});
 
-            // SSE stream endpoint
-            router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
+            // SSE stream endpoint - specific routes BEFORE wildcard!
             router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
+            router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
 
             // Session management endpoints
             router.options("/api/session", http_handlers.corsPreflightHandler, .{});

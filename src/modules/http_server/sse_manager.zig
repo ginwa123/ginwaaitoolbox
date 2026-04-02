@@ -3,21 +3,32 @@ const httpz = @import("httpz");
 
 pub const SseEvent = struct {
     data: []const u8,
+    event_type: ?[]const u8 = null,
 
     /// Maximum size for SSE event formatting (16KB - should be enough for any chunk)
     pub const MAX_SSE_SIZE = 16384;
 
     /// Format SSE event into a provided buffer (stack-allocated, no heap allocations)
     /// Returns the formatted bytes or error.BufferTooSmall if buffer is insufficient
+    /// Proper SSE format: "event: <type>\ndata: <line1>\ndata: <line2>\n\n"
     pub fn formatInto(self: SseEvent, buf: []u8) error{BufferTooSmall}![]u8 {
         var pos: usize = 0;
 
-        // Write data lines: "<line>\n" for each line (raw XML, no "data:" prefix)
+        // Write event type line if specified
+        if (self.event_type) |event_type| {
+            const event_line = std.fmt.bufPrint(buf[pos..], "event: {s}\n", .{event_type}) catch return error.BufferTooSmall;
+            pos += event_line.len;
+        }
+
+        // Write data lines: "data: <line>\n" for each line
         var iter = std.mem.splitScalar(u8, self.data, '\n');
         while (iter.next()) |line| {
             if (line.len == 0) continue; // Skip empty lines from split
-            const needed_for_line = line.len + 1;
+            // Format: "data: <content>\n"
+            const needed_for_line = 6 + line.len + 1; // "data: " + content + "\n"
             if (pos + needed_for_line > buf.len) return error.BufferTooSmall;
+            @memcpy(buf[pos..][0..6], "data: ");
+            pos += 6;
             @memcpy(buf[pos..][0..line.len], line);
             pos += line.len;
             buf[pos] = '\n';
@@ -36,9 +47,24 @@ pub const SseEvent = struct {
         var result = std.ArrayList(u8).empty;
         errdefer result.deinit(allocator);
 
-        // Write raw XML data (no "data:" prefix)
-        try result.appendSlice(allocator, self.data);
-        try result.appendSlice(allocator, "\n\n");
+        // Write event type line if specified
+        if (self.event_type) |event_type| {
+            try result.appendSlice(allocator, "event: ");
+            try result.appendSlice(allocator, event_type);
+            try result.appendSlice(allocator, "\n");
+        }
+
+        // Write data lines: "data: <content>\n"
+        var iter = std.mem.splitScalar(u8, self.data, '\n');
+        while (iter.next()) |line| {
+            if (line.len == 0) continue;
+            try result.appendSlice(allocator, "data: ");
+            try result.appendSlice(allocator, line);
+            try result.appendSlice(allocator, "\n");
+        }
+
+        // Final newline to end the event
+        try result.appendSlice(allocator, "\n");
 
         return result.toOwnedSlice(allocator);
     }

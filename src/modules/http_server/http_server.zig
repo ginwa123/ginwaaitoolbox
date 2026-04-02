@@ -103,10 +103,12 @@ pub const HttpServer = struct {
 
         /// Custom dispatch to add CORS headers to every response
         pub fn dispatch(self: *ServerHandler, action: httpz.Action(*ServerHandler), req: *httpz.Request, res: *httpz.Response) !void {
-            // Add CORS headers to all responses
-            res.header("Access-Control-Allow-Origin", "*");
+            // Add CORS headers to all responses - allow webview origin and any other origin
+            const origin = req.header("origin") orelse "*";
+            res.header("Access-Control-Allow-Origin", origin);
             res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-            res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin");
+            res.header("Access-Control-Allow-Credentials", "true");
 
             // Handle preflight OPTIONS requests
             if (req.method == .OPTIONS) {
