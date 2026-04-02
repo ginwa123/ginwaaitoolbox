@@ -1,4 +1,4 @@
-import { type Component, Show, For, createSignal, createEffect, onCleanup } from 'solid-js';
+import { type Component, For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import { electroview } from '../main';
 
 export interface FolderPickerProps {
@@ -53,9 +53,10 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
   const [showContextMenu, setShowContextMenu] = createSignal(false);
   const [contextMenuPosition, setContextMenuPosition] = createSignal({ x: 0, y: 0 });
   const [contextMenuTarget, setContextMenuTarget] = createSignal<DirectoryEntry | null>(null);
-  const [editingEntry, setEditingEntry] = createSignal<{ entry: DirectoryEntry; type: 'create' | 'rename' } | null>(
-    null
-  );
+  const [editingEntry, setEditingEntry] = createSignal<{
+    entry: DirectoryEntry;
+    type: 'create' | 'rename';
+  } | null>(null);
   const [editValue, setEditValue] = createSignal('');
 
   // Save current path to localStorage
@@ -163,7 +164,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
       } else {
         setError(result.error || 'Failed to delete folder');
       }
-    } catch (err) {
+    } catch (_err) {
       setError('Failed to delete folder via RPC');
     }
 
@@ -209,7 +210,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
           setError(result.error || 'Failed to rename folder');
         }
       }
-    } catch (err) {
+    } catch (_err) {
       setError('Operation failed via RPC');
     }
 
@@ -286,7 +287,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
 
     let accumulated = '';
     for (const part of parts) {
-      accumulated += '/' + part;
+      accumulated += `/${part}`;
       segments.push({ name: part, path: accumulated });
     }
 
@@ -386,7 +387,8 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
                 <For each={entries()}>
                   {(entry) => {
                     const isEditing = () =>
-                      editingEntry()?.entry.path === entry.path && editingEntry()?.type === 'rename';
+                      editingEntry()?.entry.path === entry.path &&
+                      editingEntry()?.type === 'rename';
 
                     return (
                       <Show
@@ -396,6 +398,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
                             onClick={() => handleClick(entry)}
                             onDblClick={() => handleDoubleClick(entry)}
                             onContextMenu={(e) => entry.isDirectory && handleContextMenu(e, entry)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleClick(entry)}
                             class={`
                               flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors
                               ${
@@ -406,9 +409,7 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
                               ${!entry.isDirectory ? 'opacity-50' : ''}
                             `}
                           >
-                            <span class="text-[#fbbf24]">
-                              {entry.isDirectory ? '📁' : '📄'}
-                            </span>
+                            <span class="text-[#fbbf24]">{entry.isDirectory ? '📁' : '📄'}</span>
                             <span class="text-sm font-mono text-[#e4e4e7]">{entry.name}</span>
                           </div>
                         }
@@ -467,7 +468,11 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
 
             {/* Close context menu on outside click */}
             <Show when={showContextMenu()}>
-              <div class="fixed inset-0 z-40" onClick={() => setShowContextMenu(false)} />
+              <div
+                class="fixed inset-0 z-40"
+                onClick={() => setShowContextMenu(false)}
+                onKeyDown={(e) => e.key === 'Escape' && setShowContextMenu(false)}
+              />
             </Show>
           </div>
 

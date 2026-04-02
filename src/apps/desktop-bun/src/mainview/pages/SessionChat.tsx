@@ -14,12 +14,12 @@ import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
 import ChatInput from '../components/ChatInput';
 import { FolderPicker } from '../components/FolderPicker';
 import { baseUrl } from '../utils/baseUrl';
+import { log } from '../utils/logger';
 import { SSEClient, type SSEMessage } from '../utils/sseClient';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
-import { log } from '../utils/logger';
 
 // Shared SSE client for all session chat instances
-log.info('[SessionChat] Module loaded, baseUrl: ' + baseUrl());
+log.info(`[SessionChat] Module loaded, baseUrl: ${baseUrl()}`);
 const sharedSseClient = new SSEClient(baseUrl());
 log.info('[SessionChat] SSEClient created');
 
@@ -184,7 +184,7 @@ const SessionChat: Component = () => {
 
   // Track SSE messages with optimistic updates
   const [sseMessages, setSseMessages] = createSignal<ChatMessage[]>([]);
-  log.info('[SessionChat] Component mounted, sessionId: ' + params.sessionId);
+  log.info(`[SessionChat] Component mounted, sessionId: ${params.sessionId}`);
 
   // Single source of truth: use messagesQuery for all message data
   const messagesQuery = createInfiniteQuery(() => ({
@@ -227,23 +227,23 @@ const SessionChat: Component = () => {
   // Collect all messages from pages + SSE messages
   const allMessages = createMemo(() => {
     const pages = messagesQuery.data?.pages ?? [];
-    
+
     // Collect all messages from pages
     let msgs: ChatMessage[] = [];
     for (const page of pages) {
       msgs = msgs.concat(page.messages);
     }
-    
+
     // Add SSE messages that aren't already in the list (optimistic updates)
     const sseMsgs = sseMessages();
-    const existingIds = new Set(msgs.map(m => m.id));
-    
+    const existingIds = new Set(msgs.map((m) => m.id));
+
     for (const sseMsg of sseMsgs) {
       if (!existingIds.has(sseMsg.id)) {
         msgs.push(sseMsg);
       }
     }
-    
+
     // Sort by timestamp (ascending - oldest first, newest at bottom)
     msgs.sort((a, b) => {
       const tsA = Number(a.timestamp) || 0;
@@ -251,7 +251,7 @@ const SessionChat: Component = () => {
       if (tsA !== tsB) return tsA - tsB;
       return a.id.localeCompare(b.id);
     });
-    
+
     return msgs;
   });
 
@@ -297,8 +297,8 @@ const SessionChat: Component = () => {
 
       // Create new handler for this session
       currentHandler = (event: SSEMessage) => {
-        log.info('[SessionChat] SSE event received, type: ' + event.type);
-        
+        log.info(`[SessionChat] SSE event received, type: ${event.type}`);
+
         // Set streaming indicator
         if (event.type === 'message' && !streaming()) {
           setStreaming(true);
@@ -306,18 +306,20 @@ const SessionChat: Component = () => {
 
         // Convert SSE event to ChatMessage
         const chatMsg = sseToChatMessage(event);
-        log.info('[SessionChat] Converted message id: ' + chatMsg.id);
-        
+        log.info(`[SessionChat] Converted message id: ${chatMsg.id}`);
+
         // Add as optimistic update if it has content
         if (chatMsg.content) {
-          log.info('[SessionChat] Adding to sseMessages: ' + chatMsg.id + ' - ' + chatMsg.content.substring(0, 50));
-          setSseMessages(prev => {
-            log.info('[SessionChat] Current sseMessages count: ' + prev.length);
+          log.info(
+            `[SessionChat] Adding to sseMessages: ${chatMsg.id} - ${chatMsg.content.substring(0, 50)}`
+          );
+          setSseMessages((prev) => {
+            log.info(`[SessionChat] Current sseMessages count: ${prev.length}`);
             // Check if already exists
-            const exists = prev.some(m => m.id === chatMsg.id);
+            const exists = prev.some((m) => m.id === chatMsg.id);
             if (exists) {
               // Update existing message (for streaming updates)
-              return prev.map(m => m.id === chatMsg.id ? { ...chatMsg } : m);
+              return prev.map((m) => (m.id === chatMsg.id ? { ...chatMsg } : m));
             }
             // Add new message
             return [...prev, chatMsg];
@@ -362,7 +364,7 @@ const SessionChat: Component = () => {
   createEffect(() => {
     const messages = allMessages();
     const isPending = messagesQuery.isPending;
-    
+
     // When messages are loaded (not pending anymore), scroll to bottom
     if (!isPending && messages.length > 0 && scrollRef) {
       // Use requestAnimationFrame to ensure DOM is rendered
@@ -378,8 +380,8 @@ const SessionChat: Component = () => {
   createEffect(() => {
     const messages = allMessages();
     const isStreaming = streaming();
-    
-    if ((messages.length > 0 && scrollRef) && isStreaming) {
+
+    if (messages.length > 0 && scrollRef && isStreaming) {
       setTimeout(() => {
         if (scrollRef) {
           scrollRef.scrollTop = scrollRef.scrollHeight;
@@ -435,9 +437,7 @@ const SessionChat: Component = () => {
                 </Show>
               }
             >
-              <h1 class="text-xl font-semibold text-[#fafafa] mb-1 tracking-tight">
-                New Chat
-              </h1>
+              <h1 class="text-xl font-semibold text-[#fafafa] mb-1 tracking-tight">New Chat</h1>
             </Show>
             <div class="flex items-center gap-3 text-xs text-[#52525b] uppercase tracking-widest">
               <Show when={!isNewSession()}>
@@ -528,11 +528,7 @@ const SessionChat: Component = () => {
             class="flex-1 overflow-y-auto"
             onScroll={handleScroll}
           >
-            <For each={allMessages()}>
-              {(message, index) => (
-                <MessageRow message={message} />
-              )}
-            </For>
+            <For each={allMessages()}>{(message, _index) => <MessageRow message={message} />}</For>
           </div>
 
           <Show when={messagesQuery.isFetchingNextPage}>

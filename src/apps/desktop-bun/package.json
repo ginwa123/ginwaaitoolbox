@@ -4,7 +4,8 @@
   "type": "module",
   "description": "SolidJS + Electrobun Desktop Application with Tailwind CSS",
   "scripts": {
-    "dev": "electrobun dev --watch",
+    "dev": "bun run build && bun run lint && bun dev:raw",
+    "dev:raw": "electrobun dev --watch",
     "dev:hmr": "concurrently \"bun run hmr\" \"bun run start\"",
     "hmr": "vite --port 5173",
     "build": "vite build && electrobun build",

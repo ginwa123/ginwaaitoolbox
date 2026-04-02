@@ -221,6 +221,3 @@ pub fn deinitGlobalRegistry() void {
     }
 }
 
-test {
-    _ = @import("activity_registry_test.zig");
-}

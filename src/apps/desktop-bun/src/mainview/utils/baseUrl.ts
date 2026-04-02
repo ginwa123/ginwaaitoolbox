@@ -13,7 +13,7 @@ const [baseUrl] = createSignal<string>(`http://127.0.0.1:${DEFAULT_PORT}`);
 const [port] = createSignal<number>(DEFAULT_PORT);
 
 export function initBaseUrl(): void {
-  log.info('[baseUrl] Using port: ' + DEFAULT_PORT);
+  log.info(`[baseUrl] Using port: ${DEFAULT_PORT}`);
 }
 
 export { baseUrl, port };

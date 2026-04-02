@@ -7,8 +7,8 @@
  */
 import { ApplicationMenu, BrowserView, BrowserWindow } from 'electrobun/bun';
 import type { DemoRPCType } from '../shared/rpc';
+import { createFolder, deleteFolder, listDirectory, renameFolder } from './filesystem-handlers';
 import { findNalarPort } from './processDiscovery';
-import { listDirectory, createFolder, renameFolder, deleteFolder } from './filesystem-handlers';
 
 // ============================================================================
 // Application Menu

@@ -6,10 +6,10 @@
  * and use effects to demonstrate Webview → Bun calls!
  */
 import { Route, Router } from '@solidjs/router';
+import { QueryClient, QueryClientProvider } from '@tanstack/solid-query';
 import { Component, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 /* @refresh reload */
 import { render } from 'solid-js/web';
-import { QueryClient, QueryClientProvider } from '@tanstack/solid-query';
 import { AppLayout } from './AppLayout';
 import SessionChat from './pages/SessionChat';
 import Welcome from './pages/Welcome';

@@ -1,4 +1,10 @@
-import { createContext, useContext, type ParentComponent, createSignal, type Accessor } from 'solid-js';
+import {
+  type Accessor,
+  type ParentComponent,
+  createContext,
+  createSignal,
+  useContext,
+} from 'solid-js';
 
 // Signal to trigger session list refresh
 const [sessionListVersion, setSessionListVersion] = createSignal(0);

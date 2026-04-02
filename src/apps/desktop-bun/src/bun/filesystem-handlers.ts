@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 /**
  * Filesystem Handlers - Bun-side RPC implementations for filesystem operations
  *
@@ -5,8 +7,6 @@
  * from the webview.
  */
 import type { DirectoryEntry } from '../shared/rpc';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 
 /**
  * List directory contents with metadata

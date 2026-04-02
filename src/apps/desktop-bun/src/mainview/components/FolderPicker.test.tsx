@@ -1,5 +1,5 @@
-import { describe, expect, test, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { FolderPicker } from './FolderPicker';
 
 // Mock fetch
@@ -22,9 +22,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     expect(screen.getByText('Select Folder')).toBeDefined();
   });
@@ -55,9 +53,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     // Wait for entries to load
     await waitFor(() => {
@@ -81,9 +77,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     fireEvent.click(screen.getByText('Cancel'));
     expect(onClose).toHaveBeenCalled();
@@ -105,9 +99,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     await waitFor(() => {
       expect(screen.getByText('Documents')).toBeDefined();
@@ -145,9 +137,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
@@ -168,9 +158,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     await waitFor(() => {
       expect(screen.getByText('Documents')).toBeDefined();
@@ -193,9 +181,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     await waitFor(() => {
       expect(screen.getByText('+ New Folder')).toBeDefined();
@@ -211,9 +197,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     await waitFor(() => {
       expect(screen.getByText('+ New Folder')).toBeDefined();
@@ -250,9 +234,7 @@ describe('FolderPicker', () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
 
-    render(() => (
-      <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />
-    ));
+    render(() => <FolderPicker isOpen={true} onSelect={onSelect} onClose={onClose} />);
 
     // Should show breadcrumb with the saved path
     await waitFor(() => {

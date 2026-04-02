@@ -1,12 +1,12 @@
 /**
  * File System Utilities for Bun Desktop App
- * 
+ *
  * These utilities handle all file system operations directly in Bun,
  * keeping the Zig backend focused only on AI/LLM processing.
  */
 
-import { readdir, stat, mkdir, rename, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync } from 'node:fs';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 
 // =============================================================================
 // Types
@@ -38,18 +38,18 @@ export async function listDirectory(
   try {
     // Validate path exists
     if (!existsSync(path)) {
-      return { entries: [], error: "Path does not exist" };
+      return { entries: [], error: 'Path does not exist' };
     }
 
     const entries = await readdir(path, { withFileTypes: true });
     const results: FileEntry[] = [];
 
     for (const entry of entries) {
-      const isHidden = entry.name.startsWith(".");
+      const isHidden = entry.name.startsWith('.');
       if (!showHidden && isHidden) continue;
 
       const fullPath = `${path}/${entry.name}`;
-      let modifiedAt = "";
+      let modifiedAt = '';
       let size = 0;
 
       try {

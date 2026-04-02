@@ -1,6 +1,6 @@
 /**
  * Logger utility - sends logs to Bun console via RPC
- * 
+ *
  * Usage:
  *   import { log } from '../utils/logger';
  *   log.info('Hello');
@@ -29,7 +29,7 @@ export const log = {
   info: (text: string) => sendToBun(text, 'info'),
   warn: (text: string) => sendToBun(text, 'warn'),
   error: (text: string) => sendToBun(text, 'error'),
-  
+
   // Generic log with optional level
   log: (text: string, level?: LogLevel) => sendToBun(text, level || 'info'),
 };

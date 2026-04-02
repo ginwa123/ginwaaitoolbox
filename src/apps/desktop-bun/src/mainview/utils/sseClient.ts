@@ -61,7 +61,7 @@ function extractXmlTag(xml: string, tag: string): string | undefined {
  */
 function parseSseXml(xmlData: string): RawSSEEvent {
   const result: RawSSEEvent = {};
-  
+
   // Check if this is a <response> tag (the main event format)
   if (xmlData.includes('<response>')) {
     // Extract all known fields from XML
@@ -76,20 +76,20 @@ function parseSseXml(xmlData: string): RawSSEEvent {
     result.tool_name = extractXmlTag(xmlData, 'tool_name');
     result.agent_name = extractXmlTag(xmlData, 'agent_name');
     result.session_name = extractXmlTag(xmlData, 'session_name');
-    
+
     const loopIndex = extractXmlTag(xmlData, 'loop_index');
-    result.loop_index = loopIndex ? parseInt(loopIndex, 10) : undefined;
-    
+    result.loop_index = loopIndex ? Number.parseInt(loopIndex, 10) : undefined;
+
     const temp = extractXmlTag(xmlData, 'temperature');
-    result.temperature = temp ? parseFloat(temp) : undefined;
-    
+    result.temperature = temp ? Number.parseFloat(temp) : undefined;
+
     result.is_thinking = extractXmlTag(xmlData, 'is_thinking') === 'true';
     result.is_input = extractXmlTag(xmlData, 'is_input') === 'true';
     result.is_output = extractXmlTag(xmlData, 'is_output') === 'true';
-    
+
     result.parent_session_id = extractXmlTag(xmlData, 'parent_session_id');
     result.parent_id = extractXmlTag(xmlData, 'parent_id');
-    
+
     // Parse tool_calls if present
     const toolCallsMatch = xmlData.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/);
     if (toolCallsMatch) {
@@ -106,7 +106,7 @@ function parseSseXml(xmlData: string): RawSSEEvent {
       }
     }
   }
-  
+
   return result;
 }
 
@@ -159,10 +159,10 @@ export class SSEClient {
   async disconnectWithNotification(): Promise<void> {
     const sessionId = this.sessionId;
     this.isIntentionalDisconnect = true;
-    
+
     // Disconnect locally first (always succeeds)
     this.disconnect();
-    
+
     // Then notify server (non-blocking, ignore failures)
     if (sessionId) {
       log.info('[SSEClient] Notifying server of disconnect:', sessionId);
@@ -183,10 +183,10 @@ export class SSEClient {
 
     // Reset intentional disconnect flag
     this.isIntentionalDisconnect = false;
-    
+
     // Disconnect any existing connection first
     this.disconnect();
-    
+
     this.sessionId = sessionId;
     this.reconnectAttempts = 0;
 
@@ -214,7 +214,10 @@ export class SSEClient {
       this.eventSource.addEventListener('message', (event: MessageEvent) => {
         try {
           log.info('[SSEClient] Received message event, data length:', event.data?.length);
-          log.info('[SSEClient] Raw data:', event.data?.substring ? event.data.substring(0, 200) : event.data);
+          log.info(
+            '[SSEClient] Raw data:',
+            event.data?.substring ? event.data.substring(0, 200) : event.data
+          );
           const parsed = parseSseXml(event.data);
           log.info('[SSEClient] Parsed result:', parsed);
           const sseMsg: SSEMessage = {
@@ -226,7 +229,11 @@ export class SSEClient {
             tool_name: parsed.tool_name,
             timestamp: parsed.session_id ? String(Date.now()) : undefined,
           };
-          log.info('[SSEClient] Emitting SSE message:', sseMsg.type, sseMsg.content?.substring ? sseMsg.content.substring(0, 50) : sseMsg.content);
+          log.info(
+            '[SSEClient] Emitting SSE message:',
+            sseMsg.type,
+            sseMsg.content?.substring ? sseMsg.content.substring(0, 50) : sseMsg.content
+          );
           this.notifyHandlers(sseMsg);
         } catch (err) {
           log.error('[SSEClient Failed to parse message event:', err, err.stack);
@@ -262,13 +269,13 @@ export class SSEClient {
   }
 
   private notifyHandlers(event: SSEMessage): void {
-    this.handlers.forEach((handler) => {
+    for (const handler of this.handlers) {
       try {
         handler(event);
       } catch (err) {
         log.error('[SSEClient Handler error:', err);
       }
-    });
+    }
   }
 
   private handleError(): void {
@@ -277,7 +284,7 @@ export class SSEClient {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = this.reconnectDelay * this.reconnectAttempts;
-      log.info('[SSEClient] Reconnecting in ' + delay + 'ms (attempt ' + this.reconnectAttempts + ')');
+      log.info(`[SSEClient] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
       setTimeout(() => {
         if (this.sessionId && !this.isIntentionalDisconnect) {
           this.connect(this.sessionId);

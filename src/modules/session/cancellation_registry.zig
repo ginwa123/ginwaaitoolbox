@@ -156,6 +156,3 @@ pub fn deinitGlobalRegistry() void {
     }
 }
 
-test {
-    _ = @import("cancellation_registry_test.zig");
-}

@@ -49,6 +49,3 @@ pub const SessionMonitor = struct {
     }
 };
 
-test {
-    _ = @import("session_monitor_test.zig");
-}

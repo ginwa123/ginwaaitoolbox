@@ -1,8 +1,12 @@
 import { useNavigate } from '@solidjs/router';
-import { type Component, For, createSignal, onCleanup, onMount, createEffect } from 'solid-js';
+import { type Component, For, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
+import {
+  getSelectedFolder,
+  getSessionListVersion,
+  setSelectedFolderValue,
+} from '../store/sessionStore';
 import { baseUrl, initBaseUrl } from '../utils/baseUrl';
 import { log } from '../utils/logger';
-import { getSessionListVersion, getSelectedFolder, setSelectedFolderValue } from '../store/sessionStore';
 import { FolderPicker } from './FolderPicker';
 
 // =============================================================================
@@ -44,7 +48,7 @@ const Sidebar: Component = () => {
     const version = sessionListVersion();
     const folder = getSelectedFolder();
     const sessionDir = folder !== '/' ? folder : undefined;
-    log.info('[Sidebar] Session list version changed: ' + version + ' Folder: ' + folder);
+    log.info(`[Sidebar] Session list version changed: ${version} Folder: ${folder}`);
     // Update current filter and reset
     setCurrentSessionDir(sessionDir);
     setSessions([]);
@@ -65,7 +69,7 @@ const Sidebar: Component = () => {
   const fetchSessions = async (cursor?: string, sessionDir?: string) => {
     try {
       let url: string;
-      
+
       if (sessionDir && sessionDir !== '/') {
         // Fetch sessions filtered by session_dir
         url = cursor
@@ -77,8 +81,8 @@ const Sidebar: Component = () => {
           ? `${baseUrl()}/api/session?limit=20&cursor=${encodeURIComponent(cursor)}`
           : `${baseUrl()}/api/session?limit=20`;
       }
-      
-      log.info('[Sidebar] fetchSessions called - url: ' + url + ' | sessionDir: ' + sessionDir);
+
+      log.info(`[Sidebar] fetchSessions called - url: ${url} | sessionDir: ${sessionDir}`);
 
       const res = await fetch(url, {
         method: 'GET',
@@ -101,7 +105,7 @@ const Sidebar: Component = () => {
       setHasMore(data.has_more ?? false);
       setNextCursor(data.next_cursor ?? null);
     } catch (err) {
-      log.error('[Sidebar] Failed to load sessions: ' + String(err));
+      log.error(`[Sidebar] Failed to load sessions: ${String(err)}`);
       setError(err instanceof Error ? err.message : String(err));
     }
   };
@@ -109,7 +113,7 @@ const Sidebar: Component = () => {
   const lazyLoadMore = async () => {
     if (!hasMore() || loadingMore() || !nextCursor()) return;
     setLoadingMore(true);
-    log.info('[Sidebar] lazyLoadMore - currentSessionDir: ' + currentSessionDir());
+    log.info(`[Sidebar] lazyLoadMore - currentSessionDir: ${currentSessionDir()}`);
     // Pass current session_dir filter for pagination
     await fetchSessions(nextCursor()!, currentSessionDir());
     setLoadingMore(false);
@@ -118,10 +122,10 @@ const Sidebar: Component = () => {
   // Fallback: scroll event listener
   const handleScroll = () => {
     if (!scrollContainerRef || !hasMore() || loadingMore() || !nextCursor()) return;
-    
+
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    
+
     // Trigger when within 100px of bottom
     if (distanceFromBottom < 100) {
       lazyLoadMore();
@@ -147,9 +151,9 @@ const Sidebar: Component = () => {
           lazyLoadMore();
         }
       },
-      { 
+      {
         root: scrollContainerRef, // scroll container as root
-        threshold: 0
+        threshold: 0,
       }
     );
 
@@ -211,15 +215,20 @@ const Sidebar: Component = () => {
 
   // Handle folder selection
   const handleFolderSelect = (path: string) => {
-    log.info('[Sidebar] Folder selected: ' + path);
+    log.info(`[Sidebar] Folder selected: ${path}`);
     setSelectedFolderValue(path); // Update shared state in sessionStore
     setFolderPickerOpen(false);
     // Pagination state will be reset by createEffect when selectedFolder changes
-    log.info('[Sidebar] Selected folder set to: ' + path + ' | currentSessionDir will be: ' + (path !== '/' ? path : 'undefined'));
+    log.info(
+      `[Sidebar] Selected folder set to: ${path} | currentSessionDir will be: ${path !== '/' ? path : 'undefined'}`
+    );
   };
 
   return (
-    <aside class="w-56 flex-shrink-0 bg-[#050505] border-r border-[#18181b] flex flex-col overflow-hidden" style="height: 100%;">
+    <aside
+      class="w-56 flex-shrink-0 bg-[#050505] border-r border-[#18181b] flex flex-col overflow-hidden"
+      style="height: 100%;"
+    >
       <div class="flex-1 flex flex-col py-3 overflow-hidden">
         <div class="px-4 mb-2 flex items-center justify-between">
           <button
@@ -258,7 +267,7 @@ const Sidebar: Component = () => {
         </div>
 
         {expanded() && (
-          <div 
+          <div
             ref={scrollContainerRef}
             onScroll={handleScroll}
             class="flex-1 px-4 overflow-y-auto sidebar-scroll"
