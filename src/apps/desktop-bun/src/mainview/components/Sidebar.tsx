@@ -30,6 +30,8 @@ const Sidebar: Component = () => {
   // Folder picker state
   const [folderPickerOpen, setFolderPickerOpen] = createSignal(false);
   const [selectedFolder, setSelectedFolder] = createSignal<string>('/');
+  // Current session_dir filter (derived from selectedFolder)
+  const [currentSessionDir, setCurrentSessionDir] = createSignal<string | undefined>(undefined);
 
   // Refs for DOM elements
   let scrollContainerRef: HTMLDivElement | undefined;
@@ -41,12 +43,14 @@ const Sidebar: Component = () => {
   createEffect(() => {
     const version = sessionListVersion();
     const folder = selectedFolder();
+    const sessionDir = folder !== '/' ? folder : undefined;
     console.log('[Sidebar] Session list version changed:', version, 'Folder:', folder);
-    // Reset and reload sessions
+    // Update current filter and reset
+    setCurrentSessionDir(sessionDir);
     setSessions([]);
     setNextCursor(null);
     setHasMore(true);
-    fetchSessions(undefined, folder !== '/' ? folder : undefined);
+    fetchSessions(undefined, sessionDir);
   });
 
   // Callback ref pattern for sentinel - more reliable than let ref
@@ -103,7 +107,8 @@ const Sidebar: Component = () => {
   const lazyLoadMore = async () => {
     if (!hasMore() || loadingMore() || !nextCursor()) return;
     setLoadingMore(true);
-    await fetchSessions(nextCursor()!);
+    // Pass current session_dir filter for pagination
+    await fetchSessions(nextCursor()!, currentSessionDir());
     setLoadingMore(false);
   };
 
@@ -127,8 +132,9 @@ const Sidebar: Component = () => {
     }
 
     setLoading(true);
-    const initialFolder = selectedFolder();
-    fetchSessions(undefined, initialFolder !== '/' ? initialFolder : undefined).finally(() => setLoading(false));
+    const sessionDir = selectedFolder() !== '/' ? selectedFolder() : undefined;
+    setCurrentSessionDir(sessionDir);
+    fetchSessions(undefined, sessionDir).finally(() => setLoading(false));
 
     // Set up IntersectionObserver
     observer = new IntersectionObserver(
@@ -203,11 +209,8 @@ const Sidebar: Component = () => {
   const handleFolderSelect = (path: string) => {
     console.log('[Sidebar] Folder selected:', path);
     setSelectedFolder(path);
-    // Reset pagination state for new folder
-    setSessions([]);
-    setNextCursor(null);
-    setHasMore(true);
     setFolderPickerOpen(false);
+    // Pagination state will be reset by createEffect when selectedFolder changes
   };
 
   return (
