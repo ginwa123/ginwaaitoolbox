@@ -14,6 +14,8 @@ test {
     _ = @import("tools/skills_test.zig");
     _ = @import("tools/agents_test.zig");
     _ = @import("tools/agents_integration_test.zig");
+    // Web search tests
+    _ = @import("tools/web_search_help_test.zig");
     // LSP tests
     _ = @import("tools/lsp_definition_test.zig");
     _ = @import("tools/lsp_document_symbol_test.zig");
