@@ -1,8 +1,8 @@
 const std = @import("std");
 const spawn_sub_agent = @import("spawn_sub_agent.zig");
 
-test "spawnSubAgentTool exists and has correct name" {
-    try std.testing.expectEqualStrings("spawn_sub_agent", spawn_sub_agent.spawnSubAgentTool.function.name);
+test "spawn_sub_agent_tool exists and has correct name" {
+    try std.testing.expectEqualStrings("spawn_sub_agent", spawn_sub_agent.spawn_sub_agent_tool.function.name);
 }
 
 test "parseSubAgents - valid JSON with two agents" {

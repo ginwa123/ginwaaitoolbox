@@ -53,14 +53,14 @@ test "LspDefinitionOutput can represent not found" {
     try std.testing.expectEqual(@as(usize, 0), output.definitions.len);
 }
 
-// Test 2.1: lspDefinitionTool name
-test "lspDefinitionTool has correct name" {
-    try std.testing.expect(std.mem.eql(u8, lsp_definition.lspDefinitionTool.function.name, "lsp_definition"));
+// Test 2.1: lsp_definition_tool name
+test "lsp_definition_tool has correct name" {
+    try std.testing.expect(std.mem.eql(u8, lsp_definition.lsp_definition_tool.function.name, "lsp_definition"));
 }
 
-// Test 2.2: lspDefinitionTool parameters
-test "lspDefinitionTool has required parameters" {
-    const params = lsp_definition.lspDefinitionTool.function.parameters;
+// Test 2.2: lsp_definition_tool parameters
+test "lsp_definition_tool has required parameters" {
+    const params = lsp_definition.lsp_definition_tool.function.parameters;
 
     var has_lsp = false;
     var has_root_dir = false;

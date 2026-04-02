@@ -234,8 +234,8 @@ test "GlobResult deinit cleans up memory" {
     result.deinit(allocator);
 }
 
-test "globTool definition is valid" {
-    const tool = glob.globTool;
+test "glob_tool definition is valid" {
+    const tool = glob.glob_tool;
 
     try expectEqualSlices(u8, "function", tool.type);
     try expectEqualSlices(u8, "glob", tool.function.name);

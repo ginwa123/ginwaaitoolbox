@@ -100,7 +100,7 @@ test "write_file - WriteFileOptions with create_with_dir" {
 
 test "write_file tool definition exists" {
     // Verify the tool definition matches expected structure
-    try std.testing.expectEqualStrings("write_file", write_file_mod.writeFileTool.function.name);
+    try std.testing.expectEqualStrings("write_file", write_file_mod.write_file_tool.function.name);
 }
 
 test "write_file - WriteFileInput with create_with_dir" {
@@ -113,7 +113,7 @@ test "write_file - WriteFileInput with create_with_dir" {
 }
 
 test "write_file tool definition includes create_with_dir parameter" {
-    const tool_def = write_file_mod.writeFileTool;
+    const tool_def = write_file_mod.write_file_tool;
     const props = tool_def.function.parameters.properties;
     
     // Find create_with_dir in properties

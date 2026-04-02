@@ -114,14 +114,14 @@ test "LspReferencesOutput can hold multiple references" {
 // Chunk 2: Tool Definition Tests (lsp_references.zig)
 // =============================================================================
 
-// Test 2.1: lspReferencesTool has correct name
-test "lspReferencesTool has correct name" {
-    try std.testing.expect(std.mem.eql(u8, lsp_references.lspReferencesTool.function.name, "lsp_references"));
+// Test 2.1: lsp_references_tool has correct name
+test "lsp_references_tool has correct name" {
+    try std.testing.expect(std.mem.eql(u8, lsp_references.lsp_references_tool.function.name, "lsp_references"));
 }
 
-// Test 2.2: lspReferencesTool has required parameters
-test "lspReferencesTool has required parameters" {
-    const params = lsp_references.lspReferencesTool.function.parameters;
+// Test 2.2: lsp_references_tool has required parameters
+test "lsp_references_tool has required parameters" {
+    const params = lsp_references.lsp_references_tool.function.parameters;
     // Should have 7 properties: lsp, root_dir, file_path, line, character, include_declaration, max_output
     try std.testing.expectEqual(@as(usize, 7), params.properties.len);
 
@@ -154,9 +154,9 @@ test "lspReferencesTool has required parameters" {
     try std.testing.expectEqual(@as(usize, 5), params.required.len);
 }
 
-// Test 2.3: lspReferencesTool has correct description
-test "lspReferencesTool has description mentioning textDocument/references" {
-    const desc = lsp_references.lspReferencesTool.function.description;
+// Test 2.3: lsp_references_tool has correct description
+test "lsp_references_tool has description mentioning textDocument/references" {
+    const desc = lsp_references.lsp_references_tool.function.description;
     try std.testing.expect(std.mem.containsAtLeast(u8, desc, 1, "references"));
 }
 

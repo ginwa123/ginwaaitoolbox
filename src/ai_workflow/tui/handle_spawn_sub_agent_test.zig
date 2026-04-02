@@ -26,7 +26,7 @@ fn makeDummyDb() sqlite.SqliteBackend {
     return sqlite.SqliteBackend{};
 }
 
-// Test helper: create a minimal config for executeSubAgentTool
+// Test helper: create a minimal config for execute_sub_agent_tool
 fn makeDummyConfig() config_mod.LlmConfig {
     return config_mod.LlmConfig{
         .allocator = std.testing.allocator,
@@ -39,10 +39,10 @@ fn makeDummyConfig() config_mod.LlmConfig {
 }
 
 // ============================================================================
-// Tests for executeSubAgentTool
+// Tests for execute_sub_agent_tool
 // ============================================================================
 
-test "executeSubAgentTool - list_skills executes successfully" {
+test "execute_sub_agent_tool - list_skills executes successfully" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("list_skills", "{}");
     var db = makeDummyDb();
@@ -50,7 +50,7 @@ test "executeSubAgentTool - list_skills executes successfully" {
     const config = makeDummyConfig();
 
     // The list_skills tool doesn't need actual DB connection
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // Result should contain valid JSON with skills array
@@ -58,19 +58,19 @@ test "executeSubAgentTool - list_skills executes successfully" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "{\"skills\":[") != null);
 }
 
-test "executeSubAgentTool - unknown tool returns error.UnknownTool" {
+test "execute_sub_agent_tool - unknown tool returns error.UnknownTool" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("nonexistent_tool", "{}");
     var db = makeDummyDb();
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     try std.testing.expectError(error.UnknownTool, result);
 }
 
 // Test tool execution error handling - using read_file with invalid path to avoid bash memory leaks
-test "executeSubAgentTool - tool execution error is caught and returned" {
+test "execute_sub_agent_tool - tool execution error is caught and returned" {
     const allocator = std.testing.allocator;
     // read_file with nonexistent path will return error but not leak memory
     const tc = makeToolCall("read_file", "{\"path\": \"nonexistent_file_xyz.txt\"}");
@@ -78,35 +78,35 @@ test "executeSubAgentTool - tool execution error is caught and returned" {
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // Should contain error message (file not found)
     try std.testing.expect(result.output.len > 0);
 }
 
-test "executeSubAgentTool - read_file with valid path" {
+test "execute_sub_agent_tool - read_file with valid path" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("read_file", "{\"path\": \"README.md\"}");
     var db = makeDummyDb();
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // read_file doesn't need db/session_id, so should work
     try std.testing.expect(result.output.len > 0);
 }
 
-test "executeSubAgentTool - search tool executes" {
+test "execute_sub_agent_tool - search tool executes" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("search", "{\"pattern\": \"test\", \"path\": \".\"}");
     var db = makeDummyDb();
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // search returns results or empty array
@@ -199,14 +199,14 @@ test "parseAgentFromResult - returns null when missing agent_name" {
 }
 
 // ============================================================================
-// Tests for getAllowedTools
+// Tests for get_allowed_tools
 // ============================================================================
 
-test "getAllowedTools - returns all tools when no filter" {
+test "get_allowed_tools - returns all tools when no filter" {
     const allocator = std.testing.allocator;
     const mcp_tools: []const tool_models.AgentTool = &.{};
 
-    const result = try handle_spawn_sub_agent.getAllowedTools(allocator, null, mcp_tools);
+    const result = try handle_spawn_sub_agent.get_allowed_tools(allocator, null, mcp_tools);
     defer allocator.free(result);
     // Should have multiple tools (bash, read_file, search, etc.)
     try std.testing.expect(result.len > 5);
@@ -225,12 +225,12 @@ test "getAllowedTools - returns all tools when no filter" {
     try std.testing.expect(has_list_skills);
 }
 
-test "getAllowedTools - filters to allowed tools only" {
+test "get_allowed_tools - filters to allowed tools only" {
     const allocator = std.testing.allocator;
     const allowed = &.{ "bash", "read_file" };
     const mcp_tools: []const tool_models.AgentTool = &.{};
 
-    const result = try handle_spawn_sub_agent.getAllowedTools(allocator, allowed, mcp_tools);
+    const result = try handle_spawn_sub_agent.get_allowed_tools(allocator, allowed, mcp_tools);
     defer allocator.free(result);
 
     try std.testing.expectEqual(@as(usize, 2), result.len);
@@ -239,23 +239,23 @@ test "getAllowedTools - filters to allowed tools only" {
     try std.testing.expectEqualStrings("read_file", result[1].function.name);
 }
 
-test "getAllowedTools - returns empty when no tools match filter" {
+test "get_allowed_tools - returns empty when no tools match filter" {
     const allocator = std.testing.allocator;
     const allowed = &.{"nonexistent_tool"};
     const mcp_tools: []const tool_models.AgentTool = &.{};
 
-    const result = try handle_spawn_sub_agent.getAllowedTools(allocator, allowed, mcp_tools);
+    const result = try handle_spawn_sub_agent.get_allowed_tools(allocator, allowed, mcp_tools);
     defer allocator.free(result);
 
     try std.testing.expectEqual(@as(usize, 0), result.len);
 }
 
-test "getAllowedTools - single allowed tool" {
+test "get_allowed_tools - single allowed tool" {
     const allocator = std.testing.allocator;
     const allowed = &.{"list_skills"};
     const mcp_tools: []const tool_models.AgentTool = &.{};
 
-    const result = try handle_spawn_sub_agent.getAllowedTools(allocator, allowed, mcp_tools);
+    const result = try handle_spawn_sub_agent.get_allowed_tools(allocator, allowed, mcp_tools);
     defer allocator.free(result);
 
     try std.testing.expectEqual(@as(usize, 1), result.len);
@@ -266,14 +266,14 @@ test "getAllowedTools - single allowed tool" {
 // Integration-style tests
 // ============================================================================
 
-test "executeSubAgentTool - SubAgentToolResult with auto_save fields" {
+test "execute_sub_agent_tool - SubAgentToolResult with auto_save fields" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("list_skills", "{}");
     var db = makeDummyDb();
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // list_skills doesn't auto-save, so these should be null
@@ -281,7 +281,7 @@ test "executeSubAgentTool - SubAgentToolResult with auto_save fields" {
     try std.testing.expect(result.agent_save == null);
 }
 
-test "executeSubAgentTool - write_file tool is available" {
+test "execute_sub_agent_tool - write_file tool is available" {
     const allocator = std.testing.allocator;
     // Try to write to a temp path
     const tc = makeToolCall("write_file",
@@ -292,21 +292,21 @@ test "executeSubAgentTool - write_file tool is available" {
     const config = makeDummyConfig();
 
     // This should execute (may succeed or fail based on permissions, but shouldn't UnknownTool
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // Should get some output (success or error)
     try std.testing.expect(result.output.len > 0);
 }
 
-test "executeSubAgentTool - list_agents tool executes" {
+test "execute_sub_agent_tool - list_agents tool executes" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("list_agents", "{}");
     var db = makeDummyDb();
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // Should return JSON with agents
@@ -314,28 +314,28 @@ test "executeSubAgentTool - list_agents tool executes" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "agents") != null);
 }
 
-test "executeSubAgentTool - change_agent tool with valid name" {
+test "execute_sub_agent_tool - change_agent tool with valid name" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("change_agent", "{\"agent_name\": \"code-reviewer\"}");
     var db = makeDummyDb();
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // Should get agent definition or error
     try std.testing.expect(result.output.len > 0);
 }
 
-test "executeSubAgentTool - remove_skill tool is available" {
+test "execute_sub_agent_tool - remove_skill tool is available" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("remove_skill", "{\"skill_name\": \"nonexistent_skill_xyz\"}");
     var db = makeDummyDb();
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // Should get output (skill not found or success)
@@ -346,7 +346,7 @@ test "executeSubAgentTool - remove_skill tool is available" {
 // Edge case tests
 // ============================================================================
 
-test "executeSubAgentTool - empty arguments" {
+test "execute_sub_agent_tool - empty arguments" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("list_skills", "");
     var db = makeDummyDb();
@@ -354,13 +354,13 @@ test "executeSubAgentTool - empty arguments" {
     const config = makeDummyConfig();
 
     // Empty args should still work for tools that don't require args
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     try std.testing.expect(result.output.len > 0);
 }
 
-test "executeSubAgentTool - text_replace tool with invalid input" {
+test "execute_sub_agent_tool - text_replace tool with invalid input" {
     const allocator = std.testing.allocator;
     const tc = makeToolCall("text_replace", "{\"path\": \"nonexistent.zig\", \"old_str\": \"x\", \"new_str\": \"y\"}");
     var db = makeDummyDb();
@@ -368,7 +368,7 @@ test "executeSubAgentTool - text_replace tool with invalid input" {
     const config = makeDummyConfig();
 
     // Should execute and return error (file not found)
-    const result = try handle_spawn_sub_agent.executeSubAgentTool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
     defer allocator.free(result.output);
 
     // Should contain some error indication
@@ -376,13 +376,13 @@ test "executeSubAgentTool - text_replace tool with invalid input" {
 }
 
 // ============================================================================
-// Integration tests for bash tool via executeSubAgentTool
+// Integration tests for bash tool via execute_sub_agent_tool
 // Note: These tests verify bash tool integration but have memory leak issues
 // due to the bash.zig tool's internal allocations. The bash.zig tests
 // (bash_test.zig) prove the bash tool works correctly. These integration
-// tests verify the executeSubAgentTool wrapper properly routes to bash.
+// tests verify the execute_sub_agent_tool wrapper properly routes to bash.
 // ============================================================================
 
 // Skipping bash integration tests due to known memory leak in bash tool internal allocations
-// when used through executeSubAgentTool wrapper. The bash tool itself works correctly
+// when used through execute_sub_agent_tool wrapper. The bash tool itself works correctly
 // as proven by src/modules/agent/tools/bash_test.zig which tests executeBash directly.

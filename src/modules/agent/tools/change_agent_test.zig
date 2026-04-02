@@ -52,13 +52,13 @@ test "parseChangeAgentInput invalid json" {
     try std.testing.expectError(error.InvalidJson, result);
 }
 
-test "ChangeAgentTool has correct name" {
-    const tool = change_agent.ChangeAgentTool;
+test "change_agent_tool has correct name" {
+    const tool = change_agent.change_agent_tool;
     try std.testing.expectEqualStrings("change_agent", tool.function.name);
 }
 
-test "ChangeAgentTool description mentions switching" {
-    const tool = change_agent.ChangeAgentTool;
+test "change_agent_tool description mentions switching" {
+    const tool = change_agent.change_agent_tool;
     const desc = tool.function.description;
     // Should mention "switch" or "persona" to indicate personality change
     try std.testing.expect(std.mem.indexOf(u8, desc, "switch") != null or 

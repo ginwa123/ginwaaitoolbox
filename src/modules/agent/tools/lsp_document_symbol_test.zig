@@ -153,14 +153,14 @@ test "LspDocumentSymbolOutput can represent not found" {
     try std.testing.expectEqual(@as(usize, 0), output.symbols.len);
 }
 
-// Test 2.1: lspDocumentSymbolTool name
-test "lspDocumentSymbolTool has correct name" {
-    try std.testing.expect(std.mem.eql(u8, lsp_document_symbol.lspDocumentSymbolTool.function.name, "lsp_document_symbol"));
+// Test 2.1: lsp_document_symbol_tool name
+test "lsp_document_symbol_tool has correct name" {
+    try std.testing.expect(std.mem.eql(u8, lsp_document_symbol.lsp_document_symbol_tool.function.name, "lsp_document_symbol"));
 }
 
-// Test 2.2: lspDocumentSymbolTool parameters
-test "lspDocumentSymbolTool has required parameters" {
-    const params = lsp_document_symbol.lspDocumentSymbolTool.function.parameters;
+// Test 2.2: lsp_document_symbol_tool parameters
+test "lsp_document_symbol_tool has required parameters" {
+    const params = lsp_document_symbol.lsp_document_symbol_tool.function.parameters;
     try std.testing.expectEqual(@as(usize, 4), params.properties.len);
 
     var has_lsp = false;

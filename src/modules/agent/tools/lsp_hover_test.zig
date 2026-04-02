@@ -53,14 +53,14 @@ test "LspHoverOutput can represent not found" {
     try std.testing.expect(output.contents == null);
 }
 
-// Test 2.1: lspHoverTool name
-test "lspHoverTool has correct name" {
-    try std.testing.expect(std.mem.eql(u8, lsp_hover.lspHoverTool.function.name, "lsp_hover"));
+// Test 2.1: lsp_hover_tool name
+test "lsp_hover_tool has correct name" {
+    try std.testing.expect(std.mem.eql(u8, lsp_hover.lsp_hover_tool.function.name, "lsp_hover"));
 }
 
-// Test 2.2: lspHoverTool parameters
-test "lspHoverTool has required parameters" {
-    const params = lsp_hover.lspHoverTool.function.parameters;
+// Test 2.2: lsp_hover_tool parameters
+test "lsp_hover_tool has required parameters" {
+    const params = lsp_hover.lsp_hover_tool.function.parameters;
     try std.testing.expectEqual(@as(usize, 5), params.properties.len);
 
     var has_lsp = false;

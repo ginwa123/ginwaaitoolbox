@@ -138,7 +138,7 @@ test "text_replace - result serialization" {
     }, read_result.sha256);
     defer result.deinit(allocator);
     
-    const serialized = try text_replace_mod.textReplaceBatchToStringXML(allocator, result);
+    const serialized = try text_replace_mod.text_replace_batch_to_string_xml(allocator, result);
     defer allocator.free(serialized);
     
     // Should contain sha256_after
@@ -149,7 +149,7 @@ test "text_replace - result serialization" {
 }
 
 test "text_replace tool definition exists" {
-    try std.testing.expectEqualStrings("text_replace", text_replace_mod.textReplaceTool.function.name);
+    try std.testing.expectEqualStrings("text_replace", text_replace_mod.text_replace_tool.function.name);
 }
 
 test "text_replace - unique match with surrounding context" {

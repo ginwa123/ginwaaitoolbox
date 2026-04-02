@@ -11,8 +11,8 @@ test "root.zig exports change_agent_tool" {
     _ = nalarcore.change_agent_tool;
 }
 
-test "root.zig exports ChangeAgentTool with correct name" {
-    const tool = nalarcore.change_agent.ChangeAgentTool;
+test "root.zig exports change_agent_tool with correct name" {
+    const tool = nalarcore.change_agent.change_agent_tool;
     try std.testing.expectEqualStrings("change_agent", tool.function.name);
 }
 

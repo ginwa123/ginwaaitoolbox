@@ -2,13 +2,13 @@ const std = @import("std");
 const list_agents = @import("list_agents.zig");
 const agents = @import("agents.zig");
 
-test "listAgentsTool has correct structure" {
+test "list_agents_tool has correct structure" {
     // Verify tool definition
-    try std.testing.expectEqualStrings("function", list_agents.listAgentsTool.type);
-    try std.testing.expectEqualStrings("list_agents", list_agents.listAgentsTool.function.name);
-    try std.testing.expectEqualStrings("object", list_agents.listAgentsTool.function.parameters.type);
-    try std.testing.expectEqual(@as(usize, 0), list_agents.listAgentsTool.function.parameters.properties.len);
-    try std.testing.expectEqual(@as(usize, 0), list_agents.listAgentsTool.function.parameters.required.len);
+    try std.testing.expectEqualStrings("function", list_agents.list_agents_tool.type);
+    try std.testing.expectEqualStrings("list_agents", list_agents.list_agents_tool.function.name);
+    try std.testing.expectEqualStrings("object", list_agents.list_agents_tool.function.parameters.type);
+    try std.testing.expectEqual(@as(usize, 0), list_agents.list_agents_tool.function.parameters.properties.len);
+    try std.testing.expectEqual(@as(usize, 0), list_agents.list_agents_tool.function.parameters.required.len);
 }
 
 test "executeListAgents returns valid JSON" {
