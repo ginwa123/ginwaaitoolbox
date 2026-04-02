@@ -104,9 +104,13 @@ pub const List = struct {
 // =============================================================================
 
 pub const WebSearchInput = struct {
-    /// URL to navigate to or action to perform
-    url: []const u8,
+    /// Search query (e.g., "Zig programming language news")
+    /// When provided, automatically searches Bing and returns results
+    query: ?[]const u8 = null,
+    /// URL to navigate to (for direct browser commands)
+    url: []const u8 = "",
     /// Action to perform: "open", "snapshot", "get", "click", etc.
+    /// When query is provided, this is ignored
     action: []const u8 = "open",
     /// Optional CSS selector for element operations
     selector: ?[]const u8 = null,
