@@ -242,6 +242,18 @@ pub fn execLspHover(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
     return "lsp_hover not implemented";
 }
 
+// Web search tool handlers
+const handle_web_search_tool = @import("handle_web_search_tool.zig");
+const handle_web_search_help_tool = @import("handle_web_search_help_tool.zig");
+
+pub fn execWebSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    return handle_web_search_tool.runWithContext(allocator, tc, db, session_id);
+}
+
+pub fn execWebSearchHelp(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    return handle_web_search_help_tool.runWithContext(allocator, tc, db, session_id);
+}
+
 // Import tool registry for unified tool definitions
 const tool_registry = @import("tool_registry.zig");
 

@@ -23,6 +23,8 @@ const lsp_workspace_symbol_mod = root_mod.tools.lsp_workspace_symbol;
 const lsp_document_symbol_mod = root_mod.tools.lsp_document_symbol;
 const lsp_hover_mod = root_mod.tools.lsp_hover;
 const set_agent_properties_mod = root_mod.set_agent_properties;
+const web_search_mod = root_mod.web_search;
+const web_search_help_mod = root_mod.web_search_help;
 
 // Forward declare to avoid circular import (exec functions)
 const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
@@ -75,6 +77,10 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "lsp_workspace_symbol", .exec = handle_spawn_sub_agent.execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool, .allowed_for_subagent = true },
     .{ .name = "lsp_document_symbol", .exec = handle_spawn_sub_agent.execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool, .allowed_for_subagent = true },
     .{ .name = "lsp_hover", .exec = handle_spawn_sub_agent.execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool, .allowed_for_subagent = true },
+
+    // === WEB SEARCH TOOLS ===
+    .{ .name = "web_search", .exec = handle_spawn_sub_agent.execWebSearch, .tool_def = web_search_mod.web_search_tool, .allowed_for_subagent = true },
+    .{ .name = "web_search_help", .exec = handle_spawn_sub_agent.execWebSearchHelp, .tool_def = web_search_help_mod.web_search_help_tool, .allowed_for_subagent = true },
 };
 
 // ============================================================================
@@ -110,6 +116,10 @@ pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "lsp_workspace_symbol", .exec = handle_spawn_sub_agent.execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool, .allowed_for_subagent = true },
     .{ .name = "lsp_document_symbol", .exec = handle_spawn_sub_agent.execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool, .allowed_for_subagent = true },
     .{ .name = "lsp_hover", .exec = handle_spawn_sub_agent.execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool, .allowed_for_subagent = true },
+
+    // === WEB SEARCH TOOLS ===
+    .{ .name = "web_search", .exec = handle_spawn_sub_agent.execWebSearch, .tool_def = web_search_mod.web_search_tool, .allowed_for_subagent = true },
+    .{ .name = "web_search_help", .exec = handle_spawn_sub_agent.execWebSearchHelp, .tool_def = web_search_help_mod.web_search_help_tool, .allowed_for_subagent = true },
 };
 
 /// Get tool metadata by name from registry
