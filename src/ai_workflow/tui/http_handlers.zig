@@ -851,6 +851,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
     res.body = "{\"error\":\"Server not initialized\"}";
 }
 
+
 // =============================================================================
 // Test
 // =============================================================================
@@ -858,3 +859,4 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
 test {
     _ = http_server;
 }
+
