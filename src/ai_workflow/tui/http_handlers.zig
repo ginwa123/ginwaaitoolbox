@@ -378,76 +378,30 @@ pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *http
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
 
-            if (session_dir) |dir| {
-                // Filter by session_dir using existing helper
-                const sessions = session_helpers.get_sessions_by_dir(alloc, sqlite_db, dir) catch {
-                    res.status = 500;
-                    res.body = "{\"error\":\"Database query failed\"}";
-                    return;
-                };
-                defer {
-                    for (sessions) |s| {
-                        alloc.free(s.session_id);
-                        alloc.free(s.session_dir);
-                        alloc.free(s.created_at);
-                    }
-                    alloc.free(sessions);
-                }
-
-                const has_more = sessions.len >= @as(usize, limit_val);
-                const next_cursor: ?[]const u8 = if (sessions.len > 0 and sessions.len >= @as(usize, limit_val))
-                    sessions[sessions.len - 1].created_at
-                else
-                    null;
-
-                // Build JSON response manually (simple format for dir-filtered results)
-                var json_buf = std.ArrayList(u8).empty;
-                try json_buf.appendSlice(alloc, "{\"sessions\":[");
-                for (sessions, 0..) |s, i| {
-                    if (i > 0) try json_buf.appendSlice(alloc, ",");
-                    try std.fmt.format(json_buf.writer(alloc), "{{\"session_id\":\"{s}\",\"session_dir\":\"{s}\",\"created_at\":\"{s}\",\"agent\":\"Agent\",\"session_name\":\"\"}}", .{
-                        s.session_id,
-                        s.session_dir,
-                        s.created_at,
-                    });
-                }
-                try json_buf.appendSlice(alloc, "],\"has_more\":");
-                try json_buf.appendSlice(alloc, if (has_more) "true" else "false");
-                if (next_cursor) |nc| {
-                    try json_buf.appendSlice(alloc, ",\"next_cursor\":\"");
-                    try json_buf.appendSlice(alloc, nc);
-                    try json_buf.append(alloc, '"');
-                }
-                try json_buf.append(alloc, '}');
-
-                res.status = 200;
-                res.body = json_buf.items;
-            } else {
-                // Original behavior: list all sessions
-                const result = session_db.getSessionListWithCursor(alloc, sqlite_db, null, null, limit_val, cursor) catch {
-                    res.status = 500;
-                    res.body = "{\"error\":\"Database query failed\"}";
-                    return;
-                };
-                defer {
-                    for (result.sessions) |s| s.deinit(alloc);
-                    alloc.free(result.sessions);
-                }
-
-                // Determine if there are more results
-                const has_more = result.sessions.len == @as(usize, limit_val);
-                // Next cursor is the created_at of the last session
-                const next_cursor: ?[]const u8 = if (result.sessions.len > 0)
-                    result.sessions[result.sessions.len - 1].created_at
-                else
-                    null;
-
-                // Build JSON response with cursor pagination
-                const response = try session_db.buildSessionListJson(alloc, result.sessions, result.total, has_more, next_cursor);
-
-                res.status = 200;
-                res.body = response;
+            // Use unified getSessionListWithCursor with session_dir support
+            const result = session_db.getSessionListWithCursor(alloc, sqlite_db, null, null, session_dir, limit_val, cursor) catch {
+                res.status = 500;
+                res.body = "{\"error\":\"Database query failed\"}";
+                return;
+            };
+            defer {
+                for (result.sessions) |s| s.deinit(alloc);
+                alloc.free(result.sessions);
             }
+
+            // Determine if there are more results
+            const has_more = result.sessions.len == @as(usize, limit_val);
+            // Next cursor is the created_at of the last session
+            const next_cursor: ?[]const u8 = if (result.sessions.len > 0)
+                result.sessions[result.sessions.len - 1].created_at
+            else
+                null;
+
+            // Build JSON response with cursor pagination
+            const response = try session_db.buildSessionListJson(alloc, result.sessions, result.total, has_more, next_cursor);
+
+            res.status = 200;
+            res.body = response;
             return;
         }
     }

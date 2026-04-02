@@ -63,11 +63,13 @@ pub fn getSessionList(
 }
 
 /// Get a list of sessions with cursor-based pagination
+/// Optionally filtered by session_dir
 pub fn getSessionListWithCursor(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     status: ?[]const u8,
     agent_type: ?[]const u8,
+    session_dir: ?[]const u8,
     limit: u32,
     cursor: ?[]const u8,
 ) !struct { sessions: []SessionInfo, total: u32 } {
@@ -77,15 +79,27 @@ pub fn getSessionListWithCursor(
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     defer allocator.free(limit_str);
 
-    // Build query with cursor condition if provided
-    const sql_final: []u8 = if (cursor) |c| blk: {
-        break :blk try std.fmt.allocPrint(allocator,
-            "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 AND created_at < '{s}' GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
-            .{c, limit});
+    // Build query with session_dir filter and cursor condition
+    const sql_final: []u8 = if (session_dir) |dir| blk: {
+        if (cursor) |c| {
+            break :blk try std.fmt.allocPrint(allocator,
+                "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 AND session_dir = '{s}' AND created_at < '{s}' GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
+                .{dir, c, limit});
+        } else {
+            break :blk try std.fmt.allocPrint(allocator,
+                "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 AND session_dir = '{s}' GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
+                .{dir, limit});
+        }
     } else blk: {
-        break :blk try std.fmt.allocPrint(allocator,
-            "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
-            .{limit});
+        if (cursor) |c| {
+            break :blk try std.fmt.allocPrint(allocator,
+                "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 AND created_at < '{s}' GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
+                .{c, limit});
+        } else {
+            break :blk try std.fmt.allocPrint(allocator,
+                "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
+                .{limit});
+        }
     };
     defer allocator.free(sql_final);
 
@@ -110,8 +124,15 @@ pub fn getSessionListWithCursor(
         row.deinit(allocator);
     }
 
-    // Get total count
-    const count_sql = "SELECT COUNT(DISTINCT session_id) FROM llm_history";
+    // Build count query with session_dir filter
+    const count_sql: []u8 = if (session_dir) |dir|
+        try std.fmt.allocPrint(allocator,
+            "SELECT COUNT(DISTINCT session_id) FROM llm_history WHERE session_dir = '{s}'",
+            .{dir})
+    else
+        try allocator.dupe(u8, "SELECT COUNT(DISTINCT session_id) FROM llm_history");
+    defer allocator.free(count_sql);
+
     var count_rows = try db.query(allocator, count_sql, &.{});
     defer count_rows.deinit();
 

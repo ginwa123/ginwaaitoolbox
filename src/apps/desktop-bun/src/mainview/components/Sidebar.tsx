@@ -37,15 +37,16 @@ const Sidebar: Component = () => {
   let observer: IntersectionObserver | undefined;
   let initialized = false;
 
-  // Refresh when session list version changes (new session created)
+  // Refresh when session list version changes (new session created) OR folder changes
   createEffect(() => {
     const version = sessionListVersion();
-    console.log('[Sidebar] Session list version changed:', version);
+    const folder = selectedFolder();
+    console.log('[Sidebar] Session list version changed:', version, 'Folder:', folder);
     // Reset and reload sessions
     setSessions([]);
     setNextCursor(null);
     setHasMore(true);
-    fetchSessions();
+    fetchSessions(undefined, folder !== '/' ? folder : undefined);
   });
 
   // Callback ref pattern for sentinel - more reliable than let ref
@@ -57,11 +58,21 @@ const Sidebar: Component = () => {
     }
   };
 
-  const fetchSessions = async (cursor?: string) => {
+  const fetchSessions = async (cursor?: string, sessionDir?: string) => {
     try {
-      const url = cursor
-        ? `${baseUrl()}/api/session?limit=20&cursor=${encodeURIComponent(cursor)}`
-        : `${baseUrl()}/api/session?limit=20`;
+      let url: string;
+      
+      if (sessionDir && sessionDir !== '/') {
+        // Fetch sessions filtered by session_dir
+        url = cursor
+          ? `${baseUrl()}/api/session?session_dir=${encodeURIComponent(sessionDir)}&limit=20&cursor=${encodeURIComponent(cursor)}`
+          : `${baseUrl()}/api/session?session_dir=${encodeURIComponent(sessionDir)}&limit=20`;
+      } else {
+        // Fetch all sessions (existing behavior)
+        url = cursor
+          ? `${baseUrl()}/api/session?limit=20&cursor=${encodeURIComponent(cursor)}`
+          : `${baseUrl()}/api/session?limit=20`;
+      }
 
       const res = await fetch(url, {
         method: 'GET',
@@ -116,7 +127,8 @@ const Sidebar: Component = () => {
     }
 
     setLoading(true);
-    fetchSessions().finally(() => setLoading(false));
+    const initialFolder = selectedFolder();
+    fetchSessions(undefined, initialFolder !== '/' ? initialFolder : undefined).finally(() => setLoading(false));
 
     // Set up IntersectionObserver
     observer = new IntersectionObserver(
@@ -191,6 +203,10 @@ const Sidebar: Component = () => {
   const handleFolderSelect = (path: string) => {
     console.log('[Sidebar] Folder selected:', path);
     setSelectedFolder(path);
+    // Reset pagination state for new folder
+    setSessions([]);
+    setNextCursor(null);
+    setHasMore(true);
     setFolderPickerOpen(false);
   };
 
