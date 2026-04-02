@@ -98,3 +98,27 @@ pub const List = struct {
         return try self.items.toOwnedSlice(allocator);
     }
 };
+
+// =============================================================================
+// Web Search Tool Types
+// =============================================================================
+
+pub const WebSearchInput = struct {
+    /// URL to navigate to or action to perform
+    url: []const u8,
+    /// Action to perform: "open", "snapshot", "get", "click", etc.
+    action: []const u8 = "open",
+    /// Optional CSS selector for element operations
+    selector: ?[]const u8 = null,
+    /// Optional additional arguments
+    args: ?[]const u8 = null,
+    /// Working directory (defaults to /tmp)
+    cwd: ?[]const u8 = "/tmp",
+};
+
+pub const WebSearchResult = struct {
+    success: bool,
+    content: []const u8,
+    exit_code: i32,
+    error_msg: ?[]const u8 = null,
+};
