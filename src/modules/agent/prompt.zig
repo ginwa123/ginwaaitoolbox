@@ -16,6 +16,7 @@ pub const ParallelSubAgentGuidance = prompts.ParallelSubAgentGuidance;
 pub const ParallelSkillReminder = prompts.ParallelSkillReminder;
 pub const Research = prompts.Research;
 pub const ResearchTriggers = prompts.ResearchTriggers;
+pub const FileEditingRules = prompts.FileEditingRules;
 pub const AvailableTools = prompts.AvailableTools;
 pub const ChangeAgent = prompts.ChangeAgent;
 pub const SpecializationTable = prompts.SpecializationTable;
@@ -147,6 +148,10 @@ pub fn buildAgentPrompt(
     // Available tools
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, AvailableTools);
+
+    // File editing rules - CRITICAL, must include expected_hash!
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, FileEditingRules);
 
     // Change agent rules
     try result.appendSlice(allocator, "\n\n");

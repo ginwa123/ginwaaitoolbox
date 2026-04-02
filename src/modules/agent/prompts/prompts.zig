@@ -39,6 +39,7 @@ pub const ParallelMandatoryIntro = research.ParallelMandatoryIntro;
 
 pub const Research = research.Research;
 pub const ResearchTriggers = research.ResearchTriggers;
+pub const FileEditingRules = research.FileEditingRules;
 pub const AvailableTools = research.AvailableTools;
 pub const SkillsUsage = research.SkillsUsage;
 pub const SkillsTriggers = research.SkillsTriggers;

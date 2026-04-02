@@ -82,6 +82,9 @@ src/
 - **Prompts (`prompts/`):** Modular prompts by purpose — core, agent, research, specialized, subagent, execution, memory, special
 - **Tools:** bash, read_file, write_file, text_replace, search, glob, **tree_dir**, LSP tools
 - **write_file:** Tool with `create_with_dir` option for automatic directory creation
+- **text_replace:** ⚠️ **ALWAYS requires `expected_hash`** — get from `read_file` output first!
+  - Wrong: `{"path": "f.zig", "ops": [{"old_str": "x", "new_str": "y"}]}` (will fail!)
+  - Correct: `{"path": "f.zig", "ops": [{"old_str": "x", "new_str": "y"}], "expected_hash": "abc..."}`
 - **Skills/Agents:** list_skill, get_skill, remove_skill, list_agents, change_agent, spawn_sub_agent
 - **MCP:** LSP definition/references/hover/workspace_symbol/document_symbol
 - **Self-Kill Protection:** `bash_selfkill.zig` — blocks dangerous commands (kill, killall, pkill, exit) that target self PID
@@ -190,7 +193,7 @@ Prompts split by purpose in `src/modules/agent/prompts/`:
 - `core.zig` — Universal rules, auto-fix
 - `agent.zig` — Main orchestration directive (MANDATORY parallel!)
 - `parallel.zig` — **PARALLEL WORK IS MANDATORY** rules
-- `research.zig` — Auto-research, tools (MANDATORY parallel for 2+ tasks!)
+- `research.zig` — Auto-research, tools, **FileEditingRules** (MANDATORY parallel for 2+ tasks!)
 - `specialized.zig` — change_agent rules
 - `subagent.zig` — Sub-agent brief
 - `execution.zig` — Classification, execution, escalation

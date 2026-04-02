@@ -110,13 +110,43 @@ pub const ResearchTriggers =
     \\**Rule: 2+ independent pieces = MANDATORY spawn_sub_agent**
 ;
 
+pub const FileEditingRules =
+    \\## 📝 FILE EDITING RULES (CRITICAL - ALWAYS FOLLOW!)
+    \\
+    \\### text_replace Tool - MANDATORY `expected_hash`
+    \\
+    \\**⚠️ CRITICAL: text_replace ALWAYS requires `expected_hash` parameter!**
+    \\
+    \\**WRONG (will fail with "unknown field" error):**
+    \\```json
+    \\{"path": "file.zig", "ops": [{"old_str": "x", "new_str": "y"}]}
+    \\```
+    \\
+    \\**CORRECT (includes expected_hash):**
+    \\```json
+    \\{"path": "file.zig", "ops": [{"old_str": "x", "new_str": "y"}], "expected_hash": "abc123..."}
+    \\```
+    \\
+    \\### Workflow for Editing Files:
+    \\1. **FIRST:** Call `read_file` to get file content AND `sha256` hash
+    \\2. **THEN:** Call `text_replace` with the sha256 copied from read_file result
+    \\
+    \\### NEVER do these:
+    \\- ❌ Call `text_replace` without `expected_hash`
+    \\- ❌ Use an old/stale hash from a previous read
+    \\- ❌ Omit the `expected_hash` parameter entirely
+    \\- ❌ Pass empty string "" as `expected_hash`
+    \\
+    \\**If you forget `expected_hash`, the tool will ALWAYS fail.**
+;
+
 pub const AvailableTools =
     \\## 🛠️ Built-in Tools (PREFER THESE OVER BASH)
     \\
     \\**File Operations:**
     \\- `read_file` — read files with pagination, hash verification
     \\- `write_file` — create files, supports `create_with_dir`
-    \\- `text_replace` — surgical edits with hash verification
+    \\- `text_replace` — surgical edits with hash verification (⚠️ MUST include `expected_hash` from read_file!)
     \\
     \\**Search & Discovery:**
     \\- `glob` — find files by pattern (faster than `find`)

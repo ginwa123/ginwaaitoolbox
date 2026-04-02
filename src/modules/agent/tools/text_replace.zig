@@ -85,7 +85,7 @@ pub fn text_replace_batch(
         };
 
         // Check for a second occurrence — must be unique
-        if (std.mem.indexOf(u8, content.items[first + op.old_str.len..], op.old_str) != null) {
+        if (std.mem.indexOf(u8, content.items[first + op.old_str.len ..], op.old_str) != null) {
             return TextReplaceError.OldStrNotUnique;
         }
 
@@ -95,7 +95,7 @@ pub fn text_replace_batch(
 
         try new_content.appendSlice(allocator, content.items[0..first]);
         try new_content.appendSlice(allocator, op.new_str);
-        try new_content.appendSlice(allocator, content.items[first + op.old_str.len..]);
+        try new_content.appendSlice(allocator, content.items[first + op.old_str.len ..]);
 
         content.deinit(allocator);
         content = new_content;
@@ -165,6 +165,9 @@ pub const textReplaceTool: AgentTool = .{
         \\- new_str can be any length, multiline, or empty (empty = delete).
         \\- Pass expected_hash from read_file result to prevent blind edits.
         \\- If file changed since read, edit will be rejected with HashMismatch error.
+        \\expected_hash (REQUIRED): SHA256 from read_file.
+        \\You MUST call read_file first and copy its sha256 field here.
+        \\Omitting this or passing empty string will always fail with an error.
         ,
         .parameters = .{
             .type = "object",

@@ -4,6 +4,7 @@ const agent = root_mod.agent;
 const logger_mod = root_mod.logger;
 const sqlite = root_mod.sqlite;
 const config_mod = root_mod.config;
+const tool_registry = @import("tool_registry.zig");
 const save_message = @import("save_message.zig").save_message;
 const on_event_sent = @import("on_event_sent.zig");
 const on_event_send_new = on_event_sent.on_event_send_new;
@@ -16,8 +17,11 @@ const get_messagesLatest = session_helpers.get_message_latest;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 
 // ============================================================================
-// TOOL REGISTRY - Single source of truth for all tool definitions
+// TOOL REGISTRY - Uses unified tool_registry.zig
 // ============================================================================
+
+/// Re-export from unified registry for backwards compatibility
+pub const TOOL_REGISTRY = tool_registry.MAIN_AGENT_TOOL_REGISTRY;
 
 /// Context passed to all tool handlers
 const ToolContext = struct {
@@ -52,70 +56,49 @@ const AgentSaveInfo = struct {
     name: []const u8,
 };
 
-// ============================================================================
-// TOOL DISPATCH TABLE - Single source of truth (replaces if-else chain)
-// ============================================================================
-
-/// Function signature for all tool dispatchers
-const ToolDispatcherFn = *const fn (ctx: ToolContext, tool_call: agent.ToolCall) anyerror!ToolResult;
-
-/// Entry in the tool registry
-const ToolEntry = struct {
-    name: []const u8,
-    dispatch: ToolDispatcherFn,
-};
-
-/// The canonical tool registry - ONE place to add/remove/modify tools
-/// Each entry maps a tool name to its dispatcher function.
-/// To add a new tool:
-///   1. Add its dispatch wrapper function below
-///   2. Add an entry to this array
-const TOOL_REGISTRY: []const ToolEntry = &.{
-    // Agent control
-    .{ .name = "set_agent_properties", .dispatch = dispatchSetAgentProperties },
-    .{ .name = "spawn_sub_agent", .dispatch = dispatchSpawnSubAgent },
-    .{ .name = "list_agents", .dispatch = dispatchListAgents },
-    .{ .name = "change_agent", .dispatch = dispatchChangeAgent },
-
-    // Skill management
-    .{ .name = "list_skills", .dispatch = dispatchListSkills },
-    .{ .name = "get_skill", .dispatch = dispatchGetSkill },
-    .{ .name = "remove_skill", .dispatch = dispatchRemoveSkill },
-
-    // File operations
-    .{ .name = "bash", .dispatch = dispatchBash },
-    .{ .name = "read_file", .dispatch = dispatchReadFile },
-    .{ .name = "write_file", .dispatch = dispatchWriteFile },
-    .{ .name = "text_replace", .dispatch = dispatchTextReplace },
-    .{ .name = "search", .dispatch = dispatchSearch },
-    .{ .name = "glob", .dispatch = dispatchGlob },
-    .{ .name = "tree_dir", .dispatch = dispatchTreeDir },
-
-    // LSP tools
-    .{ .name = "lsp_definition", .dispatch = dispatchLspDefinition },
-    .{ .name = "lsp_references", .dispatch = dispatchLspReferences },
-    .{ .name = "lsp_workspace_symbol", .dispatch = dispatchLspWorkspaceSymbol },
-    .{ .name = "lsp_document_symbol", .dispatch = dispatchLspDocumentSymbol },
-    .{ .name = "lsp_hover", .dispatch = dispatchLspHover },
-};
-
-/// Lookup a tool by name and execute it
+/// Lookup a tool by name and execute it using unified registry
 fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const tool_name = tool_call.function.name;
 
-    // Linear search through registry (17 items = negligible overhead)
-    inline for (TOOL_REGISTRY) |entry| {
+    // Use unified registry lookup
+    inline for (tool_registry.MAIN_AGENT_TOOL_REGISTRY) |entry| {
         if (std.mem.eql(u8, tool_name, entry.name)) {
-            return entry.dispatch(ctx, tool_call);
+            return dispatchByName(ctx, tool_call);
         }
     }
 
-    // Check if it's an MCP tool (format: serverName_toolName)
-    if (std.mem.indexOf(u8, tool_name, "_") != null) {
-        if (isMCPTool(ctx.config, tool_name)) {
-            return dispatchMCP(ctx, tool_call);
-        }
+    // Check if it's an MCP tool (format: mcp_serverName_toolName)
+    if (isMCPTool(ctx.config, tool_name)) {
+        return dispatchMCP(ctx, tool_call);
     }
+
+    return error.UnknownTool;
+}
+
+/// Dispatch to the appropriate handler based on tool name
+fn dispatchByName(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const name = tool_call.function.name;
+
+    // Use simple string matching for dispatch
+    if (std.mem.eql(u8, name, "set_agent_properties")) return dispatchSetAgentProperties(ctx, tool_call);
+    if (std.mem.eql(u8, name, "spawn_sub_agent")) return dispatchSpawnSubAgent(ctx, tool_call);
+    if (std.mem.eql(u8, name, "list_agents")) return dispatchListAgents(ctx, tool_call);
+    if (std.mem.eql(u8, name, "change_agent")) return dispatchChangeAgent(ctx, tool_call);
+    if (std.mem.eql(u8, name, "list_skills")) return dispatchListSkills(ctx, tool_call);
+    if (std.mem.eql(u8, name, "get_skill")) return dispatchGetSkill(ctx, tool_call);
+    if (std.mem.eql(u8, name, "remove_skill")) return dispatchRemoveSkill(ctx, tool_call);
+    if (std.mem.eql(u8, name, "bash")) return dispatchBash(ctx, tool_call);
+    if (std.mem.eql(u8, name, "read_file")) return dispatchReadFile(ctx, tool_call);
+    if (std.mem.eql(u8, name, "write_file")) return dispatchWriteFile(ctx, tool_call);
+    if (std.mem.eql(u8, name, "text_replace")) return dispatchTextReplace(ctx, tool_call);
+    if (std.mem.eql(u8, name, "search")) return dispatchSearch(ctx, tool_call);
+    if (std.mem.eql(u8, name, "glob")) return dispatchGlob(ctx, tool_call);
+    if (std.mem.eql(u8, name, "tree_dir")) return dispatchTreeDir(ctx, tool_call);
+    if (std.mem.eql(u8, name, "lsp_definition")) return dispatchLspDefinition(ctx, tool_call);
+    if (std.mem.eql(u8, name, "lsp_references")) return dispatchLspReferences(ctx, tool_call);
+    if (std.mem.eql(u8, name, "lsp_workspace_symbol")) return dispatchLspWorkspaceSymbol(ctx, tool_call);
+    if (std.mem.eql(u8, name, "lsp_document_symbol")) return dispatchLspDocumentSymbol(ctx, tool_call);
+    if (std.mem.eql(u8, name, "lsp_hover")) return dispatchLspHover(ctx, tool_call);
 
     return error.UnknownTool;
 }
@@ -152,12 +135,9 @@ fn dispatchMCP(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     return ToolResult{ .output = result };
 }
 
-/// Check if a tool name is registered
+/// Check if a tool name is registered (uses unified registry)
 pub fn isKnownTool(name: []const u8) bool {
-    for (TOOL_REGISTRY) |entry| {
-        if (std.mem.eql(u8, name, entry.name)) return true;
-    }
-    return false;
+    return tool_registry.isKnownTool(name);
 }
 
 /// Check if a tool name is registered or is an MCP tool
@@ -166,14 +146,9 @@ pub fn isKnownToolOrMCP(name: []const u8, config: *const config_mod.LlmConfig) b
     return isMCPTool(config, name);
 }
 
-/// Get all tool names as a slice (for compatibility)
-pub fn getToolNames(allocator: std.mem.Allocator) ![]const []const u8 {
-    var names = try std.ArrayList([]const u8).init(allocator);
-    errdefer names.deinit(allocator);
-    for (TOOL_REGISTRY) |entry| {
-        try names.append(allocator, entry.name);
-    }
-    return try names.toOwnedSlice(allocator);
+/// Get all tool names as a slice
+pub fn getToolNames() []const []const u8 {
+    return tool_registry.getToolNames();
 }
 
 // ============================================================================
@@ -469,7 +444,7 @@ pub fn handle_tool(
                     tool_call,
                     config,
                 ) catch |err| {
-                    tool_result = try std.fmt.allocPrint(allocator, "ERROR: MCP tool {s} failed: {s}", .{
+                    tool_result = try std.fmt.allocPrint(allocator, "<error> MCP tool {s} failed: {s}</error>", .{
                         tool_call.function.name,
                         @errorName(err),
                     });
@@ -482,7 +457,7 @@ pub fn handle_tool(
 
             // Dispatch to the appropriate handler
             const exec_result = dispatchTool(ctx, tool_call) catch |err| {
-                tool_result = try std.fmt.allocPrint(allocator, "ERROR: {s} failed: {s}", .{
+                tool_result = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
                     tool_call.function.name,
                     @errorName(err),
                 });
@@ -596,4 +571,3 @@ fn sendSSEForLatestMessage(
         }) catch {};
     }
 }
-

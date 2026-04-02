@@ -20,3 +20,23 @@ test "handle_spawn_sub_agent does not have get_agent registered" {
         }
     }
 }
+
+test "handle_spawn_sub_agent excludes set_agent_properties" {
+    for (handle_spawn_sub_agent.SUB_AGENT_TOOL_REGISTRY) |tool| {
+        if (std.mem.eql(u8, tool.name, "set_agent_properties")) {
+            try std.testing.expect(false); // Should NOT be in sub-agent registry
+            return;
+        }
+    }
+    // Good - not found in sub-agent registry
+}
+
+test "handle_spawn_sub_agent excludes spawn_sub_agent" {
+    for (handle_spawn_sub_agent.SUB_AGENT_TOOL_REGISTRY) |tool| {
+        if (std.mem.eql(u8, tool.name, "spawn_sub_agent")) {
+            try std.testing.expect(false); // Should NOT be in sub-agent registry
+            return;
+        }
+    }
+    // Good - not found in sub-agent registry
+}

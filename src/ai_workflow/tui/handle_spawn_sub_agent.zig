@@ -63,7 +63,7 @@ const BashInput = tool_models.BashInput;
 // ============================================================================
 
 /// Function signature for sub-agent tool executors
-const SubAgentToolExec = *const fn (
+pub const SubAgentToolExec = *const fn (
     allocator: std.mem.Allocator,
     tc: agent.ToolCall,
     db: *sqlite.SqliteBackend,
@@ -95,82 +95,85 @@ const AgentSaveInfo = struct {
 };
 
 // Individual tool executors
-fn execBash(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execBash(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     return handle_bash_tool.runWithContext(allocator, tc, db, session_id);
 }
 
-fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_read_file_tool.handle_read_file_tool_run(allocator, tc);
 }
 
-fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_search_tool.handle_search_tool_run(allocator, tc);
 }
 
-fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_glob_tool.handle_glob_tool_run(allocator, tc);
 }
 
-fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_text_replace_tool.handle_text_replace_tool_run(allocator, tc);
 }
 
-fn execWriteFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execWriteFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_write_file_tool.handle_write_file_tool_run(allocator, tc);
 }
 
-fn execListSkills(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execListSkills(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = tc;
     _ = db;
     _ = session_id;
     return handle_list_skills_tool.handle_list_skills_tool_run(allocator);
 }
 
-fn execGetSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execGetSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_get_skill_tool.handle_get_skill_tool_run(allocator, tc);
 }
 
-fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_remove_skill_tool.handle_remove_skill_tool_run(allocator, tc);
 }
 
-fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = tc;
     _ = db;
     _ = session_id;
     return handle_list_agents_tool.handle_list_agents_tool_run(allocator);
 }
 
-fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_change_agent_tool.handle_change_agent_tool_run(allocator, tc);
 }
 
-fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
     return handle_lsp_definition_tool.handle_lsp_definition_tool_run(allocator, tc);
 }
 
-fn execTreeDir(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execTreeDir(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    const parsed = try TreeDirTool.parseTreeDirInput(allocator, tc.function.arguments);
+    // Handle empty arguments - treat as empty JSON object
+    const args = tc.function.arguments;
+    const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
+    const parsed = try TreeDirTool.parseTreeDirInput(allocator, args_to_parse);
     var result = try TreeDirTool.execute_tree_dir(allocator, parsed);
     defer result.deinit(allocator);
     return TreeDirTool.tree_dir_result_to_string(allocator, result);
@@ -179,7 +182,7 @@ fn execTreeDir(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.Sql
 /// MCP tool executor - placeholder for dynamic MCP tool handling
 /// Note: MCP tools are actually handled dynamically in executeSubAgentTool
 /// This function is kept for API completeness but is not used
-fn execMCP(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execMCP(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = allocator;
     _ = tc;
     _ = db;
@@ -188,41 +191,26 @@ fn execMCP(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteB
     return "MCP tools are handled dynamically";
 }
 
-/// The canonical registry for sub-agent tools (no spawn_sub_agent or set_agent_properties)
-/// Maps tool names to their executors and actual tool definitions
-const SubAgentToolInfo = struct {
-    name: []const u8,
-    exec: SubAgentToolExec,
-    tool_def: tool_models.AgentTool,
-    auto_save_skill: bool = false,
-    auto_save_agent: bool = false,
-};
+/// Placeholder for spawn_sub_agent exec
+pub fn execSpawnSubAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    return "spawn_sub_agent should not be called from sub-agent context";
+}
 
-pub const SUB_AGENT_TOOL_REGISTRY: []const SubAgentToolInfo = &.{
-    // File operations
-    .{ .name = "bash", .exec = execBash, .tool_def = BashTool.bashTool },
-    .{ .name = "read_file", .exec = execReadFile, .tool_def = ReadFileTool.readFileTool },
-    .{ .name = "search", .exec = execSearch, .tool_def = SearchTool.searchTool },
-    .{ .name = "glob", .exec = execGlob, .tool_def = GlobTool.globTool },
-    .{ .name = "text_replace", .exec = execTextReplace, .tool_def = TextReplaceTool.textReplaceTool },
-    .{ .name = "write_file", .exec = execWriteFile, .tool_def = WriteFileTool.writeFileTool },
+/// Placeholder for set_agent_properties exec
+pub fn execSetAgentProperties(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = allocator;
+    _ = tc;
+    _ = db;
+    _ = session_id;
+    return "set_agent_properties should not be called from sub-agent context";
+}
 
-    // Skill management
-    .{ .name = "list_skills", .exec = execListSkills, .tool_def = ListSkillsTool.listSkillsTool },
-    .{ .name = "get_skill", .exec = execGetSkill, .tool_def = GetSkillTool.getSkillTool, .auto_save_skill = true },
-    .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = RemoveSkillTool.removeSkillTool },
-
-    // Agent management
-    .{ .name = "list_agents", .exec = execListAgents, .tool_def = ListAgentsTool.listAgentsTool },
-    .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = ChangeAgentTool.ChangeAgentTool, .auto_save_agent = true },
-
-    // LSP tools
-    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = LspDefinitionTool },
-
-    // File system tools
-    .{ .name = "tree_dir", .exec = execTreeDir, .tool_def = TreeDirTool.tree_dir_tool },
-    // TODO: Restore remaining LSP tools when lsp.zig is complete
-};
+// Import tool registry for unified tool definitions
+const tool_registry = @import("tool_registry.zig");
 
 /// Execute a tool by name, returning the result
 pub fn executeSubAgentTool(
@@ -254,11 +242,11 @@ pub fn executeSubAgentTool(
         }
     }
 
-    inline for (SUB_AGENT_TOOL_REGISTRY) |entry| {
+    inline for (tool_registry.SUB_AGENT_TOOL_REGISTRY) |entry| {
         if (std.mem.eql(u8, tc.function.name, entry.name)) {
             const output = entry.exec(allocator, tc, db, session_id) catch |err| {
                 return SubAgentToolResult{
-                    .output = try std.fmt.allocPrint(allocator, "ERROR: {s} failed: {s}", .{
+                    .output = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
                         tc.function.name,
                         @errorName(err),
                     }),
@@ -535,7 +523,7 @@ fn run_sub_agent(
                         logger.infoFmt("[SUB_AGENT] Tool: '{s}'", .{tc.function.name}) catch {};
 
                         const tool_result = executeSubAgentTool(allocator, tc, db, session_id, model, cwd, config, logger) catch |err| blk: {
-                            const msg = try std.fmt.allocPrint(allocator, "ERROR: {s} failed: {s}", .{
+                            const msg = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
                                 tc.function.name,
                                 @errorName(err),
                             });
@@ -669,12 +657,17 @@ fn runSubAgentThread(
     defer thread_arena.deinit();
     const thread_alloc = thread_arena.allocator();
 
-    // Clone config for thread-safe use (avoids hash map lock contention/corruption)
-    const thread_config = cfg.clone() catch |err| {
-        log.errFmt("spawn_sub_agent[{}]: failed to clone config: {}", .{ idx, err }) catch {};
-        return;
+    // Create thread-safe config WITHOUT mcpServers to avoid JSON mutex issues
+    // Sub-agents don't need MCP tools, and std.json.Value has internal mutex state
+    // that can cause panics when accessed from multiple threads even after cloning
+    var thread_config = config_mod.LlmConfig{
+        .allocator = thread_alloc,
+        .api_key = llm_api_key,
+        .model = llm_model,
+        .base_url = url,
+        .model_compaction_size_kb = cfg.model_compaction_size_kb,
+        .mcpServers = null, // Sub-agents don't get MCP tools
     };
-    errdefer thread_config.deinit();
 
     const sessionId = std.fmt.allocPrint(thread_alloc, "{}", .{std.time.nanoTimestamp()}) catch |err| {
         log.errFmt("spawn_sub_agent[{}]: failed to generate sessionId: {}", .{ idx, err }) catch {};
@@ -826,7 +819,7 @@ pub fn handle_spawn_sub_agent_run(
         } else if (result) |res| {
             try results.append(allocator, try allocator.dupe(u8, res));
         } else {
-            try results.append(allocator, "ERROR: unknown result");
+            try results.append(allocator, "<error> unknown result</error>");
         }
     }
 
