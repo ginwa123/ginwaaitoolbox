@@ -20,19 +20,27 @@ pub const SseEvent = struct {
             pos += event_line.len;
         }
 
-        // Write data lines: "data: <line>\n" for each line
-        var iter = std.mem.splitScalar(u8, self.data, '\n');
-        while (iter.next()) |line| {
-            if (line.len == 0) continue; // Skip empty lines from split
-            // Format: "data: <content>\n"
-            const needed_for_line = 6 + line.len + 1; // "data: " + content + "\n"
-            if (pos + needed_for_line > buf.len) return error.BufferTooSmall;
-            @memcpy(buf[pos..][0..6], "data: ");
-            pos += 6;
-            @memcpy(buf[pos..][0..line.len], line);
-            pos += line.len;
-            buf[pos] = '\n';
-            pos += 1;
+        // If data is empty, write a placeholder to ensure we send something
+        if (self.data.len == 0) {
+            const needed = 7; // "data: \n"
+            if (pos + needed > buf.len) return error.BufferTooSmall;
+            @memcpy(buf[pos..][0..7], "data: \n");
+            pos += 7;
+        } else {
+            // Write data lines: "data: <line>\n" for each line
+            var iter = std.mem.splitScalar(u8, self.data, '\n');
+            while (iter.next()) |line| {
+                if (line.len == 0) continue; // Skip empty lines from split
+                // Format: "data: <content>\n"
+                const needed_for_line = 6 + line.len + 1; // "data: " + content + "\n"
+                if (pos + needed_for_line > buf.len) return error.BufferTooSmall;
+                @memcpy(buf[pos..][0..6], "data: ");
+                pos += 6;
+                @memcpy(buf[pos..][0..line.len], line);
+                pos += line.len;
+                buf[pos] = '\n';
+                pos += 1;
+            }
         }
 
         // Final newline to end the event
@@ -54,13 +62,18 @@ pub const SseEvent = struct {
             try result.appendSlice(allocator, "\n");
         }
 
-        // Write data lines: "data: <content>\n"
-        var iter = std.mem.splitScalar(u8, self.data, '\n');
-        while (iter.next()) |line| {
-            if (line.len == 0) continue;
-            try result.appendSlice(allocator, "data: ");
-            try result.appendSlice(allocator, line);
-            try result.appendSlice(allocator, "\n");
+        // If data is empty, write a placeholder
+        if (self.data.len == 0) {
+            try result.appendSlice(allocator, "data: \n");
+        } else {
+            // Write data lines: "data: <content>\n"
+            var iter = std.mem.splitScalar(u8, self.data, '\n');
+            while (iter.next()) |line| {
+                if (line.len == 0) continue;
+                try result.appendSlice(allocator, "data: ");
+                try result.appendSlice(allocator, line);
+                try result.appendSlice(allocator, "\n");
+            }
         }
 
         // Final newline to end the event
@@ -123,6 +136,8 @@ pub const SseConnectionManager = struct {
     /// Send an event to a specific session (uses stack buffer, falls back to heap for large events)
     /// Includes retry logic for race conditions where session isn't registered yet
     pub fn sendEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
+        std.log.info("SSE sendEvent: session={s}, data_len={d}", .{session_id, event.data.len});
+
         // Retry up to 3 times with 50ms delay to handle race condition where
         // SSE stream handler hasn't registered the session yet
         const max_retries = 3;
@@ -142,6 +157,7 @@ pub const SseConnectionManager = struct {
                             return error.AllocationFailed;
                         };
                         defer self.allocator.free(heap_formatted);
+                        std.log.info("SSE sendEvent: using heap, formatted_len={d}", .{heap_formatted.len});
                         stream.writeAll(heap_formatted) catch |write_err| {
                             self.mutex.unlock();
                             std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(write_err)});
@@ -154,6 +170,7 @@ pub const SseConnectionManager = struct {
                     return err;
                 };
 
+                std.log.info("SSE sendEvent: using stack, formatted_len={d}", .{formatted.len});
                 // Write directly to stream
                 stream.writeAll(formatted) catch |err| {
                     self.mutex.unlock();

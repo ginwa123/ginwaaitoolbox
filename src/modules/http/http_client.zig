@@ -44,10 +44,17 @@ pub const HttpClient = struct {
     }
 
     /// Perform HTTP POST request
-    /// Uses std.http.Client with TLS support
+    /// Uses curl as primary (better TLS support), falls back to std.http
     pub fn post(self: HttpClient, url: []const u8, body: []const u8, headers: ?std.StringHashMap([]const u8)) !HttpResult {
-        // Try std.http first - this is the proper way to do HTTP in Zig
-        return self.postWithStdHttp(url, body, headers);
+        // Try curl first - it handles TLS better and is more reliable
+        return self.postWithCurl(url, body, headers) catch |curl_err| {
+            // If curl fails, try std.http as fallback
+            return self.postWithStdHttp(url, body, headers) catch |http_err| {
+                // Both methods failed, return an error with context
+                std.log.err("HTTP POST failed: curl={s}, std.http={s}", .{ @errorName(curl_err), @errorName(http_err) });
+                return error.HttpRequestFailed;
+            };
+        };
     }
 
     /// POST using std.http.Client (currently not used - curl is primary due to TLS issues in test env)

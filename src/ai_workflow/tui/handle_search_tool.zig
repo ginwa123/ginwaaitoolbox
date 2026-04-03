@@ -22,7 +22,7 @@ pub fn handle_search_tool_run(
         search_tool.SearchInput,
         allocator,
         args_to_parse,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
 

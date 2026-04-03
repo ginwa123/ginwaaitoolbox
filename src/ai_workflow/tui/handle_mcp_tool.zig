@@ -8,15 +8,17 @@ const http_client = tree1_mod.http_client;
 const config_mod = tree1_mod.config;
 
 /// Handle an MCP tool call by forwarding it to the MCP server
+/// 
+/// IMPORTANT: This function allocates directly from parent_allocator to avoid
+/// nested arena issues that can cause @memcpy aliasing errors.
 pub fn handle_mcp_tool_run(
     parent_allocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
     tool_call: agent.ToolCall,
     config: *const config_mod.LlmConfig,
 ) ![]const u8 {
-    var arena = std.heap.ArenaAllocator.init(parent_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    // Use parent_allocator directly to avoid nested arena memory issues
+    const allocator = parent_allocator;
 
     // Debug: log the tool call ID we received
     _ = try logger.infoFmt("[MCP] Tool call START - name: '{s}', id: '{s}'", .{ tool_call.function.name, tool_call.id });
@@ -110,6 +112,7 @@ pub fn handle_mcp_tool_run(
 
     const result = client.post(url, request_body, headers) catch |err| {
         _ = try logger.errFmt("MCP HTTP error: {s}", .{@errorName(err)});
+        allocator.free(request_body);
         return error.FailedToCallMCPServer;
     };
 
@@ -121,8 +124,12 @@ pub fn handle_mcp_tool_run(
     }
 
     // Parse the response and extract content
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, result.body, .{}) catch |err| {
+    // IMPORTANT: Use std.heap.c_allocator for JSON parsing to avoid nested arena
+    // alignment issues. json.parseFromSlice internally creates an ArenaAllocator.
+    const parsed = std.json.parseFromSlice(std.json.Value, std.heap.c_allocator, result.body, .{}) catch |err| {
         _ = try logger.errFmt("MCP JSON parse error: {s}", .{@errorName(err)});
+        allocator.free(result.body);
+        allocator.free(request_body);
         return error.MCPJSONParseError;
     };
     defer parsed.deinit();
@@ -152,8 +159,8 @@ pub fn handle_mcp_tool_run(
         }
     }
 
-    // CRITICAL: Copy result to parent_allocator before arena is deallocated
-    // Without this, tool_result points to memory that will be freed on defer
-    const owned_result = try parent_allocator.dupe(u8, tool_result);
-    return owned_result;
+    // tool_result points to result.body which is allocated from parent_allocator
+    // Since we removed the nested arena, result.body is valid and can be returned directly.
+    // The caller is responsible for freeing this memory.
+    return tool_result;
 }

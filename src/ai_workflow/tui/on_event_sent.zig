@@ -118,7 +118,17 @@ pub const OnEventInput = struct {
 ///
 /// Format is determined by whether tool_call_id is set (tool_result) or not (response)
 pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !void {
-    const sse_manager = http_server.getGlobalSseManager() orelse return;
+    const sse_manager = http_server.getGlobalSseManager() orelse {
+        std.log.warn("on_event_send_new: no SSE manager available", .{});
+        return;
+    };
+
+    // Debug: log what content we're receiving
+    if (input.content) |c| {
+        std.log.info("on_event_send_new: content len={d}", .{c.len});
+    } else {
+        std.log.warn("on_event_send_new: NO CONTENT!", .{});
+    }
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -160,6 +170,8 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
     if (input.parent_id) |v| try writeTag(w, "parent_id", v);
 
     _ = try w.writeAll("</response>");
+
+    std.log.info("on_event_send_new: XML size={d}, session_id={s}", .{buf.items.len, input.session_id});
 
     const event = http_server.SseEvent{
         .data = buf.items,

@@ -89,34 +89,7 @@ pub const StreamingContext = struct {
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     _ = ctx;
     _ = chunk;
-    // const stream_ctx = @as(?*StreamingContext, @ptrCast(@alignCast(ctx))) orelse return;
-    // const allocator = stream_ctx.allocator;
-    // const session_id = stream_ctx.session_id;
-
-    // for now we disable streaming
-    // if (chunk.done) {
-    //     sendStreamChunkFinal(allocator, session_id, stream_ctx.chunk_index, chunk.usage);
-    //     return;
-    // }
-    //
-    // // Send content chunk
-    // if (chunk.content) |content| {
-    //     sendStreamChunkContent(session_id, stream_ctx.chunk_index, content);
-    //     stream_ctx.chunk_index += 1;
-    // }
-    //
-    // // Send reasoning content chunk
-    // if (chunk.reasoning_content) |rc| {
-    //     sendStreamChunkReasoning(session_id, stream_ctx.chunk_index, rc);
-    //     stream_ctx.chunk_index += 1;
-    // }
-
-    // we disable tool calls delta for now
-    // Handle tool calls delta - we'll aggregate these
-    // if (chunk.tool_calls_delta) |deltas| {
-    //     sendStreamToolCallDelta(allocator, session_id, stream_ctx.chunk_index, deltas);
-    //     stream_ctx.chunk_index += 1;
-    // }
+    // Streaming is disabled for now - content is sent via on_event_send_new after completion
 }
 pub const TUIWorkflow = struct {
     // allocator: std.mem.Allocator,
@@ -334,31 +307,29 @@ pub const TUIWorkflow = struct {
                         .parent_session_id = session_id,
                     });
 
-                    // Send SSE event using get_messagesLatest
-                    const latestMessage = try get_message_latest(allocator, self.db, session_id);
-                    if (latestMessage) |msg| {
-                        _ = try on_event_send_new(allocator, .{
-                            .session_id = msg.session_id,
-                            .model = msg.model,
-                            .cwd = cwd,
-                            .content = msg.response_content,
-                            .reasoning_content = msg.reasoning_content,
-                            .role = msg.role,
-                            .finish_reason = msg.finish_reason,
-                            .tool_calls = null,
-                            .tool_call_id = null,
-                            .tool_name = msg.tool_name,
-                            .agent_name = current_agent,
-                            .session_name = msg.session_name,
-                            .loop_index = msg.loop_index,
-                            .temperature = agent_temperature,
-                            .is_thinking = isThinking,
-                            .is_input = false,
-                            .is_output = false,
-                            .parent_session_id = session_id,
-                            .parent_id = session_id,
-                        });
-                    }
+                    // Send SSE event directly with the agent's response content
+                    // Don't use get_message_latest as it might return wrong message if timestamps collide
+                    _ = try on_event_send_new(allocator, .{
+                        .session_id = session_id,
+                        .model = model,
+                        .cwd = cwd,
+                        .content = res_dynamic_agent.content,
+                        .reasoning_content = res_dynamic_agent.reasoning_content,
+                        .role = "assistant",
+                        .finish_reason = res_dynamic_agent.finish_reason.?.toStr(),
+                        .tool_calls = null,
+                        .tool_call_id = null,
+                        .tool_name = null,
+                        .agent_name = current_agent,
+                        .session_name = session_name,
+                        .loop_index = loopCounter,
+                        .temperature = agent_temperature,
+                        .is_thinking = isThinking,
+                        .is_input = false,
+                        .is_output = true,
+                        .parent_session_id = session_id,
+                        .parent_id = session_id,
+                    });
                     break;
                 } else if (finish_reason == .length) {
                     current_max_tokens += 4096;
@@ -395,31 +366,29 @@ pub const TUIWorkflow = struct {
                             .parent_session_id = session_id,
                         });
 
-                        // Send SSE event using get_messagesLatest
-                        const latestMessage = try get_message_latest(allocator, self.db, session_id);
-                        if (latestMessage) |msg| {
-                            _ = try on_event_send_new(allocator, .{
-                                .session_id = msg.session_id,
-                                .model = msg.model,
-                                .cwd = cwd,
-                                .content = msg.response_content,
-                                .reasoning_content = msg.reasoning_content,
-                                .role = msg.role,
-                                .finish_reason = msg.finish_reason,
-                                .tool_calls = null,
-                                .tool_call_id = null,
-                                .tool_name = msg.tool_name,
-                                .agent_name = current_agent,
-                                .session_name = msg.session_name,
-                                .loop_index = msg.loop_index,
-                                .temperature = agent_temperature,
-                                .is_thinking = isThinking,
-                                .is_input = false,
-                                .is_output = false,
-                                .parent_session_id = session_id,
-                                .parent_id = session_id,
-                            });
-                        }
+                        // Send SSE event directly with the agent's response content
+                        // Don't use get_message_latest as it might return wrong message if timestamps collide
+                        _ = try on_event_send_new(allocator, .{
+                            .session_id = session_id,
+                            .model = model,
+                            .cwd = cwd,
+                            .content = res_dynamic_agent.content,
+                            .reasoning_content = res_dynamic_agent.reasoning_content,
+                            .role = "assistant",
+                            .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+                            .tool_calls = null,
+                            .tool_call_id = null,
+                            .tool_name = null,
+                            .agent_name = current_agent,
+                            .session_name = session_name,
+                            .loop_index = loopCounter,
+                            .temperature = agent_temperature,
+                            .is_thinking = isThinking,
+                            .is_input = false,
+                            .is_output = true,
+                            .parent_session_id = session_id,
+                            .parent_id = session_id,
+                        });
                         break;
                     }
                 } else {

@@ -147,11 +147,11 @@ fn fetchToolsFromServer(
         return error.InvalidResponse;
     }
 
-    // Parse JSON response using passed allocator
-    // Note: Strings in json.Value reference the result.body buffer, which is freed
-    // after we extract and copy the data we need. This avoids thread-safety issues
-    // since each call uses its own allocator.
-    const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{
+    // Parse JSON response
+    // IMPORTANT: Use std.heap.c_allocator for JSON parsing to avoid nested arena
+    // alignment issues. json.parseFromSlice internally creates an ArenaAllocator,
+    // and using an arena as the backing allocator can cause alignment panics.
+    const parsed = json.parseFromSlice(json.Value, std.heap.c_allocator, result.body, .{
         .ignore_unknown_fields = true,
         .duplicate_field_behavior = .use_last,
     }) catch |err| {
