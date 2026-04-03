@@ -148,17 +148,25 @@ const Sidebar: Component = () => {
     }
   };
 
-  onMount(() => {
+  onMount(async () => {
     if (!initialized) {
       initBaseUrl();
       initialized = true;
     }
 
+    // Load session_dir from config first
     setLoading(true);
-    const folder = getSelectedFolder();
-    const sessionDir = folder !== '/' ? folder : undefined;
-    setCurrentSessionDir(sessionDir);
-    fetchSessions(undefined, sessionDir).finally(() => setLoading(false));
+    try {
+      const savedDir = await getSessionDir();
+      log.info(`[Sidebar] onMount loaded session_dir from config: ${savedDir}`);
+      const sessionDir = savedDir !== '/' ? savedDir : undefined;
+      setCurrentSessionDir(sessionDir);
+      fetchSessions(undefined, sessionDir).finally(() => setLoading(false));
+    } catch (err) {
+      log.warn('[Sidebar] onMount failed to load session_dir:', err);
+      setCurrentSessionDir(undefined);
+      fetchSessions(undefined, undefined).finally(() => setLoading(false));
+    }
 
     // Set up IntersectionObserver
     observer = new IntersectionObserver(

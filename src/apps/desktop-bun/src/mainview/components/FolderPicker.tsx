@@ -99,11 +99,19 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
   createEffect(async () => {
     if (props.isOpen && !configLoaded()) {
       try {
-        // Use initialPath if provided, otherwise load from config
-        const initial = props.initialPath ?? (await getLastPath());
+        // Prefer initialPath prop, otherwise load from config
+        let initial = props.initialPath;
+        if (!initial) {
+          console.log('[FolderPicker] Loading initial path from config...');
+          initial = await getLastPath();
+          console.log('[FolderPicker] Loaded from config:', initial);
+        } else {
+          console.log('[FolderPicker] Using provided initialPath:', initial);
+        }
         setCurrentPath(initial);
         setConfigLoaded(true);
-      } catch {
+      } catch (err) {
+        console.error('[FolderPicker] Failed to load initial path:', err);
         setCurrentPath('/');
         setConfigLoaded(true);
       }
