@@ -1,0 +1,129 @@
+//! HTTP Handlers module - one file per endpoint for better organization
+//! 
+//! This module exports all HTTP handlers used by the TUI HTTP server.
+//! Each handler is in its own file for maintainability.
+
+const std = @import("std");
+const root_mod = @import("nalarcore");
+const http_server = root_mod.http_server;
+const nalarcore = root_mod;
+const sqlite = nalarcore.sqlite;
+const ai_workflow = nalarcore.ai_workflow;
+const logger = nalarcore.logger;
+
+const config = nalarcore.config;
+const cancellation_registry = nalarcore.session.cancellation_registry;
+const session_helpers = nalarcore.session_helpers;
+const session_db = nalarcore.session_db;
+
+const httpz = http_server.httpz;
+
+// =============================================================================
+// Re-exports
+// =============================================================================
+
+pub const MessageHandler = http_server.MessageHandler;
+pub const SessionHandler = http_server.SessionHandler;
+
+// Re-export all handlers
+pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
+pub const streamHandler = @import("stream.zig").streamHandler;
+pub const commandHandler = @import("command.zig").commandHandler;
+pub const session_create_handler = @import("session_create.zig").session_create_handler;
+pub const session_list_handler = @import("session_list.zig").session_list_handler;
+pub const session_get_handler = @import("session_get.zig").session_get_handler;
+pub const session_exist_handler = @import("session_exist.zig").session_exist_handler;
+pub const session_message_handler = @import("session_message.zig").session_message_handler;
+pub const getLatestSessionByDirHandler = @import("session_latest.zig").session_latest_handler;
+pub const sseDisconnectHandler = @import("sse_disconnect.zig").sseDisconnectHandler;
+pub const ping_handler = @import("ping.zig").ping_handler;
+pub const llmRunHandler = @import("llm_run.zig").llmRunHandler;
+pub const sessionCancelHandler = @import("session_cancel.zig").sessionCancelHandler;
+pub const sessionCompactHandler = @import("session_compact.zig").sessionCompactHandler;
+
+// =============================================================================
+// Shared Types & Helpers
+// =============================================================================
+
+/// Response format types
+pub const ResponseFormat = enum { json, xml };
+
+/// Workflow arguments for async LLM execution
+pub const WorkflowArgs = struct {
+    allocator: std.mem.Allocator,
+    sqlite_db: *sqlite.SqliteBackend,
+    logger: *logger.Logger,
+    session_id: []u8,
+    message: []u8,
+    cwd: []u8,
+    api_key: []const u8,
+    model: []const u8,
+    base_url: []const u8,
+    llm_config: *const config.LlmConfig,
+};
+
+/// Handler arguments for async message handling
+pub const HandlerArgs = struct {
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    handler: MessageHandler,
+    ctx: ?*anyopaque,
+};
+
+/// Hex digits for session ID generation
+const hexDigits = "0123456789abcdef";
+
+/// Generate a unique session ID using timestamp and random suffix
+pub fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
+    const timestamp = std.time.timestamp();
+    var random_bytes: [8]u8 = undefined;
+    std.crypto.random.bytes(&random_bytes);
+
+    // Convert random bytes to hex string
+    var hex_chars: [16]u8 = undefined;
+    for (random_bytes, 0..) |b, i| {
+        hex_chars[i * 2] = hexDigits[b >> 4];
+        hex_chars[i * 2 + 1] = hexDigits[b & 0xF];
+    }
+
+    return std.fmt.allocPrint(allocator, "sess_{d}_{s}", .{ timestamp, hex_chars });
+}
+
+/// Determine response format from Accept header or query param
+pub fn getResponseFormat(req: *httpz.Request) ResponseFormat {
+    // First check Accept header (higher priority)
+    if (req.header("accept")) |accept| {
+        if (std.mem.indexOf(u8, accept, "text/xml") != null or
+            std.mem.indexOf(u8, accept, "application/xml") != null)
+        {
+            return .xml;
+        }
+        if (std.mem.indexOf(u8, accept, "application/json") != null) {
+            return .json;
+        }
+    }
+
+    // Fallback to query parameter
+    const query = req.query() catch return .json;
+    const format_param = query.get("format") orelse return .json;
+
+    if (std.mem.eql(u8, format_param, "xml")) {
+        return .xml;
+    }
+    return .json;
+}
+
+/// Build error response based on format
+pub fn buildErrorResponse(allocator: std.mem.Allocator, format: ResponseFormat, error_msg: []const u8) ![]u8 {
+    if (format == .xml) {
+        return std.fmt.allocPrint(allocator, "<error>{s}</error>", .{error_msg});
+    } else {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"{s}\"}}", .{error_msg});
+    }
+}
+
+/// SSE stream context for persistent connections
+pub const SseStreamCtx = struct {
+    server: *http_server.HttpServer,
+    session_id: []const u8,
+};
