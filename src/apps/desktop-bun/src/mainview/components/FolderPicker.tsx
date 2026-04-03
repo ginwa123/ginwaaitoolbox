@@ -1,5 +1,6 @@
 import { type Component, For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import { electroview } from '../main';
+import { getSessionDir, setSessionDir } from '../utils/config';
 
 export interface FolderPickerProps {
   isOpen: boolean;
@@ -17,20 +18,29 @@ interface DirectoryEntry {
   size: number;
 }
 
-// LocalStorage keys
-const STORAGE_KEY_LAST_PATH = 'folder-picker-last-path';
-const STORAGE_KEY_SHOW_HIDDEN = 'folder-picker-show-hidden';
+// Config-based session directory persistence
+// Using SQLite via Bun instead of localStorage
 
-// Helper to get last path from localStorage
-const getLastPath = (): string => {
+// Helper to get last path from config (async)
+const getLastPath = async (): Promise<string> => {
   try {
-    return localStorage.getItem(STORAGE_KEY_LAST_PATH) || '/';
+    return await getSessionDir();
   } catch {
     return '/';
   }
 };
 
-// Helper to get show hidden from localStorage
+// Helper to save last path to config (async)
+const saveLastPath = async (path: string): Promise<void> => {
+  try {
+    await setSessionDir(path);
+  } catch (err) {
+    console.warn('[FolderPicker] Failed to save session_dir:', err);
+  }
+};
+
+// Show hidden preference still uses localStorage (UI preference)
+const STORAGE_KEY_SHOW_HIDDEN = 'folder-picker-show-hidden';
 const getShowHidden = (): boolean => {
   try {
     return localStorage.getItem(STORAGE_KEY_SHOW_HIDDEN) === 'true';
@@ -40,14 +50,15 @@ const getShowHidden = (): boolean => {
 };
 
 export const FolderPicker: Component<FolderPickerProps> = (props) => {
-  // Initialize from localStorage if no initialPath provided
-  const [currentPath, setCurrentPath] = createSignal(props.initialPath ?? getLastPath());
+  // Initialize path - will be loaded from config when opened
+  const [currentPath, setCurrentPath] = createSignal(props.initialPath ?? '/');
   const [selectedPath, setSelectedPath] = createSignal<string | null>(null);
   const [entries, setEntries] = createSignal<DirectoryEntry[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [showHidden, setShowHidden] = createSignal(getShowHidden());
   const [error, setError] = createSignal<string | null>(null);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
+  const [configLoaded, setConfigLoaded] = createSignal(false);
 
   // File operation state
   const [showContextMenu, setShowContextMenu] = createSignal(false);
@@ -58,13 +69,6 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     type: 'create' | 'rename';
   } | null>(null);
   const [editValue, setEditValue] = createSignal('');
-
-  // Save current path to localStorage
-  const saveLastPath = (path: string) => {
-    try {
-      localStorage.setItem(STORAGE_KEY_LAST_PATH, path);
-    } catch {}
-  };
 
   // Save show hidden preference to localStorage
   const saveShowHidden = (show: boolean) => {
@@ -91,9 +95,24 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     setLoading(false);
   };
 
+  // Load session directory from config when opened
+  createEffect(async () => {
+    if (props.isOpen && !configLoaded()) {
+      try {
+        // Use initialPath if provided, otherwise load from config
+        const initial = props.initialPath ?? (await getLastPath());
+        setCurrentPath(initial);
+        setConfigLoaded(true);
+      } catch {
+        setCurrentPath('/');
+        setConfigLoaded(true);
+      }
+    }
+  });
+
   // Fetch when path or showHidden changes
   createEffect(() => {
-    if (props.isOpen) {
+    if (props.isOpen && configLoaded()) {
       fetchDirectory(currentPath());
       setFocusedIndex(-1);
     }
@@ -105,11 +124,11 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
     }
   };
 
-  const handleDoubleClick = (entry: DirectoryEntry) => {
+  const handleDoubleClick = async (entry: DirectoryEntry) => {
     if (entry.isDirectory) {
       const newPath = entry.path;
       setCurrentPath(newPath);
-      saveLastPath(newPath);
+      await saveLastPath(newPath);
       setSelectedPath(null);
       setFocusedIndex(-1);
     }
@@ -335,9 +354,9 @@ export const FolderPicker: Component<FolderPickerProps> = (props) => {
                     <span class="text-[#3f3f46]">/</span>
                   </Show>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       setCurrentPath(segment.path);
-                      saveLastPath(segment.path);
+                      await saveLastPath(segment.path);
                     }}
                     class="text-xs font-mono text-[#71717a] hover:text-[#fbbf24] transition-colors whitespace-nowrap"
                   >
