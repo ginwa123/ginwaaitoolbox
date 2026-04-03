@@ -182,6 +182,7 @@ pub const TUIWorkflow = struct {
             const is_running = registry.is_running(session_id);
             if (is_running) {
                 _ = registry.queue_message(session_id, message);
+                self.logger.debugFmt("WORKFLOW: queued message for session {s}", .{session_id}) catch {};
                 return;
             }
         }
@@ -217,6 +218,7 @@ pub const TUIWorkflow = struct {
         while (true) {
             if (cancellation_registry.get_global_registry()) |registry| {
                 if (registry.is_cancelled(session_id)) {
+                    _ = try self.logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
                     break;
                 }
             }
@@ -454,6 +456,8 @@ pub const TUIWorkflow = struct {
         if (activity_registry.get_global_registry()) |registry| {
             registry.unregister(session_id);
         }
+
+        _ = try self.logger.debugFmt("WORKFLOW: exiting while loop", .{});
     }
     fn callDynamicAgent(
         self: *TUIWorkflow,

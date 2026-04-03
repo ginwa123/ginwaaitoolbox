@@ -28,7 +28,6 @@ pub const SessionHandler = http_server.SessionHandler;
 // Re-export all handlers
 pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
 pub const streamHandler = @import("stream.zig").streamHandler;
-pub const commandHandler = @import("command.zig").commandHandler;
 pub const session_create_handler = @import("session_create.zig").session_create_handler;
 pub const session_list_handler = @import("session_list.zig").session_list_handler;
 pub const session_get_handler = @import("session_get.zig").session_get_handler;
@@ -40,6 +39,8 @@ pub const ping_handler = @import("ping.zig").ping_handler;
 pub const llmRunHandler = @import("llm_run.zig").llmRunHandler;
 pub const sessionCancelHandler = @import("session_cancel.zig").sessionCancelHandler;
 pub const sessionCompactHandler = @import("session_compact.zig").sessionCompactHandler;
+pub const sessionQueueDeleteHandler = @import("session_queue_delete.zig").sessionQueueDeleteHandler;
+pub const sessionQueueGetHandler = @import("session_queue_get.zig").sessionQueueGetHandler;
 
 // =============================================================================
 // Shared Types & Helpers

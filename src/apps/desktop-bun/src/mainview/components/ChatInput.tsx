@@ -41,6 +41,7 @@ const ChatInput: Component<ChatInputProps> = (props) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      log.info(`[ChatInput] Message sent: ${JSON.stringify(body)}`);
 
       if (res.ok) {
         const data = await res.json();

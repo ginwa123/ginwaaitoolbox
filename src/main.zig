@@ -222,9 +222,6 @@ pub fn main() !void {
         pub fn setup(http_port: u16, router: anytype) !void {
             std.log.info("HTTP server listening on http://127.0.0.1:{d}/", .{http_port});
 
-            // Command endpoint (generic command handler)
-            router.post("/api/command", http_handlers.commandHandler, .{});
-
             // SSE stream endpoint - specific routes BEFORE wildcard!
             router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
             router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
@@ -242,8 +239,9 @@ pub fn main() !void {
             router.post("/api/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
             router.post("/api/session/:session_id/compact", http_handlers.sessionCompactHandler, .{});
 
-            // LLM workflow endpoint
-            router.post("/api/llm/run", http_handlers.llmRunHandler, .{});
+            // Queue message operations
+            router.get("/api/session/:session_id/queue/messages", http_handlers.sessionQueueGetHandler, .{});
+            router.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, .{});
 
             // Ping endpoint - checks if session is connected via SSE
             router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});

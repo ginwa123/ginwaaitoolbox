@@ -1,6 +1,6 @@
 # AGENT.md — Project Summary
 
-> **Last Updated:** 2025-04-01
+> **Last Updated:** 2025-04-03
 > **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
 
 ---
@@ -169,6 +169,8 @@ src/
 | GET | `/api/session/latest` | Get latest by directory |
 | POST | `/api/session/:session_id/cancel` | Cancel session |
 | POST | `/api/session/:session_id/compact` | Trigger compaction |
+| DELETE | `/api/session/:session_id/queue/message?message=` | Delete queued message |
+| GET | `/api/session/:session_id/queue/messages` | Get queued messages (clears queue) |
 | POST | `/api/llm/run` | Run LLM workflow |
 | GET | `/api/ping/:session_id` | Health check |
 
@@ -189,6 +191,10 @@ src/
 - Never return stack-allocated slices from functions
 - **Memory:** Prefer `ArenaAllocator` over manual `free()`
 - **JSON keys:** Always `snake_case` (e.g., `session_id`, `created_at`)
+- **ActivityRegistry:** Uses TWO separate concepts:
+  - **Activity count** (`mark_running`/`mark_idle`) — tracks nested processing
+  - **Stopped flag** (`mark_stopped`/`is_stopped`) — persistent flag that blocks `is_running()` until re-registered
+  - **Critical:** `is_running()` checks stopped flag first, then activity count
 
 ## Logging Conventions
 
@@ -212,6 +218,15 @@ for testing use this command always
 - Use `zig build test` to run all tests
 - Tests go in `_test.zig` files next to source
 - Import test runners in `root.zig`
+
+### Desktop Bun (Vitest)
+- Run: `bun test src/apps/desktop-bun/src/.../<filename>.test.tsx`
+- Uses source-code verification approach (no DOM rendering)
+- Test files: `*.test.tsx` alongside source files
+- Pattern: Read source file → regex match expected patterns
+- Example test files:
+  - `src/mainview/components/Sidebar.test.tsx`
+  - `src/mainview/pages/MessageRow.test.tsx`
 
 ---
 

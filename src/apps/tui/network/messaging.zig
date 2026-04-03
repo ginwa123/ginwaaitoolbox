@@ -30,15 +30,20 @@ pub fn sendMessage(app: *App, message: []const u8) !void {
     const cwd = std.process.getCwdAlloc(allocator) catch "";
     const escaped_msg = escapeJsonString(allocator, message);
     const escaped_cwd = escapeJsonString(allocator, cwd);
-    // Use new /api/llm/run endpoint directly
+    // Use new /api/session endpoint directly
+    // ///   - name: session name (string, defaults to "New Session")
+    //   - session_id: custom session ID (string, optional, auto-generated if not provided)
+    //   - queue_message: initial message to add to session queue (string, optional)
+    //   - cwd_session: working directory (string, optional)
+
     const json_payload = try std.fmt.allocPrint(allocator,
-        \\{{"session_id":"{s}","message":"{s}","cwd_session":"{s}"}}
+        \\{{"session_id":"{s}","queue_message":"{s}","cwd_session":"{s}"}}
     , .{ app.session_id, escaped_msg, escaped_cwd });
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
-    const request = try std.fmt.allocPrint(allocator, "POST /api/llm/run HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
+    const request = try std.fmt.allocPrint(allocator, "POST /api/session HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
     _ = try std.posix.write(sock, request);
 }
 
@@ -80,7 +85,6 @@ pub fn send_ping_command(app: *App) !bool {
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-
 
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);
@@ -210,9 +214,7 @@ pub fn get_latest_message_by_created_at(app: *App) !bool {
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
     try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
 
-    const request = try std.fmt.allocPrint(allocator,
-        "GET /api/session/{s}/messages?sort_by=created_at&direction=desc&limit=1 HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n",
-        .{ app.session_id, globals.HTTP_HOST, app.http_port });
+    const request = try std.fmt.allocPrint(allocator, "GET /api/session/{s}/messages?sort_by=created_at&direction=desc&limit=1 HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(sock, request);
 
     // Read response

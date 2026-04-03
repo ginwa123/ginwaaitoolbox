@@ -4,6 +4,11 @@
 //! Mirrors the CancellationRegistry pattern but uses atomic counters for nested/recursive tracking.
 //! Also supports message queuing for paused/interrupted sessions.
 //!
+//! ## Key Concepts
+//!
+//! - **Activity count**: Tracks nested/recursive running (increment with `mark_running`, decrement with `mark_idle`)
+//! - **Stopped flag**: Separate flag that persists even when activity count is 0. Once stopped, `is_running()` returns false permanently until re-registered.
+//!
 //! ## Usage Example
 //!
 //! ```zig
@@ -23,6 +28,9 @@
 //!     }
 //!     // ... loop body
 //! }
+//!
+//! // When user marks session as stopped:
+//! activity_registry.get_global_registry().?.mark_stopped(session_id);
 //! ```
 
 const std = @import("std");
@@ -35,12 +43,15 @@ pub const ActivityRegistry = struct {
     sessions: std.StringHashMap(*std.atomic.Value(usize)),
     /// Message queue per session
     message_queues: std.StringHashMap(*std.ArrayList([]const u8)),
+    /// Stopped flag per session - once stopped, is_running returns false until re-registered
+    stopped: std.StringHashMap(?[]const u8),
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
             .sessions = std.StringHashMap(*std.atomic.Value(usize)).init(allocator),
             .message_queues = std.StringHashMap(*std.ArrayList([]const u8)).init(allocator),
+            .stopped = std.StringHashMap(?[]const u8).init(allocator),
         };
     }
 
@@ -64,12 +75,31 @@ pub const ActivityRegistry = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.sessions.deinit();
+
+        // Clean up stopped flags (keys are duplicated, so free them)
+        var stopped_iter = self.stopped.iterator();
+        while (stopped_iter.next()) |entry| {
+            if (entry.value_ptr.*) |reason| {
+                self.allocator.free(reason);
+            }
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.stopped.deinit();
     }
 
     pub fn register(self: *Self, session_id: []const u8) !void {
-        // If already registered, reset it
+        // If already registered, reset it (clear stopped flag and activity count)
         if (self.sessions.get(session_id)) |atomic| {
             atomic.store(0, .seq_cst);
+            // Clear stopped flag when re-registering
+            // fetchRemove returns the stored key (which was allocated via dupe in mark_stopped)
+            if (self.stopped.fetchRemove(session_id)) |entry| {
+                if (entry.value) |reason| {
+                    self.allocator.free(reason);
+                }
+                // Free the duplicated key allocated in mark_stopped
+                self.allocator.free(entry.key);
+            }
             return;
         }
 
@@ -100,6 +130,14 @@ pub const ActivityRegistry = struct {
             self.allocator.destroy(entry.value);
             self.allocator.free(entry.key);
         }
+
+        // Clean up stopped flag (key was duplicated in mark_stopped)
+        if (self.stopped.fetchRemove(session_id)) |entry| {
+            if (entry.value) |reason| {
+                self.allocator.free(reason);
+            }
+            self.allocator.free(entry.key);
+        }
     }
 
     pub fn is_registered(self: *Self, session_id: []const u8) bool {
@@ -118,18 +156,42 @@ pub const ActivityRegistry = struct {
         }
     }
 
-    /// Reset activity count to 0 immediately (e.g., when session stops completely)
+    /// Mark a session as stopped with an optional reason
+    /// This sets a persistent flag that makes is_running() return false
+    /// until the session is re-registered.
     pub fn mark_stopped(self: *Self, session_id: []const u8) void {
+        // Reset activity count to 0
         if (self.sessions.get(session_id)) |atomic| {
             atomic.store(0, .seq_cst);
         }
+
+        // Set stopped flag if not already set
+        if (!self.stopped.contains(session_id)) {
+            const key = self.allocator.dupe(u8, session_id) catch return;
+            // Value is null for now - we can add reason support later if needed
+            self.stopped.put(key, null) catch {
+                self.allocator.free(key);
+            };
+        }
     }
 
+    /// Check if a session is currently running (not stopped and has activity > 0)
     pub fn is_running(self: *Self, session_id: []const u8) bool {
-        if (self.sessions.get(session_id)) |atomic| {
-            return atomic.load(.seq_cst) > 0;
+        // First check if session is registered
+        const atomic = self.sessions.get(session_id) orelse return false;
+
+        // Then check if session is stopped
+        if (self.stopped.contains(session_id)) {
+            return false;
         }
-        return false;
+
+        // Finally check activity count
+        return atomic.load(.seq_cst) > 0;
+    }
+
+    /// Check if a session has been explicitly stopped
+    pub fn is_stopped(self: *Self, session_id: []const u8) bool {
+        return self.stopped.contains(session_id);
     }
 
     /// Queue a message for a session

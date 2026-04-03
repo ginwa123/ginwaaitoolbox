@@ -63,6 +63,33 @@ function sseToChatMessage(event: SSEMessage): ChatMessage {
 }
 
 const MessageRow: Component<{ message: ChatMessage }> = (props) => {
+  // ============================================================================
+  // Expand/Collapse State
+  // ============================================================================
+  // Message is collapsible when: is_output=true AND has tool_name
+  const isCollapsible = (): boolean => {
+    const isOutput =
+      props.message.is_output === true ||
+      props.message.is_output === 'true' ||
+      props.message.is_output === '1';
+    return isOutput && !!props.message.tool_name;
+  };
+
+  const [isExpanded, setIsExpanded] = createSignal(false);
+
+  const toggleExpand = () => setIsExpanded(!isExpanded());
+
+  // Preview truncation: show first 200 chars when collapsed
+  const PREVIEW_LENGTH = 200;
+  const getPreviewContent = () => {
+    const content = props.message.content || '';
+    if (content.length <= PREVIEW_LENGTH) return content;
+    return content.slice(0, PREVIEW_LENGTH);
+  };
+
+  // ============================================================================
+  // Formatting Helpers
+  // ============================================================================
   const formatTimestamp = (ts: string) => {
     try {
       const numericTs = Number(ts);
@@ -114,6 +141,7 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
             {getRoleIcon(props.message.role)}
           </span>
           <div class="flex-1 min-w-0">
+            {/* Header Row */}
             <div class="flex items-baseline gap-3 mb-2">
               <span
                 class={`font-mono text-xs uppercase tracking-wider font-semibold ${getRoleColor(props.message.role)}`}
@@ -128,10 +156,51 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
                   {props.message.tool_name}
                 </span>
               </Show>
+
+              {/* Expand/Collapse Toggle Button */}
+              <Show when={isCollapsible()}>
+                <button
+                  type="button"
+                  onClick={toggleExpand}
+                  aria-label={isExpanded() ? 'Collapse message' : 'Expand message'}
+                  class="ml-auto flex items-center gap-1.5 font-mono text-xs text-[#52525b] hover:text-[#a1a1aa] transition-colors cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#fbbf24] rounded px-1 py-0.5"
+                >
+                  <span
+                    class={`transition-transform duration-200 ${isExpanded() ? 'rotate-90' : ''}`}
+                  >
+                    {isExpanded() ? '▼' : '▶'}
+                  </span>
+                  <span class="text-[10px] uppercase tracking-wider">
+                    {isExpanded() ? 'Less' : 'More'}
+                  </span>
+                </button>
+              </Show>
             </div>
-            <div class="font-mono text-sm text-[#a1a1aa] whitespace-pre-wrap break-words leading-relaxed">
-              {props.message.content}
+
+            {/* Content Area */}
+            <div
+              class={`font-mono text-sm text-[#a1a1aa] whitespace-pre-wrap break-words leading-relaxed transition-all duration-200 ${
+                isCollapsible() && !isExpanded() ? 'max-h-24 overflow-hidden relative' : ''
+              }`}
+            >
+              {/* Show preview when collapsed, full content when expanded */}
+              <Show when={isCollapsible() && !isExpanded()} fallback={props.message.content}>
+                <span class="break-words">{getPreviewContent()}</span>
+              </Show>
             </div>
+
+            {/* Collapsed indicator */}
+            <Show
+              when={
+                isCollapsible() && !isExpanded() && props.message.content.length > PREVIEW_LENGTH
+              }
+            >
+              <div class="mt-1">
+                <span class="font-mono text-xs text-[#3f3f46] italic">
+                  ... {props.message.content.length - PREVIEW_LENGTH} more characters
+                </span>
+              </div>
+            </Show>
           </div>
         </div>
       </div>

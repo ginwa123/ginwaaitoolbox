@@ -278,7 +278,7 @@ setInterval(() => {
 
   // Stop after 10 updates
   if (counter >= 10) {
-    console.log('[Bun] Stopped counter updates after 10 iterations');
+    // console.log('[Bun] Stopped counter updates after 10 iterations');
   }
 }, 3000); // Every 3 seconds
 

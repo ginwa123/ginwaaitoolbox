@@ -126,6 +126,107 @@ test "ActivityRegistry mark_stopped sets is_running false immediately" {
     try std.testing.expect(!registry.is_running("session-123")); // Count = 0
 }
 
+test "ActivityRegistry is_stopped returns true after mark_stopped" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    // Initially not stopped
+    try std.testing.expect(!registry.is_stopped("session-123"));
+    
+    registry.mark_stopped("session-123");
+    
+    // Now should be stopped
+    try std.testing.expect(registry.is_stopped("session-123"));
+}
+
+test "ActivityRegistry is_running returns false when stopped even with activity count > 0" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    // Mark running
+    registry.mark_running("session-123");
+    registry.mark_running("session-123");
+    try std.testing.expect(registry.is_running("session-123")); // Count = 2
+    
+    // Mark stopped
+    registry.mark_stopped("session-123");
+    
+    // is_running should return false even though count is now 0
+    // The key test: stopped flag takes precedence
+    try std.testing.expect(!registry.is_running("session-123"));
+    try std.testing.expect(registry.is_stopped("session-123"));
+}
+
+test "ActivityRegistry stopped flag persists across mark_running calls" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    // Mark stopped first
+    registry.mark_stopped("session-123");
+    try std.testing.expect(registry.is_stopped("session-123"));
+    
+    // Try to mark running - should NOT make is_running return true
+    registry.mark_running("session-123");
+    registry.mark_running("session-123");
+    try std.testing.expect(!registry.is_running("session-123")); // Stopped flag takes precedence
+    try std.testing.expect(registry.is_stopped("session-123"));
+}
+
+test "ActivityRegistry register clears stopped flag" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    registry.mark_stopped("session-123");
+    try std.testing.expect(registry.is_stopped("session-123"));
+    try std.testing.expect(!registry.is_running("session-123"));
+    
+    // Re-register should clear stopped flag
+    try registry.register("session-123");
+    try std.testing.expect(!registry.is_stopped("session-123"));
+    
+    // Now mark_running should work
+    registry.mark_running("session-123");
+    try std.testing.expect(registry.is_running("session-123"));
+}
+
+test "ActivityRegistry simulates the bug scenario: mark_stopped prevents message queuing" {
+    const allocator = std.testing.allocator;
+    var registry = activity_registry.ActivityRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.register("session-123");
+    
+    // Simulate workflow loop running
+    registry.mark_running("session-123");
+    try std.testing.expect(registry.is_running("session-123"));
+    
+    // User marks session as stopped
+    registry.mark_stopped("session-123");
+    
+    // The critical test: is_running should now return false
+    // This prevents the workflow from queuing new messages
+    try std.testing.expect(!registry.is_running("session-123"));
+    try std.testing.expect(registry.is_stopped("session-123"));
+    
+    // mark_idle would normally happen but stopped flag already blocks is_running
+    registry.mark_idle("session-123");
+    
+    // Still not running because stopped
+    try std.testing.expect(!registry.is_running("session-123"));
+    try std.testing.expect(registry.is_stopped("session-123"));
+}
+
 // ============ Message Queue Tests ============
 
 test "ActivityRegistry queue_message adds message to queue" {

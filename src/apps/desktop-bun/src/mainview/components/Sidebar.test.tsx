@@ -1,15 +1,15 @@
 /**
  * Sidebar Component Tests
- * 
+ *
  * Tests the critical fix: sessionStore selectedFolder integration
  * ensures cwd_session is correctly sent when creating sessions.
- * 
+ *
  * @see {@link https://github.com/ginwa/agentic_coding_zig/issues/xxx}
  */
 
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createSignal } from 'solid-js';
 import * as fs from 'fs';
+import { createSignal } from 'solid-js';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 // ============================================================================
 // Test Suite: Source Code Verification (No Component Rendering)
@@ -20,7 +20,8 @@ import * as fs from 'fs';
  * to render the full component tree (avoids SolidJS client-side API issues).
  */
 describe('Sidebar Source Code Verification', () => {
-  const sidebarPath = '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/components/Sidebar.tsx';
+  const sidebarPath =
+    '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/components/Sidebar.tsx';
 
   let sidebarSource: string;
 
@@ -32,7 +33,7 @@ describe('Sidebar Source Code Verification', () => {
   // Test: setSelectedFolderValue is imported
   // ==========================================================================
   test('imports setSelectedFolderValue from sessionStore', () => {
-    expect(sidebarSource).toContain("import {");
+    expect(sidebarSource).toContain('import {');
     expect(sidebarSource).toContain('setSelectedFolderValue');
     expect(sidebarSource).toContain("from '../store/sessionStore'");
   });
@@ -42,7 +43,9 @@ describe('Sidebar Source Code Verification', () => {
   // ==========================================================================
   test('calls setSelectedFolderValue in createEffect (config load)', () => {
     // Find the createEffect block that loads from config
-    const createEffectMatch = sidebarSource.match(/createEffect\(async \(\) => \{[\s\S]*?getSessionDir\(\)[\s\S]*?\}\);/);
+    const createEffectMatch = sidebarSource.match(
+      /createEffect\(async \(\) => \{[\s\S]*?getSessionDir\(\)[\s\S]*?\}\);/
+    );
     expect(createEffectMatch).not.toBeNull();
 
     const createEffectBlock = createEffectMatch![0];
@@ -69,7 +72,9 @@ describe('Sidebar Source Code Verification', () => {
   // ==========================================================================
   test('calls setSelectedFolderValue in handleFolderSelect', () => {
     // Find the handleFolderSelect function
-    const handleFolderMatch = sidebarSource.match(/const handleFolderSelect = async \(path: string\) => \{[\s\S]*?\};/);
+    const handleFolderMatch = sidebarSource.match(
+      /const handleFolderSelect = async \(path: string\) => \{[\s\S]*?\};/
+    );
     expect(handleFolderMatch).not.toBeNull();
 
     const handleFolderBlock = handleFolderMatch![0];
@@ -95,7 +100,8 @@ describe('Sidebar Source Code Verification', () => {
 // ============================================================================
 
 describe('sessionStore selectedFolder Integration', () => {
-  const storePath = '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/store/sessionStore.tsx';
+  const storePath =
+    '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/store/sessionStore.tsx';
 
   let storeSource: string;
 
@@ -132,7 +138,8 @@ describe('sessionStore selectedFolder Integration', () => {
 // ============================================================================
 
 describe('Integration: ChatInput will receive correct cwd_session', () => {
-  const chatInputPath = '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/components/ChatInput.tsx';
+  const chatInputPath =
+    '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/components/ChatInput.tsx';
 
   let chatInputSource: string;
 
@@ -190,7 +197,7 @@ describe('Mock Behavior for selectedFolder', () => {
 
   test('setSelectedFolderValue mock captures calls correctly', () => {
     const mockFn = vi.fn();
-    
+
     // Simulate what Sidebar does
     mockFn('/home/ginwa/experiment');
     mockFn('/another/path');
@@ -230,7 +237,7 @@ describe('Regression Prevention Tests', () => {
     // Before the fix, selectedFolder was defined as:
     // const [selectedFolder, setSelectedFolder] = createSignal('/');
     // And it was NEVER updated by Sidebar!
-    
+
     const storeSource = fs.readFileSync(
       '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/store/sessionStore.tsx',
       'utf-8'
@@ -238,18 +245,18 @@ describe('Regression Prevention Tests', () => {
 
     // The fix ensures setSelectedFolderValue updates the signal
     expect(storeSource).toContain('setSelectedFolderValue');
-    
+
     // But the ORIGINAL BUG was:
     // - ChatInput called getSelectedFolder() -> always returned "/"
     // - Sidebar loaded session_dir from config -> never called setSelectedFolderValue
     // Result: cwd_session was always "/" even when session_dir was set!
-    
+
     // This test passes if the fix is in place
     const sidebarSource = fs.readFileSync(
       '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/components/Sidebar.tsx',
       'utf-8'
     );
-    
+
     // The fix: Sidebar must call setSelectedFolderValue
     expect(sidebarSource).toContain('setSelectedFolderValue(');
   });
@@ -261,7 +268,7 @@ describe('Regression Prevention Tests', () => {
     );
 
     // All three locations must have the fix:
-    
+
     // 1. createEffect (config load on init)
     const createEffectBlock = sidebarSource.match(
       /createEffect\(async \(\) => \{[\s\S]*?setConfigLoaded\(true\)[\s\S]*?\}\);/
@@ -270,9 +277,7 @@ describe('Regression Prevention Tests', () => {
     expect(createEffectBlock![0]).toContain('setSelectedFolderValue');
 
     // 2. onMount
-    const onMountBlock = sidebarSource.match(
-      /onMount\(async \(\) => \{[\s\S]*?\}\);/
-    );
+    const onMountBlock = sidebarSource.match(/onMount\(async \(\) => \{[\s\S]*?\}\);/);
     expect(onMountBlock).not.toBeNull();
     expect(onMountBlock![0]).toContain('setSelectedFolderValue');
 
