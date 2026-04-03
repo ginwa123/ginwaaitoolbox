@@ -51,6 +51,9 @@ pub const GlobMatch = struct {
 /// Result from executing a glob search.
 pub const GlobResult = struct {
     matches: std.ArrayList(GlobMatch),
+    /// Number of results that were truncated due to max_results limit.
+    /// 0 means not truncated.
+    truncated_count: usize = 0,
 
     /// Free all allocated memory.
     pub fn deinit(self: *GlobResult, allocator: std.mem.Allocator) void {
@@ -162,19 +165,24 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
         matches.shrinkRetainingCapacity(0);
     }
 
+    var truncated_count: usize = 0;
+
     // Trim to max_results if we have more than needed
-    if (matches.items.len > (input.max_results orelse 100)) {
-        for (matches.items[(input.max_results orelse 100)..]) |*m| {
+    const max_results_limit = input.max_results orelse 100;
+    if (matches.items.len > max_results_limit) {
+        truncated_count = matches.items.len - max_results_limit;
+        for (matches.items[max_results_limit..]) |*m| {
             allocator.free(m.path);
         }
-        matches.shrinkRetainingCapacity(input.max_results orelse 100);
+        matches.shrinkRetainingCapacity(max_results_limit);
     }
 
-    return GlobResult{ .matches = matches };
+    return GlobResult{ .matches = matches, .truncated_count = truncated_count };
 }
 
 /// Convert GlobResult to XML string format with <f> tags.
 /// Returns a warning message if no matches are found.
+/// Returns a truncation warning if results were limited.
 pub fn globResultToString(allocator: std.mem.Allocator, result: GlobResult) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
@@ -190,6 +198,15 @@ pub fn globResultToString(allocator: std.mem.Allocator, result: GlobResult) ![]c
     // Return a warning if no matches found
     if (output.items.len == 0) {
         return try std.fmt.allocPrint(allocator, "<warning>No files found matching the glob pattern.</warning>", .{});
+    }
+
+    // Add truncation warning if results were limited
+    if (result.truncated_count > 0) {
+        const truncation_warning = try std.fmt.allocPrint(allocator,
+            "\n<truncated>{d} files truncated. Consider using offset/max_results or more specific patterns.</truncated>",
+            .{result.truncated_count});
+        defer allocator.free(truncation_warning);
+        try output.appendSlice(allocator, truncation_warning);
     }
 
     return try output.toOwnedSlice(allocator);

@@ -1,6 +1,6 @@
 import { useNavigate } from '@solidjs/router';
 import { type Component, For, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
-import { getSessionListVersion } from '../store/sessionStore';
+import { getSessionListVersion, setSelectedFolderValue } from '../store/sessionStore';
 import { baseUrl, initBaseUrl } from '../utils/baseUrl';
 import { getSessionDir } from '../utils/config';
 import { log } from '../utils/logger';
@@ -49,6 +49,8 @@ const Sidebar: Component = () => {
         log.info(`[Sidebar] Loaded session_dir from config: ${savedDir}`);
         const sessionDir = savedDir !== '/' ? savedDir : undefined;
         setCurrentSessionDir(sessionDir);
+        // Also update shared sessionStore so ChatInput uses the correct cwd_session
+        setSelectedFolderValue(savedDir);
         // Initial fetch with loaded session_dir
         if (initialized) {
           fetchSessions(undefined, sessionDir);
@@ -161,6 +163,8 @@ const Sidebar: Component = () => {
       log.info(`[Sidebar] onMount loaded session_dir from config: ${savedDir}`);
       const sessionDir = savedDir !== '/' ? savedDir : undefined;
       setCurrentSessionDir(sessionDir);
+      // Also update shared sessionStore so ChatInput uses the correct cwd_session
+      setSelectedFolderValue(savedDir);
       fetchSessions(undefined, sessionDir).finally(() => setLoading(false));
     } catch (err) {
       log.warn('[Sidebar] onMount failed to load session_dir:', err);
@@ -242,6 +246,8 @@ const Sidebar: Component = () => {
     log.info(`[Sidebar] Folder selected: ${path}`);
     const sessionDir = path !== '/' ? path : undefined;
     setCurrentSessionDir(sessionDir);
+    // Also update shared sessionStore so ChatInput uses the correct cwd_session
+    setSelectedFolderValue(path);
     setFolderPickerOpen(false);
 
     // Persist to config

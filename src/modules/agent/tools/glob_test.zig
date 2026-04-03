@@ -243,3 +243,42 @@ test "glob_tool definition is valid" {
     try expectEqualSlices(u8, "object", tool.function.parameters.type);
     try expect(tool.function.parameters.properties.len > 0);
 }
+
+test "globResultToString includes truncation warning when truncated" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var result = GlobResult{
+        .matches = std.ArrayList(GlobMatch).empty,
+        .truncated_count = 5,
+    };
+    defer result.deinit(allocator);
+
+    try result.matches.append(allocator, .{ .path = "/path/to/file1.zig" });
+    try result.matches.append(allocator, .{ .path = "/path/to/file2.zig" });
+
+    const output = try globResultToString(allocator, result);
+
+    try expect(std.mem.containsAtLeast(u8, output, 1, "<truncated>"));
+    try expect(std.mem.containsAtLeast(u8, output, 1, "5 files truncated"));
+}
+
+test "globResultToString omits truncation warning when not truncated" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var result = GlobResult{
+        .matches = std.ArrayList(GlobMatch).empty,
+        .truncated_count = 0,
+    };
+    defer result.deinit(allocator);
+
+    try result.matches.append(allocator, .{ .path = "/path/to/file1.zig" });
+
+    const output = try globResultToString(allocator, result);
+
+    // Should not contain truncation warning
+    try expect(std.mem.indexOf(u8, output, "<truncated>") == null);
+}

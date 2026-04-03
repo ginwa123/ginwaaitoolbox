@@ -34,37 +34,6 @@ describe('getCwd RPC', () => {
 });
 
 // ============================================================================
-// Test: SessionChat cwd_session parameter
-// ============================================================================
-
-describe('SessionChat create session', () => {
-  test('CreateSessionRequest interface includes cwd_session', () => {
-    const request = {
-      queue_message: 'test message',
-      cwd_session: '/home/user/project',
-    };
-
-    // Verify the structure matches expected
-    expect(typeof request.queue_message).toBe('string');
-    expect(typeof request.cwd_session).toBe('string');
-    expect(request.cwd_session).toBe('/home/user/project');
-  });
-});
-
-// ============================================================================
-// Test: RPC schema type compatibility
-// ============================================================================
-
-describe('RPC schema compatibility', () => {
-  test('getCwd response type is string', () => {
-    const mockResponse = process.cwd();
-    // Response should be a string
-    const isString = typeof mockResponse === 'string';
-    expect(isString).toBe(true);
-  });
-});
-
-// ============================================================================
 // Filesystem Operations Tests
 // ============================================================================
 

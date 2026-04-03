@@ -144,6 +144,12 @@ src/
 - Uses `/usr/sbin/fd` and `/usr/bin/stat`
 - Returns tree visualization with branch indicators
 
+### glob Tool
+- Uses `/usr/sbin/fd` with `--glob` pattern matching
+- **Truncation Detection:** When results exceed `max_results`, includes `<truncated>` with count
+- Returns: `<f>path</f>` for each match, plus `<truncated>{n} files truncated` if limited
+- Supports `offset` + `max_results` for pagination
+
 ### web_search Tool
 - Uses `agent-browser` CLI
 - Actions: `open`, `snapshot`, `get`, `click`, `fill`, `press`, `scroll`
