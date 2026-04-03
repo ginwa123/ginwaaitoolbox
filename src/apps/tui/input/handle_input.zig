@@ -98,14 +98,14 @@ pub fn handle_input(app: *App) !bool {
             app.pasting = true;
             app.last_esc_time = null;
             // Wrap pasted content with data boundary markers for security
-            try app.input.appendSlice(app.allocator, "[START DATA]\n");
-            std.debug.print("{s}[START DATA]{s}", .{ globals.dim, globals.reset });
+            try app.input.appendSlice(app.allocator, "[PASTED TEXT START]\n");
+            std.debug.print("{s}[PASTED TEXT START]{s}", .{ globals.dim, globals.reset });
         } else if (std.mem.eql(u8, seq, "\x1b[201~")) {
             app.pasting = false;
             app.last_esc_time = null;
             // Wrap pasted content with data boundary markers for security
-            try app.input.appendSlice(app.allocator, "\n[END DATA]");
-            std.debug.print("{s}[END DATA]{s}", .{ globals.dim, globals.reset });
+            try app.input.appendSlice(app.allocator, "\n[PASTED TEXT END]");
+            std.debug.print("{s}[PASTED TEXT END]{s}", .{ globals.dim, globals.reset });
         } else {
             // Check for double escape (quick consecutive escape presses)
             const now = std.time.milliTimestamp();

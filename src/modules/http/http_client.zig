@@ -2,6 +2,22 @@ const std = @import("std");
 const json = std.json;
 const testing = std.testing;
 
+/// Escape a string for safe shell usage by wrapping in single quotes
+fn escapeShellArg(arg: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
+    try result.append(allocator, '\'');
+    for (arg) |c| {
+        if (c == '\'') {
+            try result.appendSlice(allocator, "'\\''");
+        } else {
+            try result.append(allocator, c);
+        }
+    }
+    try result.append(allocator, '\'');
+    return try result.toOwnedSlice(allocator);
+}
+
 /// HTTP Client Result
 const HttpResult = struct {
     body: []const u8,
@@ -28,11 +44,10 @@ pub const HttpClient = struct {
     }
 
     /// Perform HTTP POST request
-    /// Tries std.http first, falls back to curl if TLS is not available
+    /// Uses std.http.Client with TLS support
     pub fn post(self: HttpClient, url: []const u8, body: []const u8, headers: ?std.StringHashMap([]const u8)) !HttpResult {
-        // Always try curl as fallback since std.http TLS may fail in test environments
-        // This ensures tests pass even when TLS is not available
-        return self.postWithCurl(url, body, headers);
+        // Try std.http first - this is the proper way to do HTTP in Zig
+        return self.postWithStdHttp(url, body, headers);
     }
 
     /// POST using std.http.Client (currently not used - curl is primary due to TLS issues in test env)
@@ -86,25 +101,44 @@ pub const HttpClient = struct {
     }
 
     /// POST using curl as fallback
+    /// IMPORTANT: Uses std.heap.c_allocator for Child.process to avoid arena corruption issues
     fn postWithCurl(self: HttpClient, url: []const u8, body: []const u8, headers: ?std.StringHashMap([]const u8)) !HttpResult {
         // Note: headers param is not used because we hardcode the Accept header for MCP
         _ = headers;
 
-        // Build curl command with proper escaping using bash -c
+        // Build curl command - escape single quotes in URL and body to prevent injection
+        const escaped_url = try escapeShellArg(url, self.allocator);
+        defer self.allocator.free(escaped_url);
+        
+        const escaped_body = try escapeShellArg(body, self.allocator);
+        defer self.allocator.free(escaped_body);
+        
         const shell_cmd = try std.fmt.allocPrint(self.allocator,
-            "curl -s -X POST '{s}' -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{s}'",
-            .{ url, body }
+            "curl -s -X POST {s} -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d {s}",
+            .{ escaped_url, escaped_body }
         );
         defer self.allocator.free(shell_cmd);
 
         // Execute curl via bash -c
-        var child = std.process.Child.init(&[_][]const u8{ "bash", "-c", shell_cmd }, self.allocator);
+        // IMPORTANT: Use std.heap.c_allocator for Child to avoid arena corruption
+        // The Child.process internally creates its own arena, and using an arena
+        // wrapped in another arena can cause memory corruption
+        var child = std.process.Child.init(&[_][]const u8{ "bash", "-c", shell_cmd }, std.heap.c_allocator);
 
         child.stdin_behavior = .Ignore;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
 
-        try child.spawn();
+        // Spawn with error handling - if spawn fails, return proper error
+        child.spawn() catch |err| {
+            std.log.warn("Failed to spawn curl process: {s}", .{@errorName(err)});
+            // Return empty response with error status
+            const empty = try self.allocator.dupe(u8, "");
+            return .{
+                .body = empty,
+                .status_code = 127, // Command not found
+            };
+        };
 
         // Read stdout BEFORE waiting - important for capturing output!
         // Use a loop to read all data since network responses may arrive in multiple chunks
@@ -122,7 +156,13 @@ pub const HttpClient = struct {
 
         const stdout = try stdout_list.toOwnedSlice(self.allocator);
 
-        const term = try child.wait();
+        const term = child.wait() catch |err| {
+            std.log.warn("Failed to wait for curl process: {s}", .{@errorName(err)});
+            return .{
+                .body = stdout,
+                .status_code = 1,
+            };
+        };
 
         // Check exit code
         const exit_code: u8 = switch (term) {

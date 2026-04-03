@@ -147,7 +147,10 @@ fn fetchToolsFromServer(
         return error.InvalidResponse;
     }
 
-    // Parse JSON response
+    // Parse JSON response using passed allocator
+    // Note: Strings in json.Value reference the result.body buffer, which is freed
+    // after we extract and copy the data we need. This avoids thread-safety issues
+    // since each call uses its own allocator.
     const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{
         .ignore_unknown_fields = true,
         .duplicate_field_behavior = .use_last,
@@ -198,50 +201,55 @@ fn fetchToolsFromServer(
     defer agent_tools.deinit(allocator);
 
     for (tools_array.items) |tool_value| {
-        const tool_obj = switch (tool_value) {
+        // Handle all json.Value variants to avoid unreachable
+        const tool_obj: ?std.json.ObjectMap = switch (tool_value) {
             .object => |obj| obj,
-            else => continue,
+            .null, .bool, .integer, .float, .string, .array, .number_string => null,
         };
+        const tool_obj_inner = tool_obj orelse continue;
 
-        const name_value = tool_obj.get("name") orelse continue;
-        const name = switch (name_value) {
+        const name_value = tool_obj_inner.get("name") orelse continue;
+        const name: []const u8 = switch (name_value) {
             .string => |s| s,
-            else => continue,
+            .null, .bool, .integer, .float, .array, .object, .number_string => continue,
         };
 
-        const desc_value = tool_obj.get("description") orelse continue;
-        const description = switch (desc_value) {
+        const desc_value = tool_obj_inner.get("description") orelse continue;
+        const description: []const u8 = switch (desc_value) {
             .string => |s| s,
-            else => continue,
+            .null, .bool, .integer, .float, .array, .object, .number_string => continue,
         };
 
-        const schema_value = tool_obj.get("inputSchema") orelse continue;
-        const schema_obj = switch (schema_value) {
+        const schema_value = tool_obj_inner.get("inputSchema") orelse continue;
+        const schema_obj: ?std.json.ObjectMap = switch (schema_value) {
             .object => |obj| obj,
-            else => continue,
+            .null, .bool, .integer, .float, .string, .array, .number_string => null,
         };
+        const schema_obj_inner = schema_obj orelse continue;
 
         // Parse properties
-        const props_value = schema_obj.get("properties") orelse continue;
+        const props_value = schema_obj_inner.get("properties") orelse continue;
         const properties = try parseProperties(allocator, props_value, server_name);
 
-        // Parse required fields
+        // Parse required fields - "required" is an array of strings
         var required: []const []const u8 = &[_][]const u8{};
-        if (schema_obj.get("required")) |req_value| {
-            const req_array = switch (req_value) {
-                .array => |arr| arr,
-                else => continue,
+        if (schema_obj_inner.get("required")) |req_value| {
+            const req_array: ?[]const json.Value = switch (req_value) {
+                .array => |arr| arr.items,
+                else => null,
             };
-            var req_list: std.ArrayList([]const u8) = .empty;
-            defer req_list.deinit(allocator);
-            for (req_array.items) |req_item| {
-                const req_str = switch (req_item) {
-                    .string => |s| s,
-                    else => continue,
-                };
-                try req_list.append(allocator, try allocator.dupe(u8, req_str));
+            if (req_array) |items| {
+                var req_list: std.ArrayList([]const u8) = .empty;
+                defer req_list.deinit(allocator);
+                for (items) |req_item| {
+                    const req_str: []const u8 = switch (req_item) {
+                        .string => |s| s,
+                        .null, .bool, .integer, .float, .array, .object, .number_string => continue,
+                    };
+                    try req_list.append(allocator, try allocator.dupe(u8, req_str));
+                }
+                required = try req_list.toOwnedSlice(allocator);
             }
-            required = try req_list.toOwnedSlice(allocator);
         }
 
         const agent_tool = AgentTool{
@@ -270,35 +278,39 @@ pub fn parseProperties(
     server_name: []const u8,
 ) ![]ToolProperty {
     _ = server_name;
-    const props_obj = switch (props_value) {
+    // Handle all json.Value variants to avoid unreachable
+    const props_obj: ?std.json.ObjectMap = switch (props_value) {
         .object => |obj| obj,
-        else => return &[_]ToolProperty{},
+        .null, .bool, .integer, .float, .string, .array, .number_string => null,
     };
+    const props_obj_inner = props_obj orelse return &[_]ToolProperty{};
 
     var properties: std.ArrayList(ToolProperty) = .empty;
     defer properties.deinit(allocator);
 
-    var prop_iter = props_obj.iterator();
+    var prop_iter = props_obj_inner.iterator();
     while (prop_iter.next()) |entry| {
         const prop_name = entry.key_ptr.*;
         const prop_value = entry.value_ptr.*;
 
-        const prop_obj = switch (prop_value) {
+        // Handle all json.Value variants
+        const prop_obj: ?std.json.ObjectMap = switch (prop_value) {
             .object => |obj| obj,
-            else => continue,
+            .null, .bool, .integer, .float, .string, .array, .number_string => null,
         };
+        const prop_obj_inner = prop_obj orelse continue;
 
-        const type_value = prop_obj.get("type") orelse continue;
-        const prop_type = switch (type_value) {
+        const type_value = prop_obj_inner.get("type") orelse continue;
+        const prop_type: []const u8 = switch (type_value) {
             .string => |s| s,
-            else => continue,
+            .null, .bool, .integer, .float, .array, .object, .number_string => continue,
         };
 
         var prop_desc: []const u8 = "";
-        if (prop_obj.get("description")) |desc_value| {
+        if (prop_obj_inner.get("description")) |desc_value| {
             prop_desc = switch (desc_value) {
                 .string => |s| s,
-                else => "",
+                .null, .bool, .integer, .float, .array, .object, .number_string => "",
             };
         }
 
@@ -311,4 +323,3 @@ pub fn parseProperties(
 
     return try properties.toOwnedSlice(allocator);
 }
-

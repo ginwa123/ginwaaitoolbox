@@ -6,8 +6,8 @@
 import { createSignal } from 'solid-js';
 import { log } from './logger';
 
-// Default port - must match Zig backend (default 8080)
-const DEFAULT_PORT = 8080;
+// Default port - must match Zig backend (default 8081)
+const DEFAULT_PORT = 8081;
 
 const [baseUrl] = createSignal<string>(`http://127.0.0.1:${DEFAULT_PORT}`);
 const [port] = createSignal<number>(DEFAULT_PORT);

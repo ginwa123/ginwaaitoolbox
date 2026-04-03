@@ -221,6 +221,70 @@ test "text_replace - multiline replace" {
     try std.fs.cwd().deleteFile(test_path);
 }
 
+test "text_replace - forward slash" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_fwd_slash.txt";
+    const original_content = "path: usr/local/bin";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "path: usr/local/bin", .new_str = "path: usr\\local\\bin" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify file content was changed
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "path: usr\\local\\bin";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - URL path" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_url.txt";
+    const original_content = "https://example.com/path/to/resource";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "https://example.com", .new_str = "http://localhost:8080" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify file content was changed
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "http://localhost:8080/path/to/resource";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
 test "text_replace - replace at end of file" {
     const allocator = std.testing.allocator;
     const test_path = "test_replace_end.txt";
@@ -251,6 +315,316 @@ test "text_replace - replace at end of file" {
     
     const expected = "start\nFINISH";
     try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - single backslash" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_backslash.txt";
+    // In Zig string: \\ = single backslash \
+    const original_content = "path\\to";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // Replace single backslash with forward slash
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "\\", .new_str = "/" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify content
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "path/to";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - double backslash" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_double_backslash.txt";
+    // In Zig string: \\\\ = double backslash \\
+    const original_content = "escaped\\\\newline";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // Replace double backslash with underscore underscore
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "\\\\", .new_str = "__" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify content
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "escaped__newline";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - backslash at end" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_trailing_backslash.txt";
+    // In Zig string: \\ = single backslash \
+    const original_content = "path\\";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // Replace trailing backslash with forward slash
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "\\", .new_str = "/" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify content
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "path/";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - double quotes" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_double_quotes.txt";
+    const original_content = "\"hello world\"";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // Replace content inside double quotes
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "\"hello world\"", .new_str = "\"hi there\"" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify content
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "\"hi there\"";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - single quotes" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_single_quotes.txt";
+    const original_content = "const c = 'a';\n";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // Replace character inside single quotes
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "'a'", .new_str = "'b'" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify content
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "const c = 'b';\n";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - curly braces" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_curly_braces.txt";
+    const original_content = "fn foo() { return 42; }\n";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // Replace function body inside curly braces
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "fn foo() { return 42; }", .new_str = "fn foo() { return 0; }" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify content
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "fn foo() { return 0; }\n";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - angle brackets" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_angle_brackets.txt";
+    const original_content = "<div class=\"test\">content</div>\n";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // Replace HTML-like tag with another
+    const result = try text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "<div class=\"test\">", .new_str = "<span class=\"other\">" },
+    }, read_result.sha256);
+    defer result.deinit(allocator);
+    
+    // Verify content
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    const expected = "<span class=\"other\">content</div>\n";
+    try std.testing.expectEqualStrings(expected, read_content);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - ambiguous backslash fails" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_ambig_backslash.txt";
+    // In Zig string: a\\b a\\c = "a\b a\c" (backslash appears twice)
+    const original_content = "a\\b a\\c";
+    
+    // Create original file with backslash appearing twice
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // This should fail because "\\" (single backslash) appears twice
+    const result = text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "\\", .new_str = "/" },
+    }, read_result.sha256);
+    
+    try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotUnique, result);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - ambiguous slash in path fails" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_ambig_slash.txt";
+    const original_content = "/a/b /a/c";
+    
+    // Create original file with forward slash appearing multiple times
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // This should fail because "/" appears multiple times
+    const result = text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "/", .new_str = "-" },
+    }, read_result.sha256);
+    
+    try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotUnique, result);
+    
+    // Clean up
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - empty old_str fails" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_empty_oldstr.txt";
+    const original_content = "hello";
+    
+    // Create original file
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // Get the hash from read_file
+    const read_result = try read_file_mod.read_file(allocator, test_path, .{});
+    defer read_result.deinit(allocator);
+    
+    // This should fail because empty string matches everywhere (6 positions in "hello")
+    const result = text_replace_batch(allocator, test_path, &.{
+        TextReplaceOp{ .old_str = "", .new_str = "X" },
+    }, read_result.sha256);
+    
+    try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotUnique, result);
     
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
