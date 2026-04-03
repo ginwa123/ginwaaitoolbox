@@ -1,11 +1,8 @@
 import { useNavigate } from '@solidjs/router';
 import { type Component, For, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
-import {
-  getSelectedFolder,
-  getSessionListVersion,
-  setSelectedFolderValue,
-} from '../store/sessionStore';
+import { getSessionListVersion } from '../store/sessionStore';
 import { baseUrl, initBaseUrl } from '../utils/baseUrl';
+import { getSessionDir } from '../utils/config';
 import { log } from '../utils/logger';
 import { FolderPicker } from './FolderPicker';
 
@@ -34,8 +31,9 @@ const Sidebar: Component = () => {
 
   // Folder picker state (modal only - open/close)
   const [folderPickerOpen, setFolderPickerOpen] = createSignal(false);
-  // Current session_dir filter (derived from shared selectedFolder in sessionStore)
+  // Current session_dir filter (loaded from config)
   const [currentSessionDir, setCurrentSessionDir] = createSignal<string | undefined>(undefined);
+  const [configLoaded, setConfigLoaded] = createSignal(false);
 
   // Refs for DOM elements
   let scrollContainerRef: HTMLDivElement | undefined;
@@ -43,14 +41,32 @@ const Sidebar: Component = () => {
   let observer: IntersectionObserver | undefined;
   let initialized = false;
 
+  // Load session directory from config on mount
+  createEffect(async () => {
+    if (!configLoaded()) {
+      try {
+        const savedDir = await getSessionDir();
+        log.info(`[Sidebar] Loaded session_dir from config: ${savedDir}`);
+        const sessionDir = savedDir !== '/' ? savedDir : undefined;
+        setCurrentSessionDir(sessionDir);
+        // Initial fetch with loaded session_dir
+        if (initialized) {
+          fetchSessions(undefined, sessionDir);
+        }
+      } catch (err) {
+        log.warn('[Sidebar] Failed to load session_dir from config:', err);
+      }
+      setConfigLoaded(true);
+    }
+  });
+
   // Refresh when session list version changes (new session created) OR folder changes
   createEffect(() => {
     const version = sessionListVersion();
-    const folder = getSelectedFolder();
-    const sessionDir = folder !== '/' ? folder : undefined;
-    log.info(`[Sidebar] Session list version changed: ${version} Folder: ${folder}`);
-    // Update current filter and reset
-    setCurrentSessionDir(sessionDir);
+    const sessionDir = currentSessionDir();
+    if (!configLoaded()) return; // Wait for config to load first
+    log.info(`[Sidebar] Session list version changed: ${version} SessionDir: ${sessionDir}`);
+    // Reset and fetch
     setSessions([]);
     setNextCursor(null);
     setHasMore(true);
@@ -214,14 +230,26 @@ const Sidebar: Component = () => {
   };
 
   // Handle folder selection
-  const handleFolderSelect = (path: string) => {
+  const handleFolderSelect = async (path: string) => {
     log.info(`[Sidebar] Folder selected: ${path}`);
-    setSelectedFolderValue(path); // Update shared state in sessionStore
+    const sessionDir = path !== '/' ? path : undefined;
+    setCurrentSessionDir(sessionDir);
     setFolderPickerOpen(false);
-    // Pagination state will be reset by createEffect when selectedFolder changes
-    log.info(
-      `[Sidebar] Selected folder set to: ${path} | currentSessionDir will be: ${path !== '/' ? path : 'undefined'}`
-    );
+
+    // Persist to config
+    try {
+      const { setSessionDir } = await import('../utils/config');
+      await setSessionDir(path);
+      log.info(`[Sidebar] Session dir persisted to config: ${path}`);
+    } catch (err) {
+      log.warn('[Sidebar] Failed to persist session_dir:', err);
+    }
+
+    // Reset and refetch sessions
+    setSessions([]);
+    setNextCursor(null);
+    setHasMore(true);
+    fetchSessions(undefined, sessionDir);
   };
 
   return (
@@ -321,7 +349,7 @@ const Sidebar: Component = () => {
       {/* Folder Picker Modal */}
       <FolderPicker
         isOpen={folderPickerOpen()}
-        initialPath={getSelectedFolder()}
+        initialPath={currentSessionDir() ?? '/'}
         onSelect={handleFolderSelect}
         onClose={() => setFolderPickerOpen(false)}
       />
