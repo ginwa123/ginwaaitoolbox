@@ -14,6 +14,7 @@ import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
 import ChatInput from '../components/ChatInput';
 import { FolderPicker } from '../components/FolderPicker';
 import { baseUrl } from '../utils/baseUrl';
+import { getSessionDir, setSessionDir as saveSessionDir } from '../utils/config';
 import { log } from '../utils/logger';
 import { SSEClient, type SSEMessage } from '../utils/sseClient';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
@@ -146,25 +147,49 @@ const SessionChat: Component = () => {
 
   // FolderPicker state
   const [folderPickerOpen, setFolderPickerOpen] = createSignal(false);
-  const [sessionDir, setSessionDir] = createSignal<string | null>(null);
+  const [sessionDir, setSessionDirState] = createSignal<string | null>(null);
+  const [configLoaded, setConfigLoaded] = createSignal(false);
+
+  // Load saved session directory from config on mount
+  createEffect(async () => {
+    if (!configLoaded()) {
+      try {
+        const savedDir = await getSessionDir();
+        if (savedDir) {
+          setSessionDirState(savedDir);
+        }
+        setConfigLoaded(true);
+      } catch (err) {
+        console.warn('[SessionChat] Failed to load session_dir from config:', err);
+        setConfigLoaded(true);
+      }
+    }
+  });
 
   // Check if this is a "new" session placeholder
   const isNewSession = () => params.sessionId === 'new';
 
-  // Load session directory when sessionInfo changes
+  // Load session directory from session (overrides config if session has its own dir)
   createEffect(() => {
     const info = sessionInfo();
-    if (info?.session_dir) {
-      setSessionDir(info.session_dir);
+    // Only use session's session_dir if it's explicitly set and config was already loaded
+    if (configLoaded() && info?.session_dir) {
+      setSessionDirState(info.session_dir);
     }
   });
 
   // Handle folder selection
-  const handleFolderSelect = (path: string) => {
+  const handleFolderSelect = async (path: string) => {
     console.log('[SessionChat] Folder selected:', path);
-    setSessionDir(path);
+    setSessionDirState(path);
     setFolderPickerOpen(false);
-    // TODO: Optionally update session with new directory via API
+
+    // Persist to config
+    try {
+      await saveSessionDir(path);
+    } catch (err) {
+      console.warn('[SessionChat] Failed to persist session_dir:', err);
+    }
   };
 
   const [sessionInfo] = createResource(
