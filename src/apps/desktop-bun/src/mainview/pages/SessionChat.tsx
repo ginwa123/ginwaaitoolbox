@@ -441,8 +441,13 @@ const SessionChat: Component = () => {
 
         // Set streaming indicator
         if (event.type === 'message' && !streaming()) {
+          log.info('[SessionChat] SSE message event, setting streaming=true');
           setStreaming(true);
         }
+
+        log.info(
+          `[SessionChat] SSE event: type=${event.type}, hasContent=${!!event.content}, contentLen=${event.content?.length || 0}`
+        );
 
         // Convert SSE event to ChatMessage
         const chatMsg = sseToChatMessage(event);

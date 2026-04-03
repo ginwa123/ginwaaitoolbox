@@ -170,6 +170,18 @@ pub const TUIWorkflow = struct {
             }
         }
 
+        // Ensure cleanup happens even on error - balances mark_running() and unregisters session
+        defer {
+            if (activity_registry.get_global_registry()) |registry| {
+                registry.mark_idle(session_id);
+                registry.mark_stopped(session_id);
+                registry.unregister(session_id);
+            }
+            if (cancellation_registry.get_global_registry()) |registry| {
+                registry.unregister(session_id);
+            }
+        }
+
         const session_name = message;
         const initial_agent_state = try get_current_agent_by_session_id(
             parent_allocator,
@@ -446,18 +458,7 @@ pub const TUIWorkflow = struct {
             }
         }
 
-        if (activity_registry.get_global_registry()) |registry| {
-            registry.mark_stopped(session_id);
-        }
-
-        if (cancellation_registry.get_global_registry()) |registry| {
-            registry.unregister(session_id);
-        }
-        if (activity_registry.get_global_registry()) |registry| {
-            registry.unregister(session_id);
-        }
-
-        _ = try self.logger.debugFmt("WORKFLOW: exiting while loop for session_id ${s}", .{session_id});
+        _ = try self.logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{session_id});
     }
     fn callDynamicAgent(
         self: *TUIWorkflow,
