@@ -56,14 +56,24 @@ const AgentSaveInfo = struct {
     name: []const u8,
 };
 
+/// Extended result type for main agent tool execution
+/// Includes optional temperature/is_thinking for set_agent_properties
+const MainAgentToolResult = struct {
+    output: []const u8,
+    temperature: ?f32 = null,
+    is_thinking: ?bool = null,
+    skill_saved: ?SkillSaveInfo = null,
+    agent_saved: ?AgentSaveInfo = null,
+};
+
 /// Lookup a tool by name and execute it using unified registry
+/// Refactored: Uses entry.exec() directly instead of double lookup
 fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const tool_name = tool_call.function.name;
 
-    // Use unified registry lookup
     inline for (tool_registry.MAIN_AGENT_TOOL_REGISTRY) |entry| {
         if (std.mem.eql(u8, tool_name, entry.name)) {
-            return dispatchByName(ctx, tool_call);
+            return dispatchFromRegistry(ctx, tool_call, entry);
         }
     }
 
@@ -75,34 +85,43 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     return error.UnknownTool;
 }
 
-/// Dispatch to the appropriate handler based on tool name
-fn dispatchByName(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const name = tool_call.function.name;
+/// Dispatch tool execution from registry entry
+/// Calls entry.exec() directly and handles auto-save via registry flags
+fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, entry: tool_registry.ToolInfo) !ToolResult {
+    // Handle special tools that need extended context
+    if (std.mem.eql(u8, entry.name, "set_agent_properties")) {
+        return dispatchSetAgentProperties(ctx, tool_call);
+    }
+    if (std.mem.eql(u8, entry.name, "spawn_sub_agent")) {
+        return dispatchSpawnSubAgent(ctx, tool_call);
+    }
 
-    // Use simple string matching for dispatch
-    if (std.mem.eql(u8, name, "set_agent_properties")) return dispatchSetAgentProperties(ctx, tool_call);
-    if (std.mem.eql(u8, name, "spawn_sub_agent")) return dispatchSpawnSubAgent(ctx, tool_call);
-    if (std.mem.eql(u8, name, "list_agents")) return dispatchListAgents(ctx, tool_call);
-    if (std.mem.eql(u8, name, "change_agent")) return dispatchChangeAgent(ctx, tool_call);
-    if (std.mem.eql(u8, name, "list_skills")) return dispatchListSkills(ctx, tool_call);
-    if (std.mem.eql(u8, name, "get_skill")) return dispatchGetSkill(ctx, tool_call);
-    if (std.mem.eql(u8, name, "remove_skill")) return dispatchRemoveSkill(ctx, tool_call);
-    if (std.mem.eql(u8, name, "bash")) return dispatchBash(ctx, tool_call);
-    if (std.mem.eql(u8, name, "read_file")) return dispatchReadFile(ctx, tool_call);
-    if (std.mem.eql(u8, name, "write_file")) return dispatchWriteFile(ctx, tool_call);
-    if (std.mem.eql(u8, name, "text_replace")) return dispatchTextReplace(ctx, tool_call);
-    if (std.mem.eql(u8, name, "search")) return dispatchSearch(ctx, tool_call);
-    if (std.mem.eql(u8, name, "glob")) return dispatchGlob(ctx, tool_call);
-    if (std.mem.eql(u8, name, "tree_dir")) return dispatchTreeDir(ctx, tool_call);
-    if (std.mem.eql(u8, name, "lsp_definition")) return dispatchLspDefinition(ctx, tool_call);
-    if (std.mem.eql(u8, name, "lsp_references")) return dispatchLspReferences(ctx, tool_call);
-    if (std.mem.eql(u8, name, "lsp_workspace_symbol")) return dispatchLspWorkspaceSymbol(ctx, tool_call);
-    if (std.mem.eql(u8, name, "lsp_document_symbol")) return dispatchLspDocumentSymbol(ctx, tool_call);
-    if (std.mem.eql(u8, name, "lsp_hover")) return dispatchLspHover(ctx, tool_call);
-    if (std.mem.eql(u8, name, "web_search")) return dispatchWebSearch(ctx, tool_call);
-    if (std.mem.eql(u8, name, "web_search_help")) return dispatchWebSearchHelp(ctx, tool_call);
+    // Standard tools: call exec directly and wrap result
+    const result = try entry.exec(ctx.allocator, tool_call, ctx.db, ctx.session_id);
 
-    return error.UnknownTool;
+    var tool_result = MainAgentToolResult{ .output = result };
+
+    // Auto-save skill if enabled in registry
+    if (entry.auto_save_skill) {
+        if (parseSkillFromResult(result)) |info| {
+            tool_result.skill_saved = SkillSaveInfo{ .name = info.name, .content = info.content };
+        }
+    }
+
+    // Auto-save agent if enabled in registry
+    if (entry.auto_save_agent) {
+        if (parseAgentFromResult(result)) |name| {
+            tool_result.agent_saved = AgentSaveInfo{ .name = name };
+        }
+    }
+
+    return ToolResult{
+        .output = tool_result.output,
+        .temperature = tool_result.temperature,
+        .is_thinking = tool_result.is_thinking,
+        .skill_saved = tool_result.skill_saved,
+        .agent_saved = tool_result.agent_saved,
+    };
 }
 
 /// Check if a tool name is an MCP tool (format: mcp_serverName_toolName)
@@ -154,9 +173,10 @@ pub fn getToolNames() []const []const u8 {
 }
 
 // ============================================================================
-// TOOL DISPATCHERS - Each calls the appropriate handler module
+// SPECIAL TOOL DISPATCHERS - Tools that need extended context
 // ============================================================================
 
+/// set_agent_properties returns temperature/is_thinking changes
 fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
     const result = try handle_set_agent_properties.handle_set_agent_properties_run(ctx.allocator, tool_call);
@@ -168,76 +188,7 @@ fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !Tool
     };
 }
 
-fn dispatchBash(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_bash_tool = @import("handle_bash_tool.zig");
-    const result = try handle_bash_tool.runWithContext(ctx.allocator, tool_call, ctx.db, ctx.session_id);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchReadFile(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_read_file_tool = @import("handle_read_file_tool.zig");
-    const result = try handle_read_file_tool.handle_read_file_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchSearch(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_search_tool = @import("handle_search_tool.zig");
-    const result = try handle_search_tool.handle_search_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchGlob(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_glob_tool = @import("handle_glob_tool.zig");
-    const result = try handle_glob_tool.handle_glob_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchTreeDir(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_tree_dir_tool = @import("handle_tree_dir_tool.zig");
-    const result = try handle_tree_dir_tool.handle_tree_dir_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchWriteFile(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_write_file_tool = @import("handle_write_file_tool.zig");
-    const result = try handle_write_file_tool.handle_write_file_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchTextReplace(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
-    const result = try handle_text_replace_tool.handle_text_replace_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchListSkills(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    _ = tool_call;
-    const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
-    const result = handle_list_skills_tool.handle_list_skills_tool_run(ctx.allocator);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchGetSkill(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
-    const result = try handle_get_skill_tool.handle_get_skill_tool_run(ctx.allocator, tool_call);
-
-    var skill_save: ?SkillSaveInfo = null;
-    if (parseSkillFromResult(result)) |info| {
-        skill_save = SkillSaveInfo{ .name = info.name, .content = info.content };
-    }
-
-    return ToolResult{
-        .output = result,
-        .skill_saved = skill_save,
-    };
-}
-
-fn dispatchRemoveSkill(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
-    const result = try handle_remove_skill_tool.handle_remove_skill_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
+/// spawn_sub_agent needs full context (logger, model, etc.)
 fn dispatchSpawnSubAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
     const result = try handle_spawn_sub_agent.handle_spawn_sub_agent_run(
@@ -256,70 +207,6 @@ fn dispatchSpawnSubAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResul
         ctx.base_url,
         ctx.config,
     );
-    return ToolResult{ .output = result };
-}
-
-fn dispatchListAgents(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    _ = tool_call;
-    const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
-    const result = try handle_list_agents_tool.handle_list_agents_tool_run(ctx.allocator);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchChangeAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
-    const result = try handle_change_agent_tool.handle_change_agent_tool_run(ctx.allocator, tool_call);
-
-    var agent_save: ?AgentSaveInfo = null;
-    if (parseAgentFromResult(result)) |name| {
-        agent_save = AgentSaveInfo{ .name = name };
-    }
-
-    return ToolResult{
-        .output = result,
-        .agent_saved = agent_save,
-    };
-}
-
-fn dispatchLspDefinition(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
-    const result = try handle_lsp_definition_tool.handle_lsp_definition_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchLspReferences(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_lsp_references_tool = @import("handle_lsp_references_tool.zig");
-    const result = try handle_lsp_references_tool.handle_lsp_references_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchLspWorkspaceSymbol(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_lsp_workspace_symbol_tool = @import("handle_lsp_workspace_symbol_tool.zig");
-    const result = try handle_lsp_workspace_symbol_tool.handle_lsp_workspace_symbol_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchLspDocumentSymbol(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_lsp_document_symbol_tool = @import("handle_lsp_document_symbol_tool.zig");
-    const result = try handle_lsp_document_symbol_tool.handle_lsp_document_symbol_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchLspHover(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_lsp_hover_tool = @import("handle_lsp_hover_tool.zig");
-    const result = try handle_lsp_hover_tool.handle_lsp_hover_tool_run(ctx.allocator, tool_call);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchWebSearch(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_web_search_tool = @import("handle_web_search_tool.zig");
-    const result = try handle_web_search_tool.runWithContext(ctx.allocator, tool_call, ctx.db, ctx.session_id);
-    return ToolResult{ .output = result };
-}
-
-fn dispatchWebSearchHelp(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_web_search_help_tool = @import("handle_web_search_help_tool.zig");
-    const result = try handle_web_search_help_tool.runWithContext(ctx.allocator, tool_call, ctx.db, ctx.session_id);
     return ToolResult{ .output = result };
 }
 

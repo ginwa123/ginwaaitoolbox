@@ -9,6 +9,8 @@ test {
     _ = @import("tools/search_test.zig");
     _ = @import("tools/text_replace_test.zig");
     _ = @import("tools/text_replace_batch_test.zig");
+    _ = @import("tools/text_replace_edge_cases_test.zig");
+    _ = @import("tools/text_replace_ai_workflow_test.zig");
     _ = @import("tools/write_file_test.zig");
     _ = @import("tools/spawn_sub_agent_test.zig");
     _ = @import("tools/skills_test.zig");

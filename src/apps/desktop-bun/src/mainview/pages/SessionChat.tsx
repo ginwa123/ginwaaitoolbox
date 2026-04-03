@@ -13,11 +13,22 @@ import {
 import { type ChatMessage, SessionMessagesResponse } from '../../shared/rpc';
 import ChatInput from '../components/ChatInput';
 import { FolderPicker } from '../components/FolderPicker';
+import ToolCallRenderer from '../components/ToolCallRenderer';
 import { baseUrl } from '../utils/baseUrl';
 import { getSessionDir, setSessionDir as saveSessionDir } from '../utils/config';
 import { log } from '../utils/logger';
 import { SSEClient, type SSEMessage } from '../utils/sseClient';
+import { isToolCallXml, parseToolCallXml } from '../utils/toolParser';
 import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
+
+// Debounce helper
+function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): T {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  return ((...args: Parameters<T>) => {
+    if (timeoutId) clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), ms);
+  }) as T;
+}
 
 // Shared SSE client for all session chat instances
 log.info(`[SessionChat] Module loaded, baseUrl: ${baseUrl()}`);
@@ -64,15 +75,30 @@ function sseToChatMessage(event: SSEMessage): ChatMessage {
 
 const MessageRow: Component<{ message: ChatMessage }> = (props) => {
   // ============================================================================
-  // Expand/Collapse State
+  // Tool Call Parsing
   // ============================================================================
-  // Message is collapsible when: is_output=true AND has tool_name
-  const isCollapsible = (): boolean => {
+  const hasToolOutput = (): boolean => {
     const isOutput =
       props.message.is_output === true ||
       props.message.is_output === 'true' ||
       props.message.is_output === '1';
     return isOutput && !!props.message.tool_name;
+  };
+
+  const parsedToolData = createMemo(() => {
+    if (!hasToolOutput()) return null;
+    const content = props.message.content || '';
+    if (!isToolCallXml(content)) return null;
+    const result = parseToolCallXml(content);
+    return result.tools.length > 0 ? result.tools[0] : null;
+  });
+
+  // ============================================================================
+  // Expand/Collapse State
+  // ============================================================================
+  // Message is collapsible when: is_output=true AND has tool_name
+  const isCollapsible = (): boolean => {
+    return hasToolOutput();
   };
 
   const [isExpanded, setIsExpanded] = createSignal(false);
@@ -183,22 +209,29 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
                 isCollapsible() && !isExpanded() ? 'max-h-24 overflow-hidden relative' : ''
               }`}
             >
-              {/* Show preview when collapsed, full content when expanded */}
-              <Show when={isCollapsible() && !isExpanded()} fallback={props.message.content}>
-                <span class="break-words">{getPreviewContent()}</span>
+              <Show when={!isCollapsible() || !isExpanded()}>
+                <Show when={isCollapsible() && !isExpanded()} fallback={props.message.content}>
+                  <span class="break-words">{getPreviewContent()}</span>
+                </Show>
+              </Show>
+              <Show when={isCollapsible() && isExpanded() && parsedToolData()}>
+                <ToolCallRenderer tool={parsedToolData()!} expanded={isExpanded()} />
               </Show>
             </div>
 
             {/* Collapsed indicator */}
-            <Show
-              when={
-                isCollapsible() && !isExpanded() && props.message.content.length > PREVIEW_LENGTH
-              }
-            >
+            <Show when={isCollapsible() && !isExpanded()}>
               <div class="mt-1">
-                <span class="font-mono text-xs text-[#3f3f46] italic">
-                  ... {props.message.content.length - PREVIEW_LENGTH} more characters
-                </span>
+                <Show when={!parsedToolData()}>
+                  <span class="font-mono text-xs text-[#3f3f46] italic">
+                    ... {props.message.content.length - PREVIEW_LENGTH} more characters
+                  </span>
+                </Show>
+                <Show when={parsedToolData()}>
+                  <span class="font-mono text-xs text-[#52525b] italic">
+                    Click "More" to expand tool output
+                  </span>
+                </Show>
               </div>
             </Show>
           </div>
@@ -287,14 +320,16 @@ const SessionChat: Component = () => {
       const url = new URL(`${baseUrl()}/api/session/${params.sessionId}/messages`);
       url.searchParams.set('limit', '50');
 
+      // Always use direction=asc for consistent cursor semantics
+      // The cursor always points to the OLDEST message we've loaded
+      // so we can fetch messages OLDER than that
+      url.searchParams.set('direction', 'asc');
+
       if (pageParam !== undefined) {
-        // Pagination: load older messages
+        // Pagination: load older messages from cursor (oldest message ID)
         url.searchParams.set('cursor', pageParam);
-        url.searchParams.set('direction', 'asc');
-      } else {
-        // First load: get latest messages (newest at bottom)
-        url.searchParams.set('direction', 'desc');
       }
+      // Initial load (pageParam undefined): fetches oldest→newest (50 at a time)
 
       const res = await fetch(url.toString(), {
         headers: { Accept: 'text/xml' },
@@ -306,10 +341,16 @@ const SessionChat: Component = () => {
       const parsed = parseMessages(text);
       const msgs = parsed.map(normalizeMessage);
 
+      // For direction=asc:
+      // - First batch: oldest→newest (chronological order)
+      // - Pagination: messages OLDER than cursor
+      // The cursor is always the OLDEST message in the returned batch
+      const next_cursor = msgs.length > 0 ? msgs[0].id : null;
+
       return {
         messages: msgs,
         has_more: msgs.length === 50,
-        next_cursor: msgs.length > 0 ? msgs[msgs.length - 1].id : null,
+        next_cursor,
       } as SessionMessagesResponse;
     },
     initialPageParam: undefined as string | undefined,
@@ -352,6 +393,9 @@ const SessionChat: Component = () => {
   console.log('[SessionChat] messagesQuery:', messagesQuery);
   console.log('[SessionChat] allMessages count:', allMessages().length);
 
+  // Track if we've done the initial scroll-to-bottom
+  const [initialScrollDone, setInitialScrollDone] = createSignal(false);
+
   // Shared SSE handler reference for cleanup
   let currentHandler: ((event: SSEMessage) => void) | null = null;
 
@@ -377,6 +421,8 @@ const SessionChat: Component = () => {
       setTimeout(() => connectToSession(sessionId), 100);
     } else if (!currentSessionId) {
       console.log('[SessionChat] Connecting to SSE stream for session:', sessionId);
+      setInitialScrollDone(false); // Reset scroll state for new session
+      log.info(`[SessionChat] Reset initialScrollDone to false for session: ${sessionId}`);
       connectToSession(sessionId);
     } else {
       console.log('[SessionChat] Already connected to session:', sessionId);
@@ -423,8 +469,8 @@ const SessionChat: Component = () => {
           log.info('[SessionChat] No content in message, skipping optimistic update');
         }
 
-        // Invalidate query to sync with backend
-        queryClient.invalidateQueries({ queryKey: ['session-messages', sid] });
+        // Note: SSE messages are displayed via sseMessages state combined in allMessages()
+        // No need to trigger a fetch - the optimistic update handles the display
 
         // Stop streaming indicator on done
         if (event.type === 'done') {
@@ -454,17 +500,30 @@ const SessionChat: Component = () => {
     setSseMessages([]);
   });
 
-  // Scroll to bottom on initial load
+  // Reset initialScrollDone when session changes
+  createEffect(() => {
+    const sessionId = params.sessionId;
+    log.info(`[SessionChat] Session changed to: ${sessionId}, resetting initialScrollDone`);
+    setInitialScrollDone(false);
+  });
+
+  // Scroll to bottom on initial load ALWAYS
   createEffect(() => {
     const messages = allMessages();
     const isPending = messagesQuery.isPending;
 
+    log.info(
+      `[SessionChat] Scroll effect running: isPending=${isPending}, messages=${messages.length}, scrollRef=${!!scrollRef}, initialScrollDone=${initialScrollDone()}`
+    );
+
     // When messages are loaded (not pending anymore), scroll to bottom
-    if (!isPending && messages.length > 0 && scrollRef) {
+    if (!isPending && messages.length > 0 && scrollRef && !initialScrollDone()) {
+      log.info(`[SessionChat] Initial scroll to bottom, messages: ${messages.length}`);
       // Use requestAnimationFrame to ensure DOM is rendered
       requestAnimationFrame(() => {
-        if (scrollRef) {
+        if (scrollRef && !initialScrollDone()) {
           scrollRef.scrollTop = scrollRef.scrollHeight;
+          setInitialScrollDone(true);
         }
       });
     }
@@ -484,17 +543,24 @@ const SessionChat: Component = () => {
     }
   });
 
-  const handleScroll = () => {
-    if (!scrollRef) return;
-
-    // Trigger load more when scrolled near top
+  // Debounced scroll handler to prevent double-fetches
+  const debouncedFetchMore = debounce(() => {
     if (
+      scrollRef &&
       scrollRef.scrollTop < 300 &&
       messagesQuery.hasNextPage &&
       !messagesQuery.isFetchingNextPage
     ) {
+      log.info('[SessionChat] Loading more messages (debounced)');
       messagesQuery.fetchNextPage();
     }
+  }, 200);
+
+  const handleScroll = () => {
+    if (!scrollRef) return;
+
+    // Trigger load more when scrolled near top
+    debouncedFetchMore();
   };
 
   const sessionName = () => {

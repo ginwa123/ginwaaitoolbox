@@ -457,7 +457,7 @@ pub const TUIWorkflow = struct {
             registry.unregister(session_id);
         }
 
-        _ = try self.logger.debugFmt("WORKFLOW: exiting while loop", .{});
+        _ = try self.logger.debugFmt("WORKFLOW: exiting while loop for session_id ${s}", .{session_id});
     }
     fn callDynamicAgent(
         self: *TUIWorkflow,
@@ -675,4 +675,3 @@ pub const TUIWorkflow = struct {
         self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len }) catch {};
     }
 };
-

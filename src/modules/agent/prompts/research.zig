@@ -113,7 +113,35 @@ pub const ResearchTriggers =
 ;
 
 pub const FileEditingRules =
-    \\## 📝 FILE EDITING RULES (CRITICAL - ALWAYS FOLLOW!)
+    \\## 📝 FILE EDITING RULES (MANDATORY - NEVER USE BASH FOR FILES!)
+    \\
+    \\**⚠️ THIS IS NOT OPTIONAL — THESE RULES MUST BE FOLLOWED ALWAYS!**
+    \\
+    \\### 🚫 NEVER Use Bash for File Operations!
+    \\
+    \\**FORBIDDEN commands in bash (NEVER use for file operations):**
+    \\- ❌ `cat file.txt` — use `read_file` tool instead
+    \\- ❌ `echo "text" > file.txt` — use `write_file` tool instead
+    \\- ❌ `echo "text" >> file.txt` — use `text_replace` tool instead
+    \\- ❌ `tee file.txt` — use `write_file` tool instead
+    \\- ❌ `touch file.txt` — use `write_file` tool instead
+    \\- ❌ `mv src dst` — use `text_replace` or `write_file` instead
+    \\- ❌ `cp src dst` — use `read_file` + `write_file` instead
+    \\- ❌ `rm file.txt` — use `text_replace` to remove content
+    \\- ❌ `mkdir -p dir` — use `write_file` with `create_with_dir: true`
+    \\- ❌ `chmod`, `chown`, `ln`, `unlink` — use specialized tools
+    \\- ❌ **ANY file read/write operation via bash is FORBIDDEN**
+    \\
+    \\### ✅ CORRECT Tool Usage
+    \\
+    \\| Task | Tool to Use | NEVER use |
+    \\|------|-------------|----------|
+    \\| **Read file** | `read_file` | `cat`, `less`, `more` |
+    \\| **Create new file** | `write_file` | `echo >`, `touch`, `tee` |
+    \\| **Edit existing file** | `text_replace` | `sed`, `awk`, `echo >>` |
+    \\| **Create directory** | `write_file(create_with_dir=true)` | `mkdir` |
+    \\| **Move file** | Read + Write + Delete old | `mv` |
+    \\| **Copy file** | Read + Write | `cp` |
     \\
     \\### text_replace Tool - MANDATORY `expected_hash`
     \\
@@ -138,19 +166,24 @@ pub const FileEditingRules =
     \\- ❌ Use an old/stale hash from a previous read
     \\- ❌ Omit the `expected_hash` parameter entirely
     \\- ❌ Pass empty string "" as `expected_hash`
+    \\- ❌ Use bash for any file operation
     \\
     \\**If you forget `expected_hash`, the tool will ALWAYS fail.**
+    \\**Using bash for files = IMMEDIATE FAILURE**
 ;
 
 pub const AvailableTools =
-    \\## 🛠️ Built-in Tools (PREFER THESE OVER BASH)
+    \\## 🛠️ Built-in Tools (MANDATORY USAGE - BASH IS FORBIDDEN FOR FILES!)
     \\
-    \\**File Operations:**
-    \\- `read_file` — read files with pagination, hash verification
-    \\- `write_file` — create files, supports `create_with_dir`
-    \\- `text_replace` — surgical edits with hash verification (⚠️ MUST include `expected_hash` from read_file!)
+    \\**⚠️ CRITICAL: Use these tools for ALL file operations. Bash is FORBIDDEN.**
     \\
-    \\**Search & Discovery:**
+    \\**File Operations (ALWAYS use these, NEVER bash):**
+    \\- `read_file` — read files with pagination, hash verification (**ALWAYS use instead of `cat`**)**
+    \\- `write_file` — create files, supports `create_with_dir` (**ALWAYS use instead of `echo >`, `tee`, `touch`**)**
+    \\- `text_replace` — surgical edits with hash verification (**ALWAYS use instead of `sed`, `echo >>`**)**
+    \\  - ⚠️ **MUST include `expected_hash`** from `read_file` call!
+    \\
+    \\**Search & Discovery (ALWAYS use these, NEVER bash find/grep):**
     \\- `glob` — find files by pattern (faster than `find`)
     \\- `search` — ripgrep search (faster than `grep`)
     \\- `tree_dir` — explore directory structure
@@ -175,7 +208,8 @@ pub const AvailableTools =
     \\- `mcp_context7_query-docs` — query library docs with examples
     \\
     \\**Execution & Delegation:**
-    \\- `bash` — fallback for complex shell commands
+    \\- `bash` — **ONLY for running commands** (zig build, npm install, cargo build, etc.)
+    \\- **NEVER use bash for file operations** (cat, echo, tee, touch, mv, cp, rm, mkdir, etc.)
     \\- `spawn_sub_agent` — **parallelize work across 2-20 agents**
     \\- `change_agent` — switch to specialized agent
     \\- `list_skills` — **BROWSE available skills** ⭐ USE THIS FIRST
@@ -191,15 +225,17 @@ pub const AvailableTools =
     \\| **2+ URLs to browse** | Spawn 1 agent per URL |
     \\| **2+ failures to debug** | Spawn 1 agent per failure |
     \\
-    \\**⚡ Tool Selection Guide:**
-    \\- Need to read something? → `read_file` (not bash cat)
-    \\- Need to find files? → `glob` (not bash find)
-    \\- Need to search text? → `search` (not bash grep)
-    \\- Need to explore dirs? → `tree_dir` (not bash ls -R)
-    \\- Need to navigate code? → LSP tools (not manual search)
-    \\- **Need knowledge/info from the web?** → `web_search` ⭐ (searches google.com)
-    \\- Need to do 2+ things in parallel? → `spawn_sub_agent` (NOT sequential!)
-    \\- **Only use `bash` when no tool can do the job.**
+    \\**⚡ Tool Selection Guide (FOLLOW THIS EXACTLY!):**
+    \\- **Reading files?** → `read_file` (**NEVER `cat`, `less`, `more`**)**
+    \\- **Creating files?** → `write_file` (**NEVER `echo >`, `tee`, `touch`**)**
+    \\- **Editing files?** → `text_replace` (**NEVER `sed`, `awk`, `echo >>`**)**
+    \\- **Finding files?** → `glob` (**NEVER bash `find`**)**
+    \\- **Searching text?** → `search` (**NEVER bash `grep`**)**
+    \\- **Exploring dirs?** → `tree_dir` (**NEVER `ls -R`**)**
+    \\- **Navigating code?** → LSP tools (**NEVER manual search**)**
+    \\- **Knowledge/info from web?** → `web_search` ⭐ (**searches google.com**)**
+    \\- **2+ tasks in parallel?** → `spawn_sub_agent` (**NOT sequential!**)**
+    \\- **Running commands?** → `bash` (**ONLY allowed for commands, not files!**)**
 ;
 
 pub const SkillsUsage =

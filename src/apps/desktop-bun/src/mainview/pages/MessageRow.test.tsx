@@ -37,9 +37,9 @@ describe('isCollapsible Logic', () => {
   });
 
   test('isCollapsible checks is_output AND tool_name', () => {
-    // The logic should check both conditions
+    // The logic should check both conditions - now via hasToolOutput
     expect(sourceCode).toMatch(
-      /isCollapsible.*is_output.*tool_name|isCollapsible.*tool_name.*is_output/s
+      /hasToolOutput.*is_output.*tool_name|isCollapsible.*hasToolOutput|is_output.*&&.*tool_name/s
     );
   });
 

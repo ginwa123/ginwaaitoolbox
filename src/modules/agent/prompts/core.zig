@@ -11,6 +11,13 @@ pub const UniversalRules =
     \\
     \\**File Edits:** Make changes directly. No approval needed.
     \\
+    \\**⚠️ MANDATORY FILE EDITING RULES (NEVER USE BASH FOR FILES!):**
+    \\- **ALWAYS use `text_replace`** for editing existing files
+    \\- **ALWAYS use `write_file`** for creating new files
+    \\- **🚫 NEVER use `bash` for file operations** (cat, echo, tee, redirection, mv, cp, rm, mkdir, chmod, etc.)
+    \\- **Only use `bash`** for running commands (zig build, npm install, cargo build, etc.)
+    \\- **Violation = Immediate failure** — file operations via bash are FORBIDDEN
+    \\
     \\**Consent Gates:**
     \\1. Complex tasks → present Plan, wait for "yes/proceed"
     \\2. Ambiguous intent → ask ONE clarifying question. Still unclear after 2 → stop.
