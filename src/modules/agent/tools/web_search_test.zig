@@ -54,6 +54,10 @@ test "web search result to string conversion" {
         .exit_code = 0,
         .error_msg = null,
     };
+    defer {
+        allocator.free(result.content);
+        if (result.error_msg) |msg| allocator.free(msg);
+    }
     
     const output = try webSearchMod.webSearchResultToString(allocator, result);
     defer allocator.free(output);

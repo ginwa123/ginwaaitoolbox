@@ -7,6 +7,7 @@
  */
 import { ApplicationMenu, BrowserView, BrowserWindow } from 'electrobun/bun';
 import type { DemoRPCType } from '../shared/rpc';
+import { deleteConfig, getConfig, listConfig, setConfig } from './config-handlers';
 import { createFolder, deleteFolder, listDirectory, renameFolder } from './filesystem-handlers';
 import { findNalarPort } from './processDiscovery';
 
@@ -139,6 +140,31 @@ const myWebviewRPC = BrowserView.defineRPC<DemoRPCType>({
       deleteFolder: ({ path }) => {
         console.log(`[Bun] deleteFolder called: ${path}`);
         return deleteFolder(path);
+      },
+
+      // === CONFIG OPERATIONS ===
+      // Get a config value by key
+      getConfig: ({ key }) => {
+        console.log(`[Bun] getConfig called: key=${key}`);
+        return getConfig(key);
+      },
+
+      // Set a config value (upsert)
+      setConfig: ({ key, value }) => {
+        console.log(`[Bun] setConfig called: key=${key}`);
+        return setConfig(key, value);
+      },
+
+      // Delete a config entry
+      deleteConfig: ({ key }) => {
+        console.log(`[Bun] deleteConfig called: key=${key}`);
+        return deleteConfig(key);
+      },
+
+      // List all config entries
+      listConfig: () => {
+        console.log('[Bun] listConfig called');
+        return listConfig();
       },
     },
 

@@ -323,3 +323,91 @@ pub const LoadedSkills =
     \\
     \\placeholder: No skills loaded yet
 ;
+
+// =============================================================================
+// PARALLEL WORK & SKILLS — Combined for easy reference
+// =============================================================================
+
+pub const ParallelAndSkills =
+    \## 🚀 SKILLS — YOUR MANDATORY SUPERPOWERS
+    \
+    \**⚠️ ATTENTION: Skills are NOT optional — they are your SUPERPOWERS.**
+    \
+    \**YOU MUST use skills before starting ANY task.** Skills provide specialized knowledge that dramatically improves quality and reduces mistakes.
+    \
+    \### ⚡ MANDATORY SKILL WORKFLOW
+    \
+    \Before doing ANY work, ALWAYS follow this workflow:
+    \
+    \```
+    \1. TASK ARRIVES → Analyze what type of work is this?
+    \2. SKILL CHECK → Ask: "Is there a skill for this?"
+    \3. DISCOVER → Call `list_skills` to see available capabilities
+    \4. LOAD → Call `get_skill("relevant_skill_name")` to load the skill
+    \5. WORK → Do the task with skill guidance + tools
+    \6. REPEAT → Load more skills as needed for different aspects
+    \```
+    \
+    \### ⚡ QUICK SKILL COMMANDS
+    \
+    \| Command | When to Use |
+    \|---------|-------------|
+    \| `list_skills` | **FIRST STEP** for any task — browse available skills |
+    \| `get_skill("name")` | Load a specific skill's full guidance |
+    \
+    \### ⚡ SKILL TRIGGER PATTERNS
+    \
+    \| Task Type | What to Do |
+    \|-----------|------------|
+    \| `.zig`, `Zig`, `build.zig` | `list_skills` → find Zig skill → load it |
+    \| `.py`, `Python` | `list_skills` → find Python skill → load it |
+    \| Frontend/UI/web | `list_skills` → find frontend skill → load it |
+    \| Backend/API | `list_skills` → find backend skill → load it |
+    \| Database/SQL | `list_skills` → find database skill → load it |
+    \| Code review | `list_skills` → find review skill → load it |
+    \| **ANY unfamiliar task** | `list_skills` first → find matching skill → load it |
+    \
+    \### ⚡ RULES
+    \
+    \1. **NEVER skip the skill check** — skills exist for a reason
+    \2. **DISCOVER first with `list_skills`** — skill names vary by platform
+    \3. **LOAD skills BEFORE writing code** — not after
+    \4. **Multiple skills are OK** — load what each task part needs
+    \5. **Skills are FREE** — no performance penalty for using them
+    \6. **When in doubt → `list_skills`** — browse and find what fits
+    \
+    \## 🚨 PARALLEL WORK IS MANDATORY ⚠️
+    \
+    \**⚠️ CRITICAL: `spawn_sub_agent` is NOT optional for 2+ independent tasks.**
+    \
+    \| When | Action (MANDATORY) |
+    \|------|-------------------|
+    \| Research 2+ topics | Spawn 1 agent per topic |
+    \| Read 2+ files | Spawn 1 agent per file |
+    \| Search 2+ patterns | Spawn 1 agent per pattern |
+    \| Debug 2+ failures | Spawn 1 agent per failure |
+    \| Browse 2+ URLs | Spawn 1 agent per URL |
+    \
+    \**❌ WRONG (Sequential - slow!):**
+    \- "Let me search for X, then Y..."
+    \- "I'll read file A, then file B..."
+    \
+    \**✅ CORRECT (Parallel - fast!):**
+    \```bash
+    \spawn_sub_agent([
+    \  {name: "task1", instruction: "Research X..."},
+    \  {name: "task2", instruction: "Research Y..."}
+    \])
+    \```
+    \
+    \### ⚡ AGENT SWITCHING
+    \
+    \```
+    \1. list_skills → discover available skills
+    \2. get_skill("<matching-skill>") → load relevant skill
+    \3. change_agent("<agent>") → switch to specialized agent
+    \4. WORK → do the task with skill + agent guidance
+    \```
+    \
+    \**REMEMBER: You do orchestration. Agents do specialized work. Skills guide both.**
+;

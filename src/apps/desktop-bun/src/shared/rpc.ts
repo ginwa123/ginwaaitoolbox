@@ -141,6 +141,31 @@ export type DemoRPCType = {
         params: { path: string };
         response: { success: boolean; error?: string };
       };
+
+      // === CONFIG OPERATIONS ===
+      // Get a config value by key
+      getConfig: {
+        params: { key: string };
+        response: { value: string | null };
+      };
+
+      // Set a config value (upsert)
+      setConfig: {
+        params: { key: string; value: string };
+        response: { success: boolean };
+      };
+
+      // Delete a config entry
+      deleteConfig: {
+        params: { key: string };
+        response: { success: boolean };
+      };
+
+      // List all config entries
+      listConfig: {
+        params: undefined;
+        response: { entries: Array<{ key: string; value: string }> };
+      };
     };
 
     messages: {
