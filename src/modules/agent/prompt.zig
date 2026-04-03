@@ -35,7 +35,6 @@ pub const DestroyIdea = prompts.DestroyIdea;
 pub const SkillsUsage = prompts.SkillsUsage;
 pub const SkillsTriggers = prompts.SkillsTriggers;
 pub const LoadedSkills = prompts.LoadedSkills;
-pub const ParallelAndSkills = prompts.ParallelAndSkills;
 
 // Legacy exports for backwards compatibility
 pub const BasePrompt = UniversalRules;
