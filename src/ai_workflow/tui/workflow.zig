@@ -60,7 +60,7 @@ pub const cancellation_registry = root_mod.session.cancellation_registry;
 pub const activity_registry = root_mod.session.activity_registry;
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const SpawnSubAgentTool = root_mod.agents;
-const all_agent_tools = @import("all_agent_tools.zig").all_agent_tools;
+const tool_registry = @import("tool_registry.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
@@ -211,7 +211,7 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
         var loopCounter: u32 = 0;
-        const base_base_tools: []const tool_models.AgentTool = all_agent_tools;
+        const base_base_tools: []const tool_models.AgentTool = tool_registry.ALL_AGENT_TOOLS;
         const base_tools = try parent_allocator.dupe(tool_models.AgentTool, base_base_tools);
 
         while (true) {

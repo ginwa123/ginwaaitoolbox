@@ -90,6 +90,32 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 /// Registry for main agent (all tools)
 pub const MAIN_AGENT_TOOL_REGISTRY: []const ToolInfo = UNIFIED_TOOL_REGISTRY;
 
+/// All tool definitions for the main agent
+/// This is the canonical list of tool definitions for the main agent
+pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
+    set_agent_properties_mod.set_agent_properties_tool,
+    spawn_sub_agent_tool.spawn_sub_agent_tool,
+    list_agents_mod.list_agents_tool,
+    change_agent_mod.change_agent_tool,
+    list_skills_mod.list_skills_tool,
+    get_skill_mod.get_skill_tool,
+    remove_skill_mod.remove_skill_tool,
+    bash_tool_mod.bash_tool,
+    read_file_mod.read_file_tool,
+    write_file_mod.write_file_tool,
+    text_replace_mod.text_replace_tool,
+    search_tool_mod.search_tool,
+    glob_tool_mod.glob_tool,
+    tree_dir_mod.tree_dir_tool,
+    lsp_definition_mod.lsp_definition_tool,
+    lsp_references_mod.lsp_references_tool,
+    lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
+    lsp_document_symbol_mod.lsp_document_symbol_tool,
+    lsp_hover_mod.lsp_hover_tool,
+    web_search_mod.web_search_tool,
+    web_search_help_mod.web_search_help_tool,
+};
+
 /// Registry for sub-agents (excludes dangerous tools like spawn_sub_agent, set_agent_properties)
 pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
     // === AGENT MANAGEMENT (allowed for sub-agents, auto-save) ===
