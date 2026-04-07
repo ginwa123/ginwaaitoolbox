@@ -6,12 +6,28 @@ import { log } from './logger';
 export interface SSEMessage {
   type: 'message' | 'tool_result' | 'status' | 'error' | 'ping' | 'done' | 'step' | 'connected';
   content?: string;
+  parsedContent?: ParsedContent;
   tool_name?: string;
   finish_reason?: string;
   session_id?: string;
   message_id?: string;
   role?: string;
   timestamp?: string;
+}
+
+/**
+ * Parsed inner content from the model's response format.
+ * The model wraps its content in <markdown>, <plain>, or <think> tags.
+ */
+export interface ParsedContent {
+  /** Raw content string (unparsed) */
+  raw: string;
+  /** Markdown-formatted response, if the model used <markdown> tags */
+  markdown?: string;
+  /** Plain text response, if the model used <plain> tags */
+  plain?: string;
+  /** Internal reasoning / thinking, if the model used <think> tags */
+  thinking?: string;
 }
 
 /**
@@ -22,6 +38,7 @@ interface RawSSEEvent {
   model?: string;
   cwd?: string;
   content?: string;
+  parsed_content?: ParsedContent;
   reasoning_content?: string;
   role?: string;
   finish_reason?: string;
@@ -46,21 +63,47 @@ interface RawSSEEvent {
 export type SSEMessageHandler = (event: SSEMessage) => void;
 
 /**
- * Extract text content from a tag in XML
+ * Extract text content from an XML tag, supporting nested tags inside.
+ * Uses [\s\S]*? (lazy dot-all) instead of [^<]* so it can match across
+ * nested tags like <think>...</think> or <markdown>...</markdown>.
  */
 function extractXmlTag(xml: string, tag: string): string | undefined {
-  // Simple regex: <tag>content</tag>
   const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const regex = new RegExp(`<${escapedTag}>([^<]*)</${escapedTag}>`, 'i');
+  const regex = new RegExp(`<${escapedTag}>([\\s\\S]*?)<\\/${escapedTag}>`, 'i');
   const match = xml.match(regex);
   return match ? match[1].trim() : undefined;
 }
 
 /**
+ * Parse the inner content field produced by the model.
+ *
+ * The model is prompted to wrap its output in one of:
+ *   <markdown>…</markdown>   – for markdown responses
+ *   <plain>…</plain>         – for plain-text responses
+ *   <think>…</think>         – for internal reasoning (may appear alongside the above)
+ *
+ * All three tags may be present in the same content string.
+ */
+export function parseContentField(content: string): ParsedContent {
+  return {
+    raw: content,
+    thinking: extractXmlTag(content, 'think'),
+    markdown: extractXmlTag(content, 'markdown'),
+    plain: extractXmlTag(content, 'plain'),
+  };
+}
+
+/**
  * Parse XML content to extract SSE message data
  */
-function parseSseXml(xmlData: string): RawSSEEvent {
+export function parseSseXml(xmlData: string): RawSSEEvent {
   const result: RawSSEEvent = {};
+
+  // Skip empty data
+  if (!xmlData || xmlData.trim().length === 0) {
+    log.warn('[SSEClient] parseSseXml: empty XML data');
+    return result;
+  }
 
   // Check if this is a <response> tag (the main event format)
   if (xmlData.includes('<response>')) {
@@ -68,7 +111,14 @@ function parseSseXml(xmlData: string): RawSSEEvent {
     result.session_id = extractXmlTag(xmlData, 'session_id');
     result.model = extractXmlTag(xmlData, 'model');
     result.cwd = extractXmlTag(xmlData, 'cwd');
-    result.content = extractXmlTag(xmlData, 'content');
+
+    // Extract raw content (supports nested tags like <think>, <markdown>, <plain>)
+    const rawContent = extractXmlTag(xmlData, 'content');
+    if (rawContent) {
+      result.content = rawContent;
+      result.parsed_content = parseContentField(rawContent);
+    }
+
     result.reasoning_content = extractXmlTag(xmlData, 'reasoning_content');
     result.role = extractXmlTag(xmlData, 'role') || 'assistant';
     result.finish_reason = extractXmlTag(xmlData, 'finish_reason');
@@ -103,6 +153,32 @@ function parseSseXml(xmlData: string): RawSSEEvent {
           name: extractXmlTag(tcContent, 'name') || '',
           arguments: extractXmlTag(tcContent, 'arguments') || '',
         });
+      }
+    }
+
+    // Handle streaming chunk format: <chunk index="0"><content>...</content></chunk>
+    const chunkMatch = xmlData.match(/<chunk[^>]*index="(\d+)"[^>]*>([\s\S]*?)<\/chunk>/);
+    if (chunkMatch) {
+      const chunkContent = chunkMatch[2];
+
+      // Extract content from chunk (may itself contain <markdown>/<plain>/<think>)
+      const chunkContentMatch = chunkContent.match(/<content>([\s\S]*?)<\/content>/);
+      if (chunkContentMatch) {
+        result.content = chunkContentMatch[1];
+        result.parsed_content = parseContentField(result.content);
+      }
+
+      // Extract reasoning from chunk
+      const chunkReasoningMatch = chunkContent.match(
+        /<reasoning_content>([\s\S]*?)<\/reasoning_content>/
+      );
+      if (chunkReasoningMatch) {
+        result.reasoning_content = chunkReasoningMatch[1];
+      }
+
+      // Check if this is the final chunk (has final="true" or has usage)
+      if (xmlData.includes('final="true"') || xmlData.includes('<usage>')) {
+        result.finish_reason = 'stop';
       }
     }
   }
@@ -213,40 +289,42 @@ export class SSEClient {
       // Listen for 'message' event (default SSE event type)
       this.eventSource.addEventListener('message', (event: MessageEvent) => {
         try {
-          log.info('[SSEClient] Received message event, data length:', event.data?.length);
-          log.info(
-            '[SSEClient] Raw data:',
-            event.data?.substring ? event.data.substring(0, 200) : event.data
-          );
-          const parsed = parseSseXml(event.data);
-          log.info('[SSEClient] Parsed result:', parsed);
+          const rawData = event.data;
+
+          // Skip empty or keepalive data
+          if (!rawData || rawData.trim().length === 0) {
+            return;
+          }
+
+          log.info(`[SSEClient] Received message: ${rawData}`);
+
+          const parsed = parseSseXml(rawData);
+
+          log.info(`[SSEClient] Parsed message: ${JSON.stringify(parsed)}`);
+
           const sseMsg: SSEMessage = {
             type: determineEventType(parsed),
             content: parsed.content,
+            parsedContent: parsed.parsed_content,
             finish_reason: parsed.finish_reason,
             session_id: parsed.session_id,
             role: parsed.role,
             tool_name: parsed.tool_name,
             timestamp: parsed.session_id ? String(Date.now()) : undefined,
           };
-          log.info(
-            '[SSEClient] Emitting SSE message:',
-            sseMsg.type,
-            sseMsg.content?.substring ? sseMsg.content.substring(0, 50) : sseMsg.content
-          );
           this.notifyHandlers(sseMsg);
         } catch (err) {
-          log.error('[SSEClient Failed to parse message event:', err, err.stack);
+          log.error('[SSEClient] Failed to parse message event:', err, err.stack);
         }
       });
     } catch (err) {
-      log.error('[SSEClient Failed to create EventSource:', err);
+      log.error('[SSEClient] Failed to create EventSource:', err);
     }
   }
 
   disconnect(): void {
     if (this.eventSource) {
-      log.info('[SSEClient Disconnecting SSE stream');
+      log.info('[SSEClient] Disconnecting SSE stream');
       this.eventSource.close();
       this.eventSource = null;
     }
@@ -273,7 +351,7 @@ export class SSEClient {
       try {
         handler(event);
       } catch (err) {
-        log.error('[SSEClient Handler error:', err);
+        log.error('[SSEClient] Handler error:', err);
       }
     }
   }
@@ -291,7 +369,7 @@ export class SSEClient {
         }
       }, delay);
     } else {
-      log.error('[SSEClient Max reconnect attempts reached');
+      log.error('[SSEClient] Max reconnect attempts reached');
     }
   }
 }

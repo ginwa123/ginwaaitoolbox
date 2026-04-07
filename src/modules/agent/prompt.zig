@@ -35,6 +35,7 @@ pub const DestroyIdea = prompts.DestroyIdea;
 pub const SkillsUsage = prompts.SkillsUsage;
 pub const SkillsTriggers = prompts.SkillsTriggers;
 pub const LoadedSkills = prompts.LoadedSkills;
+pub const ResponseFormatting = prompts.ResponseFormatting;
 
 // Legacy exports for backwards compatibility
 pub const BasePrompt = UniversalRules;
@@ -59,6 +60,10 @@ pub fn buildAgentPrompt(
 
     // Base rules
     try result.appendSlice(allocator, UniversalRules);
+    try result.appendSlice(allocator, "\n\n");
+
+    // Response formatting - markdown and thinking
+    try result.appendSlice(allocator, ResponseFormatting);
     try result.appendSlice(allocator, "\n\n");
 
     // ⚡⚡⚡ SKILLS FIRST — Most important section at the top!

@@ -25,6 +25,7 @@ pub const special = @import("special.zig");
 // Re-export for convenience
 pub const UniversalRules = core.UniversalRules;
 pub const PromptAutoFix = core.PromptAutoFix;
+pub const ResponseFormatting = core.ResponseFormatting;
 
 pub const Agent = agent.Agent;
 

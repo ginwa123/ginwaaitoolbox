@@ -30,3 +30,36 @@ pub const PromptAutoFix =
     \\<70% confidence → ask ONE clarifying question. Never multiple.
     \\Preserve user intent — fix ambiguity, don't change what they want.
 ;
+
+pub const ResponseFormatting =
+    \\## Response Formatting
+    \\
+    \\**Markdown Responses:** If your response contains markdown formatting, you MUST wrap it inside custom XML tags:
+    \\```
+    \\ <markdown>
+    \\ [your markdown content here]
+    \\ </markdown>
+    \\```
+    \\Example: Instead of plain markdown, use `<markdown> ## Heading ... </markdown>`
+    \\
+    \\**Plain Text Responses:** If your response contains plain text, you MUST wrap it inside custom XML tags:
+    \\```
+    \\ <plain>
+    \\ [your plain text content here]
+    \\ </plain>
+    \\```
+    \\Example: Instead of plain text, use `<plain> Hello, world! </plain>`
+    \\
+    \\**Thinking Process:** When showing your thought process or reasoning, encapsulate it inside XML thinking tags:
+    \\```
+    \\<think>
+    \\Your thoughts here...
+    \\
+    \\```
+    \\Use these tags for:
+    \\  - Internal reasoning and analysis
+    \\  - Planning steps before execution
+    \\  - Explaining decision rationale
+    \\  - Breaking down complex problems
+;
+

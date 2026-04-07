@@ -452,6 +452,7 @@ const SessionChat: Component = () => {
         // Convert SSE event to ChatMessage
         const chatMsg = sseToChatMessage(event);
         log.info(`[SessionChat] Converted message id: ${chatMsg.id}`);
+        log.info(`[SessionChat] Converted message content: ${JSON.stringify(chatMsg)}`);
 
         // Add as optimistic update if it has content
         if (chatMsg.content) {
@@ -476,16 +477,6 @@ const SessionChat: Component = () => {
 
         // Note: SSE messages are displayed via sseMessages state combined in allMessages()
         // No need to trigger a fetch - the optimistic update handles the display
-
-        // Stop streaming indicator on done
-        if (event.type === 'done') {
-          log.info('[SessionChat] SSE stream done');
-          setStreaming(false);
-          // Clear SSE messages after a short delay (let DB sync)
-          setTimeout(() => {
-            setSseMessages([]);
-          }, 500);
-        }
       };
 
       sharedSseClient.addHandler(currentHandler);
