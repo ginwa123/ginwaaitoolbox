@@ -74,7 +74,7 @@ src/
 │   │   │   ├── bash.zig           # Shell execution
 │   │   │   ├── read_file.zig      # File reading
 │   │   │   ├── write_file.zig     # File writing
-│   │   │   ├── text_replace.zig   # File editing (requires expected_hash!)
+│   │   │   ├── text_replace.zig   # File editing
 │   │   │   ├── search.zig        # Ripgrep search
 │   │   │   ├── glob.zig           # File discovery
 │   │   │   ├── tree_dir.zig       # Directory tree
@@ -129,16 +129,8 @@ src/
 
 ## Key Tool Conventions
 
-### text_replace Tool (CRITICAL!)
-**⚠️ ALWAYS requires `expected_hash` parameter from `read_file`!**
-
-```json
-// WRONG - will fail!
-{"path": "file.zig", "ops": [{"old_str": "x", "new_str": "y"}]}
-
-// CORRECT
-{"path": "file.zig", "ops": [{"old_str": "x", "new_str": "y"}], "expected_hash": "abc..."}
-```
+### text_replace Tool
+Just use it - read the file first to see its current content.
 
 ### tree_dir Tool
 - Uses `/usr/sbin/fd` and `/usr/bin/stat`

@@ -27,7 +27,6 @@ pub fn handle_read_file_tool_run(
         .offset = parsed.value.offset,
         .limit = parsed.value.limit,
         .show_line_numbers = parsed.value.show_line_numbers,
-        .hash_only = parsed.value.hash_only, // NEW: wire hash_only parameter
     };
 
     const read_result = try read_file_mod.read_file(allocator, parsed.value.path, read_opts);
@@ -46,7 +45,3 @@ pub fn handle_read_file_tool_run(
     // Caller is responsible for freeing this returned string
     return xml_result;
 }
-
-// test {
-//     _ = @import("handle_read_file_tool_test.zig");
-// }

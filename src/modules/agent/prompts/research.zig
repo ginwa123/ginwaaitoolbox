@@ -77,7 +77,7 @@ pub const ResearchTriggers =
     \\- **Reading code?** → `read_file`, `glob`, `search` — don't guess structure
     \\- **Understanding types/functions?** → `lsp_definition`, `lsp_hover`, `lsp_references`
     \\- **Finding files?** → `glob` — faster and more reliable than bash
-    \\- **Searching patterns?** → `search` — ripgrep is faster than grep
+    \\- **Searching text?** → `search` — ripgrep is faster than grep
     \\- **Need knowledge from the web?** → `web_search` ⭐ (searches google.com)
     \\- **Unknown library/API?** → `web_search` or `mcp_context7_*` for latest docs + examples
     \\- **New language feature?** → look it up with `web_search` or `mcp_context7_*`
@@ -143,32 +143,14 @@ pub const FileEditingRules =
     \\| **Move file** | Read + Write + Delete old | `mv` |
     \\| **Copy file** | Read + Write | `cp` |
     \\
-    \\### text_replace Tool - MANDATORY `expected_hash`
-    \\
-    \\**⚠️ CRITICAL: text_replace ALWAYS requires `expected_hash` parameter!**
-    \\
-    \\**WRONG (will fail with "unknown field" error):**
-    \\```json
-    \\{"path": "file.zig", "ops": [{"old_str": "x", "new_str": "y"}]}
-    \\```
-    \\
-    \\**CORRECT (includes expected_hash):**
-    \\```json
-    \\{"path": "file.zig", "ops": [{"old_str": "x", "new_str": "y"}], "expected_hash": "abc123..."}
-    \\```
-    \\
     \\### Workflow for Editing Files:
-    \\1. **FIRST:** Call `read_file` to get file content AND `sha256` hash
-    \\2. **THEN:** Call `text_replace` with the sha256 copied from read_file result
+    \\1. **FIRST:** Call `read_file` to see file content
+    \\2. **THEN:** Call `text_replace` to make edits
     \\
     \\### NEVER do these:
-    \\- ❌ Call `text_replace` without `expected_hash`
-    \\- ❌ Use an old/stale hash from a previous read
-    \\- ❌ Omit the `expected_hash` parameter entirely
-    \\- ❌ Pass empty string "" as `expected_hash`
     \\- ❌ Use bash for any file operation
+    \\- ❌ Edit files without reading them first
     \\
-    \\**If you forget `expected_hash`, the tool will ALWAYS fail.**
     \\**Using bash for files = IMMEDIATE FAILURE**
 ;
 
@@ -178,10 +160,9 @@ pub const AvailableTools =
     \\**⚠️ CRITICAL: Use these tools for ALL file operations. Bash is FORBIDDEN.**
     \\
     \\**File Operations (ALWAYS use these, NEVER bash):**
-    \\- `read_file` — read files with pagination, hash verification (**ALWAYS use instead of `cat`**)**
+    \\- `read_file` — read files with pagination (**ALWAYS use instead of `cat`**)**
     \\- `write_file` — create files, supports `create_with_dir` (**ALWAYS use instead of `echo >`, `tee`, `touch`**)**
-    \\- `text_replace` — surgical edits with hash verification (**ALWAYS use instead of `sed`, `echo >>`**)**
-    \\  - ⚠️ **MUST include `expected_hash`** from `read_file` call!
+    \\- `text_replace` — surgical edits (**ALWAYS use instead of `sed`, `echo >>`**)**
     \\
     \\**Search & Discovery (ALWAYS use these, NEVER bash find/grep):**
     \\- `glob` — find files by pattern (faster than `find`)

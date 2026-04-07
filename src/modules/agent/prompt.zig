@@ -154,7 +154,7 @@ pub fn buildAgentPrompt(
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, AvailableTools);
 
-    // File editing rules - CRITICAL, must include expected_hash!
+    // File editing rules - CRITICAL, follow the workflow!
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, FileEditingRules);
 

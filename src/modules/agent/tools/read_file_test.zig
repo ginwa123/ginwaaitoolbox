@@ -1,69 +1,61 @@
 const std = @import("std");
 const read_file = @import("read_file.zig");
 
-test "hash_only returns only hash without content" {
-    const allocator = std.testing.allocator;
-
-    // Create a temp file with known content
-    const test_content = "Hello, World!\n";
-    const temp_path = "/tmp/read_file_hash_only_test.txt";
-    try std.fs.cwd().writeFile(.{
-        .sub_path = temp_path,
-        .data = test_content,
-    });
-    defer std.fs.cwd().deleteFile(temp_path) catch {};
-
-    // Test with hash_only = true
-    const opts = read_file.ReadFileOptions{
-        .hash_only = true,
-    };
-
-    const result = try read_file.read_file(allocator, temp_path, opts);
-    defer result.deinit(allocator);
-
-    // Hash should be present (64 hex chars for SHA256)
-    try std.testing.expect(result.sha256.len == 64);
-
-    // Content should be empty when hash_only
-    try std.testing.expect(result.content.len == 0);
-
-    // Line info should be zero
-    try std.testing.expect(result.total_lines == 0);
-    try std.testing.expect(result.start_line == 0);
-    try std.testing.expect(result.end_line == 0);
-
-    // Verify hash is valid hex string
-    for (result.sha256) |c| {
-        const is_hex = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
-        try std.testing.expect(is_hex);
-    }
-}
-
-test "hash_only false returns full content as normal" {
+test "read_file - basic read" {
     const allocator = std.testing.allocator;
 
     const test_content = "Line 1\nLine 2\n";
-    const temp_path = "/tmp/read_file_hash_only_false_test.txt";
+    const temp_path = "/tmp/read_file_basic_test.txt";
     try std.fs.cwd().writeFile(.{
         .sub_path = temp_path,
         .data = test_content,
     });
     defer std.fs.cwd().deleteFile(temp_path) catch {};
 
-    // Test with hash_only = false (default)
-    const opts = read_file.ReadFileOptions{
-        .hash_only = false,
-    };
-
-    const result = try read_file.read_file(allocator, temp_path, opts);
+    const result = try read_file.read_file(allocator, temp_path, .{});
     defer result.deinit(allocator);
 
-    // Hash should still be present
-    try std.testing.expect(result.sha256.len == 64);
-
-    // Content should NOT be empty
     try std.testing.expect(result.content.len > 0);
-
-    // Line info should be correct
     try std.testing.expect(result.total_lines == 2);
+}
+
+test "read_file - with pagination" {
+    const allocator = std.testing.allocator;
+
+    const test_content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
+    const temp_path = "/tmp/read_file_paginate_test.txt";
+    try std.fs.cwd().writeFile(.{
+        .sub_path = temp_path,
+        .data = test_content,
+    });
+    defer std.fs.cwd().deleteFile(temp_path) catch {};
+
+    const result = try read_file.read_file(allocator, temp_path, .{
+        .offset = 1,
+        .limit = 2,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.total_lines == 5);
+    try std.testing.expect(result.start_line == 1);
+}
+
+test "read_file - show line numbers" {
+    const allocator = std.testing.allocator;
+
+    const test_content = "Line 1\nLine 2\n";
+    const temp_path = "/tmp/read_file_linenums_test.txt";
+    try std.fs.cwd().writeFile(.{
+        .sub_path = temp_path,
+        .data = test_content,
+    });
+    defer std.fs.cwd().deleteFile(temp_path) catch {};
+
+    const result = try read_file.read_file(allocator, temp_path, .{
+        .show_line_numbers = true,
+    });
+    defer result.deinit(allocator);
+
+    // Content should have some prefix (line number) + original line
+    try std.testing.expect(result.content.len > 8); // "    1\t" + "Line 1\n"
 }

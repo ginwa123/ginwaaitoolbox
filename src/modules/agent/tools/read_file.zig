@@ -6,19 +6,15 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
-const crypto = @import("std").crypto;
-const Sha256 = crypto.hash.sha2.Sha256;
 
 pub const ReadFileResult = struct {
     content: []u8,
-    sha256: []u8,
     total_lines: usize,
     start_line: usize,
     end_line: usize,
 
     pub fn deinit(self: ReadFileResult, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
-        allocator.free(self.sha256);
     }
 };
 
@@ -26,7 +22,6 @@ pub const ReadFileOptions = struct {
     offset: ?usize = null, // line number to start from (0-indexed)
     limit: ?usize = null, // max number of lines to return
     show_line_numbers: ?bool = null, // whether to prefix each line with line number
-    hash_only: ?bool = null, // NEW: if true, only compute hash without reading content
 };
 
 pub fn read_file(
@@ -37,41 +32,8 @@ pub fn read_file(
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
-    // If hash_only is true, compute hash from file without loading full content
-    if (opts.hash_only orelse false) {
-        var hash: [32]u8 = undefined;
-
-        // Read file in chunks to hash without full memory allocation
-        var chunk_buf: [8192]u8 = undefined;
-        var hasher = Sha256.init(.{});
-
-        while (true) {
-            const bytes_read = try file.read(&chunk_buf);
-            if (bytes_read == 0) break;
-            hasher.update(chunk_buf[0..bytes_read]);
-        }
-
-        hasher.final(&hash);
-        const sha256_hex = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(hash, .lower)});
-
-        return ReadFileResult{
-            .content = &.{},
-            .sha256 = sha256_hex,
-            .total_lines = 0,
-            .start_line = 0,
-            .end_line = 0,
-        };
-    }
-
     const raw = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(raw);
-
-    // Compute SHA256 hash of the raw content
-    var hash: [32]u8 = undefined;
-    Sha256.hash(raw, &hash, .{});
-
-    // Convert hash to hex string
-    const sha256_hex = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(hash, .lower)});
 
     // count lines
     var total_lines: usize = 0;
@@ -123,7 +85,6 @@ pub fn read_file(
 
     return ReadFileResult{
         .content = try out.toOwnedSlice(allocator),
-        .sha256 = sha256_hex,
         .total_lines = total_lines,
         .start_line = offset,
         .end_line = end_line,
@@ -133,13 +94,11 @@ pub fn read_file(
 pub fn read_file_to_string(allocator: std.mem.Allocator, result: ReadFileResult) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<content>{s}</content>
-        \\<sha256>{s}</sha256>
         \\<total_lines>{d}</total_lines>
         \\<start_line>{d}</start_line>
         \\<end_line>{d}</end_line>
     , .{
         result.content,
-        result.sha256,
         result.total_lines,
         result.start_line,
         result.end_line,
@@ -151,14 +110,12 @@ pub const read_file_tool = AgentTool{
     .function = .{
         .name = "read_file",
         .description =
-        \\Read a file by path. Returns content, sha256, total_lines, start_line, end_line.
+        \\Read a file by path. Returns content, total_lines, start_line, end_line.
         \\
         \\- Omit offset and limit to read the whole file.
         \\- Use offset + limit to paginate large files (recommended page: 500 lines).
         \\- Never guess offsets — check total_lines from a prior call first.
         \\- Set show_line_numbers to true to prefix each line with its line number.
-        \\- Set hash_only to true to only compute hash without reading full content.
-        \\- Returns SHA256 hash of file content - save this for text_replace to prevent blind edits.
         ,
         .parameters = .{
             .type = "object",
@@ -183,14 +140,8 @@ pub const read_file_tool = AgentTool{
                     .type = "boolean",
                     .description = "Whether to prefix each line with its line number, line number start from 1. Default: false.",
                 },
-                .{
-                    .name = "hash_only",
-                    .type = "boolean",
-                    .description = "If true, only compute and return SHA256 hash without reading file content. Default: false.",
-                },
             },
             .required = &.{"path"},
         },
     },
 };
-
