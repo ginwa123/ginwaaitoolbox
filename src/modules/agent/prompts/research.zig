@@ -340,3 +340,48 @@ pub const LoadedSkills =
     \\
     \\placeholder: No skills loaded yet
 ;
+
+pub const ProceduralMemory =
+    \\## 🧠 Procedural Memory (Skill Creation)
+    \\
+    \\When you discover a non-trivial workflow that works well, save it as a skill for future reuse.
+    \\
+    \\**CREATE SKILLS WHEN:**
+    \\1. **Complex tasks (5+ tool calls)** — You found an effective approach worth remembering
+    \\2. **Error recovery** — You hit errors and found the working path through them
+    \\3. **User corrections** — The user corrected your approach and showed the right way
+    \\
+    \\**SKILL CREATION WORKFLOW:**
+    \\1. Identify the workflow pattern that worked
+    \\2. Use `save_skill` with:
+    \\   - `name`: descriptive skill name (e.g., "zig-error-handling", "debugging-async-issues")
+    \\   - `description`: what problem this skill solves
+    \\   - `content`: the learned workflow/best practices
+    \\3. The skill is saved to `.nalar/skills/<name>/SKILL.MD`
+    \\
+    \\**SKILL STRUCTURE:**
+    \\```
+    \\---
+    \\ name: my-skill
+    \\ description: "When to use this skill and what it solves"
+    \\ ---
+    \\
+    \\ # My Skill Name
+    \\
+    \\ ## When to Use
+    \\ Describe the trigger conditions...
+    \\
+    \\ ## Workflow
+    \\ Step-by-step approach that worked...
+    \\
+    \\ ## Gotchas
+    \\ Common pitfalls to avoid...
+    \\```
+    \\
+    \\**SKILL TRIGGERS:**
+    \\ After a complex task, ask: "Should I save this as a skill?"
+    \\ After error recovery, ask: "What did I learn that should be documented?"
+    \\ After user correction, ask: "What pattern should I remember?"
+    \\
+    \\**NOTE:** Skills persist across sessions. Created skills are available via `list_skills` and `get_skill` in future sessions.
+;

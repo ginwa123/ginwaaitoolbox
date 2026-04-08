@@ -35,6 +35,7 @@ pub const DestroyIdea = prompts.DestroyIdea;
 pub const SkillsUsage = prompts.SkillsUsage;
 pub const SkillsTriggers = prompts.SkillsTriggers;
 pub const LoadedSkills = prompts.LoadedSkills;
+pub const ProceduralMemory = prompts.ProceduralMemory;
 pub const ResponseFormatting = prompts.ResponseFormatting;
 
 // Legacy exports for backwards compatibility
@@ -72,6 +73,10 @@ pub fn buildAgentPrompt(
 
     // ⚡⚡⚡ SKILL TRIGGERS — When to load skills
     try result.appendSlice(allocator, SkillsTriggers);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 🧠 Procedural Memory — When to create skills
+    try result.appendSlice(allocator, ProceduralMemory);
     try result.appendSlice(allocator, "\n\n");
 
     // Memory & tasks

@@ -45,6 +45,7 @@ pub const AvailableTools = research.AvailableTools;
 pub const SkillsUsage = research.SkillsUsage;
 pub const SkillsTriggers = research.SkillsTriggers;
 pub const LoadedSkills = research.LoadedSkills;
+pub const ProceduralMemory = research.ProceduralMemory;
 
 pub const ChangeAgent = specialized.ChangeAgent;
 pub const SpecializationTable = specialized.SpecializationTable;
