@@ -15,6 +15,9 @@ const list_skills_mod = root_mod.list_skills_tool;
 const get_skill_mod = root_mod.get_skill_tool;
 const remove_skill_mod = root_mod.remove_skill_tool;
 const list_agents_mod = root_mod.list_agents;
+const add_skill_mod = root_mod.add_skill;
+const add_agent_mod = root_mod.add_agent;
+const remove_agent_mod = root_mod.remove_agent;
 const change_agent_mod = root_mod.change_agent;
 const lsp_definition_mod = root_mod.tools.lsp_definition;
 const lsp_references_mod = root_mod.tools.lsp_references;
@@ -55,11 +58,16 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     // === AGENT MANAGEMENT (allowed for sub-agents, auto-save) ===
     .{ .name = "list_agents", .exec = handle_spawn_sub_agent.execListAgents, .tool_def = list_agents_mod.list_agents_tool, .allowed_for_subagent = true, .auto_save_agent = true },
     .{ .name = "change_agent", .exec = handle_spawn_sub_agent.execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
+    .{ .name = "remove_agent", .exec = handle_spawn_sub_agent.execRemoveAgent, .tool_def = remove_agent_mod.remove_agent_tool, .allowed_for_subagent = true },
 
     // === SKILL MANAGEMENT ===
     .{ .name = "list_skills", .exec = handle_spawn_sub_agent.execListSkills, .tool_def = list_skills_mod.list_skills_tool, .allowed_for_subagent = true },
     .{ .name = "get_skill", .exec = handle_spawn_sub_agent.execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
     .{ .name = "remove_skill", .exec = handle_spawn_sub_agent.execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool, .allowed_for_subagent = true },
+
+    // === SKILL/AGENT CREATION ===
+    .{ .name = "add_skill", .exec = handle_spawn_sub_agent.execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
+    .{ .name = "add_agent", .exec = handle_spawn_sub_agent.execAddAgent, .tool_def = add_agent_mod.add_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
 
     // === FILE OPERATIONS ===
     .{ .name = "bash", .exec = handle_spawn_sub_agent.execBash, .tool_def = bash_tool_mod.bash_tool, .allowed_for_subagent = true },
@@ -95,9 +103,12 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     spawn_sub_agent_tool.spawn_sub_agent_tool,
     list_agents_mod.list_agents_tool,
     change_agent_mod.change_agent_tool,
+    remove_agent_mod.remove_agent_tool,
     list_skills_mod.list_skills_tool,
     get_skill_mod.get_skill_tool,
     remove_skill_mod.remove_skill_tool,
+    add_skill_mod.add_skill_tool,
+    add_agent_mod.add_agent_tool,
     bash_tool_mod.bash_tool,
     read_file_mod.read_file_tool,
     write_file_mod.write_file_tool,
@@ -118,11 +129,16 @@ pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
     // === AGENT MANAGEMENT (allowed for sub-agents, auto-save) ===
     .{ .name = "list_agents", .exec = handle_spawn_sub_agent.execListAgents, .tool_def = list_agents_mod.list_agents_tool, .allowed_for_subagent = true, .auto_save_agent = true },
     .{ .name = "change_agent", .exec = handle_spawn_sub_agent.execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
+    .{ .name = "remove_agent", .exec = handle_spawn_sub_agent.execRemoveAgent, .tool_def = remove_agent_mod.remove_agent_tool, .allowed_for_subagent = true },
 
     // === SKILL MANAGEMENT ===
     .{ .name = "list_skills", .exec = handle_spawn_sub_agent.execListSkills, .tool_def = list_skills_mod.list_skills_tool, .allowed_for_subagent = true },
     .{ .name = "get_skill", .exec = handle_spawn_sub_agent.execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
     .{ .name = "remove_skill", .exec = handle_spawn_sub_agent.execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool, .allowed_for_subagent = true },
+
+    // === SKILL/AGENT CREATION ===
+    .{ .name = "add_skill", .exec = handle_spawn_sub_agent.execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
+    .{ .name = "add_agent", .exec = handle_spawn_sub_agent.execAddAgent, .tool_def = add_agent_mod.add_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
 
     // === FILE OPERATIONS ===
     .{ .name = "bash", .exec = handle_spawn_sub_agent.execBash, .tool_def = bash_tool_mod.bash_tool, .allowed_for_subagent = true },

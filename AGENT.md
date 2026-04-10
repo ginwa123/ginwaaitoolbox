@@ -1,6 +1,6 @@
 # AGENT.md — Project Summary
 
-> **Last Updated:** 2025-04-03
+> **Last Updated:** 2025-04-11
 > **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
 
 ---
@@ -70,14 +70,13 @@ src/
 │   │   │   ├── execution.zig      # Classification/execution
 │   │   │   ├── memory.zig         # Tasks, AGENTS.md, git
 │   │   │   └── special.zig         # CompactionAgent, DestroyIdea
-│   │   ├── tools/                 # Agent tools (30+)
+│   │   ├── tools/                 # Agent tools (35+)
 │   │   │   ├── bash.zig           # Shell execution
 │   │   │   ├── read_file.zig      # File reading
 │   │   │   ├── write_file.zig     # File writing
 │   │   │   ├── text_replace.zig   # File editing
-│   │   │   ├── search.zig        # Ripgrep search
+│   │   │   ├── search.zig         # Ripgrep search
 │   │   │   ├── glob.zig           # File discovery
-│   │   │   ├── glob.zig              # File pattern matching
 │   │   │   ├── web_search.zig     # Web browser (agent-browser CLI)
 │   │   │   ├── lsp_*.zig          # LSP tools (definition, hover, refs, etc.)
 │   │   │   ├── skills.zig         # Skills management
@@ -85,6 +84,13 @@ src/
 │   │   │   ├── spawn_sub_agent.zig # Parallel agents
 │   │   │   ├── change_agent.zig   # Switch agent persona
 │   │   │   ├── set_agent_properties.zig
+│   │   │   ├── list_skills.zig    # List available skills
+│   │   │   ├── get_skill.zig      # Load skill content
+│   │   │   ├── remove_skill.zig   # Delete skill file from .nalar/skills/
+│   │   │   ├── add_skill.zig      # Create new skill file
+│   │   │   ├── list_agents.zig    # List available agents
+│   │   │   ├── add_agent.zig      # Create new agent file
+│   │   │   ├── remove_agent.zig   # Delete agent file from .nalar/agents/
 │   │   │   ├── schemas.zig        # Tool schemas
 │   │   │   ├── loop_detector.zig   # Prevent infinite loops
 │   │   │   └── bash_selfkill.zig  # Block self-kill commands

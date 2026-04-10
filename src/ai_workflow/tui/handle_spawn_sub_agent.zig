@@ -42,6 +42,9 @@ const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
 const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
 const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
 const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
+const handle_add_skill_tool = @import("handle_add_skill_tool.zig");
+const handle_add_agent_tool = @import("handle_add_agent_tool.zig");
+const handle_remove_agent_tool = @import("handle_remove_agent_tool.zig");
 const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
@@ -145,6 +148,24 @@ pub fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
     _ = db;
     _ = session_id;
     return handle_remove_skill_tool.handle_remove_skill_tool_run(allocator, tc);
+}
+
+pub fn execAddSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_add_skill_tool.handle_add_skill_tool_run(allocator, tc);
+}
+
+pub fn execAddAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_add_agent_tool.handle_add_agent_tool_run(allocator, tc);
+}
+
+pub fn execRemoveAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_remove_agent_tool.handle_remove_agent_tool_run(allocator, tc);
 }
 
 pub fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {

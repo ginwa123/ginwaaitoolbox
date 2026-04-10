@@ -5,8 +5,8 @@ pub const SseEvent = struct {
     data: []const u8,
     event_type: ?[]const u8 = null,
 
-    /// Maximum size for SSE event formatting (16KB - should be enough for any chunk)
-    pub const MAX_SSE_SIZE = 16384;
+    /// Maximum size for SSE event formatting (32KB - allows for larger chunks)
+    pub const MAX_SSE_SIZE = 32768;
 
     /// Format SSE event into a provided buffer (stack-allocated, no heap allocations)
     /// Returns the formatted bytes or error.BufferTooSmall if buffer is insufficient

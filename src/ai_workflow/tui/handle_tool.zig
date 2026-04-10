@@ -5,6 +5,8 @@ const logger_mod = root_mod.logger;
 const sqlite = root_mod.sqlite;
 const config_mod = root_mod.config;
 const tool_registry = @import("tool_registry.zig");
+const handle_spawn = @import("handle_spawn_sub_agent.zig");
+const SubAgentToolExec = handle_spawn.SubAgentToolExec;
 const save_message = @import("save_message.zig").save_message;
 const on_event_sent = @import("on_event_sent.zig");
 const on_event_send_new = on_event_sent.on_event_send_new;
@@ -73,7 +75,7 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 
     inline for (tool_registry.MAIN_AGENT_TOOL_REGISTRY) |entry| {
         if (std.mem.eql(u8, tool_name, entry.name)) {
-            return dispatchFromRegistry(ctx, tool_call, entry);
+            return dispatchFromRegistry(ctx, tool_call, entry.exec);
         }
     }
 
@@ -86,41 +88,26 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 }
 
 /// Dispatch tool execution from registry entry
-/// Calls entry.exec() directly and handles auto-save via registry flags
-fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, entry: tool_registry.ToolInfo) !ToolResult {
+/// Calls exec directly and handles auto-save via registry flags
+fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAgentToolExec) !ToolResult {
+    const tool_name = tool_call.function.name;
     // Handle special tools that need extended context
-    if (std.mem.eql(u8, entry.name, "set_agent_properties")) {
+    if (std.mem.eql(u8, tool_name, "set_agent_properties")) {
         return dispatchSetAgentProperties(ctx, tool_call);
     }
-    if (std.mem.eql(u8, entry.name, "spawn_sub_agent")) {
+    if (std.mem.eql(u8, tool_name, "spawn_sub_agent")) {
         return dispatchSpawnSubAgent(ctx, tool_call);
     }
 
     // Standard tools: call exec directly and wrap result
-    const result = try entry.exec(ctx.allocator, tool_call, ctx.db, ctx.session_id);
-
-    var tool_result = MainAgentToolResult{ .output = result };
-
-    // Auto-save skill if enabled in registry
-    if (entry.auto_save_skill) {
-        if (parseSkillFromResult(result)) |info| {
-            tool_result.skill_saved = SkillSaveInfo{ .name = info.name, .content = info.content };
-        }
-    }
-
-    // Auto-save agent if enabled in registry
-    if (entry.auto_save_agent) {
-        if (parseAgentFromResult(result)) |name| {
-            tool_result.agent_saved = AgentSaveInfo{ .name = name };
-        }
-    }
+    const result = try exec(ctx.allocator, tool_call, ctx.db, ctx.session_id);
 
     return ToolResult{
-        .output = tool_result.output,
-        .temperature = tool_result.temperature,
-        .is_thinking = tool_result.is_thinking,
-        .skill_saved = tool_result.skill_saved,
-        .agent_saved = tool_result.agent_saved,
+        .output = result,
+        .temperature = null,
+        .is_thinking = null,
+        .skill_saved = null,
+        .agent_saved = null,
     };
 }
 

@@ -11,22 +11,25 @@ fn formatQueueItemInto(item: *http_server.SseQueueItem, buf: []u8) error{BufferT
 
     // Write event type line if specified
     if (item.event_type) |event_type| {
-        const event_line = std.fmt.bufPrint(buf[pos..], "event: {s}\n", .{event_type}) catch return error.BufferTooSmall;
+        // Need: "event: " (7) + event_type.len + 1 (newline)
+        if (pos + 7 + event_type.len + 1 > buf.len) return error.BufferTooSmall;
+        const event_line = std.fmt.bufPrint(buf[pos..], "event: {s}\n", .{event_type}) catch unreachable;
         pos += event_line.len;
     }
 
     // Write data line
     if (item.data.len == 0) {
-        if (pos + 7 > buf.len) return error.BufferTooSmall;
+        // Need: "data: \n" (7) + 1 (final newline) = 8
+        if (pos + 8 > buf.len) return error.BufferTooSmall;
         @memcpy(buf[pos..][0..7], "data: \n");
         pos += 7;
     } else {
-        if (pos + 6 > buf.len) return error.BufferTooSmall;
+        // Need: 6 ("data: ") + data.len + 1 (newline) + 1 (final newline)
+        if (pos + 6 + item.data.len + 2 > buf.len) return error.BufferTooSmall;
         @memcpy(buf[pos..][0..6], "data: ");
         pos += 6;
         @memcpy(buf[pos..][0..item.data.len], item.data);
         pos += item.data.len;
-        if (pos + 1 > buf.len) return error.BufferTooSmall;
         buf[pos] = '\n';
         pos += 1;
     }
