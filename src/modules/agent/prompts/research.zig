@@ -84,7 +84,7 @@ pub const ResearchTriggers =
     \\- **Best practices uncertain?** → find current recommendations with `web_search`
     \\- **Error unfamiliar?** → research error + solution with `web_search`
     \\- **About to write code from memory?** → STOP → use tools → verify → write
-    \\- **Navigating codebase?** → `tree_dir`, `glob`, `lsp_workspace_symbol`
+    \\- **Navigating codebase?** → `glob`, `lsp_workspace_symbol`
     \\
     \\**🚨 MANDATORY: When to SPAWN Sub-Agents (2+ = MUST SPAWN!):**
     \\
@@ -167,7 +167,6 @@ pub const AvailableTools =
     \\**Search & Discovery (ALWAYS use these, NEVER bash find/grep):**
     \\- `glob` — find files by pattern (faster than `find`)
     \\- `search` — ripgrep search (faster than `grep`)
-    \\- `tree_dir` — explore directory structure
     \\
     \\**LSP Navigation:**
     \\- `lsp_definition` — jump to definition
@@ -212,7 +211,6 @@ pub const AvailableTools =
     \\- **Editing files?** → `text_replace` (**NEVER `sed`, `awk`, `echo >>`**)**
     \\- **Finding files?** → `glob` (**NEVER bash `find`**)**
     \\- **Searching text?** → `search` (**NEVER bash `grep`**)**
-    \\- **Exploring dirs?** → `tree_dir` (**NEVER `ls -R`**)**
     \\- **Navigating code?** → LSP tools (**NEVER manual search**)**
     \\- **Knowledge/info from web?** → `web_search` ⭐ (**searches google.com**)**
     \\- **2+ tasks in parallel?** → `spawn_sub_agent` (**NOT sequential!**)**

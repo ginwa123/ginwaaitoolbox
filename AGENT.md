@@ -77,7 +77,7 @@ src/
 │   │   │   ├── text_replace.zig   # File editing
 │   │   │   ├── search.zig        # Ripgrep search
 │   │   │   ├── glob.zig           # File discovery
-│   │   │   ├── tree_dir.zig       # Directory tree
+│   │   │   ├── glob.zig              # File pattern matching
 │   │   │   ├── web_search.zig     # Web browser (agent-browser CLI)
 │   │   │   ├── lsp_*.zig          # LSP tools (definition, hover, refs, etc.)
 │   │   │   ├── skills.zig         # Skills management
@@ -140,10 +140,6 @@ src/
 
 ### text_replace Tool
 Just use it - read the file first to see its current content.
-
-### tree_dir Tool
-- Uses `/usr/sbin/fd` and `/usr/bin/stat`
-- Returns tree visualization with branch indicators
 
 ### glob Tool
 - Uses `/usr/sbin/fd` with `--glob` pattern matching
@@ -247,16 +243,3 @@ for testing use this command always
 
 # Mandatory
 - Dont ever kill the process port 8081 !!!
-
-
-# TODO
-- Handler error
-- rds, credentials, personal data, or proprietary code in your query."}},"required":["libraryId","query"]}}}],"tool_choice":"auto"}
-2026-04-08T02:16:30.634Z INFO [STREAM] Connected in 878ms (HTTP 500)
-2026-04-08T02:16:30.634Z DEBUG [STREAM] Transfer: encoding=fixed, content_length=190, keep_alive=true
-2026-04-08T02:16:30.634Z ERROR [STREAM] HTTP error status: 500
-2026-04-08T02:16:30.634Z ERROR [STREAM] Server error response: {"type":"error","error":{"type":"server_error","message":"your current token plan not support model, MiniMax-M2.7 (2061)","http_code":"500"},"request_id":"0624ed7f1e1f16e7e03273d8fd8fd049"}
-
-2026-04-08T02:16:30.634Z ERROR Error calling dynamic agent: ApiError now retrying
-
-

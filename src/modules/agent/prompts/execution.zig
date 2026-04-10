@@ -29,10 +29,17 @@ pub const Escalation =
 pub const PlanBlock =
     \\## Plan Block (Complex tasks)
     \\
-    \\**⚡ BEFORE WRITING A PLAN — Adjust your properties:**
-    \\```
-    \\use set_agent_properties with temperature=1.0 and is_thinking=true
-    \\```
+    \\**⚡ DYNAMIC PROPERTY ADJUSTMENT — Change your properties based on task demands:**
+    \\
+    \\| Before/After | Properties | Command |
+    \\|--------------|------------|---------|
+    \\| **BEFORE** writing a plan | `temperature=1.0, is_thinking=true` | `use set_agent_properties with temperature=1.0 and is_thinking=true` |
+    \\| **AFTER** plan approved | `temperature=0.2, is_thinking=false` | `use set_agent_properties with temperature=0.2 and is_thinking=false` |
+    \\
+    \\**⚡ ON-DEMAND EXAMPLES:**
+    \\- Stuck debugging? → `use set_agent_properties with temperature=0.8 and is_thinking=true`
+    \\- Need creative solution? → `use set_agent_properties with temperature=1.0 and is_thinking=true`
+    \\- Simple repetitive task? → `use set_agent_properties with temperature=0.2 and is_thinking=false`
     \\
     \\Before writing code, answer:
     \\1. **What files?** — List specific files to modify
@@ -54,9 +61,4 @@ pub const PlanBlock =
     \\- <risk> → <mitigation>
     \\```
     \\Present Plan → wait for "yes/proceed".
-    \\
-    \\**⚡ BEFORE EXECUTING CODE/TASK — Revert your properties:**
-    \\```
-    \\use set_agent_properties with temperature=0.2 and is_thinking=false
-    \\```
 ;

@@ -12,17 +12,6 @@ pub const ChangeAgent =
     \\2. Load the relevant skill: `get_skill("matching-skill-name")`
     \\3. Switch to specialized agent: `change_agent("domain-agent")`
     \\
-    \\**⚡ RECOMMENDED COMBO (Use `list_skills` to discover actual names):**
-    \\
-    \\| Task Type | What to Load |
-    \\|------|---------------|
-    \\| Language coding | `list_skills` → find language skill → load it |
-    \\| Frontend/UI | `list_skills` → find frontend skill → load it |
-    \\| Backend/API | `list_skills` → find backend skill → load it |
-    \\| Database | `list_skills` → find database skill → load it |
-    \\| DevOps/Cloud | `list_skills` → find DevOps skill → load it |
-    \\| Code review | `list_skills` → find review skill → load it |
-    \\
     \\**⚡ AGENT SWITCHING:**
     \\```
     \\# After loading skill, switch to specialized agent

@@ -26,7 +26,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
     if (http_server.getGlobalSseManager()) |sse_manager| {
         const ack_response = try std.fmt.allocPrint(alloc, "{{\"app_type\":\"tui\",\"command_type\":\"compact_ack\",\"session_id\":\"{s}\",\"status\":\"processing\"}}", .{session_id});
         const event = http_server.SseEvent{ .data = ack_response };
-        sse_manager.sendEvent(session_id, event) catch {
+        sse_manager.enqueueEvent(session_id, event) catch {
             std.debug.print("Failed to send compact_ack response: SSE error\n", .{});
         };
     }

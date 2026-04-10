@@ -38,8 +38,7 @@ pub const save_messageInput = struct {
 /// Helper function to safely duplicate a string
 /// Uses c_allocator to avoid arena aliasing issues
 fn safeDupe(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    const copy = try std.heap.c_allocator.alloc(u8, s.len);
-    @memcpy(copy, s);
+    const copy = try std.heap.c_allocator.dupe(u8, s);
     _ = allocator; // Mark as intentionally unused - we use c_allocator to avoid aliasing
     return copy;
 }
@@ -116,4 +115,3 @@ pub fn save_message(
 
     try db.exec(allocator, sql, sqlArgs);
 }
-

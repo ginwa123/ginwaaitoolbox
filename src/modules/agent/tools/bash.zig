@@ -65,7 +65,7 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     if (try selfkill.detect_self_kill(allocator, input.command, self_pid)) |warning| {
         // Log the warning
         std.log.warn("Self-kill detected: {s}", .{warning});
-        
+
         // Return blocked output instead of executing
         const stderr_msg = try std.fmt.allocPrint(
             allocator,
@@ -76,10 +76,10 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
             "===========================\n",
             .{ warning, self_pid });
         errdefer allocator.free(stderr_msg);
-        
+
         const command_copy = try allocator.dupe(u8, input.command);
         errdefer allocator.free(command_copy);
-        
+
         return BashOutput{
             .command = command_copy,
             .stdout = "",
@@ -453,7 +453,7 @@ pub const bash_tool = AgentTool{
         \\## Command Rules (enforced in code)
         \\Every command MUST:
         \\- start with `timeout <seconds>`
-        \\- limit output using `| head -n <N>`
+        \\- limit output using `| head -n <N> or tail -n <N>`
         \\- avoid commands that produce unbounded output
         \\- use ripgrep (rg) instead of grep/find when available
         \\## Web Browsing

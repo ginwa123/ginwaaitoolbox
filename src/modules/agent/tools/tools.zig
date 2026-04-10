@@ -7,7 +7,6 @@ pub const lsp_references = @import("lsp_references.zig");
 pub const lsp_workspace_symbol = @import("lsp_workspace_symbol.zig");
 pub const lsp_document_symbol = @import("lsp_document_symbol.zig");
 pub const lsp_hover = @import("lsp_hover.zig");
-pub const tree_dir = @import("tree_dir.zig");
 pub const web_search = @import("web_search.zig");
 pub const web_search_help = @import("web_search_help.zig");
 
@@ -18,6 +17,5 @@ pub const lsp_references_tool = lsp_references.lsp_references_tool;
 pub const lsp_workspace_symbol_tool = lsp_workspace_symbol.lsp_workspace_symbol_tool;
 pub const lsp_document_symbol_tool = lsp_document_symbol.lsp_document_symbol_tool;
 pub const lsp_hover_tool = lsp_hover.lsp_hover_tool;
-pub const tree_dir_tool = tree_dir.tree_dir_tool;
 pub const web_search_tool = web_search.web_search_tool;
 pub const web_search_help_tool = web_search_help.web_search_help_tool;

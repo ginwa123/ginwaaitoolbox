@@ -176,7 +176,7 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
     const event = http_server.SseEvent{
         .data = buf.items,
     };
-    try sse_manager.sendEvent(input.session_id, event);
+    try sse_manager.enqueueEvent(input.session_id, event);
 }
 
 // ============================================================================
@@ -310,7 +310,7 @@ pub fn sendStreamChunkContent(
     const event = http_server.SseEvent{
         .data = data,
     };
-    sse_manager.sendEvent(session_id, event) catch {};
+    sse_manager.enqueueEvent(session_id, event) catch {};
 }
 
 /// Send reasoning chunk during streaming response
@@ -326,7 +326,7 @@ pub fn sendStreamChunkReasoning(
     const event = http_server.SseEvent{
         .data = data,
     };
-    sse_manager.sendEvent(session_id, event) catch {};
+    sse_manager.enqueueEvent(session_id, event) catch {};
 }
 
 /// Send final chunk with usage information during streaming
@@ -342,7 +342,7 @@ pub fn sendStreamChunkFinal(
     const event = http_server.SseEvent{
         .data = data,
     };
-    sse_manager.sendEvent(session_id, event) catch {};
+    sse_manager.enqueueEvent(session_id, event) catch {};
 }
 
 /// Send tool call delta chunk during streaming response
@@ -358,7 +358,7 @@ pub fn sendStreamToolCallDelta(
     const event = http_server.SseEvent{
         .data = data,
     };
-    sse_manager.sendEvent(session_id, event) catch {};
+    sse_manager.enqueueEvent(session_id, event) catch {};
 }
 
 // ============================================================================

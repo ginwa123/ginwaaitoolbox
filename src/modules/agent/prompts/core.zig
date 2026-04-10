@@ -29,6 +29,41 @@ pub const PromptAutoFix =
     \\Preserve user intent — fix ambiguity, don't change what they want.
 ;
 
+pub const DynamicProperties =
+    \\## 🎛️ Dynamic Agent Properties (Use On Demand!)
+    \\
+    \\**You can change your own properties on-the-fly using `set_agent_properties`:**
+    \\
+    \\```
+    \\use set_agent_properties with temperature=X and is_thinking=Y
+    \\```
+    \\
+    \\| Scenario | Temperature | is_thinking | Why |
+    \\|---------|-------------|-------------|-----|
+    \\| **Complex planning/analysis** | 1.0 | true | Creative reasoning, exploring options |
+    \\| **Creative work, brainstorming** | 1.0 | true | Divergent thinking, novel ideas |
+    \\| **Research, investigation** | 0.6 | true | Balanced exploration |
+    \\| **Debugging, troubleshooting** | 0.7 | true | Systematic reasoning |
+    \\| **Simple tasks, direct execution** | 0.2 | false | Focused, efficient |
+    \\| **Code writing, implementation** | 0.2 | false | Precise, deterministic |
+    \\| **Answering questions** | 0.3 | false | Concise, accurate |
+    \\
+    \\**⚡ WHEN TO SWITCH PROPERTIES:**
+    \\- Planning a complex task → Switch to `temperature=1.0, is_thinking=true`
+    \\- Starting execution → Switch to `temperature=0.2, is_thinking=false`
+    \\- Stuck on a problem → Switch to `temperature=0.8, is_thinking=true`
+    \\- Doing repetitive work → Keep `temperature=0.2, is_thinking=false`
+    \\
+    \\**⚡ QUICK COMMANDS:**
+    \\```
+    \\use set_agent_properties with temperature=1.0 and is_thinking=true  # Planning mode
+    \\use set_agent_properties with temperature=0.2 and is_thinking=false  # Execution mode
+    \\use set_agent_properties with temperature=0.8 and is_thinking=true   # Deep thinking
+    \\```
+    \\
+    \\**Rule: Adjust your properties to match the cognitive demands of the task!**
+;
+
 pub const ResponseFormatting =
     \\## Response Formatting
     \\

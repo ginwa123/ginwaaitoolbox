@@ -31,7 +31,6 @@ const get_skill_mod = root_mod.get_skill_tool;
 const remove_skill_mod = root_mod.remove_skill_tool;
 const list_agents_mod = root_mod.list_agents;
 const change_agent_mod = root_mod.change_agent;
-const tree_dir_mod = root_mod.tree_dir;
 const tools_mod = root_mod.tools;
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
 const handle_search_tool = @import("handle_search_tool.zig");
@@ -165,18 +164,6 @@ pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *
     _ = db;
     _ = session_id;
     return handle_lsp_definition_tool.handle_lsp_definition_tool_run(allocator, tc);
-}
-
-pub fn execTreeDir(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    // Handle empty arguments - treat as empty JSON object
-    const args = tc.function.arguments;
-    const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
-    const parsed = try tree_dir_mod.parseTreeDirInput(allocator, args_to_parse);
-    var result = try tree_dir_mod.execute_tree_dir(allocator, parsed);
-    defer result.deinit(allocator);
-    return tree_dir_mod.tree_dir_result_to_string(allocator, result);
 }
 
 /// MCP tool executor - placeholder for dynamic MCP tool handling

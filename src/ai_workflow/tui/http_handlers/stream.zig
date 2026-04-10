@@ -5,45 +5,115 @@ const http_server = root_mod.http_server;
 const httpz = http_server.httpz;
 const SseStreamCtx = @import("mod.zig").SseStreamCtx;
 
+/// Format an SSE event from queue item into a buffer
+fn formatQueueItemInto(item: *http_server.SseQueueItem, buf: []u8) error{BufferTooSmall}![]u8 {
+    var pos: usize = 0;
+
+    // Write event type line if specified
+    if (item.event_type) |event_type| {
+        const event_line = std.fmt.bufPrint(buf[pos..], "event: {s}\n", .{event_type}) catch return error.BufferTooSmall;
+        pos += event_line.len;
+    }
+
+    // Write data line
+    if (item.data.len == 0) {
+        if (pos + 7 > buf.len) return error.BufferTooSmall;
+        @memcpy(buf[pos..][0..7], "data: \n");
+        pos += 7;
+    } else {
+        if (pos + 6 > buf.len) return error.BufferTooSmall;
+        @memcpy(buf[pos..][0..6], "data: ");
+        pos += 6;
+        @memcpy(buf[pos..][0..item.data.len], item.data);
+        pos += item.data.len;
+        if (pos + 1 > buf.len) return error.BufferTooSmall;
+        buf[pos] = '\n';
+        pos += 1;
+    }
+
+    // Final newline to end the event
+    if (pos + 1 > buf.len) return error.BufferTooSmall;
+    buf[pos] = '\n';
+    pos += 1;
+
+    return buf[0..pos];
+}
+
+/// SSE stream handler - this thread OWNS the stream and reads events from the queue
 fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
     std.log.info("SSE stream handler started: session_id={s}", .{ctx.session_id});
 
-    ctx.server.sse_manager.register(ctx.session_id, stream) catch {
-        std.log.err("SSE: Failed to register stream for session: {s}", .{ctx.session_id});
+    // Create a queue for this session - we'll register it with the manager
+    const queue = ctx.server.sse_manager.createQueue() catch {
+        std.log.err("SSE: Failed to create queue for session: {s}", .{ctx.session_id});
         return;
     };
+    defer {
+        queue.close();
+        ctx.server.allocator.destroy(queue);
+    }
 
+    // Register the queue (not the stream) with the manager
+    ctx.server.sse_manager.register(ctx.session_id, queue) catch {
+        std.log.err("SSE: Failed to register queue for session: {s}", .{ctx.session_id});
+        return;
+    };
+    defer ctx.server.sse_manager.remove(ctx.session_id);
+
+    // Send connected event
     const connected_data = std.fmt.allocPrint(ctx.server.allocator, "event: connected\n{{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id}) catch {
         std.log.err("SSE: Failed to format connected event", .{});
-        ctx.server.sse_manager.remove(ctx.session_id);
         return;
     };
     defer ctx.server.allocator.free(connected_data);
 
     stream.writeAll(connected_data) catch |err| {
         std.log.err("SSE: Failed to write connected event: {s}", .{@errorName(err)});
-        ctx.server.sse_manager.remove(ctx.session_id);
         return;
     };
 
     std.log.info("SSE: Connected event sent for session: {s}", .{ctx.session_id});
 
+    // Main loop: process events from queue and keepalive
     while (ctx.server.sse_manager.hasSession(ctx.session_id)) {
-        std.Thread.sleep(5_000_000_000); // 5 seconds
+        // Wait for an event from the queue with 5 second timeout
+        const item = queue.dequeueWithTimeout(5_000_000_000);
 
-        stream.writeAll(": keepalive\n\n") catch |err| {
-            std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
-            break;
-        };
+        if (item) |queue_item| {
+            // Format and send the event
+            var stack_buf: [http_server.SseEvent.MAX_SSE_SIZE]u8 = undefined;
+            const formatted = formatQueueItemInto(queue_item, &stack_buf) catch {
+                std.log.warn("SSE: event too large for buffer", .{});
+                // Free queue item memory
+                ctx.server.allocator.free(queue_item.data);
+                if (queue_item.event_type) |et| ctx.server.allocator.free(et);
+                ctx.server.allocator.destroy(queue_item);
+                continue;
+            };
 
-        var i: usize = 0;
-        while (i < 300 and ctx.server.sse_manager.hasSession(ctx.session_id)) : (i += 1) {
-            std.Thread.sleep(100_000_000);
+            stream.writeAll(formatted) catch |err| {
+                std.log.warn("SSE write failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
+                // Free queue item memory before exiting
+                ctx.server.allocator.free(queue_item.data);
+                if (queue_item.event_type) |et| ctx.server.allocator.free(et);
+                ctx.server.allocator.destroy(queue_item);
+                break;
+            };
+
+            // Free queue item memory after successful send
+            ctx.server.allocator.free(queue_item.data);
+            if (queue_item.event_type) |et| ctx.server.allocator.free(et);
+            ctx.server.allocator.destroy(queue_item);
+        } else {
+            // Timeout - send keepalive
+            stream.writeAll(": keepalive\n\n") catch |err| {
+                std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
+                break;
+            };
         }
     }
 
     std.log.info("SSE stream handler ending: session_id={s}", .{ctx.session_id});
-    ctx.server.sse_manager.remove(ctx.session_id);
     ctx.server.allocator.free(ctx.session_id);
 }
 

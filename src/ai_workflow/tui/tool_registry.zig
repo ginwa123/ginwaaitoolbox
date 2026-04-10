@@ -16,7 +16,6 @@ const get_skill_mod = root_mod.get_skill_tool;
 const remove_skill_mod = root_mod.remove_skill_tool;
 const list_agents_mod = root_mod.list_agents;
 const change_agent_mod = root_mod.change_agent;
-const tree_dir_mod = root_mod.tree_dir;
 const lsp_definition_mod = root_mod.tools.lsp_definition;
 const lsp_references_mod = root_mod.tools.lsp_references;
 const lsp_workspace_symbol_mod = root_mod.tools.lsp_workspace_symbol;
@@ -69,7 +68,6 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "text_replace", .exec = handle_spawn_sub_agent.execTextReplace, .tool_def = text_replace_mod.text_replace_tool, .allowed_for_subagent = true },
     .{ .name = "search", .exec = handle_spawn_sub_agent.execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
     .{ .name = "glob", .exec = handle_spawn_sub_agent.execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
-    .{ .name = "tree_dir", .exec = handle_spawn_sub_agent.execTreeDir, .tool_def = tree_dir_mod.tree_dir_tool, .allowed_for_subagent = true },
 
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = handle_spawn_sub_agent.execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool, .allowed_for_subagent = true },
@@ -106,7 +104,6 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     text_replace_mod.text_replace_tool,
     search_tool_mod.search_tool,
     glob_tool_mod.glob_tool,
-    tree_dir_mod.tree_dir_tool,
     lsp_definition_mod.lsp_definition_tool,
     lsp_references_mod.lsp_references_tool,
     lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
@@ -134,7 +131,6 @@ pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "text_replace", .exec = handle_spawn_sub_agent.execTextReplace, .tool_def = text_replace_mod.text_replace_tool, .allowed_for_subagent = true },
     .{ .name = "search", .exec = handle_spawn_sub_agent.execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
     .{ .name = "glob", .exec = handle_spawn_sub_agent.execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
-    .{ .name = "tree_dir", .exec = handle_spawn_sub_agent.execTreeDir, .tool_def = tree_dir_mod.tree_dir_tool, .allowed_for_subagent = true },
 
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = handle_spawn_sub_agent.execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool, .allowed_for_subagent = true },

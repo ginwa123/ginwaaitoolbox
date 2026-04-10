@@ -98,7 +98,6 @@ pub const write_file = @import("modules/agent/tools/write_file.zig");
 pub const text_replace = @import("modules/agent/tools/text_replace.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
-pub const tree_dir = @import("modules/agent/tools/tree_dir.zig");
 pub const web_search = @import("modules/agent/tools/web_search.zig");
 pub const web_search_help = @import("modules/agent/tools/web_search_help.zig");
 pub const session = @import("modules/session/mod.zig");

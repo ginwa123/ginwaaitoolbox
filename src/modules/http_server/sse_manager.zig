@@ -83,160 +83,189 @@ pub const SseEvent = struct {
     }
 };
 
-/// Thread-safe manager for SSE connections
-/// Thread-safe manager for SSE connections using direct stream writing
+/// Thread-safe event queue item for SSE
+pub const SseQueueItem = struct {
+    data: []const u8,
+    event_type: ?[]const u8 = null,
+    next: ?*SseQueueItem = null,
+};
+
+/// Thread-safe queue-based SSE connection manager
+/// Uses a channel approach: the SSE handler thread owns the stream and reads from a queue
+/// while other threads enqueue events. This avoids concurrent stream access.
 pub const SseConnectionManager = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    /// Map from session_id to stream - stream is owned by httpz's startEventStream
-    connections: std.StringHashMap(std.net.Stream),
+    /// Map from session_id to event queue
+    queues: std.StringHashMap(*Queue),
     mutex: std.Thread.Mutex,
+
+    pub const Queue = struct {
+        head: ?*SseQueueItem = null,
+        tail: ?*SseQueueItem = null,
+        cond: std.Thread.Condition = .{},
+        mutex: std.Thread.Mutex = .{},
+        closed: bool = false,
+
+        /// Add an item to the queue (thread-safe)
+        pub fn enqueue(self: *Queue, item: *SseQueueItem) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            item.next = null;
+            if (self.tail) |tail| {
+                tail.next = item;
+            } else {
+                self.head = item;
+            }
+            self.tail = item;
+            self.cond.signal();
+        }
+
+        /// Get an item from the queue with timeout (thread-safe)
+        /// Returns null if timeout expires or queue is closed
+        pub fn dequeueWithTimeout(self: *Queue, timeout_ns: u64) ?*SseQueueItem {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            // Wait for an item or timeout
+            const deadline = std.time.nanoTimestamp() + @as(i64, @intCast(timeout_ns));
+            while (self.head == null and !self.closed) {
+                const remaining = @as(u64, @intCast(deadline - std.time.nanoTimestamp()));
+                if (remaining == 0) break;
+                self.cond.wait(&self.mutex);
+            }
+
+            if (self.head) |item| {
+                self.head = item.next;
+                if (self.head == null) self.tail = null;
+                return item;
+            }
+            return null;
+        }
+
+        /// Close the queue (signals no more items)
+        pub fn close(self: *Queue) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.closed = true;
+            self.cond.broadcast();
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .connections = std.StringHashMap(std.net.Stream).init(allocator),
+            .queues = std.StringHashMap(*Queue).init(allocator),
             .mutex = .{},
         };
     }
 
     pub fn deinit(self: *Self) void {
-        var iter = self.connections.iterator();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var iter = self.queues.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            // Note: we don't close the stream here - httpz manages that
+            entry.value_ptr.close();
+            self.allocator.destroy(entry.value_ptr);
         }
-        self.connections.deinit();
+        self.queues.deinit();
     }
 
-    /// Register a new SSE connection
-    pub fn register(self: *Self, session_id: []const u8, stream: std.net.Stream) !void {
+    /// Register a new SSE connection with its event queue
+    pub fn register(self: *Self, session_id: []const u8, queue: *Queue) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         const key = try self.allocator.dupe(u8, session_id);
         errdefer self.allocator.free(key);
 
-        try self.connections.put(key, stream);
+        try self.queues.put(key, queue);
         std.log.info("SSE registered: session_id={s}", .{session_id});
     }
 
-    /// Remove a connection (called when client disconnects)
+    /// Remove a connection
     pub fn remove(self: *Self, session_id: []const u8) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.connections.fetchRemove(session_id)) |entry| {
+        if (self.queues.fetchRemove(session_id)) |entry| {
             self.allocator.free(entry.key);
             std.log.info("SSE removed: session_id={s}", .{session_id});
         }
     }
 
-    /// Send an event to a specific session (uses stack buffer, falls back to heap for large events)
-    /// Includes retry logic for race conditions where session isn't registered yet
-    pub fn sendEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
-        std.log.info("SSE sendEvent: session={s}, data_len={d}", .{session_id, event.data.len});
+    /// Create a new queue for a session
+    pub fn createQueue(self: *Self) !*Queue {
+        const queue = try self.allocator.create(Queue);
+        queue.* = .{};
+        return queue;
+    }
 
-        // Retry up to 3 times with 50ms delay to handle race condition where
-        // SSE stream handler hasn't registered the session yet
-        const max_retries = 3;
-        const retry_delay_ms = 50;
-
-        for (0..max_retries) |attempt| {
-            self.mutex.lock();
-            if (self.connections.get(session_id)) |stream| {
-                // First try with stack buffer (fast path for small events)
-                var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
-                const formatted = event.formatInto(&stack_buf) catch |err| {
-                    if (err == error.BufferTooSmall) {
-                        // Stack buffer too small - fall back to heap allocation for large events
-                        const heap_formatted = event.format(self.allocator) catch |heap_err| {
-                            self.mutex.unlock();
-                            std.log.err("SSE sendEvent: heap allocation failed: {s}", .{@errorName(heap_err)});
-                            return error.AllocationFailed;
-                        };
-                        defer self.allocator.free(heap_formatted);
-                        std.log.info("SSE sendEvent: using heap, formatted_len={d}", .{heap_formatted.len});
-                        stream.writeAll(heap_formatted) catch |write_err| {
-                            self.mutex.unlock();
-                            std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(write_err)});
-                            return error.WriteFailed;
-                        };
-                        self.mutex.unlock();
-                        return; // Success with heap buffer
-                    }
-                    self.mutex.unlock();
-                    return err;
-                };
-
-                std.log.info("SSE sendEvent: using stack, formatted_len={d}", .{formatted.len});
-                // Write directly to stream
-                stream.writeAll(formatted) catch |err| {
-                    self.mutex.unlock();
-                    std.log.err("SSE sendEvent: write failed: {s}", .{@errorName(err)});
-                    return error.WriteFailed;
-                };
-                self.mutex.unlock();
-                return; // Success
-            }
+    /// Enqueue an event to send to a specific session
+    pub fn enqueueEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
+        // Get queue pointer while holding mutex
+        self.mutex.lock();
+        const q = self.queues.get(session_id);
+        if (q == null) {
             self.mutex.unlock();
+            return error.SessionNotFound;
+        }
+        const queue_ptr = q.?;
+        self.mutex.unlock();
 
-            // Session not found - retry after short delay
-            if (attempt < max_retries - 1) {
-                std.log.warn("SSE sendEvent: session {s} not found, retrying ({}/{})...", .{ session_id, attempt + 1, max_retries });
-                std.Thread.sleep(retry_delay_ms * 1_000_000);
-            }
+        // Create the item (outside manager mutex)
+        const item = try self.allocator.create(SseQueueItem);
+        errdefer self.allocator.destroy(item);
+        item.* = .{
+            .data = try self.allocator.dupe(u8, event.data),
+            .event_type = if (event.event_type) |et| try self.allocator.dupe(u8, et) else null,
+        };
+        errdefer {
+            self.allocator.free(item.data);
+            if (item.event_type) |et| self.allocator.free(et);
         }
 
-        // All retries exhausted
-        std.log.err("SSE sendEvent: session not found after {} retries: {s}", .{ max_retries, session_id });
-        return error.SessionNotFound;
+        // Re-acquire manager mutex to check queue still exists, then enqueue
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const queueStillExists = self.queues.get(session_id);
+        if (queueStillExists == queue_ptr) {
+            queue_ptr.enqueue(item);
+        } else {
+            return error.SessionNotFound;
+        }
     }
 
     /// Check if a session exists
     pub fn hasSession(self: *Self, session_id: []const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.connections.contains(session_id);
+        return self.queues.contains(session_id);
     }
 
     /// Broadcast an event to ALL connected sessions
-    /// Uses heap allocation for large events when stack buffer is too small
     pub fn broadcast(self: *Self, event: SseEvent) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // First try stack buffer, fall back to heap for large events
-        const formatted = blk: {
-            var stack_buf: [SseEvent.MAX_SSE_SIZE]u8 = undefined;
-            break :blk event.formatInto(&stack_buf) catch |err| {
-                if (err == error.BufferTooSmall) {
-                    // Fall back to heap allocation for large events
-                    const heap_result = event.format(self.allocator) catch {
-                        std.log.err("SSE broadcast: heap allocation failed", .{});
-                        return;
-                    };
-                    defer self.allocator.free(heap_result);
-                    // Write with heap buffer
-                    var iter = self.connections.iterator();
-                    while (iter.next()) |entry| {
-                        entry.value_ptr.writeAll(heap_result) catch {
-                            std.log.warn("SSE broadcast: failed to write to session {s}", .{entry.key_ptr.*});
-                        };
-                    }
-                    return;
-                }
-                std.log.err("SSE broadcast: format failed: {s}", .{@errorName(err)});
-                return;
-            };
-        };
-
-        var iter = self.connections.iterator();
+        var iter = self.queues.iterator();
         while (iter.next()) |entry| {
-            entry.value_ptr.writeAll(formatted) catch {
-                std.log.warn("SSE broadcast: failed to write to session {s}", .{entry.key_ptr.*});
+            const item = self.allocator.create(SseQueueItem) catch {
+                std.log.warn("SSE broadcast: failed to create item for session {s}", .{entry.key_ptr.*});
+                continue;
             };
+            item.* = .{
+                .data = self.allocator.dupe(u8, event.data) catch {
+                    self.allocator.destroy(item);
+                    std.log.warn("SSE broadcast: failed to dupe data for session {s}", .{entry.key_ptr.*});
+                    continue;
+                },
+                .event_type = if (event.event_type) |et| self.allocator.dupe(u8, et) catch null else null,
+            };
+            entry.value_ptr.enqueue(item);
         }
     }
 };

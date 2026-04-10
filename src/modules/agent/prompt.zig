@@ -6,6 +6,7 @@ const prompts = @import("prompts/prompts.zig");
 // Re-export all prompts for easy access
 pub const UniversalRules = prompts.UniversalRules;
 pub const PromptAutoFix = prompts.PromptAutoFix;
+pub const DynamicProperties = prompts.DynamicProperties;
 pub const Agent = prompts.Agent;
 pub const ParallelMandatoryIntro = prompts.ParallelMandatoryIntro;
 pub const ParallelMandatory = prompts.ParallelMandatory;
@@ -65,6 +66,10 @@ pub fn buildAgentPrompt(
 
     // Response formatting - markdown and thinking
     try result.appendSlice(allocator, ResponseFormatting);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 🎛️ Dynamic Properties - encourage on-demand property changes
+    try result.appendSlice(allocator, DynamicProperties);
     try result.appendSlice(allocator, "\n\n");
 
     // ⚡⚡⚡ SKILLS FIRST — Most important section at the top!
