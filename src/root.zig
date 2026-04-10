@@ -103,7 +103,6 @@ pub const text_replace = @import("modules/agent/tools/text_replace.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
 pub const web_search = @import("modules/agent/tools/web_search.zig");
-pub const web_search_help = @import("modules/agent/tools/web_search_help.zig");
 pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");

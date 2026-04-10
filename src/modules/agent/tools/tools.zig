@@ -8,7 +8,6 @@ pub const lsp_workspace_symbol = @import("lsp_workspace_symbol.zig");
 pub const lsp_document_symbol = @import("lsp_document_symbol.zig");
 pub const lsp_hover = @import("lsp_hover.zig");
 pub const web_search = @import("web_search.zig");
-pub const web_search_help = @import("web_search_help.zig");
 pub const add_skill = @import("add_skill.zig");
 pub const add_agent = @import("add_agent.zig");
 
@@ -20,6 +19,5 @@ pub const lsp_workspace_symbol_tool = lsp_workspace_symbol.lsp_workspace_symbol_
 pub const lsp_document_symbol_tool = lsp_document_symbol.lsp_document_symbol_tool;
 pub const lsp_hover_tool = lsp_hover.lsp_hover_tool;
 pub const web_search_tool = web_search.web_search_tool;
-pub const web_search_help_tool = web_search_help.web_search_help_tool;
 pub const add_skill_tool = add_skill.add_skill_tool;
 pub const add_agent_tool = add_agent.add_agent_tool;

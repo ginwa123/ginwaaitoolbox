@@ -6,47 +6,51 @@ const logger_mod = root_mod.logger;
 const sqlite = root_mod.sqlite;
 const prompt = root_mod.prompt;
 const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
-const bash_tool = root_mod.bash_tool;
-const read_file_tool = root_mod.read_file;
-const write_file_tool = root_mod.write_file;
-const search_tool = root_mod.search_tool;
-const glob_tool = root_mod.glob_tool;
-const text_replace_tool = root_mod.text_replace_tool;
-const list_skills_tool = root_mod.list_skills_tool;
-const get_skill_tool = root_mod.get_skill_tool;
-const remove_skill_tool = root_mod.remove_skill_tool;
 const config_mod = root_mod.config;
+
+// Import tool registry for exec functions and types
+const tool_registry = @import("tool_registry.zig");
+
+// Re-export types and functions from tool_registry for backward compatibility
+pub const SubAgentToolExec = tool_registry.SubAgentToolExec;
+pub const SubAgentToolResult = tool_registry.SubAgentToolResult;
+pub const SkillSaveInfo = tool_registry.SkillSaveInfo;
+pub const AgentSaveInfo = tool_registry.AgentSaveInfo;
+pub const parseSkillFromResult = tool_registry.parseSkillFromResult;
+pub const parseAgentFromResult = tool_registry.parseAgentFromResult;
+
+// Re-export exec functions from tool_registry for backward compatibility
+pub const execBash = tool_registry.execBash;
+pub const execReadFile = tool_registry.execReadFile;
+pub const execSearch = tool_registry.execSearch;
+pub const execGlob = tool_registry.execGlob;
+pub const execTextReplace = tool_registry.execTextReplace;
+pub const execWriteFile = tool_registry.execWriteFile;
+pub const execListSkills = tool_registry.execListSkills;
+pub const execGetSkill = tool_registry.execGetSkill;
+pub const execRemoveSkill = tool_registry.execRemoveSkill;
+pub const execAddSkill = tool_registry.execAddSkill;
+pub const execAddAgent = tool_registry.execAddAgent;
+pub const execRemoveAgent = tool_registry.execRemoveAgent;
+pub const execListAgents = tool_registry.execListAgents;
+pub const execChangeAgent = tool_registry.execChangeAgent;
+pub const execLspDefinition = tool_registry.execLspDefinition;
+pub const execLspReferences = tool_registry.execLspReferences;
+pub const execLspWorkspaceSymbol = tool_registry.execLspWorkspaceSymbol;
+pub const execLspDocumentSymbol = tool_registry.execLspDocumentSymbol;
+pub const execLspHover = tool_registry.execLspHover;
+pub const execWebSearch = tool_registry.execWebSearch;
+pub const execWebSearchHelp = tool_registry.execWebSearchHelp;
+pub const execSpawnSubAgent = tool_registry.execSpawnSubAgent;
+pub const execSetAgentProperties = tool_registry.execSetAgentProperties;
+
+// Re-export SUB_AGENT_TOOL_REGISTRY for backward compatibility
+pub const SUB_AGENT_TOOL_REGISTRY = tool_registry.SUB_AGENT_TOOL_REGISTRY;
+
 const save_message = @import("save_message.zig").save_message;
 const session_helpers = @import("session_helpers.zig");
 const getCurrentAgentBySessionId = session_helpers.get_current_agent_by_session_id;
 const handle_tool = @import("handle_tool.zig");
-const bash_tool_mod = root_mod.bash_tool;
-const read_file_mod = root_mod.read_file;
-const search_tool_mod = root_mod.search_tool;
-const glob_tool_mod = root_mod.glob_tool;
-const text_replace_mod = root_mod.text_replace_tool;
-const write_file_mod = root_mod.write_file;
-const list_skills_mod = root_mod.list_skills_tool;
-const get_skill_mod = root_mod.get_skill_tool;
-const remove_skill_mod = root_mod.remove_skill_tool;
-const list_agents_mod = root_mod.list_agents;
-const change_agent_mod = root_mod.change_agent;
-const tools_mod = root_mod.tools;
-const handle_read_file_tool = @import("handle_read_file_tool.zig");
-const handle_search_tool = @import("handle_search_tool.zig");
-const handle_glob_tool = @import("handle_glob_tool.zig");
-const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
-const handle_write_file_tool = @import("handle_write_file_tool.zig");
-const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
-const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
-const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
-const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
-const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
-const handle_add_skill_tool = @import("handle_add_skill_tool.zig");
-const handle_add_agent_tool = @import("handle_add_agent_tool.zig");
-const handle_remove_agent_tool = @import("handle_remove_agent_tool.zig");
-const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
-const handle_bash_tool = @import("handle_bash_tool.zig");
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const StreamingContext = @import("workflow.zig").StreamingContext;
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
@@ -56,214 +60,6 @@ const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 
 const MAX_SUB_AGENTS = 20;
-
-// Import BashInput from schemas (not exported in bash.zig)
-const BashInput = tool_models.BashInput;
-
-// ============================================================================
-// SUB-AGENT TOOL DISPATCH TABLE
-// ============================================================================
-
-/// Function signature for sub-agent tool executors
-pub const SubAgentToolExec = *const fn (
-    allocator: std.mem.Allocator,
-    tc: agent.ToolCall,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) anyerror![]const u8;
-
-/// Entry in the sub-agent tool registry
-const SubAgentToolEntry = struct {
-    name: []const u8,
-    exec: SubAgentToolExec,
-    auto_save_skill: bool = false,
-    auto_save_agent: bool = false,
-};
-
-/// Tool execution result with optional auto-save metadata
-const SubAgentToolResult = struct {
-    output: []const u8,
-    skill_save: ?SkillSaveInfo = null,
-    agent_save: ?AgentSaveInfo = null,
-};
-
-const SkillSaveInfo = struct {
-    name: []const u8,
-    content: []const u8,
-};
-
-const AgentSaveInfo = struct {
-    name: []const u8,
-};
-
-// Individual tool executors
-pub fn execBash(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    return handle_bash_tool.runWithContext(allocator, tc, db, session_id);
-}
-
-pub fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_read_file_tool.handle_read_file_tool_run(allocator, tc);
-}
-
-pub fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_search_tool.handle_search_tool_run(allocator, tc);
-}
-
-pub fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_glob_tool.handle_glob_tool_run(allocator, tc);
-}
-
-pub fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_text_replace_tool.handle_text_replace_tool_run(allocator, tc);
-}
-
-pub fn execWriteFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_write_file_tool.handle_write_file_tool_run(allocator, tc);
-}
-
-pub fn execListSkills(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return handle_list_skills_tool.handle_list_skills_tool_run(allocator);
-}
-
-pub fn execGetSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_get_skill_tool.handle_get_skill_tool_run(allocator, tc);
-}
-
-pub fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_remove_skill_tool.handle_remove_skill_tool_run(allocator, tc);
-}
-
-pub fn execAddSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_add_skill_tool.handle_add_skill_tool_run(allocator, tc);
-}
-
-pub fn execAddAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_add_agent_tool.handle_add_agent_tool_run(allocator, tc);
-}
-
-pub fn execRemoveAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_remove_agent_tool.handle_remove_agent_tool_run(allocator, tc);
-}
-
-pub fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return handle_list_agents_tool.handle_list_agents_tool_run(allocator);
-}
-
-pub fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_change_agent_tool.handle_change_agent_tool_run(allocator, tc);
-}
-
-pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_lsp_definition_tool.handle_lsp_definition_tool_run(allocator, tc);
-}
-
-/// MCP tool executor - placeholder for dynamic MCP tool handling
-/// Note: MCP tools are actually handled dynamically in executeSubAgentTool
-/// This function is kept for API completeness but is not used
-pub fn execMCP(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    // MCP tools are handled dynamically in executeSubAgentTool
-    return "MCP tools are handled dynamically";
-}
-
-/// Placeholder for spawn_sub_agent exec
-pub fn execSpawnSubAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return "spawn_sub_agent should not be called from sub-agent context";
-}
-
-/// Placeholder for set_agent_properties exec
-pub fn execSetAgentProperties(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return "set_agent_properties should not be called from sub-agent context";
-}
-
-// Placeholder LSP exec functions (TODO: implement when lsp.zig is complete)
-pub fn execLspReferences(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return "lsp_references not implemented";
-}
-
-pub fn execLspWorkspaceSymbol(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return "lsp_workspace_symbol not implemented";
-}
-
-pub fn execLspDocumentSymbol(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return "lsp_document_symbol not implemented";
-}
-
-pub fn execLspHover(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return "lsp_hover not implemented";
-}
-
-// Web search tool handlers
-const handle_web_search_tool = @import("handle_web_search_tool.zig");
-const handle_web_search_help_tool = @import("handle_web_search_help_tool.zig");
-
-pub fn execWebSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    return handle_web_search_tool.runWithContext(allocator, tc, db, session_id);
-}
-
-pub fn execWebSearchHelp(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    return handle_web_search_help_tool.runWithContext(allocator, tc, db, session_id);
-}
-
-// Import tool registry for unified tool definitions
-const tool_registry = @import("tool_registry.zig");
 
 /// Execute a tool by name, returning the result
 pub fn execute_sub_agent_tool(
@@ -343,35 +139,6 @@ fn is_mcp_tool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool 
         else => return false,
     };
     return mcp_servers.get(server_name) != null;
-}
-
-// ============================================================================
-// HELPER FUNCTIONS - Skill/Agent Parsing
-// ============================================================================
-
-pub fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content: []const u8 } {
-    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
-
-    const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
-    const name_begin = name_start + "<skill_name>".len;
-    const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
-    const skill_name = result[name_begin .. name_begin + name_end];
-
-    const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
-    const content_begin = content_start + "<content>".len;
-    const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
-    const skill_content = result[content_begin .. content_begin + content_end];
-
-    return .{ .name = skill_name, .content = skill_content };
-}
-
-pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
-    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
-
-    const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
-    const name_begin = name_start + "<agent_name>".len;
-    const name_end = std.mem.indexOf(u8, result[name_begin..], "</agent_name>") orelse return null;
-    return result[name_begin .. name_begin + name_end];
 }
 
 // ============================================================================

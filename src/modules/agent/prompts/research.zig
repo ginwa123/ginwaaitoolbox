@@ -181,7 +181,6 @@ pub const AvailableTools =
     \\  - Automatically opens Google search and returns results
     \\  - Use this FIRST when you need to look something up online
     \\  - Supports: open, snapshot, get, click, fill, press for advanced browsing
-    \\- `web_search_help` — Get agent-browser CLI help
     \\
     \\**Library Documentation:**
     \\- `mcp_context7_resolve-library-id` — find library IDs
