@@ -29,6 +29,11 @@ pub const Escalation =
 pub const PlanBlock =
     \\## Plan Block (Complex tasks)
     \\
+    \\**⚡ BEFORE WRITING A PLAN — Adjust your properties:**
+    \\```
+    \\use set_agent_properties with temperature=1.0 and is_thinking=true
+    \\```
+    \\
     \\Before writing code, answer:
     \\1. **What files?** — List specific files to modify
     \\2. **What changes?** — Describe exact modifications
@@ -49,4 +54,9 @@ pub const PlanBlock =
     \\- <risk> → <mitigation>
     \\```
     \\Present Plan → wait for "yes/proceed".
+    \\
+    \\**⚡ BEFORE EXECUTING CODE/TASK — Revert your properties:**
+    \\```
+    \\use set_agent_properties with temperature=0.2 and is_thinking=false
+    \\```
 ;

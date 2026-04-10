@@ -601,7 +601,7 @@ pub const Agent = struct {
         self.logFmt(.debug, "HTTP {s} {s} (body: {} bytes)", .{ method, url, body_len });
     }
 
-    pub fn buildJsonRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
+    pub fn build_json_request(self: Agent, params: AgentCall, stream: bool) ![]u8 {
         const allocator = self.allocator;
 
         // Use arena allocator for temporary conversions
@@ -879,11 +879,16 @@ pub const Agent = struct {
         });
 
         // Build request
-        const json_body = self.buildJsonRequest(params, true) catch |err| {
+        const json_body = self.build_json_request(params, true) catch |err| {
             self.logError("buildJsonRequest", err, null);
             return error.BuildRequestFailed;
         };
         defer self.allocator.free(json_body);
+
+        // Estimate tokens: ~4 chars per token (rough approximation for debugging)
+        const estimated_tokens = @divFloor(json_body.len + 3, 4);
+        self.logFmt(.info, "[TOKEN ESTIMATE] sending ~{} tokens ({} bytes)", .{ estimated_tokens, json_body.len });
+
         self.logFmt(.debug, "[STREAM REQUEST] JSON body {s}", .{json_body});
         // const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
         // const json_ellipsis = if (json_body.len > 500) "..." else "";

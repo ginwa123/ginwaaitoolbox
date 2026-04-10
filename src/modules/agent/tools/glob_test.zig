@@ -2,34 +2,26 @@ const std = @import("std");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
-const expectError = std.testing.expectError;
 
 const glob = @import("glob.zig");
 const GlobInput = glob.GlobInput;
-const GlobTypeFilter = glob.GlobTypeFilter;
 const GlobMatch = glob.GlobMatch;
 const GlobResult = glob.GlobResult;
 const executeGlob = glob.executeGlob;
 const globResultToString = glob.globResultToString;
 
-test "GlobTypeFilter toFdArg" {
-    try expectEqualSlices(u8, "f", GlobTypeFilter.file.toFdArg());
-    try expectEqualSlices(u8, "d", GlobTypeFilter.directory.toFdArg());
-    try expectEqualSlices(u8, "l", GlobTypeFilter.symlink.toFdArg());
-    try expectEqualSlices(u8, "s", GlobTypeFilter.socket.toFdArg());
-    try expectEqualSlices(u8, "p", GlobTypeFilter.pipe.toFdArg());
-    try expectEqualSlices(u8, "x", GlobTypeFilter.executable.toFdArg());
-    try expectEqualSlices(u8, "e", GlobTypeFilter.empty.toFdArg());
-}
-
 test "GlobInput default values" {
     const input = GlobInput{
-        .pattern = "*.zig",
-        .path = "src",
+        .any = "",
     };
-    try expect(!input.include_hidden);
-    try expect(input.max_results == null);
-    try expect(input.type_filter == null);
+    try expect(input.any.len == 0);
+}
+
+test "GlobInput with pattern-style any" {
+    const input = GlobInput{
+        .any = "-e zig src/",
+    };
+    try expect(input.any.len > 0);
 }
 
 test "executeGlob finds zig files" {
@@ -38,9 +30,7 @@ test "executeGlob finds zig files" {
     const allocator = arena.allocator();
 
     const input = GlobInput{
-        .pattern = "*.zig",
-        .path = "src",
-        .max_results = 10,
+        .any = "-e zig src/",
     };
 
     var result = try executeGlob(allocator, input);
@@ -51,46 +41,38 @@ test "executeGlob finds zig files" {
     try expect(std.mem.endsWith(u8, result.matches.items[0].path, ".zig"));
 }
 
-test "executeGlob with hidden files disabled" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const input = GlobInput{
-        .pattern = ".*",
-        .path = "src",
-        .include_hidden = false,
-        .max_results = 10,
-    };
-
-    // Should complete without error even if no hidden files
-    var result = try executeGlob(allocator, input);
-    defer result.deinit(allocator);
-
-    // Results should not include hidden files (files starting with .)
-    for (result.matches.items) |m| {
-        const basename = std.fs.path.basename(m.path);
-        try expect(!std.mem.startsWith(u8, basename, "."));
-    }
-}
-
 test "executeGlob with hidden files enabled" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     const input = GlobInput{
-        .pattern = ".*",
-        .path = "src",
-        .include_hidden = true,
-        .max_results = 10,
+        .any = ".* src/ -H",
     };
 
     var result = try executeGlob(allocator, input);
     defer result.deinit(allocator);
 
-    // With hidden enabled, we might find .gitignore or similar
+    // Should complete without error
     _ = result.matches.items.len;
+}
+
+test "executeGlob with extension filter" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const input = GlobInput{
+        .any = "-e zig src/",
+    };
+
+    var result = try executeGlob(allocator, input);
+    defer result.deinit(allocator);
+
+    // All results should be .zig files
+    for (result.matches.items) |m| {
+        try expect(std.mem.endsWith(u8, m.path, ".zig"));
+    }
 }
 
 test "executeGlob with type filter" {
@@ -99,71 +81,15 @@ test "executeGlob with type filter" {
     const allocator = arena.allocator();
 
     const input = GlobInput{
-        .pattern = "*",
-        .path = "src",
-        .type_filter = .file,
-        .max_results = 10,
+        .any = "-t f -e zig src/",
     };
 
     var result = try executeGlob(allocator, input);
     defer result.deinit(allocator);
 
-    // All results should be files (directories would have different suffixes)
+    // All results should be files
     for (result.matches.items) |m| {
-        try expect(!std.mem.endsWith(u8, m.path, "/"));
-    }
-}
-
-test "executeGlob respects max_results" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const max_results: usize = 3;
-    const input = GlobInput{
-        .pattern = "*.zig",
-        .path = "src",
-        .max_results = max_results,
-    };
-
-    var result = try executeGlob(allocator, input);
-    defer result.deinit(allocator);
-
-    try expect(result.matches.items.len <= max_results);
-}
-
-test "executeGlob with offset pagination" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // First batch: get first 3 results
-    const input1 = GlobInput{
-        .pattern = "*.zig",
-        .path = "src",
-        .max_results = 3,
-        .offset = 0,
-    };
-
-    var result1 = try executeGlob(allocator, input1);
-    defer result1.deinit(allocator);
-
-    // Second batch: skip first 3, get next 3
-    const input2 = GlobInput{
-        .pattern = "*.zig",
-        .path = "src",
-        .max_results = 3,
-        .offset = 3,
-    };
-
-    var result2 = try executeGlob(allocator, input2);
-    defer result2.deinit(allocator);
-
-    // Results should not overlap
-    for (result1.matches.items) |m1| {
-        for (result2.matches.items) |m2| {
-            try expect(!std.mem.eql(u8, m1.path, m2.path));
-        }
+        try expect(std.mem.endsWith(u8, m.path, ".zig"));
     }
 }
 
@@ -173,8 +99,7 @@ test "executeGlob handles non-existent path" {
     const allocator = arena.allocator();
 
     const input = GlobInput{
-        .pattern = "*.zig",
-        .path = "/nonexistent/path/that/does/not/exist",
+        .any = "-e zig /nonexistent/path/that/does/not/exist",
     };
 
     // Should return empty results, not an error
@@ -182,6 +107,24 @@ test "executeGlob handles non-existent path" {
     defer result.deinit(allocator);
 
     try expect(result.matches.items.len == 0);
+}
+
+test "executeGlob with quoted args" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const input = GlobInput{
+        .any = "\"-e zig\" src/",
+    };
+
+    var result = try executeGlob(allocator, input);
+    defer result.deinit(allocator);
+
+    // Results should be .zig files
+    for (result.matches.items) |m| {
+        try expect(std.mem.endsWith(u8, m.path, ".zig"));
+    }
 }
 
 test "globResultToString formats correctly" {
@@ -244,41 +187,23 @@ test "glob_tool definition is valid" {
     try expect(tool.function.parameters.properties.len > 0);
 }
 
-test "globResultToString includes truncation warning when truncated" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+test "glob_tool has any property" {
+    const tool = glob.glob_tool;
 
-    var result = GlobResult{
-        .matches = std.ArrayList(GlobMatch).empty,
-        .truncated_count = 5,
-    };
-    defer result.deinit(allocator);
-
-    try result.matches.append(allocator, .{ .path = "/path/to/file1.zig" });
-    try result.matches.append(allocator, .{ .path = "/path/to/file2.zig" });
-
-    const output = try globResultToString(allocator, result);
-
-    try expect(std.mem.containsAtLeast(u8, output, 1, "<truncated>"));
-    try expect(std.mem.containsAtLeast(u8, output, 1, "5 files truncated"));
+    // Find the "any" property
+    var found_any = false;
+    for (tool.function.parameters.properties) |prop| {
+        if (std.mem.eql(u8, prop.name, "any")) {
+            found_any = true;
+            try expectEqualSlices(u8, "string", prop.type);
+            break;
+        }
+    }
+    try expect(found_any);
 }
 
-test "globResultToString omits truncation warning when not truncated" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+test "glob_tool required is empty" {
+    const tool = glob.glob_tool;
 
-    var result = GlobResult{
-        .matches = std.ArrayList(GlobMatch).empty,
-        .truncated_count = 0,
-    };
-    defer result.deinit(allocator);
-
-    try result.matches.append(allocator, .{ .path = "/path/to/file1.zig" });
-
-    const output = try globResultToString(allocator, result);
-
-    // Should not contain truncation warning
-    try expect(std.mem.indexOf(u8, output, "<truncated>") == null);
+    try expectEqual(0, tool.function.parameters.required.len);
 }

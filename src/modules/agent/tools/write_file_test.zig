@@ -83,8 +83,8 @@ test "write_file - result serialization" {
     const serialized = try write_file_mod.writeFileToString(allocator, result);
     defer allocator.free(serialized);
     
-    // Should contain sha256
-    try std.testing.expect(std.mem.indexOf(u8, serialized, "<sha256>") != null);
+    // Should contain file_write
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "<file_write>") != null);
     
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
@@ -180,5 +180,5 @@ test "write_file - create_with_dir=true works when directory exists" {
     });
     defer result.deinit(allocator);
     
-    try std.testing.expect(result.sha256.len == 64); // SHA256 hex length
+    try std.testing.expect(result.path.len > 0); // path should not be empty
 }

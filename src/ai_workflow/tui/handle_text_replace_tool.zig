@@ -19,7 +19,8 @@ pub fn handle_text_replace_tool_run(
     const result = try text_replace_mod.text_replace(
         allocator,
         parsed.value.path,
-        parsed.value.op,
+        parsed.value.old_str,
+        parsed.value.new_str,
     );
 
     return text_replace_mod.text_replace_to_string_xml(allocator, result);

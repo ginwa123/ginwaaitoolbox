@@ -2,8 +2,8 @@ const std = @import("std");
 const text_replace_mod = @import("text_replace.zig");
 
 // Convenience type aliases
-const TextReplaceOp = text_replace_mod.TextReplaceOp;
 const text_replace = text_replace_mod.text_replace;
+const TextReplaceError = text_replace_mod.TextReplaceError;
 
 test "text_replace - basic replace" {
     const allocator = std.testing.allocator;
@@ -14,8 +14,7 @@ test "text_replace - basic replace" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    _ = try text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "Hello", .new_str = "Goodbye" });
+    _ = try text_replace(allocator, test_path, "Hello", "Goodbye");
     
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
@@ -36,8 +35,7 @@ test "text_replace - old_str not found" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "nonexistent", .new_str = "new" });
+    const result = text_replace(allocator, test_path, "nonexistent", "new");
     
     try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotFound, result);
     
@@ -53,8 +51,7 @@ test "text_replace - old_str appears twice" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "const x = 0;", .new_str = "const z = 1;" });
+    const result = text_replace(allocator, test_path, "const x = 0;", "const z = 1;");
     
     try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotUnique, result);
     
@@ -70,8 +67,7 @@ test "text_replace - replace with empty string" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    _ = try text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = ", World!", .new_str = "" });
+    _ = try text_replace(allocator, test_path, ", World!", "");
     
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
@@ -92,8 +88,7 @@ test "text_replace - multiline replace" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    _ = try text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "old line 1\nold line 2", .new_str = "new line A\nnew line B" });
+    _ = try text_replace(allocator, test_path, "old line 1\nold line 2", "new line A\nnew line B");
     
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
@@ -114,8 +109,7 @@ test "text_replace - unique match with context" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    _ = try text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "fn setup() void {\n    const x = 0;", .new_str = "fn setup() void {\n    const z = 1;" });
+    _ = try text_replace(allocator, test_path, "fn setup() void {\n    const x = 0;", "fn setup() void {\n    const z = 1;");
     
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
@@ -137,8 +131,7 @@ test "text_replace - URL path" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    _ = try text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "https://example.com", .new_str = "http://localhost:8080" });
+    _ = try text_replace(allocator, test_path, "https://example.com", "http://localhost:8080");
     
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
@@ -159,8 +152,7 @@ test "text_replace - single backslash" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    _ = try text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "\\", .new_str = "/" });
+    _ = try text_replace(allocator, test_path, "\\", "/");
     
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
@@ -181,8 +173,7 @@ test "text_replace - double backslash" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    _ = try text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "\\\\", .new_str = "__" });
+    _ = try text_replace(allocator, test_path, "\\\\", "__");
     
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
@@ -203,8 +194,7 @@ test "text_replace - double quotes" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    _ = try text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "\"hello world\"", .new_str = "\"hi there\"" });
+    _ = try text_replace(allocator, test_path, "\"hello world\"", "\"hi there\"");
     
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
@@ -225,10 +215,97 @@ test "text_replace - empty old_str fails" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = text_replace(allocator, test_path, 
-        TextReplaceOp{ .old_str = "", .new_str = "X" });
+    const result = text_replace(allocator, test_path, "", "X");
     
     try std.testing.expectError(text_replace_mod.TextReplaceError.OldStrNotUnique, result);
+    
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - CRLF line endings in file" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_crlf.txt";
+    // File written with CRLF (Windows line endings)
+    const original_content = "Hello,\r\n World!\r\n";
+    
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // old_str uses LF only — should still match because we normalize
+    _ = try text_replace(allocator, test_path, "Hello,\n World!", "Goodbye,\n World!");
+    
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    try std.testing.expectEqualStrings("Goodbye,\n World!\r\n", read_content);
+    
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - trailing whitespace in file" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_trailing_ws.txt";
+    // File has trailing spaces on lines
+    const original_content = "Hello,   \n  World!   \n";
+    
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // old_str without trailing spaces — should match (whitespace stripped before compare)
+    _ = try text_replace(allocator, test_path, "Hello,   ", "Goodbye,");
+    
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    try std.testing.expectEqualStrings("Goodbye,\n  World!   \n", read_content);
+    
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - mixed tabs and spaces indentation" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_mixed_indent.txt";
+    // File uses tabs, user provides spaces
+    const original_content = "fn test() void {\n\tconst x = 0;\n}";
+    
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // old_str uses spaces instead of tab
+    const result = text_replace(allocator, test_path, "    const x = 0;", "    const y = 1;");
+    
+    // This should fail since mixed tabs/spaces don't normalize to each other
+    try std.testing.expectError(TextReplaceError.OldStrNotFound, result);
+    
+    try std.fs.cwd().deleteFile(test_path);
+}
+
+test "text_replace - CRLF with trailing spaces combo" {
+    const allocator = std.testing.allocator;
+    const test_path = "test_replace_crlf_trailing.txt";
+    // Most complex case: CRLF + trailing spaces
+    const original_content = "Hello,   \r\n  World!   \r\n";
+    
+    const orig_file = try std.fs.cwd().createFile(test_path, .{});
+    defer orig_file.close();
+    try orig_file.writeAll(original_content);
+    
+    // old_str uses LF and no trailing spaces
+    _ = try text_replace(allocator, test_path, "Hello,   ", "Goodbye,");
+    
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+    const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(read_content);
+    
+    try std.testing.expectEqualStrings("Goodbye,\r\n  World!   \r\n", read_content);
     
     try std.fs.cwd().deleteFile(test_path);
 }

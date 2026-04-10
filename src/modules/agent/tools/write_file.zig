@@ -12,10 +12,10 @@ pub const WriteFileInput = struct {
 };
 
 pub const WriteFileResult = struct {
-    sha256: []u8,
+    path: []const u8,
 
     pub fn deinit(self: WriteFileResult, allocator: std.mem.Allocator) void {
-        allocator.free(self.sha256);
+        allocator.free(self.path);
     }
 };
 
@@ -50,10 +50,8 @@ pub fn write_file(
                 defer file.close();
 
                 try file.writeAll(opts.content);
-                var hash: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-                std.crypto.hash.sha2.Sha256.hash(opts.content, &hash, .{});
                 return WriteFileResult{
-                    .sha256 = std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(hash, .lower)}) catch unreachable,
+                    .path = try allocator.dupe(u8, path),
                 };
             }
         }
@@ -62,15 +60,13 @@ pub fn write_file(
     defer file.close();
 
     try file.writeAll(opts.content);
-    var hash: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(opts.content, &hash, .{});
     return WriteFileResult{
-        .sha256 = std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(hash, .lower)}) catch unreachable,
+        .path = try allocator.dupe(u8, path),
     };
 }
 
 pub fn writeFileToString(allocator: std.mem.Allocator, result: WriteFileResult) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "<sha256>{s}</sha256>", .{result.sha256});
+    return std.fmt.allocPrint(allocator, "<file_write>{s}</file_write>", .{result.path});
 }
 
 pub const write_file_tool = AgentTool{

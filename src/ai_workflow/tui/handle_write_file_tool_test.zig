@@ -24,7 +24,7 @@ test "handle_write_file_tool: passes create_with_dir to write_file" {
     defer allocator.free(result);
     
     // Verify file was created
-    try std.testing.expect(std.mem.indexOf(u8, result, "<sha256>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<file_write>") != null);
     
     // Verify directory structure exists
     const file = try std.fs.cwd().openFile("/tmp/test_create_with_dir_handler/a/b/c/file.txt", .{});
@@ -58,7 +58,7 @@ test "handle_write_file_tool: returns sha256 on success" {
     const result = try handle_write_file_tool_run(allocator, tool_call);
     defer allocator.free(result);
     
-    try testing.expect(std.mem.indexOf(u8, result, "<sha256>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<file_write>") != null);
     
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
