@@ -318,7 +318,7 @@ const SessionChat: Component = () => {
     queryKey: ['session-messages', params.sessionId],
     queryFn: async ({ pageParam }: { pageParam?: string }) => {
       const url = new URL(`${baseUrl()}/api/session/${params.sessionId}/messages`);
-      url.searchParams.set('limit', '50');
+      url.searchParams.set('limit', '10000');
 
       // Always use direction=asc for consistent cursor semantics
       // The cursor always points to the OLDEST message we've loaded
