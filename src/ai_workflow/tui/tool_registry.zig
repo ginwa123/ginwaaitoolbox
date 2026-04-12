@@ -8,8 +8,6 @@ const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
 // Tool imports for exec functions and tool_defs
 const bash_tool_mod = root_mod.bash_tool;
 const read_file_mod = root_mod.read_file;
-const search_tool_mod = root_mod.search_tool;
-const glob_tool_mod = root_mod.glob_tool;
 const text_replace_mod = root_mod.text_replace_tool;
 const write_file_mod = root_mod.write_file;
 const list_skills_mod = root_mod.list_skills_tool;
@@ -31,8 +29,6 @@ const web_search_mod = root_mod.web_search;
 // Handle tool imports for exec functions
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const handle_read_file_tool = @import("handle_read_file_tool.zig");
-const handle_search_tool = @import("handle_search_tool.zig");
-const handle_glob_tool = @import("handle_glob_tool.zig");
 const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
 const handle_write_file_tool = @import("handle_write_file_tool.zig");
 const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
@@ -82,18 +78,6 @@ pub fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
     _ = db;
     _ = session_id;
     return handle_read_file_tool.handle_read_file_tool_run(allocator, tc);
-}
-
-pub fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_search_tool.handle_search_tool_run(allocator, tc);
-}
-
-pub fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-    return handle_glob_tool.handle_glob_tool_run(allocator, tc);
 }
 
 pub fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
@@ -261,8 +245,6 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool, .allowed_for_subagent = true },
     .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool, .allowed_for_subagent = true },
     .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool, .allowed_for_subagent = true },
-    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
-    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
 
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool, .allowed_for_subagent = true },
@@ -299,8 +281,6 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     read_file_mod.read_file_tool,
     write_file_mod.write_file_tool,
     text_replace_mod.text_replace_tool,
-    search_tool_mod.search_tool,
-    glob_tool_mod.glob_tool,
     lsp_definition_mod.lsp_definition_tool,
     lsp_references_mod.lsp_references_tool,
     lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
@@ -330,8 +310,6 @@ pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool, .allowed_for_subagent = true },
     .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool, .allowed_for_subagent = true },
     .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool, .allowed_for_subagent = true },
-    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
-    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
 
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool, .allowed_for_subagent = true },

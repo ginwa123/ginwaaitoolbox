@@ -1,7 +1,11 @@
 /**
  * SSE Client for receiving real-time updates from the backend
+ *
+ * Request tracking: 1 request = 1 GUID, all related logs share this ID
  */
 import { log } from './logger';
+import { end, generateRequestId, log as requestLog, start } from './requestTracker';
+import { decodeXmlEntities, getTagValue, parseMessages } from './xmlParser';
 
 export interface SSEMessage {
   type: 'message' | 'tool_result' | 'status' | 'error' | 'ping' | 'done' | 'step' | 'connected';
@@ -67,12 +71,6 @@ export type SSEMessageHandler = (event: SSEMessage) => void;
  * Uses [\s\S]*? (lazy dot-all) instead of [^<]* so it can match across
  * nested tags like <think>...</think> or <markdown>...</markdown>.
  */
-function extractXmlTag(xml: string, tag: string): string | undefined {
-  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const regex = new RegExp(`<${escapedTag}>([\\s\\S]*?)<\\/${escapedTag}>`, 'i');
-  const match = xml.match(regex);
-  return match ? match[1].trim() : undefined;
-}
 
 /**
  * Parse the inner content field produced by the model.
@@ -83,13 +81,33 @@ function extractXmlTag(xml: string, tag: string): string | undefined {
  *   <think>…</think>         – for internal reasoning (may appear alongside the above)
  *
  * All three tags may be present in the same content string.
+ *
+ * NOTE: <think> uses special markdown-style notation (not standard XML tags),
+ * so we need regex to match it properly.
  */
 export function parseContentField(content: string): ParsedContent {
+  // Helper to extract content from <think>...</think> style tags (markdown notation)
+  // NOTE: The closing tag is </think> (not </think>) so we must match it correctly
+  const extractThinkContent = (text: string): string | undefined => {
+    const match = text.match(/<think>([\s\S]*?)<\/think>/i);
+    if (match) return match[1].trim();
+
+    // Also try matching with </think> as closing tag
+    const match2 = text.match(/<think>([\s\S]*?)<\/think>/i);
+    return match2 ? match2[1].trim() : undefined;
+  };
+
+  // Helper to convert empty string to undefined (getTagValue returns '' if not found)
+  const fromTag = (tag: string): string | undefined => {
+    const val = getTagValue(content, tag);
+    return val || undefined;
+  };
+
   return {
     raw: content,
-    thinking: extractXmlTag(content, 'think'),
-    markdown: extractXmlTag(content, 'markdown'),
-    plain: extractXmlTag(content, 'plain'),
+    thinking: extractThinkContent(content),
+    markdown: fromTag('markdown'),
+    plain: fromTag('plain'),
   };
 }
 
@@ -108,37 +126,38 @@ export function parseSseXml(xmlData: string): RawSSEEvent {
   // Check if this is a <response> tag (the main event format)
   if (xmlData.includes('<response>')) {
     // Extract all known fields from XML
-    result.session_id = extractXmlTag(xmlData, 'session_id');
-    result.model = extractXmlTag(xmlData, 'model');
-    result.cwd = extractXmlTag(xmlData, 'cwd');
+    result.session_id = getTagValue(xmlData, 'session_id') || undefined;
+    result.model = getTagValue(xmlData, 'model') || undefined;
+    result.cwd = getTagValue(xmlData, 'cwd') || undefined;
 
     // Extract raw content (supports nested tags like <think>, <markdown>, <plain>)
-    const rawContent = extractXmlTag(xmlData, 'content');
+    const rawContent = getTagValue(xmlData, 'content');
     if (rawContent) {
-      result.content = rawContent;
-      result.parsed_content = parseContentField(rawContent);
+      // Decode XML entities in content
+      result.content = decodeXmlEntities(rawContent);
+      result.parsed_content = parseContentField(result.content);
     }
 
-    result.reasoning_content = extractXmlTag(xmlData, 'reasoning_content');
-    result.role = extractXmlTag(xmlData, 'role') || 'assistant';
-    result.finish_reason = extractXmlTag(xmlData, 'finish_reason');
-    result.tool_call_id = extractXmlTag(xmlData, 'tool_call_id');
-    result.tool_name = extractXmlTag(xmlData, 'tool_name');
-    result.agent_name = extractXmlTag(xmlData, 'agent_name');
-    result.session_name = extractXmlTag(xmlData, 'session_name');
+    result.reasoning_content = getTagValue(xmlData, 'reasoning_content') || undefined;
+    result.role = getTagValue(xmlData, 'role') || 'assistant';
+    result.finish_reason = getTagValue(xmlData, 'finish_reason') || undefined;
+    result.tool_call_id = getTagValue(xmlData, 'tool_call_id') || undefined;
+    result.tool_name = getTagValue(xmlData, 'tool_name') || undefined;
+    result.agent_name = getTagValue(xmlData, 'agent_name') || undefined;
+    result.session_name = getTagValue(xmlData, 'session_name') || undefined;
 
-    const loopIndex = extractXmlTag(xmlData, 'loop_index');
+    const loopIndex = getTagValue(xmlData, 'loop_index');
     result.loop_index = loopIndex ? Number.parseInt(loopIndex, 10) : undefined;
 
-    const temp = extractXmlTag(xmlData, 'temperature');
+    const temp = getTagValue(xmlData, 'temperature');
     result.temperature = temp ? Number.parseFloat(temp) : undefined;
 
-    result.is_thinking = extractXmlTag(xmlData, 'is_thinking') === 'true';
-    result.is_input = extractXmlTag(xmlData, 'is_input') === 'true';
-    result.is_output = extractXmlTag(xmlData, 'is_output') === 'true';
+    result.is_thinking = getTagValue(xmlData, 'is_thinking') === 'true';
+    result.is_input = getTagValue(xmlData, 'is_input') === 'true';
+    result.is_output = getTagValue(xmlData, 'is_output') === 'true';
 
-    result.parent_session_id = extractXmlTag(xmlData, 'parent_session_id');
-    result.parent_id = extractXmlTag(xmlData, 'parent_id');
+    result.parent_session_id = getTagValue(xmlData, 'parent_session_id') || undefined;
+    result.parent_id = getTagValue(xmlData, 'parent_id') || undefined;
 
     // Parse tool_calls if present
     const toolCallsMatch = xmlData.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/);
@@ -149,9 +168,10 @@ export function parseSseXml(xmlData: string): RawSSEEvent {
       for (const tcMatch of toolCallMatches) {
         const tcContent = tcMatch[1];
         result.tool_calls.push({
-          id: extractXmlTag(tcContent, 'id') || '',
-          name: extractXmlTag(tcContent, 'name') || '',
-          arguments: extractXmlTag(tcContent, 'arguments') || '',
+          id: getTagValue(tcContent, 'id') || '',
+          name: getTagValue(tcContent, 'name') || '',
+          // Decode XML entities in arguments
+          arguments: decodeXmlEntities(getTagValue(tcContent, 'arguments')),
         });
       }
     }
@@ -164,7 +184,8 @@ export function parseSseXml(xmlData: string): RawSSEEvent {
       // Extract content from chunk (may itself contain <markdown>/<plain>/<think>)
       const chunkContentMatch = chunkContent.match(/<content>([\s\S]*?)<\/content>/);
       if (chunkContentMatch) {
-        result.content = chunkContentMatch[1];
+        const chunkRawContent = chunkContentMatch[1];
+        result.content = decodeXmlEntities(chunkRawContent);
         result.parsed_content = parseContentField(result.content);
       }
 
@@ -211,6 +232,10 @@ export class SSEClient {
   private baseUrl: string;
   private isIntentionalDisconnect = false;
 
+  // Request tracking: 1 request = 1 GUID
+  private requestId: string | null = null;
+  private eventIndex = 0;
+
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
   }
@@ -227,6 +252,50 @@ export class SSEClient {
    */
   getSessionId(): string | null {
     return this.sessionId;
+  }
+
+  /**
+   * Get the current request ID (1 request = 1 GUID)
+   */
+  getRequestId(): string | null {
+    return this.requestId;
+  }
+
+  /**
+   * Start a new request tracking session
+   */
+  startRequest(): string {
+    if (!this.sessionId) {
+      log.warn('[SSEClient] Cannot start request without active session');
+      return '';
+    }
+    this.requestId = generateRequestId();
+    this.eventIndex = 0;
+    start(this.requestId, this.sessionId);
+    log.info(`[SSEClient] Started request tracking: ${this.requestId}`);
+    return this.requestId;
+  }
+
+  /**
+   * Track an event with the current request
+   */
+  trackEvent(_type: string, _content?: string): { requestId: string; eventIndex: number } {
+    this.eventIndex++;
+    return { requestId: this.requestId || 'none', eventIndex: this.eventIndex };
+  }
+
+  /**
+   * End the current request tracking session
+   */
+  endRequest(): void {
+    if (this.requestId) {
+      log.info(
+        `[SSEClient] Ending request tracking: ${this.requestId} (${this.eventIndex} events)`
+      );
+      end(this.requestId);
+      this.requestId = null;
+      this.eventIndex = 0;
+    }
   }
 
   /**
@@ -266,21 +335,29 @@ export class SSEClient {
     this.sessionId = sessionId;
     this.reconnectAttempts = 0;
 
+    // Start request tracking for this session
+    this.requestId = generateRequestId();
+    this.eventIndex = 0;
+    start(this.requestId, sessionId);
+
     const url = `${this.baseUrl}/api/stream/${encodeURIComponent(sessionId)}`;
-    log.info('[SSEClient] Connecting to:', url);
+    log.info(`[SSEClient] Connecting to: ${url}`, { id: this.requestId });
 
     try {
       this.eventSource = new EventSource(url);
 
       this.eventSource.onopen = () => {
-        log.info('[SSEClient] Connected to SSE stream');
+        log.info('[SSEClient] Connected to SSE stream', { id: this.requestId || undefined });
         this.reconnectAttempts = 0;
         // Send connected event
         this.notifyHandlers({ type: 'connected', session_id: sessionId });
       };
 
       this.eventSource.onerror = (error) => {
-        log.error('[SSEClient] SSE error:', error);
+        log.error('[SSEClient] SSE error:', {
+          id: this.requestId || undefined,
+          extra: JSON.stringify(error),
+        });
         if (!this.isIntentionalDisconnect) {
           this.handleError();
         }
@@ -296,11 +373,27 @@ export class SSEClient {
             return;
           }
 
-          log.info(`[SSEClient] Received message: ${rawData}`);
+          // Track event
+          this.eventIndex++;
+          const eventInfo = { requestId: this.requestId || 'none', eventIndex: this.eventIndex };
+          requestLog(
+            eventInfo.requestId,
+            'info',
+            `Event #${eventInfo.eventIndex} received`,
+            `type=${event.type}, len=${rawData.length}`
+          );
 
-          const parsed = parseSseXml(rawData);
+          // logging raw data
+          requestLog(eventInfo.requestId, 'info', `Raw data: ${rawData}`);
 
-          log.info(`[SSEClient] Parsed message: ${JSON.stringify(parsed)}`);
+          const parsed = parseMessages(rawData);
+
+          requestLog(
+            eventInfo.requestId,
+            'info',
+            `Event #${eventInfo.eventIndex} parsed`,
+            `type=${determineEventType(parsed)}, hasContent=${!!parsed.content}`
+          );
 
           const sseMsg: SSEMessage = {
             type: determineEventType(parsed),
@@ -313,18 +406,39 @@ export class SSEClient {
             timestamp: parsed.session_id ? String(Date.now()) : undefined,
           };
           this.notifyHandlers(sseMsg);
+
+          // Log completion of request
+          if (sseMsg.type === 'done') {
+            requestLog(
+              eventInfo.requestId,
+              'info',
+              'Request completed',
+              `finish_reason=${sseMsg.finish_reason}`
+            );
+          }
         } catch (err) {
-          log.error('[SSEClient] Failed to parse message event:', err, err.stack);
+          requestLog(
+            this.requestId || 'none',
+            'error',
+            'Failed to parse message event',
+            String(err)
+          );
         }
       });
     } catch (err) {
-      log.error('[SSEClient] Failed to create EventSource:', err);
+      log.error('[SSEClient] Failed to create EventSource:', {
+        id: this.requestId || undefined,
+        extra: String(err),
+      });
     }
   }
 
   disconnect(): void {
+    // End request tracking first
+    this.endRequest();
+
     if (this.eventSource) {
-      log.info('[SSEClient] Disconnecting SSE stream');
+      log.info('[SSEClient] Disconnecting SSE stream', { id: this.requestId || undefined });
       this.eventSource.close();
       this.eventSource = null;
     }

@@ -46,33 +46,6 @@ test "parseToolCallXml: write_file tool" {
     try testing.expectEqualSlices(u8, "abc123", result.tools[0].fields.hash);
 }
 
-test "parseToolCallXml: search tool" {
-    const allocator = testing.allocator;
-    
-    const xml = "<tool_call><tool_name>search</tool_name><pattern>fn main</pattern><path>/src</path><matches>10</matches></tool_call>";
-    
-    var result = try tool_parser.parseToolCallXml(xml, allocator);
-    defer result.deinit(allocator);
-    
-    try testing.expect(result.tools.len == 1);
-    try testing.expectEqualSlices(u8, "search", result.tools[0].tool_name);
-    try testing.expectEqualSlices(u8, "fn main", result.tools[0].fields.pattern);
-    try testing.expectEqualSlices(u8, "/src", result.tools[0].fields.path);
-}
-
-test "parseToolCallXml: glob tool" {
-    const allocator = testing.allocator;
-    
-    const xml = "<tool_call><tool_name>glob</tool_name><pattern>*.zig</pattern><results>src/main.zig\nsrc/lib.zig</results></tool_call>";
-    
-    var result = try tool_parser.parseToolCallXml(xml, allocator);
-    defer result.deinit(allocator);
-    
-    try testing.expect(result.tools.len == 1);
-    try testing.expectEqualSlices(u8, "glob", result.tools[0].tool_name);
-    try testing.expectEqualSlices(u8, "*.zig", result.tools[0].fields.pattern);
-}
-
 test "parseToolCallXml: web_search tool" {
     const allocator = testing.allocator;
     

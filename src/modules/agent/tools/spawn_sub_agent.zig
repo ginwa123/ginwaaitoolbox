@@ -58,7 +58,7 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\EXAMPLE USE CASES:
         \\  - Spawn 3 agents: one to browse URL A, one to browse URL B, one to browse URL C
         \\  - Spawn 5 agents to process 5 different files in parallel
-        \\  - Spawn agents with ["search", "web_browse"] to research multiple topics at once
+        \\  - Spawn agents with ["web_browse"] to research multiple topics at once
         ,
         .parameters = .{
             .type = "object",

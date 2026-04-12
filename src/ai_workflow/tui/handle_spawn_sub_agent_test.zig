@@ -99,20 +99,6 @@ test "execute_sub_agent_tool - read_file with valid path" {
     try std.testing.expect(result.output.len > 0);
 }
 
-test "execute_sub_agent_tool - search tool executes" {
-    const allocator = std.testing.allocator;
-    const tc = makeToolCall("search", "{\"pattern\": \"test\", \"path\": \".\"}");
-    var db = makeDummyDb();
-    const session_id = "test-session";
-    const config = makeDummyConfig();
-
-    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
-    defer allocator.free(result.output);
-
-    // search returns results or empty array
-    try std.testing.expect(result.output.len > 0);
-}
-
 // ============================================================================
 // Tests for parseSkillFromResult
 // ============================================================================
@@ -208,7 +194,7 @@ test "get_allowed_tools - returns all tools when no filter" {
 
     const result = try handle_spawn_sub_agent.get_allowed_tools(allocator, null, mcp_tools);
     defer allocator.free(result);
-    // Should have multiple tools (bash, read_file, search, etc.)
+    // Should have multiple tools (bash, read_file, etc.)
     try std.testing.expect(result.len > 5);
 
     // Verify some expected tools are present

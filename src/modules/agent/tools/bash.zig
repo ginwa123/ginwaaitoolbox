@@ -157,7 +157,7 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     }
 
     // --- Foreground mode ---
-    const max_output = input.max_output orelse 1024 * 1024;
+    const max_output = input.max_output orelse 20 * 1024; // 20KB default
     const max_lines = input.max_lines orelse 1000;
     const timeout_sec = input.timeout orelse 30;
 
@@ -267,18 +267,29 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
                         if (stdout_data.items.len >= max_output or stdout_line_count >= max_lines) {
                             // Mark truncated and find the line boundary to trim to
                             stdout_truncated = true;
-                            // Find position of the max_lines-th newline
                             var count: usize = 0;
                             var trim_pos = stdout_data.items.len;
-                            for (stdout_data.items, 0..) |b, i| {
-                                if (b == '\n') {
-                                    count += 1;
-                                    if (count == max_lines) {
-                                        trim_pos = i + 1;
-                                        break;
+                            var found_line_boundary = false;
+
+                            // Prefer line boundary if lines exceeded, otherwise use byte limit
+                            if (stdout_line_count >= max_lines) {
+                                for (stdout_data.items, 0..) |b, i| {
+                                    if (b == '\n') {
+                                        count += 1;
+                                        if (count == max_lines) {
+                                            trim_pos = i + 1;
+                                            found_line_boundary = true;
+                                            break;
+                                        }
                                     }
                                 }
                             }
+
+                            // If no line boundary found, trim to byte limit
+                            if (!found_line_boundary and stdout_data.items.len > max_output) {
+                                trim_pos = max_output;
+                            }
+
                             if (stdout_data.items.len > trim_pos) {
                                 stdout_data.shrinkAndFree(allocator, trim_pos);
                             }
@@ -306,15 +317,27 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
                             stderr_truncated = true;
                             var count: usize = 0;
                             var trim_pos = stderr_data.items.len;
-                            for (stderr_data.items, 0..) |b, i| {
-                                if (b == '\n') {
-                                    count += 1;
-                                    if (count == max_lines) {
-                                        trim_pos = i + 1;
-                                        break;
+                            var found_line_boundary = false;
+
+                            // Prefer line boundary if lines exceeded, otherwise use byte limit
+                            if (stderr_line_count >= max_lines) {
+                                for (stderr_data.items, 0..) |b, i| {
+                                    if (b == '\n') {
+                                        count += 1;
+                                        if (count == max_lines) {
+                                            trim_pos = i + 1;
+                                            found_line_boundary = true;
+                                            break;
+                                        }
                                     }
                                 }
                             }
+
+                            // If no line boundary found, trim to byte limit
+                            if (!found_line_boundary and stderr_data.items.len > max_output) {
+                                trim_pos = max_output;
+                            }
+
                             if (stderr_data.items.len > trim_pos) {
                                 stderr_data.shrinkAndFree(allocator, trim_pos);
                             }
@@ -453,9 +476,11 @@ pub const bash_tool = AgentTool{
         \\## Command Rules (enforced in code)
         \\Every command MUST:
         \\- start with `timeout <seconds>`
-        \\- limit output using `| head -n <N> or tail -n <N>`
+        \\- limit output using `| head -n <N> or tail -n <N>` to prevent huge output
         \\- avoid commands that produce unbounded output
-        \\- use ripgrep (rg) instead of grep/find when available
+        \\- use ripgrep (rg) instead of grep/find for searching
+        \\- use fd for finding files (faster alternative to find/glob)
+        \\- use tree for directory structure
         \\## Web Browsing
         \\To browse the web or fetch URLs, use the `agent-browser` CLI:
         \\
@@ -488,7 +513,7 @@ pub const bash_tool = AgentTool{
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description = "Maximum stdout+stderr bytes. Default: 10000.",
+                    .description = "Maximum stdout+stderr bytes. Default: 20480 (20KB). Output exceeding this limit is truncated.",
                 },
                 .{
                     .name = "stdin_data",

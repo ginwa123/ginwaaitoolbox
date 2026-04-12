@@ -41,8 +41,6 @@ pub fn display_tool_result_by_name(result_xml: []const u8, tool_name: []const u8
         displaySkillResult(result_xml, tool_name);
     } else if (std.mem.eql(u8, tool_name, "list_skills")) {
         displayListSkillsResult(result_xml, tool_name);
-    } else if (std.mem.eql(u8, tool_name, "search")) {
-        displaySearchResult(result_xml, tool_name, max_result_len);
     } else if (std.mem.eql(u8, tool_name, "read_file")) {
         displayReadFileResult(result_xml, tool_name);
     } else if (std.mem.eql(u8, tool_name, "lsp_definition")) {

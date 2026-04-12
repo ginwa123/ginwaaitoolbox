@@ -243,7 +243,7 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
 
 const SessionChat: Component = () => {
   const params = useParams<{ sessionId: string }>();
-  const queryClient = useQueryClient();
+  const _queryClient = useQueryClient();
   let scrollRef: HTMLDivElement | undefined;
   const [streaming, setStreaming] = createSignal(false);
 

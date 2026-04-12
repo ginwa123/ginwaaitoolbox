@@ -34,7 +34,7 @@ export const decodeXmlEntities = (str: string | undefined | null): string => {
  * Extract tag value using a regex that handles nested tags properly
  * by matching from opening tag to the CORRECT closing tag (not the first one found)
  */
-const getTagValue = (content: string, tag: string): string => {
+export const getTagValue = (content: string, tag: string): string => {
   // Match opening tag, then any content until we find the exact closing tag
   // This handles nested content better than non-greedy matching
   const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

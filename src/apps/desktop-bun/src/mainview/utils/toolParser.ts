@@ -6,6 +6,8 @@
  *
  * Supports: bash, read_file, write_file, search, glob, web_search,
  * spawn_sub_agent, lsp_* tools, and generic fallback.
+ *
+ * Request tracking: 1 request = 1 GUID for easy correlation in logs
  */
 
 import { decodeXmlEntities } from './xmlParser';
@@ -19,11 +21,35 @@ export interface ToolData {
   fields: Record<string, string>;
   isParsed: boolean;
   rawContent: string;
+  /** Request GUID for tracing (set via parseToolCallXmlWithRequest) */
+  requestId?: string;
+  /** Event index within the request */
+  eventIndex?: number;
 }
 
 export interface ParseResult {
   tools: ToolData[];
   isComplete: boolean;
+}
+
+/** Optional request context for tracing */
+export interface RequestContext {
+  requestId: string;
+  eventIndex: number;
+}
+
+// ============================================================================
+// Request Context Helpers
+// ============================================================================
+
+/**
+ * Generate a short GUID (8 chars) for tracing
+ */
+export function generateRequestId(): string {
+  const timestamp = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).substring(2, 6);
+  const randomPart2 = Math.random().toString(36).substring(2, 6);
+  return `REQ-${timestamp}-${randomPart}${randomPart2}`.toUpperCase();
 }
 
 // ============================================================================
@@ -457,3 +483,42 @@ export const getToolSummary = (tool: ToolData): string => {
       return tool.toolName;
   }
 };
+
+// ============================================================================
+// Request-Aware Parsing
+// ============================================================================
+
+/**
+ * Parse tool call XML with request context for tracing
+ *
+ * Usage:
+ *   const { tools, requestId, eventIndex } = parseToolCallXmlWithRequest(content, { requestId, eventIndex });
+ *   // Each tool will have tool.requestId and tool.eventIndex set
+ */
+export function parseToolCallXmlWithRequest(
+  content: string,
+  context: RequestContext
+): ParseResult & RequestContext {
+  const result = parseToolCallXml(content);
+
+  // Annotate each tool with request context
+  for (const tool of result.tools) {
+    tool.requestId = context.requestId;
+    tool.eventIndex = context.eventIndex;
+  }
+
+  return {
+    ...result,
+    requestId: context.requestId,
+    eventIndex: context.eventIndex,
+  };
+}
+
+/**
+ * Format a log entry with request context
+ *
+ * Output format: [REQ:XXX][E1] message | extra
+ */
+export function formatRequestLog(text: string, context: RequestContext, extra?: string): string {
+  return `[REQ:${context.requestId}][E${context.eventIndex}] ${text}${extra ? ` | ${extra}` : ''}`;
+}

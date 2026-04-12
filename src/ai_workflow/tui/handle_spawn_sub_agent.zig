@@ -299,7 +299,7 @@ fn run_sub_agent(
             .chunk_index = 0,
         };
 
-        last_response = try sub_agent.callStreaming(params, &stream_ctx, stream_callback);
+        last_response = try sub_agent.call_streaming(params, &stream_ctx, stream_callback);
         const response = last_response.?;
 
         // Save assistant response to DB

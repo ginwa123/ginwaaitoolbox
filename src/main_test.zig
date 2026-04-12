@@ -27,7 +27,6 @@ test "root module exports expected symbols" {
     try std.testing.expect(@hasDecl(root, "bash_tool"));
     try std.testing.expect(@hasDecl(root, "read_file"));
     try std.testing.expect(@hasDecl(root, "write_file"));
-    try std.testing.expect(@hasDecl(root, "search_tool"));
     try std.testing.expect(@hasDecl(root, "text_replace_tool"));
     
     // Tool models

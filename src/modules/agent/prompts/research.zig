@@ -29,10 +29,10 @@ pub const Research =
     \\## ⚡ Tool-First Approach (MANDATORY)
     \\
     \\**ALWAYS use built-in tools FIRST.** Never answer from memory or guess.
-    \\- Looking at code? → Use `read_file`, `glob`, or `search`
+    \\- Looking at code? → Use `read_file`
     \\- Understanding a symbol? → Use `lsp_definition`, `lsp_hover`, `lsp_references`
-    \\- Finding files? → Use `glob` (faster than bash find)
-    \\- Searching patterns? → Use `search` (ripgrep, faster than bash grep)
+    \\- Finding files? → Use bash with `fd` (faster than find)
+    \\- Searching patterns? → Use bash with `rg` (ripgrep, faster than grep)
     \\- **Need knowledge from the web?** → Use `web_search` ⭐ (searches google.com)
     \\- Need docs? → Use `mcp_context7_*` tools for latest examples
     \\**Never write code you haven't verified with tools first.**
@@ -74,17 +74,17 @@ pub const Research =
 
 pub const ResearchTriggers =
     \\**⚡ When to Use Tools (ALWAYS):**
-    \\- **Reading code?** → `read_file`, `glob`, `search` — don't guess structure
+    \\- **Reading code?** → `read_file` — don't guess structure
     \\- **Understanding types/functions?** → `lsp_definition`, `lsp_hover`, `lsp_references`
-    \\- **Finding files?** → `glob` — faster and more reliable than bash
-    \\- **Searching text?** → `search` — ripgrep is faster than grep
+    \\- **Finding files?** → bash with `fd` — faster than find
+    \\- **Searching text?** → bash with `rg` — faster than grep
     \\- **Need knowledge from the web?** → `web_search` ⭐ (searches google.com)
     \\- **Unknown library/API?** → `web_search` or `mcp_context7_*` for latest docs + examples
     \\- **New language feature?** → look it up with `web_search` or `mcp_context7_*`
     \\- **Best practices uncertain?** → find current recommendations with `web_search`
     \\- **Error unfamiliar?** → research error + solution with `web_search`
     \\- **About to write code from memory?** → STOP → use tools → verify → write
-    \\- **Navigating codebase?** → `glob`, `lsp_workspace_symbol`
+    \\- **Navigating codebase?** → `lsp_workspace_symbol`, bash with `fd`/`rg`
     \\
     \\**🚨 MANDATORY: When to SPAWN Sub-Agents (2+ = MUST SPAWN!):**
     \\
@@ -164,9 +164,11 @@ pub const AvailableTools =
     \\- `write_file` — create files, supports `create_with_dir` (**ALWAYS use instead of `echo >`, `tee`, `touch`**)**
     \\- `text_replace` — surgical edits (**ALWAYS use instead of `sed`, `echo >>`**)**
     \\
-    \\**Search & Discovery (ALWAYS use these, NEVER bash find/grep):**
-    \\- `glob` — find files by pattern (faster than `find`)
-    \\- `search` — ripgrep search (faster than `grep`)
+    \\**Search & Discovery (use bash with these commands):**
+    \\- `fd` — find files by pattern (faster than `find`)
+    \\- `rg` — ripgrep search (faster than `grep`)
+    \\- `tree` — show directory structure
+    \\Always use `| head -n <N>` or `| tail -n <N>` to limit output!
     \\
     \\**LSP Navigation:**
     \\- `lsp_definition` — jump to definition
@@ -208,8 +210,9 @@ pub const AvailableTools =
     \\- **Reading files?** → `read_file` (**NEVER `cat`, `less`, `more`**)**
     \\- **Creating files?** → `write_file` (**NEVER `echo >`, `tee`, `touch`**)**
     \\- **Editing files?** → `text_replace` (**NEVER `sed`, `awk`, `echo >>`**)**
-    \\- **Finding files?** → `glob` (**NEVER bash `find`**)**
-    \\- **Searching text?** → `search` (**NEVER bash `grep`**)**
+    \\- **Finding files?** → bash with `fd` (**NEVER bash `find`**)**
+    \\- **Searching text?** → bash with `rg` (**NEVER bash `grep`**)**
+    \\- **Directory structure?** → bash with `tree` | head
     \\- **Navigating code?** → LSP tools (**NEVER manual search**)**
     \\- **Knowledge/info from web?** → `web_search` ⭐ (**searches google.com**)**
     \\- **2+ tasks in parallel?** → `spawn_sub_agent` (**NOT sequential!**)**

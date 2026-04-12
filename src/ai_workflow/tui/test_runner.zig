@@ -14,7 +14,6 @@ test {
     _ = @import("handle_bash_tool_test.zig");
     _ = @import("handle_content_filter_test.zig");
     _ = @import("handle_change_agent_tool_test.zig");
-    _ = @import("handle_search_tool_test.zig");
     _ = @import("handle_spawn_sub_agent_test.zig");
     _ = @import("handle_text_replace_tool_test.zig");
     _ = @import("handle_tool_test.zig");

@@ -35,7 +35,6 @@ const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const BuildMemoryForAgent = @import("build_memory_for_agent_prompt.zig").BuildMemoryForAgent;
 const WriteFileTool = root_mod.write_file;
-const SearchTool = root_mod.search_tool;
 const TextReplaceTool = root_mod.text_replace_tool;
 
 const on_event_sent = @import("on_event_sent.zig");
@@ -106,7 +105,7 @@ pub const TUIWorkflow = struct {
     }
 
     pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) void {
-        self.runInternal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
+        self.run_internal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
             on_event_send_new(allocator, .{
                 .session_id = session_id,
@@ -132,7 +131,7 @@ pub const TUIWorkflow = struct {
         };
     }
 
-    fn runInternal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
+    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
         // Register this session for cancellation tracking
         if (cancellation_registry.get_global_registry()) |registry| {
             try registry.register(session_id);
@@ -271,7 +270,7 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            const res_dynamic_agent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config, base_tools) catch |err| {
+            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config, base_tools) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -429,7 +428,7 @@ pub const TUIWorkflow = struct {
 
         _ = try self.logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{session_id});
     }
-    fn callDynamicAgent(
+    fn call_dynamic_agent(
         self: *TUIWorkflow,
         allocator: std.mem.Allocator,
         messages_list: *std.ArrayList(agent.AgentMessage),
@@ -469,7 +468,7 @@ pub const TUIWorkflow = struct {
             .session_id = session_id,
             .chunk_index = 0,
         };
-        const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
+        const res_dynamic_agent = try dynamic_agent.call_streaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
 
         return res_dynamic_agent;
     }
@@ -560,7 +559,7 @@ pub const TUIWorkflow = struct {
         }) catch {};
 
         // Use callStreaming for compaction agent - no-op callback since we don't need to stream to client
-        const response = compaction_agent.callStreaming(params, null, noopStreamCallback) catch |err| {
+        const response = compaction_agent.call_streaming(params, null, noopStreamCallback) catch |err| {
             self.logger.errFmt("[COMPACTION] Failed: {s}", .{@errorName(err)}) catch {};
             return null;
         };

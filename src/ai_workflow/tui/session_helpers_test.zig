@@ -208,7 +208,7 @@ test "get_messages returns multiple records with new columns" {
     try std.testing.expectEqual(@as(u32, 200), results[1].prompt_tokens);
     try std.testing.expectEqual(@as(u32, 100), results[1].completion_tokens);
     try std.testing.expectEqual(@as(u32, 300), results[1].total_tokens);
-    try std.testing.expectEqualStrings("search", results[1].tool_name);
+    try std.testing.expectEqualStrings("read_file", results[1].tool_name);
 }
 
 test "get_message_latest returns null for non-existent session" {

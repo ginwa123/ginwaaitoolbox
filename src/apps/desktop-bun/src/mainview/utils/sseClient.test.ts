@@ -534,8 +534,8 @@ describe('determineEventType Function', () => {
   test('checks tool info before finish_reason', () => {
     const source = fs.readFileSync(sourcePath, 'utf-8');
     // Should check tool info first (more specific), then finish_reason
-    const finishIdx = source.indexOf('finish_reason');
-    const toolIdx = source.indexOf('tool_');
+    const _finishIdx = source.indexOf('finish_reason');
+    const _toolIdx = source.indexOf('tool_');
     // This is a suggestion - not enforced
     expect(true).toBe(true);
   });
@@ -624,7 +624,7 @@ describe('parseSseXml', () => {
     '/home/ginwa/agentic_coding_zig/ginwaaitoolbox/src/apps/desktop-bun/src/mainview/utils/sseClient.ts';
 
   // Sample XML data for reference
-  const sampleXml = `<response>
+  const _sampleXml = `<response>
     <session_id>sess_1775580700_67fcab3866482f6d</session_id>
     <model>MiniMax-M2.7</model>
     <cwd>/home/ginwa/experiment</cwd>

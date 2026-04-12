@@ -31,7 +31,8 @@ pub const Agent =
     \\- `spawn_sub_agent` — **RUN 2-20 AGENTS IN PARALLEL** (MANDATORY for 2+ tasks!)
     \\- `list_skills` + `get_skill` — Skills for specialized guidance
     \\- `change_agent` — Switch to specialized agent
-    \\- Built-in tools — `read_file`, `search`, `glob`, LSP tools
+    \\- Built-in tools — `read_file`, LSP tools
+    \\- Bash tools — use `fd`, `rg`, `tree` with `head`/`tail` to limit output
     \\
     \\**Rule: Orchestrate. Delegate. Never do parallel work yourself sequentially.**
 ;

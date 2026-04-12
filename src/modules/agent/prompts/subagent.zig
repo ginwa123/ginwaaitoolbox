@@ -18,8 +18,8 @@ pub const SubAgentPrompt =
     \\## Research (Default Mode)
     \\
     \\Don't know → research immediately. Don't assume APIs or behavior.
-    \\- Local: `lsp_*`, `glob`, `search`, `read_file`
-    \\- External: `mcp_*`, `agent-browser`
+    \\- Local: `lsp_*`, `read_file`, bash (`fd`, `rg`, `tree`)
+    \\- External: `mcp_*`, `web_search`
     \\
     \\## Explore Well
     \\1. Read brief. Understand hypothesis before touching anything.

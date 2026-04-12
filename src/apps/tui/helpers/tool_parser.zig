@@ -55,18 +55,6 @@ pub const ToolData = struct {
             } else {
                 return try allocator.dupe(u8, "file");
             }
-        } else if (std.mem.eql(u8, self.tool_name, "search")) {
-            if (self.fields.pattern.len > 0) {
-                return try std.fmt.allocPrint(allocator, "Search: {s}", .{self.fields.pattern});
-            } else {
-                return try allocator.dupe(u8, " pattern");
-            }
-        } else if (std.mem.eql(u8, self.tool_name, "glob")) {
-            if (self.fields.pattern.len > 0) {
-                return try std.fmt.allocPrint(allocator, "Glob: {s}", .{self.fields.pattern});
-            } else {
-                return try allocator.dupe(u8, "pattern");
-            }
         } else if (std.mem.eql(u8, self.tool_name, "web_search") or std.mem.eql(u8, self.tool_name, "web_search_browse")) {
             if (self.fields.query.len > 0) {
                 return try std.fmt.allocPrint(allocator, "Web: {s}", .{self.fields.query});
@@ -212,13 +200,6 @@ fn parseSingleToolCall(tool_call_xml: []const u8, allocator: std.mem.Allocator) 
         fields.path = extractField(tool_call_xml, "path") orelse "";
         fields.content = extractField(tool_call_xml, "content") orelse "";
         fields.hash = extractField(tool_call_xml, "hash") orelse "";
-    } else if (std.mem.eql(u8, tool_name_lower, "search")) {
-        fields.pattern = extractField(tool_call_xml, "pattern") orelse "";
-        fields.path = extractField(tool_call_xml, "path") orelse "";
-        fields.matches = extractField(tool_call_xml, "matches") orelse "";
-    } else if (std.mem.eql(u8, tool_name_lower, "glob")) {
-        fields.pattern = extractField(tool_call_xml, "pattern") orelse "";
-        fields.results = extractField(tool_call_xml, "results") orelse "";
     } else if (std.mem.eql(u8, tool_name_lower, "web_search") or std.mem.eql(u8, tool_name_lower, "web_search_browse")) {
         fields.query = extractField(tool_call_xml, "query") orelse "";
         fields.url = extractField(tool_call_xml, "url") orelse "";
