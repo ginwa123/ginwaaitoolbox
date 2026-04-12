@@ -160,7 +160,7 @@ pub fn get_current_agent_by_session_id(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !AgentState {
-    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0.1), COALESCE(is_thinking, 1) FROM llm_history WHERE session_id = ? ORDER BY created_at DESC LIMIT 1";
+    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0), COALESCE(is_thinking, 1) FROM llm_history WHERE session_id = ? ORDER BY created_at DESC LIMIT 1";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -177,7 +177,7 @@ pub fn get_current_agent_by_session_id(
     } else {
         return AgentState{
             .agent = try allocator.dupe(u8, "Agent"),
-            .temperature = 0.1,
+            .temperature = 0,
             .is_thinking = true,
         };
     }

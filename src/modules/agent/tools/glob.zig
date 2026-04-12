@@ -49,6 +49,13 @@ pub const GlobResult = struct {
     }
 };
 
+/// Result of parsing glob arguments into fd CLI arguments.
+const ParsedGlobArgs = struct {
+    pattern: []const u8,
+    path: []const u8,
+    options: std.ArrayList([]const u8),
+};
+
 /// Tokenize a shell-like argument string, respecting quotes and escaping.
 /// Handles: pattern, -e zig, -H, --max-results 50, "quoted args"
 fn tokenizeArgs(input: []const u8, allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]const u8) {
@@ -101,17 +108,22 @@ fn looksLikePath(token: []const u8) bool {
     return false;
 }
 
+/// Check if a pattern contains glob characters (*, ?, [, {)
+/// fd requires --glob flag for these patterns to work correctly.
+fn isGlobPattern(pattern: []const u8) bool {
+    // Check for common glob metacharacters
+    return std.mem.indexOfAny(u8, pattern, "*?[") != null;
+}
+
 /// Parse tokens into positional args (pattern, path) and fd options.
 /// fd CLI: fd [OPTIONS] pattern [path]
 /// Handles the case where fd is strict about paths - a path ending with / won't work.
-fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !struct {
-    pattern: []const u8,
-    path: []const u8,
-    options: std.ArrayListUnmanaged([]const u8),
-} {
+/// Automatically adds --glob flag if the pattern contains glob metacharacters.
+fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlobArgs {
     var pattern: []const u8 = "";
     var path: []const u8 = ".";
-    var options = std.ArrayListUnmanaged([]const u8){};
+    var options = std.ArrayList([]const u8).empty;
+    errdefer options.deinit(allocator);
 
     var i: usize = 0;
     while (i < tokens.len) {
@@ -148,6 +160,24 @@ fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !struct {
         }
     }
 
+    // Auto-detect glob patterns and add --glob flag if needed
+    // fd requires --glob flag for patterns containing *, ?, or [
+    if (pattern.len > 0 and isGlobPattern(pattern)) {
+        // Check if --glob or -g is already present
+        var has_glob_flag = false;
+        for (options.items) |opt| {
+            if (std.mem.eql(u8, opt, "--glob") or std.mem.eql(u8, opt, "-g")) {
+                has_glob_flag = true;
+                break;
+            }
+        }
+        // Add --glob if not present
+        if (!has_glob_flag) {
+            try options.append(allocator, "--glob");
+        }
+    }
+
+    // Convert to ArrayListUnmanaged for return
     return .{ .pattern = pattern, .path = path, .options = options };
 }
 
@@ -193,6 +223,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
     try args.append(allocator, parsed.path);
 
     // Run fd
+
     const result = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = args.items,
@@ -203,8 +234,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
     defer allocator.free(result.stderr);
 
     // Free options memory
-    for (parsed.options.items) |opt| allocator.free(opt);
-    parsed.options.clearAndFree(allocator);
+    parsed.options.deinit(allocator);
 
     // Parse results
     var matches = std.ArrayListUnmanaged(GlobMatch){};

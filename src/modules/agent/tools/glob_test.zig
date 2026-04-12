@@ -207,3 +207,66 @@ test "glob_tool required is empty" {
 
     try expectEqual(0, tool.function.parameters.required.len);
 }
+
+// ============================================================================
+// BUG FIX: Glob patterns without --glob flag fail
+// ============================================================================
+
+test "executeGlob with glob pattern (e.g. *.zig) works" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // This should work: fd should auto-detect glob patterns and add --glob
+    const input = GlobInput{
+        .any = "*.zig src/",
+    };
+
+    var result = try executeGlob(allocator, input);
+    defer result.deinit(allocator);
+
+    // Should find .zig files
+    try expect(result.matches.items.len > 0);
+    for (result.matches.items) |m| {
+        try expect(std.mem.endsWith(u8, m.path, ".zig"));
+    }
+}
+
+test "executeGlob with glob pattern and path (e.g. *.zig src/) works" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const input = GlobInput{
+        .any = "*.zig src/",
+    };
+
+    var result = try executeGlob(allocator, input);
+    defer result.deinit(allocator);
+
+    // Should find .zig files in src/
+    try expect(result.matches.items.len > 0);
+    for (result.matches.items) |m| {
+        try expect(std.mem.endsWith(u8, m.path, ".zig"));
+    }
+}
+
+test "executeGlob with complex glob pattern (e.g. test_*.zig) works" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const input = GlobInput{
+        .any = "test_*.zig src/",
+    };
+
+    var result = try executeGlob(allocator, input);
+    defer result.deinit(allocator);
+
+    // Should find test_*.zig files
+    for (result.matches.items) |m| {
+        const filename = std.fs.path.basename(m.path);
+        try expect(std.mem.startsWith(u8, filename, "test_"));
+        try expect(std.mem.endsWith(u8, m.path, ".zig"));
+    }
+}

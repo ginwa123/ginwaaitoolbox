@@ -199,6 +199,13 @@ pub const TUIWorkflow = struct {
         const base_base_tools: []const tool_models.AgentTool = tool_registry.ALL_AGENT_TOOLS;
         const base_tools = try parent_allocator.dupe(tool_models.AgentTool, base_base_tools);
 
+        // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
+        const mcp_tools_fetched = (buildMcpTools.build_mcp_tools_run(parent_allocator, config) catch |err| blk: {
+            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
+            break :blk null;
+        }) orelse &[_]tool_models.AgentTool{};
+        // Note: mcp_tools_fetched memory is managed by parent_allocator
+
         while (true) {
             if (cancellation_registry.get_global_registry()) |registry| {
                 if (registry.is_cancelled(session_id)) {
@@ -270,7 +277,7 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, config, base_tools) catch |err| {
+            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, base_tools, mcp_tools_fetched) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -439,17 +446,10 @@ pub const TUIWorkflow = struct {
         model: []const u8,
         base_url: []const u8,
         session_id: []const u8,
-        config: *const config_mod.LlmConfig,
         base_tools: []const tool_models.AgentTool,
+        mcp_tools: []const tool_models.AgentTool,
     ) !agent.CallResponse {
-        // Fetch MCP tools from configured servers
-        const mcp_tools = (buildMcpTools.build_mcp_tools_run(allocator, config) catch |err| blk: {
-            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
-            break :blk null;
-        }) orelse &[_]tool_models.AgentTool{};
-        // Note: mcp_tools memory is managed by the arena allocator
-
-        // Merge base tools with MCP tools
+        // Merge base tools with pre-fetched MCP tools
         var all_tools: std.ArrayList(tool_models.AgentTool) = .empty;
         try all_tools.appendSlice(allocator, base_tools);
         try all_tools.appendSlice(allocator, mcp_tools);

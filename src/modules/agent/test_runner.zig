@@ -19,4 +19,6 @@ test {
     _ = @import("tools/lsp_hover_test.zig");
     _ = @import("tools/lsp_references_test.zig");
     _ = @import("tools/lsp_workspace_symbol_test.zig");
+    // Glob tests
+    _ = @import("tools/glob_test.zig");
 }

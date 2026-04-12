@@ -25,6 +25,8 @@ const lsp_document_symbol_mod = root_mod.tools.lsp_document_symbol;
 const lsp_hover_mod = root_mod.tools.lsp_hover;
 const set_agent_properties_mod = root_mod.set_agent_properties;
 const web_search_mod = root_mod.web_search;
+const glob_tool_mod = root_mod.glob_tool;
+const search_tool_mod = root_mod.search_tool;
 
 // Handle tool imports for exec functions
 const handle_bash_tool = @import("handle_bash_tool.zig");
@@ -200,9 +202,23 @@ pub fn execLspHover(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
 
 // Web search tool handlers
 const handle_web_search_tool = @import("handle_web_search_tool.zig");
+const handle_glob_tool = @import("handle_glob_tool.zig");
+const handle_search_tool = @import("handle_search_tool.zig");
 
 pub fn execWebSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     return handle_web_search_tool.runWithContext(allocator, tc, db, session_id);
+}
+
+pub fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_glob_tool.handle_glob_tool_run(allocator, tc);
+}
+
+pub fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+    _ = db;
+    _ = session_id;
+    return handle_search_tool.handle_search_tool_run(allocator, tc);
 }
 
 // ============================================================================
@@ -255,6 +271,10 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 
     // === WEB SEARCH TOOLS ===
     .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool, .allowed_for_subagent = true },
+
+    // === FILE SEARCH TOOLS ===
+    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
+    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
 };
 
 // ============================================================================
@@ -287,6 +307,8 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     lsp_document_symbol_mod.lsp_document_symbol_tool,
     lsp_hover_mod.lsp_hover_tool,
     web_search_mod.web_search_tool,
+    glob_tool_mod.glob_tool,
+    search_tool_mod.search_tool,
 };
 
 /// Registry for sub-agents (excludes dangerous tools like spawn_sub_agent, set_agent_properties)
@@ -320,6 +342,10 @@ pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
 
     // === WEB SEARCH TOOLS ===
     .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool, .allowed_for_subagent = true },
+
+    // === FILE SEARCH TOOLS ===
+    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
+    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
 };
 
 /// Get tool metadata by name from registry
@@ -356,12 +382,12 @@ pub fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, cont
     const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
     const name_begin = name_start + "<skill_name>".len;
     const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
-    const skill_name = result[name_begin..name_begin + name_end];
+    const skill_name = result[name_begin .. name_begin + name_end];
 
     const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
     const content_begin = content_start + "<content>".len;
     const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
-    const skill_content = result[content_begin..content_begin + content_end];
+    const skill_content = result[content_begin .. content_begin + content_end];
 
     return .{ .name = skill_name, .content = skill_content };
 }
@@ -372,5 +398,5 @@ pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
     const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
     const name_begin = name_start + "<agent_name>".len;
     const name_end = std.mem.indexOf(u8, result[name_begin..], "</agent_name>") orelse return null;
-    return result[name_begin..name_begin + name_end];
+    return result[name_begin .. name_begin + name_end];
 }

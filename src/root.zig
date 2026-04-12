@@ -102,6 +102,8 @@ pub const write_file = @import("modules/agent/tools/write_file.zig");
 pub const text_replace = @import("modules/agent/tools/text_replace.zig");
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");
+pub const glob_tool = @import("modules/agent/tools/glob.zig");
+pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
@@ -116,7 +118,6 @@ pub const session_table = @import("ai_workflow/tui/session_table.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
 pub const session_queue_messages = @import("ai_workflow/tui/session_queue_messages.zig");
-
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
