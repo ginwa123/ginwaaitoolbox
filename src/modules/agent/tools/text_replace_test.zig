@@ -241,6 +241,7 @@ test "text_replace - CRLF line endings in file" {
     defer allocator.free(read_content);
     
     try std.testing.expectEqualStrings("Goodbye,\n World!\r\n", read_content);
+
     
     try std.fs.cwd().deleteFile(test_path);
 }

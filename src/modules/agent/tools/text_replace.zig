@@ -174,7 +174,7 @@ pub fn text_replace(
     };
 
     // Check for a second occurrence — must be unique
-    if (std.mem.indexOf(u8, raw[first + old_str.len..], old_str) != null) {
+    if (std.mem.indexOf(u8, raw[first + old_str.len ..], old_str) != null) {
         return TextReplaceError.OldStrNotUnique;
     }
 
@@ -184,8 +184,14 @@ pub fn text_replace(
 
     try content.appendSlice(allocator, raw[0..first]);
 
-    // If file had CRLF, convert new_str to use CRLF line endings
-    if (had_crlf) {
+    // If file had CRLF, decide whether to convert new_str:
+    // - If old_str ends with \n: old_str provides boundary \n, don't convert new_str
+    // - If old_str doesn't end with \n and new_str ends with \n: new_str provides boundary, convert it
+    // - If neither ends with \n: boundary comes from file content, don't convert new_str
+    const old_str_ends_with_newline = old_str.len > 0 and old_str[old_str.len - 1] == '\n';
+    const new_str_ends_with_newline = new_str.len > 0 and new_str[new_str.len - 1] == '\n';
+
+    if (had_crlf and new_str_ends_with_newline and !old_str_ends_with_newline) {
         const new_str_crlf = try lfToCrlf(allocator, new_str);
         defer allocator.free(new_str_crlf);
         try content.appendSlice(allocator, new_str_crlf);
@@ -195,19 +201,31 @@ pub fn text_replace(
 
     // Append suffix and normalize its trailing newline to CRLF if needed
     if (had_crlf) {
-        const suffix = raw[first + old_str.len..];
+        const suffix = raw[first + old_str.len ..];
         if (suffix.len > 0 and suffix[suffix.len - 1] == '\n') {
-            // Replace trailing \n with \r\n
-            try content.appendSlice(allocator, suffix[0 .. suffix.len - 1]);
-            try content.append(allocator, '\r');
-            try content.append(allocator, '\n');
+            if (!old_str_ends_with_newline) {
+                // old_str doesn't end with \n, so suffix's leading \n is the boundary
+                // Don't add extra \r here - the conversion below handles it
+                for (suffix) |byte| {
+                    if (byte == '\n') {
+                        try content.append(allocator, '\r');
+                    }
+                    try content.append(allocator, byte);
+                }
+            } else {
+                // old_str provides boundary \n, skip suffix's leading \r and its trailing \n
+                const skip_leading_cr = suffix.len >= 2 and suffix[0] == '\r';
+                const suffix_end_len: usize = if (skip_leading_cr) 2 else 1;
+                try content.appendSlice(allocator, suffix[0 .. suffix.len - suffix_end_len]);
+                try content.append(allocator, '\r');
+                try content.append(allocator, '\n');
+            }
         } else {
             try content.appendSlice(allocator, suffix);
         }
     } else {
         try content.appendSlice(allocator, raw[first + old_str.len ..]);
     }
-
 
     // Write back to file
     const file_write = try std.fs.cwd().createFile(path, .{});

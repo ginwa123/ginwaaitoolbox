@@ -185,7 +185,7 @@ test "get_messages returns multiple records with new columns" {
         \\     prompt_tokens, completion_tokens, total_tokens, tool_name)
         \\VALUES
         \\    ('msg-1', 'multi-session', 'gpt-4', 'First', 'stop', '2024-01-01 10:00:00', 1, 100, 50, 150, 'bash'),
-        \\    ('msg-2', 'multi-session', 'gpt-4', 'Second', 'stop', '2024-01-01 10:01:00', 1, 200, 100, 300, 'search')
+        \\    ('msg-2', 'multi-session', 'gpt-4', 'Second', 'stop', '2024-01-01 10:01:00', 1, 200, 100, 300, 'read_file')
     , &[_][]const u8{});
 
     const results = try session_helpers.get_messages(std.testing.allocator, &db, "multi-session");
