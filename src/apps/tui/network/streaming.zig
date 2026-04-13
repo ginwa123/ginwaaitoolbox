@@ -43,16 +43,49 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
     }
     try messaging.sendMessage(app, message);
 
-    var poll_fds = [2]std.posix.pollfd{
-        .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
-        .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
-    };
-
     while (true) {
         defer {
             raw_buffer.clearAndFree(app.allocator);
         }
         const now = std.time.milliTimestamp();
+
+        if (app.is_noninteractive) {
+            var poll_fd = [1]std.posix.pollfd{
+                .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
+            };
+            const ready = std.posix.poll(&poll_fd, 100) catch 0;
+
+            if (ready > 0) {
+                if (poll_fd[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+                    break;
+                }
+                if (poll_fd[0].revents & std.posix.POLL.IN != 0) {
+                    const n = std.posix.read(stream_socket, &buf) catch break;
+                    if (n == 0) {
+                        break;
+                    }
+                    try raw_buffer.appendSlice(app.allocator, buf[0..n]);
+                }
+            }
+
+            if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
+                const is_done = try messaging.get_latest_message_by_created_at(app);
+                if (is_done) {
+                    break;
+                }
+            } else if (raw_buffer.items.len > 0) {
+                const is_done = try messaging.get_latest_message_by_created_at(app);
+                if (is_done) {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        var poll_fds = [2]std.posix.pollfd{
+            .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
+        };
         const ready = std.posix.poll(&poll_fds, 100) catch 0;
 
         if (ready > 0) {
@@ -78,7 +111,6 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 if (is_need_reconnect) {
                     const new_socket = connection.reconnectSseStream(app, app.allocator, stream_socket);
                     if (new_socket < 0) {
-                        std.debug.print("Reconnection failed, exiting...\n", .{});
                         break;
                     }
                     stream_socket = new_socket;
@@ -88,27 +120,24 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
-        const trimmed = std.mem.trim(u8, raw_buffer.items, &std.ascii.whitespace);
-        if (std.mem.eql(u8, trimmed, ": keepalive")) {
+        if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
             const is_done = try messaging.get_latest_message_by_created_at(app);
             if (is_done) {
                 break;
             }
         } else {
-            if (!app.is_noninteractive) {
-                const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch {
-                    raw_buffer.clearAndFree(app.allocator);
-                    continue;
-                };
-                defer app.allocator.free(decoded);
-                const json_str = sse.extract_sse_data(app.allocator, decoded) catch {
-                    raw_buffer.clearAndFree(app.allocator);
-                    continue;
-                };
-                defer app.allocator.free(json_str);
-                if (json_str.len > 0) {
-                    printJsonContent(app.allocator, json_str);
-                }
+            const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch {
+                raw_buffer.clearAndFree(app.allocator);
+                continue;
+            };
+            defer app.allocator.free(decoded);
+            const json_str = sse.extract_sse_data(app.allocator, decoded) catch {
+                raw_buffer.clearAndFree(app.allocator);
+                continue;
+            };
+            defer app.allocator.free(json_str);
+            if (json_str.len > 0) {
+                printJsonContent(app.allocator, json_str);
             }
         }
 
