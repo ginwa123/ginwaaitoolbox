@@ -216,11 +216,25 @@ fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void {
         const root = parsed.value;
         if (root != .object) return;
 
+        const role_val = root.object.get("role");
+        const role_str = if (role_val) |r| if (r == .string) r.string else "" else "";
+
+        const tool_name_val = root.object.get("tool_name");
+        const tool_name_str = if (tool_name_val) |t| if (t == .string) t.string else "" else "";
+
+        const finish_val = root.object.get("finish_reason");
+        const finish_str = if (finish_val) |f| if (f == .string) f.string else "" else "";
+
         const content_val = root.object.get("content") orelse return;
         if (content_val != .string) return;
 
         const content_str = content_val.string;
         if (content_str.len == 0) return;
+
+        const label = if (tool_name_str.len > 0) tool_name_str else role_str;
+        if (label.len > 0) {
+            std.debug.print("[{s}] ", .{label});
+        }
 
         const result = response.extract_content_result(allocator, content_str) catch null;
         if (result) |res| {
@@ -229,6 +243,10 @@ fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void {
             }
         } else {
             std.debug.print("{s}", .{content_str});
+        }
+
+        if (finish_str.len > 0 and !std.mem.eql(u8, finish_str, "stop")) {
+            std.debug.print("\n({s})", .{finish_str});
         }
     } else {
         const result = response.extract_content_result(allocator, trimmed) catch null;
