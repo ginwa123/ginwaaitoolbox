@@ -18,8 +18,9 @@ import { baseUrl } from '../utils/baseUrl';
 import { getSessionDir, setSessionDir as saveSessionDir } from '../utils/config';
 import { log } from '../utils/logger';
 import { SSEClient, type SSEMessage } from '../utils/sseClient';
-import { isToolCallXml, parseToolCallXml } from '../utils/toolParser';
-import { type XmlMessage, decodeXmlEntities, parseMessages } from '../utils/xmlParser';
+import { isToolCallJson, parseToolCallJson } from '../utils/toolParser';
+import { type MessageData, parseMessages } from '../utils/messageParser';
+
 
 // Debounce helper
 function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): T {
@@ -44,18 +45,19 @@ interface SessionInfo {
 }
 
 /**
- * Normalize an XML message to ChatMessage format
+ * Normalize a message to ChatMessage format
  */
-const normalizeMessage = (msg: XmlMessage): ChatMessage => ({
+const normalizeMessage = (msg: MessageData): ChatMessage => ({
   id: msg?.id || '',
   role: (msg?.role || 'unknown') as ChatMessage['role'],
-  content: decodeXmlEntities(msg?.content),
+  content: msg?.content || '',
   timestamp: msg?.timestamp || '',
   is_input: msg?.is_input,
   is_output: msg?.is_output,
   tool_name: msg?.tool_name,
   finish_reason: msg?.finish_reason,
 });
+
 
 /**
  * Create a ChatMessage from an SSE event
@@ -88,10 +90,11 @@ const MessageRow: Component<{ message: ChatMessage }> = (props) => {
   const parsedToolData = createMemo(() => {
     if (!hasToolOutput()) return null;
     const content = props.message.content || '';
-    if (!isToolCallXml(content)) return null;
-    const result = parseToolCallXml(content);
+    if (!isToolCallJson(content)) return null;
+    const result = parseToolCallJson(content);
     return result.tools.length > 0 ? result.tools[0] : null;
   });
+
 
   // ============================================================================
   // Expand/Collapse State

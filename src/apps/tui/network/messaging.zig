@@ -217,18 +217,67 @@ pub fn get_latest_message_by_created_at(app: *App) !bool {
     const request = try std.fmt.allocPrint(allocator, "GET /api/session/{s}/messages?sort_by=created_at&direction=desc&limit=1 HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(sock, request);
 
-    // Read response
-    var buf: [8192]u8 = undefined;
-    const n = std.posix.read(sock, &buf) catch return false;
-    if (n == 0) return false;
+    var response_buf = std.ArrayList(u8).empty;
+    defer response_buf.deinit(allocator);
+    var read_buf: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(sock, &read_buf) catch break;
+        if (n == 0) break;
+        try response_buf.appendSlice(allocator, read_buf[0..n]);
+    }
 
-    const response = buf[0..n];
+    const full_response = response_buf.items;
+    if (full_response.len == 0) return false;
 
-    // Check if we got a message with finish_reason="stop"
-    // Response format: {"messages":[{"id":"123",...,"finish_reason":"stop",...}]}
-    if (std.mem.indexOf(u8, response, "\"finish_reason\":\"stop\"")) |_| {
+    const header_sep = "\r\n\r\n";
+    const body_offset = std.mem.indexOf(u8, full_response, header_sep) orelse return false;
+    const body = full_response[body_offset + header_sep.len ..];
+
+    if (std.mem.indexOf(u8, body, "\"finish_reason\":\"stop\"")) |_| {
+        return true;
+    }
+
+    if (std.mem.indexOf(u8, body, "\"finish_reason\":\"user_choice\"")) |_| {
         return true;
     }
 
     return false;
+}
+
+/// Fetch the raw HTTP response body of the latest message for a session.
+/// Returns the JSON body as a caller-owned slice, or null if not found.
+/// The body format is: {"messages":[{"id":"...","role":"assistant","content":"...", ...}]}
+pub fn fetch_latest_message_body(app: *App) !?[]const u8 {
+    var arena = std.heap.ArenaAllocator.init(app.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+    defer std.posix.close(sock);
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
+    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+
+    const request = try std.fmt.allocPrint(alloc, "GET /api/session/{s}/messages?sort_by=created_at&direction=desc&limit=1 HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
+    _ = try std.posix.write(sock, request);
+
+    // Read full response into a dynamic buffer
+    var response_buf = std.ArrayList(u8).empty;
+    defer response_buf.deinit(alloc);
+    var read_buf: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(sock, &read_buf) catch break;
+        if (n == 0) break;
+        try response_buf.appendSlice(alloc, read_buf[0..n]);
+    }
+
+    const full_response = response_buf.items;
+    if (full_response.len == 0) return null;
+
+    // Find the HTTP body (after the blank line separating headers from body)
+    const header_sep = "\r\n\r\n";
+    const body_offset = std.mem.indexOf(u8, full_response, header_sep) orelse return null;
+    const body = full_response[body_offset + header_sep.len ..];
+    if (body.len == 0) return null;
+
+    return try app.allocator.dupe(u8, body);
 }

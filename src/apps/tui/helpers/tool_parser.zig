@@ -1,5 +1,5 @@
 const std = @import("std");
-const xml_parser = @import("xml_parser.zig");
+const json = std.json;
 
 /// ToolFields holds the extracted fields for a tool
 pub const ToolFields = struct {
@@ -7,31 +7,31 @@ pub const ToolFields = struct {
     command: []const u8 = "",
     result: []const u8 = "",
     exit_code: []const u8 = "",
-    
+
     // File tool fields
     path: []const u8 = "",
     content: []const u8 = "",
     hash: []const u8 = "",
     show_line_numbers: []const u8 = "",
-    
+
     // Search tool fields
     pattern: []const u8 = "",
     matches: []const u8 = "",
     results: []const u8 = "",
-    
+
     // Web search fields
     query: []const u8 = "",
     url: []const u8 = "",
-    
+
     // LSP tool fields
     file_path: []const u8 = "",
     line: []const u8 = "",
     character: []const u8 = "",
     symbol: []const u8 = "",
-    
+
     // Spawn sub-agent fields
     agents: []const u8 = "",
-    
+
     // Generic fallback
     raw: []const u8 = "",
 };
@@ -42,7 +42,7 @@ pub const ToolData = struct {
     fields: ToolFields,
     is_parsed: bool,
     raw_content: []const u8,
-    
+
     /// Get summary for collapsed display
     pub fn getToolSummary(self: *const ToolData, allocator: std.mem.Allocator) ![]u8 {
         if (std.mem.eql(u8, self.tool_name, "bash")) {
@@ -75,11 +75,11 @@ pub const ToolData = struct {
     }
 };
 
-/// ParseResult holds the result of parsing tool call XML
+/// ParseResult holds the result of parsing tool call JSON
 pub const ParseResult = struct {
     tools: []ToolData,
     is_complete: bool,
-    
+
     /// Free owned memory
     pub fn deinit(self: *ParseResult, allocator: std.mem.Allocator) void {
         for (self.tools) |tool| {
@@ -89,16 +89,16 @@ pub const ParseResult = struct {
     }
 };
 
-/// Parse tool call XML content
+/// Parse tool call JSON content
 /// Caller owns returned ParseResult
-pub fn parseToolCallXml(content: []const u8, allocator: std.mem.Allocator) !ParseResult {
+pub fn parseToolCallJson(content: []const u8, allocator: std.mem.Allocator) !ParseResult {
     if (content.len == 0) {
         return ParseResult{ .tools = &.{}, .is_complete = true };
     }
-    
-    // Check if content is tool call XML format
-    if (!xml_parser.isToolCallXml(content)) {
-        // Not tool call XML, return as single generic tool
+
+    // Try to parse as JSON
+    var parsed = json.parseFromSlice(json.Value, allocator, content, .{}) catch {
+        // Not JSON, return as single generic tool
         const tool = ToolData{
             .tool_name = try allocator.dupe(u8, "unknown"),
             .fields = ToolFields{ .raw = content },
@@ -108,72 +108,87 @@ pub fn parseToolCallXml(content: []const u8, allocator: std.mem.Allocator) !Pars
         var tools = std.ArrayList(ToolData).empty;
         defer tools.deinit(allocator);
         try tools.append(allocator, tool);
-        
+
+        return ParseResult{
+            .tools = try tools.toOwnedSlice(allocator),
+            .is_complete = true,
+        };
+    };
+    defer parsed.deinit();
+
+    const value = parsed.value;
+
+    // Handle array of tool calls
+    if (value == .array) {
+        var tools = std.ArrayList(ToolData).empty;
+        errdefer {
+            for (tools.items) |*t| allocator.free(t.tool_name);
+            tools.deinit(allocator);
+        }
+
+        for (value.array.items) |item| {
+            if (item == .object) {
+                if (try parseSingleToolCall(item.object, allocator)) |tool| {
+                    try tools.append(allocator, tool);
+                }
+            }
+        }
+
         return ParseResult{
             .tools = try tools.toOwnedSlice(allocator),
             .is_complete = true,
         };
     }
-    
-    var tools = std.ArrayList(ToolData).empty;
-    errdefer {
-        for (tools.items) |*t| allocator.free(t.tool_name);
-        tools.deinit(allocator);
-    }
-    
-    // Handle multiple tool calls wrapped in <tool_calls>
-    if (std.mem.indexOf(u8, content, "<tool_calls>")) |_| {
-        const start = (std.mem.indexOf(u8, content, ">").?) + 1;
-        const end = (std.mem.lastIndexOf(u8, content, "</tool_calls>").?);
-        const tool_calls_section = content[start..end];
-        
-        var pos: usize = 0;
-        while (pos < tool_calls_section.len) {
-            const tc_start = std.mem.indexOf(u8, tool_calls_section[pos..], "<tool_call>") orelse break;
-            const tc_start_pos = pos + tc_start;
-            const tc_end = std.mem.indexOf(u8, tool_calls_section[tc_start_pos..], "</tool_call>") orelse break;
-            const tc_block = tool_calls_section[tc_start_pos..tc_start_pos + tc_end + "</tool_call>".len];
-            pos = tc_start_pos + tc_end + "</tool_call>".len;
-            
-            if (try parseSingleToolCall(tc_block, allocator)) |tool| {
-                try tools.append(allocator, tool);
+
+    // Handle single tool call object
+    if (value == .object) {
+        if (try parseSingleToolCall(value.object, allocator)) |tool| {
+            var tools = std.ArrayList(ToolData).empty;
+            errdefer {
+                allocator.free(tool.tool_name);
+                tools.deinit(allocator);
             }
-        }
-    } else {
-        // Single tool call
-        if (try parseSingleToolCall(content, allocator)) |tool| {
             try tools.append(allocator, tool);
+
+            return ParseResult{
+                .tools = try tools.toOwnedSlice(allocator),
+                .is_complete = true,
+            };
         }
     }
-    
-    // Check completeness
-    const is_complete = !isIncompleteToolXml(content);
-    
+
+    // Fallback: return as generic tool
+    const tool = ToolData{
+        .tool_name = try allocator.dupe(u8, "unknown"),
+        .fields = ToolFields{ .raw = content },
+        .is_parsed = false,
+        .raw_content = content,
+    };
+    var tools = std.ArrayList(ToolData).empty;
+    defer tools.deinit(allocator);
+    try tools.append(allocator, tool);
+
     return ParseResult{
         .tools = try tools.toOwnedSlice(allocator),
-        .is_complete = is_complete,
+        .is_complete = true,
     };
 }
 
-/// Check if content appears to be incomplete (streaming)
-fn isIncompleteToolXml(content: []const u8) bool {
-    const opens = std.mem.count(u8, content, "<tool_call>");
-    const closes = std.mem.count(u8, content, "</tool_call>");
-    if (opens > closes) return true;
-    
-    const opens_multi = std.mem.count(u8, content, "<tool_calls>");
-    const closes_multi = std.mem.count(u8, content, "</tool_calls>");
-    if (opens_multi > closes_multi) return true;
-    
-    return false;
-}
+/// Parse a single tool call object
+fn parseSingleToolCall(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !?ToolData {
+    // Extract tool_name (try both "name" and "tool_name" for compatibility)
+    const tool_name = blk: {
+        if (obj.get("name")) |v| {
+            if (v == .string) break :blk v.string;
+        }
+        if (obj.get("tool_name")) |v| {
+            if (v == .string) break :blk v.string;
+        }
+        break :blk "";
+    };
 
-/// Parse a single <tool_call>...</tool_call> block
-fn parseSingleToolCall(tool_call_xml: []const u8, allocator: std.mem.Allocator) !?ToolData {
-    // Extract tool_name
-    const tool_name = extractField(tool_call_xml, "tool_name") orelse return null;
     if (tool_name.len == 0) return null;
-    
+
     // Lowercase for case-insensitive matching
     const tool_name_lower = blk: {
         const buf = try allocator.alloc(u8, tool_name.len);
@@ -182,68 +197,76 @@ fn parseSingleToolCall(tool_call_xml: []const u8, allocator: std.mem.Allocator) 
         break :blk buf;
     };
     errdefer allocator.free(tool_name_lower);
-    
+
     var fields = ToolFields{};
     var is_parsed = true;
-    
+
     // Route to appropriate parser based on tool type
     if (std.mem.eql(u8, tool_name_lower, "bash")) {
-        fields.command = extractField(tool_call_xml, "command") orelse "";
-        fields.result = extractField(tool_call_xml, "result") orelse "";
-        fields.exit_code = extractField(tool_call_xml, "exit_code") orelse "";
+        fields.command = getStringField(obj, "command");
+        fields.result = getStringField(obj, "result");
+        fields.exit_code = getStringField(obj, "exit_code");
     } else if (std.mem.eql(u8, tool_name_lower, "read_file")) {
-        fields.path = extractField(tool_call_xml, "path") orelse "";
-        fields.content = extractField(tool_call_xml, "content") orelse "";
-        fields.hash = extractField(tool_call_xml, "hash") orelse "";
-        fields.show_line_numbers = extractField(tool_call_xml, "show_line_numbers") orelse "";
+        fields.path = getStringField(obj, "path");
+        fields.content = getStringField(obj, "content");
+        fields.hash = getStringField(obj, "hash");
+        fields.show_line_numbers = getStringField(obj, "show_line_numbers");
     } else if (std.mem.eql(u8, tool_name_lower, "write_file")) {
-        fields.path = extractField(tool_call_xml, "path") orelse "";
-        fields.content = extractField(tool_call_xml, "content") orelse "";
-        fields.hash = extractField(tool_call_xml, "hash") orelse "";
+        fields.path = getStringField(obj, "path");
+        fields.content = getStringField(obj, "content");
+        fields.hash = getStringField(obj, "hash");
     } else if (std.mem.eql(u8, tool_name_lower, "web_search") or std.mem.eql(u8, tool_name_lower, "web_search_browse")) {
-        fields.query = extractField(tool_call_xml, "query") orelse "";
-        fields.url = extractField(tool_call_xml, "url") orelse "";
-        fields.results = extractField(tool_call_xml, "results") orelse "";
+        fields.query = getStringField(obj, "query");
+        fields.url = getStringField(obj, "url");
+        fields.results = getStringField(obj, "results");
     } else if (std.mem.eql(u8, tool_name_lower, "lsp_definition") or
                std.mem.eql(u8, tool_name_lower, "lsp_hover") or
                std.mem.eql(u8, tool_name_lower, "lsp_references") or
                std.mem.eql(u8, tool_name_lower, "lsp_workspace_symbol") or
                std.mem.eql(u8, tool_name_lower, "lsp_document_symbol")) {
-        fields.file_path = extractField(tool_call_xml, "file_path") orelse "";
-        fields.line = extractField(tool_call_xml, "line") orelse "";
-        fields.character = extractField(tool_call_xml, "character") orelse "";
-        fields.symbol = extractField(tool_call_xml, "symbol") orelse "";
+        fields.file_path = getStringField(obj, "file_path");
+        fields.line = getStringField(obj, "line");
+        fields.character = getStringField(obj, "character");
+        fields.symbol = getStringField(obj, "symbol");
     } else if (std.mem.eql(u8, tool_name_lower, "spawn_sub_agent")) {
-        fields.agents = extractField(tool_call_xml, "agents") orelse "";
-        fields.results = extractField(tool_call_xml, "results") orelse "";
+        fields.agents = getStringField(obj, "agents");
+        fields.results = getStringField(obj, "results");
+    } else if (std.mem.eql(u8, tool_name_lower, "search")) {
+        fields.pattern = getStringField(obj, "pattern");
+        fields.path = getStringField(obj, "path");
+        fields.matches = getStringField(obj, "matches");
+    } else if (std.mem.eql(u8, tool_name_lower, "glob")) {
+        fields.pattern = getStringField(obj, "pattern");
+        fields.results = getStringField(obj, "results");
     } else {
-        // Generic fallback
+        // Generic fallback - serialize object back to JSON string
         is_parsed = false;
-        fields.raw = tool_call_xml;
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(allocator);
+        try json.stringify(buf.writer(allocator), obj, .{});
+        fields.raw = try buf.toOwnedSlice(allocator);
     }
-    
+
     const result_tool_name = try allocator.dupe(u8, tool_name_lower);
     allocator.free(tool_name_lower);
-    
+
     return ToolData{
         .tool_name = result_tool_name,
         .fields = fields,
         .is_parsed = is_parsed,
-        .raw_content = tool_call_xml,
+        .raw_content = "",
     };
 }
 
-/// Extract a field value from tool call XML (borrowed slice)
-fn extractField(xml: []const u8, field_name: []const u8) ?[]const u8 {
-    const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{field_name}) catch return null;
-    defer std.heap.page_allocator.free(start_tag);
-    const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{field_name}) catch return null;
-    defer std.heap.page_allocator.free(end_tag);
-    
-    const open_pos = std.mem.indexOf(u8, xml, start_tag) orelse return null;
-    const close_pos = std.mem.indexOf(u8, xml, end_tag) orelse return null;
-    
-    if (close_pos <= open_pos + start_tag.len) return null;
-    
-    return xml[open_pos + start_tag.len .. close_pos];
+/// Get a string field from JSON object (borrowed slice from source)
+fn getStringField(obj: std.json.ObjectMap, field: []const u8) []const u8 {
+    if (obj.get(field)) |v| {
+        if (v == .string) return v.string;
+    }
+    return "";
 }
+
+/// Legacy alias for backwards compatibility
+pub const parseToolCallXml = parseToolCallJson;
+
+test {}

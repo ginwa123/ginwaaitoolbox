@@ -10,6 +10,7 @@ pub const CliOptions = struct {
     verbose: bool = false,
     port: u16 = 8080,
     process: []const u8 = "nalar",  // backend binary name to spawn
+    json: bool = false,              // output response as clean JSON
 };
 
 /// Parse command line arguments
@@ -63,6 +64,8 @@ pub fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
             }
             i += 1;
             opts.process = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            opts.json = true;
         } else {
             // Unknown argument, ignore for compatibility
         }
@@ -80,6 +83,7 @@ pub fn printHelp() void {
     std.debug.print("  -c <session_id>         Resume specific session\n", .{});
     std.debug.print("  -p, --port <port>       HTTP server port (default: 8080)\n", .{});
     std.debug.print("  --process <name>        Backend binary to spawn (default: nalar)\n", .{});
+    std.debug.print("  --json                  Output response as clean JSON (use with -q)\n", .{});
     std.debug.print("  -v, --version           Print version\n", .{});
     std.debug.print("  -h, --help              Show help\n\n", .{});
     std.debug.print("Examples:\n", .{});

@@ -95,14 +95,151 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 break;
             }
         } else {
-            std.debug.print("{s}", .{raw_buffer.items});
+            if (!app.is_noninteractive) {
+                const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch {
+                    raw_buffer.clearAndFree(app.allocator);
+                    continue;
+                };
+                defer app.allocator.free(decoded);
+                const json_str = sse.extract_sse_data(app.allocator, decoded) catch {
+                    raw_buffer.clearAndFree(app.allocator);
+                    continue;
+                };
+                defer app.allocator.free(json_str);
+                if (json_str.len > 0) {
+                    printJsonContent(app.allocator, json_str);
+                }
+            }
         }
 
         raw_buffer.clearAndFree(app.allocator);
     }
 
+    // In non-interactive mode, fetch the final message and print according to --json flag
+    if (app.is_noninteractive) {
+        const body = messaging.fetch_latest_message_body(app) catch null;
+        if (body) |b| {
+            defer app.allocator.free(b);
+            if (app.json) {
+                // Pretty-print the full JSON response
+                printPrettyJson(app.allocator, b);
+            } else {
+                // Extract and print only the content field value
+                printMessageContent(app.allocator, b);
+            }
+        }
+    }
+
     raw_buffer.clearRetainingCapacity();
     return try raw_buffer.toOwnedSlice(app.allocator);
+}
+
+/// Parse the messages JSON body and print user-friendly output for the first message.
+/// Body format: {"messages":[{"content":"...","role":"assistant",...}]}
+fn printMessageContent(allocator: std.mem.Allocator, body: []const u8) void {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        std.debug.print("{s}\n", .{body});
+        return;
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) {
+        std.debug.print("{s}\n", .{body});
+        return;
+    }
+    const messages_val = root.object.get("messages") orelse {
+        std.debug.print("{s}\n", .{body});
+        return;
+    };
+    if (messages_val != .array or messages_val.array.items.len == 0) {
+        std.debug.print("{s}\n", .{body});
+        return;
+    }
+    const first_msg = messages_val.array.items[0];
+    if (first_msg != .object) {
+        std.debug.print("{s}\n", .{body});
+        return;
+    }
+    const content_val = first_msg.object.get("content") orelse {
+        std.debug.print("{s}\n", .{body});
+        return;
+    };
+    if (content_val != .string) {
+        std.debug.print("{s}\n", .{body});
+        return;
+    }
+
+    const role_val = first_msg.object.get("role");
+    const role_str = if (role_val) |r| if (r == .string) r.string else "" else "";
+    const content_str = content_val.string;
+
+    const result = response.extract_content_result(allocator, content_str) catch null;
+    if (result) |res| {
+        for (res.content_results.items) |cr| {
+            std.debug.print("{s}", .{cr.content});
+        }
+    } else {
+        std.debug.print("{s}", .{content_str});
+    }
+
+    if (role_str.len > 0) {
+        std.debug.print("\n\n", .{});
+    }
+}
+
+/// Parse the JSON body and pretty-print it with indentation.
+fn printPrettyJson(allocator: std.mem.Allocator, body: []const u8) void {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        std.debug.print("{s}\n", .{body});
+        return;
+    };
+    defer parsed.deinit();
+
+    const pretty = std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 }) catch {
+        std.debug.print("{s}\n", .{body});
+        return;
+    };
+    defer allocator.free(pretty);
+    std.debug.print("{s}\n", .{pretty});
+}
+
+/// Parse SSE JSON data and print user-friendly content
+fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void {
+    const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
+    if (trimmed.len == 0) return;
+
+    if (trimmed[0] == '{') {
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch return;
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) return;
+
+        const content_val = root.object.get("content") orelse return;
+        if (content_val != .string) return;
+
+        const content_str = content_val.string;
+        if (content_str.len == 0) return;
+
+        const result = response.extract_content_result(allocator, content_str) catch null;
+        if (result) |res| {
+            for (res.content_results.items) |cr| {
+                std.debug.print("{s}", .{cr.content});
+            }
+        } else {
+            std.debug.print("{s}", .{content_str});
+        }
+    } else {
+        const result = response.extract_content_result(allocator, trimmed) catch null;
+        if (result) |res| {
+            for (res.content_results.items) |cr| {
+                std.debug.print("{s}", .{cr.content});
+            }
+        } else {
+            std.debug.print("{s}", .{trimmed});
+        }
+    }
 }
 
 /// Read and stream the list of active sessions

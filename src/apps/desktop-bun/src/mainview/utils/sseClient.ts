@@ -1,28 +1,12 @@
 /**
- * SSE Client for receiving real-time updates from the backend
+ * SSE Client for real-time communication with the backend
  *
- * Request tracking: 1 request = 1 GUID, all related logs share this ID
+ * Handles Server-Sent Events (SSE) for streaming responses and tool call updates.
+ * Supports both JSON format (primary) and legacy XML format (backwards compatibility).
  */
-import { log } from './logger';
-import { end, generateRequestId, log as requestLog, start } from './requestTracker';
-import { decodeXmlEntities, getTagValue, parseMessages } from './xmlParser';
+import { log, requestLog, start, end } from '../../shared/rpc';
+import { detectFormat, parseMessages } from './messageParser';
 
-export interface SSEMessage {
-  type: 'message' | 'tool_result' | 'status' | 'error' | 'ping' | 'done' | 'step' | 'connected';
-  content?: string;
-  parsedContent?: ParsedContent;
-  tool_name?: string;
-  finish_reason?: string;
-  session_id?: string;
-  message_id?: string;
-  role?: string;
-  timestamp?: string;
-}
-
-/**
- * Parsed inner content from the model's response format.
- * The model wraps its content in <markdown>, <plain>, or <think> tags.
- */
 export interface ParsedContent {
   /** Raw content string (unparsed) */
   raw: string;
@@ -35,7 +19,7 @@ export interface ParsedContent {
 }
 
 /**
- * Raw SSE message from server
+ * Raw SSE message from server (JSON format)
  */
 interface RawSSEEvent {
   session_id?: string;
@@ -66,11 +50,16 @@ interface RawSSEEvent {
 
 export type SSEMessageHandler = (event: SSEMessage) => void;
 
-/**
- * Extract text content from an XML tag, supporting nested tags inside.
- * Uses [\s\S]*? (lazy dot-all) instead of [^<]* so it can match across
- * nested tags like <think>...</think> or <markdown>...</markdown>.
- */
+export interface SSEMessage {
+  type: 'message' | 'tool_result' | 'done' | 'connected' | 'error';
+  content?: string;
+  parsedContent?: ParsedContent;
+  finish_reason?: string;
+  session_id?: string;
+  role?: string;
+  tool_name?: string;
+  timestamp?: string;
+}
 
 /**
  * Parse the inner content field produced by the model.
@@ -87,17 +76,13 @@ export type SSEMessageHandler = (event: SSEMessage) => void;
  */
 export function parseContentField(content: string): ParsedContent {
   // Helper to extract content from <think>...</think> style tags (markdown notation)
-  // NOTE: The closing tag is </think> (not </think>) so we must match it correctly
   const extractThinkContent = (text: string): string | undefined => {
     const match = text.match(/<think>([\s\S]*?)<\/think>/i);
     if (match) return match[1].trim();
-
-    // Also try matching with </think> as closing tag
-    const match2 = text.match(/<think>([\s\S]*?)<\/think>/i);
-    return match2 ? match2[1].trim() : undefined;
+    return undefined;
   };
 
-  // Helper to convert empty string to undefined (getTagValue returns '' if not found)
+  // Helper to convert empty string to undefined
   const fromTag = (tag: string): string | undefined => {
     const val = getTagValue(content, tag);
     return val || undefined;
@@ -112,95 +97,159 @@ export function parseContentField(content: string): ParsedContent {
 }
 
 /**
- * Parse XML content to extract SSE message data
+ * Extract text content from an XML tag, supporting nested tags inside.
  */
-export function parseSseXml(xmlData: string): RawSSEEvent {
+function getTagValue(content: string, tag: string): string {
+  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(
+    `<${escapedTag}>([^<]*(?:<(?!/${escapedTag}>)[^<]*)*)<\\/${escapedTag}>`,
+    'i'
+  );
+  const match = content.match(regex);
+  return match ? match[1].trim() : '';
+}
+
+/**
+ * Decode XML entities
+ */
+function decodeXmlEntities(str: string | undefined | null): string {
+  if (!str) return '';
+  return str
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+/**
+ * Parse JSON data to extract SSE message data
+ */
+function parseSseJson(data: unknown): RawSSEEvent {
   const result: RawSSEEvent = {};
 
-  // Skip empty data
+  if (!data || typeof data !== 'object') {
+    log.warn('[SSEClient] parseSseJson: invalid data');
+    return result;
+  }
+
+  const obj = data as Record<string, unknown>;
+
+  // Extract all known fields from JSON
+  result.session_id = typeof obj.session_id === 'string' ? obj.session_id : undefined;
+  result.model = typeof obj.model === 'string' ? obj.model : undefined;
+  result.cwd = typeof obj.cwd === 'string' ? obj.cwd : undefined;
+
+  // Content may still contain XML-style tags for markdown/plain/thinking
+  if (typeof obj.content === 'string' && obj.content) {
+    result.content = obj.content;
+    result.parsed_content = parseContentField(obj.content);
+  }
+
+  result.reasoning_content = typeof obj.reasoning_content === 'string' ? obj.reasoning_content : undefined;
+  result.role = typeof obj.role === 'string' ? obj.role : 'assistant';
+  result.finish_reason = typeof obj.finish_reason === 'string' ? obj.finish_reason : undefined;
+  result.tool_call_id = typeof obj.tool_call_id === 'string' ? obj.tool_call_id : undefined;
+  result.tool_name = typeof obj.tool_name === 'string' ? obj.tool_name : undefined;
+  result.agent_name = typeof obj.agent_name === 'string' ? obj.agent_name : undefined;
+  result.session_name = typeof obj.session_name === 'string' ? obj.session_name : undefined;
+
+  if (typeof obj.loop_index === 'number') {
+    result.loop_index = obj.loop_index;
+  }
+
+  if (typeof obj.temperature === 'number') {
+    result.temperature = obj.temperature;
+  }
+
+  if (typeof obj.is_thinking === 'boolean') {
+    result.is_thinking = obj.is_thinking;
+  }
+
+  if (typeof obj.is_input === 'boolean') {
+    result.is_input = obj.is_input;
+  }
+
+  if (typeof obj.is_output === 'boolean') {
+    result.is_output = obj.is_output;
+  }
+
+  result.parent_session_id = typeof obj.parent_session_id === 'string' ? obj.parent_session_id : undefined;
+  result.parent_id = typeof obj.parent_id === 'string' ? obj.parent_id : undefined;
+
+  // Parse tool_calls array
+  if (Array.isArray(obj.tool_calls)) {
+    result.tool_calls = obj.tool_calls.map((tc) => {
+      const toolCall = tc as Record<string, unknown>;
+      return {
+        id: typeof toolCall.id === 'string' ? toolCall.id : '',
+        name: typeof toolCall.name === 'string' ? toolCall.name : '',
+        arguments: typeof toolCall.arguments === 'string' ? toolCall.arguments : '',
+      };
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Legacy: Parse XML data to extract SSE message data
+ */
+function parseSseXml(xmlData: string): RawSSEEvent {
+  const result: RawSSEEvent = {};
+
   if (!xmlData || xmlData.trim().length === 0) {
     log.warn('[SSEClient] parseSseXml: empty XML data');
     return result;
   }
 
-  // Check if this is a <response> tag (the main event format)
-  if (xmlData.includes('<response>')) {
-    // Extract all known fields from XML
-    result.session_id = getTagValue(xmlData, 'session_id') || undefined;
-    result.model = getTagValue(xmlData, 'model') || undefined;
-    result.cwd = getTagValue(xmlData, 'cwd') || undefined;
+  if (!xmlData.includes('<response>')) {
+    return result;
+  }
 
-    // Extract raw content (supports nested tags like <think>, <markdown>, <plain>)
-    const rawContent = getTagValue(xmlData, 'content');
-    if (rawContent) {
-      // Decode XML entities in content
-      result.content = decodeXmlEntities(rawContent);
-      result.parsed_content = parseContentField(result.content);
-    }
+  result.session_id = getTagValue(xmlData, 'session_id') || undefined;
+  result.model = getTagValue(xmlData, 'model') || undefined;
+  result.cwd = getTagValue(xmlData, 'cwd') || undefined;
 
-    result.reasoning_content = getTagValue(xmlData, 'reasoning_content') || undefined;
-    result.role = getTagValue(xmlData, 'role') || 'assistant';
-    result.finish_reason = getTagValue(xmlData, 'finish_reason') || undefined;
-    result.tool_call_id = getTagValue(xmlData, 'tool_call_id') || undefined;
-    result.tool_name = getTagValue(xmlData, 'tool_name') || undefined;
-    result.agent_name = getTagValue(xmlData, 'agent_name') || undefined;
-    result.session_name = getTagValue(xmlData, 'session_name') || undefined;
+  const rawContent = getTagValue(xmlData, 'content');
+  if (rawContent) {
+    result.content = decodeXmlEntities(rawContent);
+    result.parsed_content = parseContentField(result.content);
+  }
 
-    const loopIndex = getTagValue(xmlData, 'loop_index');
-    result.loop_index = loopIndex ? Number.parseInt(loopIndex, 10) : undefined;
+  result.reasoning_content = getTagValue(xmlData, 'reasoning_content') || undefined;
+  result.role = getTagValue(xmlData, 'role') || 'assistant';
+  result.finish_reason = getTagValue(xmlData, 'finish_reason') || undefined;
+  result.tool_call_id = getTagValue(xmlData, 'tool_call_id') || undefined;
+  result.tool_name = getTagValue(xmlData, 'tool_name') || undefined;
+  result.agent_name = getTagValue(xmlData, 'agent_name') || undefined;
+  result.session_name = getTagValue(xmlData, 'session_name') || undefined;
 
-    const temp = getTagValue(xmlData, 'temperature');
-    result.temperature = temp ? Number.parseFloat(temp) : undefined;
+  const loopIndex = getTagValue(xmlData, 'loop_index');
+  result.loop_index = loopIndex ? Number.parseInt(loopIndex, 10) : undefined;
 
-    result.is_thinking = getTagValue(xmlData, 'is_thinking') === 'true';
-    result.is_input = getTagValue(xmlData, 'is_input') === 'true';
-    result.is_output = getTagValue(xmlData, 'is_output') === 'true';
+  const temp = getTagValue(xmlData, 'temperature');
+  result.temperature = temp ? Number.parseFloat(temp) : undefined;
 
-    result.parent_session_id = getTagValue(xmlData, 'parent_session_id') || undefined;
-    result.parent_id = getTagValue(xmlData, 'parent_id') || undefined;
+  result.is_thinking = getTagValue(xmlData, 'is_thinking') === 'true';
+  result.is_input = getTagValue(xmlData, 'is_input') === 'true';
+  result.is_output = getTagValue(xmlData, 'is_output') === 'true';
 
-    // Parse tool_calls if present
-    const toolCallsMatch = xmlData.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/);
-    if (toolCallsMatch) {
-      const toolCallsXml = toolCallsMatch[1];
-      const toolCallMatches = toolCallsXml.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g);
-      result.tool_calls = [];
-      for (const tcMatch of toolCallMatches) {
-        const tcContent = tcMatch[1];
-        result.tool_calls.push({
-          id: getTagValue(tcContent, 'id') || '',
-          name: getTagValue(tcContent, 'name') || '',
-          // Decode XML entities in arguments
-          arguments: decodeXmlEntities(getTagValue(tcContent, 'arguments')),
-        });
-      }
-    }
+  result.parent_session_id = getTagValue(xmlData, 'parent_session_id') || undefined;
+  result.parent_id = getTagValue(xmlData, 'parent_id') || undefined;
 
-    // Handle streaming chunk format: <chunk index="0"><content>...</content></chunk>
-    const chunkMatch = xmlData.match(/<chunk[^>]*index="(\d+)"[^>]*>([\s\S]*?)<\/chunk>/);
-    if (chunkMatch) {
-      const chunkContent = chunkMatch[2];
-
-      // Extract content from chunk (may itself contain <markdown>/<plain>/<think>)
-      const chunkContentMatch = chunkContent.match(/<content>([\s\S]*?)<\/content>/);
-      if (chunkContentMatch) {
-        const chunkRawContent = chunkContentMatch[1];
-        result.content = decodeXmlEntities(chunkRawContent);
-        result.parsed_content = parseContentField(result.content);
-      }
-
-      // Extract reasoning from chunk
-      const chunkReasoningMatch = chunkContent.match(
-        /<reasoning_content>([\s\S]*?)<\/reasoning_content>/
-      );
-      if (chunkReasoningMatch) {
-        result.reasoning_content = chunkReasoningMatch[1];
-      }
-
-      // Check if this is the final chunk (has final="true" or has usage)
-      if (xmlData.includes('final="true"') || xmlData.includes('<usage>')) {
-        result.finish_reason = 'stop';
-      }
+  const toolCallsMatch = xmlData.match(/<tool_calls>([\s\S]*?)<\/tool_calls>/);
+  if (toolCallsMatch) {
+    const toolCallsXml = toolCallsMatch[1];
+    const toolCallMatches = toolCallsXml.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g);
+    result.tool_calls = [];
+    for (const tcMatch of toolCallMatches) {
+      const tcContent = tcMatch[1];
+      result.tool_calls.push({
+        id: getTagValue(tcContent, 'id') || '',
+        name: getTagValue(tcContent, 'name') || '',
+        arguments: decodeXmlEntities(getTagValue(tcContent, 'arguments')),
+      });
     }
   }
 
@@ -208,18 +257,26 @@ export function parseSseXml(xmlData: string): RawSSEEvent {
 }
 
 /**
- * Determine event type from parsed XML data
+ * Determine event type from parsed data
  */
 function determineEventType(data: RawSSEEvent): SSEMessage['type'] {
   if (data.finish_reason) {
-    // Has finish_reason means this is a final/done message
     return 'done';
   }
   if (data.tool_call_id || data.tool_name) {
-    // Has tool info means this is a tool result
     return 'tool_result';
   }
   return 'message';
+}
+
+/**
+ * Generate a short request ID for tracing
+ */
+function generateRequestId(): string {
+  const timestamp = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).substring(2, 6);
+  const randomPart2 = Math.random().toString(36).substring(2, 6);
+  return `REQ-${timestamp}-${randomPart}${randomPart2}`.toUpperCase();
 }
 
 export class SSEClient {
@@ -232,7 +289,6 @@ export class SSEClient {
   private baseUrl: string;
   private isIntentionalDisconnect = false;
 
-  // Request tracking: 1 request = 1 GUID
   private requestId: string | null = null;
   private eventIndex = 0;
 
@@ -240,30 +296,18 @@ export class SSEClient {
     this.baseUrl = baseUrl;
   }
 
-  /**
-   * Check if currently connected to a session
-   */
   isConnected(): boolean {
     return this.eventSource !== null && this.sessionId !== null;
   }
 
-  /**
-   * Get the current session ID
-   */
   getSessionId(): string | null {
     return this.sessionId;
   }
 
-  /**
-   * Get the current request ID (1 request = 1 GUID)
-   */
   getRequestId(): string | null {
     return this.requestId;
   }
 
-  /**
-   * Start a new request tracking session
-   */
   startRequest(): string {
     if (!this.sessionId) {
       log.warn('[SSEClient] Cannot start request without active session');
@@ -276,39 +320,26 @@ export class SSEClient {
     return this.requestId;
   }
 
-  /**
-   * Track an event with the current request
-   */
   trackEvent(_type: string, _content?: string): { requestId: string; eventIndex: number } {
     this.eventIndex++;
     return { requestId: this.requestId || 'none', eventIndex: this.eventIndex };
   }
 
-  /**
-   * End the current request tracking session
-   */
   endRequest(): void {
     if (this.requestId) {
-      log.info(
-        `[SSEClient] Ending request tracking: ${this.requestId} (${this.eventIndex} events)`
-      );
+      log.info(`[SSEClient] Ending request tracking: ${this.requestId} (${this.eventIndex} events)`);
       end(this.requestId);
       this.requestId = null;
       this.eventIndex = 0;
     }
   }
 
-  /**
-   * Disconnect and notify server to clean up SSE connection
-   */
   async disconnectWithNotification(): Promise<void> {
     const sessionId = this.sessionId;
     this.isIntentionalDisconnect = true;
 
-    // Disconnect locally first (always succeeds)
     this.disconnect();
 
-    // Then notify server (non-blocking, ignore failures)
     if (sessionId) {
       log.info('[SSEClient] Notifying server of disconnect:', sessionId);
       fetch(`${this.baseUrl}/api/stream/${encodeURIComponent(sessionId)}/disconnect`, {
@@ -320,22 +351,17 @@ export class SSEClient {
   }
 
   connect(sessionId: string): void {
-    // Skip if already connected to the same session
     if (this.eventSource && this.sessionId === sessionId) {
       log.info('[SSEClient] Already connected to session:', sessionId);
       return;
     }
 
-    // Reset intentional disconnect flag
     this.isIntentionalDisconnect = false;
-
-    // Disconnect any existing connection first
     this.disconnect();
 
     this.sessionId = sessionId;
     this.reconnectAttempts = 0;
 
-    // Start request tracking for this session
     this.requestId = generateRequestId();
     this.eventIndex = 0;
     start(this.requestId, sessionId);
@@ -349,7 +375,6 @@ export class SSEClient {
       this.eventSource.onopen = () => {
         log.info('[SSEClient] Connected to SSE stream', { id: this.requestId || undefined });
         this.reconnectAttempts = 0;
-        // Send connected event
         this.notifyHandlers({ type: 'connected', session_id: sessionId });
       };
 
@@ -363,17 +388,14 @@ export class SSEClient {
         }
       };
 
-      // Listen for 'message' event (default SSE event type)
       this.eventSource.addEventListener('message', (event: MessageEvent) => {
         try {
           const rawData = event.data;
 
-          // Skip empty or keepalive data
           if (!rawData || rawData.trim().length === 0) {
             return;
           }
 
-          // Track event
           this.eventIndex++;
           const eventInfo = { requestId: this.requestId || 'none', eventIndex: this.eventIndex };
           requestLog(
@@ -383,10 +405,23 @@ export class SSEClient {
             `type=${event.type}, len=${rawData.length}`
           );
 
-          // logging raw data
           requestLog(eventInfo.requestId, 'info', `Raw data: ${rawData}`);
 
-          const parsed = parseMessages(rawData);
+          // Detect format and parse accordingly
+          const format = detectFormat(rawData);
+          let parsed: RawSSEEvent = {};
+
+          if (format === 'json') {
+            try {
+              const jsonData = JSON.parse(rawData);
+              parsed = parseSseJson(jsonData);
+            } catch {
+              log.warn('[SSEClient] Failed to parse JSON, falling back to XML');
+              parsed = parseSseXml(rawData);
+            }
+          } else if (format === 'xml') {
+            parsed = parseSseXml(rawData);
+          }
 
           requestLog(
             eventInfo.requestId,
@@ -407,7 +442,6 @@ export class SSEClient {
           };
           this.notifyHandlers(sseMsg);
 
-          // Log completion of request
           if (sseMsg.type === 'done') {
             requestLog(
               eventInfo.requestId,
@@ -434,7 +468,6 @@ export class SSEClient {
   }
 
   disconnect(): void {
-    // End request tracking first
     this.endRequest();
 
     if (this.eventSource) {

@@ -37,12 +37,13 @@ pub const App = struct {
     agent_name_buf: [64]u8 = [_]u8{0} ** 64,
     keybindings: keybindings.Keybindings,
     verbose: bool = false,
+    json: bool = false,
     state: CompletionState = CompletionState{ .matches = .empty },
     is_noninteractive: bool = false,
     http_port: u16 = 8080,
     process_name: []const u8 = "nalar",
 
-    pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16, process_name: []const u8) !App {
+    pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16, process_name: []const u8, json: bool) !App {
         // Spawn the backend if it's not already running
         backend.spawnBackend(verbose, http_port, process_name) catch |err| {
             std.debug.print("{s}Error: Failed to spawn {s} backend: {s}{s}\n", .{ globals.red, process_name, @errorName(err), globals.reset });
@@ -84,6 +85,7 @@ pub const App = struct {
                 .matches = std.ArrayList([]const u8).empty,
             },
             .is_noninteractive = is_noninteractive,
+            .json = json,
             .http_port = http_port,
             .process_name = process_name,
         };
@@ -166,6 +168,7 @@ pub fn main() !void {
         is_noninteractive,
         opts.port,
         opts.process,
+        opts.json,
     );
 
     // Handle session ID: -c alone = auto-detect latest, -c <id> = specific session, no flag = new session

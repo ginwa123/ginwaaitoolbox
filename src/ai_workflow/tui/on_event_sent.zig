@@ -5,7 +5,7 @@ const sqlite = tree1_mod.sqlite;
 const http_server = @import("nalarcore").http_server;
 
 // ============================================================================
-// XML Protocol Constants
+// JSON Protocol Constants
 // ============================================================================
 
 /// Maximum size for chunk content (32KB)
@@ -13,52 +13,6 @@ const MAX_CHUNK_SIZE = 32768;
 
 /// Maximum size for tool call delta chunk (64KB - tool calls can be large)
 const MAX_TOOL_CALL_DELTA_SIZE = 65536;
-
-/// XML event types for SSE
-const EventType = enum {
-    response,
-    tool_result,
-    chunk,
-    reasoning,
-    chunk_final,
-    tool_call_delta,
-};
-
-// ============================================================================
-// XML Helper Functions
-// ============================================================================
-
-/// Write an XML tag pair with content
-fn writeTag(w: anytype, tag: []const u8, value: []const u8) !void {
-    _ = try w.writeAll("<");
-    _ = try w.writeAll(tag);
-    _ = try w.writeAll(">");
-    _ = try w.writeAll(value);
-    _ = try w.writeAll("</");
-    _ = try w.writeAll(tag);
-    _ = try w.writeAll(">");
-}
-
-/// Write an opening XML tag
-fn writeOpenTag(w: anytype, tag: []const u8) !void {
-    _ = try w.writeAll("<");
-    _ = try w.writeAll(tag);
-    _ = try w.writeAll(">");
-}
-
-/// Write a closing XML tag
-fn writeCloseTag(w: anytype, tag: []const u8) !void {
-    _ = try w.writeAll("</");
-    _ = try w.writeAll(tag);
-    _ = try w.writeAll(">");
-}
-
-/// Write a self-closing XML tag
-fn writeSelfClosingTag(w: anytype, tag: []const u8) !void {
-    _ = try w.writeAll("<");
-    _ = try w.writeAll(tag);
-    _ = try w.writeAll("/>");
-}
 
 // ============================================================================
 // Unified Response Types
@@ -110,13 +64,41 @@ pub const OnEventInput = struct {
     parent_id: ?[]const u8 = null,
 };
 
+/// JSON event payload structure for SSE
+pub const SseEventPayload = struct {
+    session_id: []const u8,
+    model: []const u8,
+    cwd: []const u8,
+    content: ?[]const u8 = null,
+    reasoning_content: ?[]const u8 = null,
+    role: []const u8 = "assistant",
+    finish_reason: ?[]const u8 = null,
+    tool_calls: ?[]const ToolCallJson = null,
+    tool_call_id: ?[]const u8 = null,
+    tool_name: ?[]const u8 = null,
+    agent_name: ?[]const u8 = null,
+    session_name: ?[]const u8 = null,
+    loop_index: u32,
+    temperature: f32,
+    is_thinking: bool,
+    is_input: bool,
+    is_output: bool,
+    parent_session_id: ?[]const u8 = null,
+    parent_id: ?[]const u8 = null,
+};
+
+/// JSON representation of a tool call
+pub const ToolCallJson = struct {
+    id: []const u8,
+    name: []const u8,
+    arguments: []const u8,
+};
+
 /// Send an SSE event to all clients connected to the given session
 ///
-/// XML Protocol:
-/// - Response events: <response>...</response>
-/// - Tool result events: <tool_result>...</tool_result>
-///
-/// Format is determined by whether tool_call_id is set (tool_result) or not (response)
+/// JSON Protocol:
+/// - Response events contain all message fields as JSON object
+/// - Tool result events include tool_call_id and tool_name
 pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !void {
     const sse_manager = http_server.getGlobalSseManager() orelse {
         std.log.warn("on_event_send_new: no SSE manager available", .{});
@@ -130,48 +112,54 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
         std.log.warn("on_event_send_new: NO CONTENT!", .{});
     }
 
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-    var w = buf.writer(allocator);
-
-    _ = try w.writeAll("<response>");
-    try writeTag(w, "session_id", input.session_id);
-    try writeTag(w, "model", input.model);
-    try writeTag(w, "cwd", input.cwd);
-    if (input.content) |v| try writeTag(w, "content", v);
-    if (input.reasoning_content) |v| try writeTag(w, "reasoning_content", v);
-    try writeTag(w, "role", input.role orelse "assistant");
-    if (input.finish_reason) |v| try writeTag(w, "finish_reason", v);
+    // Build tool_calls JSON array if present
+    var tool_calls_json: ?[]const ToolCallJson = null;
+    var tool_calls_owned: std.ArrayList(ToolCallJson) = .empty;
+    defer if (tool_calls_json == null) tool_calls_owned.deinit(allocator);
 
     if (input.tool_calls) |calls| {
-        _ = try w.writeAll("<tool_calls>");
         for (calls) |call| {
-            _ = try w.writeAll("<tool_call>");
-            try writeTag(w, "id", call.id);
-            try writeTag(w, "name", call.function.name);
-            try writeTag(w, "arguments", call.function.arguments);
-            _ = try w.writeAll("</tool_call>");
+            try tool_calls_owned.append(allocator, .{
+                .id = call.id,
+                .name = call.function.name,
+                .arguments = call.function.arguments,
+            });
         }
-        _ = try w.writeAll("</tool_calls>");
+        tool_calls_json = try tool_calls_owned.toOwnedSlice(allocator);
     }
 
-    if (input.tool_call_id) |v| try writeTag(w, "tool_call_id", v);
-    if (input.tool_name) |v| try writeTag(w, "tool_name", v);
-    if (input.agent_name) |v| try writeTag(w, "agent_name", v);
-    if (input.session_name) |v| try writeTag(w, "session_name", v);
+    const payload = SseEventPayload{
+        .session_id = input.session_id,
+        .model = input.model,
+        .cwd = input.cwd,
+        .content = input.content,
+        .reasoning_content = input.reasoning_content,
+        .role = input.role orelse "assistant",
+        .finish_reason = input.finish_reason,
+        .tool_calls = tool_calls_json,
+        .tool_call_id = input.tool_call_id,
+        .tool_name = input.tool_name,
+        .agent_name = input.agent_name,
+        .session_name = input.session_name,
+        .loop_index = input.loop_index,
+        .temperature = input.temperature,
+        .is_thinking = input.is_thinking,
+        .is_input = input.is_input,
+        .is_output = input.is_output,
+        .parent_session_id = input.parent_session_id,
+        .parent_id = input.parent_id,
+    };
 
-    _ = try w.print("<loop_index>{d}</loop_index>", .{input.loop_index});
-    _ = try w.print("<temperature>{d}</temperature>", .{input.temperature});
-    _ = try w.print("<is_thinking>{}</is_thinking>", .{input.is_thinking});
-    _ = try w.print("<is_input>{}</is_input>", .{input.is_input});
-    _ = try w.print("<is_output>{}</is_output>", .{input.is_output});
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
 
-    if (input.parent_session_id) |v| try writeTag(w, "parent_session_id", v);
-    if (input.parent_id) |v| try writeTag(w, "parent_id", v);
+    // Use std.json.fmt with format writer
+    try buf.writer(allocator).print("{f}", .{std.json.fmt(payload, .{
+        .whitespace = .indent_tab,
+    })});
 
-    _ = try w.writeAll("</response>");
 
-    std.log.info("on_event_send_new: XML size={d}, session_id={s}", .{buf.items.len, input.session_id});
+    std.log.info("on_event_send_new: JSON size={d}, session_id={s}", .{buf.items.len, input.session_id});
 
     const event = http_server.SseEvent{
         .data = buf.items,
@@ -215,86 +203,111 @@ pub const ToolCallDeltaChunk = struct {
 };
 
 // ============================================================================
-// Structured Serialization Functions
+// Structured Serialization Functions (JSON)
 // ============================================================================
 
-/// Serialize a content chunk to XML format
-pub fn serializeContentChunk(allocator: std.mem.Allocator, chunk: ContentChunk) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-    const w = buf.writer(allocator);
+/// JSON structure for content chunk
+const ContentChunkJson = struct {
+    index: usize,
+    content: []const u8,
+    @"type": []const u8 = "chunk",
+};
 
-    _ = try w.print(
-        \\<response><chunk index="{d}"><content>{s}</content></chunk></response>
-    , .{ chunk.index, chunk.content });
+/// JSON structure for reasoning chunk
+const ReasoningChunkJson = struct {
+    index: usize,
+    reasoning_content: []const u8,
+    @"type": []const u8 = "reasoning_chunk",
+};
+
+/// JSON structure for final chunk with usage
+const FinalChunkJson = struct {
+    index: usize,
+    @"type": []const u8 = "chunk_final",
+    finish_reason: []const u8 = "stop",
+    usage: ?ChunkUsage = null,
+};
+
+/// JSON structure for tool call delta chunk
+const ToolCallDeltaChunkJson = struct {
+    index: usize,
+    @"type": []const u8 = "tool_call_delta",
+    deltas: []const agent.ToolCallDelta,
+};
+
+/// Serialize a content chunk to JSON format
+pub fn serializeContentChunk(allocator: std.mem.Allocator, chunk: ContentChunk) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    const json_chunk = ContentChunkJson{
+        .index = chunk.index,
+        .content = chunk.content,
+    };
+
+    try buf.writer(allocator).print("{f}", .{std.json.fmt(json_chunk, .{
+        .whitespace = .indent_tab,
+    })});
 
     return try buf.toOwnedSlice(allocator);
 }
 
-/// Serialize a reasoning chunk to XML format
-pub fn serializeReasoningChunk(allocator: std.mem.Allocator, chunk: ReasoningChunk) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-    const w = buf.writer(allocator);
+/// Serialize a reasoning chunk to JSON format
 
-    _ = try w.print(
-        \\<response><chunk index="{d}"><reasoning_content>{s}</reasoning_content></chunk></response>
-    , .{ chunk.index, chunk.reasoning });
+pub fn serializeReasoningChunk(allocator: std.mem.Allocator, chunk: ReasoningChunk) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    const json_chunk = ReasoningChunkJson{
+        .index = chunk.index,
+        .reasoning_content = chunk.reasoning,
+    };
+
+    try buf.writer(allocator).print("{f}", .{std.json.fmt(json_chunk, .{
+        .whitespace = .indent_tab,
+    })});
 
     return try buf.toOwnedSlice(allocator);
 }
 
 /// Serialize a final chunk with usage information
+
 pub fn serializeFinalChunk(allocator: std.mem.Allocator, chunk: FinalChunk) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
-    const w = buf.writer(allocator);
 
-    _ = try w.writeAll("<response><chunk index=\"");
-    _ = try w.print("{d}\" final=\"true\">", .{chunk.index});
+    const json_chunk = FinalChunkJson{
+        .index = chunk.index,
+        .usage = chunk.usage,
+    };
 
-    if (chunk.usage) |u| {
-        _ = try w.print(
-            \\<usage><prompt_tokens>{d}</prompt_tokens><completion_tokens>{d}</completion_tokens><total_tokens>{d}</total_tokens></usage>
-        , .{ u.prompt_tokens, u.completion_tokens, u.total_tokens });
-    }
-
-    _ = try w.writeAll("</chunk></response>");
+    try buf.writer(allocator).print("{}", .{std.json.fmt(json_chunk, .{
+        .whitespace = .indent_tab,
+    })});
 
     return try buf.toOwnedSlice(allocator);
 }
 
-/// Serialize tool call deltas to XML format
+/// Serialize tool call deltas to JSON format
 pub fn serializeToolCallDeltas(allocator: std.mem.Allocator, chunk: ToolCallDeltaChunk) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
-    const w = buf.writer(allocator);
 
-    _ = try w.print("<response><chunk index=\"{d}\"><tool_calls_delta>", .{chunk.index});
+    const json_chunk = ToolCallDeltaChunkJson{
+        .index = chunk.index,
+        .deltas = chunk.deltas,
+    };
 
-    for (chunk.deltas) |delta| {
-        _ = try w.print("<delta index=\"{d}\">", .{delta.index});
-
-        if (delta.id) |id| {
-            _ = try w.print("<id>{s}</id>", .{id});
-        }
-        if (delta.function_name) |name| {
-            _ = try w.print("<function_name>{s}</function_name>", .{name});
-        }
-        if (delta.function_arguments) |args| {
-            _ = try w.print("<function_arguments>{s}</function_arguments>", .{args});
-        }
-
-        _ = try w.writeAll("</delta>");
-    }
-
-    _ = try w.writeAll("</tool_calls_delta></chunk></response>");
+    try buf.writer(allocator).print("{f}", .{std.json.fmt(json_chunk, .{
+        .whitespace = .indent_tab,
+    })});
 
     return try buf.toOwnedSlice(allocator);
 }
 
 // ============================================================================
 // Streaming helpers (using structured serialization)
+
 // ============================================================================
 
 /// Send content chunk during streaming response
