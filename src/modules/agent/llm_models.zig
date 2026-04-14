@@ -10,7 +10,18 @@ pub const MINIMAX_2_7 = LLMModels{
     .token_count = 2000000,
 };
 
-fn is_do_compact(token_count: u32, max_capicity_token: u32) bool {
+/// Get model token count by model name string
+pub fn getModelTokenCount(model_name: []const u8) u32 {
+    if (std.mem.eql(u8, model_name, MINIMAX_2_7.name)) {
+        return MINIMAX_2_7.token_count;
+    }
+    // Default fallback (e.g., 128k tokens)
+    return 128000;
+}
+
+const std = @import("std");
+
+pub fn is_do_compact(token_count: u32, max_capicity_token: u32) bool {
     // auto compact 80% of tokens
     const threshold = max_capicity_token * 8 / 10; // 80%
     return token_count >= threshold;

@@ -468,7 +468,7 @@ pub const StreamingAggregator = struct {
 
         var content_copy: ?[]const u8 = null;
         if (self.content.items.len > 0) {
-            content_copy = try self.allocator.dupe(u8, self.content.items);
+            content_copy = try self.allocator.dupe(u8, std.mem.trim(u8, self.content.items, &std.ascii.whitespace));
         }
 
         var reasoning_copy: ?[]const u8 = null;
@@ -785,7 +785,7 @@ pub const Agent = struct {
                                                     }
                                                     const remaining = tool_names_buf.len - tool_names_len;
                                                     const to_copy = if (name.string.len > remaining) remaining else name.string.len;
-                                                    @memcpy(tool_names_buf[tool_names_len..tool_names_len + to_copy], name.string[0..to_copy]);
+                                                    @memcpy(tool_names_buf[tool_names_len .. tool_names_len + to_copy], name.string[0..to_copy]);
                                                     tool_names_len += to_copy;
                                                 }
                                             }
@@ -881,11 +881,7 @@ pub const Agent = struct {
         ctx: ?*anyopaque,
         callback: StreamCallback,
     ) CallError!CallResponse {
-        self.logFmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{
-            self.model,
-            params.messages.len,
-            params.tools.len
-        });
+        self.logFmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{ self.model, params.messages.len, params.tools.len });
 
         // Build request
         const json_body = self.build_json_request(params, true) catch |err| {
@@ -946,12 +942,10 @@ pub const Agent = struct {
             std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&@as(u32, 1))) catch {};
         }
 
-
         req.sendBodyComplete(json_body) catch |err| {
             self.logError("sendBodyComplete", err, null);
             return error.SendBodyFailed;
         };
-
 
         const stream_start = timestampMs();
         var redirect_buffer: [8192]u8 = undefined;
@@ -962,11 +956,7 @@ pub const Agent = struct {
 
         const stream_duration = elapsedMs(stream_start);
         const stream_duration_fmt = formatDuration(stream_duration);
-        self.logFmt(.info, "[STREAM] Connected in {}{s} (HTTP {d})", .{
-            stream_duration_fmt.value,
-            stream_duration_fmt.unit,
-            @intFromEnum(response.head.status)
-        });
+        self.logFmt(.info, "[STREAM] Connected in {}{s} (HTTP {d})", .{ stream_duration_fmt.value, stream_duration_fmt.unit, @intFromEnum(response.head.status) });
 
         // Log transfer details for debugging
         const encoding_str = if (response.head.transfer_encoding == .chunked) "chunked" else "fixed";
@@ -1197,11 +1187,7 @@ pub const Agent = struct {
         else
             "(none)";
         const content_ellipsis = if (aggregator.content.items.len > 50) "..." else "";
-        self.logFmt(.info, "[STREAM] Finalizing: {} tool call buffer(s), finish_reason={s}, content_len={} chars", .{
-            aggregator.tool_call_buffers.count(),
-            fr_str,
-            aggregator.content.items.len
-        });
+        self.logFmt(.info, "[STREAM] Finalizing: {} tool call buffer(s), finish_reason={s}, content_len={} chars", .{ aggregator.tool_call_buffers.count(), fr_str, aggregator.content.items.len });
         if (aggregator.content.items.len > 0) {
             self.logFmt(.info, "[STREAM] Content preview: {s}{s}", .{ content_preview, content_ellipsis });
         }
@@ -1215,12 +1201,7 @@ pub const Agent = struct {
         const prompt_cost = @as(f64, @floatFromInt(stream_response.usage.prompt_tokens)) * 0.000003;
         const completion_cost = @as(f64, @floatFromInt(stream_response.usage.completion_tokens)) * 0.000015;
         const total_cost = prompt_cost + completion_cost;
-        self.logFmt(.info, "[STREAM] Complete - Prompt: {} | Completion: {} | Total: {} | Est. cost: ${d:.4}", .{
-            stream_response.usage.prompt_tokens,
-            stream_response.usage.completion_tokens,
-            stream_response.usage.total_tokens,
-            total_cost
-        });
+        self.logFmt(.info, "[STREAM] Complete - Prompt: {} | Completion: {} | Total: {} | Est. cost: ${d:.4}", .{ stream_response.usage.prompt_tokens, stream_response.usage.completion_tokens, stream_response.usage.total_tokens, total_cost });
 
         return stream_response;
     }

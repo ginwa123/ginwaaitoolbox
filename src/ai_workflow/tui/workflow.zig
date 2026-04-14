@@ -2,6 +2,7 @@ const std = @import("std");
 const json = std.json;
 const root_mod = @import("nalarcore");
 const agent = root_mod.agent;
+const llm_models = root_mod.llm_models;
 const prompt = root_mod.prompt;
 pub const context = @import("models.zig").ContextIPCTui;
 pub const ContextIPCTui = @import("models.zig").ContextIPCTui;
@@ -263,13 +264,22 @@ pub const TUIWorkflow = struct {
 
             var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
-            const initialMessages = try BuildMessages(allocator, cwd, try get_messages(allocator, self.db, session_id), try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
+            const db_messages = try get_messages(allocator, self.db, session_id);
+            defer {
+                for (db_messages) |*msg| msg.deinit(allocator);
+                allocator.free(db_messages);
+            }
+            const total_tokens = blk: {
+                var sum: u32 = 0;
+                for (db_messages) |msg| sum += msg.total_tokens;
+                break :blk sum;
+            };
+            const initialMessages = try BuildMessages(allocator, cwd, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
-            const body_size = self.estimateBodySize(messagesLists.items);
-            self.logger.debugFmt("[COMPACTION] Body size: {} bytes", .{body_size}) catch {};
-            if (body_size > COMPACTION_CONFIG.max_body_size) {
+            self.logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len }) catch {};
+            if (llm_models.is_do_compact(total_tokens, llm_models.getModelTokenCount(model))) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
                 if (try self.callCompactAgent(messagesLists.items, allocator, api_key, model, base_url)) |compacted_xml| {
                     try self.compactMessagesInMemory(allocator, &messagesLists, compacted_xml, session_id, model, cwd);
@@ -472,23 +482,7 @@ pub const TUIWorkflow = struct {
         return res_dynamic_agent;
     }
 
-    /// Estimate the body size of messages for compaction threshold check
-    fn estimateBodySize(self: *TUIWorkflow, messages: []agent.AgentMessage) usize {
-        _ = self;
-        var total: usize = 0;
-        for (messages) |msg| {
-            total += 50; // JSON overhead per message
-            if (msg.content) |c| total += c.len;
-            if (msg.reasoning_content) |rc| total += rc.len;
-            if (msg.tool_call_id) |id| total += id.len + 20;
-            if (msg.tool_calls) |tcs| {
-                for (tcs) |tc| {
-                    total += tc.id.len + tc.function.name.len + tc.function.arguments.len + 50;
-                }
-            }
-        }
-        return total;
-    }
+
 
     /// Call CompactionAgent to compress conversation history
     fn callCompactAgent(
@@ -504,7 +498,7 @@ pub const TUIWorkflow = struct {
         defer history_buf.deinit(arena);
         var w = history_buf.writer(arena);
 
-        try w.print("Current context size: approximately {} bytes\n\n", .{self.estimateBodySize(messages)});
+        try w.print("Current context size: {} messages\n\n", .{messages.len});
         try w.writeAll("Conversation history to compact:\n\n");
 
         for (messages, 0..) |msg, i| {
@@ -552,9 +546,8 @@ pub const TUIWorkflow = struct {
             .max_tokens = 8000,
         };
 
-        self.logger.debugFmt("[COMPACTION] Calling CompactionAgent ({} messages, ~{} bytes)", .{
+        self.logger.debugFmt("[COMPACTION] Calling CompactionAgent ({} messages)", .{
             messages.len,
-            self.estimateBodySize(messages),
         }) catch {};
 
         // Use callStreaming for compaction agent - no-op callback since we don't need to stream to client
@@ -565,8 +558,8 @@ pub const TUIWorkflow = struct {
         defer response.deinit();
 
         if (response.content) |content| {
-            self.logger.debugFmt("[COMPACTION] Done: {} bytes -> {} bytes", .{
-                self.estimateBodySize(messages),
+            self.logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{
+                messages.len,
                 content.len,
             }) catch {};
             return try arena.dupe(u8, content);

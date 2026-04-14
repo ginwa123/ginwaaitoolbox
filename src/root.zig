@@ -67,6 +67,7 @@ pub const std_options: std.Options = .{
 // Module exports - these are available via @import("nalarcore")
 // it should import from folder modules only
 pub const agent = @import("modules/agent/agent.zig");
+pub const llm_models = @import("modules/agent/llm_models.zig");
 pub const prompt = @import("modules/agent/prompt.zig");
 pub const sqlite = @import("modules/databases/sqlite/sqlite.zig");
 pub const bash_tool = @import("modules/agent/tools/bash.zig");

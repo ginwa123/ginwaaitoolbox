@@ -260,16 +260,18 @@ pub fn printSSEEventContent(event: SSEEventData) void {
     if (event.content.len == 0) return;
 
     const tool_name_str = event.tool_name orelse "";
-    std.debug.print("\n", .{});
+    std.debug.print("\n Assistant: ", .{});
     if (event.is_input) {
+        std.debug.print("{s}\n", .{event.content});
         std.debug.print("Assistant: \nTool Call: {s}\n", .{tool_name_str});
     } else if (event.is_output) {
         if (tool_name_str.len > 0) {
             std.debug.print("Tool Result {s}:\n", .{tool_name_str});
+            std.debug.print("{s}\n", .{event.content});
         }
+    } else {
+        std.debug.print("{s}\n", .{event.content});
     }
-
-    std.debug.print("{s}\n", .{event.content});
 }
 
 /// Read and stream the list of active sessions

@@ -249,7 +249,6 @@ pub fn searchResultToString(allocator: std.mem.Allocator, result: SearchResult) 
     errdefer output.deinit(allocator);
 
     for (result.matches.items) |m| {
-
         const match_xml = try std.fmt.allocPrint(allocator,
             \\<m>
             \\  <f>{s}</f>
@@ -258,10 +257,10 @@ pub fn searchResultToString(allocator: std.mem.Allocator, result: SearchResult) 
             \\  <s>{s}</s>
             \\</m>
         , .{
-            m.file,
+            std.mem.trim(u8, m.file, &std.ascii.whitespace),
             m.line_number,
             m.file_total_lines,
-            m.snippet,
+            std.mem.trim(u8, m.snippet, &std.ascii.whitespace),
         });
         try output.appendSlice(allocator, match_xml);
         allocator.free(match_xml);
