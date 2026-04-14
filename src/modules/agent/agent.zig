@@ -138,6 +138,11 @@ const JsonThinkingConfig = struct {
     type: []const u8 = "disabled",
 };
 
+/// Stream options for streaming requests - enables usage in streaming responses
+const JsonStreamOptions = struct {
+    include_usage: bool,
+};
+
 /// JSON-serializable request with custom serialization for conditional fields
 const JsonRequest = struct {
     model: []const u8,
@@ -183,6 +188,10 @@ const JsonRequest = struct {
         if (self.stream) {
             try stringify.objectField("stream");
             try stringify.write(true);
+
+            // stream_options with include_usage=true to receive usage in streaming response
+            try stringify.objectField("stream_options");
+            try stringify.write(.{ .include_usage = true });
         }
 
         // tools (only when present)
