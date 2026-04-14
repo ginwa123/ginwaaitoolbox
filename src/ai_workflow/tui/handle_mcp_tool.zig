@@ -7,6 +7,22 @@ const save_message = @import("save_message.zig");
 const http_client = tree1_mod.http_client;
 const config_mod = tree1_mod.config;
 
+/// Strip SSE "data:" prefix from response body if present
+/// MCP servers may return responses in SSE format: "data: {...}\n\n"
+fn stripSsePrefix(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
+    // Check if body starts with "data:" (possibly with leading whitespace)
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "data:")) {
+        // Extract the JSON part after "data:"
+        const json_start = trimmed["data:".len..];
+        const json_trimmed = std.mem.trim(u8, json_start, " \t");
+        // Return a copy since the original body will be freed
+        return try allocator.dupe(u8, json_trimmed);
+    }
+    // No SSE prefix, return the original
+    return body;
+}
+
 /// Handle an MCP tool call by forwarding it to the MCP server
 /// 
 /// IMPORTANT: This function allocates directly from parent_allocator to avoid
@@ -123,11 +139,17 @@ pub fn handle_mcp_tool_run(
         return error.MCPServerReturnedError;
     }
 
+    // Strip SSE "data:" prefix if present - MCP may return SSE responses
+    const clean_body = try stripSsePrefix(allocator, result.body);
+    const is_copy = @intFromPtr(clean_body.ptr) != @intFromPtr(result.body.ptr);
+    errdefer if (is_copy) allocator.free(clean_body);
+
     // Parse the response and extract content
     // IMPORTANT: Use std.heap.c_allocator for JSON parsing to avoid nested arena
     // alignment issues. json.parseFromSlice internally creates an ArenaAllocator.
-    const parsed = std.json.parseFromSlice(std.json.Value, std.heap.c_allocator, result.body, .{}) catch |err| {
-        _ = try logger.errFmt("MCP JSON parse error: {s}", .{@errorName(err)});
+    const parsed = std.json.parseFromSlice(std.json.Value, std.heap.c_allocator, clean_body, .{}) catch |err| {
+        _ = try logger.errFmt("MCP JSON parse error: {s}, body: {s}", .{ @errorName(err), clean_body[0..@min(clean_body.len, 500)] });
+        if (is_copy) allocator.free(clean_body);
         allocator.free(result.body);
         allocator.free(request_body);
         return error.MCPJSONParseError;
@@ -136,7 +158,8 @@ pub fn handle_mcp_tool_run(
 
     // Extract result content from MCP response
     const root = parsed.value;
-    var tool_result: []const u8 = result.body;
+    var tool_result: []const u8 = clean_body;
+    var needs_copy = false;
 
     if (root.object.get("result")) |result_val| {
         if (result_val.object.get("content")) |content_val| {
@@ -146,21 +169,36 @@ pub fn handle_mcp_tool_run(
                     if (arr.items.len > 0) {
                         const first_content = arr.items[0];
                         if (first_content.object.get("text")) |text_val| {
-                            tool_result = switch (text_val) {
-                                .string => |s| s,
-                                else => result.body,
-                            };
+                            switch (text_val) {
+                                .string => |s| {
+                                    tool_result = s;
+                                    needs_copy = true; // string is from parsed tree, may be freed
+                                },
+                                else => {},
+                            }
                         }
                     }
                 },
-                .string => |s| tool_result = s,
+                .string => |s| {
+                    tool_result = s;
+                    needs_copy = true; // string is from parsed tree, may be freed
+                },
                 else => {},
             }
         }
     }
 
-    // tool_result points to result.body which is allocated from parent_allocator
-    // Since we removed the nested arena, result.body is valid and can be returned directly.
-    // The caller is responsible for freeing this memory.
+    // Free intermediate allocations before returning
+    if (is_copy) allocator.free(clean_body);
+    allocator.free(result.body);
+
+    // If we need the parsed string, copy it to parent allocator
+    if (needs_copy) {
+        const result_copy = try allocator.dupe(u8, tool_result);
+        return result_copy;
+    }
+
+    // tool_result is clean_body which is either a copy or result.body
+    // Either way, we've already freed the other one
     return tool_result;
 }

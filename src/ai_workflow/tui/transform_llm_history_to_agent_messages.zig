@@ -41,7 +41,13 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
                         const id_raw = if (tc_item.object.get("id")) |id_val| id_val.string else "";
                         const func_obj = if (tc_item.object.get("function")) |f| f.object else null;
                         const name_raw = if (func_obj) |fo| if (fo.get("name")) |n| n.string else "" else "";
-                        const args_raw = if (func_obj) |fo| if (fo.get("arguments")) |a| a.string else "" else "";
+                        // Normalize: empty/missing arguments → "{}" (valid JSON object)
+                        var args_raw: []const u8 = "{}";
+                        if (func_obj) |fo| {
+                            if (fo.get("arguments")) |a| {
+                                if (a.string.len > 0) args_raw = a.string;
+                            }
+                        }
                         calls[i] = .{
                             .id = try allocator.dupe(u8, id_raw),
                             .function = .{
@@ -54,7 +60,7 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
                             .id = try allocator.dupe(u8, ""),
                             .function = .{
                                 .name = try allocator.dupe(u8, ""),
-                                .arguments = try allocator.dupe(u8, ""),
+                                .arguments = try allocator.dupe(u8, "{}"),
                             },
                         };
                     }

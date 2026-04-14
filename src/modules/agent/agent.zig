@@ -625,12 +625,17 @@ pub const Agent = struct {
             if (msg.tool_calls) |tcs| {
                 const tc_slice = try arena_alloc.alloc(JsonToolCall, tcs.len);
                 for (tcs, 0..) |tc, j| {
+                    // Normalize: empty/missing arguments → "{}" (valid JSON object)
+                    const normalized_args = if (tc.function.arguments.len > 0)
+                        tc.function.arguments
+                    else
+                        "{}";
                     tc_slice[j] = .{
                         .id = tc.id,
                         .type = tc.type,
                         .function = .{
                             .name = tc.function.name,
-                            .arguments = tc.function.arguments, // Already a JSON string
+                            .arguments = normalized_args,
                         },
                     };
                 }

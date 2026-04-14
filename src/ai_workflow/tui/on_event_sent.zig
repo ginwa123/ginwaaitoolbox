@@ -158,13 +158,20 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
         .whitespace = .indent_tab,
     })});
 
-
-    std.log.info("on_event_send_new: JSON size={d}, session_id={s}", .{buf.items.len, input.session_id});
+    std.log.info("on_event_sent: buf prepared, size={d}, session_id={s}", .{buf.items.len, input.session_id});
 
     const event = http_server.SseEvent{
         .data = buf.items,
     };
+
+    std.log.info("on_event_sent: event created, data_ptr=0x{x}, data_len={d}", .{
+        @intFromPtr(event.data.ptr),
+        event.data.len,
+    });
+
     try sse_manager.enqueueEvent(input.session_id, event);
+
+    std.log.info("on_event_sent: event enqueued successfully, session_id={s}", .{input.session_id});
 }
 
 // ============================================================================

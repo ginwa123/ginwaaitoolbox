@@ -159,7 +159,6 @@ fn fetchToolsFromServer(
         return error.JsonParseError;
     };
     defer parsed.deinit();
-    std.debug.print("MCP response: {s}\n", .{result.body});
 
     // Extract tools from result
     const root = switch (parsed.value) {

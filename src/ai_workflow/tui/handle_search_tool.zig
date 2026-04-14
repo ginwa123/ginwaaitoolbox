@@ -26,7 +26,14 @@ pub fn handle_search_tool_run(
     );
     defer parsed.deinit();
 
-    var search_result = try search_tool.executeSearch(allocator, parsed.value);
+    var search_result = search_tool.executeSearch(allocator, parsed.value) catch |err| {
+        if (err == error.StdoutStreamTooLong) {
+            return try allocator.dupe(u8,
+                \\<warning>Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.</warning>
+            );
+        }
+        return err;
+    };
 
     // If there are no matches, return the raw content (which may contain warning)
     if (search_result.matches.items.len == 0) {

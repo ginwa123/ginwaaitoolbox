@@ -5,41 +5,31 @@ const http_server = root_mod.http_server;
 const httpz = http_server.httpz;
 const SseStreamCtx = @import("mod.zig").SseStreamCtx;
 
-/// Format an SSE event from queue item into a buffer
-fn formatQueueItemInto(item: *http_server.SseQueueItem, buf: []u8) error{BufferTooSmall}![]u8 {
-    var pos: usize = 0;
+/// Format an SSE event from queue item using heap allocation
+fn formatQueueItem(allocator: std.mem.Allocator, item: *http_server.SseQueueItem) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
 
     // Write event type line if specified
     if (item.event_type) |event_type| {
-        // Need: "event: " (7) + event_type.len + 1 (newline)
-        if (pos + 7 + event_type.len + 1 > buf.len) return error.BufferTooSmall;
-        const event_line = std.fmt.bufPrint(buf[pos..], "event: {s}\n", .{event_type}) catch unreachable;
-        pos += event_line.len;
+        try buf.appendSlice(allocator, "event: ");
+        try buf.appendSlice(allocator, event_type);
+        try buf.append(allocator, '\n');
     }
 
     // Write data line
     if (item.data.len == 0) {
-        // Need: "data: \n" (7) + 1 (final newline) = 8
-        if (pos + 8 > buf.len) return error.BufferTooSmall;
-        @memcpy(buf[pos..][0..7], "data: \n");
-        pos += 7;
+        try buf.appendSlice(allocator, "data: \n");
     } else {
-        // Need: 6 ("data: ") + data.len + 1 (newline) + 1 (final newline)
-        if (pos + 6 + item.data.len + 2 > buf.len) return error.BufferTooSmall;
-        @memcpy(buf[pos..][0..6], "data: ");
-        pos += 6;
-        @memcpy(buf[pos..][0..item.data.len], item.data);
-        pos += item.data.len;
-        buf[pos] = '\n';
-        pos += 1;
+        try buf.appendSlice(allocator, "data: ");
+        try buf.appendSlice(allocator, item.data);
+        try buf.append(allocator, '\n');
     }
 
     // Final newline to end the event
-    if (pos + 1 > buf.len) return error.BufferTooSmall;
-    buf[pos] = '\n';
-    pos += 1;
+    try buf.append(allocator, '\n');
 
-    return buf[0..pos];
+    return try buf.toOwnedSlice(allocator);
 }
 
 /// SSE stream handler - this thread OWNS the stream and reads events from the queue
@@ -83,16 +73,16 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
         const item = queue.dequeueWithTimeout(5_000_000_000);
 
         if (item) |queue_item| {
-            // Format and send the event
-            var stack_buf: [http_server.SseEvent.MAX_SSE_SIZE]u8 = undefined;
-            const formatted = formatQueueItemInto(queue_item, &stack_buf) catch {
-                std.log.warn("SSE: event too large for buffer", .{});
+            // Format and send the event using heap allocation
+            const formatted = formatQueueItem(ctx.server.allocator, queue_item) catch |err| {
+                std.log.warn("SSE: failed to format event: {}", .{err});
                 // Free queue item memory
                 ctx.server.allocator.free(queue_item.data);
                 if (queue_item.event_type) |et| ctx.server.allocator.free(et);
                 ctx.server.allocator.destroy(queue_item);
                 continue;
             };
+            defer ctx.server.allocator.free(formatted);
 
             stream.writeAll(formatted) catch |err| {
                 std.log.warn("SSE write failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });

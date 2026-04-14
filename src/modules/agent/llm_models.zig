@@ -16,7 +16,7 @@ pub fn getModelTokenCount(model_name: []const u8) u32 {
         return MINIMAX_2_7.token_count;
     }
     // Default fallback (e.g., 128k tokens)
-    return 128000;
+    return 200000;
 }
 
 const std = @import("std");
