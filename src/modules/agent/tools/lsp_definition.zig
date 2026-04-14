@@ -91,7 +91,7 @@ fn findZls(allocator: std.mem.Allocator) ![]u8 {
 /// Find project root by searching upward for build.zig
 fn findProjectRoot(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
     var dir = std.fs.path.dirname(file_path) orelse ".";
-    
+
     while (true) {
         const build_zig_path = try std.fmt.allocPrint(allocator, "{s}/build.zig", .{dir});
         defer allocator.free(build_zig_path);
@@ -501,11 +501,6 @@ pub const lsp_definition_tool = AgentTool{
         .parameters = .{
             .type = "object",
             .properties = &.{
-                .{
-                    .name = "lsp",
-                    .type = "string",
-                    .description = "lsp bin name like zls or pyls or path to binary",
-                },
                 .{
                     .name = "lsp",
                     .type = "string",

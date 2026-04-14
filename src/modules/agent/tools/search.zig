@@ -249,6 +249,7 @@ pub fn searchResultToString(allocator: std.mem.Allocator, result: SearchResult) 
     errdefer output.deinit(allocator);
 
     for (result.matches.items) |m| {
+
         const match_xml = try std.fmt.allocPrint(allocator,
             \\<m>
             \\  <f>{s}</f>

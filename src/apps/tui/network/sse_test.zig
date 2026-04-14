@@ -80,6 +80,30 @@ test "decode_chuncked: empty input" {
     try std.testing.expectEqualStrings("", result);
 }
 
+test "decode_chuncked: JSON with numbers should NOT be parsed as chunked" {
+    // JSON like {"id": 12345} contains hex chars but should NOT be treated as chunked
+    const raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"id\": 12345, \"data\": \"test\"}";
+    const result = try sse.decode_chuncked(std.testing.allocator, raw);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("{\"id\": 12345, \"data\": \"test\"}", result);
+}
+
+test "decode_chuncked: JSON with hex-like content should NOT be parsed as chunked" {
+    // JSON with content that looks like chunked but isn't (no CRLF after size)
+    const raw = "HTTP/1.1 200 OK\r\n\r\n{\"chunk\": \"abc123def\"}";
+    const result = try sse.decode_chuncked(std.testing.allocator, raw);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("{\"chunk\": \"abc123def\"}", result);
+}
+
+test "decode_chuncked: valid JSON starting with hex-looking number" {
+    // JSON starting with a hex-like number without chunked headers
+    const raw = "{\"status\": 200, \"message\": \"ok\"}";
+    const result = try sse.decode_chuncked(std.testing.allocator, raw);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("{\"status\": 200, \"message\": \"ok\"}", result);
+}
+
 // ============================================================================
 // extract_sse_data tests
 // ============================================================================

@@ -165,7 +165,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
 
 /// Parse the messages JSON body and print user-friendly output for the first message.
 /// Body format: {"messages":[{"content":"...","role":"assistant",...}]}
-fn printMessageContent(allocator: std.mem.Allocator, body: []const u8) void {
+pub fn printMessageContent(allocator: std.mem.Allocator, body: []const u8) void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
         std.debug.print("{s}\n", .{body});
         return;
@@ -203,14 +203,8 @@ fn printMessageContent(allocator: std.mem.Allocator, body: []const u8) void {
     const role_str = if (role_val) |r| if (r == .string) r.string else "" else "";
     const content_str = content_val.string;
 
-    const result = response.extract_content_result(allocator, content_str) catch null;
-    if (result) |res| {
-        for (res.content_results.items) |cr| {
-            std.debug.print("{s}", .{cr.content});
-        }
-    } else {
-        std.debug.print("{s}", .{content_str});
-    }
+    // Print content directly - it's already extracted from JSON, not XML
+    std.debug.print("{s}", .{content_str});
 
     if (role_str.len > 0) {
         std.debug.print("\n\n", .{});
@@ -218,7 +212,7 @@ fn printMessageContent(allocator: std.mem.Allocator, body: []const u8) void {
 }
 
 /// Parse the JSON body and pretty-print it with indentation.
-fn printPrettyJson(allocator: std.mem.Allocator, body: []const u8) void {
+pub fn printPrettyJson(allocator: std.mem.Allocator, body: []const u8) void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
         std.debug.print("{s}\n", .{body});
         return;
@@ -234,7 +228,9 @@ fn printPrettyJson(allocator: std.mem.Allocator, body: []const u8) void {
 }
 
 /// Parse SSE JSON data and print user-friendly content
-fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void {
+/// is_input: true when showing tool call invocation (arguments)
+/// is_output: true when showing tool call result (output)
+pub fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void {
     const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
     if (trimmed.len == 0) return;
 
@@ -245,47 +241,37 @@ fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void {
         const root = parsed.value;
         if (root != .object) return;
 
-        const role_val = root.object.get("role");
-        const role_str = if (role_val) |r| if (r == .string) r.string else "" else "";
+        const is_input = root.object.get("is_input");
+        const is_output = root.object.get("is_output");
+        const is_input_bool = is_input != null and is_input.?.bool;
+        const is_output_bool = is_output != null and is_output.?.bool;
 
-        const tool_name_val = root.object.get("tool_name");
-        const tool_name_str = if (tool_name_val) |t| if (t == .string) t.string else "" else "";
+        const tool_name_str = if (root.object.get("tool_name")) |t| if (t == .string) t.string else "" else "";
 
-        const finish_val = root.object.get("finish_reason");
-        const finish_str = if (finish_val) |f| if (f == .string) f.string else "" else "";
+        // const role_str = if (root.object.get("role")) |r| if (r == .string) r.string else "" else "";
+        // const finish_str = if (root.object.get("finish_reason")) |f| if (f == .string) f.string else "" else "";
 
         const content_val = root.object.get("content") orelse return;
         if (content_val != .string) return;
-
         const content_str = content_val.string;
         if (content_str.len == 0) return;
 
-        const label = if (tool_name_str.len > 0) tool_name_str else role_str;
-        if (label.len > 0) {
-            std.debug.print("[{s}] \n", .{label});
+        std.debug.print("Assistant:\n", .{});
+
+        if (is_input_bool) {
+            std.debug.print("Tool Call: {s}\n", .{tool_name_str});
+        } else if (is_output_bool) {
+            std.debug.print("Tool Result {s}:\n", .{tool_name_str});
         }
 
-        const result = response.extract_content_result(allocator, content_str) catch null;
-        if (result) |res| {
-            for (res.content_results.items) |cr| {
-                std.debug.print("{s}", .{cr.content});
-            }
-        } else {
-            std.debug.print("{s}", .{content_str});
-        }
+        std.debug.print("{s}\n", .{content_str});
 
-        if (finish_str.len > 0 and !std.mem.eql(u8, finish_str, "stop")) {
-            std.debug.print("\n({s})", .{finish_str});
-        }
+        // if (finish_str.len > 0 and !std.mem.eql(u8, finish_str, "stop")) {
+        //     std.debug.print("\n({s})", .{finish_str});
+        // }
     } else {
-        const result = response.extract_content_result(allocator, trimmed) catch null;
-        if (result) |res| {
-            for (res.content_results.items) |cr| {
-                std.debug.print("{s}", .{cr.content});
-            }
-        } else {
-            std.debug.print("{s}", .{trimmed});
-        }
+        // Non-JSON content - treat as raw text
+        std.debug.print("Handle this case json_str: {s}", .{json_str});
     }
 }
 

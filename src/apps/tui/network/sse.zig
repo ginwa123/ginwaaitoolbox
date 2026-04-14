@@ -17,11 +17,33 @@ pub fn decode_chuncked(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     const header_end = std.mem.indexOf(u8, raw, "\r\n\r\n");
     var pos: usize = if (header_end) |end| end + 4 else 0;
 
-    // Check if this looks like chunked encoding (starts with hex number)
-    const maybe_chunked = pos < raw.len and
-        (std.ascii.isHex(raw[pos]) or raw[pos] == '\r' or raw[pos] == '\n');
+    // Check if this looks like chunked encoding:
+    // 1. Must have HTTP headers (header_end != null)
+    // 2. After headers, position must have hex chars followed by CRLF
+    const looks_like_chunked = block: {
+        if (header_end == null) break :block false;
+        if (pos >= raw.len) break :block false;
 
-    if (maybe_chunked and header_end != null) {
+        // Must start with hex digit (chunk size)
+        if (!std.ascii.isHex(raw[pos])) break :block false;
+
+        // Must find CRLF after the hex number (chunk size line)
+        const maybe_crlf = std.mem.indexOf(u8, raw[pos..], "\r\n");
+        if (maybe_crlf == null or maybe_crlf.? == 0) break :block false;
+
+        // The chunk size line should be valid hex
+        const size_end = pos + maybe_crlf.?;
+        const size_str = std.mem.trim(u8, raw[pos..size_end], " \t");
+        if (size_str.len == 0) break :block false;
+
+        // Try to parse - if it fails, it's not chunked
+        const chunk_size = std.fmt.parseInt(usize, size_str, 16) catch break :block false;
+        _ = chunk_size; // suppress unused warning
+
+        break :block true;
+    };
+
+    if (looks_like_chunked) {
         // Parse chunked encoding
         debug.logVerbose("decode_chuncked: parsing chunked encoding, pos={d}, raw_len={d}", .{pos, raw.len});
         while (pos < raw.len) {
