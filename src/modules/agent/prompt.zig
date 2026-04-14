@@ -27,6 +27,7 @@ pub const Classification = prompts.Classification;
 pub const Execution = prompts.Execution;
 pub const Escalation = prompts.Escalation;
 pub const PlanBlock = prompts.PlanBlock;
+pub const TDD = prompts.TDD;
 pub const MemoryPrompt = prompts.MemoryPrompt;
 pub const GitPrompt = prompts.GitPrompt;
 pub const AgentMdAutoUpdate = prompts.AgentMdAutoUpdate;
@@ -151,6 +152,10 @@ pub fn buildAgentPrompt(
     // Plan block
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, PlanBlock);
+
+    // 🚀 TDD (Test-Driven Development) — PREFERRED APPROACH
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, TDD);
 
     // Execution
     try result.appendSlice(allocator, "\n\n");

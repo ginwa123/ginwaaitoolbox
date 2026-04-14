@@ -137,7 +137,12 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             };
             defer app.allocator.free(json_str);
             if (json_str.len > 0) {
-                printJsonContent(app.allocator, json_str);
+                const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
+                if (trimmed.len > 0 and trimmed[0] == '{') {
+                    const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, trimmed, .{}) catch continue;
+                    defer parsed.deinit();
+                    printJsonContent(parsed.value);
+                }
             }
         }
 
@@ -230,15 +235,7 @@ pub fn printPrettyJson(allocator: std.mem.Allocator, body: []const u8) void {
 /// Parse SSE JSON data and print user-friendly content
 /// is_input: true when showing tool call invocation (arguments)
 /// is_output: true when showing tool call result (output)
-pub fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void {
-    const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
-    if (trimmed.len == 0) return;
-
-    if (trimmed[0] == '{') {
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch return;
-        defer parsed.deinit();
-
-        const root = parsed.value;
+pub fn printJsonContent(root: std.json.Value) void {
         if (root != .object) return;
 
         const is_input = root.object.get("is_input");
@@ -256,23 +253,14 @@ pub fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void
         const content_str = content_val.string;
         if (content_str.len == 0) return;
 
-        std.debug.print("Assistant:\n", .{});
-
+        std.debug.print("\n", .{});
         if (is_input_bool) {
-            std.debug.print("Tool Call: {s}\n", .{tool_name_str});
+            std.debug.print("Assistant: \nTool Call: {s}\n", .{tool_name_str});
         } else if (is_output_bool) {
             std.debug.print("Tool Result {s}:\n", .{tool_name_str});
         }
 
         std.debug.print("{s}\n", .{content_str});
-
-        // if (finish_str.len > 0 and !std.mem.eql(u8, finish_str, "stop")) {
-        //     std.debug.print("\n({s})", .{finish_str});
-        // }
-    } else {
-        // Non-JSON content - treat as raw text
-        std.debug.print("Handle this case json_str: {s}", .{json_str});
-    }
 }
 
 /// Read and stream the list of active sessions

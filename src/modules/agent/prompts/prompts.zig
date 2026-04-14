@@ -58,6 +58,7 @@ pub const Classification = execution.Classification;
 pub const Execution = execution.Execution;
 pub const Escalation = execution.Escalation;
 pub const PlanBlock = execution.PlanBlock;
+pub const TDD = execution.TDD;
 
 pub const MemoryPrompt = memory.MemoryPrompt;
 pub const GitPrompt = memory.GitPrompt;

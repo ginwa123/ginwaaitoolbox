@@ -11,6 +11,52 @@ pub const Classification =
     \\| Complex | Plan → "yes/proceed" → execute |
 ;
 
+pub const TDD =
+    \\## 🚀 TDD (Test-Driven Development) — PREFERRED APPROACH
+    \\
+    \\**⚡ WHEN TO USE TDD:** When implementing new features, fixing bugs, or writing any code that can be tested.
+    \\
+    \\**⚡ TDD WORKFLOW — RED, GREEN, REFACTOR:**
+    \\
+    \\### Step 1: RED — Write a failing test FIRST
+    \\- Write the test **before** writing the implementation
+    \\- The test should describe the **expected behavior**
+    \\- Run the test → it **MUST FAIL** (function doesn't exist or behavior is wrong)
+    \\
+    \\### Step 2: GREEN — Write minimal implementation
+    \\- Write the **minimum code** needed to make the test pass
+    \\- Don't optimize, don't add extra features
+    \\- Just make the test pass
+    \\- Run the test → it **MUST PASS**
+    \\
+    \\### Step 3: REFACTOR — Improve code quality
+    \\- Once tests pass, refactor for clarity/performance
+    \\- Ensure tests still pass after refactoring
+    \\
+    \\**⚡ TDD FOR BUG FIXES:**
+    \\1. Write a test that reproduces the bug (test fails)
+    \\2. Fix the bug (test passes)
+    \\3. Ensure all other tests still pass
+    \\
+    \\**⚡ TDD COMMAND PATTERN:**
+    \\```
+    \\1. Write test → run test → FAIL ❌
+    \\2. Write impl  → run test → PASS ✅
+    \\3. Build       → verify compilation ✅
+    \\4. Read-back   → confirm edits landed
+    \\```
+    \\
+    \\**⚡ VERIFICATION MANDATORY:** Always show test output as evidence of correctness.
+    \\
+    \\**⚡ ZIG TESTING COMMANDS:**
+    \\- `zig build test` — Run all tests
+    \\- `zig test <file>` — Run tests in specific file
+    \\- `bun test` — Run Bun/TypeScript tests
+    \\
+    \\**❌ WRONG:** Write implementation first, then think about tests later
+    \\**✅ RIGHT:** Test first, watch it fail, implement, watch it pass
+;
+
 pub const Execution =
     \\## Execution
     \\
@@ -21,10 +67,7 @@ pub const Execution =
     \\- If a patch works, don't refactor
     \\- Only add complexity when there's clear evidence it's needed
     \\
-    \\1. Build → verify compiles
-    \\2. Test → run exact command that triggered error
-    \\3. Read-back → confirm edits landed
-    \\4. Report with evidence
+    \\**⚠️ TDD APPROACH (PREFERRED):** See **TDD (Test-Driven Development)** section above for test-first workflow.
     \\
     \\**⚠️ SURGICAL CODE PATCHING (Enhancing Existing Code):**
     \\- **NEVER refactor** existing code when enhancing it
@@ -33,6 +76,13 @@ pub const Execution =
     \\- Change only what's necessary for the enhancement
     \\- Leave surrounding code untouched unless directly affected
     \\- Resist "improving" unrelated parts of the code
+    \\
+    \\**⚠️ VERIFICATION WORKFLOW:**
+    \\1. Write test → run test → FAIL ❌
+    \\2. Write impl  → run test → PASS ✅
+    \\3. Build       → verify compilation ✅
+    \\4. Read-back   → confirm edits landed
+    \\5. Report with evidence
     \\
     \\**❌ WRONG:** "Let me refactor this to make it cleaner"
     \\**✅ RIGHT:** "Let me surgically patch this specific issue"
