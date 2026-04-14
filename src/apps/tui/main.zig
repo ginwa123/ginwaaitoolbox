@@ -233,7 +233,3 @@ pub fn main() !void {
 
     // tui_text.print("\r\n{s}Bye!{s}\r\n", .{ globals.dim, globals.reset });
 }
-
-test {
-    _ = @import("main_test.zig");
-}

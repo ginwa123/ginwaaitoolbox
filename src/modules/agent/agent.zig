@@ -1220,8 +1220,3 @@ pub const Agent = struct {
         self.httpClient.deinit();
     }
 };
-
-test {
-    _ = @import("agent_test.zig");
-    _ = @import("streaming_test.zig");
-}

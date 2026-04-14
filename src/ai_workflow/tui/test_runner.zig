@@ -10,7 +10,6 @@ test {
     _ = @import("build_messages_tools_mcp_for_agent_prompt_test.zig");
     _ = @import("build_skill_for_agent_prompt_test.zig");
     _ = @import("check_session_exists_test.zig");
-    _ = @import("get_tree_dir_test.zig");
     _ = @import("handle_bash_tool_test.zig");
     _ = @import("handle_content_filter_test.zig");
     _ = @import("handle_change_agent_tool_test.zig");

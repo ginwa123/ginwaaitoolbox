@@ -38,7 +38,3 @@ pub fn handle_remove_skill_tool_run(
     
     return result;
 }
-
-// test {
-//     _ = @import("handle_remove_skill_tool_test.zig");
-// }

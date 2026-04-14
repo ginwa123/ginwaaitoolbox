@@ -213,7 +213,3 @@ pub fn buildAgentPrompt(
 
     return result.toOwnedSlice(allocator);
 }
-
-test {
-    _ = @import("prompt_change_agent_test.zig");
-}

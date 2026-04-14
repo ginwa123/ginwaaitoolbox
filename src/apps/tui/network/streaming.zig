@@ -262,7 +262,7 @@ fn printJsonContent(allocator: std.mem.Allocator, json_str: []const u8) void {
 
         const label = if (tool_name_str.len > 0) tool_name_str else role_str;
         if (label.len > 0) {
-            std.debug.print("[{s}] ", .{label});
+            std.debug.print("[{s}] \n", .{label});
         }
 
         const result = response.extract_content_result(allocator, content_str) catch null;

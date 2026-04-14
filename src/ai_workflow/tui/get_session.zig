@@ -9,7 +9,7 @@ pub fn getSession(
     session_id: []const u8,
 ) !?SessionDetail {
     const sql = "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(model, 'gpt-4'), COALESCE(temperature, 0.2) FROM llm_history WHERE session_id = ? GROUP BY session_id";
-    
+
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -40,7 +40,7 @@ pub fn getLatestFinishReason(
 ) !?[]const u8 {
     // Query to get the most recent finish_reason for the session
     const sql = "SELECT finish_reason FROM llm_history WHERE session_id = ? AND finish_reason IS NOT NULL AND finish_reason != '' ORDER BY created_at DESC LIMIT 1";
-    
+
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 

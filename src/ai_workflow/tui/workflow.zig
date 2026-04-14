@@ -20,7 +20,6 @@ const RemoveSkillTool = root_mod.remove_skill_tool;
 const skills = root_mod.skills;
 const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
-const get_tree_dir = @import("get_tree_dir.zig");
 const logger_mod = root_mod.logger;
 const session_helpers = @import("session_helpers.zig");
 const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;

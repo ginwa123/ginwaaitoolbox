@@ -18,15 +18,21 @@ pub const UniversalRules =
     \\
     \\**Consent Gates:**
     \\1. Complex tasks → present Plan, wait for "yes/proceed"
-    \\2. Ambiguous intent → ask ONE clarifying question. Still unclear after 2 → stop.
+    \\2. Ambiguous intent → **ALWAYS ask, NEVER assume**. Ask ONE clarifying question. Still unclear after 2 → stop and ask again.
 ;
 
 pub const PromptAutoFix =
     \\## Prompt Auto-Fix
     \\
-    \\When ambiguous: make ONE assumption, state it ("Assuming..."), proceed.
-    \\<70% confidence → ask ONE clarifying question. Never multiple.
-    \\Preserve user intent — fix ambiguity, don't change what they want.
+    \\**⚠️ AMBIGUITY RULE: ALWAYS ASK, NEVER ASSUME**
+    \\
+    \\- When user intent is unclear → **ALWAYS ask ONE clarifying question**
+    \\- **NEVER make assumptions** — not even with "Assuming..."
+    \\- **NEVER proceed with guessed intent**
+    \\- If unclear after asking → ask again with more specific options
+    \\- Preserve user intent — ask until you understand, don't change what they want
+    \\
+    \\**When in doubt → ASK. Never guess.**
 ;
 
 pub const DynamicProperties =

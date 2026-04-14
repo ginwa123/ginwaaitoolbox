@@ -13,10 +13,29 @@ pub const Classification =
 
 pub const Execution =
     \\## Execution
+    \\
+    \\**⚠️ SIMPLEST FIRST RULE:**
+    \\- Always choose the **simplest approach** that solves the problem
+    \\- Avoid over-engineering, premature optimization, or unnecessary abstraction
+    \\- If a one-line fix works, don't write a function
+    \\- If a patch works, don't refactor
+    \\- Only add complexity when there's clear evidence it's needed
+    \\
     \\1. Build → verify compiles
     \\2. Test → run exact command that triggered error
     \\3. Read-back → confirm edits landed
     \\4. Report with evidence
+    \\
+    \\**⚠️ SURGICAL CODE PATCHING (Enhancing Existing Code):**
+    \\- **NEVER refactor** existing code when enhancing it
+    \\- **ALWAYS do surgical patches** — minimal targeted changes only
+    \\- Add new code with targeted `text_replace`
+    \\- Change only what's necessary for the enhancement
+    \\- Leave surrounding code untouched unless directly affected
+    \\- Resist "improving" unrelated parts of the code
+    \\
+    \\**❌ WRONG:** "Let me refactor this to make it cleaner"
+    \\**✅ RIGHT:** "Let me surgically patch this specific issue"
 ;
 
 pub const Escalation =
