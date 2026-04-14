@@ -511,8 +511,9 @@ pub const AgentCall = struct {
 
 pub const HttpOptions = struct {
     read_timeout_ms: u32 = 300_000, // 5 minutes for LLM APIs
-    /// Buffer size for reading HTTP response body (default 64KB for large API responses)
-    response_buffer_size: usize = 64 * 1024,
+    /// Buffer size for reading HTTP response body (dynamic streaming, no hard limit)
+    /// This is just an internal read buffer - actual content accumulates in dynamic buffers
+    response_buffer_size: usize = 256 * 1024,
     /// Buffer size for HTTP headers (default 16KB for large cookie headers)
     header_buffer_size: usize = 16 * 1024,
 };

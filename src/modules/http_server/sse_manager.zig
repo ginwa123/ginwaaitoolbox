@@ -5,52 +5,8 @@ pub const SseEvent = struct {
     data: []const u8,
     event_type: ?[]const u8 = null,
 
-    /// Maximum size for SSE event formatting (legacy constant, no longer used)
-    pub const MAX_SSE_SIZE = 1048576;
-
-    /// Format SSE event into a provided buffer (stack-allocated, no heap allocations)
-    /// Returns the formatted bytes or error.BufferTooSmall if buffer is insufficient
+    /// Format SSE event using dynamic heap allocation (no size limit)
     /// Proper SSE format: "event: <type>\ndata: <line1>\ndata: <line2>\n\n"
-    pub fn formatInto(self: SseEvent, buf: []u8) error{BufferTooSmall}![]u8 {
-        var pos: usize = 0;
-
-        // Write event type line if specified
-        if (self.event_type) |event_type| {
-            const event_line = std.fmt.bufPrint(buf[pos..], "event: {s}\n", .{event_type}) catch return error.BufferTooSmall;
-            pos += event_line.len;
-        }
-
-        // If data is empty, write a placeholder to ensure we send something
-        if (self.data.len == 0) {
-            const needed = 7; // "data: \n"
-            if (pos + needed > buf.len) return error.BufferTooSmall;
-            @memcpy(buf[pos..][0..7], "data: \n");
-            pos += 7;
-        } else {
-            // Write data lines: "data: <line>\n" for each line
-            var iter = std.mem.splitScalar(u8, self.data, '\n');
-            while (iter.next()) |line| {
-                if (line.len == 0) continue; // Skip empty lines from split
-                // Format: "data: <content>\n"
-                const needed_for_line = 6 + line.len + 1; // "data: " + content + "\n"
-                if (pos + needed_for_line > buf.len) return error.BufferTooSmall;
-                @memcpy(buf[pos..][0..6], "data: ");
-                pos += 6;
-                @memcpy(buf[pos..][0..line.len], line);
-                pos += line.len;
-                buf[pos] = '\n';
-                pos += 1;
-            }
-        }
-
-        // Final newline to end the event
-        if (pos + 1 > buf.len) return error.BufferTooSmall;
-        buf[pos] = '\n';
-        pos += 1;
-
-        return buf[0..pos];
-    }
-
     pub fn format(self: SseEvent, allocator: std.mem.Allocator) ![]const u8 {
         var result = std.ArrayList(u8).empty;
         errdefer result.deinit(allocator);

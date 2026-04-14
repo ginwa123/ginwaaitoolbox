@@ -7,12 +7,8 @@ const http_server = @import("nalarcore").http_server;
 // ============================================================================
 // JSON Protocol Constants
 // ============================================================================
-
-/// Maximum size for chunk content (32KB)
-const MAX_CHUNK_SIZE = 32768;
-
-/// Maximum size for tool call delta chunk (64KB - tool calls can be large)
-const MAX_TOOL_CALL_DELTA_SIZE = 65536;
+// Note: All buffers are dynamic using heap allocation via std.ArrayList(u8).
+// No fixed size limits for chunk content or tool call deltas.
 
 // ============================================================================
 // Unified Response Types
