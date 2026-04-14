@@ -12,6 +12,20 @@ const App = @import("../main.zig").App;
 // Re-export ToolResult from tool_results for convenience
 pub const ToolResult = tool_results.ToolResult;
 
+/// SSE event data parsed from JSON
+pub const SSEEventData = struct { is_input: bool = false, is_output: bool = false, tool_name: ?[]const u8 = null, content: []const u8 = "", finish_reason: []const u8 = "" };
+
+/// Parse SSE event data from JSON string
+fn parseSSEEventData(allocator: std.mem.Allocator, json_str: []const u8) !SSEEventData {
+    const parsed = try std.json.parseFromSlice(SSEEventData, allocator, json_str, .{
+        .ignore_unknown_fields = true,
+        .duplicate_field_behavior = .use_first,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    return parsed.value;
+}
+
 /// Read response and stream LLM output
 /// Simplified: collects raw buffer, displays content at the end
 pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
@@ -139,9 +153,18 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             if (json_str.len > 0) {
                 const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
                 if (trimmed.len > 0 and trimmed[0] == '{') {
-                    const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, trimmed, .{}) catch continue;
-                    defer parsed.deinit();
-                    printJsonContent(parsed.value);
+                    const sse_event = parseSSEEventData(app.allocator, trimmed) catch |err| {
+                        debug.logError("Failed to parse SSE event JSON: {s}", .{@errorName(err)});
+                        continue;
+                    };
+                    printSSEEventContent(sse_event);
+
+                    if (std.mem.eql(u8, sse_event.finish_reason, "stop")) {
+                        break;
+                    }
+                } else {
+                    std.debug.print("Failed to parse SSE event JSON: {s}\n", .{json_str});
+                    debug.logError("Failed to parse SSE event JSON: {s}", .{json_str});
                 }
             }
         }
@@ -232,35 +255,21 @@ pub fn printPrettyJson(allocator: std.mem.Allocator, body: []const u8) void {
     std.debug.print("{s}\n", .{pretty});
 }
 
-/// Parse SSE JSON data and print user-friendly content
-/// is_input: true when showing tool call invocation (arguments)
-/// is_output: true when showing tool call result (output)
-pub fn printJsonContent(root: std.json.Value) void {
-        if (root != .object) return;
+/// Print SSE event content using custom struct data
+pub fn printSSEEventContent(event: SSEEventData) void {
+    if (event.content.len == 0) return;
 
-        const is_input = root.object.get("is_input");
-        const is_output = root.object.get("is_output");
-        const is_input_bool = is_input != null and is_input.?.bool;
-        const is_output_bool = is_output != null and is_output.?.bool;
-
-        const tool_name_str = if (root.object.get("tool_name")) |t| if (t == .string) t.string else "" else "";
-
-        // const role_str = if (root.object.get("role")) |r| if (r == .string) r.string else "" else "";
-        // const finish_str = if (root.object.get("finish_reason")) |f| if (f == .string) f.string else "" else "";
-
-        const content_val = root.object.get("content") orelse return;
-        if (content_val != .string) return;
-        const content_str = content_val.string;
-        if (content_str.len == 0) return;
-
-        std.debug.print("\n", .{});
-        if (is_input_bool) {
-            std.debug.print("Assistant: \nTool Call: {s}\n", .{tool_name_str});
-        } else if (is_output_bool) {
+    const tool_name_str = event.tool_name orelse "";
+    std.debug.print("\n", .{});
+    if (event.is_input) {
+        std.debug.print("Assistant: \nTool Call: {s}\n", .{tool_name_str});
+    } else if (event.is_output) {
+        if (tool_name_str.len > 0) {
             std.debug.print("Tool Result {s}:\n", .{tool_name_str});
         }
+    }
 
-        std.debug.print("{s}\n", .{content_str});
+    std.debug.print("{s}\n", .{event.content});
 }
 
 /// Read and stream the list of active sessions
