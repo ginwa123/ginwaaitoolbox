@@ -6,7 +6,7 @@ const sqlite = nalarcore.sqlite;
 const ai_workflow = nalarcore.ai_workflow;
 const logger = nalarcore.logger;
 const config = nalarcore.config;
-const activity_registry = nalarcore.session.activity_registry;
+const session_registry = nalarcore.session.session_registry;
 
 const httpz = http_server.httpz;
 const WorkflowArgs = @import("mod.zig").WorkflowArgs;
@@ -76,8 +76,8 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
     }
 
     if (http_server.global_server) |server| {
-        // Register session in activity registry
-        if (activity_registry.get_global_registry()) |registry| {
+        // Register session in session registry
+        if (session_registry.get_global_registry()) |registry| {
             registry.register(session_id.?) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Failed to register worker\"}";
@@ -92,8 +92,8 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                 if (server.ctx) |ctx| {
                     const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
 
-                    // Mark as running in activity registry
-                    if (activity_registry.get_global_registry()) |registry| {
+                    // Mark as running in session registry
+                    if (session_registry.get_global_registry()) |registry| {
                         registry.mark_running(session_id.?);
                         // Queue initial message if provided
                         if (initial_message) |msg| {
@@ -124,7 +124,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                                 args.allocator.free(args.cwd);
                                 args.allocator.destroy(args);
                                 // Mark as idle when workflow completes
-                                if (activity_registry.get_global_registry()) |registry| {
+                                if (session_registry.get_global_registry()) |registry| {
                                     registry.mark_idle(args.session_id);
                                 }
                             }

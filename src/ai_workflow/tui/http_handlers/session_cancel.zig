@@ -1,7 +1,7 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
-const cancellation_registry = root_mod.session.cancellation_registry;
+const session_registry = root_mod.session.session_registry;
 
 const httpz = http_server.httpz;
 
@@ -16,7 +16,7 @@ pub fn sessionCancelHandler(_: *http_server.HttpServer.ServerHandler, req: *http
         return;
     };
 
-    if (cancellation_registry.get_global_registry()) |registry| {
+    if (session_registry.get_global_registry()) |registry| {
         registry.cancel(session_id);
         res.status = 200;
         res.body = try std.fmt.allocPrint(req.arena, "{{\"status\":\"cancelled\",\"session_id\":\"{s}\"}}", .{session_id});

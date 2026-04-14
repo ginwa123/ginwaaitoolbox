@@ -10,7 +10,7 @@ const session_monitor = root_mod.session_monitor;
 const cronjob = root_mod.cronjob;
 const sqlite = root_mod.sqlite;
 const migrations = root_mod.migrations;
-const activity_registry = root_mod.session.activity_registry;
+const activity_registry = root_mod.session.session_registry;
 const helpers = root_mod.helpers;
 const config = root_mod.config;
 
@@ -163,13 +163,9 @@ pub fn main() !void {
         .logger = global_logger_ptr,
     };
 
-    // Initialize global cancellation registry
-    ai_workflow.cancellation_registry.initGlobalRegistry(parentAllocator);
-    defer ai_workflow.cancellation_registry.deinitGlobalRegistry();
-
-    // Initialize global activity registry
-    activity_registry.initGlobalRegistry(parentAllocator);
-    defer activity_registry.deinitGlobalRegistry();
+    // Initialize global session registry (combines cancellation + activity tracking)
+    activity_registry.init_global_registry(parentAllocator);
+    defer activity_registry.deinit_global_registry();
 
     // Spawn session monitor to exit if no active sessions
     var monitor = session_monitor.SessionMonitor.spawn() catch |err| {

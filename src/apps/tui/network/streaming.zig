@@ -12,8 +12,35 @@ const App = @import("../main.zig").App;
 // Re-export ToolResult from tool_results for convenience
 pub const ToolResult = tool_results.ToolResult;
 
-/// SSE event data parsed from JSON
-pub const SSEEventData = struct { is_input: bool = false, is_output: bool = false, tool_name: ?[]const u8 = null, content: []const u8 = "", finish_reason: []const u8 = "" };
+/// SSE event data parsed from JSON (matches SseEventPayload from on_event_sent.zig)
+pub const SSEEventData = struct {
+    session_id: []const u8 = "",
+    model: []const u8 = "",
+    cwd: []const u8 = "",
+    content: ?[]const u8 = null,
+    reasoning_content: ?[]const u8 = null,
+    role: []const u8 = "assistant",
+    finish_reason: ?[]const u8 = null,
+    tool_calls: ?[]const ToolCallJson = null,
+    tool_call_id: ?[]const u8 = null,
+    tool_name: ?[]const u8 = null,
+    agent_name: ?[]const u8 = null,
+    session_name: ?[]const u8 = null,
+    loop_index: u32 = 0,
+    temperature: f32 = 0,
+    is_thinking: bool = false,
+    is_input: bool = false,
+    is_output: bool = false,
+    parent_session_id: ?[]const u8 = null,
+    parent_id: ?[]const u8 = null,
+};
+
+/// JSON representation of a tool call (matches ToolCallJson from on_event_sent.zig)
+pub const ToolCallJson = struct {
+    id: []const u8 = "",
+    name: []const u8 = "",
+    arguments: []const u8 = "",
+};
 
 /// Parse SSE event data from JSON string
 fn parseSSEEventData(allocator: std.mem.Allocator, json_str: []const u8) !SSEEventData {
@@ -154,14 +181,17 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
                 if (trimmed.len > 0 and trimmed[0] == '{') {
                     const sse_event = parseSSEEventData(app.allocator, trimmed) catch |err| {
-                        debug.logError("Failed to parse SSE event JSON: {s}", .{json_str});
+                        debug.logError("Failed to parse SSE event JSON: decoded={s}", .{ decoded });
+                        debug.logError("Failed to parse SSE event JSON: json_str={s}", .{json_str});
                         debug.logError("Failed to parse SSE event JSON: {s}", .{@errorName(err)});
                         continue;
                     };
                     printSSEEventContent(sse_event);
 
-                    if (std.mem.eql(u8, sse_event.finish_reason, "stop")) {
-                        break;
+                    if (sse_event.finish_reason) |fr| {
+                        if (std.mem.eql(u8, fr, "stop")) {
+                            break;
+                        }
                     }
                 } else {
                     debug.logError("Failed to parse SSE event JSON: {s}", .{json_str});
@@ -258,20 +288,23 @@ pub fn print_pretty_json(allocator: std.mem.Allocator, body: []const u8) void {
 
 /// Print SSE event content using custom struct data
 pub fn printSSEEventContent(event: SSEEventData) void {
-    if (event.content.len == 0) return;
+    const content_str = event.content orelse "";
+    if (content_str.len == 0) return;
 
     const tool_name_str = event.tool_name orelse "";
     std.debug.print("\n Assistant: \n", .{});
     if (event.is_input) {
-        std.debug.print("{s}\n", .{event.content});
-        std.debug.print("\nTool Call: {s}\n", .{tool_name_str});
+        std.debug.print("{s}\n", .{content_str});
+        if (tool_name_str.len > 0) {
+            std.debug.print("\nTool Call: {s}\n", .{tool_name_str});
+        }
     } else if (event.is_output) {
         if (tool_name_str.len > 0) {
             std.debug.print("Tool Result {s}:\n", .{tool_name_str});
         }
-        std.debug.print("{s}\n", .{event.content});
+        std.debug.print("{s}\n", .{content_str});
     } else {
-        std.debug.print("{s}\n", .{event.content});
+        std.debug.print("{s}\n", .{content_str});
     }
 }
 

@@ -1,8 +1,7 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
-const cancellation_registry = root_mod.session.cancellation_registry;
-const activity_registry = root_mod.session.activity_registry;
+const session_registry = root_mod.session.session_registry;
 
 const httpz = http_server.httpz;
 
@@ -21,7 +20,7 @@ pub fn worker_cancel_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
     };
 
     // Check if session exists
-    if (activity_registry.get_global_registry()) |registry| {
+    if (session_registry.get_global_registry()) |registry| {
         if (!registry.is_registered(session_id)) {
             res.status = 404;
             res.body = "{\"error\":\"Worker not found\"}";
@@ -29,13 +28,9 @@ pub fn worker_cancel_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
         }
     }
 
-    // Cancel via cancellation registry
-    if (cancellation_registry.get_global_registry()) |registry| {
+    // Cancel and mark as stopped in session registry
+    if (session_registry.get_global_registry()) |registry| {
         registry.cancel(session_id);
-    }
-
-    // Also mark as stopped in activity registry
-    if (activity_registry.get_global_registry()) |registry| {
         registry.mark_stopped(session_id);
     }
 

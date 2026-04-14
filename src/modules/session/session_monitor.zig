@@ -1,5 +1,5 @@
 const std = @import("std");
-const cancellation_registry = @import("cancellation_registry.zig");
+const session_registry = @import("session_registry.zig");
 
 pub const SessionMonitor = struct {
     const Self = @This();
@@ -32,19 +32,19 @@ pub const SessionMonitor = struct {
             if (!running.load(.seq_cst)) break;
 
             // Check registry status
-            const registry = cancellation_registry.get_global_registry();
+            const registry = session_registry.get_global_registry();
             // for now we will disabled this
             // if (registry == null) {
             //     std.log.info("SessionMonitor: No registry found, exiting process", .{});
             //     std.posix.exit(0);
             // }
             //
-            // if (!registry.?.hasSessions()) {
+            // if (!registry.?.has_sessions()) {
             //     std.log.info("SessionMonitor: No active sessions, exiting process", .{});
             //     std.posix.exit(0);
             // }
 
-            std.log.debug("SessionMonitor: {d} active session(s), continuing", .{registry.?.sessionCount()});
+            std.log.debug("SessionMonitor: {d} active session(s), continuing", .{registry.?.session_count()});
         }
     }
 };

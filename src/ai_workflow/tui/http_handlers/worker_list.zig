@@ -1,7 +1,7 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
-const activity_registry = root_mod.session.activity_registry;
+const session_registry = root_mod.session.session_registry;
 
 const httpz = http_server.httpz;
 
@@ -20,24 +20,33 @@ pub fn worker_list_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz
 
     const limit = std.fmt.parseInt(u32, limit_str, 10) catch 50;
 
-    if (activity_registry.get_global_registry()) |registry| {
+    if (session_registry.get_global_registry()) |registry| {
         var worker_list = std.ArrayList(u8).empty;
         defer worker_list.deinit(alloc);
         const writer = worker_list.writer(alloc);
 
         try writer.writeAll("[");
         var count: u32 = 0;
-        var iter = registry.sessions.iterator();
 
         // Determine filter type
         const filter_running = std.mem.eql(u8, status_filter, "running");
         const filter_idle = std.mem.eql(u8, status_filter, "idle");
         const filter_stopped = std.mem.eql(u8, status_filter, "stopped");
 
-        while (iter.next()) |entry| {
+        // Get all session IDs using the helper method
+        var session_ids = registry.get_session_ids(alloc) catch {
+            res.status = 500;
+            res.body = "{\"error\":\"Failed to get session list\"}";
+            return;
+        };
+        defer {
+            for (session_ids.items) |sid| alloc.free(sid);
+            session_ids.deinit(alloc);
+        }
+
+        for (session_ids.items) |sid| {
             if (count >= limit) break;
 
-            const sid = entry.key_ptr.*;
             const is_stopped = registry.is_stopped(sid);
             const is_running = registry.is_running(sid);
 
@@ -54,11 +63,7 @@ pub fn worker_list_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz
             if (!matches_filter) continue;
 
             const status = if (is_stopped) "stopped" else if (is_running) "running" else "idle";
-
-            var queue_count: u32 = 0;
-            if (registry.message_queues.get(sid)) |queue| {
-                queue_count = @intCast(queue.items.len);
-            }
+            const queue_count = registry.get_queue_count(sid);
 
             if (count > 0) {
                 try writer.writeAll(",");

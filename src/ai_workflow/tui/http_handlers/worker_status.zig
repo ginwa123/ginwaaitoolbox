@@ -1,7 +1,7 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
-const activity_registry = root_mod.session.activity_registry;
+const session_registry = root_mod.session.session_registry;
 
 const httpz = http_server.httpz;
 
@@ -25,7 +25,7 @@ pub fn worker_status_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
     var queue_count: u32 = 0;
     var is_registered = false;
 
-    if (activity_registry.get_global_registry()) |registry| {
+    if (session_registry.get_global_registry()) |registry| {
         is_registered = registry.is_registered(session_id);
 
         if (registry.is_stopped(session_id)) {

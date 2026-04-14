@@ -1,7 +1,7 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
-const activity_registry = root_mod.session.activity_registry;
+const session_registry = root_mod.session.session_registry;
 
 const httpz = http_server.httpz;
 
@@ -22,7 +22,7 @@ pub fn sessionQueueGetHandler(
         return;
     };
 
-    if (activity_registry.get_global_registry()) |registry| {
+    if (session_registry.get_global_registry()) |registry| {
         if (registry.get_queue_messages(session_id)) |messages| {
             var msgs = messages;
             defer {

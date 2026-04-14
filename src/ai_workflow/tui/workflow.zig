@@ -55,8 +55,7 @@ const BuildBackgroundProcessContent = @import("build_background_process_for_agen
 const save_skill_mod = @import("save_skill.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 const config_mod = root_mod.config;
-pub const cancellation_registry = root_mod.session.cancellation_registry;
-pub const activity_registry = root_mod.session.activity_registry;
+pub const session_registry = root_mod.session.session_registry;
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const SpawnSubAgentTool = root_mod.agents;
 const tool_registry = @import("tool_registry.zig");
@@ -132,24 +131,16 @@ pub const TUIWorkflow = struct {
     }
 
     fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
-        // Register this session for cancellation tracking
-        if (cancellation_registry.get_global_registry()) |registry| {
+        // Register this session for activity/cancellation tracking
+        if (session_registry.get_global_registry()) |registry| {
             try registry.register(session_id);
-        }
-        if (activity_registry.get_global_registry()) |registry| {
-            if (registry.is_registered(session_id) == false) {
-                try registry.register(session_id);
-            }
         }
 
         // Ensure cleanup happens even on error - balances mark_running() and unregisters session
         defer {
-            if (activity_registry.get_global_registry()) |registry| {
+            if (session_registry.get_global_registry()) |registry| {
                 registry.mark_idle(session_id);
                 registry.mark_stopped(session_id);
-                registry.unregister(session_id);
-            }
-            if (cancellation_registry.get_global_registry()) |registry| {
                 registry.unregister(session_id);
             }
         }
@@ -162,7 +153,7 @@ pub const TUIWorkflow = struct {
         );
         const initial_agent = initial_agent_state.agent;
 
-        if (activity_registry.get_global_registry()) |registry| {
+        if (session_registry.get_global_registry()) |registry| {
             const is_running = registry.is_running(session_id);
             if (is_running) {
                 _ = registry.queue_message(session_id, message);
@@ -207,14 +198,12 @@ pub const TUIWorkflow = struct {
         // Note: mcp_tools_fetched memory is managed by parent_allocator
 
         while (true) {
-            if (cancellation_registry.get_global_registry()) |registry| {
+            if (session_registry.get_global_registry()) |registry| {
                 if (registry.is_cancelled(session_id)) {
                     _ = try self.logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
                     break;
                 }
-            }
 
-            if (activity_registry.get_global_registry()) |registry| {
                 const queued_messages = registry.get_queue_messages(session_id);
                 if (queued_messages) |messages| {
                     for (messages.items) |msg| {
