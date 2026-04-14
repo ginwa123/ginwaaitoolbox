@@ -42,6 +42,12 @@ pub const sessionCompactHandler = @import("session_compact.zig").sessionCompactH
 pub const sessionQueueDeleteHandler = @import("session_queue_delete.zig").sessionQueueDeleteHandler;
 pub const sessionQueueGetHandler = @import("session_queue_get.zig").sessionQueueGetHandler;
 
+// Worker API handlers
+pub const worker_create_handler = @import("worker_create.zig").worker_create_handler;
+pub const worker_status_handler = @import("worker_status.zig").worker_status_handler;
+pub const worker_list_handler = @import("worker_list.zig").worker_list_handler;
+pub const worker_cancel_handler = @import("worker_cancel.zig").worker_cancel_handler;
+
 // =============================================================================
 // Shared Types & Helpers
 // =============================================================================

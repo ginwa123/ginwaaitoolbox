@@ -245,6 +245,12 @@ pub fn main() !void {
 
             // Ping endpoint - checks if session is connected via SSE
             router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
+
+            // Worker API endpoints (background task execution)
+            router.post("/api/worker", http_handlers.worker_create_handler, .{});
+            router.get("/api/workers", http_handlers.worker_list_handler, .{});
+            router.get("/api/worker/:session_id/status", http_handlers.worker_status_handler, .{});
+            router.post("/api/worker/:session_id/cancel", http_handlers.worker_cancel_handler, .{});
         }
     };
     try server.runWithConfig(HttpRoutes.setup);
