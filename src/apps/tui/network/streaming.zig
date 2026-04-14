@@ -154,6 +154,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
                 if (trimmed.len > 0 and trimmed[0] == '{') {
                     const sse_event = parseSSEEventData(app.allocator, trimmed) catch |err| {
+                        debug.logError("Failed to parse SSE event JSON: {s}", .{json_str});
                         debug.logError("Failed to parse SSE event JSON: {s}", .{@errorName(err)});
                         continue;
                     };
@@ -163,8 +164,8 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                         break;
                     }
                 } else {
-                    std.debug.print("Failed to parse SSE event JSON: {s}\n", .{json_str});
                     debug.logError("Failed to parse SSE event JSON: {s}", .{json_str});
+                    std.debug.print("Failed to parse SSE event JSON: {s}\n", .{json_str});
                 }
             }
         }
@@ -179,7 +180,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             defer app.allocator.free(b);
             if (app.json) {
                 // Pretty-print the full JSON response
-                printPrettyJson(app.allocator, b);
+                print_pretty_json(app.allocator, b);
             } else {
                 // Extract and print only the content field value
                 printMessageContent(app.allocator, b);
@@ -240,7 +241,7 @@ pub fn printMessageContent(allocator: std.mem.Allocator, body: []const u8) void 
 }
 
 /// Parse the JSON body and pretty-print it with indentation.
-pub fn printPrettyJson(allocator: std.mem.Allocator, body: []const u8) void {
+pub fn print_pretty_json(allocator: std.mem.Allocator, body: []const u8) void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
         std.debug.print("{s}\n", .{body});
         return;
@@ -260,147 +261,18 @@ pub fn printSSEEventContent(event: SSEEventData) void {
     if (event.content.len == 0) return;
 
     const tool_name_str = event.tool_name orelse "";
-    std.debug.print("\n Assistant: ", .{});
+    std.debug.print("\n Assistant: \n", .{});
     if (event.is_input) {
         std.debug.print("{s}\n", .{event.content});
-        std.debug.print("Assistant: \nTool Call: {s}\n", .{tool_name_str});
+        std.debug.print("\nTool Call: {s}\n", .{tool_name_str});
     } else if (event.is_output) {
         if (tool_name_str.len > 0) {
             std.debug.print("Tool Result {s}:\n", .{tool_name_str});
-            std.debug.print("{s}\n", .{event.content});
         }
+        std.debug.print("{s}\n", .{event.content});
     } else {
         std.debug.print("{s}\n", .{event.content});
     }
-}
-
-/// Read and stream the list of active sessions
-pub fn readResponseAndStreamGetSessions(app: *App) ![]u8 {
-    var raw_buffer = std.ArrayList(u8).empty;
-    errdefer raw_buffer.deinit(app.allocator);
-    var arena = std.heap.ArenaAllocator.init(app.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-    var buf: [4096]u8 = undefined;
-
-    const SSE_TIMEOUT_MS: i64 = 90000;
-    var last_data_received_ms: i64 = std.time.milliTimestamp();
-    var reconnection_attempts: u32 = 0;
-    const MAX_RECONNECTION_ATTEMPTS: u32 = 3;
-
-    const PING_INTERVAL_MS: i64 = 5000;
-    var last_ping_ms: i64 = std.time.milliTimestamp();
-
-    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
-    defer std.posix.close(stream_socket);
-
-    var enable: u32 = 1;
-    std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
-
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
-
-    const stream_request = try std.fmt.allocPrint(alloc, "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(stream_socket, stream_request);
-
-    if (!connection.waitForSseConnected(stream_socket, 5000)) {
-        std.debug.print("{s}Warning: SSE connection timeout{s}\n", .{ globals.yellow, globals.reset });
-    }
-    try messaging.sendSessionsCommand(app);
-
-    var poll_fds = [2]std.posix.pollfd{
-        .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
-        .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
-    };
-
-    while (true) {
-        const now = std.time.milliTimestamp();
-        const ready = std.posix.poll(&poll_fds, 50) catch 0;
-        var new_data = false;
-        if (ready > 0) {
-            if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
-                poll_fds[1].revents = 0;
-            }
-            if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
-                const n = std.posix.read(stream_socket, &buf) catch break;
-                if (n == 0) break;
-                try raw_buffer.appendSlice(app.allocator, buf[0..n]);
-                poll_fds[0].revents = 0;
-                new_data = true;
-                last_data_received_ms = now;
-            }
-            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
-        }
-
-        if (!new_data) {
-            if (now - last_ping_ms > PING_INTERVAL_MS) {
-                const needs_reconnect = messaging.send_ping_command(app) catch false;
-                if (needs_reconnect) {
-                    std.debug.print("SSE session expired, reconnecting...\n", .{});
-                    reconnection_attempts += 1;
-                    break;
-                }
-                last_ping_ms = now;
-            }
-
-            if (now - last_data_received_ms > SSE_TIMEOUT_MS) {
-                if (reconnection_attempts >= MAX_RECONNECTION_ATTEMPTS) {
-                    std.debug.print("\r\x1b[2K\n{s}Connection lost. Max reconnection attempts reached.{s}\n", .{ globals.yellow, globals.reset });
-                    break;
-                }
-
-                reconnection_attempts += 1;
-                std.debug.print("\r\x1b[2K\n{s}Connection lost, reconnecting... (attempt {}/{})\n{s}", .{ globals.yellow, reconnection_attempts, MAX_RECONNECTION_ATTEMPTS, globals.reset });
-
-                const new_socket = connection.reconnectSseStream(app, alloc, stream_socket);
-                if (new_socket < 0) {
-                    std.debug.print("\r\x1b[2K\n{s}Reconnection failed.{s}\n", .{ globals.yellow, globals.reset });
-                    last_data_received_ms = now;
-                    std.Thread.sleep(1_000_000_000);
-                    continue;
-                }
-
-                stream_socket = new_socket;
-                poll_fds[0].fd = stream_socket;
-                last_data_received_ms = now;
-                std.debug.print("\r\x1b[2K\n{s}Reconnected successfully.{s}\n", .{ globals.green, globals.reset });
-                continue;
-            }
-
-            std.Thread.sleep(10_000_000);
-            continue;
-        }
-
-        const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch continue;
-        defer app.allocator.free(decoded);
-        const xml = sse.extract_sse_data(app.allocator, decoded) catch continue;
-        defer app.allocator.free(xml);
-        if (std.mem.indexOf(u8, xml, "</finish_reason>") != null) break;
-    }
-
-    std.debug.print("\r\x1b[2K\n", .{});
-
-    const final_decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch "";
-    defer app.allocator.free(final_decoded);
-    const final_xml = sse.extract_sse_data(app.allocator, final_decoded) catch "";
-    defer app.allocator.free(final_xml);
-
-    if (utils.extract_tag(final_xml, "sessions")) |md| {
-        const trimmed = utils.trim(md);
-        std.debug.print("{s}Session ID           Directory                        Created{s}\n", .{ globals.bold, globals.reset });
-        std.debug.print("─────────────────────────────────────────────────────────────────────\n", .{});
-        var rest = trimmed;
-        while (utils.extract_tag(rest, "session")) |session| {
-            const id = utils.extract_tag(session, "id") orelse "";
-            const dir = utils.extract_tag(session, "dir") orelse "";
-            const ts = utils.extract_tag(session, "created") orelse "";
-            std.debug.print("{s:<20} {s:<32} {s}\n", .{ id, dir, ts });
-            const end = std.mem.indexOf(u8, rest, "</session>") orelse break;
-            rest = rest[end + "</session>".len ..];
-        }
-    }
-
-    return try raw_buffer.toOwnedSlice(app.allocator);
 }
 
 /// Check stdin for double escape sequence (to interrupt streaming)

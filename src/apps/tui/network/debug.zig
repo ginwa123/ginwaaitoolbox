@@ -10,7 +10,7 @@ pub const DebugLevel = enum(u8) {
 };
 
 /// Global debug level - set via environment or compile time
-pub var global_debug_level: DebugLevel = .off;
+pub var global_debug_level: DebugLevel = .err;
 
 /// ANSI color codes for terminal output
 const colors = struct {
@@ -24,9 +24,9 @@ const colors = struct {
 /// Log a message at the specified level
 pub fn log(level: DebugLevel, comptime fmt: []const u8, args: anytype) void {
     if (@intFromEnum(level) > @intFromEnum(global_debug_level)) return;
-    
+
     const timestamp = @as(i64, @intCast(std.time.timestamp()));
-    
+
     switch (level) {
         .off => {
             std.debug.print(colors.reset ++ "[OFF ][" ++ "{d}" ++ "] " ++ fmt ++ colors.reset ++ "\n", .{ timestamp } ++ args);
@@ -61,10 +61,10 @@ pub fn logVerbose(comptime fmt: []const u8, args: anytype) void {
 /// Dump hex data for debugging raw streams
 pub fn dumpHex(label: []const u8, data: []const u8, max_len: usize) void {
     if (@intFromEnum(global_debug_level) < @intFromEnum(DebugLevel.verbose)) return;
-    
+
     const show_len = @min(data.len, max_len);
     logVerbose("{s} ({d}/{d} bytes):", .{label, show_len, data.len});
-    
+
     var i: usize = 0;
     var line = std.ArrayList(u8).empty;
     while (i < show_len) : (i += 1) {
@@ -87,10 +87,10 @@ pub fn setLevelFromString(level_str: []const u8) void {
 test "debug level parsing" {
     setLevelFromString("error");
     try std.testing.expect(global_debug_level == .err);
-    
+
     setLevelFromString("verbose");
     try std.testing.expect(global_debug_level == .verbose);
-    
+
     setLevelFromString("invalid");
     try std.testing.expect(global_debug_level == .verbose); // unchanged
 }

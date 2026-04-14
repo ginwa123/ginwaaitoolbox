@@ -6,9 +6,6 @@ const App = @import("../main.zig").App;
 /// Execute a command by name
 /// Returns true if the app should exit, false otherwise
 pub fn executeCommand(app: *App, command: []const u8) !bool {
-    if (std.mem.eql(u8, command, "/sessions")) {
-        return commandSessions(app);
-    }
     if (std.mem.eql(u8, command, "/exit")) {
         return commandExit(app);
     }
@@ -57,16 +54,6 @@ fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
 }
 
 // ─── Command Handlers ────────────────────────────────────────────────────────
-
-fn commandSessions(app: *App) !bool {
-    std.debug.print("\r\n", .{});
-    // Import the streaming function from network module
-    const streaming = @import("../network/streaming.zig");
-    const response = streaming.readResponseAndStreamGetSessions(app) catch "";
-    defer app.allocator.free(response);
-    if (response.len == 0) std.debug.print("{s}No response{s}\r\n", .{ globals.dim, globals.reset });
-    return false;
-}
 
 fn commandExit(_: *App) !bool {
     return true;
