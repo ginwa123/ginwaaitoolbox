@@ -112,44 +112,54 @@ pub const SessionRegistry = struct {
             return;
         }
 
-        const key = try self.allocator.dupe(u8, session_id);
-        errdefer self.allocator.free(key);
-
-        // Defensive: Clean up any orphaned entries in cancelled (can happen from partial failures)
-        if (self.cancelled.contains(key)) {
-            if (self.cancelled.fetchRemove(key)) |entry| {
+        // Defensive: Clean up any orphaned entries that might exist without a corresponding activity entry
+        // This handles partial failures from previous register() calls that didn't complete
+        if (self.cancelled.contains(session_id)) {
+            if (self.cancelled.fetchRemove(session_id)) |entry| {
                 self.allocator.destroy(entry.value);
                 self.allocator.free(entry.key);
             }
         }
 
+        // Also clean up orphaned message queues
+        if (self.message_queues.contains(session_id)) {
+            if (self.message_queues.fetchRemove(session_id)) |entry| {
+                for (entry.value.items) |msg| {
+                    self.allocator.free(msg);
+                }
+                entry.value.deinit(self.allocator);
+                self.allocator.destroy(entry.value);
+            }
+        }
+
+        // Use the session_id directly for cleanup, then create a new key for insertion
+        const key = try self.allocator.dupe(u8, session_id);
+        errdefer self.allocator.free(key);
+
         // Create activity counter
         const activity_atomic = try self.allocator.create(std.atomic.Value(usize));
         activity_atomic.* = std.atomic.Value(usize).init(0);
-        try self.activity.put(key, activity_atomic);
         errdefer {
-            _ = self.activity.fetchRemove(key);
             self.allocator.destroy(activity_atomic);
         }
+        try self.activity.put(key, activity_atomic);
 
         // Create cancellation flag
         const cancelled_atomic = try self.allocator.create(std.atomic.Value(bool));
         cancelled_atomic.* = std.atomic.Value(bool).init(false);
-        try self.cancelled.put(key, cancelled_atomic);
         errdefer {
-            _ = self.cancelled.fetchRemove(key);
             self.allocator.destroy(cancelled_atomic);
         }
+        try self.cancelled.put(key, cancelled_atomic);
 
         // Create message queue
         const queue = try self.allocator.create(std.ArrayList([]const u8));
         queue.* = std.ArrayList([]const u8).empty;
-        try self.message_queues.put(key, queue);
         errdefer {
-            _ = self.message_queues.fetchRemove(key);
             queue.deinit(self.allocator);
             self.allocator.destroy(queue);
         }
+        try self.message_queues.put(key, queue);
     }
 
     pub fn unregister(self: *Self, session_id: []const u8) void {

@@ -56,28 +56,23 @@ fn parseSSEEventData(allocator: std.mem.Allocator, json_str: []const u8) !SSEEve
 /// Read response and stream LLM output
 /// Simplified: collects raw buffer, displays content at the end
 pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
-    var raw_buffer = std.ArrayList(u8).empty;
-    errdefer raw_buffer.deinit(app.allocator);
+    var raw_buffer = std.array_list.AlignedManaged(u8, null).init(app.allocator);
+    errdefer raw_buffer.deinit();
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Dynamic read buffer instead of fixed stack buffer
-    var read_buf = std.ArrayList(u8).empty;
-    errdefer read_buf.deinit(app.allocator);
-    try read_buf.resize(app.allocator, 4096); // pre-allocate initial capacity
-
     const PING_INTERVAL_MS: i64 = 1000;
     var last_ping_ms: i64 = std.time.milliTimestamp();
 
-    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
+    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice();
     defer std.posix.close(stream_socket);
 
     var enable: u32 = 1;
     std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
+    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice();
 
     const stream_request = try std.fmt.allocPrint(alloc, "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(stream_socket, stream_request);
@@ -89,7 +84,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
 
     while (true) {
         defer {
-            raw_buffer.clearAndFree(app.allocator);
+            raw_buffer.clearAndFree();
         }
         const now = std.time.milliTimestamp();
 
@@ -104,18 +99,10 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                     break;
                 }
                 if (poll_fd[0].revents & std.posix.POLL.IN != 0) {
-                    // Dynamic buffer read loop
-                    while (true) {
-                        const min_capacity = read_buf.items.len * 2;
-                        if (min_capacity > read_buf.capacity) {
-                            try read_buf.resize(app.allocator, min_capacity);
-                        }
-                        const n = std.posix.read(stream_socket, read_buf.items) catch break;
-                        if (n == 0) break;
-                        const was_full = n >= read_buf.items.len;
-                        try raw_buffer.appendSlice(app.allocator, read_buf.items[0..n]);
-                        if (!was_full) break;
-                    }
+                    var buf: [8192]u8 = undefined;
+                    const n = std.posix.read(stream_socket, &buf) catch break;
+                    if (n == 0) break;
+                    try raw_buffer.appendSlice(buf[0..n]);
                 }
             }
 
@@ -149,26 +136,11 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
 
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
-                // Loop to handle partial reads and dynamic buffer growth
-                while (true) {
-                    // Check if we need to grow the buffer
-                    const min_capacity = read_buf.items.len * 2;
-                    if (min_capacity > read_buf.capacity) {
-                        try read_buf.resize(app.allocator, min_capacity);
-                    }
-
-                    const n = std.posix.read(stream_socket, read_buf.items) catch break;
-                    if (n == 0) break;
-
-                    // Check if buffer was too small (might have more data)
-                    const was_full = n >= read_buf.items.len;
-
-                    try raw_buffer.appendSlice(app.allocator, read_buf.items[0..n]);
-                    poll_fds[0].revents = 0;
-
-                    // If we didn't fill the buffer, we got everything
-                    if (!was_full) break;
-                }
+                var buf: [8192]u8 = undefined;
+                const n = std.posix.read(stream_socket, &buf) catch break;
+                if (n == 0) break;
+                try raw_buffer.appendSlice(buf[0..n]);
+                poll_fds[0].revents = 0;
             }
 
             if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
@@ -194,73 +166,39 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
         } else {
             const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch {
-                raw_buffer.clearAndFree(app.allocator);
+                raw_buffer.clearAndFree();
                 continue;
             };
             defer app.allocator.free(decoded);
-            
-            // Split on "data:" boundaries and parse each SSE event individually
-            // This handles multiple concatenated events like: data: {...}  data: {...}
-            var data_start: usize = 0;
-            while (data_start < decoded.len) {
-                // Find next "data:" marker
-                const next_data = std.mem.indexOf(u8, decoded[data_start..], "data:");
-                if (next_data == null) break;
-                
-                const data_pos = data_start + next_data.?;
-                // Find the JSON start (skip "data:" and any whitespace/spaces)
-                var json_start = data_pos + "data:".len;
-                while (json_start < decoded.len and (decoded[json_start] == ' ' or decoded[json_start] == '\t')) {
-                    json_start += 1;
-                }
-                
-                // Find the end of this JSON object (matching closing brace)
-                // We need to find the closing } that matches the opening { of THIS event
-                if (json_start >= decoded.len or decoded[json_start] != '{') {
-                    data_start = data_pos + "data:".len;
-                    continue;
-                }
-                
-                // Find the end of this JSON - track brace depth
-                var brace_depth: i32 = 0;
-                var json_end = json_start;
-                for (decoded[json_start..], 0..) |c, i| {
-                    if (c == '{') brace_depth += 1;
-                    if (c == '}') brace_depth -= 1;
-                    if (brace_depth == 0) {
-                        json_end = json_start + i + 1;
-                        break;
-                    }
-                }
-                
-                if (json_end > json_start) {
-                    const json_slice = decoded[json_start..json_end];
-                    const trimmed = std.mem.trim(u8, json_slice, &std.ascii.whitespace);
-                    
-                    if (trimmed.len > 0 and trimmed[0] == '{') {
-                        const sse_event = parseSSEEventData(app.allocator, trimmed) catch |err| {
-                            debug.logError("Failed to parse SSE event JSON: raw_buffer={s}", .{decoded[data_pos..json_end]});
-                            debug.logError("Failed to parse SSE event JSON: {s}", .{@errorName(err)});
-                            data_start = data_pos + "data:".len;
-                            continue;
-                        };
-                        
-                        printSSEEventContent(sse_event);
+            const json_str = sse.extract_sse_data(app.allocator, decoded) catch {
+                raw_buffer.clearAndFree();
+                continue;
+            };
+            defer app.allocator.free(json_str);
+            if (json_str.len > 0) {
+                const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
+                if (trimmed.len > 0 and trimmed[0] == '{') {
+                    const sse_event = parseSSEEventData(app.allocator, trimmed) catch |err| {
+                        debug.logError("Failed to parse SSE event JSON: raw_buffer={s}", .{raw_buffer.items});
+                        debug.logError("Failed to parse SSE event JSON: decoded={s}", .{decoded});
+                        debug.logError("Failed to parse SSE event JSON: {s}", .{@errorName(err)});
+                        continue;
+                    };
+                    printSSEEventContent(sse_event);
 
-                        if (sse_event.finish_reason) |fr| {
-                            if (std.mem.eql(u8, fr, "stop")) {
-                                break;
-                            }
+                    if (sse_event.finish_reason) |fr| {
+                        if (std.mem.eql(u8, fr, "stop")) {
+                            break;
                         }
                     }
+                } else {
+                    debug.logError("Failed to parse SSE event JSON: {s}", .{json_str});
+                    std.debug.print("Failed to parse SSE event JSON: {s}\n", .{json_str});
                 }
-                
-                // Move to next event (skip past this data: marker)
-                data_start = data_pos + "data:".len;
             }
         }
 
-        raw_buffer.clearAndFree(app.allocator);
+        raw_buffer.clearAndFree();
     }
 
     // In non-interactive mode, fetch the final message and print according to --json flag
@@ -279,7 +217,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
     }
 
     raw_buffer.clearRetainingCapacity();
-    return try raw_buffer.toOwnedSlice(app.allocator);
+    return try raw_buffer.toOwnedSlice();
 }
 
 /// Parse the messages JSON body and print user-friendly output for the first message.
