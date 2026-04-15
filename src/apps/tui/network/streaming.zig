@@ -56,8 +56,9 @@ fn parseSSEEventData(allocator: std.mem.Allocator, json_str: []const u8) !SSEEve
 /// Read response and stream LLM output
 /// Simplified: collects raw buffer, displays content at the end
 pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
-    var raw_buffer = std.array_list.AlignedManaged(u8, null).init(app.allocator);
-    errdefer raw_buffer.deinit();
+    var raw_buffer = std.ArrayListUnmanaged(u8){};
+    errdefer raw_buffer.deinit(app.allocator);
+
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -65,14 +66,14 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
     const PING_INTERVAL_MS: i64 = 1000;
     var last_ping_ms: i64 = std.time.milliTimestamp();
 
-    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice();
+    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);
 
     var enable: u32 = 1;
     std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
 
     var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice();
+    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
 
     const stream_request = try std.fmt.allocPrint(alloc, "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
     _ = try std.posix.write(stream_socket, stream_request);
@@ -82,9 +83,11 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
     }
     try messaging.sendMessage(app, message);
 
+    const READ_SIZE: usize = 1024 * 64;
+
     while (true) {
         defer {
-            raw_buffer.clearAndFree();
+            raw_buffer.clearAndFree(app.allocator);
         }
         const now = std.time.milliTimestamp();
 
@@ -99,23 +102,20 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                     break;
                 }
                 if (poll_fd[0].revents & std.posix.POLL.IN != 0) {
-                    var buf: [8192]u8 = undefined;
-                    const n = std.posix.read(stream_socket, &buf) catch break;
+                    try raw_buffer.ensureUnusedCapacity(app.allocator, READ_SIZE);
+                    const slice = raw_buffer.unusedCapacitySlice();
+                    const n = std.posix.read(stream_socket, slice[0..@min(slice.len, READ_SIZE)]) catch break;
                     if (n == 0) break;
-                    try raw_buffer.appendSlice(buf[0..n]);
+                    raw_buffer.items.len += n;
                 }
             }
 
             if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
                 const is_done = try messaging.get_latest_message_by_created_at(app);
-                if (is_done) {
-                    break;
-                }
+                if (is_done) break;
             } else if (raw_buffer.items.len > 0) {
                 const is_done = try messaging.get_latest_message_by_created_at(app);
-                if (is_done) {
-                    break;
-                }
+                if (is_done) break;
             }
             continue;
         }
@@ -136,10 +136,11 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
 
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
-                var buf: [8192]u8 = undefined;
-                const n = std.posix.read(stream_socket, &buf) catch break;
+                try raw_buffer.ensureUnusedCapacity(app.allocator, READ_SIZE);
+                const slice = raw_buffer.unusedCapacitySlice();
+                const n = std.posix.read(stream_socket, slice[0..@min(slice.len, READ_SIZE)]) catch break;
                 if (n == 0) break;
-                try raw_buffer.appendSlice(buf[0..n]);
+                raw_buffer.items.len += n;
                 poll_fds[0].revents = 0;
             }
 
@@ -149,9 +150,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 const is_need_reconnect = messaging.send_ping_command(app) catch false;
                 if (is_need_reconnect) {
                     const new_socket = connection.reconnectSseStream(app, app.allocator, stream_socket);
-                    if (new_socket < 0) {
-                        break;
-                    }
+                    if (new_socket < 0) break;
                     stream_socket = new_socket;
                     poll_fds[0].fd = stream_socket;
                 }
@@ -161,17 +160,15 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
 
         if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
             const is_done = try messaging.get_latest_message_by_created_at(app);
-            if (is_done) {
-                break;
-            }
+            if (is_done) break;
         } else {
             const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch {
-                raw_buffer.clearAndFree();
+                raw_buffer.clearAndFree(app.allocator);
                 continue;
             };
             defer app.allocator.free(decoded);
             const json_str = sse.extract_sse_data(app.allocator, decoded) catch {
-                raw_buffer.clearAndFree();
+                raw_buffer.clearAndFree(app.allocator);
                 continue;
             };
             defer app.allocator.free(json_str);
@@ -187,9 +184,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                     printSSEEventContent(sse_event);
 
                     if (sse_event.finish_reason) |fr| {
-                        if (std.mem.eql(u8, fr, "stop")) {
-                            break;
-                        }
+                        if (std.mem.eql(u8, fr, "stop")) break;
                     }
                 } else {
                     debug.logError("Failed to parse SSE event JSON: {s}", .{json_str});
@@ -198,26 +193,23 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
-        raw_buffer.clearAndFree();
+        raw_buffer.clearAndFree(app.allocator);
     }
 
-    // In non-interactive mode, fetch the final message and print according to --json flag
     if (app.is_noninteractive) {
         const body = messaging.fetch_latest_message_body(app) catch null;
         if (body) |b| {
             defer app.allocator.free(b);
             if (app.json) {
-                // Pretty-print the full JSON response
                 print_pretty_json(app.allocator, b);
             } else {
-                // Extract and print only the content field value
                 printMessageContent(app.allocator, b);
             }
         }
     }
 
     raw_buffer.clearRetainingCapacity();
-    return try raw_buffer.toOwnedSlice();
+    return try raw_buffer.toOwnedSlice(app.allocator);
 }
 
 /// Parse the messages JSON body and print user-friendly output for the first message.
