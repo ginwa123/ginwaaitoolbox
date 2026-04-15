@@ -1,6 +1,7 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
+const logger = root_mod.logger;
 
 const httpz = http_server.httpz;
 const SseStreamCtx = @import("mod.zig").SseStreamCtx;
@@ -34,11 +35,12 @@ fn formatQueueItem(allocator: std.mem.Allocator, item: *http_server.SseQueueItem
 
 /// SSE stream handler - this thread OWNS the stream and reads events from the queue
 fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
-    std.log.info("SSE stream handler started: session_id={s}", .{ctx.session_id});
+    const log = logger.getGlobal();
+    log.?.infoFmt("SSE stream handler started: session_id={s}", .{ctx.session_id}) catch {};
 
     // Create a queue for this session - we'll register it with the manager
     const queue = ctx.server.sse_manager.createQueue() catch {
-        std.log.err("SSE: Failed to create queue for session: {s}", .{ctx.session_id});
+        log.?.errFmt("SSE: Failed to create queue for session: {s}", .{ctx.session_id}) catch {};
         return;
     };
     defer {
@@ -48,24 +50,24 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
 
     // Register the queue (not the stream) with the manager
     ctx.server.sse_manager.register(ctx.session_id, queue) catch {
-        std.log.err("SSE: Failed to register queue for session: {s}", .{ctx.session_id});
+        log.?.errFmt("SSE: Failed to register queue for session: {s}", .{ctx.session_id}) catch {};
         return;
     };
     defer ctx.server.sse_manager.remove(ctx.session_id);
 
     // Send connected event
     const connected_data = std.fmt.allocPrint(ctx.server.allocator, "event: connected\n{{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id}) catch {
-        std.log.err("SSE: Failed to format connected event", .{});
+        log.?.errFmt("SSE: Failed to format connected event", .{}) catch {};
         return;
     };
     defer ctx.server.allocator.free(connected_data);
 
     stream.writeAll(connected_data) catch |err| {
-        std.log.err("SSE: Failed to write connected event: {s}", .{@errorName(err)});
+        log.?.errFmt("SSE: Failed to write connected event: {s}", .{@errorName(err)}) catch {};
         return;
     };
 
-    std.log.info("SSE: Connected event sent for session: {s}", .{ctx.session_id});
+    log.?.infoFmt("SSE: Connected event sent for session: {s}", .{ctx.session_id}) catch {};
 
     // Main loop: process events from queue and keepalive
     while (ctx.server.sse_manager.hasSession(ctx.session_id)) {
@@ -75,7 +77,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
         if (item) |queue_item| {
             // Format and send the event using heap allocation
             const formatted = formatQueueItem(ctx.server.allocator, queue_item) catch |err| {
-                std.log.warn("SSE: failed to format event: {}", .{err});
+                log.?.warnFmt("SSE: failed to format event: {}", .{err}) catch {};
                 // Free queue item memory
                 ctx.server.allocator.free(queue_item.data);
                 if (queue_item.event_type) |et| ctx.server.allocator.free(et);
@@ -85,7 +87,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
             defer ctx.server.allocator.free(formatted);
 
             stream.writeAll(formatted) catch |err| {
-                std.log.warn("SSE write failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
+                log.?.warnFmt("SSE write failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};
                 // Free queue item memory before exiting
                 ctx.server.allocator.free(queue_item.data);
                 if (queue_item.event_type) |et| ctx.server.allocator.free(et);
@@ -100,13 +102,13 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
         } else {
             // Timeout - send keepalive
             stream.writeAll(": keepalive\n\n") catch |err| {
-                std.log.warn("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) });
+                log.?.warnFmt("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};
                 break;
             };
         }
     }
 
-    std.log.info("SSE stream handler ending: session_id={s}", .{ctx.session_id});
+    log.?.infoFmt("SSE stream handler ending: session_id={s}", .{ctx.session_id}) catch {};
     ctx.server.allocator.free(ctx.session_id);
 }
 
@@ -118,8 +120,10 @@ pub fn streamHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
         return;
     };
 
+    const log = logger.getGlobal();
+
     if (http_server.global_server) |server| {
-        std.log.info("SSE STREAM CONNECTED: session_id={s}", .{session_id});
+        log.?.infoFmt("SSE STREAM CONNECTED: session_id={s}", .{session_id}) catch {};
 
         const session_id_copy = try server.allocator.dupe(u8, session_id);
         errdefer server.allocator.free(session_id_copy);

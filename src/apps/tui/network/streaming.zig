@@ -182,8 +182,6 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 if (trimmed.len > 0 and trimmed[0] == '{') {
                     const sse_event = parseSSEEventData(app.allocator, trimmed) catch |err| {
                         debug.logError("Failed to parse SSE event JSON: raw_buffer={s}", .{raw_buffer.items});
-                        debug.logError("Failed to parse SSE event JSON: decoded={s}", .{ decoded });
-                        debug.logError("Failed to parse SSE event JSON: json_str={s}", .{json_str});
                         debug.logError("Failed to parse SSE event JSON: {s}", .{@errorName(err)});
                         continue;
                     };
