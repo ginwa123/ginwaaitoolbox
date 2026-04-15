@@ -75,6 +75,9 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
         const item = queue.dequeueWithTimeout(5_000_000_000);
 
         if (item) |queue_item| {
+            // Log body before sending
+            log.?.debugFmt("SSE: sending body: {s}", .{queue_item.data}) catch {};
+
             // Format and send the event using heap allocation
             const formatted = formatQueueItem(ctx.server.allocator, queue_item) catch |err| {
                 log.?.warnFmt("SSE: failed to format event: {}", .{err}) catch {};
@@ -85,6 +88,9 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
                 continue;
             };
             defer ctx.server.allocator.free(formatted);
+
+            // Log formatted SSE data before sending
+            log.?.debugFmt("SSE: sending formatted: {s}", .{formatted}) catch {};
 
             stream.writeAll(formatted) catch |err| {
                 log.?.warnFmt("SSE write failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};

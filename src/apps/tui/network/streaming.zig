@@ -62,7 +62,10 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var buf: [4096]u8 = undefined;
+    // Dynamic read buffer instead of fixed stack buffer
+    var read_buf = std.ArrayList(u8).empty;
+    errdefer read_buf.deinit(app.allocator);
+    try read_buf.resize(app.allocator, 4096); // pre-allocate initial capacity
 
     const PING_INTERVAL_MS: i64 = 1000;
     var last_ping_ms: i64 = std.time.milliTimestamp();
@@ -101,11 +104,11 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                     break;
                 }
                 if (poll_fd[0].revents & std.posix.POLL.IN != 0) {
-                    const n = std.posix.read(stream_socket, &buf) catch break;
+                    const n = std.posix.read(stream_socket, read_buf.items) catch break;
                     if (n == 0) {
                         break;
                     }
-                    try raw_buffer.appendSlice(app.allocator, buf[0..n]);
+                    try raw_buffer.appendSlice(app.allocator, read_buf.items[0..n]);
                 }
             }
 
@@ -139,9 +142,9 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
 
             if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
-                const n = std.posix.read(stream_socket, &buf) catch break;
+                const n = std.posix.read(stream_socket, read_buf.items) catch break;
                 if (n == 0) break;
-                try raw_buffer.appendSlice(app.allocator, buf[0..n]);
+                try raw_buffer.appendSlice(app.allocator, read_buf.items[0..n]);
                 poll_fds[0].revents = 0;
             }
 

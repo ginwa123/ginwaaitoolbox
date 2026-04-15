@@ -3,6 +3,7 @@ const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
 const http_server = @import("nalarcore").http_server;
+const logger = @import("nalarcore").logger;
 
 // ============================================================================
 // JSON Protocol Constants
@@ -96,16 +97,29 @@ pub const ToolCallJson = struct {
 /// - Response events contain all message fields as JSON object
 /// - Tool result events include tool_call_id and tool_name
 pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !void {
+    const log = logger.getGlobal();
+    const session_id = input.session_id;
+
     const sse_manager = http_server.getGlobalSseManager() orelse {
-        std.log.warn("on_event_send_new: no SSE manager available", .{});
+        log.?.warnFmt("on_event_send_new[{s}]: no SSE manager available", .{session_id}) catch {};
         return;
     };
 
-    // Debug: log what content we're receiving
+    // Trace: log what content we're receiving
     if (input.content) |c| {
-        std.log.info("on_event_send_new: content len={d}", .{c.len});
+        // Truncate content for logging if too long (>500 chars)
+        const truncated_content = if (c.len > 500) c[0..500] else c;
+        const suffix = if (c.len > 500) "... [truncated]" else "";
+        log.?.infoFmt("on_event_send_new[{s}]: content=\"{s}{s}\", len={d}, is_thinking={}, role={s}", .{
+            session_id,
+            truncated_content,
+            suffix,
+            c.len,
+            input.is_thinking,
+            input.role orelse "assistant",
+        }) catch {};
     } else {
-        std.log.warn("on_event_send_new: NO CONTENT!", .{});
+        log.?.warnFmt("on_event_send_new[{s}]: NO CONTENT!", .{session_id}) catch {};
     }
 
     // Build tool_calls JSON array if present
@@ -154,20 +168,25 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
         .whitespace = .indent_tab,
     })});
 
-    std.log.info("on_event_sent: buf prepared, size={d}, session_id={s}", .{buf.items.len, input.session_id});
+    log.?.debugFmt("on_event_send_new[{s}]: buf prepared, size={d}, body={s}", .{
+        session_id,
+        buf.items.len,
+        buf.items,
+    }) catch {};
 
     const event = http_server.SseEvent{
         .data = buf.items,
     };
 
-    std.log.info("on_event_sent: event created, data_ptr=0x{x}, data_len={d}", .{
+    log.?.debugFmt("on_event_send_new[{s}]: event created, data_ptr=0x{x}, data_len={d}", .{
+        session_id,
         @intFromPtr(event.data.ptr),
         event.data.len,
-    });
+    }) catch {};
 
     try sse_manager.enqueueEvent(input.session_id, event);
 
-    std.log.info("on_event_sent: event enqueued successfully, session_id={s}", .{input.session_id});
+    log.?.infoFmt("on_event_send_new[{s}]: event enqueued successfully", .{session_id}) catch {};
 }
 
 // ============================================================================
