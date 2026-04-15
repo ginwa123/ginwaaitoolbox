@@ -1,5 +1,5 @@
 const std = @import("std");
-const session_helpers = @import("session_helpers.zig");
+const session_helpers = @import("llm_history.zig");
 const TUIHistory = @import("models.zig").TUIHistory;
 const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;

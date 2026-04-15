@@ -2,6 +2,7 @@ const std = @import("std");
 const list_skills = @import("tools/list_skills.zig");
 const agents = @import("tools/agents.zig");
 const prompts = @import("prompts/prompts.zig");
+const tool_models = @import("nalarcore").tool_models;
 
 // Re-export all prompts for easy access
 pub const UniversalRules = prompts.UniversalRules;
@@ -49,7 +50,7 @@ pub const AgentsMdPrompt = prompts.MemoryPrompt;
 // =============================================================================
 
 /// Build main agent prompt with all components combined
-pub fn buildAgentPrompt(
+pub fn build_agent_prompt(
     allocator: std.mem.Allocator,
     cwd: []const u8,
     treeDir: []const u8,
@@ -57,6 +58,7 @@ pub fn buildAgentPrompt(
     memoryMd: []const u8,
     backgroundProcessContent: []const u8,
     agent: []const u8,
+    tools: []const tool_models.AgentTool
 ) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -165,9 +167,17 @@ pub fn buildAgentPrompt(
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, Escalation);
 
-    // Available tools
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, AvailableTools);
+    // Dynamic tool listing - enumerate actual tools available
+    if (tools.len > 0) {
+        try result.appendSlice(allocator, "\n\n## Available Tools\n\nUse these exact tool names in your tool_calls:\n\n");
+        for (tools) |tool| {
+            try result.appendSlice(allocator, "- **");
+            try result.appendSlice(allocator, tool.function.name);
+            try result.appendSlice(allocator, "**: ");
+            try result.appendSlice(allocator, tool.function.description);
+            try result.appendSlice(allocator, "\n");
+        }
+    }
 
     // File editing rules - CRITICAL, follow the workflow!
     try result.appendSlice(allocator, "\n\n");

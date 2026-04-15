@@ -5,7 +5,7 @@ const nalarcore = root_mod;
 const sqlite = nalarcore.sqlite;
 
 const httpz = http_server.httpz;
-const session_db = nalarcore.session_db;
+const llm_history = nalarcore.llm_history;
 const getResponseFormat = @import("mod.zig").getResponseFormat;
 const buildErrorResponse = @import("mod.zig").buildErrorResponse;
 
@@ -40,23 +40,23 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
     const is_desc = std.mem.eql(u8, direction_str, "desc");
 
     // Parse sort_by parameter and combine with direction
-    const sort_spec: session_db.SortSpec = blk: {
+    const sort_spec: llm_history.SortSpec = blk: {
         if (std.mem.eql(u8, sort_by_str, "id")) {
             break :blk if (is_desc)
-                session_db.SortSpec{ .id_desc = {} }
+                llm_history.SortSpec{ .id_desc = {} }
             else
-                session_db.SortSpec{ .id_asc = {} };
+                llm_history.SortSpec{ .id_asc = {} };
         } else if (std.mem.eql(u8, sort_by_str, "role")) {
             break :blk if (is_desc)
-                session_db.SortSpec{ .role_desc = {} }
+                llm_history.SortSpec{ .role_desc = {} }
             else
-                session_db.SortSpec{ .role_asc = {} };
+                llm_history.SortSpec{ .role_asc = {} };
         } else {
             // Default to created_at
             break :blk if (is_desc)
-                session_db.SortSpec{ .created_at_desc = {} }
+                llm_history.SortSpec{ .created_at_desc = {} }
             else
-                session_db.SortSpec{ .created_at_asc = {} };
+                llm_history.SortSpec{ .created_at_asc = {} };
         }
     };
 
@@ -64,7 +64,7 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
         if (server.db) |db| {
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
 
-            const msg_response = session_db.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
+            const msg_response = llm_history.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
                 res.status = 500;
                 res.body = try buildErrorResponse(alloc, format, "Database query failed");
                 return;
@@ -76,9 +76,9 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
             }
 
             const response_body = if (format == .xml)
-                try session_db.buildSessionMessagesXml(alloc, &msg_response)
+                try llm_history.buildSessionMessagesXml(alloc, &msg_response)
             else
-                try session_db.buildSessionMessagesJson(alloc, &msg_response);
+                try llm_history.buildSessionMessagesJson(alloc, &msg_response);
             res.status = 200;
             res.body = response_body;
             return;

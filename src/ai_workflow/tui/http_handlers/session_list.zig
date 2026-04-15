@@ -5,7 +5,7 @@ const nalarcore = root_mod;
 const sqlite = nalarcore.sqlite;
 
 const httpz = http_server.httpz;
-const session_db = nalarcore.session_db;
+const llm_history = nalarcore.llm_history;
 
 /// List all sessions - returns sessions from database with cursor pagination
 /// Optionally filtered by session_dir query parameter
@@ -24,7 +24,7 @@ pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *http
             const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
 
             // Use unified getSessionListWithCursor with session_dir support
-            const result = session_db.getSessionListWithCursor(alloc, sqlite_db, null, null, session_dir, limit_val, cursor) catch {
+            const result = llm_history.getSessionListWithCursor(alloc, sqlite_db, null, null, session_dir, limit_val, cursor) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Database query failed\"}";
                 return;
@@ -43,7 +43,7 @@ pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *http
                 null;
 
             // Build JSON response with cursor pagination
-            const response = try session_db.buildSessionListJson(alloc, result.sessions, result.total, has_more, next_cursor);
+            const response = try llm_history.buildSessionListJson(alloc, result.sessions, result.total, has_more, next_cursor);
 
             res.status = 200;
             res.body = response;

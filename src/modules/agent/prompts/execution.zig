@@ -48,10 +48,6 @@ pub const TDD =
     \\
     \\**⚡ VERIFICATION MANDATORY:** Always show test output as evidence of correctness.
     \\
-    \\**⚡ ZIG TESTING COMMANDS:**
-    \\- `zig build test` — Run all tests
-    \\- `zig test <file>` — Run tests in specific file
-    \\- `bun test` — Run Bun/TypeScript tests
     \\
     \\**❌ WRONG:** Write implementation first, then think about tests later
     \\**✅ RIGHT:** Test first, watch it fail, implement, watch it pass

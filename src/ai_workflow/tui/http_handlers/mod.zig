@@ -14,7 +14,7 @@ const logger = nalarcore.logger;
 const config = nalarcore.config;
 const cancellation_registry = nalarcore.session.cancellation_registry;
 const session_helpers = nalarcore.session_helpers;
-const session_db = nalarcore.session_db;
+
 
 const httpz = http_server.httpz;
 

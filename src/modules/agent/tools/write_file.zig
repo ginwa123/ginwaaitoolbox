@@ -19,18 +19,14 @@ pub const WriteFileResult = struct {
     }
 };
 
-pub const WriteFileOptions = struct {
-    content: []const u8,
-    create_with_dir: bool = false,
-};
-
 pub fn write_file(
     allocator: std.mem.Allocator,
-    path: []const u8,
-    opts: WriteFileOptions,
+    input: WriteFileInput,
 ) !WriteFileResult {
+    const path = input.path;
+
     // If create_with_dir is true, proactively create parent directories with makePath
-    if (opts.create_with_dir) {
+    if (input.create_with_dir) {
         if (std.mem.lastIndexOf(u8, path, "/")) |idx| {
             const dir_path = path[0..idx];
             try std.fs.cwd().makePath(dir_path);
@@ -49,7 +45,7 @@ pub fn write_file(
                 const file = try std.fs.cwd().createFile(path, .{});
                 defer file.close();
 
-                try file.writeAll(opts.content);
+                try file.writeAll(input.content);
                 return WriteFileResult{
                     .path = try allocator.dupe(u8, path),
                 };
@@ -59,7 +55,7 @@ pub fn write_file(
     };
     defer file.close();
 
-    try file.writeAll(opts.content);
+    try file.writeAll(input.content);
     return WriteFileResult{
         .path = try allocator.dupe(u8, path),
     };
@@ -77,6 +73,7 @@ pub const write_file_tool = AgentTool{
         \\Write content to a new file. Creates file if it doesn't exist, overwrites if it does.
         \\For partial file updates, use text_replace tool instead.
         \\Set create_with_dir to true to automatically create parent directories.
+        \\return <file_write>{path}</file_write>
         ,
         .parameters = .{
             .type = "object",
@@ -101,4 +98,3 @@ pub const write_file_tool = AgentTool{
         },
     },
 };
-

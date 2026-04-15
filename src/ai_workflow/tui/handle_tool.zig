@@ -7,15 +7,16 @@ const config_mod = root_mod.config;
 const tool_registry = @import("tool_registry.zig");
 const handle_spawn = @import("handle_spawn_sub_agent.zig");
 const SubAgentToolExec = handle_spawn.SubAgentToolExec;
-const save_message = @import("save_message.zig").save_message;
+const llm_history = @import("llm_history.zig");
+const save_message = llm_history.save_message;
 const on_event_sent = @import("on_event_sent.zig");
 const on_event_send_new = on_event_sent.on_event_send_new;
-const SaveSkill = @import("save_skill.zig").SaveSkill;
+const SaveSkill = @import("session_skills.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
-const session_helpers = @import("session_helpers.zig");
-const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;
+const session_helpers = llm_history;
+const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
 const tool_models = root_mod.tool_models;
-const get_messagesLatest = session_helpers.get_message_latest;
+const get_messagesLatest = llm_history.get_message_latest;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 
 // ============================================================================

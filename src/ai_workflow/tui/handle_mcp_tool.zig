@@ -3,7 +3,7 @@ const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
-const save_message = @import("save_message.zig");
+const save_message = @import("llm_history.zig");
 const http_client = tree1_mod.http_client;
 const config_mod = tree1_mod.config;
 

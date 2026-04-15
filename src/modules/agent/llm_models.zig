@@ -11,7 +11,7 @@ pub const MINIMAX_2_7 = LLMModels{
 };
 
 /// Get model token count by model name string
-pub fn getModelTokenCount(model_name: []const u8) u32 {
+pub fn get_model_token_count(model_name: []const u8) u32 {
     if (std.mem.eql(u8, model_name, MINIMAX_2_7.name)) {
         return MINIMAX_2_7.token_count;
     }

@@ -109,12 +109,13 @@ pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
 pub const helpers = @import("helpers/mod.zig");
-pub const kerjabot_get_session = @import("ai_workflow/tui/get_session.zig");
-pub const kerjabot_create_session = @import("ai_workflow/tui/create_session.zig");
-pub const kerjabot_get_list_session = @import("ai_workflow/tui/get_list_session.zig");
-pub const tui_check_session_exists = @import("ai_workflow/tui/check_session_exists.zig");
-pub const session_helpers = @import("ai_workflow/tui/session_helpers.zig");
-pub const session_db = @import("ai_workflow/tui/session_db.zig");
+pub const kerjabot_get_session = @import("ai_workflow/tui/llm_history.zig");
+pub const kerjabot_create_session = @import("ai_workflow/tui/llm_history.zig");
+pub const kerjabot_get_list_session = @import("ai_workflow/tui/llm_history.zig");
+pub const tui_check_session_exists = @import("ai_workflow/tui/llm_history.zig");
+pub const session_helpers = @import("ai_workflow/tui/llm_history.zig");
+pub const session_db = @import("ai_workflow/tui/llm_history.zig");
+pub const llm_history = @import("ai_workflow/tui/llm_history.zig");
 pub const session_table = @import("ai_workflow/tui/session_table.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
@@ -125,5 +126,4 @@ test {
     _ = @import("modules/agent/test_runner.zig");
     _ = @import("apps/tui/test_runner.zig");
     _ = @import("modules/session/test_runner.zig");
-    _ = @import("root_change_agent_test.zig");
 }

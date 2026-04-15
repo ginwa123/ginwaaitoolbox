@@ -50,7 +50,7 @@ pub fn read_file(
         return error.OffsetOutOfRange;
     }
 
-    const show_line_numbers = opts.show_line_numbers orelse false;
+    const show_line_numbers = opts.show_line_numbers orelse true;
 
     // collect lines in [offset, offset+limit)
     var out = std.ArrayList(u8).empty;
@@ -138,7 +138,7 @@ pub const read_file_tool = AgentTool{
                 .{
                     .name = "show_line_numbers",
                     .type = "boolean",
-                    .description = "Whether to prefix each line with its line number, line number start from 1. Default: false.",
+                    .description = "Whether to prefix each line with its line number, line number start from 1. Default: true.",
                 },
             },
             .required = &.{"path"},

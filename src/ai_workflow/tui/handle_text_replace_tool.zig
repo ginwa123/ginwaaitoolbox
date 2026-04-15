@@ -48,5 +48,5 @@ pub fn handle_text_replace_tool_run(
         parsed.value.new_str,
     );
 
-    return text_replace_tool_mod.text_replace_to_string_xml(allocator, result);
+    return text_replace_tool_mod.to_xml(allocator, result);
 }

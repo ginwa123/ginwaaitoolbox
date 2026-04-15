@@ -1,6 +1,54 @@
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
-const sqlite = tree1_mod.sqlite;
+const tree1 = @import("nalarcore");
+const sqlite = tree1.sqlite;
+const agent = tree1.agent;
+const TUIHistory = @import("models.zig").TUIHistory;
+
+pub fn mark_message_not_for_llm_run(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !void {
+    const sql = "UPDATE llm_history SET is_feed_to_llm = 0 WHERE session_id = ?";
+    try db.exec(allocator, sql, &.{session_id});
+}
+
+/// Session info for list view
+pub const SessionInfo = struct {
+    session_id: []const u8,
+    session_dir: []const u8,
+    created_at: []const u8,
+    agent: []const u8,
+    session_name: []const u8,
+
+    pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.session_dir);
+        allocator.free(self.created_at);
+        allocator.free(self.agent);
+        allocator.free(self.session_name);
+    }
+};
+
+/// Detailed session info
+pub const SessionDetail = struct {
+    session_id: []const u8,
+    session_dir: []const u8,
+    created_at: []const u8,
+    agent: []const u8,
+    session_name: []const u8,
+    model: []const u8,
+    temperature: f32,
+
+    pub fn deinit(self: *const SessionDetail, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.session_dir);
+        allocator.free(self.created_at);
+        allocator.free(self.agent);
+        allocator.free(self.session_name);
+        allocator.free(self.model);
+    }
+};
 
 /// Get a list of sessions from the database
 pub fn getSessionList(
@@ -14,7 +62,6 @@ pub fn getSessionList(
     _ = status;
     _ = agent_type;
 
-    // Query to get distinct sessions with their latest message info
     const sql = "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?";
 
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
@@ -242,42 +289,27 @@ pub fn get_session(
     return null;
 }
 
-/// Session info for list view
-pub const SessionInfo = struct {
+/// Get the latest finish_reason for a session from the database
+/// Returns the most recent finish_reason value (e.g., "stop", "tool_calls", "length", etc.)
+/// Returns null if no history exists for the session
+pub fn getLatestFinishReason(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
     session_id: []const u8,
-    session_dir: []const u8,
-    created_at: []const u8,
-    agent: []const u8,
-    session_name: []const u8,
+) !?[]const u8 {
+    const sql = "SELECT finish_reason FROM llm_history WHERE session_id = ? AND finish_reason IS NOT NULL AND finish_reason != '' ORDER BY created_at DESC LIMIT 1";
 
-    pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
-        allocator.free(self.session_id);
-        allocator.free(self.session_dir);
-        allocator.free(self.created_at);
-        allocator.free(self.agent);
-        allocator.free(self.session_name);
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const finish_reason = try allocator.dupe(u8, row.values[0]);
+        row.deinit(allocator);
+        return finish_reason;
     }
-};
 
-/// Detailed session info
-pub const SessionDetail = struct {
-    session_id: []const u8,
-    session_dir: []const u8,
-    created_at: []const u8,
-    agent: []const u8,
-    session_name: []const u8,
-    model: []const u8,
-    temperature: f32,
-
-    pub fn deinit(self: *const SessionDetail, allocator: std.mem.Allocator) void {
-        allocator.free(self.session_id);
-        allocator.free(self.session_dir);
-        allocator.free(self.created_at);
-        allocator.free(self.agent);
-        allocator.free(self.session_name);
-        allocator.free(self.model);
-    }
-};
+    return null;
+}
 
 /// Chat message for a session
 pub const SessionMessage = struct {
@@ -343,8 +375,6 @@ pub fn get_session_messages_sorted(
     var argv: []const []const u8 = undefined;
 
     if (cursor) |c| {
-        // Fix: Use created_at for cursor comparison since IDs are string-based (sess_xxx_hex)
-        // created_at is numeric (milliseconds timestamp), so comparison works correctly
         const is_asc = switch (sort_spec) {
             .created_at_asc, .role_asc, .id_asc => true,
             else => false,
@@ -367,7 +397,6 @@ pub fn get_session_messages_sorted(
             , .{ cursor_cmp, order_part });
         argv = &.{ session_id, c, limit_str };
     } else {
-        // Without cursor
         const order_part = switch (sort_spec) {
             .created_at_asc => " ORDER BY created_at ASC, id ASC",
             .created_at_desc => " ORDER BY created_at DESC, id DESC",
@@ -555,4 +584,352 @@ pub fn buildSessionMessagesXml(
     try xml_messages.appendSlice(allocator, "</messages>");
 
     return try xml_messages.toOwnedSlice(allocator);
+}
+
+// =============================================================================
+// Session Creation
+// =============================================================================
+
+/// Create a new session in the database
+pub fn createSession(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    agent_type: []const u8,
+    model: []const u8,
+    temperature: f32,
+) ![]const u8 {
+    // Generate session ID
+    var session_id_buf: [64]u8 = undefined;
+    const session_id = try std.fmt.bufPrint(&session_id_buf, "kerjabot_{}", .{std.time.timestamp()});
+
+    // Insert session into database
+    const insert_sql = "INSERT INTO llm_history (id, session_id, model, response_content, role, agent, temperature, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)";
+    
+    const temp_str = try std.fmt.allocPrint(allocator, "{d}", .{temperature});
+    defer allocator.free(temp_str);
+    
+    try db.exec(allocator, insert_sql, &.{ session_id, session_id, model, "", "system", agent_type, temp_str, "0", "0", "" });
+
+    return session_id;
+}
+
+// =============================================================================
+// Save Message Functions
+// =============================================================================
+
+/// Serialize tool_calls array to JSON string
+pub fn serializeToolCalls(allocator: std.mem.Allocator, tool_calls: []agent.ToolCall) ![]u8 {
+    var aw: std.io.Writer.Allocating = .init(allocator);
+    try aw.writer.print("{f}", .{std.json.fmt(tool_calls, .{})});
+    return try aw.toOwnedSlice();
+}
+
+pub const save_messageInput = struct {
+    session_id: []const u8,
+    model: []const u8,
+    cwd: []const u8,
+    content: ?[]const u8,
+    reasoning_content: ?[]const u8,
+    role: ?[]const u8,
+    finish_reason: ?[]const u8,
+    tool_calls: ?[]agent.ToolCall,
+    tool_call_id: ?[]const u8,
+    tool_name: ?[]const u8 = null,
+    agent_name: ?[]const u8,
+    session_name: ?[]const u8,
+    loop_index: u32,
+    temperature: f32,
+    is_thinking: bool,
+    is_input: bool = false,
+    is_output: bool = false,
+    parent_session_id: ?[]const u8 = null,
+    parent_id: ?[]const u8 = null,
+    prompt_tokens: usize = 0,
+    completion_tokens: usize = 0,
+    total_tokens: usize = 0,
+};
+
+/// Helper function to safely duplicate a string
+/// Uses c_allocator to avoid arena aliasing issues
+fn safeDupe(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    const copy = try std.heap.c_allocator.dupe(u8, s);
+    _ = allocator; // Mark as intentionally unused - we use c_allocator to avoid aliasing
+    return copy;
+}
+
+pub fn save_message(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: save_messageInput,
+) !void {
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
+    defer allocator.free(id);
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
+    defer allocator.free(created_at);
+
+    const contentStr = input.content orelse "";
+    const finishReasonStr = input.finish_reason orelse "null";
+    const roleStr = input.role orelse "assistant";
+    const reasoningStr = input.reasoning_content orelse "";
+    const agentStr = input.agent_name orelse "Agent";
+
+    // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
+    var toolCallsJson: []const u8 = "";
+    var toolCallsOwned: ?[]u8 = null;
+    if (input.tool_calls) |tc| {
+        toolCallsOwned = try serializeToolCalls(allocator, tc);
+        toolCallsJson = toolCallsOwned.?;
+    } else if (input.tool_call_id) |tcid| {
+        toolCallsJson = tcid;
+    }
+    defer if (toolCallsOwned) |tcj| allocator.free(tcj);
+
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    // Use safeDupe to avoid arena aliasing issues
+    const copy_session_id = try safeDupe(allocator, input.session_id);
+    defer std.heap.c_allocator.free(copy_session_id);
+    const copy_model = try safeDupe(allocator, input.model);
+    defer std.heap.c_allocator.free(copy_model);
+    const copy_content = try safeDupe(allocator, contentStr);
+    defer std.heap.c_allocator.free(copy_content);
+    const copy_finish_reason = try safeDupe(allocator, finishReasonStr);
+    defer std.heap.c_allocator.free(copy_finish_reason);
+    const copy_role = try safeDupe(allocator, roleStr);
+    defer std.heap.c_allocator.free(copy_role);
+    const copy_tool_calls = try safeDupe(allocator, toolCallsJson);
+    defer std.heap.c_allocator.free(copy_tool_calls);
+    const copy_reasoning = try safeDupe(allocator, reasoningStr);
+    defer std.heap.c_allocator.free(copy_reasoning);
+    const copy_cwd = try safeDupe(allocator, input.cwd);
+    defer std.heap.c_allocator.free(copy_cwd);
+    const copy_agent = try safeDupe(allocator, agentStr);
+    defer std.heap.c_allocator.free(copy_agent);
+    const copy_session_name = try safeDupe(allocator, input.session_name orelse "");
+    defer std.heap.c_allocator.free(copy_session_name);
+    const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{input.loop_index});
+    defer allocator.free(loop_index_str);
+    const temperature_str = try std.fmt.allocPrint(allocator, "{d:.2}", .{input.temperature});
+    defer allocator.free(temperature_str);
+    const is_thinking_str = if (input.is_thinking) "1" else "0";
+    const copy_parent_session_id = try safeDupe(allocator, input.parent_session_id orelse "");
+    defer std.heap.c_allocator.free(copy_parent_session_id);
+    const copy_parent_id = try safeDupe(allocator, input.parent_id orelse "");
+    defer std.heap.c_allocator.free(copy_parent_id);
+    const copy_tool_name = try safeDupe(allocator, input.tool_name orelse "");
+    defer std.heap.c_allocator.free(copy_tool_name);
+    const prompt_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.prompt_tokens});
+    defer allocator.free(prompt_tokens_str);
+    const completion_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.completion_tokens});
+    defer allocator.free(completion_tokens_str);
+    const total_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.total_tokens});
+    defer allocator.free(total_tokens_str);
+
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name };
+
+    try db.exec(allocator, sql, sqlArgs);
+}
+
+/// Check if a session exists in the database
+/// Returns true if session exists, false otherwise or on error
+pub fn check_session_exists(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) bool {
+    const sql = "SELECT COUNT(*) as cnt FROM llm_history WHERE session_id = ?";
+
+    const result = db.queryRow(allocator, sql, &.{session_id}) catch return false;
+    defer result.deinit(allocator);
+
+    if (result.values.len > 0) {
+        const count_str = std.mem.sliceTo(result.values[0], 0);
+        if (std.fmt.parseInt(i32, count_str, 10)) |count| {
+            return count > 0;
+        } else |_| {}
+    }
+
+    return false;
+}
+
+// =============================================================================
+// Get Messages Functions
+// =============================================================================
+
+pub fn get_messages(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]TUIHistory {
+    var results: std.ArrayList(TUIHistory) = .empty;
+
+    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(tool_name, ''), COALESCE(parent_session_id, ''), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(is_input, 0), COALESCE(is_output, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at ASC";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    while (try rows.next()) |row| {
+        const parent_session_id_str = row.values[13];
+        const history = TUIHistory{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .model = try allocator.dupe(u8, row.values[2]),
+            .created_at = try allocator.dupe(u8, row.values[3]),
+            .response_content = try allocator.dupe(u8, row.values[4]),
+            .finish_reason = try allocator.dupe(u8, row.values[5]),
+            .role = try allocator.dupe(u8, row.values[6]),
+            .tools = try allocator.dupe(u8, row.values[7]),
+            .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
+            .agent = try allocator.dupe(u8, row.values[9]),
+            .session_name = try allocator.dupe(u8, row.values[10]),
+            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
+            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .is_input = std.mem.eql(u8, row.values[19], "1"),
+            .is_output = std.mem.eql(u8, row.values[20], "1"),
+        };
+        try results.append(allocator, history);
+        row.deinit(allocator);
+    }
+
+    return results.toOwnedSlice(allocator);
+}
+
+pub fn get_message_latest(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !?TUIHistory {
+    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(tool_name, ''), COALESCE(parent_session_id, ''), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(is_input, 0), COALESCE(is_output, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at DESC LIMIT 1";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const parent_session_id_str = row.values[13];
+        const history = TUIHistory{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .model = try allocator.dupe(u8, row.values[2]),
+            .created_at = try allocator.dupe(u8, row.values[3]),
+            .response_content = try allocator.dupe(u8, row.values[4]),
+            .finish_reason = try allocator.dupe(u8, row.values[5]),
+            .role = try allocator.dupe(u8, row.values[6]),
+            .tools = try allocator.dupe(u8, row.values[7]),
+            .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
+            .agent = try allocator.dupe(u8, row.values[9]),
+            .session_name = try allocator.dupe(u8, row.values[10]),
+            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
+            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .is_input = std.mem.eql(u8, row.values[19], "1"),
+            .is_output = std.mem.eql(u8, row.values[20], "1"),
+        };
+        row.deinit(allocator);
+        return history;
+    }
+
+    return null;
+}
+
+// =============================================================================
+// Get Sessions By Directory Functions
+// =============================================================================
+
+pub fn get_sessions_by_dir(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_dir: []const u8,
+) ![]SessionInfo {
+    var results: std.ArrayList(SessionInfo) = .empty;
+
+    const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created_at) as created_at FROM llm_history WHERE session_dir = ? GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT 10";
+    var rows = try db.query(allocator, sql, &[_][]const u8{session_dir});
+    defer rows.deinit();
+
+    while (try rows.next()) |row| {
+        const session = SessionInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .created_at = try allocator.dupe(u8, row.values[2]),
+            .agent = try allocator.dupe(u8, ""),
+            .session_name = try allocator.dupe(u8, ""),
+        };
+        try results.append(allocator, session);
+        row.deinit(allocator);
+    }
+
+    return results.toOwnedSlice(allocator);
+}
+
+/// Get the latest session for a given directory
+/// Returns null if no sessions exist for that directory
+pub fn getLatestSessionByDir(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_dir: []const u8,
+) !?SessionInfo {
+    const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created_at) as created_at FROM llm_history WHERE session_dir = ? GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT 1";
+    var rows = try db.query(allocator, sql, &[_][]const u8{session_dir});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const session = SessionInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .created_at = try allocator.dupe(u8, row.values[2]),
+            .agent = try allocator.dupe(u8, ""),
+            .session_name = try allocator.dupe(u8, ""),
+        };
+        row.deinit(allocator);
+        return session;
+    }
+
+    return null;
+}
+
+// =============================================================================
+// Get Current Agent By Session ID Functions
+// =============================================================================
+
+pub const AgentState = struct {
+    agent: []const u8,
+    temperature: f32,
+    is_thinking: bool,
+};
+
+pub fn get_current_agent_by_session_id(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !AgentState {
+    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0), COALESCE(is_thinking, 1) FROM llm_history WHERE session_id = ? ORDER BY created_at DESC LIMIT 1";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        const agent_name = try allocator.dupe(u8, row.values[0]);
+        const temperature = try std.fmt.parseFloat(f32, row.values[1]);
+        const is_thinking = std.mem.eql(u8, row.values[2], "1");
+        return AgentState{
+            .agent = agent_name,
+            .temperature = temperature,
+            .is_thinking = is_thinking,
+        };
+    } else {
+        return AgentState{
+            .agent = try allocator.dupe(u8, "Agent"),
+            .temperature = 0,
+            .is_thinking = true,
+        };
+    }
 }

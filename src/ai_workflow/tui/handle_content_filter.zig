@@ -3,10 +3,11 @@ const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
-const save_message = @import("save_message.zig").save_message;
+const llm_history = @import("llm_history.zig");
+const save_message = llm_history.save_message;
 const on_event_send_new = @import("on_event_sent.zig").on_event_send_new;
-const session_helpers = @import("session_helpers.zig");
-const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;
+const session_helpers = llm_history;
+const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
 
 pub fn handle_content_filter_run(
     allocator: std.mem.Allocator,

@@ -6,10 +6,10 @@ const llm_models = root_mod.llm_models;
 const prompt = root_mod.prompt;
 pub const context = @import("models.zig").ContextIPCTui;
 pub const ContextIPCTui = @import("models.zig").ContextIPCTui;
-pub const kerjabot_get_session = @import("get_session.zig");
-pub const kerjabot_create_session = @import("create_session.zig");
-pub const kerjabot_get_list_session = @import("get_list_session.zig");
-pub const tui_check_session_exists = @import("check_session_exists.zig");
+pub const kerjabot_get_session = @import("llm_history.zig");
+pub const kerjabot_create_session = @import("llm_history.zig");
+pub const kerjabot_get_list_session = @import("llm_history.zig");
+pub const tui_check_session_exists = @import("llm_history.zig");
 const sqlite = root_mod.sqlite;
 const BashTool = root_mod.bash_tool;
 const ReadFileTool = root_mod.read_file;
@@ -22,15 +22,16 @@ const skills = root_mod.skills;
 const loop_detector = root_mod.loop_detector;
 const bash_helper = root_mod.helperTool;
 const logger_mod = root_mod.logger;
-const session_helpers = @import("session_helpers.zig");
-const get_current_agent_by_session_id = session_helpers.get_current_agent_by_session_id;
+const llm_history = @import("llm_history.zig");
+const session_helpers = llm_history;
+const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
-const save_message = @import("save_message.zig").save_message;
+const save_message = llm_history.save_message;
 const BuildMessages = @import("build_messages_for_agent_prompt.zig").BuildMessages;
 const get_messages = session_helpers.get_messages;
 const get_message_latest = session_helpers.get_message_latest;
-const mark_messages_not_for_llm = @import("mark_message_not_for_llm.zig");
+const mark_messages_not_for_llm = @import("llm_history.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const handle_bash_tool = @import("handle_bash_tool.zig");
 const BuildMemoryForAgent = @import("build_memory_for_agent_prompt.zig").BuildMemoryForAgent;
@@ -52,7 +53,7 @@ const handle_content_filter = @import("handle_content_filter.zig");
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
 const BuildDynamicAgentContent = @import("build_dynamic_agent_for_agent_prompt.zig").BuildDynamicAgentContent;
 const BuildBackgroundProcessContent = @import("build_background_process_for_agent_prompt.zig").BuildBackgroundProcessPrompt;
-const save_skill_mod = @import("save_skill.zig");
+const save_skill_mod = @import("session_skills.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
 const config_mod = root_mod.config;
 pub const session_registry = root_mod.session.session_registry;
@@ -197,6 +198,13 @@ pub const TUIWorkflow = struct {
         }) orelse &[_]tool_models.AgentTool{};
         // Note: mcp_tools_fetched memory is managed by parent_allocator
 
+        // Merge base tools and MCP tools once outside the loop
+        var all_tools_list: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
+        defer all_tools_list.deinit(parent_allocator);
+        try all_tools_list.appendSlice(parent_allocator, base_tools);
+        try all_tools_list.appendSlice(parent_allocator, mcp_tools_fetched);
+        const merged_tools = try all_tools_list.toOwnedSlice(parent_allocator);
+
         while (true) {
             if (session_registry.get_global_registry()) |registry| {
                 if (registry.is_cancelled(session_id)) {
@@ -259,27 +267,27 @@ pub const TUIWorkflow = struct {
                 allocator.free(db_messages);
             }
             const total_tokens = blk: {
-                var total_token: u32 = 0;
+                var max_token: u32 = 0;
                 for (db_messages) |msg| {
-                    if (msg.total_tokens > 0) {
-                        total_token = msg.total_tokens;
+                    if (msg.total_tokens > max_token) {
+                        max_token = msg.total_tokens;
                     }
                 }
-                break :blk total_token;
+                break :blk max_token;
             };
-            const initialMessages = try BuildMessages(allocator, cwd, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
+            const initialMessages = try BuildMessages(allocator, cwd, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id), merged_tools);
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
             self.logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len }) catch {};
-            if (llm_models.is_do_compact(total_tokens, llm_models.getModelTokenCount(model))) {
+            if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(model))) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
                 if (try self.callCompactAgent(messagesLists.items, allocator, api_key, model, base_url)) |compacted_xml| {
                     try self.compactMessagesInMemory(allocator, &messagesLists, compacted_xml, session_id, model, cwd);
                 }
             }
 
-            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, base_tools, mcp_tools_fetched) catch |err| {
+            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, merged_tools) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -448,15 +456,8 @@ pub const TUIWorkflow = struct {
         model: []const u8,
         base_url: []const u8,
         session_id: []const u8,
-        base_tools: []const tool_models.AgentTool,
-        mcp_tools: []const tool_models.AgentTool,
+        tools: []const tool_models.AgentTool,
     ) !agent.CallResponse {
-        // Merge base tools with pre-fetched MCP tools
-        var all_tools: std.ArrayList(tool_models.AgentTool) = .empty;
-        try all_tools.appendSlice(allocator, base_tools);
-        try all_tools.appendSlice(allocator, mcp_tools);
-        const tools = try all_tools.toOwnedSlice(allocator);
-
         var dynamic_agent = try agent.Agent.init(allocator, self.logger);
         dynamic_agent.apiKey = api_key;
         dynamic_agent.model = model;

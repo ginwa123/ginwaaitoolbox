@@ -9,7 +9,8 @@ test "write_file - write new file" {
     // Clean up any existing file
     std.fs.cwd().deleteFile(test_path) catch {};
     
-    const result = try write_file_mod.write_file(allocator, test_path, .{
+    const result = try write_file_mod.write_file(allocator, .{
+        .path = test_path,
         .content = test_content,
     });
     defer result.deinit(allocator);
@@ -37,7 +38,8 @@ test "write_file - overwrite existing file" {
     defer orig_file.close();
     try orig_file.writeAll(original_content);
     
-    const result = try write_file_mod.write_file(allocator, test_path, .{
+    const result = try write_file_mod.write_file(allocator, .{
+        .path = test_path,
         .content = new_content,
     });
     defer result.deinit(allocator);
@@ -60,7 +62,8 @@ test "write_file - error on invalid directory" {
     const test_content = "content\n";
     
     // This should return an error
-    const result = write_file_mod.write_file(allocator, test_path, .{
+    const result = write_file_mod.write_file(allocator, .{
+        .path = test_path,
         .content = test_content,
     });
     
@@ -75,7 +78,8 @@ test "write_file - result serialization" {
     // Clean up
     std.fs.cwd().deleteFile(test_path) catch {};
     
-    const result = try write_file_mod.write_file(allocator, test_path, .{
+    const result = try write_file_mod.write_file(allocator, .{
+        .path = test_path,
         .content = test_content,
     });
     defer result.deinit(allocator);
@@ -90,26 +94,20 @@ test "write_file - result serialization" {
     try std.fs.cwd().deleteFile(test_path);
 }
 
-test "write_file - WriteFileOptions with create_with_dir" {
-    const opts = write_file_mod.WriteFileOptions{
-        .content = "hello",
-        .create_with_dir = true,
-    };
-    try std.testing.expect(opts.create_with_dir == true);
-}
-
-test "write_file tool definition exists" {
-    // Verify the tool definition matches expected structure
-    try std.testing.expectEqualStrings("write_file", write_file_mod.write_file_tool.function.name);
-}
-
-test "write_file - WriteFileInput with create_with_dir" {
+test "write_file - WriteFileInput struct definition" {
     const input = write_file_mod.WriteFileInput{
         .path = "/tmp/test/nested/dir/file.txt",
         .content = "hello",
         .create_with_dir = true,
     };
     try std.testing.expect(input.create_with_dir == true);
+    try std.testing.expect(input.path.len > 0);
+    try std.testing.expect(input.content.len > 0);
+}
+
+test "write_file tool definition exists" {
+    // Verify the tool definition matches expected structure
+    try std.testing.expectEqualStrings("write_file", write_file_mod.write_file_tool.function.name);
 }
 
 test "write_file tool definition includes create_with_dir parameter" {
@@ -136,7 +134,8 @@ test "write_file - create file with nested directories (create_with_dir=true)" {
     // Ensure parent directories DON'T exist
     std.fs.cwd().deleteTree("test_nested") catch {};
     
-    const result = try write_file_mod.write_file(allocator, test_path, .{
+    const result = try write_file_mod.write_file(allocator, .{
+        .path = test_path,
         .content = test_content,
         .create_with_dir = true,
     });
@@ -158,7 +157,8 @@ test "write_file - create_with_dir=false returns error on missing directory" {
     const allocator = std.testing.allocator;
     const test_path = "/tmp/nonexistent/path/file.txt";
     
-    const result = write_file_mod.write_file(allocator, test_path, .{
+    const result = write_file_mod.write_file(allocator, .{
+        .path = test_path,
         .content = "test",
         .create_with_dir = false,
     });
@@ -174,7 +174,8 @@ test "write_file - create_with_dir=true works when directory exists" {
     try std.fs.cwd().makeDir("/tmp/existing_dir");
     defer std.fs.cwd().deleteTree("/tmp/existing_dir") catch {};
     
-    const result = try write_file_mod.write_file(allocator, test_path, .{
+    const result = try write_file_mod.write_file(allocator, .{
+        .path = test_path,
         .content = "test",
         .create_with_dir = true,
     });

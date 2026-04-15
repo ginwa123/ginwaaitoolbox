@@ -1,7 +1,7 @@
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
-const agent = tree1_mod.agent;
-const write_file_tool = tree1_mod.write_file;
+const nalar = @import("nalarcore");
+const agent = nalar.agent;
+const write_file_tool = nalar.write_file;
 
 /// Stateless write_file tool handler - only handles core logic:
 /// 1. Parse arguments from tool_call.function.arguments
@@ -22,13 +22,7 @@ pub fn handle_write_file_tool_run(
     );
     defer parsed.deinit();
 
-    // Convert WriteFileInput to WriteFileOptions for the write_file function
-    const opts = write_file_tool.WriteFileOptions{
-        .content = parsed.value.content,
-        .create_with_dir = parsed.value.create_with_dir,
-    };
-
-    const write_result = try write_file_tool.write_file(allocator, parsed.value.path, opts);
+    const write_result = try write_file_tool.write_file(allocator, parsed.value);
 
     // Convert write result to string format
     const res_write = try write_file_tool.writeFileToString(allocator, write_result);

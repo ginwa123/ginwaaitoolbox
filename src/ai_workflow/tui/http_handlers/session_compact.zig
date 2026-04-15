@@ -5,7 +5,7 @@ const nalarcore = root_mod;
 const sqlite = nalarcore.sqlite;
 const ai_workflow = nalarcore.ai_workflow;
 const logger = nalarcore.logger;
-const kerjabot_get_session = nalarcore.kerjabot_get_session;
+const llm_history = nalarcore.llm_history;
 const config = nalarcore.config;
 
 const httpz = http_server.httpz;
@@ -49,7 +49,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                         // Get cwd from session
                         var cwd_buf: [4096]u8 = undefined;
                         const cwd = blk: {
-                            const result = kerjabot_get_session.getSession(threadAlloc2, sqliteDb, sessId) catch null;
+                            const result = llm_history.get_session(threadAlloc2, sqliteDb, sessId) catch null;
                             if (result) |session| {
                                 defer session.deinit(threadAlloc2);
                                 if (session.session_dir.len > 0) {

@@ -47,14 +47,15 @@ pub const execSetAgentProperties = tool_registry.execSetAgentProperties;
 // Re-export SUB_AGENT_TOOL_REGISTRY for backward compatibility
 pub const SUB_AGENT_TOOL_REGISTRY = tool_registry.SUB_AGENT_TOOL_REGISTRY;
 
-const save_message = @import("save_message.zig").save_message;
-const session_helpers = @import("session_helpers.zig");
-const getCurrentAgentBySessionId = session_helpers.get_current_agent_by_session_id;
+const llm_history = @import("llm_history.zig");
+const save_message = llm_history.save_message;
+const session_helpers = llm_history;
+const getCurrentAgentBySessionId = llm_history.get_current_agent_by_session_id;
 const handle_tool = @import("handle_tool.zig");
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const StreamingContext = @import("workflow.zig").StreamingContext;
 const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
-const SaveSkill = @import("save_skill.zig").SaveSkill;
+const SaveSkill = @import("session_skills.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
@@ -269,7 +270,7 @@ fn run_sub_agent(
         const allocator = arena_allocator.allocator();
 
         const skillContents = try BuildSkillContent(allocator, db, session_id);
-        const systemPrompt = try prompt.buildAgentPrompt(allocator, cwd, "", skillContents, "", "", "");
+        const systemPrompt = try prompt.build_agent_prompt(allocator, cwd, "", skillContents, "", "", "", sub_agent_tools);
 
         var messages: std.ArrayList(agent.AgentMessage) = .empty;
         try messages.append(allocator, .{

@@ -239,7 +239,7 @@ pub fn text_replace(
 }
 
 /// Serialize result to XML string
-pub fn text_replace_to_string_xml(allocator: std.mem.Allocator, result: TextReplaceResult) []const u8 {
+pub fn to_xml(allocator: std.mem.Allocator, result: TextReplaceResult) []const u8 {
     _ = allocator;
     _ = result;
     return "<success>true</success>";
