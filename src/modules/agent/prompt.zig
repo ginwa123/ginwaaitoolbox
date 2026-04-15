@@ -72,8 +72,16 @@ pub fn build_agent_prompt(
     try result.appendSlice(allocator, "\n\n");
 
     // 🎛️ Dynamic Properties - encourage on-demand property changes
-    try result.appendSlice(allocator, DynamicProperties);
-    try result.appendSlice(allocator, "\n\n");
+    // Only include if set_agent_properties tool is enabled
+    const has_set_agent_properties = for (tools) |tool| {
+        if (std.mem.eql(u8, tool.function.name, "set_agent_properties")) {
+            break true;
+        }
+    } else false;
+    if (has_set_agent_properties) {
+        try result.appendSlice(allocator, DynamicProperties);
+        try result.appendSlice(allocator, "\n\n");
+    }
 
     // ⚡⚡⚡ SKILLS FIRST — Most important section at the top!
     try result.appendSlice(allocator, SkillsUsage);

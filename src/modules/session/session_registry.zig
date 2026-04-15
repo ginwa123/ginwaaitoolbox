@@ -112,27 +112,18 @@ pub const SessionRegistry = struct {
             return;
         }
 
-        // Defensive: Clean up any orphaned entries that might exist without a corresponding activity entry
-        // This handles partial failures from previous register() calls that didn't complete
-        if (self.cancelled.contains(session_id)) {
-            if (self.cancelled.fetchRemove(session_id)) |entry| {
-                self.allocator.destroy(entry.value);
-                self.allocator.free(entry.key);
-            }
-        }
+        // Clean up orphaned entries (use remove instead of fetchRemove to properly free keys)
+        _ = self.cancelled.remove(session_id);
 
         // Also clean up orphaned message queues
-        if (self.message_queues.contains(session_id)) {
-            if (self.message_queues.fetchRemove(session_id)) |entry| {
-                for (entry.value.items) |msg| {
-                    self.allocator.free(msg);
-                }
-                entry.value.deinit(self.allocator);
-                self.allocator.destroy(entry.value);
-            }
+        if (self.message_queues.remove(session_id)) {
+            // Entry existed and was removed - nothing else needed
         }
 
-        // Use the session_id directly for cleanup, then create a new key for insertion
+        // Also clean up orphaned stopped flags
+        _ = self.stopped.remove(session_id);
+
+        // Create key for insertion (use session_id directly as it's already unique per session)
         const key = try self.allocator.dupe(u8, session_id);
         errdefer self.allocator.free(key);
 
