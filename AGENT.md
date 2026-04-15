@@ -199,6 +199,22 @@ Just use it - read the file first to see its current content.
   - **Stopped flag** (`mark_stopped`/`is_stopped`) — persistent flag that blocks `is_running()` until re-registered
   - **Critical:** `is_running()` checks stopped flag first, then activity count
 
+## MCP Tool Handling
+
+**Key files:**
+- `src/ai_workflow/tui/handle_mcp_tool.zig` — Executes MCP tool calls
+- `src/ai_workflow/tui/build_messages_tools_mcp_for_agent_prompt.zig` — Fetches MCP tools from servers
+
+**Important fixes applied:**
+1. **SSE Response Parsing:** MCP servers may return `text/event-stream` responses with `data:` prefix. The handler now strips this prefix before JSON parsing.
+2. **Memory Safety:** When extracting strings from parsed JSON, the handler copies them to the parent allocator to avoid use-after-free when the parsed tree is deallocated.
+3. **Use `std.heap.c_allocator` for JSON parsing** — Avoids nested arena alignment issues.
+
+**JSON Parse Error Prevention:**
+- Always use `std.heap.c_allocator` instead of arenas for `json.parseFromSlice`
+- Strip SSE framing before parsing if server may return event-stream responses
+- Copy extracted strings if they need to outlive the parsed value
+
 ## Logging Conventions
 
 **Desktop Bun Frontend (`src/apps/desktop-bun/`):**
@@ -206,7 +222,27 @@ Just use it - read the file first to see its current content.
 - Import: `import { log } from '../utils/logger';`
 - Usage: `log.info('msg')`, `log.warn('msg')`, `log.error('msg')`
 
-**Zig Backend:** Use `std.log` or project's logger module
+**Zig Backend:** Use `root_mod.logger.getGlobal()` for custom logger
+```zig
+const logger = root_mod.logger;
+
+// Get global logger instance
+const log = logger.getGlobal();
+
+// Use formatted methods (catch {} to ignore errors)
+log.?.infoFmt("message: {s}", .{arg}) catch {};
+log.?.warnFmt("warning: {}", .{err}) catch {};
+log.?.errFmt("error: {s}", .{@errorName(err)}) catch {};
+log.?.debugFmt("debug: {}", .{value}) catch {};
+log.?.traceFmt("trace: {}", .{value}) catch {};
+
+// Simple methods (also need error handling)
+log.?.info("simple message") catch {};
+log.?.warn("warning message") catch {};
+log.?.err("error message") catch {};
+```
+
+**Note:** For void functions, use `catch {}` to silently ignore logging errors.
 
 ## Dev Test
 
