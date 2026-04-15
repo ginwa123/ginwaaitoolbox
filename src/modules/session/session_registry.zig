@@ -118,7 +118,7 @@ pub const SessionRegistry = struct {
         // Defensive: Clean up any orphaned entries in cancelled (can happen from partial failures)
         if (self.cancelled.contains(key)) {
             if (self.cancelled.fetchRemove(key)) |entry| {
-                self.allocator.destroy(entry.value.*);
+                self.allocator.destroy(entry.value);
                 self.allocator.free(entry.key);
             }
         }
