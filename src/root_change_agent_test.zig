@@ -6,16 +6,6 @@ test "root.zig exports change_agent" {
     _ = nalarcore.change_agent;
 }
 
-test "root.zig exports change_agent_tool" {
-    // Verify change_agent_tool is exported
-    _ = nalarcore.change_agent_tool;
-}
-
-test "root.zig exports change_agent_tool with correct name" {
-    const tool = nalarcore.change_agent.change_agent_tool;
-    try std.testing.expectEqualStrings("change_agent", tool.function.name);
-}
-
 test "root.zig does not export get_agent" {
     // Verify get_agent is not exported anymore
     // This uses @hasField to check at compile time

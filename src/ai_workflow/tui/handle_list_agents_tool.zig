@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
-const list_agents_tool = tree1_mod.list_agents_tool;
+const list_agents = tree1_mod.list_agents;
 
 /// Stateless list_agents tool handler - only handles core logic:
 /// 1. Execute list_agents
@@ -11,7 +11,7 @@ const list_agents_tool = tree1_mod.list_agents_tool;
 pub fn handle_list_agents_tool_run(
     allocator: std.mem.Allocator,
 ) ![]const u8 {
-    const result = list_agents_tool.executeListAgents(allocator) catch {
+    const result = list_agents.executeListAgents(allocator) catch {
         return try std.fmt.allocPrint(allocator,
             \\<agents>
             \\  <error>Failed to list agents</error>

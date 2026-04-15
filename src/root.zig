@@ -75,15 +75,15 @@ pub const tool_models = @import("modules/agent/tools/schemas.zig");
 pub const lsp_types = @import("modules/agent/tools/lsp_types.zig");
 pub const tools = @import("modules/agent/tools/tools.zig");
 pub const change_agent = @import("modules/agent/tools/change_agent.zig");
-pub const change_agent_tool = @import("modules/agent/tools/change_agent.zig");
+
 pub const get_skill_tool = @import("modules/agent/tools/get_skill.zig");
 pub const remove_skill_tool = @import("modules/agent/tools/remove_skill.zig");
 pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");
 pub const list_agents = @import("modules/agent/tools/list_agents.zig");
-pub const list_agents_tool = @import("modules/agent/tools/list_agents.zig");
+
 pub const set_agent_properties = @import("modules/agent/tools/set_agent_properties.zig");
-pub const set_agent_properties_tool = @import("modules/agent/tools/set_agent_properties.zig");
+
 pub const http_server = @import("modules/http_server/http_server.zig");
 pub const http_client = @import("modules/http/http_client.zig");
 pub const logger = @import("modules/logger/logger.zig");
@@ -95,12 +95,12 @@ pub const skills = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const add_agent = @import("modules/agent/tools/add_agent.zig");
 pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");
-pub const remove_agent_tool = @import("modules/agent/tools/remove_agent.zig");
+
 pub const config = @import("modules/config/config.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");
-pub const text_replace = @import("modules/agent/tools/text_replace.zig");
+
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");

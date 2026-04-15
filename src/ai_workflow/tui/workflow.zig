@@ -259,9 +259,13 @@ pub const TUIWorkflow = struct {
                 allocator.free(db_messages);
             }
             const total_tokens = blk: {
-                var sum: u32 = 0;
-                for (db_messages) |msg| sum += msg.total_tokens;
-                break :blk sum;
+                var total_token: u32 = 0;
+                for (db_messages) |msg| {
+                    if (msg.total_tokens > 0) {
+                        total_token = msg.total_tokens;
+                    }
+                }
+                break :blk total_token;
             };
             const initialMessages = try BuildMessages(allocator, cwd, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id));
 
