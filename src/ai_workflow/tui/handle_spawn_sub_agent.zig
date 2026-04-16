@@ -7,7 +7,7 @@ const sqlite = root_mod.sqlite;
 const prompt = root_mod.prompt;
 const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
 const config_mod = root_mod.config;
-const activity_registry = root_mod.session.activity_registry;
+const session_registry = root_mod.session.session_registry;
 
 // Import tool registry for exec functions and types
 const tool_registry = @import("tool_registry.zig");
@@ -271,7 +271,7 @@ fn run_sub_agent(
         const allocator = arena_allocator.allocator();
 
         const skillContents = try BuildSkillContent(allocator, db, session_id);
-        const activity_info = try build_subagent_activity_info(allocator, db);
+        const activity_info = try build_subagent_activity_info(allocator, db, session_id);
         const systemPrompt = try prompt.build_agent_prompt(allocator, cwd, "", skillContents, "", "", "", sub_agent_tools, activity_info);
         allocator.free(activity_info);
 
@@ -664,9 +664,10 @@ pub fn handle_spawn_sub_agent_run(
 }
 
 /// Build activity info string for sub-agent prompts
-/// Uses activity_registry as PRIMARY source, DB for enrichment
-fn build_subagent_activity_info(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) ![]const u8 {
-    const registry = activity_registry.get_global_registry() orelse {
+/// Uses session_registry as PRIMARY source, DB for enrichment
+/// Filters out current session to avoid self-reference
+fn build_subagent_activity_info(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
+    const registry = session_registry.get_global_registry() orelse {
         return try allocator.dupe(u8, "");
     };
 
@@ -680,12 +681,17 @@ fn build_subagent_activity_info(allocator: std.mem.Allocator, db: *sqlite.Sqlite
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
-    var iter = registry.sessions.iterator();
+    var iter = registry.activity.iterator();
     var has_activity = false;
 
     while (iter.next()) |entry| {
         const session_id = entry.key_ptr.*;
         const atomic = entry.value_ptr.*;
+
+        // Skip current session to avoid self-reference
+        if (std.mem.eql(u8, session_id, current_session_id)) {
+            continue;
+        }
 
         // Check if this session is currently running
         if (atomic.load(.seq_cst) > 0 and !registry.stopped.contains(session_id)) {

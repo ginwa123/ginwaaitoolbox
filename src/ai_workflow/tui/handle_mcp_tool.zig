@@ -145,18 +145,21 @@ pub fn handle_mcp_tool_run(
     errdefer if (is_copy) allocator.free(clean_body);
 
     // Parse the response and extract content
-    // IMPORTANT: Use std.heap.c_allocator for JSON parsing to avoid nested arena
-    // alignment issues. json.parseFromSlice internally creates an ArenaAllocator.
-    const parsed = std.json.parseFromSlice(std.json.Value, std.heap.c_allocator, clean_body, .{}) catch |err| {
+    // IMPORTANT: Use a separate ArenaAllocator with c_allocator to avoid nested arena
+    // alignment issues. We create it here and deinit immediately after extracting strings.
+    var parse_arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer parse_arena.deinit();
+    const parse_alloc = parse_arena.allocator();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, parse_alloc, clean_body, .{}) catch |err| {
         _ = try logger.errFmt("MCP JSON parse error: {s}, body: {s}", .{ @errorName(err), clean_body[0..@min(clean_body.len, 500)] });
         if (is_copy) allocator.free(clean_body);
         allocator.free(result.body);
         allocator.free(request_body);
         return error.MCPJSONParseError;
     };
-    defer parsed.deinit();
 
-    // Extract result content from MCP response
+    // Extract result content from MCP response BEFORE deinit
     const root = parsed.value;
     var tool_result: []const u8 = clean_body;
     var needs_copy = false;
@@ -171,8 +174,8 @@ pub fn handle_mcp_tool_run(
                         if (first_content.object.get("text")) |text_val| {
                             switch (text_val) {
                                 .string => |s| {
-                                    tool_result = s;
-                                    needs_copy = true; // string is from parsed tree, may be freed
+                                    tool_result = try allocator.dupe(u8, s);
+                                    needs_copy = true;
                                 },
                                 else => {},
                             }
@@ -180,25 +183,25 @@ pub fn handle_mcp_tool_run(
                     }
                 },
                 .string => |s| {
-                    tool_result = s;
-                    needs_copy = true; // string is from parsed tree, may be freed
+                    tool_result = try allocator.dupe(u8, s);
+                    needs_copy = true;
                 },
                 else => {},
             }
         }
     }
 
+    // Now safe to deinit the parse arena
+    parsed.deinit();
+
     // Free intermediate allocations before returning
     if (is_copy) allocator.free(clean_body);
     allocator.free(result.body);
 
-    // If we need the parsed string, copy it to parent allocator
-    if (needs_copy) {
-        const result_copy = try allocator.dupe(u8, tool_result);
-        return result_copy;
+    // If we extracted a specific result, it was already duplicated
+    // Otherwise, return a copy of clean_body
+    if (!needs_copy) {
+        return try allocator.dupe(u8, clean_body);
     }
-
-    // tool_result is clean_body which is either a copy or result.body
-    // Either way, we've already freed the other one
     return tool_result;
 }

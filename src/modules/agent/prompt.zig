@@ -239,6 +239,7 @@ pub fn build_agent_prompt(
     if (activity_info.len > 0) {
         try result.appendSlice(allocator, "\n\n## Active Workers\n\n");
         try result.appendSlice(allocator, activity_info);
+        try result.appendSlice(allocator, "\n\n**Note:** These are other agent sessions running in different processes/directories. This information helps you avoid duplicate work or coordinate with other agents if needed. However, each worker operates independently — you have your own separate context and session.");
     }
 
     return result.toOwnedSlice(allocator);

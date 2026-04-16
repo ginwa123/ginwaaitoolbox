@@ -26,5 +26,4 @@ test {
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
 
     _ = @import("session_queue_messages_test.zig");
-    _ = @import("activity_info_test.zig");
 }

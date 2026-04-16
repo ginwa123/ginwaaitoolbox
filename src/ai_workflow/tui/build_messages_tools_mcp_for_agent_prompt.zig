@@ -8,6 +8,18 @@ const ToolProperty = root_mod.tool_models.ToolProperty;
 const config_mod = root_mod.config;
 const http_client = root_mod.http_client;
 
+/// Strip SSE "data:" prefix from response body if present
+/// MCP servers may return responses in SSE format: "data: {...}\n\n"
+fn stripSsePrefix(body: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "data:")) {
+        const json_start = trimmed["data:".len..];
+        const json_trimmed = std.mem.trim(u8, json_start, " \t");
+        return json_trimmed;
+    }
+    return null;
+}
+
 /// Error types for MCP tool fetching
 pub const McpToolError = error{
     ConfigLoadError,
@@ -147,20 +159,28 @@ fn fetchToolsFromServer(
         return error.InvalidResponse;
     }
 
-    // Parse JSON response
-    // IMPORTANT: Use std.heap.c_allocator for JSON parsing to avoid nested arena
-    // alignment issues. json.parseFromSlice internally creates an ArenaAllocator,
-    // and using an arena as the backing allocator can cause alignment panics.
-    const parsed = json.parseFromSlice(json.Value, std.heap.c_allocator, result.body, .{
+    // Strip SSE prefix if present (context7 returns text/event-stream)
+    const clean_body = stripSsePrefix(result.body);
+    const body_to_parse = if (clean_body) |b| b else result.body;
+
+    // Log first 500 chars of response for debugging
+    std.log.warn("MCP response from {s}: {s}", .{ server_name, result.body[0..@min(result.body.len, 500)] });
+
+    // Parse JSON response using a separate arena to avoid memory issues
+    // IMPORTANT: json.parseFromSlice internally creates an ArenaAllocator.
+    // We use a dedicated arena here and extract all strings before deinit.
+    var parse_arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer parse_arena.deinit();
+
+    const parsed = json.parseFromSlice(json.Value, parse_arena.allocator(), body_to_parse, .{
         .ignore_unknown_fields = true,
         .duplicate_field_behavior = .use_last,
     }) catch |err| {
         std.log.warn("Failed to parse MCP response from {s}: {s}", .{ server_name, @errorName(err) });
         return error.JsonParseError;
     };
-    defer parsed.deinit();
 
-    // Extract tools from result
+    // Extract tools from result (before deinit to access parsed.value)
     const root = switch (parsed.value) {
         .object => |obj| obj,
         else => {
@@ -226,7 +246,7 @@ fn fetchToolsFromServer(
         };
         const schema_obj_inner = schema_obj orelse continue;
 
-        // Parse properties
+        // Parse properties - this duplicates strings to allocator
         const props_value = schema_obj_inner.get("properties") orelse continue;
         const properties = try parseProperties(allocator, props_value, server_name);
 

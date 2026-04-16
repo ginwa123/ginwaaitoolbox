@@ -8,12 +8,12 @@ const prompt = tree1_mod.prompt;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_messages = @import("transform_llm_history_to_agent_messages.zig");
 const tool_models = tree1_mod.tool_models;
-const activity_registry = tree1_mod.session.activity_registry;
 
 pub fn BuildMessages(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     cwd: []const u8,
+    session_id: []const u8,
     historyMessages: []TUIHistory,
     skills: []const u8,
     memoryMd: []const u8,
@@ -23,7 +23,7 @@ pub fn BuildMessages(
 ) ![]agent.AgentMessage {
 
     // buildAgentPrompt now handles processMessages internally
-    const activity_info = try build_activity_info(allocator, db);
+    const activity_info = try build_activity_info(allocator, db, session_id);
     const systemContent = try prompt.build_agent_prompt(allocator, cwd, "", skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info);
     allocator.free(activity_info);
 
@@ -46,77 +46,52 @@ pub fn BuildMessages(
 }
 
 /// Build activity info string for the agent prompt
-/// Uses activity_registry as PRIMARY source for active workers
-/// DB provides enriched info (working_directory, last_activity)
-fn build_activity_info(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) ![]const u8 {
-    const registry = activity_registry.get_global_registry() orelse {
-        return try allocator.dupe(u8, "");
-    };
+/// Uses worker table as the SOLE source of active workers info
+/// Filters out current session to avoid self-reference
+fn build_activity_info(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
+    const workers = try llm_history.get_active_workers(allocator, db);
+    defer {
+        for (workers) |*worker| worker.deinit(allocator);
+        allocator.free(workers);
+    }
 
-    // Get worker info from database for enrichment
-    const workers = llm_history.get_active_workers(allocator, db) catch null;
-    defer if (workers) |w| {
-        for (w) |*worker| worker.deinit(allocator);
-        allocator.free(w);
-    };
+    // Filter out current session and count remaining
+    var filtered = std.ArrayList(llm_history.WorkerInfo).empty;
+    defer filtered.deinit(allocator);
+    for (workers) |worker| {
+        if (!std.mem.eql(u8, worker.session_id, current_session_id)) {
+            try filtered.append(allocator, worker);
+        }
+    }
+    if (filtered.items.len == 0) {
+        return try allocator.dupe(u8, "");
+    }
 
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
-    var iter = registry.sessions.iterator();
-    var has_activity = false;
+    try result.appendSlice(allocator, "The following workers are currently active:\n\n");
 
-    while (iter.next()) |entry| {
-        const session_id = entry.key_ptr.*;
-        const atomic = entry.value_ptr.*;
-
-        // Check if this session is currently running (not stopped, activity > 0)
-        if (atomic.load(.seq_cst) > 0 and !registry.stopped.contains(session_id)) {
-            if (!has_activity) {
-                try result.appendSlice(allocator, "The following workers are currently active:\n\n");
-                has_activity = true;
-            }
-
-            // Try to find enriched info from DB
-            var working_dir: []const u8 = "";
-            var last_activity_secs: i64 = 0;
-            var last_activity_desc: []const u8 = "";
-
-            if (workers) |w| {
-                for (w) |worker| {
-                    if (std.mem.eql(u8, worker.session_id, session_id)) {
-                        working_dir = worker.working_directory;
-                        last_activity_secs = worker.last_activity;
-                        last_activity_desc = worker.last_activity_description;
-                        break;
-                    }
-                }
-            }
-
-            try result.appendSlice(allocator, "- **");
-            try result.appendSlice(allocator, session_id);
-            try result.appendSlice(allocator, "**");
-            if (working_dir.len > 0) {
-                try result.appendSlice(allocator, " @ ");
-                try result.appendSlice(allocator, working_dir);
-            }
-            if (last_activity_secs > 0) {
-                const now: i64 = @intCast(std.time.timestamp());
-                const diff_secs = now - last_activity_secs;
-                try result.appendSlice(allocator, " | last activity: ");
-                try result.appendSlice(allocator, format_relative_time(diff_secs));
-                if (last_activity_desc.len > 0) {
-                    try result.appendSlice(allocator, " (");
-                    try result.appendSlice(allocator, last_activity_desc);
-                    try result.appendSlice(allocator, ")");
-                }
-            }
-            try result.appendSlice(allocator, "\n");
+    for (filtered.items) |worker| {
+        try result.appendSlice(allocator, "- **");
+        try result.appendSlice(allocator, worker.session_id);
+        try result.appendSlice(allocator, "**");
+        if (worker.working_directory.len > 0) {
+            try result.appendSlice(allocator, " @ ");
+            try result.appendSlice(allocator, worker.working_directory);
         }
-    }
-
-    if (!has_activity) {
-        return try allocator.dupe(u8, "");
+        if (worker.last_activity > 0) {
+            const now: i64 = @intCast(std.time.timestamp());
+            const diff_secs = now - worker.last_activity;
+            try result.appendSlice(allocator, " | last activity: ");
+            try result.appendSlice(allocator, format_relative_time(diff_secs));
+            if (worker.last_activity_description.len > 0) {
+                try result.appendSlice(allocator, " (");
+                try result.appendSlice(allocator, worker.last_activity_description);
+                try result.appendSlice(allocator, ")");
+            }
+        }
+        try result.appendSlice(allocator, "\n");
     }
 
     return try result.toOwnedSlice(allocator);
@@ -128,7 +103,7 @@ pub fn format_relative_time(seconds: i64) []const u8 {
         return "< 1m";
     } else if (seconds < 3600) {
         const mins = @divTrunc(seconds, 60);
-        return if (mins == 1) "1m" else if (mins < 10) "2m" else "5m";
+        return if (mins == 1) "1m" else if (mins < 5) "2m" else "5m";
     } else if (seconds < 86400) {
         const hours = @divTrunc(seconds, 3600);
         return if (hours == 1) "1h" else if (hours < 12) "5h" else "12h+";

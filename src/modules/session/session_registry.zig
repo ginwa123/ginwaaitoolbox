@@ -45,6 +45,8 @@ pub const SessionRegistry = struct {
     message_queues: std.StringHashMap(*std.ArrayList([]const u8)),
     /// Stopped flag per session - once stopped, is_running returns false until re-registered
     stopped: std.StringHashMap(?[]const u8),
+    /// Mutex for thread-safe registration
+    register_mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
@@ -96,11 +98,26 @@ pub const SessionRegistry = struct {
     }
 
     pub fn register(self: *Self, session_id: []const u8) !void {
-        // If already registered, reset it (clear stopped flag, activity, and cancellation)
+        self.register_mutex.lock();
+        defer self.register_mutex.unlock();
+
+        // Always clean up any orphaned entries first (entry might exist in some maps but not all)
+        _ = self.cancelled.remove(session_id);
+        _ = self.message_queues.remove(session_id);
+        _ = self.stopped.remove(session_id);
+
         if (self.activity.get(session_id)) |atomic| {
             atomic.store(0, .seq_cst);
             if (self.cancelled.get(session_id)) |cancel_atomic| {
                 cancel_atomic.store(false, .seq_cst);
+            } else {
+                // cancelled was cleaned up above, re-create it
+                const cancelled_atomic = try self.allocator.create(std.atomic.Value(bool));
+                cancelled_atomic.* = std.atomic.Value(bool).init(false);
+                errdefer self.allocator.destroy(cancelled_atomic);
+                const key = try self.allocator.dupe(u8, session_id);
+                errdefer self.allocator.free(key);
+                try self.cancelled.put(key, cancelled_atomic);
             }
             // Clear stopped flag when re-registering
             if (self.stopped.fetchRemove(session_id)) |entry| {
@@ -111,17 +128,6 @@ pub const SessionRegistry = struct {
             }
             return;
         }
-
-        // Clean up orphaned entries (use remove instead of fetchRemove to properly free keys)
-        _ = self.cancelled.remove(session_id);
-
-        // Also clean up orphaned message queues
-        if (self.message_queues.remove(session_id)) {
-            // Entry existed and was removed - nothing else needed
-        }
-
-        // Also clean up orphaned stopped flags
-        _ = self.stopped.remove(session_id);
 
         // Create key for insertion (use session_id directly as it's already unique per session)
         const key = try self.allocator.dupe(u8, session_id);
@@ -154,6 +160,9 @@ pub const SessionRegistry = struct {
     }
 
     pub fn unregister(self: *Self, session_id: []const u8) void {
+        self.register_mutex.lock();
+        defer self.register_mutex.unlock();
+
         // Clean up message queue
         if (self.message_queues.fetchRemove(session_id)) |entry| {
             for (entry.value.items) |msg| {
@@ -203,6 +212,9 @@ pub const SessionRegistry = struct {
     }
 
     pub fn mark_stopped(self: *Self, session_id: []const u8) void {
+        self.register_mutex.lock();
+        defer self.register_mutex.unlock();
+
         // Reset activity count to 0
         if (self.activity.get(session_id)) |atomic| {
             atomic.store(0, .seq_cst);
@@ -291,6 +303,9 @@ pub const SessionRegistry = struct {
     // ========== Message Queues ==========
 
     pub fn queue_message(self: *Self, session_id: []const u8, message: []const u8) void {
+        self.register_mutex.lock();
+        defer self.register_mutex.unlock();
+
         if (self.message_queues.get(session_id)) |queue| {
             const msg_copy = self.allocator.dupe(u8, message) catch return;
             queue.append(self.allocator, msg_copy) catch {
@@ -320,6 +335,9 @@ pub const SessionRegistry = struct {
 
     /// Delete a specific message from the queue (removes first occurrence)
     pub fn delete_queue_messages(self: *Self, session_id: []const u8, message: []const u8) void {
+        self.register_mutex.lock();
+        defer self.register_mutex.unlock();
+
         if (self.message_queues.get(session_id)) |queue| {
             for (queue.items, 0..) |msg, i| {
                 if (std.mem.eql(u8, msg, message)) {

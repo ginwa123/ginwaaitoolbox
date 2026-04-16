@@ -295,9 +295,9 @@ pub const Migration020AddWorkerExtraFields = struct {
     pub const name = "add_worker_extra_fields";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN working_directory TEXT", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN last_activity INTEGER DEFAULT (strftime('%s', 'now'))", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN last_activity_description TEXT", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN IF NOT EXISTS working_directory TEXT", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN IF NOT EXISTS last_activity INTEGER DEFAULT (strftime('%s', 'now'))", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN IF NOT EXISTS last_activity_description TEXT", &[_][]const u8{});
     }
 };
 
