@@ -48,9 +48,49 @@ pub const TDD =
     \\
     \\**⚡ VERIFICATION MANDATORY:** Always show test output as evidence of correctness.
     \\
+    \\**⚡ ISOLATED TEST ENVIRONMENT — TEST FIRST IN `/tmp` (or equivalent):**
+    \\When implementing features or adjusting code, **test in an isolated environment first**:
+    \\
+    \\### Linux/macOS Temp
+    \\- Use `/tmp/<project-name>-test/` or `/tmp/nalar-test-XXXXXX`
+    \\- Create isolated test files and directories
+    \\- Clean up after test completion
+    \\
+    \\### Windows Temp
+    \\- Use `%TEMP%`, `%TMP%`, or `%USERPROFILE%\\AppData\\Local\\Temp`
+    \\- Create isolated test files (e.g., `test_XXXX.tmp`)
+    \\- Use `std.fs.cwd().deleteTree()` for cleanup
+    \\
+    \\### Testing Workflow
+    \\1. **Create isolated test dir** in temp: `mkdir -p /tmp/myfeature-test`
+    \\2. **Write minimal test file** to verify behavior
+    \\3. **Run test** and observe failure (RED)
+    \\4. **Implement fix** and run test (GREEN)
+    \\5. **Verify** with build system
+    \\6. **Cleanup** — delete temp files/dirs
+    \\
+    \\### Example: Testing a new feature
+    \\```bash
+    \\# Linux/macOS
+    \\mkdir -p /tmp/myfeature-test
+    \\# Write test file to /tmp/myfeature-test/test.zig
+    \\zig test /tmp/myfeature-test/test.zig
+    \\rm -rf /tmp/myfeature-test
+    \\
+    \\# Windows equivalent
+    \\mkdir %TEMP%\\myfeature-test
+    \\zig test %TEMP%\\myfeature-test\\test.zig
+    \\rmdir /s /q %TEMP%\\myfeature-test
+    \\```
+    \\
+    \\**⚠️ IMPORTANT:**
+    \\- Always test in `/tmp` (or `%TEMP%` on Windows) **before** modifying project files
+    \\- This prevents accidental corruption of project files during experimentation
+    \\- Clean up all temp files after testing
+    \\
     \\
     \\**❌ WRONG:** Write implementation first, then think about tests later
-    \\**✅ RIGHT:** Test first, watch it fail, implement, watch it pass
+    \\**✅ RIGHT:** Test first in isolated environment, watch it fail, implement, watch it pass
 ;
 
 pub const Execution =

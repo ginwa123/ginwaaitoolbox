@@ -276,6 +276,9 @@ pub const Migration019CreateWorkerTable = struct {
             \\CREATE TABLE IF NOT EXISTS worker (
             \\    id TEXT PRIMARY KEY,
             \\    session_id TEXT NOT NULL,
+            \\    working_directory TEXT,
+            \\    last_activity INTEGER DEFAULT (strftime('%s', 'now')),
+            \\    last_activity_description TEXT,
             \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             \\)
         , &[_][]const u8{});
@@ -284,6 +287,17 @@ pub const Migration019CreateWorkerTable = struct {
             "CREATE INDEX IF NOT EXISTS idx_worker_session ON worker(session_id)", 
             &[_][]const u8{}
         );
+    }
+};
+
+pub const Migration020AddWorkerExtraFields = struct {
+    pub const version: u32 = 20;
+    pub const name = "add_worker_extra_fields";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN working_directory TEXT", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN last_activity INTEGER DEFAULT (strftime('%s', 'now'))", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN last_activity_description TEXT", &[_][]const u8{});
     }
 };
 
@@ -358,6 +372,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration017CreateSessionsTable.version, .name = Migration017CreateSessionsTable.name, .up = Migration017CreateSessionsTable.up },
     .{ .version = Migration018CreateSessionQueueMessages.version, .name = Migration018CreateSessionQueueMessages.name, .up = Migration018CreateSessionQueueMessages.up },
     .{ .version = Migration019CreateWorkerTable.version, .name = Migration019CreateWorkerTable.name, .up = Migration019CreateWorkerTable.up },
+    .{ .version = Migration020AddWorkerExtraFields.version, .name = Migration020AddWorkerExtraFields.name, .up = Migration020AddWorkerExtraFields.up },
 };
 
 /// Register all migrations with a MigrationManager

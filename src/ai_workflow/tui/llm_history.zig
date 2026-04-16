@@ -933,3 +933,131 @@ pub fn get_current_agent_by_session_id(
         };
     }
 }
+
+// =============================================================================
+// WORKER INFO - For activity registry display
+// =============================================================================
+
+/// Worker info for displaying in agent prompts
+pub const WorkerInfo = struct {
+    session_id: []const u8,
+    working_directory: []const u8,
+    last_activity: i64,
+    last_activity_description: []const u8,
+
+    pub fn deinit(self: *const WorkerInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.working_directory);
+        allocator.free(self.last_activity_description);
+    }
+};
+
+/// Get all active workers with their info
+pub fn get_active_workers(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+) ![]WorkerInfo {
+    const sql = "SELECT session_id, COALESCE(working_directory, ''), last_activity, COALESCE(last_activity_description, '') FROM worker ORDER BY last_activity DESC";
+
+    var rows = try db.query(allocator, sql, &.{});
+    defer rows.deinit();
+
+    var workers = std.ArrayList(WorkerInfo).empty;
+    errdefer {
+        for (workers.items) |w| w.deinit(allocator);
+        workers.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const last_activity = std.fmt.parseInt(i64, row.values[2], 10) catch 0;
+        const worker = WorkerInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .working_directory = try allocator.dupe(u8, row.values[1]),
+            .last_activity = last_activity,
+            .last_activity_description = try allocator.dupe(u8, row.values[3]),
+        };
+        try workers.append(allocator, worker);
+        row.deinit(allocator);
+    }
+
+    return try workers.toOwnedSlice(allocator);
+}
+
+/// Register or update a worker
+pub fn upsert_worker(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    worker_id: []const u8,
+    session_id: []const u8,
+    working_directory: []const u8,
+) !void {
+    const sql = "INSERT OR REPLACE INTO worker (id, session_id, working_directory, last_activity, last_activity_description) VALUES (?, ?, ?, strftime('%s', 'now'), '')";
+    try db.exec(allocator, sql, &.{ worker_id, session_id, working_directory });
+}
+
+/// Update worker's last activity timestamp with description
+pub fn update_worker_activity_with_description(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    worker_id: []const u8,
+    description: []const u8,
+) !void {
+    const sql = "UPDATE worker SET last_activity = strftime('%s', 'now'), last_activity_description = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ description, worker_id });
+}
+
+/// Update worker's last activity timestamp
+pub fn update_worker_activity(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    worker_id: []const u8,
+) !void {
+    const sql = "UPDATE worker SET last_activity = strftime('%s', 'now') WHERE id = ?";
+    try db.exec(allocator, sql, &.{worker_id});
+}
+
+/// Update worker's activity description (for display in agent prompts)
+pub fn update_worker_description(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    worker_id: []const u8,
+    description: []const u8,
+) !void {
+    const sql = "UPDATE worker SET last_activity = strftime('%s', 'now'), last_activity_description = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ description, worker_id });
+}
+
+/// Extract a short description from content for activity display
+/// Returns first line or first 60 chars of content, stripped
+pub fn extract_activity_description(content: []const u8) []const u8 {
+    if (content.len == 0) return "idle";
+    
+    // Find first newline or use full content
+    const first_line_end = for (content, 0..) |c, i| {
+        if (c == '\n' or c == '\r') break i;
+    } else content.len;
+    
+    // Take first 60 chars or until newline
+    const snippet = content[0..@min(first_line_end, @min(60, content.len))];
+    
+    // Trim trailing whitespace
+    var end = snippet.len;
+    while (end > 0 and (snippet[end - 1] == ' ' or snippet[end - 1] == '\t')) {
+        end -= 1;
+    }
+    
+    if (end == 0) return "idle";
+    
+    // Return slice (caller must copy if needed)
+    return snippet[0..end];
+}
+
+/// Remove a worker
+pub fn remove_worker(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    worker_id: []const u8,
+) !void {
+    const sql = "DELETE FROM worker WHERE id = ?";
+    try db.exec(allocator, sql, &.{worker_id});
+}

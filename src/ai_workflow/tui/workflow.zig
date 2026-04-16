@@ -25,6 +25,11 @@ const logger_mod = root_mod.logger;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
+const upsert_worker = llm_history.upsert_worker;
+const update_worker_activity = llm_history.update_worker_activity;
+const update_worker_description = llm_history.update_worker_description;
+const update_worker_activity_with_description = llm_history.update_worker_activity_with_description;
+const remove_worker = llm_history.remove_worker;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
 const save_message = llm_history.save_message;
@@ -137,6 +142,11 @@ pub const TUIWorkflow = struct {
             try registry.register(session_id);
         }
 
+        // Also register in worker table for enrichment info
+        upsert_worker(parent_allocator, self.db, session_id, session_id, cwd) catch {
+            self.logger.warnFmt("Failed to upsert worker info for {s}", .{session_id}) catch {};
+        };
+
         // Ensure cleanup happens even on error - balances mark_running() and unregisters session
         defer {
             if (session_registry.get_global_registry()) |registry| {
@@ -144,6 +154,8 @@ pub const TUIWorkflow = struct {
                 registry.mark_stopped(session_id);
                 registry.unregister(session_id);
             }
+            // Also remove from worker table
+            remove_worker(parent_allocator, self.db, session_id) catch {};
         }
 
         const session_name = message;
@@ -242,6 +254,9 @@ pub const TUIWorkflow = struct {
                 registry.mark_running(session_id);
             }
 
+            // Update worker activity in DB to show we're actively processing
+            update_worker_activity(parent_allocator, self.db, session_id) catch {};
+
             var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
             defer arenaAllocatorWhileLoop.deinit();
             const allocator = arenaAllocatorWhileLoop.allocator();
@@ -275,7 +290,7 @@ pub const TUIWorkflow = struct {
                 }
                 break :blk max_token;
             };
-            const initialMessages = try BuildMessages(allocator, cwd, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id), merged_tools);
+            const initialMessages = try BuildMessages(allocator, self.db, cwd, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id), merged_tools);
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
@@ -283,7 +298,7 @@ pub const TUIWorkflow = struct {
             if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(model))) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
                 if (try self.callCompactAgent(messagesLists.items, allocator, api_key, model, base_url)) |compacted_xml| {
-                    try self.compactMessagesInMemory(allocator, &messagesLists, compacted_xml, session_id, model, cwd);
+                    try self.compact_message_in_memory(allocator, &messagesLists, compacted_xml, session_id, model, cwd);
                 }
             }
 
@@ -301,6 +316,15 @@ pub const TUIWorkflow = struct {
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
+                    // Update worker with response content (for other agents to see)
+                    if (res_dynamic_agent.content) |content| {
+                        const desc = llm_history.extract_activity_description(content);
+                        update_worker_description(parent_allocator, self.db, session_id, desc) catch {};
+                    } else if (res_dynamic_agent.reasoning_content) |reasoning| {
+                        const desc = llm_history.extract_activity_description(reasoning);
+                        update_worker_description(parent_allocator, self.db, session_id, desc) catch {};
+                    }
+                    
                     _ = try save_message(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
@@ -352,14 +376,47 @@ pub const TUIWorkflow = struct {
                     _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
+                    // Update worker with tool description
+                    if (res_dynamic_agent.tool_calls) |tcs| {
+                        var names: std.ArrayList(u8) = .empty;
+                        defer names.deinit(parent_allocator);
+                        for (tcs) |tc| {
+                            if (names.items.len > 0) names.appendSlice(parent_allocator, " + ") catch {};
+                            names.appendSlice(parent_allocator, tc.function.name) catch {};
+                        }
+                        const desc = try names.toOwnedSlice(parent_allocator);
+                        update_worker_activity_with_description(parent_allocator, self.db, session_id, desc) catch {};
+                        allocator.free(desc);
+                    }
+
                     try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                 } else if (finish_reason == .assistant) {
                     // Some providers return "assistant" instead of "tool_calls" when tool calls are present
                     // Treat it the same as tool_calls - check if there are actual tool calls to process
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
+                        // Has tool calls - update with tool names
+                        if (res_dynamic_agent.tool_calls) |tcs| {
+                            var names: std.ArrayList(u8) = .empty;
+                            defer names.deinit(parent_allocator);
+                            for (tcs) |tc| {
+                                if (names.items.len > 0) names.appendSlice(parent_allocator, " + ") catch {};
+                                names.appendSlice(parent_allocator, tc.function.name) catch {};
+                            }
+                            const desc = try names.toOwnedSlice(parent_allocator);
+                            update_worker_activity_with_description(parent_allocator, self.db, session_id, desc) catch {};
+                            allocator.free(desc);
+                        }
                         try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                     } else {
-                        // No tool calls present - treat as normal completion
+                        // No tool calls present - update with content description
+                        if (res_dynamic_agent.content) |content| {
+                            const desc = llm_history.extract_activity_description(content);
+                            update_worker_description(parent_allocator, self.db, session_id, desc) catch {};
+                        } else if (res_dynamic_agent.reasoning_content) |reasoning| {
+                            const desc = llm_history.extract_activity_description(reasoning);
+                            update_worker_description(parent_allocator, self.db, session_id, desc) catch {};
+                        }
+                        // Treat as normal completion
                         _ = try save_message(allocator, self.db, .{
                             .session_id = session_id,
                             .model = model,
@@ -569,7 +626,7 @@ pub const TUIWorkflow = struct {
 
     /// Compact messages in memory based on CompactionAgent output
     /// Also persists to database: marks old messages as not for LLM, saves new compacted message
-    fn compactMessagesInMemory(
+    fn compact_message_in_memory(
         self: *TUIWorkflow,
         allocator: std.mem.Allocator,
         messages: *std.ArrayList(agent.AgentMessage),

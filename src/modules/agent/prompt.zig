@@ -58,7 +58,8 @@ pub fn build_agent_prompt(
     memoryMd: []const u8,
     backgroundProcessContent: []const u8,
     agent: []const u8,
-    tools: []const tool_models.AgentTool
+    tools: []const tool_models.AgentTool,
+    activity_info: []const u8,
 ) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -71,7 +72,7 @@ pub fn build_agent_prompt(
     try result.appendSlice(allocator, ResponseFormatting);
     try result.appendSlice(allocator, "\n\n");
 
-    // 🎛️ Dynamic Properties - encourage on-demand property changes
+    // Dynamic Properties - encourage on-demand property changes
     // Only include if set_agent_properties tool is enabled
     const has_set_agent_properties = for (tools) |tool| {
         if (std.mem.eql(u8, tool.function.name, "set_agent_properties")) {
@@ -83,15 +84,15 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, "\n\n");
     }
 
-    // ⚡⚡⚡ SKILLS FIRST — Most important section at the top!
+    // SKILLS FIRST — Most important section at the top!
     try result.appendSlice(allocator, SkillsUsage);
     try result.appendSlice(allocator, "\n\n");
 
-    // ⚡⚡⚡ SKILL TRIGGERS — When to load skills
+    // SKILL TRIGGERS — When to load skills
     try result.appendSlice(allocator, SkillsTriggers);
     try result.appendSlice(allocator, "\n\n");
 
-    // 🧠 Procedural Memory — When to create skills
+    // Procedural Memory — When to create skills
     try result.appendSlice(allocator, ProceduralMemory);
     try result.appendSlice(allocator, "\n\n");
 
@@ -163,7 +164,7 @@ pub fn build_agent_prompt(
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, PlanBlock);
 
-    // 🚀 TDD (Test-Driven Development) — PREFERRED APPROACH
+    // TDD (Test-Driven Development) — PREFERRED APPROACH
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, TDD);
 
@@ -232,6 +233,12 @@ pub fn build_agent_prompt(
     if (agent.len > 0) {
         try result.appendSlice(allocator, "\n\n## Active Specialized Agent\n\n");
         try result.appendSlice(allocator, agent);
+    }
+
+    // Active workers/threads info
+    if (activity_info.len > 0) {
+        try result.appendSlice(allocator, "\n\n## Active Workers\n\n");
+        try result.appendSlice(allocator, activity_info);
     }
 
     return result.toOwnedSlice(allocator);
