@@ -36,7 +36,7 @@ pub const LspError = error{
 };
 
 // Find LSP binary - resolves name to absolute path
-pub fn findLsp(allocator: std.mem.Allocator, lsp_name: []const u8) ![]u8 {
+pub fn find_lsp(allocator: std.mem.Allocator, lsp_name: []const u8) ![]u8 {
     // If already an absolute path, check if it exists
     if (lsp_name.len > 0 and lsp_name[0] == '/') {
         std.fs.accessAbsolute(lsp_name, .{}) catch return LspError.BinaryNotFound;
@@ -87,12 +87,12 @@ pub fn findLsp(allocator: std.mem.Allocator, lsp_name: []const u8) ![]u8 {
 // Shared JSON-RPC message helpers
 // =============================================================================
 
-pub fn createMessage(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+pub fn create_message(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "Content-Length: {d}\r\n\r\n{s}", .{ content.len, content });
 }
 
 // Read one JSON-RPC message from LSP stdout
-fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
+fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     var header_buf: [1024]u8 = undefined;
     var header_len: usize = 0;
     var found_empty = false;
@@ -150,7 +150,7 @@ const LspSession = struct {
     content: []const u8,
 
     /// Initialize LSP session with file-based operations
-    pub fn initWithFile(
+    pub fn init_with_file(
         parent_allocator: std.mem.Allocator,
         lsp_name: []const u8,
         file_path: []const u8,
@@ -160,7 +160,7 @@ const LspSession = struct {
         const arena_allocator = arena.allocator();
 
         // Resolve LSP binary name to absolute path
-        const lsp_binary = try findLsp(arena_allocator, lsp_name);
+        const lsp_binary = try find_lsp(arena_allocator, lsp_name);
         errdefer arena_allocator.free(lsp_binary);
 
         std.fs.accessAbsolute(file_path, .{}) catch return LspError.FileNotFound;
@@ -191,15 +191,15 @@ const LspSession = struct {
             .content = content,
         };
 
-        try session.sendInitialize();
-        try session.sendInitialized();
-        try session.sendDidOpen();
+        try session.send_initialize();
+        try session.send_initialized();
+        try session.send_did_open();
 
         return session;
     }
 
     /// Initialize LSP session without file (for workspace-wide operations)
-    pub fn initWithoutFile(
+    pub fn init_without_file(
         parent_allocator: std.mem.Allocator,
         lsp_name: []const u8,
         root_dir: []const u8,
@@ -208,7 +208,7 @@ const LspSession = struct {
         const arena_allocator = arena.allocator();
 
         // Resolve LSP binary name to absolute path
-        const lsp_binary = try findLsp(arena_allocator, lsp_name);
+        const lsp_binary = try find_lsp(arena_allocator, lsp_name);
         errdefer arena_allocator.free(lsp_binary);
 
         var child = std.process.Child.init(&.{lsp_binary}, arena_allocator);
@@ -232,8 +232,8 @@ const LspSession = struct {
             .content = "",
         };
 
-        try session.sendInitialize();
-        try session.sendInitialized();
+        try session.send_initialize();
+        try session.send_initialized();
 
         return session;
     }
@@ -244,7 +244,7 @@ const LspSession = struct {
         self.arena.deinit();
     }
 
-    fn sendInitialize(self: *LspSession) !void {
+    fn send_initialize(self: *LspSession) !void {
         var buf = std.ArrayList(u8).empty;
         const w = buf.writer(self.arena_allocator);
         try w.print("{{", .{});
@@ -256,12 +256,12 @@ const LspSession = struct {
         try w.print("\"rootUri\":\"{s}\",", .{self.root_uri});
         try w.print("\"capabilities\":{{}}}}}}", .{});
         const json_str = try buf.toOwnedSlice(self.arena_allocator);
-        const msg = try createMessage(self.arena_allocator, json_str);
+        const msg = try create_message(self.arena_allocator, json_str);
         try self.stdin.writeAll(msg);
 
         var attempts: usize = 0;
         while (attempts < 10) {
-            const data = try readMessage(self.arena_allocator, self.stdout);
+            const data = try read_message(self.arena_allocator, self.stdout);
             var parsed = json.parseFromSlice(json.Value, self.arena_allocator, data, .{}) catch {
                 attempts += 1;
                 continue;
@@ -274,14 +274,14 @@ const LspSession = struct {
         if (attempts >= 10) return LspError.InvalidResponse;
     }
 
-    fn sendInitialized(self: *LspSession) !void {
-        const msg = try createMessage(self.arena_allocator,
+    fn send_initialized(self: *LspSession) !void {
+        const msg = try create_message(self.arena_allocator,
             \\{"jsonrpc":"2.0","method":"initialized","params":{}}
         );
         try self.stdin.writeAll(msg);
     }
 
-    fn sendDidOpen(self: *LspSession) !void {
+    fn send_did_open(self: *LspSession) !void {
         const prefix = try std.fmt.allocPrint(self.arena_allocator,
             \\{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{s}","languageId":"zig","version":1,"text":"
         , .{self.uri});
@@ -300,18 +300,18 @@ const LspSession = struct {
         }
 
         const full = try std.fmt.allocPrint(self.arena_allocator, "{s}{s}\"}}}}", .{ prefix, escaped.items });
-        const msg = try createMessage(self.arena_allocator, full);
+        const msg = try create_message(self.arena_allocator, full);
         try self.stdin.writeAll(msg);
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
 
-    pub fn sendRequest(self: *LspSession, request_json: []const u8, request_id: i64) ![]u8 {
-        const msg = try createMessage(self.arena_allocator, request_json);
+    pub fn send_request(self: *LspSession, request_json: []const u8, request_id: i64) ![]u8 {
+        const msg = try create_message(self.arena_allocator, request_json);
         try self.stdin.writeAll(msg);
 
         var attempts: usize = 0;
         while (attempts < 10) {
-            const data = try readMessage(self.arena_allocator, self.stdout);
+            const data = try read_message(self.arena_allocator, self.stdout);
             var parsed = json.parseFromSlice(json.Value, self.arena_allocator, data, .{}) catch {
                 attempts += 1;
                 continue;
@@ -329,7 +329,7 @@ const LspSession = struct {
 // LSP Definition
 // =============================================================================
 
-fn parseDefinitionLocation(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
+fn parse_definition_location(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
     if (loc_value != .object) return null;
     const obj = loc_value.object;
 
@@ -399,7 +399,7 @@ fn parseDefinitionLocation(allocator: std.mem.Allocator, loc_value: json.Value) 
     return location;
 }
 
-fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspDefinitionOutput {
+fn parse_definition_result(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspDefinitionOutput {
     if (result == .null) {
         return LspDefinitionOutput{ .definitions = &.{}, .found = false };
     }
@@ -411,12 +411,12 @@ fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value, max_o
     if (result == .array) {
         for (result.array.items) |item| {
             if (locations.items.len >= limit) break;
-            if (try parseDefinitionLocation(allocator, item)) |loc| {
+            if (try parse_definition_location(allocator, item)) |loc| {
                 try locations.append(allocator, loc);
             }
         }
     } else if (result == .object) {
-        if (try parseDefinitionLocation(allocator, result)) |loc| {
+        if (try parse_definition_location(allocator, result)) |loc| {
             try locations.append(allocator, loc);
         }
     }
@@ -425,8 +425,8 @@ fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value, max_o
     return LspDefinitionOutput{ .definitions = defs, .found = defs.len > 0 };
 }
 
-pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionInput) !LspDefinitionOutput {
-    var session = try LspSession.initWithFile(allocator, input.lsp, input.file_path, input.root_dir);
+pub fn execute_lsp_definition(allocator: std.mem.Allocator, input: LspDefinitionInput) !LspDefinitionOutput {
+    var session = try LspSession.init_with_file(allocator, input.lsp, input.file_path, input.root_dir);
     defer session.deinit();
 
     var buf = std.ArrayList(u8).empty;
@@ -449,10 +449,10 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
         return LspDefinitionOutput{ .definitions = &.{}, .found = false };
     };
 
-    return try parseDefinitionResult(allocator, result, input.max_output);
+    return try parse_definition_result(allocator, result, input.max_output);
 }
 
-pub fn lspDefinitionToString(allocator: std.mem.Allocator, result: LspDefinitionOutput) ![]const u8 {
+pub fn lsp_definition_to_string(allocator: std.mem.Allocator, result: LspDefinitionOutput) ![]const u8 {
     if (!result.found or result.definitions.len == 0) {
         return try allocator.dupe(u8, "<found>false</found>");
     }
@@ -509,7 +509,7 @@ pub const lsp_definition_tool = AgentTool{
 // LSP References
 // =============================================================================
 
-fn parseReferencesLocation(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
+fn parse_references_location(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
     if (loc_value != .object) return null;
     const obj = loc_value.object;
 
@@ -549,7 +549,7 @@ fn parseReferencesLocation(allocator: std.mem.Allocator, loc_value: json.Value) 
     return location;
 }
 
-fn parseReferencesResult(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspReferencesOutput {
+fn parse_references_result(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspReferencesOutput {
     if (result == .null) {
         return LspReferencesOutput{ .definitions = &.{}, .found = false };
     }
@@ -561,7 +561,7 @@ fn parseReferencesResult(allocator: std.mem.Allocator, result: json.Value, max_o
     if (result == .array) {
         for (result.array.items) |item| {
             if (locations.items.len >= limit) break;
-            if (try parseReferencesLocation(allocator, item)) |loc| {
+            if (try parse_references_location(allocator, item)) |loc| {
                 try locations.append(allocator, loc);
             }
         }
@@ -571,8 +571,8 @@ fn parseReferencesResult(allocator: std.mem.Allocator, result: json.Value, max_o
     return LspReferencesOutput{ .definitions = refs, .found = refs.len > 0 };
 }
 
-pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesInput) !LspReferencesOutput {
-    var session = try LspSession.initWithFile(allocator, input.lsp, input.file_path, input.root_dir);
+pub fn execute_lsp_references(allocator: std.mem.Allocator, input: LspReferencesInput) !LspReferencesOutput {
+    var session = try LspSession.init_with_file(allocator, input.lsp, input.file_path, input.root_dir);
     defer session.deinit();
 
     var buf = std.ArrayList(u8).empty;
@@ -596,10 +596,10 @@ pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesIn
         return LspReferencesOutput{ .definitions = &.{}, .found = false };
     };
 
-    return try parseReferencesResult(allocator, result, input.max_output);
+    return try parse_references_result(allocator, result, input.max_output);
 }
 
-pub fn lspReferencesToString(allocator: std.mem.Allocator, result: LspReferencesOutput) ![]const u8 {
+pub fn lsp_references_to_string(allocator: std.mem.Allocator, result: LspReferencesOutput) ![]const u8 {
     if (!result.found or result.definitions.len == 0) {
         return try allocator.dupe(u8, "<found>false</found>");
     }
@@ -655,7 +655,7 @@ pub const lsp_references_tool = AgentTool{
 // LSP Workspace Symbol
 // =============================================================================
 
-fn parseWorkspaceSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspWorkspaceSymbol {
+fn parse_workspace_symbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspWorkspaceSymbol {
     if (sym_value != .object) return null;
     const obj = sym_value.object;
 
@@ -736,7 +736,7 @@ fn parseWorkspaceSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?L
     };
 }
 
-fn parseWorkspaceSymbolResult(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspWorkspaceSymbolOutput {
+fn parse_workspace_symbol_result(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspWorkspaceSymbolOutput {
     if (result == .null) {
         return LspWorkspaceSymbolOutput{ .symbols = &.{}, .found = false };
     }
@@ -748,7 +748,7 @@ fn parseWorkspaceSymbolResult(allocator: std.mem.Allocator, result: json.Value, 
     if (result == .array) {
         for (result.array.items) |item| {
             if (symbols.items.len >= limit) break;
-            if (try parseWorkspaceSymbol(allocator, item)) |sym| {
+            if (try parse_workspace_symbol(allocator, item)) |sym| {
                 try symbols.append(allocator, sym);
             }
         }
@@ -758,8 +758,8 @@ fn parseWorkspaceSymbolResult(allocator: std.mem.Allocator, result: json.Value, 
     return LspWorkspaceSymbolOutput{ .symbols = syms, .found = syms.len > 0 };
 }
 
-pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspaceSymbolInput) !LspWorkspaceSymbolOutput {
-    var session = try LspSession.initWithoutFile(allocator, input.lsp, input.root_dir);
+pub fn execute_lsp_workspace_symbol(allocator: std.mem.Allocator, input: LspWorkspaceSymbolInput) !LspWorkspaceSymbolOutput {
+    var session = try LspSession.init_without_file(allocator, input.lsp, input.root_dir);
     defer session.deinit();
 
     var buf = std.ArrayList(u8).empty;
@@ -781,10 +781,10 @@ pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspa
         return LspWorkspaceSymbolOutput{ .symbols = &.{}, .found = false };
     };
 
-    return try parseWorkspaceSymbolResult(allocator, result, input.max_output);
+    return try parse_workspace_symbol_result(allocator, result, input.max_output);
 }
 
-pub fn lspWorkspaceSymbolToString(allocator: std.mem.Allocator, result: LspWorkspaceSymbolOutput) ![]const u8 {
+pub fn lsp_workspace_symbol_to_string(allocator: std.mem.Allocator, result: LspWorkspaceSymbolOutput) ![]const u8 {
     if (!result.found or result.symbols.len == 0) {
         return try allocator.dupe(u8, "<found>false</found>");
     }
@@ -838,7 +838,7 @@ pub const lsp_workspace_symbol_tool = AgentTool{
 // LSP Document Symbol
 // =============================================================================
 
-fn parseRange(obj: json.ObjectMap) ?struct { line: u32, character: u32 } {
+fn parse_range(obj: json.ObjectMap) ?struct { line: u32, character: u32 } {
     const start_val = obj.get("start") orelse return null;
     if (start_val != .object) return null;
 
@@ -849,7 +849,7 @@ fn parseRange(obj: json.ObjectMap) ?struct { line: u32, character: u32 } {
     return .{ .line = @intCast(line_val.integer), .character = @intCast(char_val.integer) };
 }
 
-fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspDocumentSymbol {
+fn parse_document_symbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspDocumentSymbol {
     if (sym_value != .object) return null;
     const obj = sym_value.object;
 
@@ -876,7 +876,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
         const range_val = loc.object.get("range") orelse return null;
         if (range_val != .object) return null;
 
-        if (parseRange(range_val.object)) |s| {
+        if (parse_range(range_val.object)) |s| {
             line = s.line;
             character = s.character;
         }
@@ -894,7 +894,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
     } else {
         if (obj.get("range")) |rv| {
             if (rv == .object) {
-                if (parseRange(rv.object)) |s| {
+                if (parse_range(rv.object)) |s| {
                     line = s.line;
                     character = s.character;
                 }
@@ -914,7 +914,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
 
         if (obj.get("selectionRange")) |srv| {
             if (srv == .object) {
-                if (parseRange(srv.object)) |s| {
+                if (parse_range(srv.object)) |s| {
                     selection_line = s.line;
                     selection_character = s.character;
                 }
@@ -929,7 +929,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
             defer child_list.deinit(allocator);
 
             for (cv.array.items) |child_item| {
-                if (try parseDocumentSymbol(allocator, child_item)) |c| {
+                if (try parse_document_symbol(allocator, child_item)) |c| {
                     try child_list.append(allocator, c);
                 }
             }
@@ -954,7 +954,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
     };
 }
 
-fn parseDocumentSymbolResult(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspDocumentSymbolOutput {
+fn parse_document_symbol_result(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspDocumentSymbolOutput {
     if (result == .null) {
         return LspDocumentSymbolOutput{ .symbols = &.{}, .found = false };
     }
@@ -966,7 +966,7 @@ fn parseDocumentSymbolResult(allocator: std.mem.Allocator, result: json.Value, m
     if (result == .array) {
         for (result.array.items) |item| {
             if (symbols.items.len >= limit) break;
-            if (try parseDocumentSymbol(allocator, item)) |s| {
+            if (try parse_document_symbol(allocator, item)) |s| {
                 try symbols.append(allocator, s);
             }
         }
@@ -976,7 +976,7 @@ fn parseDocumentSymbolResult(allocator: std.mem.Allocator, result: json.Value, m
     return LspDocumentSymbolOutput{ .symbols = syms, .found = syms.len > 0 };
 }
 
-fn writeSymbolToXml(writer: anytype, sym: LspDocumentSymbol, indent_level: u32) !void {
+fn write_symbol_to_xml(writer: anytype, sym: LspDocumentSymbol, indent_level: u32) !void {
     var indent_buf: [64]u8 = undefined;
     const indent = if (indent_level * 2 < indent_buf.len) indent_buf[0 .. indent_level * 2] else indent_buf[0..64];
     for (indent) |*c| c.* = ' ';
@@ -996,7 +996,7 @@ fn writeSymbolToXml(writer: anytype, sym: LspDocumentSymbol, indent_level: u32) 
         if (children.len > 0) {
             try writer.print("{s}  <children>\n", .{indent});
             for (children) |child| {
-                try writeSymbolToXml(writer, child, indent_level + 2);
+                try write_symbol_to_xml(writer, child, indent_level + 2);
             }
             try writer.print("{s}  </children>\n", .{indent});
         }
@@ -1005,8 +1005,8 @@ fn writeSymbolToXml(writer: anytype, sym: LspDocumentSymbol, indent_level: u32) 
     try writer.print("{s}</symbol>\n", .{indent});
 }
 
-pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocumentSymbolInput) !LspDocumentSymbolOutput {
-    var session = try LspSession.initWithFile(allocator, input.lsp, input.file_path, input.root_dir);
+pub fn execute_lsp_document_symbol(allocator: std.mem.Allocator, input: LspDocumentSymbolInput) !LspDocumentSymbolOutput {
+    var session = try LspSession.init_with_file(allocator, input.lsp, input.file_path, input.root_dir);
     defer session.deinit();
 
     var buf = std.ArrayList(u8).empty;
@@ -1028,10 +1028,10 @@ pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocument
         return LspDocumentSymbolOutput{ .symbols = &.{}, .found = false };
     };
 
-    return try parseDocumentSymbolResult(allocator, result, input.max_output);
+    return try parse_document_symbol_result(allocator, result, input.max_output);
 }
 
-pub fn lspDocumentSymbolToString(allocator: std.mem.Allocator, result: LspDocumentSymbolOutput) ![]const u8 {
+pub fn lsp_document_symbol_to_string(allocator: std.mem.Allocator, result: LspDocumentSymbolOutput) ![]const u8 {
     if (!result.found or result.symbols.len == 0) {
         return try allocator.dupe(u8, "<found>false</found>");
     }
@@ -1045,7 +1045,7 @@ pub fn lspDocumentSymbolToString(allocator: std.mem.Allocator, result: LspDocume
     try w.print("<symbols>\n", .{});
 
     for (result.symbols) |sym| {
-        try writeSymbolToXml(w, sym, 1);
+        try write_symbol_to_xml(w, sym, 1);
     }
 
     try w.print("</symbols>", .{});
@@ -1078,7 +1078,7 @@ pub const lsp_document_symbol_tool = AgentTool{
 // LSP Hover
 // =============================================================================
 
-fn parseHoverContents(allocator: std.mem.Allocator, contents: json.Value) !?[]u8 {
+fn parse_hover_contents(allocator: std.mem.Allocator, contents: json.Value) !?[]u8 {
     switch (contents) {
         .string => return try allocator.dupe(u8, contents.string),
         .object => {
@@ -1111,7 +1111,7 @@ fn parseHoverContents(allocator: std.mem.Allocator, contents: json.Value) !?[]u8
     }
 }
 
-fn parseHoverResult(allocator: std.mem.Allocator, result: json.Value) !LspHoverOutput {
+fn parse_hover_result(allocator: std.mem.Allocator, result: json.Value) !LspHoverOutput {
     if (result == .null or result != .object) {
         return LspHoverOutput{ .contents = null, .found = false };
     }
@@ -1119,7 +1119,7 @@ fn parseHoverResult(allocator: std.mem.Allocator, result: json.Value) !LspHoverO
     const obj = result.object;
     var contents: ?[]u8 = null;
     if (obj.get("contents")) |cv| {
-        contents = try parseHoverContents(allocator, cv);
+        contents = try parse_hover_contents(allocator, cv);
     }
 
     var line: ?u32 = null;
@@ -1162,8 +1162,8 @@ fn parseHoverResult(allocator: std.mem.Allocator, result: json.Value) !LspHoverO
     };
 }
 
-pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspHoverOutput {
-    var session = try LspSession.initWithFile(allocator, input.lsp, input.file_path, input.root_dir);
+pub fn execute_lsp_hover(allocator: std.mem.Allocator, input: LspHoverInput) !LspHoverOutput {
+    var session = try LspSession.init_with_file(allocator, input.lsp, input.file_path, input.root_dir);
     defer session.deinit();
 
     var buf = std.ArrayList(u8).empty;
@@ -1186,10 +1186,10 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
         return LspHoverOutput{ .contents = null, .found = false };
     };
 
-    return try parseHoverResult(allocator, result);
+    return try parse_hover_result(allocator, result);
 }
 
-pub fn lspHoverToString(allocator: std.mem.Allocator, result: LspHoverOutput) ![]const u8 {
+pub fn lsp_hover_to_string(allocator: std.mem.Allocator, result: LspHoverOutput) ![]const u8 {
     if (!result.found or result.contents == null) {
         return try allocator.dupe(u8, "<found>false</found>");
     }

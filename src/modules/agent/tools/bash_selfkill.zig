@@ -113,7 +113,8 @@ pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_
 
         // "killall -9" without target
         if (std.mem.startsWith(u8, after, "-9") or
-            std.mem.startsWith(u8, after, "-SIGKILL")) {
+            std.mem.startsWith(u8, after, "-SIGKILL"))
+        {
             const signal_part = if (std.mem.startsWith(u8, after, "-9"))
                 after[2..]
             else
@@ -123,7 +124,7 @@ pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_
             if (after_signal.len == 0) {
                 return "Command 'killall -9' without target is dangerous - may kill many processes.";
             }
-            
+
             // Check for negative PIDs
             if (parse_pid(after_signal)) |target_pid| {
                 if (target_pid < 0) {
@@ -142,7 +143,8 @@ pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_
 
     // === Check 4: Command starts with pkill or pgrep ===
     if (std.mem.startsWith(u8, trimmed, "pkill") or
-        std.mem.startsWith(u8, trimmed, "pgrep")) {
+        std.mem.startsWith(u8, trimmed, "pgrep"))
+    {
         const rest = if (std.mem.startsWith(u8, trimmed, "pkill"))
             trimmed[5..]
         else

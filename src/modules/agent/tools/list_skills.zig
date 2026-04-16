@@ -35,9 +35,9 @@ pub const list_skills_tool = AgentTool{
 /// Execute the list_skills tool
 /// Returns a JSON string with the list of available skills
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeListSkills(allocator: std.mem.Allocator) ![]const u8 {
-    const skills_list = skills.listSkills(allocator);
-    defer skills.freeSkillsList(allocator, skills_list);
+pub fn execute_list_skills(allocator: std.mem.Allocator) ![]const u8 {
+    const skills_list = skills.list_skills(allocator);
+    defer skills.free_skills_list(allocator, skills_list);
 
     // Build JSON array
     var result: std.ArrayList(u8) = .empty;
@@ -49,9 +49,9 @@ pub fn executeListSkills(allocator: std.mem.Allocator) ![]const u8 {
         if (i > 0) {
             try result.appendSlice(allocator, ", ");
         }
-        const escaped_name = escapeJsonString(allocator, skill.name);
+        const escaped_name = escape_json_string(allocator, skill.name);
         defer allocator.free(escaped_name);
-        const escaped_desc = escapeJsonString(allocator, skill.description);
+        const escaped_desc = escape_json_string(allocator, skill.description);
         defer allocator.free(escaped_desc);
         const entry = try std.fmt.allocPrint(allocator,
             \\{{"name":"{s}","description":"{s}"}}
@@ -66,7 +66,7 @@ pub fn executeListSkills(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 /// Escape a string for JSON output
-fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
+fn escape_json_string(allocator: std.mem.Allocator, s: []const u8) []const u8 {
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
 

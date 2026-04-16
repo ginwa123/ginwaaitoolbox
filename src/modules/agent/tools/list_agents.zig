@@ -28,9 +28,9 @@ pub const list_agents_tool = AgentTool{
 /// Execute the list_agents tool
 /// Returns a JSON string with the list of available agents
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeListAgents(allocator: std.mem.Allocator) ![]const u8 {
-    const agents_list = agents.listAgents(allocator);
-    defer agents.freeAgentsList(allocator, agents_list);
+pub fn execute_list_agents(allocator: std.mem.Allocator) ![]const u8 {
+    const agents_list = agents.list_agents(allocator);
+    defer agents.free_agents_list(allocator, agents_list);
 
     // Build JSON array
     var result: std.ArrayList(u8) = .empty;
@@ -42,9 +42,9 @@ pub fn executeListAgents(allocator: std.mem.Allocator) ![]const u8 {
         if (i > 0) {
             try result.appendSlice(allocator, ", ");
         }
-        const escaped_name = escapeJsonString(allocator, agent.name);
+        const escaped_name = escape_json_string(allocator, agent.name);
         defer allocator.free(escaped_name);
-        const escaped_desc = escapeJsonString(allocator, agent.description);
+        const escaped_desc = escape_json_string(allocator, agent.description);
         defer allocator.free(escaped_desc);
         const entry = try std.fmt.allocPrint(allocator,
             \\{{"name":"{s}","description":"{s}"}}
@@ -59,7 +59,7 @@ pub fn executeListAgents(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 /// Escape a string for JSON output
-pub fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
+pub fn escape_json_string(allocator: std.mem.Allocator, s: []const u8) []const u8 {
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
 
@@ -76,4 +76,3 @@ pub fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 
 
     return allocator.dupe(u8, result.items) catch "";
 }
-

@@ -159,7 +159,7 @@ test "lspWorkspaceSymbolToString formats found symbols" {
     };
     defer output.deinit(allocator);
 
-    const result = try lsp_workspace_symbol.lspWorkspaceSymbolToString(allocator, output);
+    const result = try lsp_workspace_symbol.lsp_workspace_symbol_to_string(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "<found>true</found>") != null);
@@ -180,18 +180,18 @@ test "lspWorkspaceSymbolToString formats not found" {
         .found = false,
     };
 
-    const result = try lsp_workspace_symbol.lspWorkspaceSymbolToString(allocator, output);
+    const result = try lsp_workspace_symbol.lsp_workspace_symbol_to_string(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.eql(u8, result, "<found>false</found>"));
 }
 
-// Test 4.1: createMessage helper
+// Test 4.1: create_message helper
 test "createMessage creates valid LSP message" {
     const allocator = std.testing.allocator;
 
     const content = "{\"jsonrpc\":\"2.0\",\"id\":1}";
-    const msg = try lsp_workspace_symbol.createMessage(allocator, content);
+    const msg = try lsp_workspace_symbol.create_message(allocator, content);
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.startsWith(u8, msg, "Content-Length: "));

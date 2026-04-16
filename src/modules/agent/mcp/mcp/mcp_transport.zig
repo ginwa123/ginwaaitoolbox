@@ -18,14 +18,14 @@ pub const McpTransport = struct {
 
     /// Read a JSON-RPC request from stdin
     /// Blocks until a complete message is received
-    pub fn readMessage(self: *Self) ![]u8 {
+    pub fn read_message(self: *Self) ![]u8 {
         var reader = self.stdin.reader();
         var header_end_pos: usize = 0;
-        
+
         // Read headers until blank line
         var content_length: usize = 0;
         var buf: [4096]u8 = undefined;
-        
+
         while (true) {
             const bytes_read = reader.read(&buf) catch |e| {
                 if (e == error.EndOfStream) {
@@ -36,7 +36,7 @@ pub const McpTransport = struct {
             if (bytes_read == 0) {
                 return error.EndOfStream;
             }
-            
+
             // Find header end
             const view = buf[0..bytes_read];
             if (std.mem.indexOf(u8, view, "\r\n\r\n")) |pos| {
@@ -53,7 +53,7 @@ pub const McpTransport = struct {
                 break;
             } else if (std.mem.indexOf(u8, view, "\n\n")) |pos| {
                 header_end_pos = pos + 2;
-                // Parse Content-Length  
+                // Parse Content-Length
                 const header = view[0..pos];
                 var lines = std.mem.splitScalar(u8, header, '\n');
                 while (lines.next()) |line| {
@@ -65,24 +65,24 @@ pub const McpTransport = struct {
                 break;
             }
         }
-        
+
         if (content_length == 0) {
             return error.InvalidMessage;
         }
-        
+
         // Read body
         const body_available = if (buf.len >= header_end_pos) buf.len - header_end_pos else 0;
-        
+
         const body = try self.allocator.alloc(u8, content_length);
         errdefer self.allocator.free(body);
-        
+
         var body_offset: usize = 0;
         if (body_available > 0) {
             const to_copy = @min(body_available, content_length);
-            @memcpy(body[0..to_copy], buf[header_end_pos..header_end_pos + to_copy]);
+            @memcpy(body[0..to_copy], buf[header_end_pos .. header_end_pos + to_copy]);
             body_offset = to_copy;
         }
-        
+
         while (body_offset < content_length) {
             const bytes_read = reader.read(body[body_offset..]) catch |e| {
                 self.allocator.free(body);
@@ -94,12 +94,12 @@ pub const McpTransport = struct {
             }
             body_offset += bytes_read;
         }
-        
+
         return body;
     }
 
     /// Write a JSON-RPC response to stdout
-    pub fn writeMessage(self: *Self, message: []const u8) !void {
+    pub fn write_message(self: *Self, message: []const u8) !void {
         const writer = self.stdout.writer();
         try writer.print("Content-Length: {d}\r\n\r\n", .{message.len});
         try writer.writeAll(message);

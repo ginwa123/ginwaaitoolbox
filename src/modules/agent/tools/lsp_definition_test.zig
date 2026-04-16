@@ -21,7 +21,7 @@ test "LspDefinitionInput has all required fields" {
 // Test 1.2: LspDefinitionOutput struct - found
 test "LspDefinitionOutput can represent found definition" {
     const allocator = std.testing.allocator;
-    
+
     // Create a location
     const locations = try allocator.alloc(lsp_types.LspLocation, 1);
     locations[0] = lsp_types.LspLocation{
@@ -29,7 +29,7 @@ test "LspDefinitionOutput can represent found definition" {
         .line = 20,
         .character = 8,
     };
-    
+
     var output = lsp_types.LspDefinitionOutput{
         .definitions = locations,
         .found = true,

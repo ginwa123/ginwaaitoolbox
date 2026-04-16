@@ -1,7 +1,6 @@
 const std = @import("std");
 
-
-pub fn extractTag(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
+pub fn extract_tag(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
     const start_tag = std.fmt.allocPrint(allocator, "<{s}>", .{tag}) catch return null;
     defer allocator.free(start_tag);
     const end_tag = std.fmt.allocPrint(allocator, "</{s}>", .{tag}) catch return null;
@@ -13,4 +12,3 @@ pub fn extractTag(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator
 
     return xml[content_start .. content_start + end_idx];
 }
-

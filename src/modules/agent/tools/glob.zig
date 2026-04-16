@@ -58,7 +58,7 @@ const ParsedGlobArgs = struct {
 
 /// Tokenize a shell-like argument string, respecting quotes and escaping.
 /// Handles: pattern, -e zig, -H, --max-results 50, "quoted args"
-fn tokenizeArgs(input: []const u8, allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]const u8) {
+fn tokenize_args(input: []const u8, allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]const u8) {
     var args = std.ArrayListUnmanaged([]const u8){};
     errdefer args.deinit(allocator);
 
@@ -100,7 +100,7 @@ fn tokenizeArgs(input: []const u8, allocator: std.mem.Allocator) !std.ArrayListU
 }
 
 /// Check if a token looks like a path (contains / or is a directory-like path)
-fn looksLikePath(token: []const u8) bool {
+fn looks_like_path(token: []const u8) bool {
     // Contains path separator
     if (std.mem.indexOfScalar(u8, token, '/') != null) return true;
     // Is "." or ".."
@@ -110,7 +110,7 @@ fn looksLikePath(token: []const u8) bool {
 
 /// Check if a pattern contains glob characters (*, ?, [, {)
 /// fd requires --glob flag for these patterns to work correctly.
-fn isGlobPattern(pattern: []const u8) bool {
+fn is_glob_pattern(pattern: []const u8) bool {
     // Check for common glob metacharacters
     return std.mem.indexOfAny(u8, pattern, "*?[") != null;
 }
@@ -119,7 +119,7 @@ fn isGlobPattern(pattern: []const u8) bool {
 /// fd CLI: fd [OPTIONS] pattern [path]
 /// Handles the case where fd is strict about paths - a path ending with / won't work.
 /// Automatically adds --glob flag if the pattern contains glob metacharacters.
-fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlobArgs {
+fn parse_glob_args(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlobArgs {
     var pattern: []const u8 = "";
     var path: []const u8 = ".";
     var options = std.ArrayList([]const u8).empty;
@@ -137,12 +137,12 @@ fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlob
                 try options.append(allocator, tokens[i]);
                 i += 1;
             }
-        } else if (looksLikePath(token)) {
+        } else if (looks_like_path(token)) {
             // Looks like a path - use as path if we haven't set one yet
             if (path.len == 1) {
                 // Remove trailing slash from path (fd doesn't like it)
                 if (token.len > 1 and token[token.len - 1] == '/') {
-                    path = token[0..token.len - 1];
+                    path = token[0 .. token.len - 1];
                 } else {
                     path = token;
                 }
@@ -162,7 +162,7 @@ fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlob
 
     // Auto-detect glob patterns and add --glob flag if needed
     // fd requires --glob flag for patterns containing *, ?, or [
-    if (pattern.len > 0 and isGlobPattern(pattern)) {
+    if (pattern.len > 0 and is_glob_pattern(pattern)) {
         // Check if --glob or -g is already present
         var has_glob_flag = false;
         for (options.items) |opt| {
@@ -193,16 +193,16 @@ fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlob
 ///   - "*.zig src/" → fd "*.zig" src/ (trailing / removed)
 ///   - "-e zig" → fd -e zig .  (file extension)
 ///   - "-e zig src/ -H" → fd -e zig src/ -H
-pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
+pub fn execute_glob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
     // Tokenize the any arguments
-    var tokens = try tokenizeArgs(input.any, allocator);
+    var tokens = try tokenize_args(input.any, allocator);
     defer {
         for (tokens.items) |t| allocator.free(t);
         tokens.deinit(allocator);
     }
 
     // Parse into pattern, path, and options
-    var parsed = try parseGlobArgs(tokens.items, allocator);
+    var parsed = try parse_glob_args(tokens.items, allocator);
 
     // Build argument list for fd
     var args = std.ArrayListUnmanaged([]const u8){};
@@ -266,7 +266,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
 /// Convert GlobResult to XML string format with <f> tags.
 /// Returns a warning message if no matches are found.
 /// Returns a truncation warning if results were limited.
-pub fn globResultToString(allocator: std.mem.Allocator, result: GlobResult) ![]const u8 {
+pub fn glob_result_to_string(allocator: std.mem.Allocator, result: GlobResult) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
@@ -285,9 +285,7 @@ pub fn globResultToString(allocator: std.mem.Allocator, result: GlobResult) ![]c
 
     // Add truncation warning if results were limited
     if (result.truncated_count > 0) {
-        const truncation_warning = try std.fmt.allocPrint(allocator,
-            "\n<truncated>{d} files truncated. Consider using offset/max_results or more specific patterns.</truncated>",
-            .{result.truncated_count});
+        const truncation_warning = try std.fmt.allocPrint(allocator, "\n<truncated>{d} files truncated. Consider using offset/max_results or more specific patterns.</truncated>", .{result.truncated_count});
         defer allocator.free(truncation_warning);
         try output.appendSlice(allocator, truncation_warning);
     }

@@ -13,17 +13,17 @@ const log = @import("nalarcore").logger;
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
 /// Get current timestamp in milliseconds since epoch
-fn timestampMs() i64 {
+fn timestamp_ms() i64 {
     return @divTrunc(std.time.milliTimestamp(), 1);
 }
 
 /// Calculate elapsed time in milliseconds
-fn elapsedMs(start: i64) i64 {
-    return timestampMs() - start;
+fn elapsed_ms(start: i64) i64 {
+    return timestamp_ms() - start;
 }
 
 /// Format duration for human-readable output
-fn formatDuration(ms: i64) struct { value: i64, unit: []const u8 } {
+fn format_duration(ms: i64) struct { value: i64, unit: []const u8 } {
     if (ms < 1000) return .{ .value = ms, .unit = "ms" };
     if (ms < 60000) return .{ .value = @divTrunc(ms, 1000), .unit = "s" };
     return .{ .value = @divTrunc(ms, 60000), .unit = "min" };
@@ -233,7 +233,7 @@ pub const Role = enum {
     /// Tool result message
     tool,
 
-    pub fn fromStr(s: []const u8) ?Role {
+    pub fn from_str(s: []const u8) ?Role {
         if (std.mem.eql(u8, s, "system")) return .system;
         if (std.mem.eql(u8, s, "user")) return .user;
         if (std.mem.eql(u8, s, "assistant")) return .assistant;
@@ -241,7 +241,7 @@ pub const Role = enum {
         return null;
     }
 
-    pub fn toStr(self: Role) []const u8 {
+    pub fn to_str(self: Role) []const u8 {
         return switch (self) {
             .system => "system",
             .user => "user",
@@ -288,7 +288,7 @@ pub const FinishReason = enum {
     /// Model returned assistant role (some providers use this)
     assistant,
 
-    pub fn fromStr(s: ?[]const u8) ?FinishReason {
+    pub fn from_str(s: ?[]const u8) ?FinishReason {
         if (s == null) return .null;
         const str = s.?;
         if (std.mem.eql(u8, str, "stop")) return .stop;
@@ -300,7 +300,7 @@ pub const FinishReason = enum {
         return null;
     }
 
-    pub fn toStr(self: FinishReason) []const u8 {
+    pub fn to_str(self: FinishReason) []const u8 {
         return switch (self) {
             .stop => "stop",
             .length => "length",
@@ -386,7 +386,7 @@ pub const StreamingAggregator = struct {
         self.tool_call_buffers.deinit();
     }
 
-    pub fn processChunk(self: *StreamingAggregator, chunk: StreamChunk) !void {
+    pub fn process_chunk(self: *StreamingAggregator, chunk: StreamChunk) !void {
         if (chunk.done) return;
 
         // Accumulate content
@@ -558,7 +558,7 @@ pub const Agent = struct {
     }
 
     /// Initialize agent with custom HTTP options
-    pub fn initWithOptions(allocator: std.mem.Allocator, options: HttpOptions, logger_ptr: *log.Logger) !Agent {
+    pub fn init_with_options(allocator: std.mem.Allocator, options: HttpOptions, logger_ptr: *log.Logger) !Agent {
         return Agent{
             .allocator = allocator,
             .httpClient = std.http.Client{
@@ -570,45 +570,45 @@ pub const Agent = struct {
         };
     }
 
-    pub fn logMsg(self: Agent, level: log.LogLevel, message: []const u8) void {
+    pub fn log_msg(self: Agent, level: log.LogLevel, message: []const u8) void {
         self.logger.log(level, message) catch {};
     }
 
     /// Log with formatted message and context
-    pub fn logFmt(self: Agent, comptime level: log.LogLevel, comptime fmt: []const u8, args: anytype) void {
+    pub fn log_fmt(self: Agent, comptime level: log.LogLevel, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch {
             std.debug.print("fmt alloc failed\n", .{});
             return;
         };
         defer self.allocator.free(msg);
-        self.logMsg(level, msg);
+        self.log_msg(level, msg);
     }
 
     /// Log error with context (operation, error name, and optional detail)
-    pub fn logError(self: Agent, operation: []const u8, err: anyerror, detail: ?[]const u8) void {
+    pub fn log_error(self: Agent, operation: []const u8, err: anyerror, detail: ?[]const u8) void {
         if (detail) |d| {
-            self.logFmt(.err, "{s} failed: {s} - {s}", .{ operation, @errorName(err), d });
+            self.log_fmt(.err, "{s} failed: {s} - {s}", .{ operation, @errorName(err), d });
         } else {
-            self.logFmt(.err, "{s} failed: {s}", .{ operation, @errorName(err) });
+            self.log_fmt(.err, "{s} failed: {s}", .{ operation, @errorName(err) });
         }
     }
 
     /// Log error with JSON body for debugging API issues
-    pub fn logApiError(self: Agent, operation: []const u8, err: anyerror, body: []const u8) void {
+    pub fn log_api_error(self: Agent, operation: []const u8, err: anyerror, body: []const u8) void {
         // Truncate body if too long for logging
         const max_body_len = 500;
         const truncated = body.len > max_body_len;
         const body_to_log = if (truncated) body[0..max_body_len] else body;
         if (truncated) {
-            self.logFmt(.err, "{s} failed: {s}\nResponse (truncated): {s}...", .{ operation, @errorName(err), body_to_log });
+            self.log_fmt(.err, "{s} failed: {s}\nResponse (truncated): {s}...", .{ operation, @errorName(err), body_to_log });
         } else {
-            self.logFmt(.err, "{s} failed: {s}\nResponse: {s}", .{ operation, @errorName(err), body_to_log });
+            self.log_fmt(.err, "{s} failed: {s}\nResponse: {s}", .{ operation, @errorName(err), body_to_log });
         }
     }
 
     /// Log HTTP request details for debugging
-    pub fn logRequest(self: Agent, method: []const u8, url: []const u8, body_len: usize) void {
-        self.logFmt(.debug, "HTTP {s} {s} (body: {} bytes)", .{ method, url, body_len });
+    pub fn log_request(self: Agent, method: []const u8, url: []const u8, body_len: usize) void {
+        self.log_fmt(.debug, "HTTP {s} {s} (body: {} bytes)", .{ method, url, body_len });
     }
 
     pub fn build_json_request(self: Agent, params: AgentCall, stream: bool) ![]u8 {
@@ -643,7 +643,7 @@ pub const Agent = struct {
                 json_tool_calls = tc_slice;
             }
             json_messages[i] = .{
-                .role = msg.role.toStr(),
+                .role = msg.role.to_str(),
                 .content = msg.content,
                 .tool_calls = json_tool_calls,
                 .tool_call_id = msg.tool_call_id,
@@ -712,7 +712,7 @@ pub const Agent = struct {
     };
 
     /// Parse a single SSE line (format: "data: {...}" or "data: [DONE]")
-    pub fn parseSseLine(_: Agent, line: []const u8) ?[]const u8 {
+    pub fn parse_sse_line(_: Agent, line: []const u8) ?[]const u8 {
         // Skip empty lines
         if (line.len == 0) return null;
 
@@ -730,15 +730,15 @@ pub const Agent = struct {
     }
 
     /// Parse a streaming chunk JSON into StreamChunk
-    pub fn parseStreamChunk(self: Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
+    pub fn parse_stream_chunk(self: Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
         const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch |err| {
             const max_data_len = 200;
             const truncated = data.len > max_data_len;
             const data_to_log = if (truncated) data[0..max_data_len] else data;
             if (truncated) {
-                self.logFmt(.err, "JSON parse failed: {s}\nData (truncated): {s}...", .{ @errorName(err), data_to_log });
+                self.log_fmt(.err, "JSON parse failed: {s}\nData (truncated): {s}...", .{ @errorName(err), data_to_log });
             } else {
-                self.logFmt(.err, "JSON parse failed: {s}\nData: {s}", .{ @errorName(err), data_to_log });
+                self.log_fmt(.err, "JSON parse failed: {s}\nData: {s}", .{ @errorName(err), data_to_log });
             }
             return null;
         };
@@ -753,8 +753,8 @@ pub const Agent = struct {
 
                 if (first_choice.object.get("finish_reason")) |fr| {
                     if (fr == .string) {
-                        chunk.finish_reason = FinishReason.fromStr(fr.string);
-                        // self.logFmt(.info, "[STREAM] finish_reason parsed: {s}", .{fr.string});
+                        chunk.finish_reason = FinishReason.from_str(fr.string);
+                        // self.log_fmt(.info, "[STREAM] finish_reason parsed: {s}", .{fr.string});
                     }
                 }
 
@@ -800,11 +800,11 @@ pub const Agent = struct {
                                 }
                             }
                             // const tool_names_summary = if (tool_names_len > 0) tool_names_buf[0..tool_names_len] else "unknown";
-                            // self.logFmt(.info, "[STREAM] AI requesting {} tool call(s): {s}", .{tc_delta.array.items.len, tool_names_summary});
+                            // self.log_fmt(.info, "[STREAM] AI requesting {} tool call(s): {s}", .{tc_delta.array.items.len, tool_names_summary});
 
                             var deltas = arena.alloc(ToolCallDelta, tc_delta.array.items.len) catch |err| {
-                                self.logMsg(.debug, "Error allocating ToolCallDelta");
-                                self.logMsg(.err, @errorName(err));
+                                self.log_msg(.debug, "Error allocating ToolCallDelta");
+                                self.log_msg(.err, @errorName(err));
                                 return null;
                             };
 
@@ -847,7 +847,7 @@ pub const Agent = struct {
                                 //     if (args.len > 50) args[0..50] else args
                                 // else
                                 //     "none";
-                                // self.logFmt(.debug, "[STREAM] Tool[{}] {s} (id={s}): args={s}{s}", .{
+                                // self.log_fmt(.debug, "[STREAM] Tool[{}] {s} (id={s}): args={s}{s}", .{
                                 //     i,
                                 //     fn_name,
                                 //     fn_id,
@@ -887,37 +887,37 @@ pub const Agent = struct {
         ctx: ?*anyopaque,
         callback: StreamCallback,
     ) CallError!CallResponse {
-        self.logFmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{ self.model, params.messages.len, params.tools.len });
+        self.log_fmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{ self.model, params.messages.len, params.tools.len });
 
         // Build request
         const json_body = self.build_json_request(params, true) catch |err| {
-            self.logError("buildJsonRequest", err, null);
+            self.log_error("buildJsonRequest", err, null);
             return error.BuildRequestFailed;
         };
         defer self.allocator.free(json_body);
 
         // Estimate tokens: ~4 chars per token (rough approximation for debugging)
         const estimated_tokens = @divFloor(json_body.len + 3, 4);
-        self.logFmt(.info, "[TOKEN ESTIMATE] sending ~{} tokens ({} bytes)", .{ estimated_tokens, json_body.len });
+        self.log_fmt(.info, "[TOKEN ESTIMATE] sending ~{} tokens ({} bytes)", .{ estimated_tokens, json_body.len });
 
-        self.logFmt(.debug, "[STREAM REQUEST] JSON body {s}", .{json_body});
+        self.log_fmt(.debug, "[STREAM REQUEST] JSON body {s}", .{json_body});
         // const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
         // const json_ellipsis = if (json_body.len > 500) "..." else "";
-        // self.logFmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
+        // self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
         const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
-            self.logError("concat URI", err, null);
+            self.log_error("concat URI", err, null);
             return error.OutOfMemory;
         };
         defer self.allocator.free(uri_str);
 
         const uri = std.Uri.parse(uri_str) catch |err| {
-            self.logFmt(.err, "Failed to parse URI '{s}': {s}", .{ uri_str, @errorName(err) });
+            self.log_fmt(.err, "Failed to parse URI '{s}': {s}", .{ uri_str, @errorName(err) });
             return error.InvalidUri;
         };
 
         const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
-            self.logError("concat auth", err, null);
+            self.log_error("concat auth", err, null);
             return error.OutOfMemory;
         };
         defer self.allocator.free(auth_value);
@@ -930,7 +930,7 @@ pub const Agent = struct {
                 .accept_encoding = .{ .override = "identity" },
             },
         }) catch |err| {
-            self.logFmt(.err, "HTTP streaming request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
+            self.log_fmt(.err, "HTTP streaming request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
             return error.HttpRequestFailed;
         };
         defer req.deinit();
@@ -949,20 +949,20 @@ pub const Agent = struct {
         }
 
         req.sendBodyComplete(json_body) catch |err| {
-            self.logError("sendBodyComplete", err, null);
+            self.log_error("sendBodyComplete", err, null);
             return error.SendBodyFailed;
         };
 
-        const stream_start = timestampMs();
+        const stream_start = timestamp_ms();
         var redirect_buffer: [8192]u8 = undefined;
         var response = req.receiveHead(&redirect_buffer) catch |err| {
-            self.logFmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(stream_start), @errorName(err) });
+            self.log_fmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsed_ms(stream_start), @errorName(err) });
             return error.ReceiveFailed;
         };
 
-        const stream_duration = elapsedMs(stream_start);
-        const stream_duration_fmt = formatDuration(stream_duration);
-        self.logFmt(.info, "[STREAM] Connected in {}{s} (HTTP {d})", .{ stream_duration_fmt.value, stream_duration_fmt.unit, @intFromEnum(response.head.status) });
+        const stream_duration = elapsed_ms(stream_start);
+        const stream_duration_fmt = format_duration(stream_duration);
+        self.log_fmt(.info, "[STREAM] Connected in {}{s} (HTTP {d})", .{ stream_duration_fmt.value, stream_duration_fmt.unit, @intFromEnum(response.head.status) });
 
         // Log transfer details for debugging
         const encoding_str = if (response.head.transfer_encoding == .chunked) "chunked" else "fixed";
@@ -971,7 +971,7 @@ pub const Agent = struct {
             std.fmt.bufPrint(&content_len_buf, "{}", .{cl}) catch "?"
         else
             "unknown";
-        self.logFmt(.debug, "[STREAM] Transfer: encoding={s}, content_length={s}, keep_alive={}", .{
+        self.log_fmt(.debug, "[STREAM] Transfer: encoding={s}, content_length={s}, keep_alive={}", .{
             encoding_str,
             content_len_str,
             response.head.keep_alive,
@@ -980,7 +980,7 @@ pub const Agent = struct {
         // Handle non-success HTTP status codes
         if (response.head.status.class() == .client_error or response.head.status.class() == .server_error) {
             const status_code = @intFromEnum(response.head.status);
-            self.logFmt(.err, "[STREAM] HTTP error status: {d}", .{status_code});
+            self.log_fmt(.err, "[STREAM] HTTP error status: {d}", .{status_code});
 
             // Read the error body from the server
             const transfer_buf = self.allocator.alloc(u8, 4096) catch null;
@@ -992,7 +992,7 @@ pub const Agent = struct {
                 const error_body = err_reader.allocRemaining(self.allocator, .unlimited) catch null;
                 if (error_body) |body| {
                     defer self.allocator.free(body);
-                    self.logFmt(.err, "[STREAM] Server error response: {s}", .{body});
+                    self.log_fmt(.err, "[STREAM] Server error response: {s}", .{body});
                 }
             }
 
@@ -1001,7 +1001,7 @@ pub const Agent = struct {
 
         // Check if response has a body
         if (!response.request.method.responseHasBody()) {
-            self.logMsg(.info, "[STREAM] Response has no body (status code)");
+            self.log_msg(.info, "[STREAM] Response has no body (status code)");
             return CallResponse{
                 .allocator = self.allocator,
                 .content = "",
@@ -1011,7 +1011,7 @@ pub const Agent = struct {
         }
 
         if (response.head.content_length == null and response.head.transfer_encoding != .chunked) {
-            self.logMsg(.info, "[STREAM] Response has no body (no content-length, not chunked)");
+            self.log_msg(.info, "[STREAM] Response has no body (no content-length, not chunked)");
             return CallResponse{
                 .allocator = self.allocator,
                 .content = "",
@@ -1022,7 +1022,7 @@ pub const Agent = struct {
 
         // Handle zero content-length to avoid union field access panic
         if (response.head.content_length != null and response.head.content_length.? == 0) {
-            self.logMsg(.info, "[STREAM] Response has empty body (content-length=0)");
+            self.log_msg(.info, "[STREAM] Response has empty body (content-length=0)");
             return CallResponse{
                 .allocator = self.allocator,
                 .content = "",
@@ -1035,7 +1035,7 @@ pub const Agent = struct {
         defer aggregator.deinit();
 
         const transfer_buffer = self.allocator.alloc(u8, self.httpOptions.response_buffer_size) catch |err| {
-            self.logError("alloc transfer_buffer", err, null);
+            self.log_error("alloc transfer_buffer", err, null);
             return error.OutOfMemory;
         };
         defer self.allocator.free(transfer_buffer);
@@ -1043,7 +1043,7 @@ pub const Agent = struct {
         var reader = response.request.reader.bodyReader(transfer_buffer[0..], response.head.transfer_encoding, response.head.content_length);
 
         // Debug: log reader state and response details
-        self.logFmt(.info, "[STREAM] bodyReader called: transfer_encoding={s}, content_length={?}, reader_state={s}", .{
+        self.log_fmt(.info, "[STREAM] bodyReader called: transfer_encoding={s}, content_length={?}, reader_state={s}", .{
             if (response.head.transfer_encoding == .chunked) "chunked" else "none",
             response.head.content_length,
             switch (response.request.reader.state) {
@@ -1070,7 +1070,7 @@ pub const Agent = struct {
         };
 
         if (!state_is_valid) {
-            self.logFmt(.err, "[STREAM] Reader state mismatch! State={s} but transfer_encoding={s}, content_length={?}. Treating as empty response.", .{
+            self.log_fmt(.err, "[STREAM] Reader state mismatch! State={s} but transfer_encoding={s}, content_length={?}. Treating as empty response.", .{
                 switch (response.request.reader.state) {
                     .ready => "ready",
                     .received_head => "received_head",
@@ -1125,12 +1125,12 @@ pub const Agent = struct {
 
             const bytes_read = reader.stream(&writer, .limited(read_buf.len)) catch |err| {
                 if (err == error.EndOfStream) {
-                    self.logMsg(.info, "[STREAM] EndOfStream received");
+                    self.log_msg(.info, "[STREAM] EndOfStream received");
                     stream_ended_cleanly = true;
                     break;
                 }
                 // Log the error and break instead of continuing to avoid panic
-                self.logFmt(.err, "[STREAM] Read error: {s}", .{@errorName(err)});
+                self.log_fmt(.err, "[STREAM] Read error: {s}", .{@errorName(err)});
                 stream_ended_cleanly = false;
                 break;
             };
@@ -1138,12 +1138,12 @@ pub const Agent = struct {
             if (bytes_read == 0) {
                 // No more data available - this can happen when the stream is exhausted
                 // but EndOfStream hasn't been signaled yet (common with some HTTP servers)
-                self.logMsg(.info, "[STREAM] Zero bytes read, ending stream");
+                self.log_msg(.info, "[STREAM] Zero bytes read, ending stream");
                 stream_ended_cleanly = true;
                 break;
             }
 
-            // self.logFmt(.debug, "[STREAM] Read {} bytes", .{bytes_read});
+            // self.log_fmt(.debug, "[STREAM] Read {} bytes", .{bytes_read});
 
             // Add small yield to prevent tight CPU spinning during streaming
             // This ensures we don't monopolize CPU when reading small chunks rapidly
@@ -1157,13 +1157,13 @@ pub const Agent = struct {
                 if (byte == '\n') {
                     if (line_buffer.items.len > 0) {
                         const line = line_buffer.items;
-                        if (self.parseSseLine(line)) |data| {
+                        if (self.parse_sse_line(line)) |data| {
                             // _ = chunk_arena.reset(.retain_capacity);
 
-                            if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
+                            if (self.parse_stream_chunk(data, chunk_arena.allocator())) |chunk| {
                                 chunk_count += 1;
                                 callback(ctx, chunk);
-                                aggregator.processChunk(chunk) catch {};
+                                aggregator.process_chunk(chunk) catch {};
                             }
                         }
                         line_buffer.clearRetainingCapacity();
@@ -1176,30 +1176,30 @@ pub const Agent = struct {
 
         // Process remaining line
         if (line_buffer.items.len > 0) {
-            if (self.parseSseLine(line_buffer.items)) |data| {
+            if (self.parse_sse_line(line_buffer.items)) |data| {
                 _ = chunk_arena.reset(.retain_capacity);
-                if (self.parseStreamChunk(data, chunk_arena.allocator())) |chunk| {
+                if (self.parse_stream_chunk(data, chunk_arena.allocator())) |chunk| {
                     callback(ctx, chunk);
-                    aggregator.processChunk(chunk) catch {};
+                    aggregator.process_chunk(chunk) catch {};
                 }
             }
         }
 
         callback(ctx, .{ .done = true });
 
-        const fr_str = if (aggregator.finish_reason) |fr| fr.toStr() else "incomplete";
+        const fr_str = if (aggregator.finish_reason) |fr| fr.to_str() else "incomplete";
         const content_preview = if (aggregator.content.items.len > 0)
             if (aggregator.content.items.len > 50) aggregator.content.items[0..50] else aggregator.content.items
         else
             "(none)";
         const content_ellipsis = if (aggregator.content.items.len > 50) "..." else "";
-        self.logFmt(.info, "[STREAM] Finalizing: {} tool call buffer(s), finish_reason={s}, content_len={} chars", .{ aggregator.tool_call_buffers.count(), fr_str, aggregator.content.items.len });
+        self.log_fmt(.info, "[STREAM] Finalizing: {} tool call buffer(s), finish_reason={s}, content_len={} chars", .{ aggregator.tool_call_buffers.count(), fr_str, aggregator.content.items.len });
         if (aggregator.content.items.len > 0) {
-            self.logFmt(.info, "[STREAM] Content preview: {s}{s}", .{ content_preview, content_ellipsis });
+            self.log_fmt(.info, "[STREAM] Content preview: {s}{s}", .{ content_preview, content_ellipsis });
         }
 
         const stream_response = aggregator.finalize() catch |err| {
-            self.logError("finalize streaming response", err, null);
+            self.log_error("finalize streaming response", err, null);
             return error.AllocFailed;
         };
 
@@ -1207,7 +1207,7 @@ pub const Agent = struct {
         const prompt_cost = @as(f64, @floatFromInt(stream_response.usage.prompt_tokens)) * 0.000003;
         const completion_cost = @as(f64, @floatFromInt(stream_response.usage.completion_tokens)) * 0.000015;
         const total_cost = prompt_cost + completion_cost;
-        self.logFmt(.info, "[STREAM] Complete - Prompt: {} | Completion: {} | Total: {} | Est. cost: ${d:.4}", .{ stream_response.usage.prompt_tokens, stream_response.usage.completion_tokens, stream_response.usage.total_tokens, total_cost });
+        self.log_fmt(.info, "[STREAM] Complete - Prompt: {} | Completion: {} | Total: {} | Est. cost: ${d:.4}", .{ stream_response.usage.prompt_tokens, stream_response.usage.completion_tokens, stream_response.usage.total_tokens, total_cost });
 
         return stream_response;
     }

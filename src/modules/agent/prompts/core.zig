@@ -101,4 +101,3 @@ pub const ResponseFormatting =
     \\  - Explaining decision rationale
     \\  - Breaking down complex problems
 ;
-

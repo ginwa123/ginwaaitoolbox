@@ -26,7 +26,7 @@ test "McpTool structure is valid" {
         .name = "test_tool",
         .description = "A test tool description",
         .inputSchema = .{
-            .@"type" = "object",
+            .type = "object",
             .properties = .{ .null = {} },
             .required = &.{ "param1", "param2" },
         },
@@ -34,7 +34,7 @@ test "McpTool structure is valid" {
 
     try testing.expectEqualStrings("test_tool", tool.name);
     try testing.expectEqualStrings("A test tool description", tool.description);
-    try testing.expectEqualStrings("object", tool.inputSchema.@"type");
+    try testing.expectEqualStrings("object", tool.inputSchema.type);
     try testing.expect(tool.inputSchema.required != null);
     try testing.expectEqual(@as(usize, 2), tool.inputSchema.required.?.len);
 }
@@ -44,7 +44,7 @@ test "McpTool with null required fields" {
         .name = "simple_tool",
         .description = "Simple tool",
         .inputSchema = .{
-            .@"type" = "object",
+            .type = "object",
             .properties = .{ .null = {} },
             .required = null,
         },
@@ -130,12 +130,12 @@ test "Prompt structure" {
 
 test "ContentBlock text type" {
     const block = mcp_types.ContentBlock{
-        .@"type" = "text",
+        .type = "text",
         .text = "Hello world",
         .resource = null,
     };
 
-    try testing.expectEqualStrings("text", block.@"type");
+    try testing.expectEqualStrings("text", block.type);
     try testing.expectEqualStrings("Hello world", block.text.?);
     try testing.expect(block.resource == null);
 }
@@ -149,12 +149,12 @@ test "ContentBlock with resource" {
     };
 
     const block = mcp_types.ContentBlock{
-        .@"type" = "resource",
+        .type = "resource",
         .text = null,
         .resource = resource_content,
     };
 
-    try testing.expectEqualStrings("resource", block.@"type");
+    try testing.expectEqualStrings("resource", block.type);
     try testing.expect(block.text == null);
     try testing.expect(block.resource != null);
     try testing.expectEqualStrings("file:///test.txt", block.resource.?.uri);
@@ -390,12 +390,12 @@ test "ListToolsResult with tools" {
         .{
             .name = "tool1",
             .description = "First tool",
-            .inputSchema = .{ .@"type" = "object", .properties = .{ .null = {} }, .required = null },
+            .inputSchema = .{ .type = "object", .properties = .{ .null = {} }, .required = null },
         },
         .{
             .name = "tool2",
             .description = "Second tool",
-            .inputSchema = .{ .@"type" = "object", .properties = .{ .null = {} }, .required = null },
+            .inputSchema = .{ .type = "object", .properties = .{ .null = {} }, .required = null },
         },
     };
     const result = mcp_types.ListToolsResult{
@@ -409,7 +409,7 @@ test "ListToolsResult with tools" {
 
 test "CallToolResult success" {
     const content = [_]mcp_types.ContentBlock{
-        .{ .@"type" = "text", .text = "Result", .resource = null },
+        .{ .type = "text", .text = "Result", .resource = null },
     };
     const result = mcp_types.CallToolResult{
         .content = &content,
@@ -422,7 +422,7 @@ test "CallToolResult success" {
 
 test "CallToolResult error" {
     const content = [_]mcp_types.ContentBlock{
-        .{ .@"type" = "text", .text = "Error occurred", .resource = null },
+        .{ .type = "text", .text = "Error occurred", .resource = null },
     };
     const result = mcp_types.CallToolResult{
         .content = &content,

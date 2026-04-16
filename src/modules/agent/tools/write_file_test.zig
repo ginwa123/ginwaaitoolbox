@@ -5,24 +5,24 @@ test "write_file - write new file" {
     const allocator = std.testing.allocator;
     const test_path = "test_write_new.txt";
     const test_content = "Hello, World!\n";
-    
+
     // Clean up any existing file
     std.fs.cwd().deleteFile(test_path) catch {};
-    
+
     const result = try write_file_mod.write_file(allocator, .{
         .path = test_path,
         .content = test_content,
     });
     defer result.deinit(allocator);
-    
+
     // Verify file was created with correct content
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
     const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(read_content);
-    
+
     try std.testing.expectEqualStrings(test_content, read_content);
-    
+
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
 }
@@ -32,26 +32,26 @@ test "write_file - overwrite existing file" {
     const test_path = "test_write_overwrite.txt";
     const original_content = "Original content\n";
     const new_content = "New content\n";
-    
+
     // Create original file using createFile
     const orig_file = try std.fs.cwd().createFile(test_path, .{});
     defer orig_file.close();
     try orig_file.writeAll(original_content);
-    
+
     const result = try write_file_mod.write_file(allocator, .{
         .path = test_path,
         .content = new_content,
     });
     defer result.deinit(allocator);
-    
+
     // Verify content was overwritten
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
     const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(read_content);
-    
+
     try std.testing.expectEqualStrings(new_content, read_content);
-    
+
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
 }
@@ -60,13 +60,13 @@ test "write_file - error on invalid directory" {
     const allocator = std.testing.allocator;
     const test_path = "/nonexistent/path/file.txt";
     const test_content = "content\n";
-    
+
     // This should return an error
     const result = write_file_mod.write_file(allocator, .{
         .path = test_path,
         .content = test_content,
     });
-    
+
     try std.testing.expectError(error.FileNotFound, result);
 }
 
@@ -74,22 +74,22 @@ test "write_file - result serialization" {
     const allocator = std.testing.allocator;
     const test_path = "test_serialize.txt";
     const test_content = "Test content\n";
-    
+
     // Clean up
     std.fs.cwd().deleteFile(test_path) catch {};
-    
+
     const result = try write_file_mod.write_file(allocator, .{
         .path = test_path,
         .content = test_content,
     });
     defer result.deinit(allocator);
-    
-    const serialized = try write_file_mod.writeFileToString(allocator, result);
+
+    const serialized = try write_file_mod.write_file_to_string(allocator, result);
     defer allocator.free(serialized);
-    
+
     // Should contain file_write
     try std.testing.expect(std.mem.indexOf(u8, serialized, "<file_write>") != null);
-    
+
     // Clean up
     try std.fs.cwd().deleteFile(test_path);
 }
@@ -113,7 +113,7 @@ test "write_file tool definition exists" {
 test "write_file tool definition includes create_with_dir parameter" {
     const tool_def = write_file_mod.write_file_tool;
     const props = tool_def.function.parameters.properties;
-    
+
     // Find create_with_dir in properties
     var found = false;
     for (props) |prop| {
@@ -130,25 +130,25 @@ test "write_file - create file with nested directories (create_with_dir=true)" {
     const allocator = std.testing.allocator;
     const test_path = "test_nested/deeply/nested/dir/file.txt";
     const test_content = "Nested content\n";
-    
+
     // Ensure parent directories DON'T exist
     std.fs.cwd().deleteTree("test_nested") catch {};
-    
+
     const result = try write_file_mod.write_file(allocator, .{
         .path = test_path,
         .content = test_content,
         .create_with_dir = true,
     });
     defer result.deinit(allocator);
-    
+
     // Verify file was created with correct content
     const file = try std.fs.cwd().openFile(test_path, .{});
     defer file.close();
     const read_content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(read_content);
-    
+
     try std.testing.expectEqualStrings(test_content, read_content);
-    
+
     // Clean up
     try std.fs.cwd().deleteTree("test_nested");
 }
@@ -156,30 +156,30 @@ test "write_file - create file with nested directories (create_with_dir=true)" {
 test "write_file - create_with_dir=false returns error on missing directory" {
     const allocator = std.testing.allocator;
     const test_path = "/tmp/nonexistent/path/file.txt";
-    
+
     const result = write_file_mod.write_file(allocator, .{
         .path = test_path,
         .content = "test",
         .create_with_dir = false,
     });
-    
+
     try std.testing.expectError(error.FileNotFound, result);
 }
 
 test "write_file - create_with_dir=true works when directory exists" {
     const allocator = std.testing.allocator;
     const test_path = "/tmp/existing_dir/file.txt";
-    
+
     // Create parent directory first
     try std.fs.cwd().makeDir("/tmp/existing_dir");
     defer std.fs.cwd().deleteTree("/tmp/existing_dir") catch {};
-    
+
     const result = try write_file_mod.write_file(allocator, .{
         .path = test_path,
         .content = "test",
         .create_with_dir = true,
     });
     defer result.deinit(allocator);
-    
+
     try std.testing.expect(result.path.len > 0); // path should not be empty
 }

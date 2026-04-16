@@ -35,7 +35,7 @@ pub const ParsedAgentFrontmatter = struct {
 ///
 /// Returns ParsedAgentFrontmatter with allocated strings, or null if no valid frontmatter found.
 /// Caller owns the returned memory and must free name and description.
-pub fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedAgentFrontmatter {
+pub fn parse_yaml_frontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedAgentFrontmatter {
     // Find the first --- marker
     const first_newline = std.mem.indexOf(u8, content, "\n") orelse return null;
     const after_first_line = content[first_newline + 1 ..];
@@ -96,14 +96,14 @@ pub fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?
 }
 
 /// Free a ParsedAgentFrontmatter allocated by parseYamlFrontmatter
-pub fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedAgentFrontmatter) void {
+pub fn free_parsed_frontmatter(allocator: std.mem.Allocator, fm: ParsedAgentFrontmatter) void {
     allocator.free(fm.name);
     allocator.free(fm.description);
 }
 
 /// Get the local agents directory path (.nalar/agents/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
-pub fn getLocalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn get_local_agents_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = std.posix.getcwd(&cwd_buf) catch {
@@ -128,7 +128,7 @@ pub fn getLocalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
 /// macOS: ~/Library/Application Support/nalar/agents/
 /// Windows: %APPDATA%/nalar/agents/
 /// Returns allocated string that caller must free, or null if home/env not found
-pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn get_global_agents_path(allocator: std.mem.Allocator) ?[]const u8 {
     var config_dir: ?[]const u8 = null;
     var needs_free: bool = false;
 
@@ -184,9 +184,9 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
 
 /// Resolve the agents directory path by checking local first, then global
 /// Returns allocated string that caller must free, or null if neither exists
-pub fn resolveAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn resolve_agents_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Try local path first
-    if (getLocalAgentsPath(allocator)) |local_path| {
+    if (get_local_agents_path(allocator)) |local_path| {
         // Check if directory exists
         const exists = blk: {
             std.fs.cwd().access(local_path, .{}) catch {
@@ -201,7 +201,7 @@ pub fn resolveAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
     }
 
     // Try global path
-    if (getGlobalAgentsPath(allocator)) |global_path| {
+    if (get_global_agents_path(allocator)) |global_path| {
         // Check if directory exists
         const exists = blk: {
             std.fs.cwd().access(global_path, .{}) catch {
@@ -219,15 +219,15 @@ pub fn resolveAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
 }
 
 /// Free an agents path allocated by getLocalAgentsPath, getGlobalAgentsPath, or resolveAgentsPath
-pub fn freeAgentsPath(allocator: std.mem.Allocator, path: []const u8) void {
+pub fn free_agents_path(allocator: std.mem.Allocator, path: []const u8) void {
     allocator.free(path);
 }
 
 /// List all agent files in the agents directory
 /// Returns allocated array of file paths to AGENT.md files inside agent folders
 /// Empty files are excluded from the list
-pub fn listAgentFiles(allocator: std.mem.Allocator) ?[][]const u8 {
-    const dir_path = resolveAgentsPath(allocator) orelse return null;
+pub fn list_agent_files(allocator: std.mem.Allocator) ?[][]const u8 {
+    const dir_path = resolve_agents_path(allocator) orelse return null;
     defer allocator.free(dir_path);
 
     // Open the agents directory
@@ -281,7 +281,7 @@ pub fn listAgentFiles(allocator: std.mem.Allocator) ?[][]const u8 {
 }
 
 /// Free a list of agent file paths
-pub fn freeAgentFiles(allocator: std.mem.Allocator, files: [][]const u8) void {
+pub fn free_agent_files(allocator: std.mem.Allocator, files: [][]const u8) void {
     for (files) |file| {
         allocator.free(file);
     }
@@ -291,7 +291,7 @@ pub fn freeAgentFiles(allocator: std.mem.Allocator, files: [][]const u8) void {
 /// Load agent content from a specific file path
 /// Returns allocated string with agent content, or null if file not found/invalid
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ?[]const u8 {
+pub fn load_agent_from_path(allocator: std.mem.Allocator, path: []const u8) ?[]const u8 {
     // Open file
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         // Log warning but don't crash - agents are optional
@@ -330,26 +330,26 @@ pub fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ?[]cons
 /// Parse a specific agent from the agents directory by name
 /// Returns allocated string with agent content, or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parseAgent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
-    return parseAgentFromDir(allocator, agent_name);
+pub fn parse_agent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
+    return parse_agent_from_dir(allocator, agent_name);
 }
 
 /// Parse a specific agent from the agents directory by name
 /// Returns allocated string with agent content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parseAgentFromDir(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
-    const files = listAgentFiles(allocator) orelse return null;
-    defer freeAgentFiles(allocator, files);
+pub fn parse_agent_from_dir(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
+    const files = list_agent_files(allocator) orelse return null;
+    defer free_agent_files(allocator, files);
 
     for (files) |file_path| {
-        const content = loadAgentFromPath(allocator, file_path);
+        const content = load_agent_from_path(allocator, file_path);
         if (content == null) {
             continue;
         }
         const content_slice = content.?;
 
-        if (parseYamlFrontmatter(allocator, content_slice)) |parsed| {
-            defer freeParsedFrontmatter(allocator, parsed);
+        if (parse_yaml_frontmatter(allocator, content_slice)) |parsed| {
+            defer free_parsed_frontmatter(allocator, parsed);
             if (std.mem.eql(u8, parsed.name, agent_name)) {
                 // Return the full content (including frontmatter)
                 return content_slice;
@@ -364,16 +364,16 @@ pub fn parseAgentFromDir(allocator: std.mem.Allocator, agent_name: []const u8) ?
 /// List all available agents from the agents directory
 /// Returns allocated array of AgentInfo structs
 /// Caller owns the returned memory and must free it with freeAgentsList()
-pub fn listAgents(allocator: std.mem.Allocator) []AgentInfo {
-    return listAgentsFromDir(allocator);
+pub fn list_agents(allocator: std.mem.Allocator) []AgentInfo {
+    return list_agents_from_dir(allocator);
 }
 
 /// List all available agents from the agents directory
 /// Returns allocated array of AgentInfo structs
 /// Caller owns the returned memory and must free it with freeAgentsList()
-pub fn listAgentsFromDir(allocator: std.mem.Allocator) []AgentInfo {
-    const files = listAgentFiles(allocator) orelse return &.{};
-    defer freeAgentFiles(allocator, files);
+pub fn list_agents_from_dir(allocator: std.mem.Allocator) []AgentInfo {
+    const files = list_agent_files(allocator) orelse return &.{};
+    defer free_agent_files(allocator, files);
 
     if (files.len == 0) return &.{};
 
@@ -382,18 +382,18 @@ pub fn listAgentsFromDir(allocator: std.mem.Allocator) []AgentInfo {
     defer agents_list.deinit(allocator);
 
     for (files) |file_path| {
-        const content = loadAgentFromPath(allocator, file_path);
+        const content = load_agent_from_path(allocator, file_path);
         if (content == null) {
             continue;
         }
         const content_slice = content.?;
 
-        if (parseYamlFrontmatter(allocator, content_slice)) |parsed| {
+        if (parse_yaml_frontmatter(allocator, content_slice)) |parsed| {
             agents_list.append(allocator, .{
                 .name = parsed.name,
                 .description = parsed.description,
             }) catch {
-                freeParsedFrontmatter(allocator, parsed);
+                free_parsed_frontmatter(allocator, parsed);
                 allocator.free(content_slice);
                 continue;
             };
@@ -408,11 +408,10 @@ pub fn listAgentsFromDir(allocator: std.mem.Allocator) []AgentInfo {
 }
 
 /// Free an agents array allocated by listAgents
-pub fn freeAgentsList(allocator: std.mem.Allocator, agents_list: []AgentInfo) void {
+pub fn free_agents_list(allocator: std.mem.Allocator, agents_list: []AgentInfo) void {
     for (agents_list) |agent| {
         allocator.free(agent.name);
         allocator.free(agent.description);
     }
     allocator.free(agents_list);
 }
-

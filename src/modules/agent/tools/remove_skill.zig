@@ -47,7 +47,7 @@ pub const remove_skill_tool = AgentTool{
 /// Execute the remove_skill tool - removes from session AND deletes file
 /// Returns an XML string with result
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeRemoveSkillToString(
+pub fn execute_remove_skill_to_string(
     allocator: std.mem.Allocator,
     input: RemoveSkillInput,
 ) ![]const u8 {

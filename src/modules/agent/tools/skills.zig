@@ -45,7 +45,7 @@ pub const ParsedFrontmatter = struct {
 ///
 /// Returns allocated ParsedFrontmatter with owned name and description strings
 /// Caller owns the returned memory and must free name and description.
-fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
+fn parse_yaml_frontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
     // Find the first --- marker
     const first_newline = std.mem.indexOf(u8, content, "\n") orelse return null;
     const after_first_line = content[first_newline + 1 ..];
@@ -98,15 +98,15 @@ fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?Pars
     };
 }
 
-/// Free a ParsedFrontmatter allocated by parseYamlFrontmatter
-fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) void {
+/// Free a ParsedFrontmatter allocated by parse_yaml_frontmatter
+fn free_parsed_frontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) void {
     allocator.free(fm.name);
     allocator.free(fm.description);
 }
 
 /// Get the local skills directory path (.nalar/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
-pub fn getSkillsDirPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn get_skills_dir_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = std.posix.getcwd(&cwd_buf) catch {
@@ -129,8 +129,8 @@ pub fn getSkillsDirPath(allocator: std.mem.Allocator) ?[]const u8 {
 /// List all skill files in the skills directory
 /// Returns allocated array of file paths to SKILL.MD files inside skill folders
 /// Empty files are excluded from the list
-pub fn listSkillFiles(allocator: std.mem.Allocator) ?[][]const u8 {
-    const dir_path = getSkillsDirPath(allocator) orelse return null;
+pub fn list_skill_files(allocator: std.mem.Allocator) ?[][]const u8 {
+    const dir_path = get_skills_dir_path(allocator) orelse return null;
     defer allocator.free(dir_path);
 
     // Open the skills directory
@@ -184,7 +184,7 @@ pub fn listSkillFiles(allocator: std.mem.Allocator) ?[][]const u8 {
 }
 
 /// Free a list of skill file paths
-pub fn freeSkillFiles(allocator: std.mem.Allocator, files: [][]const u8) void {
+pub fn free_skill_files(allocator: std.mem.Allocator, files: [][]const u8) void {
     for (files) |file| {
         allocator.free(file);
     }
@@ -193,7 +193,7 @@ pub fn freeSkillFiles(allocator: std.mem.Allocator, files: [][]const u8) void {
 
 /// Get the local skills path (.nalar/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
-pub fn getLocalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn get_local_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = std.posix.getcwd(&cwd_buf) catch {
@@ -218,7 +218,7 @@ pub fn getLocalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
 /// macOS: ~/Library/Application Support/nalar/skills/
 /// Windows: %APPDATA%/nalar/skills/
 /// Returns allocated string that caller must free, or null if home/env not found
-pub fn getGlobalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn get_global_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
     var config_dir: ?[]const u8 = null;
     var needs_free: bool = false;
 
@@ -254,7 +254,7 @@ pub fn getGlobalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
                 config_dir = std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME }) catch null;
                 if (config_dir != null) needs_free = true;
             }
-        }
+        },
     }
 
     const dir = config_dir orelse return null;
@@ -274,9 +274,9 @@ pub fn getGlobalSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
 
 /// Resolve the skills directory path by checking local first, then global
 /// Returns allocated string that caller must free, or null if neither exists
-pub fn resolveSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn resolve_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Try local path first
-    if (getLocalSkillsPath(allocator)) |local_path| {
+    if (get_local_skills_path(allocator)) |local_path| {
         // Check if directory exists
         const exists = blk: {
             std.fs.cwd().access(local_path, .{}) catch {
@@ -291,7 +291,7 @@ pub fn resolveSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
     }
 
     // Try global path
-    if (getGlobalSkillsPath(allocator)) |global_path| {
+    if (get_global_skills_path(allocator)) |global_path| {
         // Check if directory exists
         const exists = blk: {
             std.fs.cwd().access(global_path, .{}) catch {
@@ -308,15 +308,15 @@ pub fn resolveSkillsPath(allocator: std.mem.Allocator) ?[]const u8 {
     return null;
 }
 
-/// Free a skills path allocated by getLocalSkillsPath, getGlobalSkillsPath, or resolveSkillsPath
-pub fn freeSkillsPath(allocator: std.mem.Allocator, path: []const u8) void {
+/// Free a skills path allocated by get_local_skills_path, get_global_skills_path, or resolve_skills_path
+pub fn free_skills_path(allocator: std.mem.Allocator, path: []const u8) void {
     allocator.free(path);
 }
 
 /// Load skills content from a specific file path
 /// Returns allocated string with skills content, or empty string if file not found/invalid
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn loadSkillsFromPath(allocator: std.mem.Allocator, path: []const u8) []const u8 {
+pub fn load_skills_from_path(allocator: std.mem.Allocator, path: []const u8) []const u8 {
     // Open file
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         // Log warning but don't crash - skills are optional
@@ -355,26 +355,26 @@ pub fn loadSkillsFromPath(allocator: std.mem.Allocator, path: []const u8) []cons
 /// Parse a specific skill from the skills directory by name
 /// Returns allocated string with skill content, or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parseSkill(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
-    return parseSkillFromDir(allocator, skill_name);
+pub fn parse_skill(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
+    return parse_skill_from_dir(allocator, skill_name);
 }
 
 /// Parse a specific skill from the skills directory by name
 /// Returns allocated string with skill content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parseSkillFromDir(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
-    const files = listSkillFiles(allocator) orelse return null;
-    defer freeSkillFiles(allocator, files);
+pub fn parse_skill_from_dir(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
+    const files = list_skill_files(allocator) orelse return null;
+    defer free_skill_files(allocator, files);
 
     for (files) |file_path| {
-        const content = loadSkillsFromPath(allocator, file_path);
+        const content = load_skills_from_path(allocator, file_path);
         if (content.len == 0) {
             allocator.free(content);
             continue;
         }
 
-        if (parseYamlFrontmatter(allocator, content)) |parsed| {
-            defer freeParsedFrontmatter(allocator, parsed);
+        if (parse_yaml_frontmatter(allocator, content)) |parsed| {
+            defer free_parsed_frontmatter(allocator, parsed);
             if (std.mem.eql(u8, parsed.name, skill_name)) {
                 // Return the full content (including frontmatter)
                 return content;
@@ -388,17 +388,17 @@ pub fn parseSkillFromDir(allocator: std.mem.Allocator, skill_name: []const u8) ?
 
 /// List all available skills from the skills directory
 /// Returns allocated array of SkillInfo structs
-/// Caller owns the returned memory and must free it with freeSkillsList()
-pub fn listSkills(allocator: std.mem.Allocator) []SkillInfo {
-    return listSkillsFromDir(allocator);
+/// Caller owns the returned memory and must free it with free_skills_list()
+pub fn list_skills(allocator: std.mem.Allocator) []SkillInfo {
+    return list_skills_from_dir(allocator);
 }
 
 /// List all available skills from the skills directory
 /// Returns allocated array of SkillInfo structs
-/// Caller owns the returned memory and must free it with freeSkillsList()
-pub fn listSkillsFromDir(allocator: std.mem.Allocator) []SkillInfo {
-    const files = listSkillFiles(allocator) orelse return &.{};
-    defer freeSkillFiles(allocator, files);
+/// Caller owns the returned memory and must free it with free_skills_list()
+pub fn list_skills_from_dir(allocator: std.mem.Allocator) []SkillInfo {
+    const files = list_skill_files(allocator) orelse return &.{};
+    defer free_skill_files(allocator, files);
 
     if (files.len == 0) return &.{};
 
@@ -407,18 +407,18 @@ pub fn listSkillsFromDir(allocator: std.mem.Allocator) []SkillInfo {
     defer skills_list.deinit(allocator);
 
     for (files) |file_path| {
-        const content = loadSkillsFromPath(allocator, file_path);
+        const content = load_skills_from_path(allocator, file_path);
         if (content.len == 0) {
             allocator.free(content);
             continue;
         }
 
-        if (parseYamlFrontmatter(allocator, content)) |parsed| {
+        if (parse_yaml_frontmatter(allocator, content)) |parsed| {
             skills_list.append(allocator, .{
                 .name = parsed.name,
                 .description = parsed.description,
             }) catch {
-                freeParsedFrontmatter(allocator, parsed);
+                free_parsed_frontmatter(allocator, parsed);
                 allocator.free(content);
                 continue;
             };
@@ -432,8 +432,8 @@ pub fn listSkillsFromDir(allocator: std.mem.Allocator) []SkillInfo {
     return skills_list.toOwnedSlice(allocator) catch &.{};
 }
 
-/// Free a skills array allocated by listSkills
-pub fn freeSkillsList(allocator: std.mem.Allocator, skills_list: []SkillInfo) void {
+/// Free a skills array allocated by list_skills
+pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []SkillInfo) void {
     for (skills_list) |skill| {
         allocator.free(skill.name);
         allocator.free(skill.description);

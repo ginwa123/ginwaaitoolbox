@@ -5,15 +5,12 @@ const change_agent = @import("change_agent.zig");
 const ChangeAgentInput = change_agent.ChangeAgentInput;
 
 // Helper function to create a test agent file with YAML frontmatter
-fn createTestAgentFile(dir: std.fs.Dir, agent_name: []const u8, description: []const u8, content: []const u8) !void {
+fn create_test_agent_file(dir: std.fs.Dir, agent_name: []const u8, description: []const u8, content: []const u8) !void {
     // Create agent directory
     try dir.makePath(agent_name);
 
     // Build the agent file content with YAML frontmatter
-    const agent_content = try std.fmt.allocPrint(std.testing.allocator,
-        "---\nname: {s}\ndescription: \"{s}\"\n---\n\n{s}",
-        .{ agent_name, description, content }
-    );
+    const agent_content = try std.fmt.allocPrint(std.testing.allocator, "---\nname: {s}\ndescription: \"{s}\"\n---\n\n{s}", .{ agent_name, description, content });
     defer std.testing.allocator.free(agent_content);
 
     // Create the AGENT.md file
@@ -26,7 +23,7 @@ fn createTestAgentFile(dir: std.fs.Dir, agent_name: []const u8, description: []c
 }
 
 // Helper function to set up a temporary agents directory
-fn setupTestAgentsDir() !struct { tmp_dir: std.testing.TmpDir, agents_path: []const u8 } {
+fn setup_test_agents_dir() !struct { tmp_dir: std.testing.TmpDir, agents_path: []const u8 } {
     var tmp_dir = std.testing.tmpDir(.{});
     errdefer tmp_dir.cleanup();
 
@@ -58,8 +55,8 @@ test "full agent workflow - list and get agents" {
     defer agents_dir.close();
 
     // Create test agent files
-    try createTestAgentFile(agents_dir, "test-coder", "A test coding agent", "# Test Coder\n\nThis agent helps with coding tasks.");
-    try createTestAgentFile(agents_dir, "test-reviewer", "A test code reviewer agent", "# Test Reviewer\n\nThis agent reviews code.");
+    try create_test_agent_file(agents_dir, "test-coder", "A test coding agent", "# Test Coder\n\nThis agent helps with coding tasks.");
+    try create_test_agent_file(agents_dir, "test-reviewer", "A test code reviewer agent", "# Test Reviewer\n\nThis agent reviews code.");
 
     // Get the full path to the agents directory
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -72,13 +69,13 @@ test "full agent workflow - list and get agents" {
     // We need to change to the temp directory for the test
     // Since we can't easily chdir in tests, we'll use the path directly
 
-    // Test 1: List agents using listAgentFiles
-    const files = agents.listAgentFiles(allocator);
+    // Test 1: List agents using list_agent_files
+    const files = agents.list_agent_files(allocator);
     // Note: This may return null if the current directory doesn't have .nalar/agents
     // In a real integration test environment, we'd set up the directory properly
 
     if (files) |f| {
-        defer agents.freeAgentFiles(allocator, f);
+        defer agents.free_agent_files(allocator, f);
         // If we have files, verify structure
         try std.testing.expect(f.len >= 0); // May be 0 or more depending on environment
     }
@@ -87,16 +84,16 @@ test "full agent workflow - list and get agents" {
     const test_agent_path = try std.fs.path.join(allocator, &[_][]const u8{ agents_path, "test-coder", "AGENT.md" });
     defer allocator.free(test_agent_path);
 
-    const loaded_content = agents.loadAgentFromPath(allocator, test_agent_path);
+    const loaded_content = agents.load_agent_from_path(allocator, test_agent_path);
     if (loaded_content) |content| {
         defer allocator.free(content);
         try std.testing.expect(std.mem.indexOf(u8, content, "test-coder") != null);
         try std.testing.expect(std.mem.indexOf(u8, content, "A test coding agent") != null);
 
         // Parse frontmatter
-        const frontmatter = agents.parseYamlFrontmatter(allocator, content);
+        const frontmatter = agents.parse_yaml_frontmatter(allocator, content);
         if (frontmatter) |fm| {
-            defer agents.freeParsedFrontmatter(allocator, fm);
+            defer agents.free_parsed_frontmatter(allocator, fm);
             try std.testing.expectEqualStrings("test-coder", fm.name);
             try std.testing.expectEqualStrings("A test coding agent", fm.description);
         }
@@ -112,7 +109,7 @@ test "listAgents returns valid JSON" {
     const allocator = std.testing.allocator;
 
     // Execute list_agents
-    const result = try list_agents.executeListAgents(allocator);
+    const result = try list_agents.execute_list_agents(allocator);
     defer allocator.free(result);
 
     // Verify JSON structure
@@ -161,7 +158,7 @@ test "parseAgent returns valid XML" {
         .agent_name = null,
     };
 
-    const result = try change_agent.executeChangeAgentToString(allocator, input);
+    const result = try change_agent.execute_change_agent_to_string(allocator, input);
     defer allocator.free(result);
 
     // Verify XML structure
@@ -191,7 +188,7 @@ test "parseAgent handles missing agent" {
         .path = null,
     };
 
-    const result = try change_agent.executeChangeAgentToString(allocator, input);
+    const result = try change_agent.execute_change_agent_to_string(allocator, input);
     defer allocator.free(result);
 
     // Verify error XML structure
@@ -249,9 +246,9 @@ test "full workflow with multiple agents" {
     defer agents_dir.close();
 
     // Create multiple test agents
-    try createTestAgentFile(agents_dir, "agent-alpha", "First test agent", "# Agent Alpha\n\nAlpha content.");
-    try createTestAgentFile(agents_dir, "agent-beta", "Second test agent", "# Agent Beta\n\nBeta content.");
-    try createTestAgentFile(agents_dir, "agent-gamma", "Third test agent", "# Agent Gamma\n\nGamma content.");
+    try create_test_agent_file(agents_dir, "agent-alpha", "First test agent", "# Agent Alpha\n\nAlpha content.");
+    try create_test_agent_file(agents_dir, "agent-beta", "Second test agent", "# Agent Beta\n\nBeta content.");
+    try create_test_agent_file(agents_dir, "agent-gamma", "Third test agent", "# Agent Gamma\n\nGamma content.");
 
     // Verify files were created
     var alpha_file = try agents_dir.openFile("agent-alpha/AGENT.md", .{});
@@ -274,7 +271,7 @@ test "full workflow with multiple agents" {
     });
     defer allocator.free(alpha_path);
 
-    const alpha_content = agents.loadAgentFromPath(allocator, alpha_path);
+    const alpha_content = agents.load_agent_from_path(allocator, alpha_path);
     if (alpha_content) |content| {
         defer allocator.free(content);
         try std.testing.expect(std.mem.indexOf(u8, content, "agent-alpha") != null);
@@ -289,7 +286,7 @@ test "full workflow with multiple agents" {
     });
     defer allocator.free(beta_path);
 
-    const beta_content = agents.loadAgentFromPath(allocator, beta_path);
+    const beta_content = agents.load_agent_from_path(allocator, beta_path);
     if (beta_content) |content| {
         defer allocator.free(content);
         try std.testing.expect(std.mem.indexOf(u8, content, "agent-beta") != null);
@@ -304,7 +301,7 @@ test "full workflow with multiple agents" {
     });
     defer allocator.free(gamma_path);
 
-    const gamma_content = agents.loadAgentFromPath(allocator, gamma_path);
+    const gamma_content = agents.load_agent_from_path(allocator, gamma_path);
     if (gamma_content) |content| {
         defer allocator.free(content);
         try std.testing.expect(std.mem.indexOf(u8, content, "agent-gamma") != null);

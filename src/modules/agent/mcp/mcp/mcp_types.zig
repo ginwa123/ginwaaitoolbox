@@ -10,7 +10,7 @@ pub const JsonRpcRequest = struct {
     params: ?[]const u8 = null, // Raw JSON params
 };
 
-/// JSON-RPC 2.0 response message  
+/// JSON-RPC 2.0 response message
 pub const JsonRpcResponse = struct {
     jsonrpc: []const u8 = "2.0",
     id: ?[]const u8,
@@ -157,7 +157,7 @@ pub const McpTool = struct {
 };
 
 pub const InputSchema = struct {
-    @"type": []const u8 = "object",
+    type: []const u8 = "object",
     properties: std.json.Value,
     required: ?[]const []const u8 = null,
 };
@@ -180,7 +180,7 @@ pub const CallToolResult = struct {
 };
 
 pub const ContentBlock = struct {
-    @"type": []const u8,
+    type: []const u8,
     text: ?[]const u8 = null,
     resource: ?ResourceContents = null,
 };

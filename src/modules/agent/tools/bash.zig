@@ -54,7 +54,7 @@ fn is_forbidden_command(command: []const u8) bool {
     return false;
 }
 
-pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
+pub fn execute_bash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     // --- Forbidden pattern check ---
     if (is_forbidden_command(input.command)) {
         return error.CommandForbidden;
@@ -67,14 +67,11 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
         std.log.warn("Self-kill detected: {s}", .{warning});
 
         // Return blocked output instead of executing
-        const stderr_msg = try std.fmt.allocPrint(
-            allocator,
-            "\n=== SELF-KILL PROTECTION ===\n" ++
+        const stderr_msg = try std.fmt.allocPrint(allocator, "\n=== SELF-KILL PROTECTION ===\n" ++
             "Blocked command that would terminate the current process.\n" ++
             "Reason: {s}\n" ++
             "Your PID: {d}\n" ++
-            "===========================\n",
-            .{ warning, self_pid });
+            "===========================\n", .{ warning, self_pid });
         errdefer allocator.free(stderr_msg);
 
         const command_copy = try allocator.dupe(u8, input.command);
@@ -443,7 +440,7 @@ pub fn executeBash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     };
 }
 
-pub fn bashResultToString(allocator: std.mem.Allocator, result: BashOutput) ![]const u8 {
+pub fn bash_result_to_string(allocator: std.mem.Allocator, result: BashOutput) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<stdout>{s}</stdout>
         \\<stderr>{s}</stderr>

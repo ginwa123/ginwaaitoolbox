@@ -208,7 +208,7 @@ pub const TUIWorkflow = struct {
                             .cwd = cwd,
                             .content = msg,
                             .reasoning_content = null,
-                            .role = agent.Role.user.toStr(),
+                            .role = agent.Role.user.to_str(),
                             .finish_reason = "null",
                             .tool_calls = null,
                             .tool_call_id = null,
@@ -296,8 +296,8 @@ pub const TUIWorkflow = struct {
                         .cwd = cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
-                        .role = agent.Role.assistant.toStr(),
-                        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+                        .role = agent.Role.assistant.to_str(),
+                        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
                         .tool_calls = null,
                         .tool_call_id = null,
                         .agent_name = current_agent,
@@ -320,7 +320,7 @@ pub const TUIWorkflow = struct {
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
                         .role = "assistant",
-                        .finish_reason = res_dynamic_agent.finish_reason.?.toStr(),
+                        .finish_reason = res_dynamic_agent.finish_reason.?.to_str(),
                         .tool_calls = null,
                         .tool_call_id = null,
                         .tool_name = null,
@@ -351,8 +351,8 @@ pub const TUIWorkflow = struct {
                             .cwd = cwd,
                             .content = res_dynamic_agent.content,
                             .reasoning_content = res_dynamic_agent.reasoning_content,
-                            .role = agent.Role.assistant.toStr(),
-                            .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+                            .role = agent.Role.assistant.to_str(),
+                            .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
                             .tool_calls = null,
                             .tool_call_id = null,
                             .agent_name = current_agent,
@@ -375,7 +375,7 @@ pub const TUIWorkflow = struct {
                             .content = res_dynamic_agent.content,
                             .reasoning_content = res_dynamic_agent.reasoning_content,
                             .role = "assistant",
-                            .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
+                            .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
                             .tool_calls = null,
                             .tool_call_id = null,
                             .tool_name = null,
@@ -482,7 +482,7 @@ pub const TUIWorkflow = struct {
                 try w.print("--- Message {} (tool_result id:{s}) ---\n", .{ i, msg.tool_call_id orelse "unknown" });
                 if (msg.content) |c| try w.writeAll(c);
             } else if (msg.reasoning_content) |rc| {
-                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.toStr() });
+                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.to_str() });
                 try w.writeAll("[REASONING]\n");
                 try w.writeAll(rc);
                 if (msg.content) |c| {
@@ -490,13 +490,13 @@ pub const TUIWorkflow = struct {
                     try w.writeAll(c);
                 }
             } else if (msg.tool_calls) |tcs| {
-                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.toStr() });
+                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.to_str() });
                 try w.writeAll("[TOOL CALLS]\n");
                 for (tcs) |tc| {
                     try w.print("  - {s}({s})\n", .{ tc.function.name, tc.function.arguments });
                 }
             } else if (msg.content) |c| {
-                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.toStr() });
+                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.to_str() });
                 try w.writeAll(c);
             }
 

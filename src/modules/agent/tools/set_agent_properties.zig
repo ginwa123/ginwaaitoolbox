@@ -7,7 +7,6 @@ const AgentTool = schemas.AgentTool;
 
 /// set_agent_properties tool - placeholder stub for compilation
 /// The actual implementation needs to be completed
-
 pub const SetAgentPropertiesInput = struct {
     temperature: ?f32 = null,
     is_thinking: ?bool = null,

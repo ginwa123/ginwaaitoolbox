@@ -22,17 +22,17 @@ pub const ToolAdapter = struct {
         self.tools.deinit();
     }
 
-    pub fn registerAgentTool(self: *Self, tool: AgentTool) !void {
+    pub fn register_agent_tool(self: *Self, tool: AgentTool) !void {
         try self.tools.put(tool.function.name, tool);
     }
 
     /// Convert AgentTool to McpTool
-    pub fn toMcpTool(self: *Self, agent_tool: AgentTool) !mcp_types.McpTool {
+    pub fn to_mcp_tool(self: *Self, agent_tool: AgentTool) !mcp_types.McpTool {
         var props_buf = std.ArrayList(u8).init(self.allocator);
         defer props_buf.deinit();
 
         try props_buf.appendSlice("{\"type\":\"object\",\"properties\":{");
-        
+
         const props = agent_tool.function.parameters.properties;
         var first = true;
         for (props) |prop| {
@@ -54,7 +54,7 @@ pub const ToolAdapter = struct {
             .name = agent_tool.function.name,
             .description = agent_tool.function.description,
             .inputSchema = .{
-                .@"type" = "object",
+                .type = "object",
                 .properties = .{},
                 .required = agent_tool.function.parameters.required,
             },
@@ -62,7 +62,7 @@ pub const ToolAdapter = struct {
     }
 
     /// Create tool executor that calls registered agent tools
-    pub fn createExecutor(self: *Self) mcp_server.ToolExecutor {
+    pub fn create_executor(self: *Self) mcp_server.ToolExecutor {
         const adapter = self;
         return struct {
             fn exec(

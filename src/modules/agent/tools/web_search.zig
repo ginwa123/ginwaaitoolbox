@@ -7,7 +7,7 @@ const WebSearchResult = schemas.WebSearchResult;
 const AgentTool = schemas.AgentTool;
 
 /// Execute a web browser action using agent-browser CLI
-pub fn executeWebSearch(allocator: std.mem.Allocator, input: WebSearchInput) !WebSearchResult {
+pub fn execute_web_search(allocator: std.mem.Allocator, input: WebSearchInput) !WebSearchResult {
     var command = std.ArrayList(u8).empty;
     errdefer command.deinit(allocator);
 
@@ -22,7 +22,7 @@ pub fn executeWebSearch(allocator: std.mem.Allocator, input: WebSearchInput) !We
         try command.append(allocator, ' ');
 
         // Encode the query for URL
-        const encoded_query = try urlEncode(allocator, query);
+        const encoded_query = try url_encode(allocator, query);
         defer allocator.free(encoded_query);
 
         // Build Google search URL and open it
@@ -67,7 +67,7 @@ pub fn executeWebSearch(allocator: std.mem.Allocator, input: WebSearchInput) !We
         .max_output = 1024 * 1024, // 1MB for page content
     };
 
-    const result = try bashMod.executeBash(allocator, bashInput);
+    const result = try bashMod.execute_bash(allocator, bashInput);
     defer {
         allocator.free(result.stdout);
         allocator.free(result.stderr);
@@ -84,14 +84,16 @@ pub fn executeWebSearch(allocator: std.mem.Allocator, input: WebSearchInput) !We
             .max_output = 1024 * 1024,
         };
 
-        const snapshotResult = bashMod.executeBash(allocator, snapshotInput) catch {
+        const snapshotResult = bashMod.execute_bash(allocator, snapshotInput) catch {
             // If snapshot fails, return the open result
             return WebSearchResult{
                 .success = result.exit_code == 0,
                 .content = try allocator.dupe(u8, result.stdout),
                 .exit_code = result.exit_code,
                 .error_msg = if (result.stderr.len > 0 and !std.mem.eql(u8, result.stderr, "No errors."))
-                    try allocator.dupe(u8, result.stderr) else null,
+                    try allocator.dupe(u8, result.stderr)
+                else
+                    null,
             };
         };
         defer {
@@ -127,7 +129,7 @@ pub fn executeWebSearch(allocator: std.mem.Allocator, input: WebSearchInput) !We
 }
 
 /// Convert result to XML string for agent response
-pub fn webSearchResultToString(allocator: std.mem.Allocator, result: WebSearchResult) ![]const u8 {
+pub fn web_search_result_to_string(allocator: std.mem.Allocator, result: WebSearchResult) ![]const u8 {
     if (result.success) {
         return try std.fmt.allocPrint(allocator,
             \\<success>true</success>
@@ -152,7 +154,7 @@ pub fn webSearchResultToString(allocator: std.mem.Allocator, result: WebSearchRe
 }
 
 /// Encode a string for URL usage (percent encoding)
-fn urlEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+fn url_encode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     defer result.deinit(allocator);
 

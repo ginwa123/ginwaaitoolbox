@@ -100,13 +100,13 @@ const CallToolResult = struct {
     isError: bool = false,
 
     const ContentBlock = struct {
-        @"type": []const u8,
+        type: []const u8,
         text: ?[]const u8 = null,
 
         pub fn jsonStringify(self: @This(), jws: anytype) !void {
             try jws.beginObject();
             try jws.objectField("type");
-            try jws.write(self.@"type");
+            try jws.write(self.type);
             if (self.text) |t| {
                 try jws.objectField("text");
                 try jws.write(t);
@@ -211,19 +211,19 @@ pub const McpServer = struct {
     }
 
     /// Register a tool with the server
-    pub fn registerTool(self: *Self, tool: mcp_types.McpTool) !void {
+    pub fn register_tool(self: *Self, tool: mcp_types.McpTool) !void {
         try self.tools.put(tool.name, tool);
     }
 
     /// Set tool executor function
-    pub fn setToolExecutor(self: *Self, executor: ToolExecutor) void {
+    pub fn set_tool_executor(self: *Self, executor: ToolExecutor) void {
         self.toolExecutor = executor;
     }
 
     /// Run the server - handles incoming requests
     pub fn run(self: *Self) !void {
         while (true) {
-            const message = self.transport.readMessage() catch |e| {
+            const message = self.transport.read_message() catch |e| {
                 if (e == error.EndOfStream) {
                     break;
                 }
@@ -233,14 +233,14 @@ pub const McpServer = struct {
             defer self.allocator.free(message);
 
             // Parse and handle the request
-            self.handleMessage(message) catch |e| {
+            self.handle_message(message) catch |e| {
                 std.debug.print("MCP handle error: {}\n", .{e});
             };
         }
     }
 
     /// Handle a single JSON-RPC message
-    fn handleMessage(self: *Self, message: []const u8) !void {
+    fn handle_message(self: *Self, message: []const u8) !void {
         // Parse JSON-RPC request
         var parser = json.Parser.init(self.allocator, .{
             .allow_trailing_comma = true,
@@ -248,56 +248,56 @@ pub const McpServer = struct {
         defer parser.deinit();
 
         const json_value = parser.parse(message) catch {
-            return self.sendError(null, .ParseError, "Invalid JSON");
+            return self.send_error(null, .ParseError, "Invalid JSON");
         };
         defer json_value.deinit();
 
         const obj = json_value.object orelse {
-            return self.sendError(null, .InvalidRequest, "Expected object");
+            return self.send_error(null, .InvalidRequest, "Expected object");
         };
 
         const method_field = obj.get("method") orelse {
-            return self.sendError(null, .InvalidRequest, "Missing method");
+            return self.send_error(null, .InvalidRequest, "Missing method");
         };
-        
+
         const method_str = method_field.string;
         const id = obj.get("id");
 
         // Handle methods
         if (std.mem.eql(u8, method_str, "initialize")) {
-            try self.handleInitialize(id, obj.get("params"));
+            try self.handle_initialize(id, obj.get("params"));
         } else if (std.mem.eql(u8, method_str, "initialized")) {
             // Notification: client confirms initialization complete, no response
         } else if (std.mem.eql(u8, method_str, "ping")) {
-            try self.handlePing(id);
+            try self.handle_ping(id);
         } else if (std.mem.eql(u8, method_str, "tools/list")) {
-            try self.handleToolsList(id);
+            try self.handle_tools_list(id);
         } else if (std.mem.eql(u8, method_str, "tools/call")) {
-            try self.handleToolsCall(id, obj.get("params"));
+            try self.handle_tools_call(id, obj.get("params"));
         } else if (std.mem.eql(u8, method_str, "resources/list")) {
-            try self.handleResourcesList(id);
+            try self.handle_resources_list(id);
         } else if (std.mem.eql(u8, method_str, "resources/read")) {
-            try self.handleResourcesRead(id, obj.get("params"));
+            try self.handle_resources_read(id, obj.get("params"));
         } else if (std.mem.eql(u8, method_str, "resources/subscribe")) {
-            try self.handleResourcesSubscribe(id, obj.get("params"));
+            try self.handle_resources_subscribe(id, obj.get("params"));
         } else if (std.mem.eql(u8, method_str, "resources/unsubscribe")) {
-            try self.handleResourcesUnsubscribe(id, obj.get("params"));
+            try self.handle_resources_unsubscribe(id, obj.get("params"));
         } else if (std.mem.eql(u8, method_str, "prompts/list")) {
-            try self.handlePromptsList(id);
+            try self.handle_prompts_list(id);
         } else if (std.mem.eql(u8, method_str, "prompts/get")) {
-            try self.handlePromptsGet(id, obj.get("params"));
+            try self.handle_prompts_get(id, obj.get("params"));
         } else if (std.mem.eql(u8, method_str, "completion/complete")) {
-            try self.handleCompletionComplete(id, obj.get("params"));
+            try self.handle_completion_complete(id, obj.get("params"));
         } else if (std.mem.eql(u8, method_str, "logging/setLevel")) {
-            try self.handleLoggingSetLevel(id, obj.get("params"));
+            try self.handle_logging_set_level(id, obj.get("params"));
         } else if (std.mem.startsWith(u8, method_str, "notifications/")) {
             // Notifications don't get responses
         } else {
-            return self.sendError(id, .MethodNotFound, "Unknown method");
+            return self.send_error(id, .MethodNotFound, "Unknown method");
         }
     }
 
-    fn handleInitialize(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+    fn handle_initialize(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         // Parse capabilities if provided
         if (params) |p| {
             if (p.object) |params_obj| {
@@ -326,10 +326,10 @@ pub const McpServer = struct {
             },
         };
 
-        try self.sendResponse(id, result);
+        try self.send_response(id, result);
     }
 
-    fn handleToolsList(self: *Self, id: ?json.Value) !void {
+    fn handle_tools_list(self: *Self, id: ?json.Value) !void {
         // Collect tools into a slice
         var tools_list = std.ArrayList(mcp_types.McpTool).init(self.allocator);
         defer tools_list.deinit();
@@ -344,20 +344,20 @@ pub const McpServer = struct {
         };
         errdefer self.allocator.free(result.tools);
 
-        try self.sendResponse(id, result);
+        try self.send_response(id, result);
     }
 
-    fn handleToolsCall(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+    fn handle_tools_call(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         if (params == null or self.toolExecutor == null) {
-            return self.sendError(id, .InvalidParams, "Missing params or executor");
+            return self.send_error(id, .InvalidParams, "Missing params or executor");
         }
 
         const params_obj = params.?.object orelse {
-            return self.sendError(id, .InvalidParams, "Expected object params");
+            return self.send_error(id, .InvalidParams, "Expected object params");
         };
 
         const name_field = params_obj.get("name") orelse {
-            return self.sendError(id, .InvalidParams, "Missing tool name");
+            return self.send_error(id, .InvalidParams, "Missing tool name");
         };
         const arguments = params_obj.get("arguments");
 
@@ -374,7 +374,7 @@ pub const McpServer = struct {
         errdefer self.allocator.free(content_text);
 
         const content_block = CallToolResult.ContentBlock{
-            .@"type" = "text",
+            .type = "text",
             .text = content_text,
         };
 
@@ -383,45 +383,45 @@ pub const McpServer = struct {
             .isError = false,
         };
 
-        try self.sendResponse(id, result);
+        try self.send_response(id, result);
     }
 
-    fn handleResourcesList(self: *Self, id: ?json.Value) !void {
+    fn handle_resources_list(self: *Self, id: ?json.Value) !void {
         const result = ListResourcesResult{
             .resources = &.{},
         };
-        try self.sendResponse(id, result);
+        try self.send_response(id, result);
     }
 
-    fn handleResourcesRead(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+    fn handle_resources_read(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         _ = params;
         const result = ReadResourceResult{
             .contents = &.{},
         };
-        try self.sendResponse(id, result);
+        try self.send_response(id, result);
     }
 
-    fn handlePing(self: *Self, id: ?json.Value) !void {
+    fn handle_ping(self: *Self, id: ?json.Value) !void {
         // Ping returns an empty result object
         const EmptyResult = struct {};
-        try self.sendResponse(id, EmptyResult{});
+        try self.send_response(id, EmptyResult{});
     }
 
-    fn handleResourcesSubscribe(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+    fn handle_resources_subscribe(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         _ = params;
         // Acknowledge subscription (actual subscription tracking not implemented)
         const EmptyResult = struct {};
-        try self.sendResponse(id, EmptyResult{});
+        try self.send_response(id, EmptyResult{});
     }
 
-    fn handleResourcesUnsubscribe(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+    fn handle_resources_unsubscribe(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         _ = params;
         // Acknowledge unsubscription (actual subscription tracking not implemented)
         const EmptyResult = struct {};
-        try self.sendResponse(id, EmptyResult{});
+        try self.send_response(id, EmptyResult{});
     }
 
-    fn handlePromptsList(self: *Self, id: ?json.Value) !void {
+    fn handle_prompts_list(self: *Self, id: ?json.Value) !void {
         const ListPromptsResult = struct {
             prompts: []const mcp_types.Prompt,
 
@@ -435,10 +435,10 @@ pub const McpServer = struct {
         const result = ListPromptsResult{
             .prompts = &.{},
         };
-        try self.sendResponse(id, result);
+        try self.send_response(id, result);
     }
 
-    fn handlePromptsGet(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+    fn handle_prompts_get(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         _ = params;
         // Prompts not yet implemented - return empty result for now
         const GetPromptResult = struct {
@@ -457,10 +457,10 @@ pub const McpServer = struct {
             }
         };
         const result = GetPromptResult{};
-        try self.sendResponse(id, result);
+        try self.send_response(id, result);
     }
 
-    fn handleCompletionComplete(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+    fn handle_completion_complete(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         _ = params;
         const CompleteResult = struct {
             completion: struct {
@@ -498,17 +498,17 @@ pub const McpServer = struct {
                 .hasMore = false,
             },
         };
-        try self.sendResponse(id, result);
+        try self.send_response(id, result);
     }
 
-    fn handleLoggingSetLevel(self: *Self, id: ?json.Value, params: ?json.Value) !void {
+    fn handle_logging_set_level(self: *Self, id: ?json.Value, params: ?json.Value) !void {
         _ = params;
         // Log level stored but not yet used (logging infrastructure not implemented)
         const EmptyResult = struct {};
-        try self.sendResponse(id, EmptyResult{});
+        try self.send_response(id, EmptyResult{});
     }
 
-    fn sendResponse(self: *Self, id: ?json.Value, result: anytype) !void {
+    fn send_response(self: *Self, id: ?json.Value, result: anytype) !void {
         // Use arena for JSON construction
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -524,10 +524,10 @@ pub const McpServer = struct {
         const message = try aw.toOwnedSlice();
         errdefer arena_alloc.free(message);
 
-        try self.transport.writeMessage(try self.allocator.dupe(u8, message));
+        try self.transport.write_message(try self.allocator.dupe(u8, message));
     }
 
-    fn sendError(self: *Self, id: ?json.Value, code: mcp_types.ErrorCode, message: []const u8) !void {
+    fn send_error(self: *Self, id: ?json.Value, code: mcp_types.ErrorCode, message: []const u8) !void {
         // Use arena for JSON construction
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -546,7 +546,7 @@ pub const McpServer = struct {
         const json_str = try aw.toOwnedSlice();
         errdefer arena_alloc.free(json_str);
 
-        try self.transport.writeMessage(try self.allocator.dupe(u8, json_str));
+        try self.transport.write_message(try self.allocator.dupe(u8, json_str));
     }
 };
 

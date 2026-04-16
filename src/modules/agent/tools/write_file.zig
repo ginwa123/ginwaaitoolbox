@@ -61,7 +61,7 @@ pub fn write_file(
     };
 }
 
-pub fn writeFileToString(allocator: std.mem.Allocator, result: WriteFileResult) ![]const u8 {
+pub fn write_file_to_string(allocator: std.mem.Allocator, result: WriteFileResult) ![]const u8 {
     return std.fmt.allocPrint(allocator, "<file_write>{s}</file_write>", .{result.path});
 }
 

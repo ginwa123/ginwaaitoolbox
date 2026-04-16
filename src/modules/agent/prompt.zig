@@ -120,11 +120,13 @@ pub fn build_agent_prompt(
     try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, SkillsTriggers);
     try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, GitPrompt);
+    try result.appendSlice(allocator, "\n\n");
     try result.appendSlice(allocator, ProceduralMemory);
     try result.appendSlice(allocator, "\n\n");
 
     // 10. Skills list (dynamic)
-    const skills_json = try list_skills.executeListSkills(allocator);
+    const skills_json = try list_skills.execute_list_skills(allocator);
     defer allocator.free(skills_json);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{});
@@ -186,8 +188,8 @@ pub fn build_agent_prompt(
     try result.appendSlice(allocator, SpecializationTable);
 
     // Dynamic agents
-    const agents_list = agents.listAgents(allocator);
-    defer agents.freeAgentsList(allocator, agents_list);
+    const agents_list = agents.list_agents(allocator);
+    defer agents.free_agents_list(allocator, agents_list);
 
     if (agents_list.len > 0) {
         try result.appendSlice(allocator, "\n\n## Available Dynamic Agents\n\n");

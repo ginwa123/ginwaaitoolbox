@@ -16,12 +16,12 @@ pub const LspError = error{
 };
 
 // JSON-RPC message helpers
-pub fn createMessage(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+pub fn create_message(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "Content-Length: {d}\r\n\r\n{s}", .{ content.len, content });
 }
 
 // Read one JSON-RPC message from LSP stdout
-fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
+fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     // Read headers until empty line
     var header_buf: [1024]u8 = undefined;
     var header_len: usize = 0;
@@ -73,7 +73,7 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
 /// - { kind: "markdown" | "plaintext", value: string }
 /// - string[] (array of strings)
 /// - { kind: ..., value: ... }[] (array of marked strings)
-fn parseHoverContents(allocator: std.mem.Allocator, contents: json.Value) !?[]u8 {
+fn parse_hover_contents(allocator: std.mem.Allocator, contents: json.Value) !?[]u8 {
     switch (contents) {
         .string => {
             return try allocator.dupe(u8, contents.string);
@@ -121,7 +121,7 @@ fn parseHoverContents(allocator: std.mem.Allocator, contents: json.Value) !?[]u8
 }
 
 /// Parse LSP hover response result
-fn parseHoverResult(allocator: std.mem.Allocator, result: json.Value) !LspHoverOutput {
+fn parse_hover_result(allocator: std.mem.Allocator, result: json.Value) !LspHoverOutput {
     if (result == .null) {
         return LspHoverOutput{
             .contents = null,
@@ -142,7 +142,7 @@ fn parseHoverResult(allocator: std.mem.Allocator, result: json.Value) !LspHoverO
     var contents: ?[]u8 = null;
     const contents_val = obj.get("contents");
     if (contents_val) |cv| {
-        contents = try parseHoverContents(allocator, cv);
+        contents = try parse_hover_contents(allocator, cv);
     }
 
     // Parse range
@@ -194,7 +194,7 @@ fn parseHoverResult(allocator: std.mem.Allocator, result: json.Value) !LspHoverO
     };
 }
 
-pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspHoverOutput {
+pub fn execute_lsp_hover(allocator: std.mem.Allocator, input: LspHoverInput) !LspHoverOutput {
     // Use arena allocator for all temporary allocations
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -241,7 +241,7 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
     try init_writer.print("\"rootUri\":\"{s}\",", .{root_uri});
     try init_writer.print("\"capabilities\":{{}}}}}}", .{});
     const init_json = try init_json_buf.toOwnedSlice(arena_allocator);
-    const init_msg = try createMessage(arena_allocator, init_json);
+    const init_msg = try create_message(arena_allocator, init_json);
     try stdin.writeAll(init_msg);
 
     // Read initialize response (may need to skip notifications)
@@ -250,7 +250,7 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
     const max_init_attempts = 10;
 
     while (init_attempts < max_init_attempts) {
-        const msg_data = try readMessage(arena_allocator, stdout);
+        const msg_data = try read_message(arena_allocator, stdout);
 
         // Parse to check if this is the response with id: 1
         var temp_parsed = json.parseFromSlice(json.Value, arena_allocator, msg_data, .{}) catch {
@@ -274,7 +274,7 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
     }
 
     // 2. Send initialized notification
-    const initialized_msg = try createMessage(arena_allocator,
+    const initialized_msg = try create_message(allocator,
         \\{"jsonrpc":"2.0","method":"initialized","params":{}}
     );
     try stdin.writeAll(initialized_msg);
@@ -301,7 +301,7 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
     const didopen_end = "\"}}}}";
     const full_didopen = try std.fmt.allocPrint(arena_allocator, "{s}{s}{s}", .{ didopen_json, escaped_content.items, didopen_end });
 
-    const didopen_msg = try createMessage(arena_allocator, full_didopen);
+    const didopen_msg = try create_message(arena_allocator, full_didopen);
     try stdin.writeAll(didopen_msg);
 
     // Small delay to let LSP process the didOpen
@@ -319,7 +319,7 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
     try w.print("\"position\":{{\"line\":{d},\"character\":{d}}}", .{ input.line, input.character });
     try w.print("}}}}", .{});
 
-    const hover_msg = try createMessage(arena_allocator, hover_json.items);
+    const hover_msg = try create_message(arena_allocator, hover_json.items);
     try stdin.writeAll(hover_msg);
 
     // 5. Read hover response (may need to skip notifications)
@@ -328,7 +328,7 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
     const max_attempts = 10;
 
     while (attempts < max_attempts) {
-        const msg_data = try readMessage(arena_allocator, stdout);
+        const msg_data = try read_message(arena_allocator, stdout);
 
         // Parse to check if this is the response with id: 2
         var temp_parsed = json.parseFromSlice(json.Value, arena_allocator, msg_data, .{}) catch {
@@ -365,10 +365,10 @@ pub fn executeLspHover(allocator: std.mem.Allocator, input: LspHoverInput) !LspH
     }
 
     // Use the original allocator for the final result (lives beyond this function)
-    return try parseHoverResult(allocator, result_opt.?);
+    return try parse_hover_result(allocator, result_opt.?);
 }
 
-pub fn lspHoverToString(allocator: std.mem.Allocator, result: LspHoverOutput) ![]const u8 {
+pub fn lsp_hover_to_string(allocator: std.mem.Allocator, result: LspHoverOutput) ![]const u8 {
     if (!result.found or result.contents == null) {
         return try allocator.dupe(u8, "<found>false</found>");
     }

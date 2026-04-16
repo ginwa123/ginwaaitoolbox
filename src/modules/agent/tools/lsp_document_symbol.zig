@@ -17,12 +17,12 @@ pub const LspError = error{
 };
 
 // JSON-RPC message helpers
-pub fn createMessage(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+pub fn create_message(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "Content-Length: {d}\r\n\r\n{s}", .{ content.len, content });
 }
 
 // Read one JSON-RPC message from LSP stdout
-fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
+fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     // Read headers until empty line
     var header_buf: [1024]u8 = undefined;
     var header_len: usize = 0;
@@ -70,7 +70,7 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
 }
 
 /// Parse a range object from JSON
-fn parseRange(obj: json.ObjectMap) ?struct { line: u32, character: u32 } {
+fn parse_range(obj: json.ObjectMap) ?struct { line: u32, character: u32 } {
     const start_val = obj.get("start") orelse return null;
     if (start_val != .object) return null;
 
@@ -85,7 +85,7 @@ fn parseRange(obj: json.ObjectMap) ?struct { line: u32, character: u32 } {
 }
 
 /// Parse a single DocumentSymbol or SymbolInformation object recursively
-fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspDocumentSymbol {
+fn parse_document_symbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspDocumentSymbol {
     if (sym_value != .object) return null;
     const obj = sym_value.object;
 
@@ -122,7 +122,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
         const range_val = loc.object.get("range") orelse return null;
         if (range_val != .object) return null;
 
-        const start = parseRange(range_val.object);
+        const start = parse_range(range_val.object);
         if (start) |s| {
             line = s.line;
             character = s.character;
@@ -146,7 +146,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
         const range_val = obj.get("range");
         if (range_val) |rv| {
             if (rv == .object) {
-                const start = parseRange(rv.object);
+                const start = parse_range(rv.object);
                 if (start) |s| {
                     line = s.line;
                     character = s.character;
@@ -172,7 +172,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
         const sel_range_val = obj.get("selectionRange");
         if (sel_range_val) |srv| {
             if (srv == .object) {
-                const sel_start = parseRange(srv.object);
+                const sel_start = parse_range(srv.object);
                 if (sel_start) |s| {
                     selection_line = s.line;
                     selection_character = s.character;
@@ -190,7 +190,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
             defer child_list.deinit(allocator);
 
             for (cv.array.items) |child_item| {
-                const child = try parseDocumentSymbol(allocator, child_item);
+                const child = try parse_document_symbol(allocator, child_item);
                 if (child) |c| {
                     try child_list.append(allocator, c);
                 }
@@ -217,7 +217,7 @@ fn parseDocumentSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?Ls
 }
 
 /// Parse LSP document/symbol response result
-fn parseDocumentSymbolResult(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspDocumentSymbolOutput {
+fn parse_document_symbol_result(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspDocumentSymbolOutput {
     if (result == .null) {
         return LspDocumentSymbolOutput{
             .symbols = &.{},
@@ -233,7 +233,7 @@ fn parseDocumentSymbolResult(allocator: std.mem.Allocator, result: json.Value, m
     if (result == .array) {
         for (result.array.items) |item| {
             if (symbols.items.len >= limit) break;
-            const sym = try parseDocumentSymbol(allocator, item);
+            const sym = try parse_document_symbol(allocator, item);
             if (sym) |s| {
                 try symbols.append(allocator, s);
             }
@@ -249,11 +249,11 @@ fn parseDocumentSymbolResult(allocator: std.mem.Allocator, result: json.Value, m
 }
 
 /// Recursively write symbol to XML
-fn writeSymbolToXml(writer: anytype, sym: LspDocumentSymbol, indent_level: u32) !void {
+fn write_symbol_to_xml(writer: anytype, sym: LspDocumentSymbol, indent_level: u32) !void {
     // Build indentation string
     var indent_buf: [64]u8 = undefined;
     const indent = if (indent_level * 2 < indent_buf.len)
-        indent_buf[0..indent_level * 2]
+        indent_buf[0 .. indent_level * 2]
     else
         indent_buf[0..64];
     for (indent) |*c| c.* = ' ';
@@ -284,7 +284,7 @@ fn writeSymbolToXml(writer: anytype, sym: LspDocumentSymbol, indent_level: u32) 
         if (children.len > 0) {
             try writer.print("{s}  <children>\n", .{indent});
             for (children) |child| {
-                try writeSymbolToXml(writer, child, indent_level + 2);
+                try write_symbol_to_xml(writer, child, indent_level + 2);
             }
             try writer.print("{s}  </children>\n", .{indent});
         }
@@ -293,7 +293,7 @@ fn writeSymbolToXml(writer: anytype, sym: LspDocumentSymbol, indent_level: u32) 
     try writer.print("{s}</symbol>\n", .{indent});
 }
 
-pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocumentSymbolInput) !LspDocumentSymbolOutput {
+pub fn execute_lsp_document_symbol(allocator: std.mem.Allocator, input: LspDocumentSymbolInput) !LspDocumentSymbolOutput {
     // Use arena allocator for all temporary allocations
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -340,7 +340,7 @@ pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocument
     try init_writer.print("\"rootUri\":\"{s}\",", .{root_uri});
     try init_writer.print("\"capabilities\":{{}}}}}}", .{});
     const init_json = try init_json_buf.toOwnedSlice(arena_allocator);
-    const init_msg = try createMessage(arena_allocator, init_json);
+    const init_msg = try create_message(arena_allocator, init_json);
     try stdin.writeAll(init_msg);
 
     // Read initialize response (may need to skip notifications)
@@ -349,7 +349,7 @@ pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocument
     const max_init_attempts = 10;
 
     while (init_attempts < max_init_attempts) {
-        const msg_data = try readMessage(arena_allocator, stdout);
+        const msg_data = try read_message(arena_allocator, stdout);
 
         // Parse to check if this is the response with id: 1
         var temp_parsed = json.parseFromSlice(json.Value, arena_allocator, msg_data, .{}) catch {
@@ -373,7 +373,7 @@ pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocument
     }
 
     // 2. Send initialized notification
-    const initialized_msg = try createMessage(arena_allocator,
+    const initialized_msg = try create_message(arena_allocator,
         \\{"jsonrpc":"2.0","method":"initialized","params":{}}
     );
     try stdin.writeAll(initialized_msg);
@@ -400,7 +400,7 @@ pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocument
     const didopen_end = "\"}}}}";
     const full_didopen = try std.fmt.allocPrint(arena_allocator, "{s}{s}{s}", .{ didopen_json, escaped_content.items, didopen_end });
 
-    const didopen_msg = try createMessage(arena_allocator, full_didopen);
+    const didopen_msg = try create_message(arena_allocator, full_didopen);
     try stdin.writeAll(didopen_msg);
 
     // Small delay to let LSP process the didOpen
@@ -417,7 +417,7 @@ pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocument
     try w.print("\"textDocument\":{{\"uri\":\"{s}\"}}", .{uri});
     try w.print("}}}}", .{});
 
-    const symbol_msg = try createMessage(arena_allocator, symbol_json.items);
+    const symbol_msg = try create_message(arena_allocator, symbol_json.items);
     try stdin.writeAll(symbol_msg);
 
     // 5. Read documentSymbol response (may need to skip notifications)
@@ -426,7 +426,7 @@ pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocument
     const max_attempts = 10;
 
     while (attempts < max_attempts) {
-        const msg_data = try readMessage(arena_allocator, stdout);
+        const msg_data = try read_message(arena_allocator, stdout);
 
         // Parse to check if this is the response with id: 2
         var temp_parsed = json.parseFromSlice(json.Value, arena_allocator, msg_data, .{}) catch {
@@ -463,10 +463,10 @@ pub fn executeLspDocumentSymbol(allocator: std.mem.Allocator, input: LspDocument
     }
 
     // Use the original allocator for the final result (lives beyond this function)
-    return try parseDocumentSymbolResult(allocator, result_opt.?, input.max_output);
+    return try parse_document_symbol_result(allocator, result_opt.?, input.max_output);
 }
 
-pub fn lspDocumentSymbolToString(allocator: std.mem.Allocator, result: LspDocumentSymbolOutput) ![]const u8 {
+pub fn lsp_document_symbol_to_string(allocator: std.mem.Allocator, result: LspDocumentSymbolOutput) ![]const u8 {
     if (!result.found or result.symbols.len == 0) {
         return try allocator.dupe(u8, "<found>false</found>");
     }
@@ -481,7 +481,7 @@ pub fn lspDocumentSymbolToString(allocator: std.mem.Allocator, result: LspDocume
     try writer.print("<symbols>\n", .{});
 
     for (result.symbols) |sym| {
-        try writeSymbolToXml(writer, sym, 1);
+        try write_symbol_to_xml(writer, sym, 1);
     }
 
     try writer.print("</symbols>", .{});

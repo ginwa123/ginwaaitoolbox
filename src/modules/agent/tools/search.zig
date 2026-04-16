@@ -35,7 +35,7 @@ pub const SearchResult = struct {
     }
 };
 
-fn getTextFromJson(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
+fn get_text_from_json(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
     if (obj.get(key)) |val| {
         if (val == .object) {
             if (val.object.get("text")) |text_val| {
@@ -48,7 +48,7 @@ fn getTextFromJson(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 
     return null;
 }
 
-fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
+fn get_matched_lines(obj: *const std.json.ObjectMap) ?usize {
     if (obj.get("stats")) |stats| {
         if (stats == .object) {
             if (stats.object.get("matched_lines")) |ml| {
@@ -66,7 +66,7 @@ fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
     return null;
 }
 
-pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchResult {
+pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchResult {
     // Validate head/tail are mutually exclusive
     if (input.head != null and input.tail != null) {
         return error.HeadAndTailMutuallyExclusive;
@@ -123,7 +123,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
                 if (type_val == .string and std.mem.eql(u8, type_val.string, "begin")) {
                     if (parsed.value.object.get("data")) |data| {
                         if (data == .object) {
-                            if (getTextFromJson(&data.object, "path")) |path_text| {
+                            if (get_text_from_json(&data.object, "path")) |path_text| {
                                 current_file = path_text;
                             }
                         }
@@ -136,11 +136,11 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
                             var line_num: usize = 0;
                             var has_required = false;
 
-                            if (getTextFromJson(&data.object, "path")) |path_text| {
+                            if (get_text_from_json(&data.object, "path")) |path_text| {
                                 match_file = path_text;
                             }
 
-                            if (getTextFromJson(&data.object, "lines")) |lines_text| {
+                            if (get_text_from_json(&data.object, "lines")) |lines_text| {
                                 match_snippet = lines_text;
                             }
 
@@ -173,7 +173,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
                     if (current_file != null) {
                         if (parsed.value.object.get("data")) |data| {
                             if (data == .object) {
-                                if (getMatchedLines(&data.object)) |ml| {
+                                if (get_matched_lines(&data.object)) |ml| {
                                     try file_stats.put(current_file.?, ml);
                                 }
                             }
@@ -244,7 +244,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, input: SearchInput) !SearchRe
 }
 
 /// Convert SearchResult to compressed XML string format
-pub fn searchResultToString(allocator: std.mem.Allocator, result: SearchResult) ![]const u8 {
+pub fn search_result_to_string(allocator: std.mem.Allocator, result: SearchResult) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 

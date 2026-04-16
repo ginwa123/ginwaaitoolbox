@@ -8,10 +8,10 @@ test "web search with query returns content" {
     const input = WebSearchInput{
         .query = "example domain",
     };
-    
+
     const result = try webSearchMod.executeWebSearch(allocator, input);
     defer result.deinit(allocator);
-    
+
     try std.testing.expect(result.success);
     try std.testing.expect(result.content.len > 0);
     try std.testing.expect(result.exit_code == 0);
@@ -23,10 +23,10 @@ test "web search with direct URL" {
         .url = "https://example.com",
         .action = "snapshot",
     };
-    
+
     const result = try webSearchMod.executeWebSearch(allocator, input);
     defer result.deinit(allocator);
-    
+
     // Either success or failure is acceptable (depends on agent-browser availability)
     try std.testing.expect(result.content.len > 0 or result.error_msg != null);
 }
@@ -38,10 +38,10 @@ test "web search with click action" {
         .action = "click",
         .selector = "#submit-btn",
     };
-    
+
     const result = try webSearchMod.executeWebSearch(allocator, input);
     defer result.deinit(allocator);
-    
+
     // Should return some output
     try std.testing.expect(result.content.len >= 0);
 }
@@ -58,10 +58,10 @@ test "web search result to string conversion" {
         allocator.free(result.content);
         if (result.error_msg) |msg| allocator.free(msg);
     }
-    
+
     const output = try webSearchMod.webSearchResultToString(allocator, result);
     defer allocator.free(output);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, output, "<success>true</success>") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "<content>test content</content>") != null);
 }

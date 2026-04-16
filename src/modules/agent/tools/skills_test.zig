@@ -18,10 +18,7 @@ test "loadSkillsFromPath loads valid file" {
 
     // Create a temporary test file
     const test_content = "# Test Skills\n\nThis is a test.";
-    const test_file = std.fs.cwd().createFile(
-        "test_skills_temp.md",
-        .{ .truncate = true }
-    ) catch |err| {
+    const test_file = std.fs.cwd().createFile("test_skills_temp.md", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
@@ -43,10 +40,7 @@ test "loadSkillsFromPath returns empty string for empty file" {
     const allocator = testing.allocator;
 
     // Create an empty test file
-    const test_file = std.fs.cwd().createFile(
-        "test_skills_empty.md",
-        .{ .truncate = true }
-    ) catch |err| {
+    const test_file = std.fs.cwd().createFile("test_skills_empty.md", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
@@ -66,10 +60,7 @@ test "loadSkillsFromPath returns empty string for whitespace-only file" {
     const allocator = testing.allocator;
 
     // Create a whitespace-only test file
-    const test_file = std.fs.cwd().createFile(
-        "test_skills_whitespace.md",
-        .{ .truncate = true }
-    ) catch |err| {
+    const test_file = std.fs.cwd().createFile("test_skills_whitespace.md", .{ .truncate = true }) catch |err| {
         std.debug.print("Could not create test file: {s}\n", .{@errorName(err)});
         return error.SkipZigTest;
     };
@@ -183,7 +174,7 @@ test "getGlobalSkillsPath returns XDG-compliant path" {
         // On Linux, should contain .config or XDG_CONFIG_HOME
         if (builtin.os.tag == .linux) {
             const has_config = std.mem.indexOf(u8, p, ".config") != null or
-                               std.posix.getenv("XDG_CONFIG_HOME") != null;
+                std.posix.getenv("XDG_CONFIG_HOME") != null;
             try testing.expect(has_config);
         }
     }
@@ -319,7 +310,7 @@ test "parseSkill returns null for invalid skill name" {
 const list_skills = @import("list_skills.zig");
 const get_skill = @import("get_skill.zig");
 
-test "executeListSkills returns JSON with skills" {
+test "execute_list_skills returns JSON with skills" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -359,7 +350,7 @@ test "executeListSkills returns JSON with skills" {
 
     try file1.writeAll(skill1_content);
 
-    const result = try list_skills.executeListSkills(allocator);
+    const result = try list_skills.execute_list_skills(allocator);
     defer allocator.free(result);
 
     // Verify JSON structure

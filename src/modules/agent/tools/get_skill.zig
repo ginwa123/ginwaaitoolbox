@@ -50,15 +50,15 @@ pub const get_skill_tool = AgentTool{
 /// Execute the get_skill tool
 /// Returns an XML string with the skill content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeGetSkillToString(allocator: std.mem.Allocator, input: GetSkillInput) ![]const u8 {
+pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, input: GetSkillInput) ![]const u8 {
     // Check if path is provided - load from file
     if (input.path) |path| {
-        return loadSkillFromPath(allocator, path);
+        return load_skill_from_path(allocator, path);
     }
 
     // Otherwise try to parse by skill name
     if (input.skill_name) |skill_name| {
-        return loadSkillByName(allocator, skill_name);
+        return load_skill_by_name(allocator, skill_name);
     }
 
     // No skill_name or path provided
@@ -66,7 +66,7 @@ pub fn executeGetSkillToString(allocator: std.mem.Allocator, input: GetSkillInpu
 }
 
 /// Load skill from absolute file path
-fn loadSkillFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+fn load_skill_from_path(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const file = std.fs.openFileAbsolute(path, .{}) catch {
         const result = try std.fmt.allocPrint(allocator,
             \\<skill_name></skill_name>
@@ -92,7 +92,7 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
     // Extract filename without extension for skill_name
     const filename = std.fs.path.basename(path);
     const ext = std.fs.path.extension(filename);
-    const skill_name = filename[0..filename.len - ext.len];
+    const skill_name = filename[0 .. filename.len - ext.len];
 
     const result = try std.fmt.allocPrint(allocator,
         \\<skill_name>{s}</skill_name>
@@ -103,9 +103,9 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
 }
 
 /// Load skill by name from built-in skills
-fn loadSkillByName(allocator: std.mem.Allocator, skill_name: []const u8) ![]const u8 {
+fn load_skill_by_name(allocator: std.mem.Allocator, skill_name: []const u8) ![]const u8 {
     // Try to parse the skill
-    if (skills.parseSkill(allocator, skill_name)) |content| {
+    if (skills.parse_skill(allocator, skill_name)) |content| {
         defer allocator.free(content);
         // Success - return the skill content
         const result = try std.fmt.allocPrint(allocator,
@@ -116,8 +116,8 @@ fn loadSkillByName(allocator: std.mem.Allocator, skill_name: []const u8) ![]cons
         return result;
     } else {
         // Skill not found - list available skills
-        const skills_list = skills.listSkills(allocator);
-        defer skills.freeSkillsList(allocator, skills_list);
+        const skills_list = skills.list_skills(allocator);
+        defer skills.free_skills_list(allocator, skills_list);
 
         // Build XML string for available skills
         var available_str: std.ArrayList(u8) = .empty;
@@ -140,4 +140,3 @@ fn loadSkillByName(allocator: std.mem.Allocator, skill_name: []const u8) ![]cons
         return result;
     }
 }
-

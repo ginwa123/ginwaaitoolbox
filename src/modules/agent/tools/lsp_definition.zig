@@ -17,12 +17,12 @@ pub const LspError = error{
 };
 
 // JSON-RPC message helpers
-pub fn createMessage(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+pub fn create_message(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "Content-Length: {d}\r\n\r\n{s}", .{ content.len, content });
 }
 
 // Read one JSON-RPC message from LSP stdout
-fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
+fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     // Read headers until empty line
     var header_buf: [1024]u8 = undefined;
     var header_len: usize = 0;
@@ -70,7 +70,7 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
 }
 
 /// Find the zls binary in PATH or return BinaryNotFound error
-fn findZls(allocator: std.mem.Allocator) ![]u8 {
+fn find_zls(allocator: std.mem.Allocator) ![]u8 {
     // First check if zls exists in PATH
     const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch return LspError.BinaryNotFound;
     defer allocator.free(path_env);
@@ -89,7 +89,7 @@ fn findZls(allocator: std.mem.Allocator) ![]u8 {
 }
 
 /// Find project root by searching upward for build.zig
-fn findProjectRoot(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
+fn find_project_root(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
     var dir = std.fs.path.dirname(file_path) orelse ".";
 
     while (true) {
@@ -112,7 +112,7 @@ fn findProjectRoot(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
 
 /// Parse a single LSP Location or LocationLink object
 /// Returns the parsed LspLocation or null if parsing fails
-fn parseLocation(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
+fn parse_location(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
     if (loc_value != .object) return null;
 
     const obj = loc_value.object;
@@ -217,7 +217,7 @@ fn parseLocation(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocat
 
 /// Parse LSP definition response result
 /// Handles: null, single Location, Location[], LocationLink[]
-fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value) !LspDefinitionOutput {
+fn parse_definition_result(allocator: std.mem.Allocator, result: json.Value) !LspDefinitionOutput {
     // Handle null result
     if (result == .null) {
         return LspDefinitionOutput{
@@ -232,7 +232,7 @@ fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value) !LspD
     // Handle array of locations (Location[] or LocationLink[])
     if (result == .array) {
         for (result.array.items) |item| {
-            const loc = try parseLocation(allocator, item);
+            const loc = try parse_location(allocator, item);
             if (loc) |l| {
                 try locations.append(allocator, l);
             }
@@ -240,7 +240,7 @@ fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value) !LspD
     }
     // Handle single location object
     else if (result == .object) {
-        const loc = try parseLocation(allocator, result);
+        const loc = try parse_location(allocator, result);
         if (loc) |l| {
             try locations.append(allocator, l);
         }
@@ -255,7 +255,7 @@ fn parseDefinitionResult(allocator: std.mem.Allocator, result: json.Value) !LspD
     };
 }
 
-pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionInput) !LspDefinitionOutput {
+pub fn execute_lsp_definition(allocator: std.mem.Allocator, input: LspDefinitionInput) !LspDefinitionOutput {
     // Verify file exists
     std.fs.accessAbsolute(input.file_path, .{}) catch return LspError.FileNotFound;
 
@@ -266,7 +266,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     defer allocator.free(content);
 
     // Find zls binary
-    const zls_path = try findZls(allocator);
+    const zls_path = try find_zls(allocator);
     defer allocator.free(zls_path);
 
     // Spawn zls
@@ -289,7 +289,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     defer allocator.free(uri);
 
     // Find project root by searching upward for build.zig
-    const root_dir = try findProjectRoot(allocator, input.file_path);
+    const root_dir = try find_project_root(allocator, input.file_path);
     defer allocator.free(root_dir);
     const root_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{root_dir});
     defer allocator.free(root_uri);
@@ -308,7 +308,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     try init_writer.print("\"capabilities\":{{}}}}}}", .{});
     const init_json = try init_json_buf.toOwnedSlice(allocator);
     defer allocator.free(init_json);
-    const init_msg = try createMessage(allocator, init_json);
+    const init_msg = try create_message(allocator, init_json);
     defer allocator.free(init_msg);
     try stdin.writeAll(init_msg);
 
@@ -318,7 +318,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     const max_init_attempts = 10;
 
     while (init_attempts < max_init_attempts) {
-        const msg_data = try readMessage(allocator, stdout);
+        const msg_data = try read_message(allocator, stdout);
 
         // Parse to check if this is the response with id: 1
         var temp_parsed = json.parseFromSlice(json.Value, allocator, msg_data, .{}) catch {
@@ -347,7 +347,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     std.debug.print("LSP init response: {s}\n", .{init_response});
 
     // 2. Send initialized notification
-    const initialized_msg = try createMessage(allocator,
+    const initialized_msg = try create_message(allocator,
         \\{"jsonrpc":"2.0","method":"initialized","params":{}}
     );
     defer allocator.free(initialized_msg);
@@ -379,7 +379,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     const full_didopen = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ didopen_json, escaped_content.items, didopen_end });
     defer allocator.free(full_didopen);
 
-    const didopen_msg = try createMessage(allocator, full_didopen);
+    const didopen_msg = try create_message(allocator, full_didopen);
     defer allocator.free(didopen_msg);
     std.debug.print("didOpen message: {s}\n", .{didopen_msg});
     try stdin.writeAll(didopen_msg);
@@ -401,7 +401,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     try w.print("\"position\":{{\"line\":{d},\"character\":{d}}}", .{ input.line, input.character });
     try w.print("}}}}", .{});
 
-    const def_msg = try createMessage(allocator, def_json.items);
+    const def_msg = try create_message(allocator, def_json.items);
     defer allocator.free(def_msg);
     try stdin.writeAll(def_msg);
 
@@ -411,7 +411,7 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     const max_attempts = 10;
 
     while (attempts < max_attempts) {
-        const msg_data = try readMessage(allocator, stdout);
+        const msg_data = try read_message(allocator, stdout);
 
         // Parse to check if this is the response with id: 2
         var temp_parsed = json.parseFromSlice(json.Value, allocator, msg_data, .{}) catch {
@@ -470,10 +470,10 @@ pub fn executeLspDefinition(allocator: std.mem.Allocator, input: LspDefinitionIn
     }
 
     // Use the original allocator for the final result (lives beyond this function)
-    return try parseDefinitionResult(allocator, result_opt.?);
+    return try parse_definition_result(allocator, result_opt.?);
 }
 
-pub fn lspDefinitionToString(allocator: std.mem.Allocator, result: LspDefinitionOutput) ![]const u8 {
+pub fn lsp_definition_to_string(allocator: std.mem.Allocator, result: LspDefinitionOutput) ![]const u8 {
     if (result.found and result.definitions.len > 0) {
         // Return info about the first definition
         const first_def = result.definitions[0];

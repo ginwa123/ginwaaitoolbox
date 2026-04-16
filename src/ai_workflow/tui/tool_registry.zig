@@ -81,7 +81,7 @@ pub fn runWithContext(
 
     const is_background = parsed.value.background;
 
-    const bash_output = try bash_tool_mod.executeBash(allocator, parsed.value);
+    const bash_output = try bash_tool_mod.execute_bash(allocator, parsed.value);
 
     // If background mode and DB is available, save the process info
     if (is_background and db != null and session_id != null) {
@@ -124,7 +124,7 @@ pub fn runWithContext(
         }
     }
 
-    const res_bash = try bash_tool_mod.bashResultToString(allocator, bash_output);
+    const res_bash = try bash_tool_mod.bash_result_to_string(allocator, bash_output);
 
     return res_bash;
 }
@@ -218,7 +218,7 @@ pub fn execWriteFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqli
     defer parsed.deinit();
 
     const write_result = try write_file_mod.write_file(allocator, parsed.value);
-    const res_write = try write_file_mod.writeFileToString(allocator, write_result);
+    const res_write = try write_file_mod.write_file_to_string(allocator, write_result);
     write_result.deinit(allocator);
 
     return res_write;
@@ -229,7 +229,7 @@ pub fn execListSkills(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sql
     _ = db;
     _ = session_id;
 
-    return list_skills_mod.executeListSkills(allocator) catch blk: {
+    return list_skills_mod.execute_list_skills(allocator) catch blk: {
         break :blk "{\"error\": \"Failed to list skills\"}";
     };
 }
@@ -248,7 +248,7 @@ pub fn execGetSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
     };
     defer parsed.deinit();
 
-    return get_skill_mod.executeGetSkillToString(allocator, parsed.value) catch {
+    return get_skill_mod.execute_get_skill_to_string(allocator, parsed.value) catch {
         return "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>";
     };
 }
@@ -271,7 +271,7 @@ pub fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
     };
     defer parsed.deinit();
 
-    return remove_skill_mod.executeRemoveSkillToString(allocator, parsed.value) catch {
+    return remove_skill_mod.execute_remove_skill_to_string(allocator, parsed.value) catch {
         return try std.fmt.allocPrint(allocator,
             \\<skill_name>{s}</skill_name>
             \\<removed>false</removed>
@@ -300,7 +300,7 @@ pub fn execAddSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
     };
     defer parsed.deinit();
 
-    return add_skill_mod.executeAddSkillToString(allocator, parsed.value) catch {
+    return add_skill_mod.execute_add_skill_to_string(allocator, parsed.value) catch {
         return try std.fmt.allocPrint(allocator,
             \\<skill>
             \\<name>{s}</name>
@@ -331,7 +331,7 @@ pub fn execAddAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
     };
     defer parsed.deinit();
 
-    return add_agent_mod.executeAddAgentToString(allocator, parsed.value) catch {
+    return add_agent_mod.execute_add_agent_to_string(allocator, parsed.value) catch {
         return try std.fmt.allocPrint(allocator,
             \\<agent>
             \\<name>{s}</name>
@@ -360,7 +360,7 @@ pub fn execRemoveAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
     };
     defer parsed.deinit();
 
-    return remove_agent_mod.executeRemoveAgentToString(allocator, parsed.value) catch {
+    return remove_agent_mod.execute_remove_agent_to_string(allocator, parsed.value) catch {
         return try std.fmt.allocPrint(allocator,
             \\<name>{s}</name>
             \\<removed>false</removed>
@@ -374,7 +374,7 @@ pub fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sql
     _ = db;
     _ = session_id;
 
-    return list_agents_mod.executeListAgents(allocator) catch {
+    return list_agents_mod.execute_list_agents(allocator) catch {
         return try std.fmt.allocPrint(allocator,
             \\<agents>
             \\  <error>Failed to list agents</error>
@@ -404,7 +404,7 @@ pub fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
     };
     defer parsed.deinit();
 
-    return change_agent_mod.executeChangeAgentToString(allocator, parsed.value) catch {
+    return change_agent_mod.execute_change_agent_to_string(allocator, parsed.value) catch {
         return try std.fmt.allocPrint(allocator,
             \\<agent>
             \\  <agent_name></agent_name>
@@ -433,7 +433,7 @@ pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *
     };
     defer parsed.deinit();
 
-    const result = lsp_definition_mod.executeLspDefinition(allocator, parsed.value) catch |err| {
+    const result = lsp_definition_mod.execute_lsp_definition(allocator, parsed.value) catch |err| {
         return try std.fmt.allocPrint(allocator,
             "<error>Failed to get definition: {s}</error>",
             .{@errorName(err)},
@@ -441,7 +441,7 @@ pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *
     };
     defer result.deinit(allocator);
 
-    return lsp_definition_mod.lspDefinitionToString(allocator, result);
+    return lsp_definition_mod.lsp_definition_to_string(allocator, result);
 }
 
 // Placeholder for restricted tools
@@ -506,10 +506,10 @@ pub fn execWebSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqli
     );
     defer parsed.deinit();
 
-    const result = try web_search_mod.executeWebSearch(allocator, parsed.value);
+    const result = try web_search_mod.execute_web_search(allocator, parsed.value);
     defer result.deinit(allocator);
 
-    return try web_search_mod.webSearchResultToString(allocator, result);
+    return try web_search_mod.web_search_result_to_string(allocator, result);
 }
 
 pub fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
@@ -527,8 +527,8 @@ pub fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.Sq
     );
     defer parsed.deinit();
 
-    var glob_result = try glob_tool_mod.executeGlob(allocator, parsed.value);
-    const res_glob = try glob_tool_mod.globResultToString(allocator, glob_result);
+    var glob_result = try glob_tool_mod.execute_glob(allocator, parsed.value);
+    const res_glob = try glob_tool_mod.glob_result_to_string(allocator, glob_result);
     glob_result.deinit(allocator);
 
     return res_glob;
@@ -549,7 +549,7 @@ pub fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.
     );
     defer parsed.deinit();
 
-    var search_result = search_tool_mod.executeSearch(allocator, parsed.value) catch |err| {
+    var search_result = search_tool_mod.execute_search(allocator, parsed.value) catch |err| {
         if (err == error.StdoutStreamTooLong) {
             return try allocator.dupe(u8,
                 \\<warning>Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.</warning>
@@ -564,7 +564,7 @@ pub fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.
         return content;
     }
 
-    const res_search = try search_tool_mod.searchResultToString(allocator, search_result);
+    const res_search = try search_tool_mod.search_result_to_string(allocator, search_result);
     search_result.deinit(allocator);
 
     return res_search;

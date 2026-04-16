@@ -376,7 +376,7 @@ test "bash background log file" {
 
     // Extract log path from stdout - find "Log: " and extract everything after it
     const log_start = std.mem.indexOf(u8, r.stdout, "Log: ") orelse return error.TestExpectedFound;
-    const log_path = std.mem.trim(u8, r.stdout[log_start + 5..], " \n\r");
+    const log_path = std.mem.trim(u8, r.stdout[log_start + 5 ..], " \n\r");
 
     // Give a moment for the file to be written
     std.Thread.sleep(100 * std.time.ns_per_ms);

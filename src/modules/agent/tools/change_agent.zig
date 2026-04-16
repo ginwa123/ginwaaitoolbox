@@ -17,7 +17,7 @@ const agents = struct {
     /// Parse a specific agent by name from the agents directory
     /// Returns allocated string with agent content, or null if not found
     /// Caller owns the returned memory and must free it with allocator.free()
-    pub fn parseAgent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
+    pub fn parse_agent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
         // Placeholder implementation - will be replaced when agents.zig is available
         // Try to find agent in .nalar/agents/<agent_name>/AGENT.md
         const LOCAL_AGENTS_DIR = ".nalar/agents";
@@ -47,7 +47,7 @@ const agents = struct {
     /// List all available agents from the agents directory
     /// Returns allocated array of AgentInfo structs
     /// Caller owns the returned memory and must free it with freeAgentsList()
-    pub fn listAgents(allocator: std.mem.Allocator) []AgentInfo {
+    pub fn list_agents(allocator: std.mem.Allocator) []AgentInfo {
         // Placeholder implementation - will be replaced when agents.zig is available
         const LOCAL_AGENTS_DIR = ".nalar/agents";
 
@@ -86,7 +86,7 @@ const agents = struct {
             defer allocator.free(content);
 
             // Parse frontmatter to get name and description
-            if (parseFrontmatter(allocator, content)) |fm| {
+            if (parse_frontmatter(allocator, content)) |fm| {
                 agents_list.append(allocator, .{
                     .name = fm.name,
                     .description = fm.description,
@@ -101,7 +101,7 @@ const agents = struct {
     }
 
     /// Free a agents array allocated by listAgents
-    pub fn freeAgentsList(allocator: std.mem.Allocator, agents_list: []AgentInfo) void {
+    pub fn free_agents_list(allocator: std.mem.Allocator, agents_list: []AgentInfo) void {
         for (agents_list) |agent| {
             allocator.free(agent.name);
             allocator.free(agent.description);
@@ -114,7 +114,7 @@ const agents = struct {
         description: []const u8,
     };
 
-    fn parseFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
+    fn parse_frontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
         // Find opening ---
         const start_marker = "---\n";
         const start_idx = std.mem.indexOf(u8, content, start_marker) orelse return null;
@@ -201,7 +201,7 @@ pub const change_agent_tool = AgentTool{
 };
 
 /// Parse change_agent tool input from JSON
-pub fn parseChangeAgentInput(allocator: std.mem.Allocator, json_str: []const u8) !ChangeAgentInput {
+pub fn parse_change_agent_input(allocator: std.mem.Allocator, json_str: []const u8) !ChangeAgentInput {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch return error.InvalidJson;
     defer parsed.deinit();
 
@@ -228,15 +228,15 @@ pub fn parseChangeAgentInput(allocator: std.mem.Allocator, json_str: []const u8)
 /// Execute the change_agent tool
 /// Returns an XML string with the agent content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeChangeAgentToString(allocator: std.mem.Allocator, input: ChangeAgentInput) ![]const u8 {
+pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, input: ChangeAgentInput) ![]const u8 {
     // Check if path is provided - load from file
     if (input.path) |path| {
-        return loadAgentFromPath(allocator, path);
+        return load_agent_from_path(allocator, path);
     }
 
     // Otherwise try to parse by agent name
     if (input.agent_name) |agent_name| {
-        return loadAgentByName(allocator, agent_name);
+        return load_agent_by_name(allocator, agent_name);
     }
 
     // No agent_name or path provided
@@ -244,7 +244,7 @@ pub fn executeChangeAgentToString(allocator: std.mem.Allocator, input: ChangeAge
 }
 
 /// Load agent from absolute file path
-fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+fn load_agent_from_path(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const file = std.fs.openFileAbsolute(path, .{}) catch {
         const result = try std.fmt.allocPrint(allocator,
             \\<agent>
@@ -287,9 +287,9 @@ fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
 }
 
 /// Load agent by name from built-in agents
-fn loadAgentByName(allocator: std.mem.Allocator, agent_name: []const u8) ![]const u8 {
+fn load_agent_by_name(allocator: std.mem.Allocator, agent_name: []const u8) ![]const u8 {
     // Try to parse the agent
-    if (agents.parseAgent(allocator, agent_name)) |content| {
+    if (agents.parse_agent(allocator, agent_name)) |content| {
         defer allocator.free(content);
         // Success - return the agent content
         const result = try std.fmt.allocPrint(allocator,
@@ -302,8 +302,8 @@ fn loadAgentByName(allocator: std.mem.Allocator, agent_name: []const u8) ![]cons
         return result;
     } else {
         // Agent not found - list available agents
-        const agents_list = agents.listAgents(allocator);
-        defer agents.freeAgentsList(allocator, agents_list);
+        const agents_list = agents.list_agents(allocator);
+        defer agents.free_agents_list(allocator, agents_list);
 
         // Build XML string for available agents
         var available_str: std.ArrayList(u8) = .empty;

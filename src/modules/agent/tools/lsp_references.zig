@@ -17,12 +17,12 @@ pub const LspError = error{
 };
 
 // JSON-RPC message helpers
-pub fn createMessage(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+pub fn create_message(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "Content-Length: {d}\r\n\r\n{s}", .{ content.len, content });
 }
 
 // Read one JSON-RPC message from LSP stdout
-fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
+fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     // Read headers until empty line
     var header_buf: [1024]u8 = undefined;
     var header_len: usize = 0;
@@ -71,7 +71,7 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
 
 /// Parse a single LSP Location object
 /// Returns the parsed LspLocation or null if parsing fails
-fn parseLocation(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
+fn parse_location(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocation {
     if (loc_value != .object) return null;
 
     const obj = loc_value.object;
@@ -127,7 +127,7 @@ fn parseLocation(allocator: std.mem.Allocator, loc_value: json.Value) !?LspLocat
 
 /// Parse LSP references response result
 /// References always returns: null or Location[]
-fn parseReferencesResult(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspReferencesOutput {
+fn parse_references_result(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspReferencesOutput {
     // Handle null result
     if (result == .null) {
         return LspReferencesOutput{
@@ -145,7 +145,7 @@ fn parseReferencesResult(allocator: std.mem.Allocator, result: json.Value, max_o
     if (result == .array) {
         for (result.array.items) |item| {
             if (locations.items.len >= limit) break;
-            const loc = try parseLocation(allocator, item);
+            const loc = try parse_location(allocator, item);
             if (loc) |l| {
                 try locations.append(allocator, l);
             }
@@ -160,7 +160,7 @@ fn parseReferencesResult(allocator: std.mem.Allocator, result: json.Value, max_o
     };
 }
 
-pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesInput) !LspReferencesOutput {
+pub fn execute_lsp_references(allocator: std.mem.Allocator, input: LspReferencesInput) !LspReferencesOutput {
     // Use arena allocator for all temporary allocations
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -207,7 +207,7 @@ pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesIn
     try init_writer.print("\"rootUri\":\"{s}\",", .{root_uri});
     try init_writer.print("\"capabilities\":{{}}}}}}", .{});
     const init_json = try init_json_buf.toOwnedSlice(arena_allocator);
-    const init_msg = try createMessage(arena_allocator, init_json);
+    const init_msg = try create_message(arena_allocator, init_json);
     try stdin.writeAll(init_msg);
 
     // Read initialize response (may need to skip notifications)
@@ -216,7 +216,7 @@ pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesIn
     const max_init_attempts = 10;
 
     while (init_attempts < max_init_attempts) {
-        const msg_data = try readMessage(arena_allocator, stdout);
+        const msg_data = try read_message(arena_allocator, stdout);
 
         // Parse to check if this is the response with id: 1
         var temp_parsed = json.parseFromSlice(json.Value, arena_allocator, msg_data, .{}) catch {
@@ -240,7 +240,7 @@ pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesIn
     }
 
     // 2. Send initialized notification
-    const initialized_msg = try createMessage(arena_allocator,
+    const initialized_msg = try create_message(arena_allocator,
         \\{"jsonrpc":"2.0","method":"initialized","params":{}}
     );
     try stdin.writeAll(initialized_msg);
@@ -267,7 +267,7 @@ pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesIn
     const didopen_end = "\"}}}}";
     const full_didopen = try std.fmt.allocPrint(arena_allocator, "{s}{s}{s}", .{ didopen_json, escaped_content.items, didopen_end });
 
-    const didopen_msg = try createMessage(arena_allocator, full_didopen);
+    const didopen_msg = try create_message(arena_allocator, full_didopen);
     try stdin.writeAll(didopen_msg);
 
     // Small delay to let zls process the didOpen
@@ -286,7 +286,7 @@ pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesIn
     try w.print("\"context\":{{\"includeDeclaration\":{}}}", .{input.include_declaration});
     try w.print("}}}}", .{});
 
-    const refs_msg = try createMessage(arena_allocator, refs_json.items);
+    const refs_msg = try create_message(arena_allocator, refs_json.items);
     try stdin.writeAll(refs_msg);
 
     // 5. Read references response (may need to skip notifications)
@@ -295,7 +295,7 @@ pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesIn
     const max_attempts = 10;
 
     while (attempts < max_attempts) {
-        const msg_data = try readMessage(arena_allocator, stdout);
+        const msg_data = try read_message(arena_allocator, stdout);
 
         // Parse to check if this is the response with id: 2
         var temp_parsed = json.parseFromSlice(json.Value, arena_allocator, msg_data, .{}) catch {
@@ -332,10 +332,10 @@ pub fn executeLspReferences(allocator: std.mem.Allocator, input: LspReferencesIn
     }
 
     // Use the original allocator for the final result (lives beyond this function)
-    return try parseReferencesResult(allocator, result_opt.?, input.max_output);
+    return try parse_references_result(allocator, result_opt.?, input.max_output);
 }
 
-pub fn lspReferencesToString(allocator: std.mem.Allocator, result: LspReferencesOutput) ![]const u8 {
+pub fn lsp_references_to_string(allocator: std.mem.Allocator, result: LspReferencesOutput) ![]const u8 {
     if (!result.found or result.definitions.len == 0) {
         return try allocator.dupe(u8, "<found>false</found>");
     }

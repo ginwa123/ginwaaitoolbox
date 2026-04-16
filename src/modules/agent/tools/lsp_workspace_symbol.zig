@@ -16,12 +16,12 @@ pub const LspError = error{
 };
 
 // JSON-RPC message helpers
-pub fn createMessage(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+pub fn create_message(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "Content-Length: {d}\r\n\r\n{s}", .{ content.len, content });
 }
 
 // Read one JSON-RPC message from LSP stdout
-fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
+fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
     // Read headers until empty line
     var header_buf: [1024]u8 = undefined;
     var header_len: usize = 0;
@@ -69,7 +69,7 @@ fn readMessage(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
 }
 
 /// Parse a single SymbolInformation or WorkspaceSymbol object
-fn parseSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspWorkspaceSymbol {
+fn parse_symbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspWorkspaceSymbol {
     if (sym_value != .object) return null;
     const obj = sym_value.object;
 
@@ -163,7 +163,7 @@ fn parseSymbol(allocator: std.mem.Allocator, sym_value: json.Value) !?LspWorkspa
 }
 
 /// Parse LSP workspace/symbol response result
-fn parseWorkspaceSymbolResult(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspWorkspaceSymbolOutput {
+fn parse_workspace_symbol_result(allocator: std.mem.Allocator, result: json.Value, max_output: ?u32) !LspWorkspaceSymbolOutput {
     if (result == .null) {
         return LspWorkspaceSymbolOutput{
             .symbols = &.{},
@@ -179,7 +179,7 @@ fn parseWorkspaceSymbolResult(allocator: std.mem.Allocator, result: json.Value, 
     if (result == .array) {
         for (result.array.items) |item| {
             if (symbols.items.len >= limit) break;
-            const sym = try parseSymbol(allocator, item);
+            const sym = try parse_symbol(allocator, item);
             if (sym) |s| {
                 try symbols.append(allocator, s);
             }
@@ -194,7 +194,7 @@ fn parseWorkspaceSymbolResult(allocator: std.mem.Allocator, result: json.Value, 
     };
 }
 
-pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspaceSymbolInput) !LspWorkspaceSymbolOutput {
+pub fn execute_lsp_workspace_symbol(allocator: std.mem.Allocator, input: LspWorkspaceSymbolInput) !LspWorkspaceSymbolOutput {
     // Use arena allocator for all temporary allocations
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -230,7 +230,7 @@ pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspa
     try init_writer.print("\"rootUri\":\"{s}\",", .{root_uri});
     try init_writer.print("\"capabilities\":{{}}}}}}", .{});
     const init_json = try init_json_buf.toOwnedSlice(arena_allocator);
-    const init_msg = try createMessage(arena_allocator, init_json);
+    const init_msg = try create_message(arena_allocator, init_json);
     try stdin.writeAll(init_msg);
 
     // Read initialize response (may need to skip notifications)
@@ -239,7 +239,7 @@ pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspa
     const max_init_attempts = 10;
 
     while (init_attempts < max_init_attempts) {
-        const msg_data = try readMessage(arena_allocator, stdout);
+        const msg_data = try read_message(arena_allocator, stdout);
 
         // Parse to check if this is the response with id: 1
         var temp_parsed = json.parseFromSlice(json.Value, arena_allocator, msg_data, .{}) catch {
@@ -263,7 +263,7 @@ pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspa
     }
 
     // 2. Send initialized notification
-    const initialized_msg = try createMessage(arena_allocator,
+    const initialized_msg = try create_message(arena_allocator,
         \\{"jsonrpc":"2.0","method":"initialized","params":{}}
     );
     try stdin.writeAll(initialized_msg);
@@ -282,7 +282,7 @@ pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspa
     try w.print("\"query\":\"{s}\"", .{input.query});
     try w.print("}}}}", .{});
 
-    const symbol_msg = try createMessage(arena_allocator, symbol_json.items);
+    const symbol_msg = try create_message(arena_allocator, symbol_json.items);
     try stdin.writeAll(symbol_msg);
 
     // 4. Read workspace/symbol response (may need to skip notifications)
@@ -291,7 +291,7 @@ pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspa
     const max_attempts = 10;
 
     while (attempts < max_attempts) {
-        const msg_data = try readMessage(arena_allocator, stdout);
+        const msg_data = try read_message(arena_allocator, stdout);
 
         // Parse to check if this is the response with id: 2
         var temp_parsed = json.parseFromSlice(json.Value, arena_allocator, msg_data, .{}) catch {
@@ -328,10 +328,10 @@ pub fn executeLspWorkspaceSymbol(allocator: std.mem.Allocator, input: LspWorkspa
     }
 
     // Use the original allocator for the final result (lives beyond this function)
-    return try parseWorkspaceSymbolResult(allocator, result_opt.?, input.max_output);
+    return try parse_workspace_symbol_result(allocator, result_opt.?, input.max_output);
 }
 
-pub fn lspWorkspaceSymbolToString(allocator: std.mem.Allocator, result: LspWorkspaceSymbolOutput) ![]const u8 {
+pub fn lsp_workspace_symbol_to_string(allocator: std.mem.Allocator, result: LspWorkspaceSymbolOutput) ![]const u8 {
     if (!result.found or result.symbols.len == 0) {
         return try allocator.dupe(u8, "<found>false</found>");
     }

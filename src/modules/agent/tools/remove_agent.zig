@@ -41,7 +41,7 @@ pub const remove_agent_tool = AgentTool{
 /// Execute the remove_agent tool - deletes agent directory from .nalar/agents/
 /// Returns an XML string with result
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeRemoveAgentToString(
+pub fn execute_remove_agent_to_string(
     allocator: std.mem.Allocator,
     input: RemoveAgentInput,
 ) ![]const u8 {

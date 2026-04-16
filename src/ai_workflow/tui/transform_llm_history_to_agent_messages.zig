@@ -7,7 +7,7 @@ const json = std.json;
 pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, message: TUIHistory) ![]agent.AgentMessage {
     var messages: std.ArrayList(agent.AgentMessage) = .empty;
 
-    const role = agent.Role.fromStr(message.role) orelse .assistant;
+    const role = agent.Role.from_str(message.role) orelse .assistant;
 
     // Handle tool result messages (role == "tool")
     // For tool messages, the tools column contains the tool_call_id string directly
@@ -23,7 +23,7 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
 
     // Handle assistant/user/system messages - always create a message if role is valid
     // (but not tool role which is handled above)
-    // const finishReason = agent.FinishReason.fromStr(message.finish_reason);
+    // const finishReason = agent.FinishReason.from_str(message.finish_reason);
     // const isToolCalls = finishReason == .tool_calls;
 
     // For assistant/user/system roles, always create a message (even if content is empty)

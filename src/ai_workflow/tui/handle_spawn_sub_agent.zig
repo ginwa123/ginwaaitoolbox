@@ -233,7 +233,7 @@ fn run_sub_agent(
         .cwd = cwd,
         .content = instruction,
         .reasoning_content = null,
-        .role = agent.Role.user.toStr(),
+        .role = agent.Role.user.to_str(),
         .finish_reason = "null",
         .tool_calls = null,
         .tool_call_id = null,
@@ -273,7 +273,7 @@ fn run_sub_agent(
         const skillContents = try BuildSkillContent(allocator, db, session_id);
         const activity_info = try build_subagent_activity_info(allocator, db, session_id);
         const systemPrompt = try prompt.build_agent_prompt(allocator, cwd, "", skillContents, "", "", "", sub_agent_tools, activity_info);
-        allocator.free(activity_info);
+        // Note: Don't free activity_info - it's allocated from arena and will be freed automatically
 
         var messages: std.ArrayList(agent.AgentMessage) = .empty;
         try messages.append(allocator, .{
@@ -314,8 +314,8 @@ fn run_sub_agent(
             .cwd = cwd,
             .content = response.content,
             .reasoning_content = response.reasoning_content,
-            .role = agent.Role.assistant.toStr(),
-            .finish_reason = if (response.finish_reason) |fr| fr.toStr() else null,
+            .role = agent.Role.assistant.to_str(),
+            .finish_reason = if (response.finish_reason) |fr| fr.to_str() else null,
             .tool_calls = assistant_tool_calls,
             .tool_call_id = null,
             .agent_name = agent_name,
@@ -375,8 +375,8 @@ fn run_sub_agent(
                             .cwd = cwd,
                             .content = tool_result.output,
                             .reasoning_content = null,
-                            .role = agent.Role.tool.toStr(),
-                            .finish_reason = agent.FinishReason.tool.toStr(),
+                            .role = agent.Role.tool.to_str(),
+                            .finish_reason = agent.FinishReason.tool.to_str(),
                             .tool_calls = null,
                             .tool_call_id = tc.id,
                             .agent_name = agent_name,
@@ -558,7 +558,7 @@ pub fn handle_spawn_sub_agent_run(
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
 ) ![]u8 {
-    const parsed = try spawn_sub_agent_tool.parseSubAgents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
+    const parsed = try spawn_sub_agent_tool.parse_sub_agents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
 
     // Reject single sub-agent - must spawn at least 2 for parallel work
     if (parsed.sub_agents.len == 1) {

@@ -93,7 +93,7 @@ pub const List = struct {
         });
     }
 
-    pub fn toOwnedSlice(self: *List, allocator: std.mem.Allocator) ![]ToolProperty {
+    pub fn to_owned_slice(self: *List, allocator: std.mem.Allocator) ![]ToolProperty {
         return try self.items.toOwnedSlice(allocator);
     }
 };
