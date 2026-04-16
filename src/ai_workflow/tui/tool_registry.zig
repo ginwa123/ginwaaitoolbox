@@ -30,18 +30,8 @@ const search_tool_mod = root_mod.search_tool;
 
 // Handle tool imports for exec functions
 const handle_bash_tool = @import("handle_bash_tool.zig");
-const handle_read_file_tool = @import("handle_read_file_tool.zig");
-const handle_text_replace_tool = @import("handle_text_replace_tool.zig");
-const handle_write_file_tool = @import("handle_write_file_tool.zig");
-const handle_list_skills_tool = @import("handle_list_skills_tool.zig");
-const handle_get_skill_tool = @import("handle_get_skill_tool.zig");
-const handle_remove_skill_tool = @import("handle_remove_skill_tool.zig");
-const handle_list_agents_tool = @import("handle_list_agents_tool.zig");
-const handle_change_agent_tool = @import("handle_change_agent_tool.zig");
-const handle_add_skill_tool = @import("handle_add_skill_tool.zig");
-const handle_add_agent_tool = @import("handle_add_agent_tool.zig");
-const handle_remove_agent_tool = @import("handle_remove_agent_tool.zig");
-const handle_lsp_definition_tool = @import("handle_lsp_definition_tool.zig");
+const handle_glob_tool = @import("handle_glob_tool.zig");
+const handle_search_tool = @import("handle_search_tool.zig");
 
 // ============================================================================
 // CODE EXEC TOOL TYPES AND FUNCTIONS
@@ -79,75 +69,311 @@ pub fn execBash(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.Sq
 pub fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_read_file_tool.handle_read_file_tool_run(allocator, tc);
+
+    // Parse arguments JSON to ReadFileInput
+    const parsed = try std.json.parseFromSlice(
+        tool_models.ReadFileInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const read_opts = read_file_mod.ReadFileOptions{
+        .offset = parsed.value.offset,
+        .limit = parsed.value.limit,
+        .show_line_numbers = parsed.value.show_line_numbers,
+    };
+
+    const read_result = try read_file_mod.read_file(allocator, parsed.value.path, read_opts);
+    defer read_result.deinit(allocator);
+
+    // Single allocation: combines path and content into XML result
+    return try read_file_mod.to_xml(allocator, read_result, parsed.value.path);
 }
 
 pub fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_text_replace_tool.handle_text_replace_tool_run(allocator, tc);
+
+    // Check for empty arguments first
+    if (tc.function.arguments.len == 0) {
+        return try std.fmt.allocPrint(allocator,
+            \\<error>text_replace failed: Missing arguments (empty JSON)</error>
+            \\<path></path>
+            \\<old_str></old_str>
+            \\<new_str></new_str>
+            \\<success>false</success>
+        , .{});
+    }
+
+    const parsed = std.json.parseFromSlice(
+        text_replace_mod.TextReplaceInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch |err| {
+        const err_msg: []const u8 = switch (err) {
+            error.UnexpectedEndOfInput => "text_replace failed: UnexpectedEndOfInput - arguments may be incomplete or malformed",
+            else => "text_replace failed: Invalid JSON arguments",
+        };
+        return try std.fmt.allocPrint(allocator,
+            \\<error>{s}</error>
+            \\<path></path>
+            \\<old_str></old_str>
+            \\<new_str></new_str>
+            \\<success>false</success>
+        , .{err_msg});
+    };
+    defer parsed.deinit();
+
+    const result = try text_replace_mod.text_replace(
+        allocator,
+        parsed.value.path,
+        parsed.value.old_str,
+        parsed.value.new_str,
+    );
+
+    return text_replace_mod.to_xml(allocator, result);
 }
 
 pub fn execWriteFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_write_file_tool.handle_write_file_tool_run(allocator, tc);
+
+    const parsed = try std.json.parseFromSlice(
+        write_file_mod.WriteFileInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const write_result = try write_file_mod.write_file(allocator, parsed.value);
+    const res_write = try write_file_mod.writeFileToString(allocator, write_result);
+    write_result.deinit(allocator);
+
+    return res_write;
 }
 
 pub fn execListSkills(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = tc;
     _ = db;
     _ = session_id;
-    return handle_list_skills_tool.handle_list_skills_tool_run(allocator);
+
+    return list_skills_mod.executeListSkills(allocator) catch blk: {
+        break :blk "{\"error\": \"Failed to list skills\"}";
+    };
 }
 
 pub fn execGetSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_get_skill_tool.handle_get_skill_tool_run(allocator, tc);
+
+    const parsed = std.json.parseFromSlice(
+        get_skill_mod.GetSkillInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        return "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to parse get_skill arguments</error>";
+    };
+    defer parsed.deinit();
+
+    return get_skill_mod.executeGetSkillToString(allocator, parsed.value) catch {
+        return "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>";
+    };
 }
 
 pub fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_remove_skill_tool.handle_remove_skill_tool_run(allocator, tc);
+
+    const parsed = std.json.parseFromSlice(
+        remove_skill_mod.RemoveSkillInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<skill_name></skill_name>
+            \\<removed>false</removed>
+            \\<error>Failed to parse remove_skill arguments</error>
+        , .{});
+    };
+    defer parsed.deinit();
+
+    return remove_skill_mod.executeRemoveSkillToString(allocator, parsed.value) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<skill_name>{s}</skill_name>
+            \\<removed>false</removed>
+            \\<error>Unknown error</error>
+        , .{ parsed.value.skill_name });
+    };
 }
 
 pub fn execAddSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_add_skill_tool.handle_add_skill_tool_run(allocator, tc);
+
+    const parsed = std.json.parseFromSlice(
+        add_skill_mod.AddSkillInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<skill>
+            \\<name></name>
+            \\<created>false</created>
+            \\<error>Failed to parse add_skill arguments</error>
+            \\</skill>
+        , .{});
+    };
+    defer parsed.deinit();
+
+    return add_skill_mod.executeAddSkillToString(allocator, parsed.value) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<skill>
+            \\<name>{s}</name>
+            \\<created>false</created>
+            \\<error>Failed to add skill</error>
+            \\</skill>
+        , .{ parsed.value.name });
+    };
 }
 
 pub fn execAddAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_add_agent_tool.handle_add_agent_tool_run(allocator, tc);
+
+    const parsed = std.json.parseFromSlice(
+        add_agent_mod.AddAgentInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<agent>
+            \\<name></name>
+            \\<created>false</created>
+            \\<error>Failed to parse add_agent arguments</error>
+            \\</agent>
+        , .{});
+    };
+    defer parsed.deinit();
+
+    return add_agent_mod.executeAddAgentToString(allocator, parsed.value) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<agent>
+            \\<name>{s}</name>
+            \\<created>false</created>
+            \\<error>Failed to add agent</error>
+            \\</agent>
+        , .{ parsed.value.name });
+    };
 }
 
 pub fn execRemoveAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_remove_agent_tool.handle_remove_agent_tool_run(allocator, tc);
+
+    const parsed = std.json.parseFromSlice(
+        remove_agent_mod.RemoveAgentInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<name></name>
+            \\<removed>false</removed>
+            \\<error>Failed to parse remove_agent arguments</error>
+        , .{});
+    };
+    defer parsed.deinit();
+
+    return remove_agent_mod.executeRemoveAgentToString(allocator, parsed.value) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<name>{s}</name>
+            \\<removed>false</removed>
+            \\<error>Failed to remove agent</error>
+        , .{ parsed.value.name });
+    };
 }
 
 pub fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = tc;
     _ = db;
     _ = session_id;
-    return handle_list_agents_tool.handle_list_agents_tool_run(allocator);
+
+    return list_agents_mod.executeListAgents(allocator) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<agents>
+            \\  <error>Failed to list agents</error>
+            \\</agents>
+        , .{});
+    };
 }
 
 pub fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_change_agent_tool.handle_change_agent_tool_run(allocator, tc);
+
+    const parsed = std.json.parseFromSlice(
+        change_agent_mod.ChangeAgentInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<agent>
+            \\  <agent_name></agent_name>
+            \\  <content></content>
+            \\  <loaded>false</loaded>
+            \\  <error>Failed to parse change_agent arguments</error>
+            \\</agent>
+        , .{});
+    };
+    defer parsed.deinit();
+
+    return change_agent_mod.executeChangeAgentToString(allocator, parsed.value) catch {
+        return try std.fmt.allocPrint(allocator,
+            \\<agent>
+            \\  <agent_name></agent_name>
+            \\  <content></content>
+            \\  <loaded>false</loaded>
+            \\  <error>Failed to get agent</error>
+            \\</agent>
+        , .{});
+    };
 }
 
 pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_lsp_definition_tool.handle_lsp_definition_tool_run(allocator, tc);
+
+    const parsed = std.json.parseFromSlice(
+        lsp_definition_mod.LspDefinitionInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch |err| {
+        return try std.fmt.allocPrint(allocator,
+            "<error>Failed to parse lsp_definition arguments: {s}</error>",
+            .{@errorName(err)},
+        );
+    };
+    defer parsed.deinit();
+
+    const result = lsp_definition_mod.executeLspDefinition(allocator, parsed.value) catch |err| {
+        return try std.fmt.allocPrint(allocator,
+            "<error>Failed to get definition: {s}</error>",
+            .{@errorName(err)},
+        );
+    };
+    defer result.deinit(allocator);
+
+    return lsp_definition_mod.lspDefinitionToString(allocator, result);
 }
 
 // Placeholder for restricted tools
@@ -200,25 +426,80 @@ pub fn execLspHover(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
     return "lsp_hover not implemented";
 }
 
-// Web search tool handlers
-const handle_web_search_tool = @import("handle_web_search_tool.zig");
-const handle_glob_tool = @import("handle_glob_tool.zig");
-const handle_search_tool = @import("handle_search_tool.zig");
-
 pub fn execWebSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    return handle_web_search_tool.runWithContext(allocator, tc, db, session_id);
+    _ = db;
+    _ = session_id;
+
+    const parsed = try std.json.parseFromSlice(
+        tool_models.WebSearchInput,
+        allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const result = try web_search_mod.executeWebSearch(allocator, parsed.value);
+    defer result.deinit(allocator);
+
+    return try web_search_mod.webSearchResultToString(allocator, result);
 }
 
 pub fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_glob_tool.handle_glob_tool_run(allocator, tc);
+
+    const args = tc.function.arguments;
+    const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
+
+    const parsed = try std.json.parseFromSlice(
+        glob_tool_mod.GlobInput,
+        allocator,
+        args_to_parse,
+        .{ .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    var glob_result = try glob_tool_mod.executeGlob(allocator, parsed.value);
+    const res_glob = try glob_tool_mod.globResultToString(allocator, glob_result);
+    glob_result.deinit(allocator);
+
+    return res_glob;
 }
 
 pub fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
     _ = db;
     _ = session_id;
-    return handle_search_tool.handle_search_tool_run(allocator, tc);
+
+    const args = tc.function.arguments;
+    const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
+
+    const parsed = try std.json.parseFromSlice(
+        search_tool_mod.SearchInput,
+        allocator,
+        args_to_parse,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    var search_result = search_tool_mod.executeSearch(allocator, parsed.value) catch |err| {
+        if (err == error.StdoutStreamTooLong) {
+            return try allocator.dupe(u8,
+                \\<warning>Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.</warning>
+            );
+        }
+        return err;
+    };
+
+    if (search_result.matches.items.len == 0) {
+        const content = try allocator.dupe(u8, search_result.content);
+        search_result.deinit(allocator);
+        return content;
+    }
+
+    const res_search = try search_tool_mod.searchResultToString(allocator, search_result);
+    search_result.deinit(allocator);
+
+    return res_search;
 }
 
 // ============================================================================

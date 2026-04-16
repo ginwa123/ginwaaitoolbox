@@ -91,13 +91,15 @@ pub fn read_file(
     };
 }
 
-pub fn read_file_to_string(allocator: std.mem.Allocator, result: ReadFileResult) ![]const u8 {
+pub fn to_xml(allocator: std.mem.Allocator, result: ReadFileResult, path: []const u8) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
+        \\<path>{s}</path>
         \\<content>{s}</content>
         \\<total_lines>{d}</total_lines>
         \\<start_line>{d}</start_line>
         \\<end_line>{d}</end_line>
     , .{
+        path,
         result.content,
         result.total_lines,
         result.start_line,

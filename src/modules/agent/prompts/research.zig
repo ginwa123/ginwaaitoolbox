@@ -3,26 +3,9 @@
 // =============================================================================
 
 pub const ParallelMandatoryIntro =
-    \\## 🚨 PARALLEL WORK IS MANDATORY FOR RESEARCH/SEARCH/INVESTIGATION
+    \\## 🚨 PARALLEL WORK IS MANDATORY
     \\
-    \\**⚠️ CRITICAL RULE:** You MUST use `spawn_sub_agent` for:
-    \\
-    \\| When | Action |
-    \\|-----|--------|
-    \\| Research 2+ topics | Spawn 1 agent per topic |
-    \\| Search 2+ patterns | Spawn 1 agent per pattern |
-    \\| Read 2+ files | Spawn 1 agent per file |
-    \\| Investigate 2+ components | Spawn 1 agent per component |
-    \\| Debug 2+ failures | Spawn 1 agent per failure |
-    \\| Browse 2+ URLs | Spawn 1 agent per URL |
-    \\
-    \\**❌ NEVER do these sequentially:**
-    \\- "Let me search for X, then Y..." → Spawn parallel agents!
-    \\- "I'll read file A, then file B..." → Spawn parallel agents!
-    \\- "I need to research topic 1, 2, 3..." → Spawn parallel agents!
-    \\- "Let me investigate these 3 failures..." → Spawn parallel agents!
-    \\
-    \\**Rule: 2+ independent pieces = MANDATORY parallel execution**
+    \\**See `ParallelWork` section below for details.**
 ;
 
 pub const Research =
@@ -36,40 +19,6 @@ pub const Research =
     \\- **Need knowledge from the web?** → Use `web_search` ⭐ (searches google.com)
     \\- Need docs? → Use `mcp_context7_*` tools for latest examples
     \\**Never write code you haven't verified with tools first.**
-    \\
-    \\## 🚨 PARALLEL WORK IS MANDATORY (NOT OPTIONAL!)
-    \\
-    \\**When you encounter ANY of these, you MUST spawn sub-agents:**
-    \\
-    \\| Situation | Required Action |
-    \\|------------|----------------|
-    \\| **2+ research topics** | Spawn 1 agent per topic |
-    \\| **2+ files to read** | Spawn 1 agent per file |
-    \\| **2+ patterns to search** | Spawn 1 agent per pattern |
-    \\| **2+ components to investigate** | Spawn 1 agent per component |
-    \\| **2+ failures to debug** | Spawn 1 agent per failure |
-    \\| **2+ URLs to browse** | Spawn 1 agent per URL |
-    \\
-    \\**❌ WRONG (Sequential -浪费时间!):**
-    \\- "Let me search for X, then Y..."
-    \\- "I'll read file A, then file B..."
-    \\- "I need to research topic 1, 2, 3..."
-    \\
-    \\**✅ CORRECT (Parallel -高效!):**
-    \\```
-    \\spawn_sub_agent([
-    \\  {name: "task1", instruction: "Research X..."},
-    \\  {name: "task2", instruction: "Research Y..."}
-    \\])
-    \\```
-    \\
-    \\**⚡ Parallel Research Examples:**
-    \\- "Research Zig comptime" → spawn agent
-    \\- "Find all usages of functionA AND functionB" → spawn 2 agents
-    \\- "Read files: auth.zig, user.zig, db.zig" → spawn 3 agents
-    \\- "Debug failures: test1, test2, test3" → spawn 3 agents
-    \\
-    \\**Sub-agent tip:** Give each agent COMPLETE context — include all needed info since sub-agents don't share your conversation history.
 ;
 
 pub const ResearchTriggers =
@@ -85,31 +34,6 @@ pub const ResearchTriggers =
     \\- **Error unfamiliar?** → research error + solution with `web_search`
     \\- **About to write code from memory?** → STOP → use tools → verify → write
     \\- **Navigating codebase?** → `lsp_workspace_symbol`, bash with `fd`/`rg`
-    \\
-    \\**🚨 MANDATORY: When to SPAWN Sub-Agents (2+ = MUST SPAWN!):**
-    \\
-    \\| Situation | Required Action |
-    \\|------------|----------------|
-    \\| **2+ research topics** | Spawn 1 agent per topic |
-    \\| **2+ files to read** | Spawn 1 agent per file |
-    \\| **2+ patterns to search** | Spawn 1 agent per pattern |
-    \\| **2+ components to investigate** | Spawn 1 agent per component |
-    \\| **2+ failures to debug** | Spawn 1 agent per failure |
-    \\| **2+ URLs to browse** | Spawn 1 agent per URL |
-    \\
-    \\**❌ WRONG (Sequential -浪费时间!):**
-    \\- "Let me search for X, then Y..."
-    \\- "I'll read file A, then file B..."
-    \\
-    \\**✅ CORRECT (Parallel -高效!):**
-    \\```
-    \\spawn_sub_agent([
-    \\  {name: "task1", instruction: "Do task 1..."},
-    \\  {name: "task2", instruction: "Do task 2..."}
-    \\])
-    \\```
-    \\
-    \\**Rule: 2+ independent pieces = MANDATORY spawn_sub_agent**
 ;
 
 pub const FileEditingRules =

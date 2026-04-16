@@ -11,11 +11,8 @@ test {
     _ = @import("build_skill_for_agent_prompt_test.zig");
     _ = @import("handle_bash_tool_test.zig");
     _ = @import("handle_content_filter_test.zig");
-    _ = @import("handle_change_agent_tool_test.zig");
     _ = @import("handle_spawn_sub_agent_test.zig");
-    _ = @import("handle_text_replace_tool_test.zig");
     _ = @import("handle_tool_test.zig");
-    _ = @import("handle_write_file_tool_test.zig");
 
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");

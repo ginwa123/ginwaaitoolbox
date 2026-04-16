@@ -30,12 +30,8 @@ pub const ResponseFormatting = core.ResponseFormatting;
 
 pub const Agent = agent.Agent;
 
-pub const ParallelMandatory = parallel.ParallelMandatory;
-pub const ParallelWorkflow = parallel.ParallelWorkflow;
-pub const ParallelExamples = parallel.ParallelExamples;
-pub const ParallelAntiPatterns = parallel.ParallelAntiPatterns;
-pub const ParallelSubAgentGuidance = parallel.ParallelSubAgentGuidance;
-pub const ParallelSkillReminder = parallel.ParallelSkillReminder;
+// ✅ CONSOLIDATED: Single ParallelWork section (was spread across 5 files)
+pub const ParallelWork = parallel.ParallelWork;
 
 pub const ParallelMandatoryIntro = research.ParallelMandatoryIntro;
 

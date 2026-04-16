@@ -9,6 +9,7 @@ pub const UniversalRules = prompts.UniversalRules;
 pub const PromptAutoFix = prompts.PromptAutoFix;
 pub const DynamicProperties = prompts.DynamicProperties;
 pub const Agent = prompts.Agent;
+pub const ParallelWork = prompts.ParallelWork; // ✅ CONSOLIDATED parallel rules
 pub const ParallelMandatoryIntro = prompts.ParallelMandatoryIntro;
 pub const ParallelMandatory = prompts.ParallelMandatory;
 pub const ParallelWorkflow = prompts.ParallelWorkflow;
@@ -64,15 +65,33 @@ pub fn build_agent_prompt(
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
-    // Base rules
+    // 1. Base rules
     try result.appendSlice(allocator, UniversalRules);
     try result.appendSlice(allocator, "\n\n");
 
-    // Response formatting - markdown and thinking
+    // 2. ✅ MOVED UP: Prompt auto-fix (CRITICAL - must be early!)
+    try result.appendSlice(allocator, PromptAutoFix);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 3. Response formatting - markdown and thinking
     try result.appendSlice(allocator, ResponseFormatting);
     try result.appendSlice(allocator, "\n\n");
 
-    // Dynamic Properties - encourage on-demand property changes
+    // 4. Main agent directive (IMPORTANT - agent needs context before anything else)
+    try result.appendSlice(allocator, Agent);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 5. ✅ CONSOLIDATED: Parallel work rules (was duplicated 5x, now once)
+    try result.appendSlice(allocator, ParallelWork);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 6. Tool-First Approach + Research triggers
+    try result.appendSlice(allocator, Research);
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, ResearchTriggers);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 7. Dynamic Properties - encourage on-demand property changes
     // Only include if set_agent_properties tool is enabled
     const has_set_agent_properties = for (tools) |tool| {
         if (std.mem.eql(u8, tool.function.name, "set_agent_properties")) {
@@ -84,23 +103,27 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, "\n\n");
     }
 
-    // SKILLS FIRST — Most important section at the top!
+    // 8. Classification + Plan + TDD + Execution
+    try result.appendSlice(allocator, Classification);
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, PlanBlock);
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, TDD);
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, Execution);
+    try result.appendSlice(allocator, "\n\n");
+    try result.appendSlice(allocator, Escalation);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 9. ✅ MOVED: Skills section (after agent knows context)
     try result.appendSlice(allocator, SkillsUsage);
     try result.appendSlice(allocator, "\n\n");
-
-    // SKILL TRIGGERS — When to load skills
     try result.appendSlice(allocator, SkillsTriggers);
     try result.appendSlice(allocator, "\n\n");
-
-    // Procedural Memory — When to create skills
     try result.appendSlice(allocator, ProceduralMemory);
     try result.appendSlice(allocator, "\n\n");
 
-    // Memory & tasks
-    try result.appendSlice(allocator, MemoryPrompt);
-    try result.appendSlice(allocator, "\n\n");
-
-    // Skills list
+    // 10. Skills list (dynamic)
     const skills_json = try list_skills.executeListSkills(allocator);
     defer allocator.free(skills_json);
 
@@ -128,53 +151,15 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
     }
 
-    // Custom skills content
+    // 11. Custom skills content + Memory markdown
     if (skillsContent.len > 0) {
         try result.appendSlice(allocator, "\n\n");
         try result.appendSlice(allocator, skillsContent);
     }
-
-    // Memory markdown
     if (memoryMd.len > 0) {
         try result.appendSlice(allocator, "\n\n");
         try result.appendSlice(allocator, memoryMd);
     }
-
-    // Prompt auto-fix
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, PromptAutoFix);
-
-    // Main agent directive
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, Agent);
-
-    // Research
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, Research);
-
-    // Research triggers
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, ResearchTriggers);
-
-    // Classification
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, Classification);
-
-    // Plan block
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, PlanBlock);
-
-    // TDD (Test-Driven Development) — PREFERRED APPROACH
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, TDD);
-
-    // Execution
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, Execution);
-
-    // Escalation
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, Escalation);
 
     // Dynamic tool listing - enumerate actual tools available
     if (tools.len > 0) {

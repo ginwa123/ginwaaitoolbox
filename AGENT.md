@@ -112,8 +112,6 @@ src/
 │   │   ├── request_id.zig
 │   │   └── timing.zig
 │   ├── session/                    # Session management
-│   │   ├── cancellation_registry.zig
-│   │   ├── activity_registry.zig
 │   │   └── session_monitor.zig
 │   └── cronjob/                    # Background scheduler
 ├── ai_workflow/tui/                # TUI workflow orchestration
