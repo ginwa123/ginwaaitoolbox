@@ -380,7 +380,7 @@ pub fn get_session_messages_sorted(
             else => false,
         };
         const cursor_cmp = if (is_asc) " AND created_at > ?" else " AND created_at < ?";
-        
+
         const order_part = switch (sort_spec) {
             .created_at_asc => " ORDER BY created_at ASC, id ASC",
             .created_at_desc => " ORDER BY created_at DESC, id DESC",
@@ -442,16 +442,16 @@ pub fn get_session_messages_sorted(
 
     // Check if there are more results
     const has_more = messages.items.len > @as(usize, limit);
-    
+
     // Get next cursor from last message if has_more
     const next_cursor: ?[]const u8 = if (has_more and messages.items.len > 0)
         messages.items[@as(usize, limit) - 1].id
     else
         null;
-    
+
     // Return only limit messages if has_more
     const result_messages = if (has_more) messages.items[0..limit] else messages.items;
-    
+
     return SessionMessageResponse{
         .messages = result_messages,
         .has_more = has_more,
@@ -604,10 +604,10 @@ pub fn createSession(
 
     // Insert session into database
     const insert_sql = "INSERT INTO llm_history (id, session_id, model, response_content, role, agent, temperature, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)";
-    
+
     const temp_str = try std.fmt.allocPrint(allocator, "{d}", .{temperature});
     defer allocator.free(temp_str);
-    
+
     try db.exec(allocator, insert_sql, &.{ session_id, session_id, model, "", "system", agent_type, temp_str, "0", "0", "" });
 
     return session_id;
@@ -728,6 +728,9 @@ pub fn save_message(
     const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name };
 
     try db.exec(allocator, sql, sqlArgs);
+
+    // Update worker description with latest messages
+    try update_worker_description(allocator, db, input.session_id);
 }
 
 /// Check if a session exists in the database
@@ -1017,40 +1020,90 @@ pub fn update_worker_activity(
 }
 
 /// Update worker's activity description (for display in agent prompts)
+/// Gets the 5 latest messages from llm_history for the given session_id
+/// and updates the worker's last_activity_description field.
 pub fn update_worker_description(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    worker_id: []const u8,
-    description: []const u8,
+    session_id: []const u8,
 ) !void {
-    const sql = "UPDATE worker SET last_activity = strftime('%s', 'now'), last_activity_description = ? WHERE id = ?";
-    try db.exec(allocator, sql, &.{ description, worker_id });
+    // Get the 5 latest messages from llm_history for this session
+    // Note: tool_results_json is never populated, so we only use response_content and tool_calls_json
+    const sql = "SELECT COALESCE(response_content, ''), COALESCE(tool_calls_json, ''), role FROM llm_history WHERE session_id = ? ORDER BY created_at DESC LIMIT 5";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    // Build description from messages in reverse order (oldest first)
+    var description = std.ArrayList(u8).empty;
+    errdefer description.deinit(allocator);
+    try description.appendSlice(allocator, "Recent activity:\n");
+
+    // Collect messages (we iterate newest first, so store them first)
+    var messages = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (messages.items) |msg| allocator.free(msg);
+        messages.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const content = row.values[0];
+        const tool_calls = row.values[1];
+        const role = row.values[2];
+
+        var msg = std.ArrayList(u8).empty;
+        errdefer msg.deinit(allocator);
+
+        // Format: [role] content
+        if (content.len > 0) {
+            try msg.appendSlice(allocator, "[");
+            try msg.appendSlice(allocator, role);
+            try msg.appendSlice(allocator, "] ");
+            // Truncate long content
+            if (content.len > 200) {
+                try msg.appendSlice(allocator, content[0..200]);
+                try msg.appendSlice(allocator, "...");
+            } else {
+                try msg.appendSlice(allocator, content);
+            }
+        } else if (tool_calls.len > 0) {
+            // Tool call without content
+            try msg.appendSlice(allocator, "[");
+            try msg.appendSlice(allocator, role);
+            try msg.appendSlice(allocator, "] (tool call)");
+        } else {
+            continue;
+        }
+
+        try messages.append(allocator, try msg.toOwnedSlice(allocator));
+        row.deinit(allocator);
+    }
+
+    // Reverse order (oldest first for readability)
+    var i: usize = 0;
+    var j: usize = if (messages.items.len > 0) messages.items.len - 1 else 0;
+    while (i < j) : ({ i += 1; j -= 1; }) {
+        const tmp = messages.items[i];
+        messages.items[i] = messages.items[j];
+        messages.items[j] = tmp;
+    }
+
+    // Build final description
+    for (messages.items, 0..) |msg, idx| {
+        if (idx > 0) try description.append(allocator, '\n');
+        try description.appendSlice(allocator, "- ");
+        try description.appendSlice(allocator, msg);
+        allocator.free(msg);
+    }
+    messages.deinit(allocator);
+
+    const final_description = try description.toOwnedSlice(allocator);
+    defer allocator.free(final_description);
+
+    // Update worker with this description (find worker by session_id)
+    const update_sql = "UPDATE worker SET last_activity = strftime('%s', 'now'), last_activity_description = ? WHERE session_id = ?";
+    try db.exec(allocator, update_sql, &.{ final_description, session_id });
 }
 
-/// Extract a short description from content for activity display
-/// Returns first line or first 60 chars of content, stripped
-pub fn extract_activity_description(content: []const u8) []const u8 {
-    if (content.len == 0) return "idle";
-    
-    // Find first newline or use full content
-    const first_line_end = for (content, 0..) |c, i| {
-        if (c == '\n' or c == '\r') break i;
-    } else content.len;
-    
-    // Take first 60 chars or until newline
-    const snippet = content[0..@min(first_line_end, @min(60, content.len))];
-    
-    // Trim trailing whitespace
-    var end = snippet.len;
-    while (end > 0 and (snippet[end - 1] == ' ' or snippet[end - 1] == '\t')) {
-        end -= 1;
-    }
-    
-    if (end == 0) return "idle";
-    
-    // Return slice (caller must copy if needed)
-    return snippet[0..end];
-}
 
 /// Remove a worker
 pub fn remove_worker(

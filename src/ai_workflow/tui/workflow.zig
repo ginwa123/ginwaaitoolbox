@@ -27,8 +27,6 @@ const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
 const upsert_worker = llm_history.upsert_worker;
 const update_worker_activity = llm_history.update_worker_activity;
-const update_worker_description = llm_history.update_worker_description;
-const update_worker_activity_with_description = llm_history.update_worker_activity_with_description;
 const remove_worker = llm_history.remove_worker;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
@@ -38,7 +36,6 @@ const get_messages = session_helpers.get_messages;
 const get_message_latest = session_helpers.get_message_latest;
 const mark_messages_not_for_llm = @import("llm_history.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
-const handle_bash_tool = @import("handle_bash_tool.zig");
 const BuildMemoryForAgent = @import("build_memory_for_agent_prompt.zig").BuildMemoryForAgent;
 const WriteFileTool = root_mod.write_file;
 const TextReplaceTool = root_mod.text_replace_tool;
@@ -316,15 +313,6 @@ pub const TUIWorkflow = struct {
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    // Update worker with response content (for other agents to see)
-                    if (res_dynamic_agent.content) |content| {
-                        const desc = llm_history.extract_activity_description(content);
-                        update_worker_description(parent_allocator, self.db, session_id, desc) catch {};
-                    } else if (res_dynamic_agent.reasoning_content) |reasoning| {
-                        const desc = llm_history.extract_activity_description(reasoning);
-                        update_worker_description(parent_allocator, self.db, session_id, desc) catch {};
-                    }
-                    
                     _ = try save_message(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
@@ -376,46 +364,12 @@ pub const TUIWorkflow = struct {
                     _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    // Update worker with tool description
-                    if (res_dynamic_agent.tool_calls) |tcs| {
-                        var names: std.ArrayList(u8) = .empty;
-                        defer names.deinit(parent_allocator);
-                        for (tcs) |tc| {
-                            if (names.items.len > 0) names.appendSlice(parent_allocator, " + ") catch {};
-                            names.appendSlice(parent_allocator, tc.function.name) catch {};
-                        }
-                        const desc = try names.toOwnedSlice(parent_allocator);
-                        update_worker_activity_with_description(parent_allocator, self.db, session_id, desc) catch {};
-                        allocator.free(desc);
-                    }
-
                     try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                 } else if (finish_reason == .assistant) {
-                    // Some providers return "assistant" instead of "tool_calls" when tool calls are present
-                    // Treat it the same as tool_calls - check if there are actual tool calls to process
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        // Has tool calls - update with tool names
-                        if (res_dynamic_agent.tool_calls) |tcs| {
-                            var names: std.ArrayList(u8) = .empty;
-                            defer names.deinit(parent_allocator);
-                            for (tcs) |tc| {
-                                if (names.items.len > 0) names.appendSlice(parent_allocator, " + ") catch {};
-                                names.appendSlice(parent_allocator, tc.function.name) catch {};
-                            }
-                            const desc = try names.toOwnedSlice(parent_allocator);
-                            update_worker_activity_with_description(parent_allocator, self.db, session_id, desc) catch {};
-                            allocator.free(desc);
-                        }
                         try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                     } else {
                         // No tool calls present - update with content description
-                        if (res_dynamic_agent.content) |content| {
-                            const desc = llm_history.extract_activity_description(content);
-                            update_worker_description(parent_allocator, self.db, session_id, desc) catch {};
-                        } else if (res_dynamic_agent.reasoning_content) |reasoning| {
-                            const desc = llm_history.extract_activity_description(reasoning);
-                            update_worker_description(parent_allocator, self.db, session_id, desc) catch {};
-                        }
                         // Treat as normal completion
                         _ = try save_message(allocator, self.db, .{
                             .session_id = session_id,

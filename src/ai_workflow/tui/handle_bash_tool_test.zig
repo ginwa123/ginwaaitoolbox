@@ -1,7 +1,7 @@
 const std = @import("std");
-const handle_bash = @import("handle_bash_tool.zig");
+const tool_registry = @import("tool_registry.zig");
 
-test "handle_bash_tool module exists" {
+test "tool_registry execBash function exists" {
     // This module has complex dependencies, so we just verify it compiles
-    _ = handle_bash;
+    _ = tool_registry.execBash;
 }

@@ -117,7 +117,13 @@ pub const SessionRegistry = struct {
                 errdefer self.allocator.destroy(cancelled_atomic);
                 const key = try self.allocator.dupe(u8, session_id);
                 errdefer self.allocator.free(key);
-                try self.cancelled.put(key, cancelled_atomic);
+                // Use fetchPut to handle case where key might exist (race condition safety)
+                const existing = try self.cancelled.fetchPut(key, cancelled_atomic);
+                if (existing) |kv| {
+                    // Key already existed - reuse existing atomic, cleanup our new one
+                    self.allocator.destroy(cancelled_atomic);
+                    kv.value.store(false, .seq_cst);
+                }
             }
             // Clear stopped flag when re-registering
             if (self.stopped.fetchRemove(session_id)) |entry| {
@@ -139,15 +145,30 @@ pub const SessionRegistry = struct {
         errdefer {
             self.allocator.destroy(activity_atomic);
         }
-        try self.activity.put(key, activity_atomic);
+        // Use fetchPut for safety - handle existing key from race conditions
+        const existing_activity = try self.activity.fetchPut(key, activity_atomic);
+        if (existing_activity) |kv| {
+            // Key already existed - cleanup our new atomic, reuse existing
+            self.allocator.destroy(activity_atomic);
+            kv.value.store(0, .seq_cst);
+        }
 
-        // Create cancellation flag
+        // Create cancellation flag - use fetchPut to handle race conditions
         const cancelled_atomic = try self.allocator.create(std.atomic.Value(bool));
         cancelled_atomic.* = std.atomic.Value(bool).init(false);
         errdefer {
             self.allocator.destroy(cancelled_atomic);
         }
-        try self.cancelled.put(key, cancelled_atomic);
+        // Re-create key since fetchPut might have consumed it
+        const cancelled_key = try self.allocator.dupe(u8, session_id);
+        errdefer self.allocator.free(cancelled_key);
+        
+        const existing_cancelled = try self.cancelled.fetchPut(cancelled_key, cancelled_atomic);
+        if (existing_cancelled) |kv| {
+            // Key already existed - cleanup our new atomic
+            self.allocator.destroy(cancelled_atomic);
+            kv.value.store(false, .seq_cst);
+        }
 
         // Create message queue
         const queue = try self.allocator.create(std.ArrayList([]const u8));
@@ -156,7 +177,18 @@ pub const SessionRegistry = struct {
             queue.deinit(self.allocator);
             self.allocator.destroy(queue);
         }
-        try self.message_queues.put(key, queue);
+        const queue_key = try self.allocator.dupe(u8, session_id);
+        errdefer self.allocator.free(queue_key);
+        
+        const existing_queue = try self.message_queues.fetchPut(queue_key, queue);
+        if (existing_queue) |kv| {
+            // Key already existed - cleanup our new queue
+            for (kv.value.items) |msg| {
+                self.allocator.free(msg);
+            }
+            kv.value.deinit(self.allocator);
+            self.allocator.destroy(queue);
+        }
     }
 
     pub fn unregister(self: *Self, session_id: []const u8) void {

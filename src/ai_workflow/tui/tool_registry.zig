@@ -29,9 +29,7 @@ const glob_tool_mod = root_mod.glob_tool;
 const search_tool_mod = root_mod.search_tool;
 
 // Handle tool imports for exec functions
-const handle_bash_tool = @import("handle_bash_tool.zig");
-const handle_glob_tool = @import("handle_glob_tool.zig");
-const handle_search_tool = @import("handle_search_tool.zig");
+const background_process = @import("background_process.zig");
 
 // ============================================================================
 // CODE EXEC TOOL TYPES AND FUNCTIONS
@@ -61,9 +59,79 @@ pub const AgentSaveInfo = struct {
     name: []const u8,
 };
 
+// ============================================================================
+// BASH TOOL EXECUTION
+// ============================================================================
+
+/// Run with database context for background process tracking
+pub fn runWithContext(
+    allocator: std.mem.Allocator,
+    tool_call: agent.ToolCall,
+    db: ?*sqlite.SqliteBackend,
+    session_id: ?[]const u8,
+) ![]const u8 {
+    // Parse arguments JSON to BashInput
+    const parsed = try std.json.parseFromSlice(
+        tool_models.BashInput,
+        allocator,
+        tool_call.function.arguments,
+        .{ .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const is_background = parsed.value.background;
+
+    const bash_output = try bash_tool_mod.executeBash(allocator, parsed.value);
+
+    // If background mode and DB is available, save the process info
+    if (is_background and db != null and session_id != null) {
+        const db_ptr = db.?;
+        const sess_id = session_id.?;
+
+        // Parse PID from bash output (format: "PID: {pid}\nLog: {path}")
+        const stdout = bash_output.stdout;
+        if (stdout.len > 5) {
+            // Skip "PID: " prefix
+            const pid_start = 5;
+            var pid_end: usize = 4;
+            while (pid_end < stdout.len and stdout[pid_end] != '\n') : (pid_end += 1) {}
+
+            if (pid_end > pid_start) {
+                const pid_str = stdout[pid_start..pid_end];
+                const pid = std.fmt.parseInt(u32, pid_str, 10) catch 0;
+
+                if (pid > 0) {
+                    // Extract log path from "Log: {path}" part
+                    var log_start: usize = 0;
+                    while (log_start < stdout.len and stdout[log_start] != '\n') : (log_start += 1) {}
+                    log_start += 1; // skip newline
+
+                    // Find "Log: " prefix
+                    var log_path_start = log_start;
+                    while (log_path_start < stdout.len and log_path_start < log_start + 5) : (log_path_start += 1) {}
+
+                    if (log_path_start < stdout.len) {
+                        const log_path = stdout[log_path_start..];
+
+                        // Save to database
+                        const started_at = std.time.timestamp();
+                        background_process.save(db_ptr, allocator, sess_id, pid, parsed.value.command, log_path, started_at) catch {
+                            // Log error but don't fail the tool execution
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    const res_bash = try bash_tool_mod.bashResultToString(allocator, bash_output);
+
+    return res_bash;
+}
+
 // Individual tool executors
 pub fn execBash(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    return handle_bash_tool.runWithContext(allocator, tc, db, session_id);
+    return runWithContext(allocator, tc, db, session_id);
 }
 
 pub fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
@@ -511,51 +579,50 @@ pub const ToolInfo = struct {
     name: []const u8,
     exec: SubAgentToolExec,
     tool_def: tool_models.AgentTool,
-    allowed_for_subagent: bool = true,
     auto_save_skill: bool = false,
     auto_save_agent: bool = false,
 };
 
 /// The ONE registry for all tool metadata.
-/// `allowed_for_subagent = false` excludes dangerous tools (spawn_sub_agent, set_agent_properties).
+/// Main agent gets all tools. Sub-agents get SUB_AGENT_TOOL_REGISTRY (hard filtered).
 pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
-    // === AGENT CONTROL (not allowed for sub-agents) ===
-    .{ .name = "set_agent_properties", .exec = execSetAgentProperties, .tool_def = set_agent_properties_mod.set_agent_properties_tool, .allowed_for_subagent = false },
-    .{ .name = "spawn_sub_agent", .exec = execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawn_sub_agent_tool, .allowed_for_subagent = false },
+    // === AGENT CONTROL (main agent only) ===
+    .{ .name = "set_agent_properties", .exec = execSetAgentProperties, .tool_def = set_agent_properties_mod.set_agent_properties_tool },
+    .{ .name = "spawn_sub_agent", .exec = execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawn_sub_agent_tool },
 
-    // === AGENT MANAGEMENT (allowed for sub-agents, auto-save) ===
-    .{ .name = "list_agents", .exec = execListAgents, .tool_def = list_agents_mod.list_agents_tool, .allowed_for_subagent = true, .auto_save_agent = true },
-    .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
-    .{ .name = "remove_agent", .exec = execRemoveAgent, .tool_def = remove_agent_mod.remove_agent_tool, .allowed_for_subagent = true },
+    // === AGENT MANAGEMENT (auto-save) ===
+    .{ .name = "list_agents", .exec = execListAgents, .tool_def = list_agents_mod.list_agents_tool, .auto_save_agent = true },
+    .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .auto_save_agent = true },
+    .{ .name = "remove_agent", .exec = execRemoveAgent, .tool_def = remove_agent_mod.remove_agent_tool },
 
     // === SKILL MANAGEMENT ===
-    .{ .name = "list_skills", .exec = execListSkills, .tool_def = list_skills_mod.list_skills_tool, .allowed_for_subagent = true },
-    .{ .name = "get_skill", .exec = execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
-    .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool, .allowed_for_subagent = true },
+    .{ .name = "list_skills", .exec = execListSkills, .tool_def = list_skills_mod.list_skills_tool },
+    .{ .name = "get_skill", .exec = execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .auto_save_skill = true },
+    .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool },
 
     // === SKILL/AGENT CREATION ===
-    .{ .name = "add_skill", .exec = execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
-    .{ .name = "add_agent", .exec = execAddAgent, .tool_def = add_agent_mod.add_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
+    .{ .name = "add_skill", .exec = execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
+    .{ .name = "add_agent", .exec = execAddAgent, .tool_def = add_agent_mod.add_agent_tool, .auto_save_agent = true },
 
     // === FILE OPERATIONS ===
-    .{ .name = "bash", .exec = execBash, .tool_def = bash_tool_mod.bash_tool, .allowed_for_subagent = true },
-    .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool, .allowed_for_subagent = true },
-    .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool, .allowed_for_subagent = true },
-    .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool, .allowed_for_subagent = true },
+    .{ .name = "bash", .exec = execBash, .tool_def = bash_tool_mod.bash_tool },
+    .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool },
+    .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool },
+    .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool },
 
     // === LSP TOOLS ===
-    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool, .allowed_for_subagent = true },
-    .{ .name = "lsp_references", .exec = execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool, .allowed_for_subagent = true },
-    .{ .name = "lsp_workspace_symbol", .exec = execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool, .allowed_for_subagent = true },
-    .{ .name = "lsp_document_symbol", .exec = execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool, .allowed_for_subagent = true },
-    .{ .name = "lsp_hover", .exec = execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
+    .{ .name = "lsp_references", .exec = execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool },
+    .{ .name = "lsp_workspace_symbol", .exec = execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool },
+    .{ .name = "lsp_document_symbol", .exec = execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool },
+    .{ .name = "lsp_hover", .exec = execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool },
 
     // === WEB SEARCH TOOLS ===
-    .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool, .allowed_for_subagent = true },
+    .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool },
 
     // === FILE SEARCH TOOLS ===
-    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
-    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
+    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool },
+    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool },
 };
 
 // ============================================================================
@@ -592,41 +659,41 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     search_tool_mod.search_tool,
 };
 
-/// Registry for sub-agents (excludes dangerous tools like spawn_sub_agent, set_agent_properties)
+/// Registry for sub-agents (excludes dangerous tools: spawn_sub_agent, set_agent_properties)
 pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
-    // === AGENT MANAGEMENT (allowed for sub-agents, auto-save) ===
-    .{ .name = "list_agents", .exec = execListAgents, .tool_def = list_agents_mod.list_agents_tool, .allowed_for_subagent = true, .auto_save_agent = true },
-    .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
-    .{ .name = "remove_agent", .exec = execRemoveAgent, .tool_def = remove_agent_mod.remove_agent_tool, .allowed_for_subagent = true },
+    // === AGENT MANAGEMENT (auto-save) ===
+    .{ .name = "list_agents", .exec = execListAgents, .tool_def = list_agents_mod.list_agents_tool, .auto_save_agent = true },
+    .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .auto_save_agent = true },
+    .{ .name = "remove_agent", .exec = execRemoveAgent, .tool_def = remove_agent_mod.remove_agent_tool },
 
     // === SKILL MANAGEMENT ===
-    .{ .name = "list_skills", .exec = execListSkills, .tool_def = list_skills_mod.list_skills_tool, .allowed_for_subagent = true },
-    .{ .name = "get_skill", .exec = execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
-    .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool, .allowed_for_subagent = true },
+    .{ .name = "list_skills", .exec = execListSkills, .tool_def = list_skills_mod.list_skills_tool },
+    .{ .name = "get_skill", .exec = execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .auto_save_skill = true },
+    .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool },
 
     // === SKILL/AGENT CREATION ===
-    .{ .name = "add_skill", .exec = execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .allowed_for_subagent = true, .auto_save_skill = true },
-    .{ .name = "add_agent", .exec = execAddAgent, .tool_def = add_agent_mod.add_agent_tool, .allowed_for_subagent = true, .auto_save_agent = true },
+    .{ .name = "add_skill", .exec = execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
+    .{ .name = "add_agent", .exec = execAddAgent, .tool_def = add_agent_mod.add_agent_tool, .auto_save_agent = true },
 
     // === FILE OPERATIONS ===
-    .{ .name = "bash", .exec = execBash, .tool_def = bash_tool_mod.bash_tool, .allowed_for_subagent = true },
-    .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool, .allowed_for_subagent = true },
-    .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool, .allowed_for_subagent = true },
-    .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool, .allowed_for_subagent = true },
+    .{ .name = "bash", .exec = execBash, .tool_def = bash_tool_mod.bash_tool },
+    .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool },
+    .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool },
+    .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool },
 
     // === LSP TOOLS ===
-    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool, .allowed_for_subagent = true },
-    .{ .name = "lsp_references", .exec = execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool, .allowed_for_subagent = true },
-    .{ .name = "lsp_workspace_symbol", .exec = execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool, .allowed_for_subagent = true },
-    .{ .name = "lsp_document_symbol", .exec = execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool, .allowed_for_subagent = true },
-    .{ .name = "lsp_hover", .exec = execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool, .allowed_for_subagent = true },
+    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
+    .{ .name = "lsp_references", .exec = execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool },
+    .{ .name = "lsp_workspace_symbol", .exec = execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool },
+    .{ .name = "lsp_document_symbol", .exec = execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool },
+    .{ .name = "lsp_hover", .exec = execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool },
 
     // === WEB SEARCH TOOLS ===
-    .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool, .allowed_for_subagent = true },
+    .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool },
 
     // === FILE SEARCH TOOLS ===
-    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool, .allowed_for_subagent = true },
-    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool, .allowed_for_subagent = true },
+    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool },
+    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool },
 };
 
 /// Get tool metadata by name from registry
