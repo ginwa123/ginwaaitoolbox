@@ -119,7 +119,6 @@ pub const llm_history = @import("ai_workflow/tui/llm_history.zig");
 pub const session_table = @import("ai_workflow/tui/session_table.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
-pub const session_queue_messages = @import("ai_workflow/tui/session_queue_messages.zig");
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");

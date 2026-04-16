@@ -45,6 +45,8 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\- You MUST include all necessary context, background, and instructions
         \\  directly inside each sub-agent's "instruction" field.
         \\- All sub-agents run in parallel and return results separately.
+        \\- Sub-agents are registered as **workers** in the database and activity registry,
+        \\  so they can be tracked and show up in the agent's awareness of other active agents.
         \\
         \\WHEN TO USE:
         \\- Use when tasks can be broken down into independent parallel workloads.

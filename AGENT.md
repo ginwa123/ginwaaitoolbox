@@ -1,6 +1,6 @@
 # AGENT.md — Project Summary
 
-> **Last Updated:** 2025-04-11
+> **Last Updated:** 2025-04-16
 > **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
 
 ---
@@ -174,6 +174,24 @@ Just use it - read the file first to see its current content.
 | GET | `/api/session/:session_id/queue/messages` | Get queued messages (clears queue) |
 | POST | `/api/llm/run` | Run LLM workflow |
 | GET | `/api/ping/:session_id` | Health check |
+| POST | `/api/worker` | Create/register a worker |
+| GET | `/api/workers` | List all active workers |
+| GET | `/api/worker/:session_id/status` | Get worker status |
+| POST | `/api/worker/:session_id/cancel` | Cancel a worker |
+
+## Worker System
+
+**Workers** are persistent background agents that survive restarts. They are:
+- Registered in the `worker` table in the database
+- Tracked in the activity registry for real-time awareness
+- Automatically restarted on app startup (via startup handler)
+- Shown in agent prompts so agents know what other workers are active
+
+**Sub-agents** (spawned via `spawn_sub_agent`) are now also registered as workers:
+- Each sub-agent gets a unique `session_id` (nanosecond timestamp)
+- They're registered in the database (`worker` table) with `worker_id = "subagent_{session_id}"`)
+- They're tracked in the activity registry during execution
+- On completion, their activity description is updated and they become idle
 
 ## Data Locations
 

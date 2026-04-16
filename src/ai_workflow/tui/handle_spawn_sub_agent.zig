@@ -52,6 +52,9 @@ const llm_history = @import("llm_history.zig");
 const save_message = llm_history.save_message;
 const session_helpers = llm_history;
 const getCurrentAgentBySessionId = llm_history.get_current_agent_by_session_id;
+const upsert_worker = llm_history.upsert_worker;
+const update_worker_activity_with_description = llm_history.update_worker_activity_with_description;
+const update_worker_description = llm_history.update_worker_description;
 const handle_tool = @import("handle_tool.zig");
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const StreamingContext = @import("workflow.zig").StreamingContext;
@@ -469,7 +472,6 @@ fn runSubAgentThread(
     parent_id: []const u8,
     thread_res: []ThreadResult,
 ) void {
-    _ = name;
     // Each thread gets its own arena allocator to prevent memory corruption
     // when multiple sub-agents run in parallel
     var thread_arena = std.heap.ArenaAllocator.init(alloc);
@@ -490,6 +492,20 @@ fn runSubAgentThread(
         return;
     };
 
+    // Create worker_id and register this sub-agent as a worker in the database
+    const worker_id = std.fmt.allocPrint(thread_alloc, "subagent_{s}", .{sessionId}) catch |err| {
+        log.errFmt("spawn_sub_agent[{}]: failed to create worker_id: {}", .{ idx, err }) catch {};
+        return;
+    };
+
+    // Register worker in database
+    upsert_worker(thread_alloc, database, worker_id, sessionId, workdir) catch |err| {
+        log.warnFmt("spawn_sub_agent[{}]: failed to register worker: {}", .{ idx, err }) catch {};
+        // Continue anyway - worker registration is best-effort
+    };
+
+    log.infoFmt("spawn_sub_agent[{s}]: registered as worker (session_id: {s})", .{ name, sessionId }) catch {};
+
     const run_result = run_sub_agent(
         thread_alloc,
         log,
@@ -509,6 +525,10 @@ fn runSubAgentThread(
         parent_sess,
         parent_id,
     );
+
+    llm_history.remove_worker(thread_alloc, database, worker_id) catch {
+        log.errFmt("Failed to remove worker from database for session {s}", .{sessionId}) catch {};
+    };
 
     // Store result or error in thread-safe manner
     thread_res[idx].mutex.lock();
@@ -752,4 +772,3 @@ fn format_relative_time(seconds: i64) []const u8 {
         return "> 24h";
     }
 }
-

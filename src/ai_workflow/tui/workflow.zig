@@ -168,28 +168,9 @@ pub const TUIWorkflow = struct {
                 self.logger.debugFmt("WORKFLOW: queued message for session {s}", .{session_id}) catch {};
                 return;
             }
-        }
 
-        try save_message(parent_allocator, self.db, .{
-            .session_id = session_id,
-            .model = model,
-            .cwd = cwd,
-            .content = message,
-            .reasoning_content = null,
-            .role = agent.Role.user.toStr(),
-            .finish_reason = "null",
-            .tool_calls = null,
-            .tool_call_id = null,
-            .agent_name = initial_agent,
-            .loop_index = 0,
-            .temperature = initial_agent_state.temperature,
-            .is_thinking = initial_agent_state.is_thinking,
-            .prompt_tokens = 0,
-            .completion_tokens = 0,
-            .total_tokens = 0,
-            .parent_id = session_id,
-            .parent_session_id = session_id,
-        });
+            _ = registry.queue_message(session_id, message);
+        }
 
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
@@ -476,8 +457,6 @@ pub const TUIWorkflow = struct {
 
         return res_dynamic_agent;
     }
-
-
 
     /// Call CompactionAgent to compress conversation history
     fn callCompactAgent(
