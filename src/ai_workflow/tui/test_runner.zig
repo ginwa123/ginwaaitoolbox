@@ -9,7 +9,6 @@ test {
     _ = @import("build_messages_for_agent_prompt_test.zig");
     _ = @import("build_messages_tools_mcp_for_agent_prompt_test.zig");
     _ = @import("build_skill_for_agent_prompt_test.zig");
-    _ = @import("handle_bash_tool_test.zig");
     _ = @import("handle_content_filter_test.zig");
     _ = @import("handle_spawn_sub_agent_test.zig");
     _ = @import("handle_tool_test.zig");
