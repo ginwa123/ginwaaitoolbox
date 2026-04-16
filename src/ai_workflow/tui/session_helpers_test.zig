@@ -13,6 +13,15 @@ test "get_message_latest returns all new columns correctly" {
     // Use in-memory database for testing
     try db.init(":memory:");
 
+    // Create sessions table (needed for JOIN in get_messages/get_message_latest)
+    try db.exec(std.testing.allocator,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &[_][]const u8{});
+
     // Create table with all columns including new ones
     try db.exec(std.testing.allocator,
         \\CREATE TABLE llm_history (
@@ -57,6 +66,11 @@ test "get_message_latest returns all new columns correctly" {
         \\     0.7, 1, 'parent-session', 100, 50, 150, 1, 1, 'bash_tool', 1)
     , &[_][]const u8{});
 
+    // Insert corresponding session for JOIN
+    try db.exec(std.testing.allocator,
+        \\INSERT INTO sessions (id, name, status) VALUES ('session-abc', 'Test Session Name', 'active')
+    , &[_][]const u8{});
+
     // Call the function under test
     const result = try session_helpers.get_message_latest(std.testing.allocator, &db, "session-abc");
     try std.testing.expect(result != null);
@@ -82,6 +96,15 @@ test "get_message_latest returns defaults for NULL columns" {
     defer db.deinit();
 
     try db.init(":memory:");
+
+    // Create sessions table (needed for JOIN)
+    try db.exec(std.testing.allocator,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &[_][]const u8{});
 
     // Create table with all columns
     try db.exec(std.testing.allocator,
@@ -122,6 +145,11 @@ test "get_message_latest returns defaults for NULL columns" {
         \\    ('test-null', 'session-null', 'gpt-3.5', 'Response', 'stop', 1)
     , &[_][]const u8{});
 
+    // Insert corresponding session for JOIN
+    try db.exec(std.testing.allocator,
+        \\INSERT INTO sessions (id, name, status) VALUES ('session-null', 'Null Session', 'active')
+    , &[_][]const u8{});
+
     const result = try session_helpers.get_message_latest(std.testing.allocator, &db, "session-null");
     try std.testing.expect(result != null);
 
@@ -146,6 +174,15 @@ test "get_messages returns multiple records with new columns" {
     defer db.deinit();
 
     try db.init(":memory:");
+
+    // Create sessions table (needed for JOIN)
+    try db.exec(std.testing.allocator,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &[_][]const u8{});
 
     // Create table
     try db.exec(std.testing.allocator,
@@ -188,6 +225,11 @@ test "get_messages returns multiple records with new columns" {
         \\    ('msg-2', 'multi-session', 'gpt-4', 'Second', 'stop', '2024-01-01 10:01:00', 1, 200, 100, 300, 'read_file')
     , &[_][]const u8{});
 
+    // Insert corresponding session for JOIN
+    try db.exec(std.testing.allocator,
+        \\INSERT INTO sessions (id, name, status) VALUES ('multi-session', 'Multi Session', 'active')
+    , &[_][]const u8{});
+
     const results = try session_helpers.get_messages(std.testing.allocator, &db, "multi-session");
     defer {
         for (results) |*msg| msg.deinit(std.testing.allocator);
@@ -218,6 +260,15 @@ test "get_message_latest returns null for non-existent session" {
     defer db.deinit();
 
     try db.init(":memory:");
+
+    // Create sessions table (needed for JOIN)
+    try db.exec(std.testing.allocator,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &[_][]const u8{});
 
     try db.exec(std.testing.allocator,
         \\CREATE TABLE llm_history (

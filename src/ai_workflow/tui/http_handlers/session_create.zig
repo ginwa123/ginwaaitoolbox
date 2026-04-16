@@ -85,6 +85,14 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
             if (server.ctx) |ctx| {
                 const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
 
+                // Ensure session exists in sessions table (for JOIN queries)
+                const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status) VALUES (?, ?, 'active')";
+                const copy_session_name = try alloc.dupe(u8, session_name);
+                defer alloc.free(copy_session_name);
+                sqlite_db.exec(alloc, session_sql, &.{ session_id, copy_session_name }) catch {
+                    // Non-fatal error, continue anyway
+                };
+
                 // Spawn workflow in detached thread (fire-and-forget)
                 const workflow_args = try server.allocator.create(WorkflowArgs);
                 workflow_args.* = .{

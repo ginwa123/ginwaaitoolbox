@@ -62,7 +62,7 @@ pub fn getSessionList(
     _ = status;
     _ = agent_type;
 
-    const sql = "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT ? OFFSET ?";
+    const sql = "SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE 1=1 GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT ? OFFSET ?";
 
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{offset});
@@ -597,12 +597,19 @@ pub fn createSession(
     agent_type: []const u8,
     model: []const u8,
     temperature: f32,
+    session_name: []const u8,
 ) ![]const u8 {
     // Generate session ID
     var session_id_buf: [64]u8 = undefined;
     const session_id = try std.fmt.bufPrint(&session_id_buf, "kerjabot_{}", .{std.time.timestamp()});
 
-    // Insert session into database
+    // Insert into sessions table first (for JOIN queries)
+    const session_sql = "INSERT INTO sessions (id, name, status) VALUES (?, ?, 'active')";
+    const copy_session_name = try std.heap.c_allocator.dupe(u8, session_name);
+    defer std.heap.c_allocator.free(copy_session_name);
+    try db.exec(allocator, session_sql, &.{ session_id, copy_session_name });
+
+    // Insert session into llm_history table
     const insert_sql = "INSERT INTO llm_history (id, session_id, model, response_content, role, agent, temperature, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)";
 
     const temp_str = try std.fmt.allocPrint(allocator, "{d}", .{temperature});
@@ -636,7 +643,6 @@ pub const save_messageInput = struct {
     tool_call_id: ?[]const u8,
     tool_name: ?[]const u8 = null,
     agent_name: ?[]const u8,
-    session_name: ?[]const u8,
     loop_index: u32,
     temperature: f32,
     is_thinking: bool,
@@ -684,7 +690,7 @@ pub fn save_message(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     // Use safeDupe to avoid arena aliasing issues
     const copy_session_id = try safeDupe(allocator, input.session_id);
@@ -705,8 +711,6 @@ pub fn save_message(
     defer std.heap.c_allocator.free(copy_cwd);
     const copy_agent = try safeDupe(allocator, agentStr);
     defer std.heap.c_allocator.free(copy_agent);
-    const copy_session_name = try safeDupe(allocator, input.session_name orelse "");
-    defer std.heap.c_allocator.free(copy_session_name);
     const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{input.loop_index});
     defer allocator.free(loop_index_str);
     const temperature_str = try std.fmt.allocPrint(allocator, "{d:.2}", .{input.temperature});
@@ -725,7 +729,7 @@ pub fn save_message(
     const total_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.total_tokens});
     defer allocator.free(total_tokens_str);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, copy_session_name, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -766,7 +770,7 @@ pub fn get_messages(
 ) ![]TUIHistory {
     var results: std.ArrayList(TUIHistory) = .empty;
 
-    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(tool_name, ''), COALESCE(parent_session_id, ''), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(is_input, 0), COALESCE(is_output, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at ASC";
+    const sql = "SELECT h.id, h.session_id, h.model, h.created_at, h.response_content, h.finish_reason, COALESCE(h.role, 'assistant'), COALESCE(h.tool_calls_json, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.name, ''), COALESCE(h.loop_index, 0), COALESCE(h.tool_name, ''), COALESCE(h.parent_session_id, ''), COALESCE(h.temperature, 0.2), COALESCE(h.is_thinking, 0), COALESCE(h.prompt_tokens, 0), COALESCE(h.completion_tokens, 0), COALESCE(h.total_tokens, 0), COALESCE(h.is_input, 0), COALESCE(h.is_output, 0) FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE h.session_id = ? AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL) ORDER BY h.created_at ASC";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -807,7 +811,7 @@ pub fn get_message_latest(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?TUIHistory {
-    const sql = "SELECT id, session_id, model, created_at, response_content, finish_reason, COALESCE(role, 'assistant'), COALESCE(tool_calls_json, ''), COALESCE(reasoning_content, ''), COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(loop_index, 0), COALESCE(tool_name, ''), COALESCE(parent_session_id, ''), COALESCE(temperature, 0.2), COALESCE(is_thinking, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0), COALESCE(is_input, 0), COALESCE(is_output, 0) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL) ORDER BY created_at DESC LIMIT 1";
+    const sql = "SELECT h.id, h.session_id, h.model, h.created_at, h.response_content, h.finish_reason, COALESCE(h.role, 'assistant'), COALESCE(h.tool_calls_json, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.name, ''), COALESCE(h.loop_index, 0), COALESCE(h.tool_name, ''), COALESCE(h.parent_session_id, ''), COALESCE(h.temperature, 0.2), COALESCE(h.is_thinking, 0), COALESCE(h.prompt_tokens, 0), COALESCE(h.completion_tokens, 0), COALESCE(h.total_tokens, 0), COALESCE(h.is_input, 0), COALESCE(h.is_output, 0) FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE h.session_id = ? AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL) ORDER BY h.created_at DESC LIMIT 1";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -996,6 +1000,11 @@ pub fn upsert_worker(
 ) !void {
     const sql = "INSERT OR REPLACE INTO worker (id, session_id, working_directory, last_activity, last_activity_description) VALUES (?, ?, ?, strftime('%s', 'now'), '')";
     try db.exec(allocator, sql, &.{ worker_id, session_id, working_directory });
+
+    // Also ensure session exists in sessions table (for JOIN queries)
+    // Use INSERT OR IGNORE to handle cases where session might already exist
+    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status) VALUES (?, ?, 'active')";
+    try db.exec(allocator, session_sql, &.{ session_id, session_id });
 }
 
 /// Update worker's last activity timestamp with description

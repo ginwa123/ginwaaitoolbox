@@ -135,7 +135,8 @@ pub fn handle_mcp_tool_run(
     _ = try logger.debugFmt("MCP response status: {d}", .{result.status_code});
 
     if (result.status_code != 200) {
-        _ = try logger.errFmt("MCP server returned status {d}: {s}", .{ result.status_code, result.body });
+        // Log status without raw body to prevent crashes from non-null-terminated data
+        _ = try logger.errFmt("MCP server returned status {d}, body length: {d}", .{ result.status_code, result.body.len });
         return error.MCPServerReturnedError;
     }
 
@@ -152,7 +153,8 @@ pub fn handle_mcp_tool_run(
     const parse_alloc = parse_arena.allocator();
 
     const parsed = std.json.parseFromSlice(std.json.Value, parse_alloc, clean_body, .{}) catch |err| {
-        _ = try logger.errFmt("MCP JSON parse error: {s}, body: {s}", .{ @errorName(err), clean_body[0..@min(clean_body.len, 500)] });
+        // Log error without raw body to prevent crashes from non-null-terminated data
+        _ = try logger.errFmt("MCP JSON parse error: {s}, body length: {d}", .{ @errorName(err), clean_body.len });
         if (is_copy) allocator.free(clean_body);
         allocator.free(result.body);
         allocator.free(request_body);

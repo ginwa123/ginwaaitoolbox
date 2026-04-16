@@ -183,6 +183,17 @@ Just use it - read the file first to see its current content.
 | Log file | `/tmp/agentic_coding.log` |
 | Panic log | Same as log file |
 
+## Database Schema Notes
+
+**Session Name Derivation:** The `llm_history` table uses `LEFT JOIN sessions` to derive session names instead of storing a denormalized `session_name` column.
+
+| Table | Key Column | Purpose |
+|-------|------------|---------|
+| `sessions` | `id` (PK), `name` | Session metadata |
+| `llm_history` | `session_id` (FK) | References `sessions.id` |
+
+**Latest Migration (v21):** `Migration021RemoveSessionNameFromLlmHistory` — drops `session_name` from `llm_history`
+
 ## Important Conventions
 
 - **Max lines per file:** 400 lines — split larger files

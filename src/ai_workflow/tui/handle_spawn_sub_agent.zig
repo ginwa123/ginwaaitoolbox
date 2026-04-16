@@ -223,8 +223,6 @@ fn run_sub_agent(
     // Fetch MCP tools for sub-agent
     const mcp_tools = try buildMcpTools.build_mcp_tools_run(parentAllocator, config);
 
-    const sessionName = try std.fmt.allocPrint(parentAllocator, "{}", .{std.time.nanoTimestamp()});
-
     // Save user instruction message to DB
     _ = try save_message(parentAllocator, db, .{
         .session_id = session_id,
@@ -237,7 +235,6 @@ fn run_sub_agent(
         .tool_calls = null,
         .tool_call_id = null,
         .agent_name = agent_name,
-        .session_name = sessionName,
         .loop_index = loop_index,
         .temperature = agent_temperature,
         .is_thinking = is_thinking,
@@ -319,7 +316,6 @@ fn run_sub_agent(
             .tool_calls = assistant_tool_calls,
             .tool_call_id = null,
             .agent_name = agent_name,
-            .session_name = sessionName,
             .loop_index = loop_index,
             .temperature = agent_temperature,
             .is_thinking = is_thinking,
@@ -381,7 +377,6 @@ fn run_sub_agent(
                             .tool_calls = null,
                             .tool_call_id = tc.id,
                             .agent_name = agent_name,
-                            .session_name = sessionName,
                             .loop_index = loop_index,
                             .temperature = agent_temperature,
                             .is_thinking = is_thinking,
@@ -535,7 +530,6 @@ pub fn handle_spawn_sub_agent_run(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    _session_name: ?[]const u8,
     loop_counter: u32,
     tool_call: agent.ToolCall,
     agent_temperature: f32,
@@ -545,7 +539,6 @@ pub fn handle_spawn_sub_agent_run(
     config: *const config_mod.LlmConfig,
 ) ![]u8 {
     const parsed = try spawn_sub_agent_tool.parseSubAgents(allocator, tool_call.function.arguments, MAX_SUB_AGENTS);
-    _ = _session_name; // unused parameter
 
     // Reject single sub-agent - must spawn at least 2 for parallel work
     if (parsed.sub_agents.len == 1) {

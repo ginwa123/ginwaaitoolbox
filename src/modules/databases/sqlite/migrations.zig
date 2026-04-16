@@ -301,6 +301,15 @@ pub const Migration020AddWorkerExtraFields = struct {
     }
 };
 
+pub const Migration021RemoveSessionNameFromLlmHistory = struct {
+    pub const version: u32 = 21;
+    pub const name = "remove_session_name_from_llm_history";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator, "ALTER TABLE llm_history DROP COLUMN session_name", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -373,6 +382,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration018CreateSessionQueueMessages.version, .name = Migration018CreateSessionQueueMessages.name, .up = Migration018CreateSessionQueueMessages.up },
     .{ .version = Migration019CreateWorkerTable.version, .name = Migration019CreateWorkerTable.name, .up = Migration019CreateWorkerTable.up },
     .{ .version = Migration020AddWorkerExtraFields.version, .name = Migration020AddWorkerExtraFields.name, .up = Migration020AddWorkerExtraFields.up },
+    .{ .version = Migration021RemoveSessionNameFromLlmHistory.version, .name = Migration021RemoveSessionNameFromLlmHistory.name, .up = Migration021RemoveSessionNameFromLlmHistory.up },
 };
 
 /// Register all migrations with a MigrationManager

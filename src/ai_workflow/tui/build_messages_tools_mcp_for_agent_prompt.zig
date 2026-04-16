@@ -163,8 +163,9 @@ fn fetchToolsFromServer(
     const clean_body = stripSsePrefix(result.body);
     const body_to_parse = if (clean_body) |b| b else result.body;
 
-    // Log first 500 chars of response for debugging
-    std.log.warn("MCP response from {s}: {s}", .{ server_name, result.body[0..@min(result.body.len, 500)] });
+    // Log body length for debugging (avoid logging raw body to prevent crashes
+    // from non-null-terminated binary data)
+    std.log.warn("MCP response from {s}: {d} bytes", .{ server_name, body_to_parse.len });
 
     // Parse JSON response using a separate arena to avoid memory issues
     // IMPORTANT: json.parseFromSlice internally creates an ArenaAllocator.

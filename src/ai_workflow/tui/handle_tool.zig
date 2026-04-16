@@ -186,7 +186,6 @@ fn dispatchSpawnSubAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResul
         ctx.session_id,
         ctx.model,
         ctx.cwd,
-        null,
         0,
         tool_call,
         ctx.agent_temperature.*,
@@ -238,7 +237,6 @@ pub fn handle_tool(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    session_name: ?[]const u8,
     loop_counter: u32,
     res_dynamic_agent: agent.CallResponse,
     agent_temperature: *f32,
@@ -286,7 +284,6 @@ pub fn handle_tool(
             .tool_calls = tc,
             .tool_call_id = null,
             .agent_name = current_agent_for_save,
-            .session_name = session_name,
             .loop_index = loop_counter,
             .temperature = agent_temperature.*,
             .is_thinking = isThinking.*,
@@ -337,10 +334,10 @@ pub fn handle_tool(
                         tool_call.function.name,
                         @errorName(err),
                     });
-                    try saveAndSendToolResult(allocator, db, session_id, model, cwd, session_name, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                    try saveAndSendToolResult(allocator, db, session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                     continue;
                 };
-                try saveAndSendToolResult(allocator, db, session_id, model, cwd, session_name, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                try saveAndSendToolResult(allocator, db, session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                 continue;
             }
 
@@ -350,7 +347,7 @@ pub fn handle_tool(
                     tool_call.function.name,
                     @errorName(err),
                 });
-                try saveAndSendToolResult(allocator, db, session_id, model, cwd, session_name, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                try saveAndSendToolResult(allocator, db, session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                 continue;
             };
 
@@ -374,7 +371,7 @@ pub fn handle_tool(
                 };
             }
 
-            try saveAndSendToolResult(allocator, db, session_id, model, cwd, session_name, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+            try saveAndSendToolResult(allocator, db, session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
         }
     }
 
@@ -387,7 +384,6 @@ fn saveAndSendToolResult(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    session_name: ?[]const u8,
     loop_counter: u32,
     tool_call: agent.ToolCall,
     result: []const u8,
@@ -406,7 +402,6 @@ fn saveAndSendToolResult(
         .tool_calls = null,
         .tool_call_id = tool_call.id,
         .agent_name = agent_name,
-        .session_name = session_name,
         .loop_index = loop_counter,
         .temperature = temperature,
         .is_thinking = is_thinking,
@@ -449,7 +444,6 @@ fn sendSSEForLatestMessage(
             .tool_call_id = msg.id,
             .tool_name = msg.tool_name,
             .agent_name = agent_name,
-            .session_name = msg.session_name,
             .loop_index = msg.loop_index,
             .temperature = temperature,
             .is_thinking = is_thinking,

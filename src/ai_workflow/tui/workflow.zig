@@ -121,7 +121,6 @@ pub const TUIWorkflow = struct {
                 .tool_call_id = null,
                 .tool_name = null,
                 .agent_name = null,
-                .session_name = message,
                 .loop_index = 0,
                 .temperature = 0.0,
                 .is_thinking = false,
@@ -155,7 +154,6 @@ pub const TUIWorkflow = struct {
             remove_worker(parent_allocator, self.db, session_id) catch {};
         }
 
-        const session_name = message;
         const initial_agent_state = try get_current_agent_by_session_id(
             parent_allocator,
             self.db,
@@ -183,7 +181,6 @@ pub const TUIWorkflow = struct {
             .tool_calls = null,
             .tool_call_id = null,
             .agent_name = initial_agent,
-            .session_name = session_name,
             .loop_index = 0,
             .temperature = initial_agent_state.temperature,
             .is_thinking = initial_agent_state.is_thinking,
@@ -235,7 +232,6 @@ pub const TUIWorkflow = struct {
                             .tool_calls = null,
                             .tool_call_id = null,
                             .agent_name = initial_agent,
-                            .session_name = session_name,
                             .loop_index = 0,
                             .temperature = initial_agent_state.temperature,
                             .is_thinking = initial_agent_state.is_thinking,
@@ -324,7 +320,6 @@ pub const TUIWorkflow = struct {
                         .tool_calls = null,
                         .tool_call_id = null,
                         .agent_name = current_agent,
-                        .session_name = session_name,
                         .loop_index = loopCounter,
                         .temperature = agent_temperature,
                         .is_thinking = isThinking,
@@ -349,7 +344,6 @@ pub const TUIWorkflow = struct {
                         .tool_call_id = null,
                         .tool_name = null,
                         .agent_name = current_agent,
-                        .session_name = session_name,
                         .loop_index = loopCounter,
                         .temperature = agent_temperature,
                         .is_thinking = isThinking,
@@ -364,12 +358,11 @@ pub const TUIWorkflow = struct {
                     _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
+                    try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                 } else if (finish_reason == .assistant) {
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, session_name, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
+                        try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                     } else {
-                        // No tool calls present - update with content description
                         // Treat as normal completion
                         _ = try save_message(allocator, self.db, .{
                             .session_id = session_id,
@@ -382,7 +375,6 @@ pub const TUIWorkflow = struct {
                             .tool_calls = null,
                             .tool_call_id = null,
                             .agent_name = current_agent,
-                            .session_name = session_name,
                             .loop_index = loopCounter,
                             .temperature = agent_temperature,
                             .is_thinking = isThinking,
@@ -407,7 +399,6 @@ pub const TUIWorkflow = struct {
                             .tool_call_id = null,
                             .tool_name = null,
                             .agent_name = current_agent,
-                            .session_name = session_name,
                             .loop_index = loopCounter,
                             .temperature = agent_temperature,
                             .is_thinking = isThinking,
@@ -433,7 +424,6 @@ pub const TUIWorkflow = struct {
                         .tool_call_id = null,
                         .tool_name = null,
                         .agent_name = current_agent,
-                        .session_name = session_name,
                         .loop_index = loopCounter,
                         .temperature = agent_temperature,
                         .is_thinking = isThinking,
@@ -609,8 +599,8 @@ pub const TUIWorkflow = struct {
         const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
         defer allocator.free(created_at);
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)";
-        try self.db.exec(allocator, sql, &.{ id, session_id, model, summary_content, "stop", "user", "", "", cwd, "Agent", "", "0", created_at, "1", "0", "" });
+        const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, loop_index, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
+        try self.db.exec(allocator, sql, &.{ id, session_id, model, summary_content, "stop", "user", "", "", cwd, "Agent", "0", created_at, "1", "0", "" });
 
         // Build new in-memory message list: system message + compacted summary
         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;
