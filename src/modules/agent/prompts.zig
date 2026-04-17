@@ -204,8 +204,8 @@ pub fn build_agent_prompt(
     try result.appendSlice(allocator, SpecializationTable);
 
     // Dynamic agents
-    const agents_list = agents.list_agents(allocator);
-    defer agents.free_agents_list(allocator, agents_list);
+    const agents_list = agents.listAgents(allocator);
+    defer agents.freeAgentsList(allocator, agents_list);
 
     if (agents_list.len > 0) {
         try result.appendSlice(allocator, "\n\n## Available Dynamic Agents\n\n");

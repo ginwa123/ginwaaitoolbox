@@ -17,7 +17,7 @@ const agents = struct {
     /// Parse a specific agent by name from the agents directory
     /// Returns allocated string with agent content, or null if not found
     /// Caller owns the returned memory and must free it with allocator.free()
-    pub fn parse_agent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
+    pub fn parseAgent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
         // Placeholder implementation - will be replaced when agents.zig is available
         // Try to find agent in .nalar/agents/<agent_name>/AGENT.md
         const LOCAL_AGENTS_DIR = ".nalar/agents";
@@ -47,7 +47,7 @@ const agents = struct {
     /// List all available agents from the agents directory
     /// Returns allocated array of AgentInfo structs
     /// Caller owns the returned memory and must free it with freeAgentsList()
-    pub fn list_agents(allocator: std.mem.Allocator) []AgentInfo {
+    pub fn listAgents(allocator: std.mem.Allocator) []AgentInfo {
         // Placeholder implementation - will be replaced when agents.zig is available
         const LOCAL_AGENTS_DIR = ".nalar/agents";
 
@@ -101,7 +101,7 @@ const agents = struct {
     }
 
     /// Free a agents array allocated by listAgents
-    pub fn free_agents_list(allocator: std.mem.Allocator, agents_list: []AgentInfo) void {
+    pub fn freeAgentsList(allocator: std.mem.Allocator, agents_list: []AgentInfo) void {
         for (agents_list) |agent| {
             allocator.free(agent.name);
             allocator.free(agent.description);
@@ -289,7 +289,7 @@ fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
 /// Load agent by name from built-in agents
 fn loadAgentByName(allocator: std.mem.Allocator, agent_name: []const u8) ![]const u8 {
     // Try to parse the agent
-    if (agents.parse_agent(allocator, agent_name)) |content| {
+    if (agents.parseAgent(allocator, agent_name)) |content| {
         defer allocator.free(content);
         // Success - return the agent content
         const result = try std.fmt.allocPrint(allocator,
@@ -302,8 +302,8 @@ fn loadAgentByName(allocator: std.mem.Allocator, agent_name: []const u8) ![]cons
         return result;
     } else {
         // Agent not found - list available agents
-        const agents_list = agents.list_agents(allocator);
-        defer agents.free_agents_list(allocator, agents_list);
+        const agents_list = agents.listAgents(allocator);
+        defer agents.freeAgentsList(allocator, agents_list);
 
         // Build XML string for available agents
         var available_str: std.ArrayList(u8) = .empty;

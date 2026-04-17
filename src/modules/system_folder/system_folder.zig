@@ -96,6 +96,11 @@ pub const SystemFolder = struct {
         const home = try getHomeDirectory(allocator);
         defer allocator.free(home);
 
+        // Check if path already starts with home directory (absolute path)
+        if (std.mem.startsWith(u8, relative_path, home)) {
+            return allocator.dupe(u8, relative_path);
+        }
+
         // If path starts with /, it's relative to home
         if (std.mem.startsWith(u8, relative_path, "/")) {
             const subpath = relative_path[1..];
@@ -109,7 +114,7 @@ pub const SystemFolder = struct {
         return allocator.dupe(u8, relative_path);
     }
 
-    /// List directory contents
+    /// List directory contents (first level only)
     pub fn listDirectory(allocator: std.mem.Allocator, dir_path: []const u8) SystemFolderError![]FolderEntry {
         var dir = std.fs.openDirAbsolute(dir_path, .{
             .iterate = true,
@@ -123,35 +128,23 @@ pub const SystemFolder = struct {
         defer dir.close();
 
         var entries = std.ArrayList(FolderEntry).empty;
-        errdefer {
-            for (entries.items) |entry| {
-                allocator.free(entry.name);
-                allocator.free(entry.path);
-            }
-            entries.deinit(allocator);
-        }
 
-        var walker = dir.walk(allocator) catch return SystemFolderError.OutOfMemory;
-        defer walker.deinit();
-
-        // Skip the first entry (the directory itself)
-        _ = walker.next() catch {};
-
+        var iterator = dir.iterate();
         while (true) {
-            const entry_opt = walker.next() catch break;
+            const entry_opt = iterator.next() catch break;
             const entry = entry_opt orelse break;
             if (entry.kind == .directory or entry.kind == .file) {
-                const name = try allocator.dupe(u8, entry.basename);
-                const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.basename });
+                const name = try allocator.dupe(u8, entry.name);
+                const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
                 const is_dir = entry.kind == .directory;
                 const is_link = entry.kind == .sym_link;
 
-                try entries.append(allocator, FolderEntry{
+                entries.append(allocator, FolderEntry{
                     .name = name,
                     .path = full_path,
                     .is_directory = is_dir,
                     .is_symlink = is_link,
-                });
+                }) catch continue;
             }
         }
 
@@ -165,7 +158,7 @@ pub const SystemFolder = struct {
             }
         }.less);
 
-        return try entries.toOwnedSlice(allocator);
+        return entries.toOwnedSlice(allocator);
     }
 
     /// Get parent directory path

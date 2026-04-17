@@ -4,16 +4,16 @@ const TUIHistory = @import("models.zig").TUIHistory;
 const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
 
-test "get_message_latest returns all new columns correctly" {
-    std.log.info("get_message_latest returns all new columns correctly", .{});
-    defer std.log.info("get_message_latest returns all new columns correctly", .{});
+test "getLatestMessage returns all new columns correctly" {
+    std.log.info("getLatestMessage returns all new columns correctly", .{});
+    defer std.log.info("getLatestMessage returns all new columns correctly", .{});
     var db: sqlite.SqliteBackend = .{};
     defer db.deinit();
 
     // Use in-memory database for testing
     try db.init(":memory:");
 
-    // Create sessions table (needed for JOIN in get_messages/get_message_latest)
+    // Create sessions table (needed for JOIN in getMessages/getLatestMessage)
     try db.exec(std.testing.allocator,
         \\CREATE TABLE sessions (
         \\    id TEXT PRIMARY KEY,
@@ -72,7 +72,7 @@ test "get_message_latest returns all new columns correctly" {
     , &[_][]const u8{});
 
     // Call the function under test
-    const result = try session_helpers.get_message_latest(std.testing.allocator, &db, "session-abc");
+    const result = try session_helpers.getLatestMessage(std.testing.allocator, &db, "session-abc");
     try std.testing.expect(result != null);
 
     var msg = result.?;
@@ -89,9 +89,9 @@ test "get_message_latest returns all new columns correctly" {
     try std.testing.expectEqualStrings("bash_tool", msg.tool_name);
 }
 
-test "get_message_latest returns defaults for NULL columns" {
-    std.log.info("get_message_latest returns defaults for NULL columns", .{});
-    defer std.log.info("get_message_latest returns defaults for NULL columns", .{});
+test "getLatestMessage returns defaults for NULL columns" {
+    std.log.info("getLatestMessage returns defaults for NULL columns", .{});
+    defer std.log.info("getLatestMessage returns defaults for NULL columns", .{});
     var db: sqlite.SqliteBackend = .{};
     defer db.deinit();
 
@@ -150,7 +150,7 @@ test "get_message_latest returns defaults for NULL columns" {
         \\INSERT INTO sessions (id, name, status) VALUES ('session-null', 'Null Session', 'active')
     , &[_][]const u8{});
 
-    const result = try session_helpers.get_message_latest(std.testing.allocator, &db, "session-null");
+    const result = try session_helpers.getLatestMessage(std.testing.allocator, &db, "session-null");
     try std.testing.expect(result != null);
 
     var msg = result.?;
@@ -167,9 +167,9 @@ test "get_message_latest returns defaults for NULL columns" {
     try std.testing.expectEqualStrings("", msg.tool_name);
 }
 
-test "get_messages returns multiple records with new columns" {
-    std.log.info("get_messages returns multiple records with new columns", .{});
-    defer std.log.info("get_messages returns multiple records with new columns", .{});
+test "getMessages returns multiple records with new columns" {
+    std.log.info("getMessages returns multiple records with new columns", .{});
+    defer std.log.info("getMessages returns multiple records with new columns", .{});
     var db: sqlite.SqliteBackend = .{};
     defer db.deinit();
 
@@ -230,7 +230,7 @@ test "get_messages returns multiple records with new columns" {
         \\INSERT INTO sessions (id, name, status) VALUES ('multi-session', 'Multi Session', 'active')
     , &[_][]const u8{});
 
-    const results = try session_helpers.get_messages(std.testing.allocator, &db, "multi-session");
+    const results = try session_helpers.getMessages(std.testing.allocator, &db, "multi-session");
     defer {
         for (results) |*msg| msg.deinit(std.testing.allocator);
         std.testing.allocator.free(results);
@@ -253,9 +253,9 @@ test "get_messages returns multiple records with new columns" {
     try std.testing.expectEqualStrings("read_file", results[1].tool_name);
 }
 
-test "get_message_latest returns null for non-existent session" {
-    std.log.info("get_message_latest returns null for non-existent session", .{});
-    defer std.log.info("get_message_latest returns null for non-existent session", .{});
+test "getLatestMessage returns null for non-existent session" {
+    std.log.info("getLatestMessage returns null for non-existent session", .{});
+    defer std.log.info("getLatestMessage returns null for non-existent session", .{});
     var db: sqlite.SqliteBackend = .{};
     defer db.deinit();
 
@@ -300,6 +300,6 @@ test "get_message_latest returns null for non-existent session" {
         \\)
     , &[_][]const u8{});
 
-    const result = try session_helpers.get_message_latest(std.testing.allocator, &db, "non-existent-session");
+    const result = try session_helpers.getLatestMessage(std.testing.allocator, &db, "non-existent-session");
     try std.testing.expect(result == null);
 }

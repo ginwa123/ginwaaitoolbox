@@ -10,6 +10,8 @@ export interface WorkspaceItem {
   entries?: FolderEntry[]  // Nested folder contents
   isLoaded?: boolean       // Whether contents have been fetched
   isLoading?: boolean      // Loading state
+  expanded?: boolean       // Whether nested contents are expanded
+  tasks?: Task[]           // Tasks within this project
 }
 
 export interface Workspace {
@@ -33,6 +35,15 @@ export interface FolderEntry {
   path: string
   is_directory: boolean
   is_symlink: boolean
+}
+
+// Task interface for project tasks
+export interface Task {
+  id: string
+  name: string
+  description?: string
+  completed?: boolean
+  createdAt?: Date
 }
 
 const API_BASE = ''
@@ -60,6 +71,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
   // Current active workspace item
   const activeWorkspaceItemId = ref<string | null>(persisted.activeWorkspaceItemId)
+
+  // Active task within the selected workspace item
+  const activeTaskId = ref<string | null>(null)
 
   // System folder info from API
   const systemFolderInfo = ref<SystemFolderInfo | null>(null)
@@ -110,6 +124,21 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     )
   })
 
+  // Get active task details
+  const activeTask = computed(() => {
+    if (!activeTaskId.value || !activeWorkspaceItemId.value) return null
+    
+    const workspace = workspaces.value.find((ws) =>
+      ws.items.some((item) => item.id === activeWorkspaceItemId.value)
+    )
+    if (!workspace) return null
+    
+    const item = workspace.items.find((i) => i.id === activeWorkspaceItemId.value)
+    if (!item?.tasks) return null
+    
+    return item.tasks.find((t) => t.id === activeTaskId.value) || null
+  })
+
   // Actions
   async function fetchSystemFolder(path?: string) {
     systemFolderLoading.value = true
@@ -156,9 +185,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Update entries
       item.entries = data.entries || []
       item.isLoaded = true
-
-      // Auto-expand the workspace
-      workspace.expanded = true
+      // Don't auto-expand - let user control expanded state
     } catch (err) {
       console.error('Failed to fetch folder contents:', err)
       item.entries = []
@@ -176,17 +203,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
   function setActiveWorkspaceItem(itemId: string | null) {
     activeWorkspaceItemId.value = itemId
-    if (itemId) {
-      // Auto-expand parent workspace
-      const parentWorkspace = workspaces.value.find((ws) =>
-        ws.items.some((item) => item.id === itemId)
-      )
-      if (parentWorkspace) {
-        workspaces.value.forEach((ws) => {
-          ws.expanded = ws.id === parentWorkspace.id
-        })
-      }
-    }
+    // Don't auto-expand - preserve user's expanded states
   }
 
   function addWorkspace(name: string, icon: string = '📂') {
@@ -199,14 +216,92 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     })
   }
 
-  function addWorkspaceItem(workspaceId: string, name: string, icon: string = '◆') {
+  function addWorkspaceItem(workspaceId: string, name: string, path: string, icon: string = '📁'): string | undefined {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (workspace) {
+      const itemId = `item-${Date.now()}`
       workspace.items.push({
-        id: `item-${Date.now()}`,
+        id: itemId,
         name,
         icon,
+        path,
       })
+      // Auto-expand workspace to show new item
+      workspace.expanded = true
+      return itemId
+    }
+    return undefined
+  }
+
+  // Add a task to a workspace item
+  function addTask(workspaceId: string, itemId: string, name: string, description?: string): string | undefined {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return undefined
+
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item) return undefined
+
+    if (!item.tasks) {
+      item.tasks = []
+    }
+
+    const taskId = `task-${Date.now()}`
+    item.tasks.push({
+      id: taskId,
+      name,
+      description,
+      completed: false,
+      createdAt: new Date(),
+    })
+
+    return taskId
+  }
+
+  // Toggle task completion
+  function toggleTask(workspaceId: string, itemId: string, taskId: string) {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return
+
+    const task = item.tasks.find((t) => t.id === taskId)
+    if (task) {
+      task.completed = !task.completed
+    }
+  }
+
+  // Delete a task
+  function deleteTask(workspaceId: string, itemId: string, taskId: string) {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return
+
+    item.tasks = item.tasks.filter((t) => t.id !== taskId)
+    
+    // Clear active task if it was the deleted one
+    if (activeTaskId.value === taskId) {
+      activeTaskId.value = null
+    }
+  }
+
+  // Set active task - also ensures parent workspace is expanded
+  function setActiveTask(taskId: string | null) {
+    activeTaskId.value = taskId
+    if (taskId) {
+      // Find parent workspace and item, then expand workspace
+      for (const workspace of workspaces.value) {
+        for (const item of workspace.items) {
+          if (item.tasks?.some((t) => t.id === taskId)) {
+            // Found the parent - set active item and expand workspace
+            activeWorkspaceItemId.value = item.id
+            workspace.expanded = true
+            return
+          }
+        }
+      }
     }
   }
 
@@ -258,7 +353,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
           id: 'system-workspace',
           name: 'Current Project',
           icon: '🏠',
-          expanded: true,
+          expanded: false,  // Don't auto-expand
           items: [
             {
               id: 'current-folder',
@@ -285,6 +380,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // State
     workspaces,
     activeWorkspaceItemId,
+    activeTaskId,
     systemFolderInfo,
     systemFolderLoading,
     systemFolderError,
@@ -292,14 +388,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     allWorkspaceItems,
     activeWorkspaceItem,
     activeWorkspace,
+    activeTask,
     // Actions
     toggleWorkspace,
     setActiveWorkspaceItem,
+    setActiveTask,
     addWorkspace,
     addWorkspaceItem,
     removeWorkspaceItem,
     removeWorkspace,
     updateWorkspaceItemPath,
+    addTask,
+    toggleTask,
+    deleteTask,
     initializeFromSystemFolder,
     fetchSystemFolder,
     fetchFolderContents,

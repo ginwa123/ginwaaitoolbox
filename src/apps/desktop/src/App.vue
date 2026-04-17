@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import Sidebar from './components/Sidebar.vue'
+import FolderExplorer from './components/FolderExplorer.vue'
 import Chats from './components/Chats.vue'
+import ChatView from './components/ChatView.vue'
+import TaskDetail from './components/TaskDetail.vue'
 import { useWorkspacesStore } from './stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
 const activeView = ref('chat')
+const activeChatId = ref('')
+const activeChatName = ref('')
 
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
 
@@ -13,13 +18,34 @@ const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
 onMounted(() => {
   workspacesStore.initializeFromSystemFolder()
 })
+
+const handleNavigate = (view: string, chatName?: string) => {
+  activeView.value = view
+  if (view.startsWith('chat-')) {
+    activeChatId.value = view
+    activeChatName.value = chatName || ''
+  } else if (view === 'chat') {
+    activeChatId.value = ''
+    activeChatName.value = ''
+  }
+}
 </script>
 
 <template>
   <div class="flex h-screen" style="background-color: var(--semantic-content-bg);">
-    <Sidebar @navigate="activeView = $event" />
+    <Sidebar @navigate="handleNavigate" />
     <main class="flex-1 flex flex-col overflow-hidden">
-      <Chats v-if="activeView === 'chat'" />
+      <ChatView 
+        v-if="activeChatId.startsWith('chat-')" 
+        :chat-id="activeChatId" 
+        :chat-name="activeChatName" 
+      />
+      <Chats v-else-if="activeView === 'chat'" />
+      <TaskDetail 
+        v-else-if="activeView === 'task' && workspacesStore.activeTask && workspacesStore.activeWorkspaceItem"
+        :task="workspacesStore.activeTask"
+        :project-name="workspacesStore.activeWorkspaceItem.name"
+      />
       <div v-else-if="activeView === 'workspace'" class="flex-1 flex flex-col items-center justify-center p-8">
         <!-- Workspace Item Selected -->
         <div
@@ -90,5 +116,6 @@ onMounted(() => {
         </div>
       </div>
     </main>
+    <FolderExplorer v-if="workspacesStore.activeWorkspaceItem" />
   </div>
 </template>

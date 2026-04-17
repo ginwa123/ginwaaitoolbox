@@ -69,13 +69,13 @@ test "full agent workflow - list and get agents" {
     // We need to change to the temp directory for the test
     // Since we can't easily chdir in tests, we'll use the path directly
 
-    // Test 1: List agents using list_agent_files
-    const files = agents.list_agent_files(allocator);
+    // Test 1: List agents using listAgentFiles
+    const files = agents.listAgentFiles(allocator);
     // Note: This may return null if the current directory doesn't have .nalar/agents
     // In a real integration test environment, we'd set up the directory properly
 
     if (files) |f| {
-        defer agents.free_agent_files(allocator, f);
+        defer agents.freeAgentFiles(allocator, f);
         // If we have files, verify structure
         try std.testing.expect(f.len >= 0); // May be 0 or more depending on environment
     }
@@ -109,7 +109,7 @@ test "list_agents returns valid JSON" {
     const allocator = std.testing.allocator;
 
     // Execute list_agents
-    const result = try list_agents.execute_list_agents(allocator);
+    const result = try list_agents.executeListAgents(allocator);
     defer allocator.free(result);
 
     // Verify JSON structure

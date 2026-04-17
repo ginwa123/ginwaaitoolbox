@@ -11,10 +11,10 @@ test "list_agents_tool has correct structure" {
     try std.testing.expectEqual(@as(usize, 0), list_agents.list_agents_tool.function.parameters.required.len);
 }
 
-test "execute_list_agents returns valid JSON" {
+test "executeListAgents returns valid JSON" {
     const allocator = std.testing.allocator;
 
-    const result = try list_agents.execute_list_agents(allocator);
+    const result = try list_agents.executeListAgents(allocator);
     defer allocator.free(result);
 
     // Verify result is valid JSON starting with {"agents":[
@@ -22,10 +22,10 @@ test "execute_list_agents returns valid JSON" {
     try std.testing.expectStringEndsWith(result, "]}");
 }
 
-test "execute_list_agents returns valid JSON structure" {
+test "executeListAgents returns valid JSON structure" {
     const allocator = std.testing.allocator;
 
-    const result = try list_agents.execute_list_agents(allocator);
+    const result = try list_agents.executeListAgents(allocator);
     defer allocator.free(result);
 
     // Verify JSON structure is valid - starts with {"agents":[ and ends with ]}

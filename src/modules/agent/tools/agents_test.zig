@@ -119,11 +119,11 @@ test "parseYamlFrontmatter returns null when name missing" {
 test "get_local_agents_path returns path" {
     const allocator = std.testing.allocator;
 
-    const path = agents.get_local_agents_path(allocator) orelse {
+    const path = agents.getLocalAgentsPath(allocator) orelse {
         // It's ok if cwd is not available in test environment
         return;
     };
-    defer agents.free_agents_path(allocator, path);
+    defer agents.freeAgentsPath(allocator, path);
 
     // Path should contain the local agents directory
     try std.testing.expect(std.mem.indexOf(u8, path, ".nalar/agents") != null);
@@ -133,11 +133,11 @@ test "get_local_agents_path returns path" {
 test "get_global_agents_path returns path" {
     const allocator = std.testing.allocator;
 
-    const path = agents.get_global_agents_path(allocator) orelse {
+    const path = agents.getGlobalAgentsPath(allocator) orelse {
         // It's ok if env vars are not set
         return;
     };
-    defer agents.free_agents_path(allocator, path);
+    defer agents.freeAgentsPath(allocator, path);
 
     // Path should not be empty
     try std.testing.expect(path.len > 0);
@@ -148,9 +148,9 @@ test "resolve_agents_path resolution" {
     const allocator = std.testing.allocator;
 
     // This may return null if neither path exists
-    const path = agents.resolve_agents_path(allocator);
+    const path = agents.resolveAgentsPath(allocator);
     if (path) |p| {
-        defer agents.free_agents_path(allocator, p);
+        defer agents.freeAgentsPath(allocator, p);
         try std.testing.expect(p.len > 0);
     }
 }
@@ -172,57 +172,57 @@ test "freeParsedFrontmatter handles empty strings" {
     agents.freeParsedFrontmatter(allocator, fm);
 }
 
-// Test: free_agents_list works with empty list
-test "free_agents_list handles empty list" {
+// Test: freeAgentsList works with empty list
+test "freeAgentsList handles empty list" {
     const allocator = std.testing.allocator;
 
     // Empty slice - just verify it doesn't panic
     const empty_list: []agents.AgentInfo = &[_]agents.AgentInfo{};
 
     // Should not panic
-    agents.free_agents_list(allocator, empty_list);
+    agents.freeAgentsList(allocator, empty_list);
 }
 
-// Test: free_agent_files works with empty list
-test "free_agent_files handles empty list" {
+// Test: freeAgentFiles works with empty list
+test "freeAgentFiles handles empty list" {
     const allocator = std.testing.allocator;
 
     // Empty slice - just verify it doesn't panic
     const empty_files: [][]const u8 = &[_][]const u8{};
 
     // Should not panic
-    agents.free_agent_files(allocator, empty_files);
+    agents.freeAgentFiles(allocator, empty_files);
 }
 
-// Test: free_agents_path works
-test "free_agents_path frees path" {
+// Test: freeAgentsPath works
+test "freeAgentsPath frees path" {
     const allocator = std.testing.allocator;
 
     const path = try allocator.dupe(u8, "/test/path");
 
     // Should not panic
-    agents.free_agents_path(allocator, path);
+    agents.freeAgentsPath(allocator, path);
 }
 
-// Test: list_agent_files returns array (may be empty if no agents dir)
-test "list_agent_files returns array" {
+// Test: listAgentFiles returns array (may be empty if no agents dir)
+test "listAgentFiles returns array" {
     const allocator = std.testing.allocator;
 
-    const files = agents.list_agent_files(allocator) orelse {
+    const files = agents.listAgentFiles(allocator) orelse {
         // It's ok if directory doesn't exist
         return;
     };
-    defer agents.free_agent_files(allocator, files);
+    defer agents.freeAgentFiles(allocator, files);
 
     // files is used in defer, no need for additional assertion
 }
 
-// Test: list_agents returns array (may be empty if no agents)
-test "list_agents returns array" {
+// Test: listAgents returns array (may be empty if no agents)
+test "listAgents returns array" {
     const allocator = std.testing.allocator;
 
-    const agents_list = agents.list_agents(allocator);
-    defer agents.free_agents_list(allocator, agents_list);
+    const agents_list = agents.listAgents(allocator);
+    defer agents.freeAgentsList(allocator, agents_list);
 
     // agents_list is used in defer, no need for additional assertion
 }
@@ -235,11 +235,11 @@ test "loadAgentFromPath returns null for non-existent file" {
     try std.testing.expect(content == null);
 }
 
-// Test: parse_agent with non-existent agent returns null
-test "parse_agent returns null for non-existent agent" {
+// Test: parseAgent with non-existent agent returns null
+test "parseAgent returns null for non-existent agent" {
     const allocator = std.testing.allocator;
 
-    const content = agents.parse_agent(allocator, "nonexistent-agent");
+    const content = agents.parseAgent(allocator, "nonexistent-agent");
     try std.testing.expect(content == null);
 }
 

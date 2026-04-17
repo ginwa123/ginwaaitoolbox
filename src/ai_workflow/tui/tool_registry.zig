@@ -218,14 +218,22 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    const result = try text_replace_mod.text_replace(
+    const result = text_replace_mod.text_replace(
         ctx.allocator,
         parsed.value.path,
         parsed.value.old_str,
         parsed.value.new_str,
-    );
+    ) catch |err| {
+        const output = text_replace_mod.toXmlError(
+            ctx.allocator,
+            err,
+            parsed.value.path,
+            parsed.value.old_str,
+        );
+        return ToolExecResult{ .output = output };
+    };
 
-    const output = text_replace_mod.to_xml(ctx.allocator, result);
+    const output = text_replace_mod.toXmlSuccess(ctx.allocator, result);
     return ToolExecResult{ .output = output };
 }
 
@@ -238,8 +246,11 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    const write_result = try write_file_mod.write_file(ctx.allocator, parsed.value);
-    const res_write = try write_file_mod.write_file_to_string(ctx.allocator, write_result);
+    const write_result = write_file_mod.write_file(ctx.allocator, parsed.value) catch |err| {
+        const output = write_file_mod.toXmlError(ctx.allocator, err, parsed.value.path);
+        return ToolExecResult{ .output = output };
+    };
+    const res_write = write_file_mod.toXmlSuccess(ctx.allocator, write_result);
     write_result.deinit(ctx.allocator);
 
     return ToolExecResult{ .output = res_write };
@@ -392,7 +403,7 @@ pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
 pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
 
-    const output = list_agents_mod.execute_list_agents(ctx.allocator) catch {
+    const output = list_agents_mod.executeListAgents(ctx.allocator) catch {
         const out = try std.fmt.allocPrint(ctx.allocator,
             \\<agents>
             \\  <error>Failed to list agents</error>

@@ -281,7 +281,7 @@ pub fn listAgentFiles(allocator: std.mem.Allocator) ?[][]const u8 {
 }
 
 /// Free a list of agent file paths
-pub fn free_agent_files(allocator: std.mem.Allocator, files: [][]const u8) void {
+pub fn freeAgentFiles(allocator: std.mem.Allocator, files: [][]const u8) void {
     for (files) |file| {
         allocator.free(file);
     }
@@ -330,16 +330,16 @@ pub fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ?[]cons
 /// Parse a specific agent from the agents directory by name
 /// Returns allocated string with agent content, or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_agent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
-    return parse_agent_from_dir(allocator, agent_name);
+pub fn parseAgent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
+    return parseAgentFromDir(allocator, agent_name);
 }
 
 /// Parse a specific agent from the agents directory by name
 /// Returns allocated string with agent content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_agent_from_dir(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
+pub fn parseAgentFromDir(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
     const files = listAgentFiles(allocator) orelse return null;
-    defer free_agent_files(allocator, files);
+    defer freeAgentFiles(allocator, files);
 
     for (files) |file_path| {
         const content = loadAgentFromPath(allocator, file_path);
@@ -364,16 +364,16 @@ pub fn parse_agent_from_dir(allocator: std.mem.Allocator, agent_name: []const u8
 /// List all available agents from the agents directory
 /// Returns allocated array of AgentInfo structs
 /// Caller owns the returned memory and must free it with freeAgentsList()
-pub fn list_agents(allocator: std.mem.Allocator) []AgentInfo {
-    return list_agents_from_dir(allocator);
+pub fn listAgents(allocator: std.mem.Allocator) []AgentInfo {
+    return listAgentsFromDir(allocator);
 }
 
 /// List all available agents from the agents directory
 /// Returns allocated array of AgentInfo structs
 /// Caller owns the returned memory and must free it with freeAgentsList()
-pub fn list_agents_from_dir(allocator: std.mem.Allocator) []AgentInfo {
+pub fn listAgentsFromDir(allocator: std.mem.Allocator) []AgentInfo {
     const files = listAgentFiles(allocator) orelse return &.{};
-    defer free_agent_files(allocator, files);
+    defer freeAgentFiles(allocator, files);
 
     if (files.len == 0) return &.{};
 
@@ -408,7 +408,7 @@ pub fn list_agents_from_dir(allocator: std.mem.Allocator) []AgentInfo {
 }
 
 /// Free an agents array allocated by listAgents
-pub fn free_agents_list(allocator: std.mem.Allocator, agents_list: []AgentInfo) void {
+pub fn freeAgentsList(allocator: std.mem.Allocator, agents_list: []AgentInfo) void {
     for (agents_list) |agent| {
         allocator.free(agent.name);
         allocator.free(agent.description);

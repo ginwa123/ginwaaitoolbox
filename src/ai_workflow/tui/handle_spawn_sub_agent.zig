@@ -291,7 +291,7 @@ fn runSubAgent(
         });
 
         // Fetch existing messages from DB
-        const tui_histories = try session_helpers.get_messages(allocator, db, session_id);
+        const tui_histories = try session_helpers.getMessages(allocator, db, session_id);
         for (tui_histories) |hist| {
             const agent_msgs = try TransformLLMHistory.transform_llm_history_to_agent_message(allocator, hist);
             for (agent_msgs) |msg| {

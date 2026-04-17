@@ -16,7 +16,7 @@ const SaveAgent = @import("save_agent.zig").SaveAgent;
 const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
 const tool_models = nalar.tool_models;
-const get_messagesLatest = llm_history.get_message_latest;
+const getLatestMessage = llm_history.getLatestMessage;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 
 // ============================================================================
@@ -443,7 +443,7 @@ fn sendSSEForLatestMessage(
     is_input: bool,
     is_output: bool,
 ) !void {
-    const latestMessage = get_messagesLatest(allocator, db, session_id) catch return;
+    const latestMessage = getLatestMessage(allocator, db, session_id) catch return;
     if (latestMessage) |msg| {
         on_event_send_new(allocator, .{
             .session_id = msg.session_id,

@@ -7,6 +7,22 @@ const SystemFolder = root_mod.system_folder.SystemFolder;
 const FolderEntry = root_mod.system_folder.FolderEntry;
 const SystemFolderError = root_mod.system_folder.SystemFolderError;
 
+/// Escape special characters for JSON string values
+fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var result = std.ArrayList(u8).empty;
+    for (value) |c| {
+        switch (c) {
+            '"' => try result.appendSlice(allocator, "\\\""),
+            '\\' => try result.appendSlice(allocator, "\\\\"),
+            '\n' => try result.appendSlice(allocator, "\\n"),
+            '\r' => try result.appendSlice(allocator, "\\r"),
+            '\t' => try result.appendSlice(allocator, "\\t"),
+            else => try result.append(allocator, c),
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
+
 /// System folder endpoint
 /// 
 /// GET /api/system/folder
@@ -54,19 +70,21 @@ pub fn system_folder_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
         return;
     };
     
-    // Determine target path
+    // Determine target path - default to home if no path provided
     const target_path: []u8 = if (path_param) |p| 
         SystemFolder.resolvePath(allocator, p) catch |err| {
             res.status = 400;
             res.body = try std.fmt.allocPrint(allocator, "{{\"error\":\"Invalid path: {s}\"}}", .{@errorName(err)});
             return;
         }
-    else 
-        SystemFolder.getCurrentWorkingDirectory(allocator) catch |err| {
+    else blk: {
+        const dup = allocator.dupe(u8, home) catch {
             res.status = 500;
-            res.body = try std.fmt.allocPrint(allocator, "{{\"error\":\"Failed to get current directory: {s}\"}}", .{@errorName(err)});
+            res.body = try std.fmt.allocPrint(allocator, "{{\"error\":\"Out of memory\"}}", .{});
             return;
         };
+        break :blk dup;
+    };
     
     // Get relative path from home
     const relative = SystemFolder.getRelativePathFromHome(allocator, target_path, home) catch |err| {
@@ -107,11 +125,20 @@ pub fn system_folder_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
         var entries_json = std.ArrayList(u8).empty;
         for (entries, 0..) |entry, i| {
             if (i > 0) try entries_json.append(allocator, ',');
+            
+            // Escape name and path for JSON
+            const escaped_name = jsonEscape(allocator, entry.name) catch "";
+            const escaped_path = jsonEscape(allocator, entry.path) catch "";
+            defer {
+                allocator.free(escaped_name);
+                allocator.free(escaped_path);
+            }
+            
             try entries_json.writer(allocator).print(
                 "{{\"name\":\"{s}\",\"path\":\"{s}\",\"is_directory\":{},\"is_symlink\":{}}}",
                 .{
-                    entry.name,
-                    entry.path,
+                    escaped_name,
+                    escaped_path,
                     entry.is_directory,
                     entry.is_symlink,
                 }
