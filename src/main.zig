@@ -1,72 +1,19 @@
 const std = @import("std");
 
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-const http_handlers = root_mod.http_handlers;
+const nalar_mod = @import("nalarcore");
+const http_server = nalar_mod.http_server;
+const http_handlers = nalar_mod.http_handlers;
 const httpz = http_server.httpz;
-const ai_workflow = root_mod.ai_workflow;
-const ai_workflow_mod = root_mod.ai_workflow;
-const session_monitor = root_mod.session_monitor;
-const cronjob = root_mod.cronjob;
-const sqlite = root_mod.sqlite;
-const migrations = root_mod.migrations;
-const activity_registry = root_mod.session.session_registry;
-const helpers = root_mod.helpers;
-const config = root_mod.config;
-const llm_history = root_mod.llm_history;
-
-pub const CommandMessage = struct {
-    command_type: []const u8 = "",
-    session_id: []const u8 = "",
-    message: []const u8 = "",
-    cwd_session: []const u8 = "",
-};
-
-/// Parse message (JSON or XML) into CommandMessage struct
-pub fn parseMessage(allocator: std.mem.Allocator, data: []const u8) !CommandMessage {
-    // Try JSON first (HTTP format)
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch {
-        // Fall back to XML parsing (IPC format)
-        var msg: CommandMessage = .{};
-
-        if (helpers.xml.extractTag(data, "command_type", allocator)) |val| {
-            msg.command_type = try helpers.xml.decodeXmlEntities(allocator, val);
-        }
-        if (helpers.xml.extractTag(data, "session_id", allocator)) |val| {
-            msg.session_id = try helpers.xml.decodeXmlEntities(allocator, val);
-        }
-        if (helpers.xml.extractTag(data, "content", allocator)) |val| {
-            msg.message = try helpers.xml.decodeXmlEntities(allocator, val);
-        }
-        if (helpers.xml.extractTag(data, "cwd_session", allocator)) |val| {
-            msg.cwd_session = try helpers.xml.decodeXmlEntities(allocator, val);
-        }
-
-        return msg;
-    };
-    defer parsed.deinit();
-
-    const root = parsed.value.object;
-    var msg: CommandMessage = .{};
-
-    if (root.get("command_type")) |v| {
-        msg.command_type = try allocator.dupe(u8, v.string);
-    }
-    if (root.get("session_id")) |v| {
-        msg.session_id = try allocator.dupe(u8, v.string);
-    }
-    if (root.get("content")) |v| {
-        msg.message = try allocator.dupe(u8, v.string);
-    }
-    if (root.get("cwd_session")) |v| {
-        msg.cwd_session = try allocator.dupe(u8, v.string);
-    }
-
-    // MUST deinit parsed AFTER we've dupe'd all needed strings
-    parsed.deinit();
-
-    return msg;
-}
+const ai_workflow = nalar_mod.ai_workflow;
+const ai_workflow_mod = nalar_mod.ai_workflow;
+const session_monitor = nalar_mod.session_monitor;
+const cronjob = nalar_mod.cronjob;
+const sqlite = nalar_mod.sqlite;
+const migrations = nalar_mod.migrations;
+const activity_registry = nalar_mod.session.session_registry;
+const helpers = nalar_mod.helpers;
+const config = nalar_mod.config;
+const llm_history = nalar_mod.llm_history;
 
 /// Get the database path following XDG standards: ~/.config/nalar/agent.db
 /// Creates the config directory if it doesn't exist.
@@ -107,7 +54,7 @@ fn getDbPath(allocator: std.mem.Allocator) ![:0]const u8 {
 /// Startup handler - queries worker table and starts a thread for each worker
 /// Called once during app initialization to bootstrap workers from database
 pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !void {
-    const global_logger_ptr = root_mod.logger.getGlobal().?;
+    const global_logger_ptr = nalar_mod.logger.getGlobal().?;
 
     // Get session registry
     const registry = activity_registry.get_global_registry() orelse {
@@ -212,7 +159,7 @@ pub fn main() !void {
     const parentAllocator = gpa.allocator();
 
     // Load LLM config from JSON file
-    var llm_config = root_mod.config.LlmConfig.init(parentAllocator, null) catch |err| {
+    var llm_config = nalar_mod.config.LlmConfig.init(parentAllocator, null) catch |err| {
         std.log.err("Failed to load config: {s}", .{@errorName(err)});
         return err;
     };
@@ -242,10 +189,10 @@ pub fn main() !void {
     defer parentAllocator.free(log_file_path);
 
     // SET PANIC LOG PATH EARLY - before any code that could panic
-    root_mod.setPanicLogPath(log_file_path);
+    nalar_mod.setPanicLogPath(log_file_path);
 
     // Initialize global logger
-    root_mod.logger.initGlobalColor(parentAllocator, .{
+    nalar_mod.logger.initGlobalColor(parentAllocator, .{
         .min_level = .debug,
         .output_mode = .file,
         .log_file_path = log_file_path,
@@ -253,9 +200,9 @@ pub fn main() !void {
         .include_request_id = true,
         .include_timestamp = true,
     });
-    defer root_mod.logger.deinitGlobal();
+    defer nalar_mod.logger.deinitGlobal();
 
-    const global_logger_ptr = root_mod.logger.getGlobal().?;
+    const global_logger_ptr = nalar_mod.logger.getGlobal().?;
 
     const ctxParent = try parentAllocator.create(ai_workflow_mod.ContextIPCTui);
     defer parentAllocator.destroy(ctxParent);
@@ -349,12 +296,6 @@ pub fn main() !void {
 
             // Ping endpoint - checks if session is connected via SSE
             router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
-
-            // Worker API endpoints (background task execution)
-            router.post("/api/worker", http_handlers.worker_create_handler, .{});
-            router.get("/api/workers", http_handlers.worker_list_handler, .{});
-            router.get("/api/worker/:session_id/status", http_handlers.worker_status_handler, .{});
-            router.post("/api/worker/:session_id/cancel", http_handlers.worker_cancel_handler, .{});
         }
     };
     try server.runWithConfig(HttpRoutes.setup);

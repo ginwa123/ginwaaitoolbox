@@ -1,11 +1,11 @@
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
-const agent = tree1_mod.agent;
-const logger_mod = tree1_mod.logger;
-const sqlite = tree1_mod.sqlite;
+const nalar_mod = @import("nalarcore");
+const agent = nalar_mod.agent;
+const logger_mod = nalar_mod.logger;
+const sqlite = nalar_mod.sqlite;
 const save_message = @import("llm_history.zig");
-const http_client = tree1_mod.http_client;
-const config_mod = tree1_mod.config;
+const http_client = nalar_mod.http_client;
+const config_mod = nalar_mod.config;
 
 /// Strip SSE "data:" prefix from response body if present
 /// MCP servers may return responses in SSE format: "data: {...}\n\n"
@@ -24,7 +24,7 @@ fn stripSsePrefix(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
 }
 
 /// Handle an MCP tool call by forwarding it to the MCP server
-/// 
+///
 /// IMPORTANT: This function allocates directly from parent_allocator to avoid
 /// nested arena issues that can cause @memcpy aliasing errors.
 pub fn handle_mcp_tool_run(
