@@ -8,7 +8,7 @@ const tool_registry = @import("tool_registry.zig");
 const handle_spawn = @import("handle_spawn_sub_agent.zig");
 const SubAgentToolExec = handle_spawn.SubAgentToolExec;
 const llm_history = @import("llm_history.zig");
-const save_message = llm_history.save_message;
+const save_message = llm_history.saveMessage;
 const on_event_sent = @import("on_event_sent.zig");
 const on_event_send_new = on_event_sent.on_event_send_new;
 const SaveSkill = @import("session_skills.zig").SaveSkill;
@@ -26,8 +26,20 @@ const handle_mcp_tool = @import("handle_mcp_tool.zig");
 /// Re-export from unified registry for backwards compatibility
 pub const TOOL_REGISTRY = tool_registry.MAIN_AGENT_TOOL_REGISTRY;
 
-/// Context passed to all tool handlers (alias for unified type from tool_registry)
-const ToolContext = tool_registry.ToolExecContext;
+/// Context passed to all tool handlers
+const ToolContext = struct {
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    logger: *logger_mod.Logger,
+    session_id: []const u8,
+    model: []const u8,
+    cwd: []const u8,
+    api_key: []const u8,
+    base_url: []const u8,
+    config: *const config_mod.LlmConfig,
+    agent_temperature: *f32,
+    is_thinking: *bool,
+};
 
 /// Result of executing a tool
 const ToolResult = struct {
@@ -77,17 +89,39 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 }
 
 /// Dispatch tool execution from registry entry
-/// Uses unified exec signature that takes full context
-fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tool_registry.ToolExecFunc) !ToolResult {
-    // Call exec with full context - all tools now use unified signature
-    const result = try exec(ctx, tool_call);
+/// Calls exec directly and handles auto-save via registry flags
+fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAgentToolExec) !ToolResult {
+    const tool_name = tool_call.function.name;
+    // Handle special tools that need extended context
+    if (std.mem.eql(u8, tool_name, "set_agent_properties")) {
+        return dispatchSetAgentProperties(ctx, tool_call);
+    }
+    if (std.mem.eql(u8, tool_name, "spawn_sub_agent")) {
+        return dispatchSpawnSubAgent(ctx, tool_call);
+    }
+
+    // Standard tools: call exec directly and wrap result
+    const ctx_local = tool_registry.ToolExecContext{
+        .allocator = ctx.allocator,
+        .db = ctx.db,
+        .logger = ctx.logger,
+        .session_id = ctx.session_id,
+        .model = ctx.model,
+        .cwd = ctx.cwd,
+        .api_key = ctx.api_key,
+        .base_url = ctx.base_url,
+        .config = ctx.config,
+        .agent_temperature = ctx.agent_temperature,
+        .is_thinking = ctx.is_thinking,
+    };
+    const exec_result = try exec(ctx_local, tool_call);
 
     return ToolResult{
-        .output = result.output,
-        .temperature = result.temperature,
-        .is_thinking = result.is_thinking,
-        .skill_saved = if (result.skill_save) |sk| .{ .name = sk.name, .content = sk.content } else null,
-        .agent_saved = if (result.agent_save) |ag| .{ .name = ag.name } else null,
+        .output = exec_result.output,
+        .temperature = exec_result.temperature,
+        .is_thinking = exec_result.is_thinking,
+        .skill_saved = if (exec_result.skill_save) |sk| SkillSaveInfo{ .name = sk.name, .content = sk.content } else null,
+        .agent_saved = if (exec_result.agent_save) |ag| AgentSaveInfo{ .name = ag.name } else null,
     };
 }
 
@@ -140,10 +174,70 @@ pub fn getToolNames() []const []const u8 {
 }
 
 // ============================================================================
-// HELPER FUNCTIONS - XML Parsing (re-exported from tool_registry)
+// SPECIAL TOOL DISPATCHERS - Tools that need extended context
 // ============================================================================
 
-// parseSkillFromResult and parseAgentFromResult are now in tool_registry.zig
+/// set_agent_properties returns temperature/is_thinking changes
+fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
+    const result = try handle_set_agent_properties.handle_set_agent_properties_run(ctx.allocator, tool_call);
+
+    return ToolResult{
+        .output = result.arguments,
+        .temperature = result.temperature,
+        .is_thinking = result.is_thinking,
+    };
+}
+
+/// spawn_sub_agent needs full context (logger, model, etc.)
+fn dispatchSpawnSubAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
+    const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
+    const result = try handle_spawn_sub_agent.handle_spawn_sub_agent_run(
+        ctx.allocator,
+        ctx.db,
+        ctx.logger,
+        ctx.session_id,
+        ctx.model,
+        ctx.cwd,
+        0,
+        tool_call,
+        ctx.agent_temperature.*,
+        ctx.is_thinking.*,
+        ctx.api_key,
+        ctx.base_url,
+        ctx.config,
+    );
+    return ToolResult{ .output = result };
+}
+
+// ============================================================================
+// HELPER FUNCTIONS - XML Parsing
+// ============================================================================
+
+fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content: []const u8 } {
+    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
+
+    const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
+    const name_begin = name_start + "<skill_name>".len;
+    const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
+    const skill_name = result[name_begin..name_begin + name_end];
+
+    const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
+    const content_begin = content_start + "<content>".len;
+    const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
+    const skill_content = result[content_begin..content_begin + content_end];
+
+    return .{ .name = skill_name, .content = skill_content };
+}
+
+fn parseAgentFromResult(result: []const u8) ?[]const u8 {
+    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
+
+    const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
+    const name_begin = name_start + "<agent_name>".len;
+    const name_end = std.mem.indexOf(u8, result[name_begin..], "</agent_name>") orelse return null;
+    return result[name_begin..name_begin + name_end];
+}
 
 // ============================================================================
 // MAIN HANDLER - Clean dispatch using registry

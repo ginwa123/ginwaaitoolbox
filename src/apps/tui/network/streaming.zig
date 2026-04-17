@@ -12,6 +12,25 @@ const App = @import("../main.zig").App;
 // Re-export ToolResult from tool_results for convenience
 pub const ToolResult = tool_results.ToolResult;
 
+/// Check if the SSE stream is done by querying the server.
+/// Returns true if the stream has completed.
+fn checkStreamDone(app: *App) !bool {
+    return try messaging.get_latest_message_by_created_at(app);
+}
+
+/// Print the final message body to stdout (used by both modes at end).
+fn printFinalMessage(app: *App) void {
+    const body = messaging.fetch_latest_message_body(app) catch null;
+    if (body) |b| {
+        defer app.allocator.free(b);
+        if (app.json) {
+            print_pretty_json(app.allocator, b);
+        } else {
+            printMessageContent(app.allocator, b);
+        }
+    }
+}
+
 /// SSE event data parsed from JSON (matches SseEventPayload from on_event_sent.zig)
 pub const SSEEventData = struct {
     session_id: []const u8 = "",
@@ -55,7 +74,7 @@ fn parseSSEEventData(allocator: std.mem.Allocator, json_str: []const u8) !SSEEve
 
 /// Read response and stream LLM output
 /// Simplified: collects raw buffer, displays content at the end
-pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
+pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var raw_buffer = std.ArrayListUnmanaged(u8){};
     errdefer raw_buffer.deinit(app.allocator);
 
@@ -92,6 +111,7 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
         const now = std.time.milliTimestamp();
 
         if (app.is_noninteractive) {
+            // Non-interactive: poll only the socket
             var poll_fd = [1]std.posix.pollfd{
                 .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
             };
@@ -110,16 +130,14 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 }
             }
 
-            if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
-                const is_done = try messaging.get_latest_message_by_created_at(app);
-                if (is_done) break;
-            } else if (raw_buffer.items.len > 0) {
-                const is_done = try messaging.get_latest_message_by_created_at(app);
-                if (is_done) break;
+            // Check if stream is done (keepalive or any data)
+            if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null or raw_buffer.items.len > 0) {
+                if (try checkStreamDone(app)) break;
             }
             continue;
         }
 
+        // Interactive: poll socket + stdin, parse & print in real-time
         var poll_fds = [2]std.posix.pollfd{
             .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
             .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
@@ -158,17 +176,15 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
+        // Parse and print SSE events in real-time
         if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
-            const is_done = try messaging.get_latest_message_by_created_at(app);
-            if (is_done) break;
+            if (try checkStreamDone(app)) break;
         } else {
             const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch {
-                raw_buffer.clearAndFree(app.allocator);
                 continue;
             };
             defer app.allocator.free(decoded);
             const json_str = sse.extract_sse_data(app.allocator, decoded) catch {
-                raw_buffer.clearAndFree(app.allocator);
                 continue;
             };
             defer app.allocator.free(json_str);
@@ -177,7 +193,6 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 if (trimmed.len > 0 and trimmed[0] == '{') {
                     const sse_event = parseSSEEventData(app.allocator, trimmed) catch |err| {
                         debug.logError("Failed to parse SSE event JSON: raw_buffer={s}", .{raw_buffer.items});
-                        debug.logError("Failed to parse SSE event JSON: decoded={s}", .{decoded});
                         debug.logError("Failed to parse SSE event JSON: {s}", .{@errorName(err)});
                         continue;
                     };
@@ -192,21 +207,10 @@ pub fn read_response_and_stream_run_LLM(app: *App, message: []const u8) ![]u8 {
                 }
             }
         }
-
-        raw_buffer.clearAndFree(app.allocator);
     }
 
-    if (app.is_noninteractive) {
-        const body = messaging.fetch_latest_message_body(app) catch null;
-        if (body) |b| {
-            defer app.allocator.free(b);
-            if (app.json) {
-                print_pretty_json(app.allocator, b);
-            } else {
-                printMessageContent(app.allocator, b);
-            }
-        }
-    }
+    // Print final message body in both modes
+    printFinalMessage(app);
 
     raw_buffer.clearRetainingCapacity();
     return try raw_buffer.toOwnedSlice(app.allocator);
@@ -282,15 +286,15 @@ pub fn printSSEEventContent(event: SSEEventData) void {
     if (content_str.len == 0) return;
 
     const tool_name_str = event.tool_name orelse "";
-    std.debug.print("\n Assistant: \n", .{});
     if (event.is_input) {
+        std.debug.print("\n Assistant: \n", .{});
         std.debug.print("{s}\n", .{content_str});
         if (tool_name_str.len > 0) {
-            std.debug.print("\nTool Call: {s}\n", .{tool_name_str});
+            std.debug.print("\nPlannig NextMove: {s}\n", .{tool_name_str});
         }
     } else if (event.is_output) {
         if (tool_name_str.len > 0) {
-            std.debug.print("Tool Result {s}:\n", .{tool_name_str});
+            std.debug.print("Result {s}:\n", .{tool_name_str});
         }
         std.debug.print("{s}\n", .{content_str});
     } else {

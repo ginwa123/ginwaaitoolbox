@@ -1,27 +1,27 @@
 const std = @import("std");
 const json = std.json;
-const root_mod = @import("nalarcore");
-const agent = root_mod.agent;
-const llm_models = root_mod.llm_models;
-const prompt = root_mod.prompt;
+const nalar_mod = @import("nalarcore");
+const agent = nalar_mod.agent;
+const llm_models = nalar_mod.llm_models;
+const prompt = nalar_mod.prompt;
 pub const context = @import("models.zig").ContextIPCTui;
 pub const ContextIPCTui = @import("models.zig").ContextIPCTui;
 pub const kerjabot_get_session = @import("llm_history.zig");
 pub const kerjabot_create_session = @import("llm_history.zig");
 pub const kerjabot_get_list_session = @import("llm_history.zig");
 pub const tui_check_session_exists = @import("llm_history.zig");
-const sqlite = root_mod.sqlite;
-const BashTool = root_mod.bash_tool;
-const ReadFileTool = root_mod.read_file;
-const tool_models = root_mod.tool_models;
-const SetAgentProperties = root_mod.set_agent_properties;
-const ListSkillsTool = root_mod.list_skills_tool;
-const GetSkillTool = root_mod.get_skill_tool;
-const RemoveSkillTool = root_mod.remove_skill_tool;
-const skills = root_mod.skills;
-const loop_detector = root_mod.loop_detector;
-const bash_helper = root_mod.helperTool;
-const logger_mod = root_mod.logger;
+const sqlite = nalar_mod.sqlite;
+const BashTool = nalar_mod.bash_tool;
+const ReadFileTool = nalar_mod.read_file;
+const tool_models = nalar_mod.tool_models;
+const SetAgentProperties = nalar_mod.set_agent_properties;
+const ListSkillsTool = nalar_mod.list_skills_tool;
+const GetSkillTool = nalar_mod.get_skill_tool;
+const RemoveSkillTool = nalar_mod.remove_skill_tool;
+const skills = nalar_mod.skills;
+const loop_detector = nalar_mod.loop_detector;
+const bash_helper = nalar_mod.helperTool;
+const logger_mod = nalar_mod.logger;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
@@ -30,15 +30,14 @@ const update_worker_activity = llm_history.update_worker_activity;
 const remove_worker = llm_history.remove_worker;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
-const save_message = llm_history.save_message;
 const BuildMessages = @import("build_messages_for_agent_prompt.zig").BuildMessages;
 const get_messages = session_helpers.get_messages;
 const get_message_latest = session_helpers.get_message_latest;
 const mark_messages_not_for_llm = @import("llm_history.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
 const BuildMemoryForAgent = @import("build_memory_for_agent_prompt.zig").BuildMemoryForAgent;
-const WriteFileTool = root_mod.write_file;
-const TextReplaceTool = root_mod.text_replace_tool;
+const WriteFileTool = nalar_mod.write_file;
+const TextReplaceTool = nalar_mod.text_replace_tool;
 
 const on_event_sent = @import("on_event_sent.zig");
 const on_event_send_new = on_event_sent.on_event_send_new;
@@ -57,10 +56,10 @@ const BuildDynamicAgentContent = @import("build_dynamic_agent_for_agent_prompt.z
 const BuildBackgroundProcessContent = @import("build_background_process_for_agent_prompt.zig").BuildBackgroundProcessPrompt;
 const save_skill_mod = @import("session_skills.zig");
 const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
-const config_mod = root_mod.config;
-pub const session_registry = root_mod.session.session_registry;
+const config_mod = nalar_mod.config;
+pub const session_registry = nalar_mod.session.session_registry;
 const handle_tool = @import("handle_tool.zig").handle_tool;
-const SpawnSubAgentTool = root_mod.agents;
+const SpawnSubAgentTool = nalar_mod.agents;
 const tool_registry = @import("tool_registry.zig");
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
@@ -202,7 +201,7 @@ pub const TUIWorkflow = struct {
                 const queued_messages = registry.get_queue_messages(session_id);
                 if (queued_messages) |messages| {
                     for (messages.items) |msg| {
-                        _ = try save_message(parent_allocator, self.db, .{
+                        _ = try llm_history.saveMessage(parent_allocator, self.db, .{
                             .session_id = session_id,
                             .model = model,
                             .cwd = cwd,
@@ -221,6 +220,8 @@ pub const TUIWorkflow = struct {
                             .total_tokens = 0,
                             .parent_id = session_id,
                             .parent_session_id = session_id,
+                            .is_input = true,
+                            .is_output = false,
                         });
                         _ = registry.delete_queue_messages(session_id, msg);
                     }
@@ -290,7 +291,7 @@ pub const TUIWorkflow = struct {
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    _ = try save_message(allocator, self.db, .{
+                    _ = try llm_history.saveMessage(allocator, self.db, .{
                         .session_id = session_id,
                         .model = model,
                         .cwd = cwd,
@@ -345,7 +346,7 @@ pub const TUIWorkflow = struct {
                         try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
                     } else {
                         // Treat as normal completion
-                        _ = try save_message(allocator, self.db, .{
+                        _ = try llm_history.saveMessage(allocator, self.db, .{
                             .session_id = session_id,
                             .model = model,
                             .cwd = cwd,

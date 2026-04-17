@@ -631,7 +631,7 @@ pub fn serializeToolCalls(allocator: std.mem.Allocator, tool_calls: []agent.Tool
     return try aw.toOwnedSlice();
 }
 
-pub const save_messageInput = struct {
+pub const SaveMessageInput = struct {
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -663,10 +663,10 @@ fn safeDupe(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     return copy;
 }
 
-pub fn save_message(
+pub fn saveMessage(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    input: save_messageInput,
+    input: SaveMessageInput,
 ) !void {
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
     defer allocator.free(id);

@@ -105,7 +105,7 @@ pub const App = struct {
 
 /// Run query mode - send single query and exit
 fn runQueryMode(app: *App, query: []const u8) !void {
-    const response = network.read_response_and_stream_run_LLM(app, query) catch |err| {
+    const response = network.readResponseAndStreamRunLLM(app, query) catch |err| {
         std.debug.print("Error: {s}\n", .{@errorName(err)});
         return;
     };

@@ -190,7 +190,7 @@ pub fn handle_input(app: *App) !bool {
             // Regular input - send to LLM
             std.debug.print("\r\n\r\n", .{});
             const streaming = @import("../network/streaming.zig");
-            const response = streaming.read_response_and_stream_run_LLM(app, app.input.items) catch "";
+            const response = streaming.readResponseAndStreamRunLLM(app, app.input.items) catch "";
             defer app.allocator.free(response);
             app.input.clearRetainingCapacity();
         }

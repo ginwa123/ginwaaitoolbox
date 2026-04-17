@@ -49,7 +49,6 @@ pub const execSetAgentProperties = tool_registry.execSetAgentProperties;
 pub const SUB_AGENT_TOOL_REGISTRY = tool_registry.SUB_AGENT_TOOL_REGISTRY;
 
 const llm_history = @import("llm_history.zig");
-const save_message = llm_history.save_message;
 const session_helpers = llm_history;
 const getCurrentAgentBySessionId = llm_history.get_current_agent_by_session_id;
 const upsert_worker = llm_history.upsert_worker;
@@ -77,57 +76,63 @@ pub fn execute_sub_agent_tool(
     config: *const config_mod.LlmConfig,
     logger: ?*logger_mod.Logger,
 ) !SubAgentToolResult {
-    _ = model;
-    _ = cwd;
+    // Create minimal logger if none provided
+    const fallback_logger: *logger_mod.Logger = if (logger) |log| log else blk: {
+        var minimal_logger = logger_mod.Logger.init(allocator, .{
+            .min_level = .err,
+            .output_mode = .stdout,
+        });
+        break :blk &minimal_logger;
+    };
+    defer if (logger == null) fallback_logger.deinit();
+
     // Check if it's an MCP tool first (dynamic handling)
     if (isMcpTool(config, tc.function.name)) {
-        if (logger) |log| {
-            const mcp_result = try handle_mcp_tool.handle_mcp_tool_run(allocator, log, tc, config);
-            return SubAgentToolResult{ .output = mcp_result };
-        } else {
-            // Create a minimal logger for MCP calls when no logger is available
-            var minimal_logger = logger_mod.Logger.init(allocator, .{
-                .min_level = .err, // Only errors
-                .output_mode = .stdout,
-            });
-            defer minimal_logger.deinit();
-            const mcp_result = try handle_mcp_tool.handle_mcp_tool_run(allocator, &minimal_logger, tc, config);
-            return SubAgentToolResult{ .output = mcp_result };
-        }
+        const mcp_result = try handle_mcp_tool.handle_mcp_tool_run(allocator, fallback_logger, tc, config);
+        return SubAgentToolResult{ .output = mcp_result };
     }
 
     inline for (tool_registry.SUB_AGENT_TOOL_REGISTRY) |entry| {
         if (std.mem.eql(u8, tc.function.name, entry.name)) {
-            // Build exec context for sub-agent (limited context, no logger)
+            // Build ToolExecContext from individual params
             const ctx = tool_registry.ToolExecContext{
                 .allocator = allocator,
                 .db = db,
-                .logger = undefined, // Not used by sub-agent tools
+                .logger = fallback_logger,
                 .session_id = session_id,
-                .model = undefined, // Not used by sub-agent tools
-                .cwd = undefined, // Not used by sub-agent tools
-                .api_key = undefined, // Not used by sub-agent tools
-                .base_url = undefined, // Not used by sub-agent tools
+                .model = model,
+                .cwd = cwd,
+                .api_key = "",
+                .base_url = "",
                 .config = config,
-                .agent_temperature = undefined, // Not used by sub-agent tools
-                .is_thinking = undefined, // Not used by sub-agent tools
+                .agent_temperature = undefined,
+                .is_thinking = undefined,
+            };
+            const exec_result = try entry.exec(ctx, tc);
+
+            var result = SubAgentToolResult{
+                .output = exec_result.output,
+                .temperature = exec_result.temperature,
+                .is_thinking = exec_result.is_thinking,
+                .skill_save = exec_result.skill_save,
+                .agent_save = exec_result.agent_save,
             };
 
-            const result = entry.exec(ctx, tc) catch |err| {
-                return SubAgentToolResult{
-                    .output = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
-                        tc.function.name,
-                        @errorName(err),
-                    }),
-                };
-            };
+            // Auto-save skill if this tool loaded one
+            if (entry.auto_save_skill) {
+                if (parseSkillFromResult(exec_result.output)) |info| {
+                    result.skill_save = SkillSaveInfo{ .name = info.name, .content = info.content };
+                }
+            }
 
-            // Return the result (skill_save and agent_save are handled by caller if needed)
-            return SubAgentToolResult{
-                .output = result.output,
-                .skill_save = result.skill_save,
-                .agent_save = result.agent_save,
-            };
+            // Auto-save agent if this tool loaded one
+            if (entry.auto_save_agent) {
+                if (parseAgentFromResult(exec_result.output)) |name| {
+                    result.agent_save = AgentSaveInfo{ .name = name };
+                }
+            }
+
+            return result;
         }
     }
 
@@ -231,7 +236,7 @@ fn runSubAgent(
     const mcp_tools = try buildMcpTools.build_mcp_tools_run(parentAllocator, config);
 
     // Save user instruction message to DB
-    _ = try save_message(parentAllocator, db, .{
+    _ = try llm_history.saveMessage(parentAllocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
@@ -312,7 +317,7 @@ fn runSubAgent(
 
         // Save assistant response to DB
         const assistant_tool_calls = if (response.tool_calls) |tcs| tcs else null;
-        _ = try save_message(allocator, db, .{
+        _ = try llm_history.saveMessage(allocator, db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -373,7 +378,7 @@ fn runSubAgent(
                         }
 
                         // Save tool result to DB
-                        _ = try save_message(allocator, db, .{
+                        _ = try llm_history.saveMessage(allocator, db, .{
                             .session_id = session_id,
                             .model = model,
                             .cwd = cwd,

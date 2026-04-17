@@ -4,7 +4,7 @@ const agent = tree1_mod.agent;
 const logger_mod = tree1_mod.logger;
 const sqlite = tree1_mod.sqlite;
 const llm_history = @import("llm_history.zig");
-const save_message = llm_history.save_message;
+const save_message = llm_history.saveMessage;
 const on_event_send_new = @import("on_event_sent.zig").on_event_send_new;
 const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
@@ -16,6 +16,7 @@ pub fn handle_content_filter_run(
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
+    session_name: ?[]const u8,
     loop_counter: u32,
     res_dynamic_agent: agent.CallResponse,
     agent_temperature: f32,
@@ -38,11 +39,12 @@ pub fn handle_content_filter_run(
         .cwd = cwd,
         .content = res_dynamic_agent.content,
         .reasoning_content = res_dynamic_agent.reasoning_content,
-        .role = agent.Role.assistant.to_str(),
-        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
+        .role = agent.Role.assistant.toStr(),
+        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.toStr() else null,
         .tool_calls = null,
         .tool_call_id = null,
         .agent_name = current_agent,
+        .session_name = session_name,
         .loop_index = loop_counter,
         .temperature = agent_temperature,
         .is_thinking = is_thinking,
@@ -67,6 +69,7 @@ pub fn handle_content_filter_run(
                 .tool_call_id = null,
                 .tool_name = null,
                 .agent_name = current_agent,
+                .session_name = session_name,
                 .loop_index = loop_counter,
                 .temperature = agent_temperature,
                 .is_thinking = is_thinking,
@@ -89,6 +92,7 @@ pub fn handle_content_filter_run(
                 .tool_call_id = null,
                 .tool_name = null,
                 .agent_name = current_agent,
+                .session_name = session_name,
                 .loop_index = loop_counter,
                 .temperature = agent_temperature,
                 .is_thinking = is_thinking,
@@ -112,6 +116,7 @@ pub fn handle_content_filter_run(
             .tool_call_id = null,
             .tool_name = null,
             .agent_name = current_agent,
+            .session_name = session_name,
             .loop_index = loop_counter,
             .temperature = agent_temperature,
             .is_thinking = is_thinking,
