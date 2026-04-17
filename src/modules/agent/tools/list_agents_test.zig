@@ -67,61 +67,61 @@ test "execute_list_agents returns valid JSON structure" {
     try std.testing.expectEqual(@as(i32, 0), bracket_count);
 }
 
-test "escape_json_string escapes quotes" {
+test "escapeJsonString escapes quotes" {
     const allocator = std.testing.allocator;
 
     const input = "Hello \"world\"";
-    const result = list_agents.escape_json_string(allocator, input);
+    const result = list_agents.escapeJsonString(allocator, input);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("Hello \\\"world\\\"", result);
 }
 
-test "escape_json_string escapes backslashes" {
+test "escapeJsonString escapes backslashes" {
     const allocator = std.testing.allocator;
 
     const input = "path\\to\\file";
-    const result = list_agents.escape_json_string(allocator, input);
+    const result = list_agents.escapeJsonString(allocator, input);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("path\\\\to\\\\file", result);
 }
 
-test "escape_json_string escapes newlines" {
+test "escapeJsonString escapes newlines" {
     const allocator = std.testing.allocator;
 
     const input = "line1\nline2";
-    const result = list_agents.escape_json_string(allocator, input);
+    const result = list_agents.escapeJsonString(allocator, input);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("line1\\nline2", result);
 }
 
-test "escape_json_string escapes tabs" {
+test "escapeJsonString escapes tabs" {
     const allocator = std.testing.allocator;
 
     const input = "col1\tcol2";
-    const result = list_agents.escape_json_string(allocator, input);
+    const result = list_agents.escapeJsonString(allocator, input);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("col1\\tcol2", result);
 }
 
-test "escape_json_string handles empty string" {
+test "escapeJsonString handles empty string" {
     const allocator = std.testing.allocator;
 
     const input = "";
-    const result = list_agents.escape_json_string(allocator, input);
+    const result = list_agents.escapeJsonString(allocator, input);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("", result);
 }
 
-test "escape_json_string handles string without special chars" {
+test "escapeJsonString handles string without special chars" {
     const allocator = std.testing.allocator;
 
     const input = "Hello World";
-    const result = list_agents.escape_json_string(allocator, input);
+    const result = list_agents.escapeJsonString(allocator, input);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("Hello World", result);

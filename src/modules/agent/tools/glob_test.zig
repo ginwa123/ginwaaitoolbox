@@ -7,8 +7,8 @@ const glob = @import("glob.zig");
 const GlobInput = glob.GlobInput;
 const GlobMatch = glob.GlobMatch;
 const GlobResult = glob.GlobResult;
-const executeGlob = glob.executeGlob;
-const globResultToString = glob.globResultToString;
+const execute_glob = glob.execute_glob;
+const glob_result_to_string = glob.glob_result_to_string;
 
 test "GlobInput default values" {
     const input = GlobInput{
@@ -24,7 +24,7 @@ test "GlobInput with pattern-style any" {
     try expect(input.any.len > 0);
 }
 
-test "executeGlob finds zig files" {
+test "execute_glob finds zig files" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -33,7 +33,7 @@ test "executeGlob finds zig files" {
         .any = "-e zig src/",
     };
 
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     try expect(result.matches.items.len > 0);
@@ -41,7 +41,7 @@ test "executeGlob finds zig files" {
     try expect(std.mem.endsWith(u8, result.matches.items[0].path, ".zig"));
 }
 
-test "executeGlob with hidden files enabled" {
+test "execute_glob with hidden files enabled" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -50,14 +50,14 @@ test "executeGlob with hidden files enabled" {
         .any = ".* src/ -H",
     };
 
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     // Should complete without error
     _ = result.matches.items.len;
 }
 
-test "executeGlob with extension filter" {
+test "execute_glob with extension filter" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -66,7 +66,7 @@ test "executeGlob with extension filter" {
         .any = "-e zig src/",
     };
 
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     // All results should be .zig files
@@ -75,7 +75,7 @@ test "executeGlob with extension filter" {
     }
 }
 
-test "executeGlob with type filter" {
+test "execute_glob with type filter" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -84,7 +84,7 @@ test "executeGlob with type filter" {
         .any = "-t f -e zig src/",
     };
 
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     // All results should be files
@@ -93,7 +93,7 @@ test "executeGlob with type filter" {
     }
 }
 
-test "executeGlob handles non-existent path" {
+test "execute_glob handles non-existent path" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -103,13 +103,13 @@ test "executeGlob handles non-existent path" {
     };
 
     // Should return empty results, not an error
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     try expect(result.matches.items.len == 0);
 }
 
-test "executeGlob with quoted args" {
+test "execute_glob with quoted args" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -118,7 +118,7 @@ test "executeGlob with quoted args" {
         .any = "\"-e zig\" src/",
     };
 
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     // Results should be .zig files
@@ -127,7 +127,7 @@ test "executeGlob with quoted args" {
     }
 }
 
-test "globResultToString formats correctly" {
+test "glob_result_to_string formats correctly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -140,13 +140,13 @@ test "globResultToString formats correctly" {
     try result.matches.append(allocator, .{ .path = "/path/to/file1.zig" });
     try result.matches.append(allocator, .{ .path = "/path/to/file2.zig" });
 
-    const output = try globResultToString(allocator, result);
+    const output = try glob_result_to_string(allocator, result);
 
     try expect(std.mem.containsAtLeast(u8, output, 1, "<f>/path/to/file1.zig</f>"));
     try expect(std.mem.containsAtLeast(u8, output, 1, "<f>/path/to/file2.zig</f>"));
 }
 
-test "globResultToString handles empty result" {
+test "glob_result_to_string handles empty result" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -156,7 +156,7 @@ test "globResultToString handles empty result" {
     };
     defer result.deinit(allocator);
 
-    const output = try globResultToString(allocator, result);
+    const output = try glob_result_to_string(allocator, result);
 
     try std.testing.expect(std.mem.indexOf(u8, output, "No files found") != null);
 }
@@ -212,7 +212,7 @@ test "glob_tool required is empty" {
 // BUG FIX: Glob patterns without --glob flag fail
 // ============================================================================
 
-test "executeGlob with glob pattern (e.g. *.zig) works" {
+test "execute_glob with glob pattern (e.g. *.zig) works" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -222,7 +222,7 @@ test "executeGlob with glob pattern (e.g. *.zig) works" {
         .any = "*.zig src/",
     };
 
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     // Should find .zig files
@@ -232,7 +232,7 @@ test "executeGlob with glob pattern (e.g. *.zig) works" {
     }
 }
 
-test "executeGlob with glob pattern and path (e.g. *.zig src/) works" {
+test "execute_glob with glob pattern and path (e.g. *.zig src/) works" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -241,7 +241,7 @@ test "executeGlob with glob pattern and path (e.g. *.zig src/) works" {
         .any = "*.zig src/",
     };
 
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     // Should find .zig files in src/
@@ -251,7 +251,7 @@ test "executeGlob with glob pattern and path (e.g. *.zig src/) works" {
     }
 }
 
-test "executeGlob with complex glob pattern (e.g. test_*.zig) works" {
+test "execute_glob with complex glob pattern (e.g. test_*.zig) works" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -260,7 +260,7 @@ test "executeGlob with complex glob pattern (e.g. test_*.zig) works" {
         .any = "test_*.zig src/",
     };
 
-    var result = try executeGlob(allocator, input);
+    var result = try execute_glob(allocator, input);
     defer result.deinit(allocator);
 
     // Should find test_*.zig files

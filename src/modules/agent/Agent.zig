@@ -13,17 +13,17 @@ const log = @import("nalarcore").logger;
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
 /// Get current timestamp in milliseconds since epoch
-fn timestamp_ms() i64 {
+fn timestampMs() i64 {
     return @divTrunc(std.time.milliTimestamp(), 1);
 }
 
 /// Calculate elapsed time in milliseconds
-fn elapsed_ms(start: i64) i64 {
-    return timestamp_ms() - start;
+fn elapsedMs(start: i64) i64 {
+    return timestampMs() - start;
 }
 
 /// Format duration for human-readable output
-fn format_duration(ms: i64) struct { value: i64, unit: []const u8 } {
+fn formatDuration(ms: i64) struct { value: i64, unit: []const u8 } {
     if (ms < 1000) return .{ .value = ms, .unit = "ms" };
     if (ms < 60000) return .{ .value = @divTrunc(ms, 1000), .unit = "s" };
     return .{ .value = @divTrunc(ms, 60000), .unit = "min" };
@@ -953,15 +953,15 @@ pub const Agent = struct {
             return error.SendBodyFailed;
         };
 
-        const stream_start = timestamp_ms();
+        const stream_start = timestampMs();
         var redirect_buffer: [8192]u8 = undefined;
         var response = req.receiveHead(&redirect_buffer) catch |err| {
-            self.log_fmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsed_ms(stream_start), @errorName(err) });
+            self.log_fmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(stream_start), @errorName(err) });
             return error.ReceiveFailed;
         };
 
-        const stream_duration = elapsed_ms(stream_start);
-        const stream_duration_fmt = format_duration(stream_duration);
+        const stream_duration = elapsedMs(stream_start);
+        const stream_duration_fmt = formatDuration(stream_duration);
         self.log_fmt(.info, "[STREAM] Connected in {}{s} (HTTP {d})", .{ stream_duration_fmt.value, stream_duration_fmt.unit, @intFromEnum(response.head.status) });
 
         // Log transfer details for debugging

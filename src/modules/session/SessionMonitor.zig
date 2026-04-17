@@ -1,5 +1,5 @@
 const std = @import("std");
-const session_registry = @import("session_registry.zig");
+const session_registry = @import("SessionRegistry.zig");
 
 pub const SessionMonitor = struct {
     const Self = @This();

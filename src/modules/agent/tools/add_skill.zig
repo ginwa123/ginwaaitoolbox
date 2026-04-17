@@ -51,7 +51,7 @@ pub const add_skill_tool = AgentTool{
 /// Creates a new skill file at .nalar/skills/<name>/SKILL.MD
 /// Returns an XML string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn execute_add_skill_to_string(allocator: std.mem.Allocator, input: AddSkillInput) ![]const u8 {
+pub fn executeAddSkillToString(allocator: std.mem.Allocator, input: AddSkillInput) ![]const u8 {
     // Validate input
     if (input.name.len == 0) return error.InvalidInput;
     if (input.description.len == 0) return error.InvalidInput;
@@ -60,7 +60,7 @@ pub fn execute_add_skill_to_string(allocator: std.mem.Allocator, input: AddSkill
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = std.posix.getcwd(&cwd_buf) catch {
-        return try error_to_xml(allocator, input.name, "Failed to get current working directory");
+        return try errorToXml(allocator, input.name, "Failed to get current working directory");
     };
 
     // Build paths
@@ -76,32 +76,32 @@ pub fn execute_add_skill_to_string(allocator: std.mem.Allocator, input: AddSkill
     // Create directories if needed
     if (input.create_with_dir) {
         std.fs.cwd().makePath(skill_dir) catch {
-            return try error_to_xml(allocator, input.name, "Failed to create skill directory");
+            return try errorToXml(allocator, input.name, "Failed to create skill directory");
         };
     }
 
     // Build skill content with YAML frontmatter
-    const file_content = try build_skill_content(allocator, input);
+    const file_content = try buildSkillContent(allocator, input);
     defer allocator.free(file_content);
 
     // Write the file
     const file = std.fs.createFileAbsolute(skill_file, .{}) catch {
-        return try error_to_xml(allocator, input.name, "Failed to create skill file");
+        return try errorToXml(allocator, input.name, "Failed to create skill file");
     };
     defer file.close();
 
     file.writeAll(file_content) catch {
-        return try error_to_xml(allocator, input.name, "Failed to write skill file");
+        return try errorToXml(allocator, input.name, "Failed to write skill file");
     };
 
     // Return success XML
-    return try success_to_xml(allocator, input.name, skill_file);
+    return try successToXml(allocator, input.name, skill_file);
 }
 
 /// Build skill file content with YAML frontmatter
-fn build_skill_content(allocator: std.mem.Allocator, input: AddSkillInput) ![]const u8 {
+fn buildSkillContent(allocator: std.mem.Allocator, input: AddSkillInput) ![]const u8 {
     // Escape quotes in description for YAML string
-    const escaped_desc = try escape_yaml_string(allocator, input.description);
+    const escaped_desc = try escapeYamlString(allocator, input.description);
     defer allocator.free(escaped_desc);
 
     // Build the content: frontmatter + separator + content
@@ -125,7 +125,7 @@ fn build_skill_content(allocator: std.mem.Allocator, input: AddSkillInput) ![]co
 
 /// Escape special characters in a YAML string value
 /// Handles: double quotes, backslashes
-fn escape_yaml_string(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+fn escapeYamlString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     var needs_escape = false;
 
     // Check if escaping is needed
@@ -156,7 +156,7 @@ fn escape_yaml_string(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
 }
 
 /// Generate success XML response
-fn success_to_xml(allocator: std.mem.Allocator, name: []const u8, path: []const u8) ![]const u8 {
+fn successToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<skill>
         \\<name>{s}</name>
@@ -167,7 +167,7 @@ fn success_to_xml(allocator: std.mem.Allocator, name: []const u8, path: []const 
 }
 
 /// Generate error XML response
-fn error_to_xml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) ![]const u8 {
+fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<skill>
         \\<name>{s}</name>

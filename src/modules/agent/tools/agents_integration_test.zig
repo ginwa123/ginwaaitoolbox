@@ -62,7 +62,7 @@ test "full agent workflow - list and get agents" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const agents_path = try tmp_dir.dir.realpath(".nalar/agents", &path_buf);
 
-    // Change to the temp directory so resolveAgentsPath finds our test agents
+    // Change to the temp directory so resolve_agents_path finds our test agents
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const original_cwd = try std.posix.getcwd(&cwd_buf);
 
@@ -84,16 +84,16 @@ test "full agent workflow - list and get agents" {
     const test_agent_path = try std.fs.path.join(allocator, &[_][]const u8{ agents_path, "test-coder", "AGENT.md" });
     defer allocator.free(test_agent_path);
 
-    const loaded_content = agents.load_agent_from_path(allocator, test_agent_path);
+    const loaded_content = agents.loadAgentFromPath(allocator, test_agent_path);
     if (loaded_content) |content| {
         defer allocator.free(content);
         try std.testing.expect(std.mem.indexOf(u8, content, "test-coder") != null);
         try std.testing.expect(std.mem.indexOf(u8, content, "A test coding agent") != null);
 
         // Parse frontmatter
-        const frontmatter = agents.parse_yaml_frontmatter(allocator, content);
+        const frontmatter = agents.parseYamlFrontmatter(allocator, content);
         if (frontmatter) |fm| {
-            defer agents.free_parsed_frontmatter(allocator, fm);
+            defer agents.freeParsedFrontmatter(allocator, fm);
             try std.testing.expectEqualStrings("test-coder", fm.name);
             try std.testing.expectEqualStrings("A test coding agent", fm.description);
         }
@@ -103,9 +103,9 @@ test "full agent workflow - list and get agents" {
     try std.posix.chdir(original_cwd);
 }
 
-// Test: listAgents returns valid JSON
+// Test: list_agents returns valid JSON
 // Verifies that executeListAgents produces valid JSON output
-test "listAgents returns valid JSON" {
+test "list_agents returns valid JSON" {
     const allocator = std.testing.allocator;
 
     // Execute list_agents
@@ -129,9 +129,9 @@ test "listAgents returns valid JSON" {
     try std.testing.expect(agents_array == .array);
 }
 
-// Test: parseAgent returns valid XML
+// Test: parse_agent returns valid XML
 // Verifies that executeGetAgentToString produces valid XML output
-test "parseAgent returns valid XML" {
+test "parse_agent returns valid XML" {
     const allocator = std.testing.allocator;
 
     // Create temporary directory with test agent
@@ -177,9 +177,9 @@ test "parseAgent returns valid XML" {
     try std.testing.expect(std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null);
 }
 
-// Test: parseAgent handles missing agent
+// Test: parse_agent handles missing agent
 // Verifies that executeChangeAgentToString returns appropriate error XML for non-existent agents
-test "parseAgent handles missing agent" {
+test "parse_agent handles missing agent" {
     const allocator = std.testing.allocator;
 
     // Test with a non-existent agent name
@@ -271,7 +271,7 @@ test "full workflow with multiple agents" {
     });
     defer allocator.free(alpha_path);
 
-    const alpha_content = agents.load_agent_from_path(allocator, alpha_path);
+    const alpha_content = agents.loadAgentFromPath(allocator, alpha_path);
     if (alpha_content) |content| {
         defer allocator.free(content);
         try std.testing.expect(std.mem.indexOf(u8, content, "agent-alpha") != null);
@@ -286,7 +286,7 @@ test "full workflow with multiple agents" {
     });
     defer allocator.free(beta_path);
 
-    const beta_content = agents.load_agent_from_path(allocator, beta_path);
+    const beta_content = agents.loadAgentFromPath(allocator, beta_path);
     if (beta_content) |content| {
         defer allocator.free(content);
         try std.testing.expect(std.mem.indexOf(u8, content, "agent-beta") != null);
@@ -301,7 +301,7 @@ test "full workflow with multiple agents" {
     });
     defer allocator.free(gamma_path);
 
-    const gamma_content = agents.load_agent_from_path(allocator, gamma_path);
+    const gamma_content = agents.loadAgentFromPath(allocator, gamma_path);
     if (gamma_content) |content| {
         defer allocator.free(content);
         try std.testing.expect(std.mem.indexOf(u8, content, "agent-gamma") != null);

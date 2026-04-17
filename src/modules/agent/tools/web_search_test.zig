@@ -9,7 +9,7 @@ test "web search with query returns content" {
         .query = "example domain",
     };
 
-    const result = try webSearchMod.executeWebSearch(allocator, input);
+    const result = try webSearchMod.execute_web_search(allocator, input);
     defer result.deinit(allocator);
 
     try std.testing.expect(result.success);
@@ -24,7 +24,7 @@ test "web search with direct URL" {
         .action = "snapshot",
     };
 
-    const result = try webSearchMod.executeWebSearch(allocator, input);
+    const result = try webSearchMod.execute_web_search(allocator, input);
     defer result.deinit(allocator);
 
     // Either success or failure is acceptable (depends on agent-browser availability)
@@ -39,7 +39,7 @@ test "web search with click action" {
         .selector = "#submit-btn",
     };
 
-    const result = try webSearchMod.executeWebSearch(allocator, input);
+    const result = try webSearchMod.execute_web_search(allocator, input);
     defer result.deinit(allocator);
 
     // Should return some output
@@ -59,7 +59,7 @@ test "web search result to string conversion" {
         if (result.error_msg) |msg| allocator.free(msg);
     }
 
-    const output = try webSearchMod.webSearchResultToString(allocator, result);
+    const output = try webSearchMod.web_search_result_to_string(allocator, result);
     defer allocator.free(output);
 
     try std.testing.expect(std.mem.indexOf(u8, output, "<success>true</success>") != null);

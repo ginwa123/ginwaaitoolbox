@@ -86,7 +86,7 @@ test "lsp_hover_tool has required parameters" {
 }
 
 // Test 3.1: Format found hover
-test "lspHoverToString formats found hover" {
+test "lsp_hover_to_string formats found hover" {
     const allocator = std.testing.allocator;
 
     const output = lsp_types.LspHoverOutput{
@@ -99,7 +99,7 @@ test "lspHoverToString formats found hover" {
     };
     defer allocator.free(output.contents.?);
 
-    const result = try lsp_hover.lspHoverToString(allocator, output);
+    const result = try lsp_hover.lsp_hover_to_string(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "<found>true</found>") != null);
@@ -112,7 +112,7 @@ test "lspHoverToString formats found hover" {
 }
 
 // Test 3.2: Format not found
-test "lspHoverToString formats not found" {
+test "lsp_hover_to_string formats not found" {
     const allocator = std.testing.allocator;
 
     const output = lsp_types.LspHoverOutput{
@@ -124,18 +124,18 @@ test "lspHoverToString formats not found" {
         .found = false,
     };
 
-    const result = try lsp_hover.lspHoverToString(allocator, output);
+    const result = try lsp_hover.lsp_hover_to_string(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.eql(u8, result, "<found>false</found>"));
 }
 
-// Test 4.1: createMessage helper
-test "createMessage creates valid LSP message" {
+// Test 4.1: create_message helper
+test "create_message creates valid LSP message" {
     const allocator = std.testing.allocator;
 
     const content = "{\"jsonrpc\":\"2.0\",\"id\":1}";
-    const msg = try lsp_hover.createMessage(allocator, content);
+    const msg = try lsp_hover.create_message(allocator, content);
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.startsWith(u8, msg, "Content-Length: "));
@@ -144,7 +144,7 @@ test "createMessage creates valid LSP message" {
 }
 
 // Test 5.1: Non-existent file
-test "executeLspHover returns error for non-existent file" {
+test "execute_lsp_hover returns error for non-existent file" {
     const allocator = std.testing.allocator;
     const input = lsp_types.LspHoverInput{
         .lsp = "zls",
@@ -154,6 +154,6 @@ test "executeLspHover returns error for non-existent file" {
         .character = 0,
     };
 
-    const result = lsp_hover.executeLspHover(allocator, input);
+    const result = lsp_hover.execute_lsp_hover(allocator, input);
     try std.testing.expectError(error.FileNotFound, result);
 }

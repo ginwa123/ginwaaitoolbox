@@ -22,7 +22,7 @@ pub fn execute_web_search(allocator: std.mem.Allocator, input: WebSearchInput) !
         try command.append(allocator, ' ');
 
         // Encode the query for URL
-        const encoded_query = try url_encode(allocator, query);
+        const encoded_query = try urlEncode(allocator, query);
         defer allocator.free(encoded_query);
 
         // Build Google search URL and open it
@@ -154,7 +154,7 @@ pub fn web_search_result_to_string(allocator: std.mem.Allocator, result: WebSear
 }
 
 /// Encode a string for URL usage (percent encoding)
-fn url_encode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+fn urlEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     defer result.deinit(allocator);
 

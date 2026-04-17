@@ -23,7 +23,7 @@ pub fn BuildMessages(
 ) ![]agent.AgentMessage {
 
     // buildAgentPrompt now handles processMessages internally
-    const activity_info = try build_activity_info(allocator, db, session_id);
+    const activity_info = try buildActivityInfo(allocator, db, session_id);
     const systemContent = try prompt.build_agent_prompt(allocator, cwd, "", skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info);
     allocator.free(activity_info);
 
@@ -48,7 +48,7 @@ pub fn BuildMessages(
 /// Build activity info string for the agent prompt
 /// Uses worker table as the SOLE source of active workers info
 /// Filters out current session to avoid self-reference
-fn build_activity_info(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
+fn buildActivityInfo(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
     const workers = try llm_history.get_active_workers(allocator, db);
     defer {
         for (workers) |*worker| worker.deinit(allocator);
@@ -84,7 +84,7 @@ fn build_activity_info(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, 
             const now: i64 = @intCast(std.time.timestamp());
             const diff_secs = now - worker.last_activity;
             try result.appendSlice(allocator, " | last activity: ");
-            try result.appendSlice(allocator, format_relative_time(diff_secs));
+            try result.appendSlice(allocator, formatRelativeTime(diff_secs));
             if (worker.last_activity_description.len > 0) {
                 try result.appendSlice(allocator, " (");
                 try result.appendSlice(allocator, worker.last_activity_description);
@@ -98,7 +98,7 @@ fn build_activity_info(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, 
 }
 
 /// Format seconds into human-readable relative time
-pub fn format_relative_time(seconds: i64) []const u8 {
+pub fn formatRelativeTime(seconds: i64) []const u8 {
     if (seconds < 60) {
         return "< 1m";
     } else if (seconds < 3600) {

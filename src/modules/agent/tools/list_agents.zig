@@ -42,9 +42,9 @@ pub fn execute_list_agents(allocator: std.mem.Allocator) ![]const u8 {
         if (i > 0) {
             try result.appendSlice(allocator, ", ");
         }
-        const escaped_name = escape_json_string(allocator, agent.name);
+        const escaped_name = escapeJsonString(allocator, agent.name);
         defer allocator.free(escaped_name);
-        const escaped_desc = escape_json_string(allocator, agent.description);
+        const escaped_desc = escapeJsonString(allocator, agent.description);
         defer allocator.free(escaped_desc);
         const entry = try std.fmt.allocPrint(allocator,
             \\{{"name":"{s}","description":"{s}"}}
@@ -59,7 +59,7 @@ pub fn execute_list_agents(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 /// Escape a string for JSON output
-pub fn escape_json_string(allocator: std.mem.Allocator, s: []const u8) []const u8 {
+pub fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
 

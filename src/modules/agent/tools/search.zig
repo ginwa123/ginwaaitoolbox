@@ -35,7 +35,7 @@ pub const SearchResult = struct {
     }
 };
 
-fn get_text_from_json(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
+fn getTextFromJson(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
     if (obj.get(key)) |val| {
         if (val == .object) {
             if (val.object.get("text")) |text_val| {
@@ -48,7 +48,7 @@ fn get_text_from_json(obj: *const std.json.ObjectMap, key: []const u8) ?[]const 
     return null;
 }
 
-fn get_matched_lines(obj: *const std.json.ObjectMap) ?usize {
+fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
     if (obj.get("stats")) |stats| {
         if (stats == .object) {
             if (stats.object.get("matched_lines")) |ml| {
@@ -123,7 +123,7 @@ pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchR
                 if (type_val == .string and std.mem.eql(u8, type_val.string, "begin")) {
                     if (parsed.value.object.get("data")) |data| {
                         if (data == .object) {
-                            if (get_text_from_json(&data.object, "path")) |path_text| {
+                            if (getTextFromJson(&data.object, "path")) |path_text| {
                                 current_file = path_text;
                             }
                         }
@@ -136,11 +136,11 @@ pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchR
                             var line_num: usize = 0;
                             var has_required = false;
 
-                            if (get_text_from_json(&data.object, "path")) |path_text| {
+                            if (getTextFromJson(&data.object, "path")) |path_text| {
                                 match_file = path_text;
                             }
 
-                            if (get_text_from_json(&data.object, "lines")) |lines_text| {
+                            if (getTextFromJson(&data.object, "lines")) |lines_text| {
                                 match_snippet = lines_text;
                             }
 
@@ -173,7 +173,7 @@ pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchR
                     if (current_file != null) {
                         if (parsed.value.object.get("data")) |data| {
                             if (data == .object) {
-                                if (get_matched_lines(&data.object)) |ml| {
+                                if (getMatchedLines(&data.object)) |ml| {
                                     try file_stats.put(current_file.?, ml);
                                 }
                             }

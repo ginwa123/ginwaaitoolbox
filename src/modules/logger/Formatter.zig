@@ -1,5 +1,5 @@
 const std = @import("std");
-const timing = @import("timing.zig");
+const timing = @import("Timing.zig");
 
 /// Log level for filtering and formatting
 pub const LogLevel = enum {

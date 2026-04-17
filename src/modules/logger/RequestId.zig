@@ -1,5 +1,5 @@
 const std = @import("std");
-const timing = @import("timing.zig");
+const timing = @import("Timing.zig");
 
 /// Request ID format: REQ-YYYYMMDD-HHMMSS-XXXX (24 characters)
 /// where XXXX is a 4-character random hex suffix

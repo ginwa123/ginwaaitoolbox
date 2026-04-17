@@ -58,7 +58,7 @@ const ParsedGlobArgs = struct {
 
 /// Tokenize a shell-like argument string, respecting quotes and escaping.
 /// Handles: pattern, -e zig, -H, --max-results 50, "quoted args"
-fn tokenize_args(input: []const u8, allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]const u8) {
+fn tokenizeArgs(input: []const u8, allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]const u8) {
     var args = std.ArrayListUnmanaged([]const u8){};
     errdefer args.deinit(allocator);
 
@@ -100,7 +100,7 @@ fn tokenize_args(input: []const u8, allocator: std.mem.Allocator) !std.ArrayList
 }
 
 /// Check if a token looks like a path (contains / or is a directory-like path)
-fn looks_like_path(token: []const u8) bool {
+fn looksLikePath(token: []const u8) bool {
     // Contains path separator
     if (std.mem.indexOfScalar(u8, token, '/') != null) return true;
     // Is "." or ".."
@@ -110,7 +110,7 @@ fn looks_like_path(token: []const u8) bool {
 
 /// Check if a pattern contains glob characters (*, ?, [, {)
 /// fd requires --glob flag for these patterns to work correctly.
-fn is_glob_pattern(pattern: []const u8) bool {
+fn isGlobPattern(pattern: []const u8) bool {
     // Check for common glob metacharacters
     return std.mem.indexOfAny(u8, pattern, "*?[") != null;
 }
@@ -119,7 +119,7 @@ fn is_glob_pattern(pattern: []const u8) bool {
 /// fd CLI: fd [OPTIONS] pattern [path]
 /// Handles the case where fd is strict about paths - a path ending with / won't work.
 /// Automatically adds --glob flag if the pattern contains glob metacharacters.
-fn parse_glob_args(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlobArgs {
+fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlobArgs {
     var pattern: []const u8 = "";
     var path: []const u8 = ".";
     var options = std.ArrayList([]const u8).empty;
@@ -137,7 +137,7 @@ fn parse_glob_args(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGl
                 try options.append(allocator, tokens[i]);
                 i += 1;
             }
-        } else if (looks_like_path(token)) {
+        } else if (looksLikePath(token)) {
             // Looks like a path - use as path if we haven't set one yet
             if (path.len == 1) {
                 // Remove trailing slash from path (fd doesn't like it)
@@ -162,7 +162,7 @@ fn parse_glob_args(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGl
 
     // Auto-detect glob patterns and add --glob flag if needed
     // fd requires --glob flag for patterns containing *, ?, or [
-    if (pattern.len > 0 and is_glob_pattern(pattern)) {
+    if (pattern.len > 0 and isGlobPattern(pattern)) {
         // Check if --glob or -g is already present
         var has_glob_flag = false;
         for (options.items) |opt| {
@@ -195,14 +195,14 @@ fn parse_glob_args(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGl
 ///   - "-e zig src/ -H" → fd -e zig src/ -H
 pub fn execute_glob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
     // Tokenize the any arguments
-    var tokens = try tokenize_args(input.any, allocator);
+    var tokens = try tokenizeArgs(input.any, allocator);
     defer {
         for (tokens.items) |t| allocator.free(t);
         tokens.deinit(allocator);
     }
 
     // Parse into pattern, path, and options
-    var parsed = try parse_glob_args(tokens.items, allocator);
+    var parsed = try parseGlobArgs(tokens.items, allocator);
 
     // Build argument list for fd
     var args = std.ArrayListUnmanaged([]const u8){};

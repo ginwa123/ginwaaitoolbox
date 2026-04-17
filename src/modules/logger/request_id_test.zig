@@ -1,5 +1,5 @@
 const std = @import("std");
-const request_id = @import("request_id.zig");
+const request_id = @import("RequestId.zig");
 const RequestId = request_id.RequestId;
 const SessionId = request_id.SessionId;
 const generateRequestId = request_id.generateRequestId;

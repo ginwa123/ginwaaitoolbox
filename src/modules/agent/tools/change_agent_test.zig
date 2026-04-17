@@ -2,11 +2,11 @@ const std = @import("std");
 const change_agent = @import("change_agent.zig");
 const ChangeAgentInput = change_agent.ChangeAgentInput;
 
-test "parseChangeAgentInput with agent_name" {
+test "parse_change_agent_input with agent_name" {
     const allocator = std.testing.allocator;
     const json_str = "{\"agent_name\": \"zig-expert\"}";
 
-    const input = try change_agent.parseChangeAgentInput(allocator, json_str);
+    const input = try change_agent.parse_change_agent_input(allocator, json_str);
     defer {
         if (input.agent_name) |n| allocator.free(n);
         if (input.path) |p| allocator.free(p);
@@ -16,11 +16,11 @@ test "parseChangeAgentInput with agent_name" {
     try std.testing.expectEqualStrings("zig-expert", input.agent_name.?);
 }
 
-test "parseChangeAgentInput with path" {
+test "parse_change_agent_input with path" {
     const allocator = std.testing.allocator;
     const json_str = "{\"path\": \"/absolute/path/to/agent.zig\"}";
 
-    const input = try change_agent.parseChangeAgentInput(allocator, json_str);
+    const input = try change_agent.parse_change_agent_input(allocator, json_str);
     defer {
         if (input.agent_name) |n| allocator.free(n);
         if (input.path) |p| allocator.free(p);
@@ -30,11 +30,11 @@ test "parseChangeAgentInput with path" {
     try std.testing.expectEqualStrings("/absolute/path/to/agent.zig", input.path.?);
 }
 
-test "parseChangeAgentInput empty input" {
+test "parse_change_agent_input empty input" {
     const allocator = std.testing.allocator;
     const json_str = "{}";
 
-    const input = try change_agent.parseChangeAgentInput(allocator, json_str);
+    const input = try change_agent.parse_change_agent_input(allocator, json_str);
     defer {
         if (input.agent_name) |n| allocator.free(n);
         if (input.path) |p| allocator.free(p);
@@ -44,11 +44,11 @@ test "parseChangeAgentInput empty input" {
     try std.testing.expect(input.path == null);
 }
 
-test "parseChangeAgentInput invalid json" {
+test "parse_change_agent_input invalid json" {
     const allocator = std.testing.allocator;
     const json_str = "not valid json";
 
-    const result = change_agent.parseChangeAgentInput(allocator, json_str);
+    const result = change_agent.parse_change_agent_input(allocator, json_str);
     try std.testing.expectError(error.InvalidJson, result);
 }
 

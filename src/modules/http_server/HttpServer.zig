@@ -4,9 +4,9 @@ const httpz_import = @import("httpz");
 pub const httpz = httpz_import;
 
 // Re-export types from sub-modules
-pub const SseEvent = @import("./sse_manager.zig").SseEvent;
-pub const SseConnectionManager = @import("./sse_manager.zig").SseConnectionManager;
-pub const SseQueueItem = @import("./sse_manager.zig").SseQueueItem;
+pub const SseEvent = @import("./SseManager.zig").SseEvent;
+pub const SseConnectionManager = @import("./SseManager.zig").SseConnectionManager;
+pub const SseQueueItem = @import("./SseManager.zig").SseQueueItem;
 
 // Note: HTTP handlers are exported directly from nalarcore.http_handlers
 // (stored at ai_workflow/tui/http_handlers.zig to avoid circular imports)
@@ -124,5 +124,5 @@ pub const HttpServer = struct {
 };
 
 test {
-    _ = @import("sse_manager.zig");
+    _ = @import("SseManager.zig");
 }

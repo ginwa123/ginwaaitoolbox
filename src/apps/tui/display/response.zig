@@ -22,7 +22,7 @@ pub const ExtractResult = struct {
 
 /// Strip <think>...</think> block (if any) and trim surrounding whitespace.
 /// Only strips ONE leading think block — the model always emits it first.
-fn strip_think_blocks(text: []const u8) []const u8 {
+fn stripThinkBlocks(text: []const u8) []const u8 {
     const think_open = "<think>";
     const think_close = "</think>";
 
@@ -51,8 +51,8 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?E
     var results = std.ArrayListUnmanaged(ContentResult){};
     errdefer results.deinit(allocator);
 
-    try extract_tag_content(allocator, &results, xml, "<response>", "</response>", .response);
-    try extract_tag_content(allocator, &results, xml, "<tool_result>", "</tool_result>", .tool_result);
+    try extractTagContent(allocator, &results, xml, "<response>", "</response>", .response);
+    try extractTagContent(allocator, &results, xml, "<tool_result>", "</tool_result>", .tool_result);
 
     // Extract the LAST <finish_reason> tag (streaming may produce multiple)
     var finish_reason: ?[]const u8 = null;
@@ -107,7 +107,7 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?E
     };
 }
 
-fn extract_tag_content(
+fn extractTagContent(
     allocator: std.mem.Allocator,
     results: *std.ArrayListUnmanaged(ContentResult),
     xml: []const u8,
@@ -131,7 +131,7 @@ fn extract_tag_content(
             inner_pos = c_end + "</content>".len;
 
             if (c_text.len > 0) {
-                const cleaned = strip_think_blocks(c_text);
+                const cleaned = stripThinkBlocks(c_text);
                 if (cleaned.len > 0) {
                     try results.append(allocator, .{ .content = cleaned, .xml_type = .content });
                     extracted_any = true;
@@ -145,7 +145,7 @@ fn extract_tag_content(
         }
 
         if (!extracted_any and inner.len > 0) {
-            const cleaned = strip_think_blocks(inner);
+            const cleaned = stripThinkBlocks(inner);
             if (cleaned.len > 0) {
                 try results.append(allocator, .{ .content = cleaned, .xml_type = outer_type });
             }

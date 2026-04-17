@@ -1,5 +1,5 @@
 const std = @import("std");
-const sqlite = @import("sqlite.zig");
+const sqlite = @import("Sqlite.zig");
 
 pub const SqliteBackend = sqlite.SqliteBackend;
 

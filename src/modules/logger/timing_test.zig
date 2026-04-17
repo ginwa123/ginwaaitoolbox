@@ -1,5 +1,5 @@
 const std = @import("std");
-const timing = @import("timing.zig");
+const timing = @import("Timing.zig");
 
 test "timestampMs returns reasonable value" {
     const ts = timing.timestampMs();

@@ -61,13 +61,13 @@ pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_
             }
 
             // Check for shell variables that reference current process
-            if (detect_shell_pid_var(after_signal)) |_| {
+            if (detectShellPidVar(after_signal)) |_| {
                 return "Command 'kill -9 <shell_var>' targets the current process. " ++
                     "This is IMMEDIATE and cannot be intercepted.";
             }
 
             // Check for numeric PID
-            if (parse_pid(after_signal)) |target_pid| {
+            if (parsePid(after_signal)) |target_pid| {
                 if (target_pid == self_pid) {
                     return "Command 'kill -9 <self_pid>' targets YOUR OWN PROCESS. " ++
                         "This is IMMEDIATE and cannot be intercepted.";
@@ -80,12 +80,12 @@ pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_
         }
 
         // Check for shell variables in arguments
-        if (detect_shell_pid_var(after)) |_| {
+        if (detectShellPidVar(after)) |_| {
             return "Command 'kill <shell_var>' targets the current process.";
         }
 
         // Check for numeric PID
-        if (parse_pid(after)) |target_pid| {
+        if (parsePid(after)) |target_pid| {
             if (target_pid == self_pid) {
                 return "Command 'kill <self_pid>' targets YOUR OWN PROCESS.";
             }
@@ -126,7 +126,7 @@ pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_
             }
 
             // Check for negative PIDs
-            if (parse_pid(after_signal)) |target_pid| {
+            if (parsePid(after_signal)) |target_pid| {
                 if (target_pid < 0) {
                     return "Command 'killall -9 -1' will kill ALL processes! This is catastrophic.";
                 }
@@ -134,7 +134,7 @@ pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_
         }
 
         // Check for negative PIDs
-        if (parse_pid(after)) |target_pid| {
+        if (parsePid(after)) |target_pid| {
             if (target_pid < 0) {
                 return "Command 'killall <negative_pid>' may affect multiple processes.";
             }
@@ -194,7 +194,7 @@ pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_
 }
 
 /// Check if a string contains shell variables that reference current process
-fn detect_shell_pid_var(s: []const u8) ?[]const u8 {
+fn detectShellPidVar(s: []const u8) ?[]const u8 {
     if (std.mem.indexOf(u8, s, "$$") != null) return "$$";
     if (std.mem.indexOf(u8, s, "$!") != null) return "$!";
     if (std.mem.indexOf(u8, s, "$PPID") != null) return "$PPID";
@@ -203,7 +203,7 @@ fn detect_shell_pid_var(s: []const u8) ?[]const u8 {
 
 /// Try to parse a PID from a string
 /// Returns null if not a valid PID number
-fn parse_pid(s: []const u8) ?i32 {
+fn parsePid(s: []const u8) ?i32 {
     // Skip leading minus for negative PIDs
     const start: usize = if (s.len > 0 and s[0] == '-') 1 else 0;
     if (start >= s.len) return null;

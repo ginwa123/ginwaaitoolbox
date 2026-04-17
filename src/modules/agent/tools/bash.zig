@@ -15,7 +15,7 @@ pub const CommandForbidden = error{
 };
 
 /// Detects forbidden command patterns that produce unbounded output
-fn is_forbidden_command(command: []const u8) bool {
+fn isForbiddenCommand(command: []const u8) bool {
     const trimmed = std.mem.trim(u8, command, " \t\n\r");
 
     // temporary disabled forbidden command
@@ -56,7 +56,7 @@ fn is_forbidden_command(command: []const u8) bool {
 
 pub fn execute_bash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
     // --- Forbidden pattern check ---
-    if (is_forbidden_command(input.command)) {
+    if (isForbiddenCommand(input.command)) {
         return error.CommandForbidden;
     }
 

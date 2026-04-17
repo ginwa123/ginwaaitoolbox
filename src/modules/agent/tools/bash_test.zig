@@ -12,7 +12,7 @@ test "bash execute helloworld" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer {
         allocator.free(r.stdout);
         allocator.free(r.stderr);
@@ -32,7 +32,7 @@ test "bash execute non-zero exit code" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -54,7 +54,7 @@ test "bash execute long command truncated in output" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -74,7 +74,7 @@ test "bash execute bun --version" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -93,7 +93,7 @@ test "bash execute python3 print" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -112,7 +112,7 @@ test "bash execute node --version" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -131,7 +131,7 @@ test "bash execute python error" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -150,7 +150,7 @@ test "bash execute sleep command" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -169,7 +169,7 @@ test "bash timeout test" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -188,7 +188,7 @@ test "bash timeout with python sleep" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -206,7 +206,7 @@ test "bash stdin closed" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -226,7 +226,7 @@ test "bash stdin with data" {
         .max_output = null,
         .stdin_data = "hello world",
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -245,7 +245,7 @@ test "bash pipe with multiple stages" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -266,7 +266,7 @@ test "bash pipe with slow producer respects timeout" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -287,7 +287,7 @@ test "bash timeout with complex pipe command" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -308,7 +308,7 @@ test "bash timeout with continuous output and pipe" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -328,7 +328,7 @@ test "bash timeout with stderr redirect and pipe" {
         .cwd = null,
         .max_output = null,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -346,7 +346,7 @@ test "bash background basic" {
         .cwd = "/tmp",
         .background = true,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -367,7 +367,7 @@ test "bash background log file" {
         .cwd = "/tmp",
         .background = true,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -398,7 +398,7 @@ test "bash background long running" {
         .cwd = "/tmp",
         .background = true,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -420,7 +420,7 @@ test "bash max_lines stdout truncation" {
         .max_output = null,
         .max_lines = 5,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -446,7 +446,7 @@ test "bash max_lines default is 1000" {
         .max_output = null,
         // max_lines not set - should default to 1000
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);
@@ -471,7 +471,7 @@ test "bash max_lines stderr truncation" {
         .max_output = null,
         .max_lines = 3,
     };
-    const r = try bashMod.executeBash(allocator, input);
+    const r = try bashMod.execute_bash(allocator, input);
     defer allocator.free(r.stdout);
     defer {
         allocator.free(r.stderr);

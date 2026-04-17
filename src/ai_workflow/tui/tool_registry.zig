@@ -276,7 +276,7 @@ pub fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
             \\<skill_name>{s}</skill_name>
             \\<removed>false</removed>
             \\<error>Unknown error</error>
-        , .{ parsed.value.skill_name });
+        , .{parsed.value.skill_name});
     };
 }
 
@@ -300,14 +300,14 @@ pub fn execAddSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
     };
     defer parsed.deinit();
 
-    return add_skill_mod.execute_add_skill_to_string(allocator, parsed.value) catch {
+    return add_skill_mod.executeAddSkillToString(allocator, parsed.value) catch {
         return try std.fmt.allocPrint(allocator,
             \\<skill>
             \\<name>{s}</name>
             \\<created>false</created>
             \\<error>Failed to add skill</error>
             \\</skill>
-        , .{ parsed.value.name });
+        , .{parsed.value.name});
     };
 }
 
@@ -331,14 +331,14 @@ pub fn execAddAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
     };
     defer parsed.deinit();
 
-    return add_agent_mod.execute_add_agent_to_string(allocator, parsed.value) catch {
+    return add_agent_mod.executeAddAgentToString(allocator, parsed.value) catch {
         return try std.fmt.allocPrint(allocator,
             \\<agent>
             \\<name>{s}</name>
             \\<created>false</created>
             \\<error>Failed to add agent</error>
             \\</agent>
-        , .{ parsed.value.name });
+        , .{parsed.value.name});
     };
 }
 
@@ -365,7 +365,7 @@ pub fn execRemoveAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
             \\<name>{s}</name>
             \\<removed>false</removed>
             \\<error>Failed to remove agent</error>
-        , .{ parsed.value.name });
+        , .{parsed.value.name});
     };
 }
 
@@ -426,7 +426,8 @@ pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch |err| {
-        return try std.fmt.allocPrint(allocator,
+        return try std.fmt.allocPrint(
+            allocator,
             "<error>Failed to parse lsp_definition arguments: {s}</error>",
             .{@errorName(err)},
         );
@@ -434,7 +435,8 @@ pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *
     defer parsed.deinit();
 
     const result = lsp_definition_mod.execute_lsp_definition(allocator, parsed.value) catch |err| {
-        return try std.fmt.allocPrint(allocator,
+        return try std.fmt.allocPrint(
+            allocator,
             "<error>Failed to get definition: {s}</error>",
             .{@errorName(err)},
         );

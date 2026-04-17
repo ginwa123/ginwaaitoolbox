@@ -1,5 +1,5 @@
 const std = @import("std");
-const formatter = @import("formatter.zig");
+const formatter = @import("Formatter.zig");
 const LogLevel = formatter.LogLevel;
 const LogEntry = formatter.LogEntry;
 const TextFormatter = formatter.TextFormatter;

@@ -66,10 +66,10 @@ pub const std_options: std.Options = .{
 
 // Module exports - these are available via @import("nalarcore")
 // it should import from folder modules only
-pub const agent = @import("modules/agent/agent.zig");
-pub const llm_models = @import("modules/agent/llm_models.zig");
-pub const prompt = @import("modules/agent/prompt.zig");
-pub const sqlite = @import("modules/databases/sqlite/sqlite.zig");
+pub const agent = @import("modules/agent/Agent.zig");
+pub const llm_models = @import("modules/agent/LLMModels.zig");
+pub const prompt = @import("modules/agent/prompts.zig");
+pub const sqlite = @import("modules/databases/sqlite/Sqlite.zig");
 pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const tool_models = @import("modules/agent/tools/schemas.zig");
 pub const lsp_types = @import("modules/agent/tools/lsp_types.zig");
@@ -84,19 +84,19 @@ pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 
 pub const set_agent_properties = @import("modules/agent/tools/set_agent_properties.zig");
 
-pub const http_server = @import("modules/http_server/http_server.zig");
-pub const http_client = @import("modules/http/http_client.zig");
-pub const logger = @import("modules/logger/logger.zig");
-pub const migrations = @import("modules/databases/sqlite/migrations.zig");
+pub const http_server = @import("modules/http_server/HttpServer.zig");
+pub const http_client = @import("modules/http/HttpClient.zig");
+pub const logger = @import("modules/logger/Logger.zig");
+pub const migrations = @import("modules/databases/sqlite/Migrations.zig");
 pub const ai_workflow = @import("ai_workflow/tui/workflow.zig");
-pub const session_monitor = @import("modules/session/session_monitor.zig");
+pub const session_monitor = @import("modules/session/SessionMonitor.zig");
 pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
 pub const skills = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const add_agent = @import("modules/agent/tools/add_agent.zig");
 pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");
 
-pub const config = @import("modules/config/config.zig");
+pub const config = @import("modules/config/Config.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");

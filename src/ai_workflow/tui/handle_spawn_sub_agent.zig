@@ -80,7 +80,7 @@ pub fn execute_sub_agent_tool(
     _ = model;
     _ = cwd;
     // Check if it's an MCP tool first (dynamic handling)
-    if (is_mcp_tool(config, tc.function.name)) {
+    if (isMcpTool(config, tc.function.name)) {
         if (logger) |log| {
             const mcp_result = try handle_mcp_tool.handle_mcp_tool_run(allocator, log, tc, config);
             return SubAgentToolResult{ .output = mcp_result };
@@ -131,7 +131,7 @@ pub fn execute_sub_agent_tool(
 }
 
 /// Check if a tool name is an MCP tool (format: serverName_toolName)
-fn is_mcp_tool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
+fn isMcpTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
     if (config.mcpServers == null) return false;
     // Tool names must start with "mcp_"
     if (!std.mem.startsWith(u8, tool_name, "mcp_")) return false;
@@ -204,7 +204,7 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 }
 
 /// Run a single sub-agent with basic tools (but no spawn_sub_agent or set_agent_properties)
-fn run_sub_agent(
+fn runSubAgent(
     parentAllocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
     db: *sqlite.SqliteBackend,
@@ -271,7 +271,7 @@ fn run_sub_agent(
         const allocator = arena_allocator.allocator();
 
         const skillContents = try BuildSkillContent(allocator, db, session_id);
-        const activity_info = try build_subagent_activity_info(allocator, db, session_id);
+        const activity_info = try buildSubagentActivityInfo(allocator, db, session_id);
         const systemPrompt = try prompt.build_agent_prompt(allocator, cwd, "", skillContents, "", "", "", sub_agent_tools, activity_info);
         // Note: Don't free activity_info - it's allocated from arena and will be freed automatically
 
@@ -506,7 +506,7 @@ fn runSubAgentThread(
 
     log.infoFmt("spawn_sub_agent[{s}]: registered as worker (session_id: {s})", .{ name, sessionId }) catch {};
 
-    const run_result = run_sub_agent(
+    const run_result = runSubAgent(
         thread_alloc,
         log,
         database,
@@ -618,6 +618,9 @@ pub fn handle_spawn_sub_agent_run(
         });
 
         thread.detach();
+
+        // Stagger thread spawning to avoid overwhelming the system
+        std.Thread.sleep(500 * std.time.ns_per_ms);
     }
 
     // Wait for all threads to finish by checking completion status
@@ -679,7 +682,7 @@ pub fn handle_spawn_sub_agent_run(
 /// Build activity info string for sub-agent prompts
 /// Uses session_registry as PRIMARY source, DB for enrichment
 /// Filters out current session to avoid self-reference
-fn build_subagent_activity_info(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
+fn buildSubagentActivityInfo(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
     const registry = session_registry.get_global_registry() orelse {
         return try allocator.dupe(u8, "");
     };
@@ -740,7 +743,7 @@ fn build_subagent_activity_info(allocator: std.mem.Allocator, db: *sqlite.Sqlite
                 const now: i64 = @intCast(std.time.timestamp());
                 const diff_secs = now - last_activity_secs;
                 try result.appendSlice(allocator, " | last activity: ");
-                try result.appendSlice(allocator, format_relative_time(diff_secs));
+                try result.appendSlice(allocator, formatRelativeTime(diff_secs));
                 if (last_activity_desc.len > 0) {
                     try result.appendSlice(allocator, " (");
                     try result.appendSlice(allocator, last_activity_desc);
@@ -759,7 +762,7 @@ fn build_subagent_activity_info(allocator: std.mem.Allocator, db: *sqlite.Sqlite
 }
 
 /// Format seconds into human-readable relative time
-fn format_relative_time(seconds: i64) []const u8 {
+fn formatRelativeTime(seconds: i64) []const u8 {
     if (seconds < 60) {
         return "< 1m";
     } else if (seconds < 3600) {

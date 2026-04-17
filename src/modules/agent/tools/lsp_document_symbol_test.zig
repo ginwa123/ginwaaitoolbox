@@ -183,7 +183,7 @@ test "lsp_document_symbol_tool has required parameters" {
 }
 
 // Test 3.1: Format found symbols
-test "lspDocumentSymbolToString formats found symbols" {
+test "lsp_document_symbol_to_string formats found symbols" {
     const allocator = std.testing.allocator;
 
     const symbols = try allocator.alloc(lsp_types.LspDocumentSymbol, 2);
@@ -218,7 +218,7 @@ test "lspDocumentSymbolToString formats found symbols" {
     };
     defer output.deinit(allocator);
 
-    const result = try lsp_document_symbol.lspDocumentSymbolToString(allocator, output);
+    const result = try lsp_document_symbol.lsp_document_symbol_to_string(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "<found>true</found>") != null);
@@ -233,7 +233,7 @@ test "lspDocumentSymbolToString formats found symbols" {
 }
 
 // Test 3.2: Format not found
-test "lspDocumentSymbolToString formats not found" {
+test "lsp_document_symbol_to_string formats not found" {
     const allocator = std.testing.allocator;
 
     const output = lsp_types.LspDocumentSymbolOutput{
@@ -241,18 +241,18 @@ test "lspDocumentSymbolToString formats not found" {
         .found = false,
     };
 
-    const result = try lsp_document_symbol.lspDocumentSymbolToString(allocator, output);
+    const result = try lsp_document_symbol.lsp_document_symbol_to_string(allocator, output);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.eql(u8, result, "<found>false</found>"));
 }
 
-// Test 4.1: createMessage helper
-test "createMessage creates valid LSP message" {
+// Test 4.1: create_message helper
+test "create_message creates valid LSP message" {
     const allocator = std.testing.allocator;
 
     const content = "{\"jsonrpc\":\"2.0\",\"id\":1}";
-    const msg = try lsp_document_symbol.createMessage(allocator, content);
+    const msg = try lsp_document_symbol.create_message(allocator, content);
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.startsWith(u8, msg, "Content-Length: "));
@@ -261,7 +261,7 @@ test "createMessage creates valid LSP message" {
 }
 
 // Test 5.1: Non-existent file
-test "executeLspDocumentSymbol returns error for non-existent file" {
+test "execute_lsp_document_symbol returns error for non-existent file" {
     const allocator = std.testing.allocator;
     const input = lsp_types.LspDocumentSymbolInput{
         .lsp = "zls",
@@ -270,6 +270,6 @@ test "executeLspDocumentSymbol returns error for non-existent file" {
         .max_output = 100,
     };
 
-    const result = lsp_document_symbol.executeLspDocumentSymbol(allocator, input);
+    const result = lsp_document_symbol.execute_lsp_document_symbol(allocator, input);
     try std.testing.expectError(error.FileNotFound, result);
 }

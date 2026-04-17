@@ -2,17 +2,17 @@ const std = @import("std");
 const builtin = @import("builtin");
 const skills = @import("skills.zig");
 
-test "loadSkillsFromPath returns empty string for missing file" {
+test "load_skills_from_path returns empty string for missing file" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const result = skills.loadSkillsFromPath(allocator, "nonexistent/path/skills.md");
+    const result = skills.load_skills_from_path(allocator, "nonexistent/path/skills.md");
     defer allocator.free(result);
 
     try testing.expectEqualStrings("", result);
 }
 
-test "loadSkillsFromPath loads valid file" {
+test "load_skills_from_path loads valid file" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -29,13 +29,13 @@ test "loadSkillsFromPath loads valid file" {
 
     try test_file.writeAll(test_content);
 
-    const result = skills.loadSkillsFromPath(allocator, "test_skills_temp.md");
+    const result = skills.load_skills_from_path(allocator, "test_skills_temp.md");
     defer allocator.free(result);
 
     try testing.expectEqualStrings(test_content, result);
 }
 
-test "loadSkillsFromPath returns empty string for empty file" {
+test "load_skills_from_path returns empty string for empty file" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -49,13 +49,13 @@ test "loadSkillsFromPath returns empty string for empty file" {
         std.fs.cwd().deleteFile("test_skills_empty.md") catch {};
     }
 
-    const result = skills.loadSkillsFromPath(allocator, "test_skills_empty.md");
+    const result = skills.load_skills_from_path(allocator, "test_skills_empty.md");
     defer allocator.free(result);
 
     try testing.expectEqualStrings("", result);
 }
 
-test "loadSkillsFromPath returns empty string for whitespace-only file" {
+test "load_skills_from_path returns empty string for whitespace-only file" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -71,7 +71,7 @@ test "loadSkillsFromPath returns empty string for whitespace-only file" {
 
     try test_file.writeAll("   \n\t\n   ");
 
-    const result = skills.loadSkillsFromPath(allocator, "test_skills_whitespace.md");
+    const result = skills.load_skills_from_path(allocator, "test_skills_whitespace.md");
     defer allocator.free(result);
 
     try testing.expectEqualStrings("", result);
@@ -105,7 +105,7 @@ test "parseYamlFrontmatter extracts name and description with quotes" {
     }
     try test_file.writeAll(test_content);
 
-    const content = skills.loadSkillsFromPath(allocator, "test_fm_quoted.md");
+    const content = skills.load_skills_from_path(allocator, "test_fm_quoted.md");
     defer allocator.free(content);
 
     // We can't directly test parseYamlFrontmatter since it's private, but we can test via listSkillsFromDir
@@ -135,7 +135,7 @@ test "parseYamlFrontmatter handles unquoted values" {
     }
     try test_file.writeAll(test_content);
 
-    const content = skills.loadSkillsFromPath(allocator, "test_fm_unquoted.md");
+    const content = skills.load_skills_from_path(allocator, "test_fm_unquoted.md");
     defer allocator.free(content);
 
     try testing.expect(content.len > 0);
@@ -145,11 +145,11 @@ test "parseYamlFrontmatter handles unquoted values" {
 // Tests for path resolution functions
 // ============================================
 
-test "getLocalSkillsPath returns a valid path structure" {
+test "get_local_skills_path returns a valid path structure" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const path = skills.getLocalSkillsPath(allocator);
+    const path = skills.get_local_skills_path(allocator);
     if (path) |p| {
         defer allocator.free(p);
 
@@ -159,11 +159,11 @@ test "getLocalSkillsPath returns a valid path structure" {
     }
 }
 
-test "getGlobalSkillsPath returns XDG-compliant path" {
+test "get_global_skills_path returns XDG-compliant path" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const path = skills.getGlobalSkillsPath(allocator);
+    const path = skills.get_global_skills_path(allocator);
     if (path) |p| {
         defer allocator.free(p);
 
@@ -180,13 +180,13 @@ test "getGlobalSkillsPath returns XDG-compliant path" {
     }
 }
 
-test "resolveSkillsPath returns null when no skills directory exists" {
+test "resolve_skills_path returns null when no skills directory exists" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
     // This test assumes no skills directory exists in default locations
     // The function should return null gracefully
-    const path = skills.resolveSkillsPath(allocator);
+    const path = skills.resolve_skills_path(allocator);
     if (path) |p| {
         defer allocator.free(p);
         // If a path was returned, the directory should exist
@@ -196,22 +196,22 @@ test "resolveSkillsPath returns null when no skills directory exists" {
     }
 }
 
-test "freeSkillsPath works correctly" {
+test "free_skills_path works correctly" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    const path = skills.getLocalSkillsPath(allocator);
+    const path = skills.get_local_skills_path(allocator);
     if (path) |p| {
-        skills.freeSkillsPath(allocator, p);
+        skills.free_skills_path(allocator, p);
         // If we get here without crashing, the test passes
     }
 }
 
 // ============================================
-// Tests for parseSkill with YAML frontmatter
+// Tests for parse_skill with YAML frontmatter
 // ============================================
 
-test "parseSkill returns skill content for valid skill name" {
+test "parse_skill returns skill content for valid skill name" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -251,7 +251,7 @@ test "parseSkill returns skill content for valid skill name" {
 
     try file1.writeAll(skill_content);
 
-    const result = skills.parseSkill(allocator, "test_skill");
+    const result = skills.parse_skill(allocator, "test_skill");
     defer if (result) |r| allocator.free(r);
 
     try testing.expect(result != null);
@@ -259,7 +259,7 @@ test "parseSkill returns skill content for valid skill name" {
     try testing.expect(std.mem.indexOf(u8, result.?, "Test Skill") != null);
 }
 
-test "parseSkill returns null for invalid skill name" {
+test "parse_skill returns null for invalid skill name" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -298,7 +298,7 @@ test "parseSkill returns null for invalid skill name" {
 
     try file1.writeAll(skill_content);
 
-    const result = skills.parseSkill(allocator, "nonexistent_skill");
+    const result = skills.parse_skill(allocator, "nonexistent_skill");
 
     try testing.expect(result == null);
 }
@@ -403,7 +403,7 @@ test "executeGetSkill returns skill content for valid skill" {
         .skill_name = "debugging",
     };
 
-    const result = try get_skill.executeGetSkillToString(allocator, input);
+    const result = try get_skill.execute_get_skill_to_string(allocator, input);
     defer allocator.free(result);
 
     // Verify XML structure
@@ -455,7 +455,7 @@ test "executeGetSkillToString returns error for invalid skill" {
         .skill_name = "nonexistent_skill",
     };
 
-    const result = try get_skill.executeGetSkillToString(allocator, input);
+    const result = try get_skill.execute_get_skill_to_string(allocator, input);
     defer allocator.free(result);
 
     // Verify XML structure for error case

@@ -1,5 +1,5 @@
 const std = @import("std");
-const logger = @import("logger.zig");
+const logger = @import("Logger.zig");
 const Logger = logger.Logger;
 const LoggerConfig = logger.LoggerConfig;
 

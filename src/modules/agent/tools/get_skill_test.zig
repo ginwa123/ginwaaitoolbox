@@ -49,7 +49,7 @@ test "GetSkillInput default values" {
     try std.testing.expect(input.path == null);
 }
 
-test "executeGetSkillToString with path loads from file" {
+test "execute_get_skill_to_string with path loads from file" {
     const allocator = std.testing.allocator;
 
     // Create a temporary test file
@@ -68,7 +68,7 @@ test "executeGetSkillToString with path loads from file" {
         .skill_name = null,
     };
 
-    const result = try get_skill.executeGetSkillToString(allocator, input);
+    const result = try get_skill.execute_get_skill_to_string(allocator, input);
     defer allocator.free(result);
 
     // Verify result contains skill content
@@ -77,7 +77,7 @@ test "executeGetSkillToString with path loads from file" {
     try std.testing.expect(std.mem.indexOf(u8, result, "<loaded>true</loaded>") != null);
 }
 
-test "executeGetSkillToString with invalid path returns error" {
+test "execute_get_skill_to_string with invalid path returns error" {
     const allocator = std.testing.allocator;
 
     const input = GetSkillInput{
@@ -85,7 +85,7 @@ test "executeGetSkillToString with invalid path returns error" {
         .skill_name = null,
     };
 
-    const result = try get_skill.executeGetSkillToString(allocator, input);
+    const result = try get_skill.execute_get_skill_to_string(allocator, input);
     defer allocator.free(result);
 
     // Verify result contains error
@@ -93,7 +93,7 @@ test "executeGetSkillToString with invalid path returns error" {
     try std.testing.expect(std.mem.indexOf(u8, result, "Failed to open file") != null);
 }
 
-test "executeGetSkillToString with non-existent skill_name lists available" {
+test "execute_get_skill_to_string with non-existent skill_name lists available" {
     const allocator = std.testing.allocator;
 
     const input = GetSkillInput{
@@ -101,7 +101,7 @@ test "executeGetSkillToString with non-existent skill_name lists available" {
         .path = null,
     };
 
-    const result = try get_skill.executeGetSkillToString(allocator, input);
+    const result = try get_skill.execute_get_skill_to_string(allocator, input);
     defer allocator.free(result);
 
     // Verify result contains error and available skills
@@ -110,11 +110,11 @@ test "executeGetSkillToString with non-existent skill_name lists available" {
     try std.testing.expect(std.mem.indexOf(u8, result, "<available_skills>") != null);
 }
 
-test "executeGetSkillToString with no input returns error" {
+test "execute_get_skill_to_string with no input returns error" {
     const allocator = std.testing.allocator;
 
     const input = GetSkillInput{};
 
-    const result = get_skill.executeGetSkillToString(allocator, input);
+    const result = get_skill.execute_get_skill_to_string(allocator, input);
     try std.testing.expectError(error.InvalidInput, result);
 }

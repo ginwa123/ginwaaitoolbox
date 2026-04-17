@@ -37,7 +37,7 @@ pub const TextReplaceResult = struct {
 };
 
 /// Normalize CRLF (\r\n) to LF (\n), always returns a new allocation
-fn normalize_line_endings(allocator: std.mem.Allocator, content: []u8) ![]u8 {
+fn normalizeLineEndings(allocator: std.mem.Allocator, content: []u8) ![]u8 {
     if (std.mem.indexOf(u8, content, "\r\n") == null) {
         // No CRLF found — still allocate so caller always owns the result
         return try allocator.dupe(u8, content);
@@ -63,7 +63,7 @@ fn normalize_line_endings(allocator: std.mem.Allocator, content: []u8) ![]u8 {
 }
 
 /// Strip trailing whitespace from each line, returns new allocation if needed
-fn strip_trailing_whitespace(allocator: std.mem.Allocator, content: []u8, had_crlf: bool) ![]u8 {
+fn stripTrailingWhitespace(allocator: std.mem.Allocator, content: []u8, had_crlf: bool) ![]u8 {
     const newline_char: u8 = if (had_crlf) '\r' else '\n';
     const newline: []const u8 = if (had_crlf) "\r\n" else "\n";
 
@@ -122,7 +122,7 @@ fn strip_trailing_whitespace(allocator: std.mem.Allocator, content: []u8, had_cr
 }
 
 /// Convert LF to CRLF
-fn lf_to_crlf(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+fn lfToCrlf(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     if (std.mem.indexOf(u8, content, "\n") == null) {
         return try allocator.dupe(u8, content);
     }
@@ -161,7 +161,7 @@ pub fn text_replace(
     // Detect and normalize line endings (CRLF -> LF)
     const had_crlf = std.mem.indexOf(u8, raw, "\r\n") != null;
     if (had_crlf) {
-        const normalized = try normalize_line_endings(allocator, raw);
+        const normalized = try normalizeLineEndings(allocator, raw);
         allocator.free(raw);
         raw = normalized;
     }
@@ -169,7 +169,7 @@ pub fn text_replace(
     // Find first occurrence
     const first = std.mem.indexOf(u8, raw, old_str) orelse {
         // Detailed diagnostic for "not found" — attempt to help user understand why
-        _ = strip_trailing_whitespace(allocator, raw, had_crlf) catch raw;
+        _ = stripTrailingWhitespace(allocator, raw, had_crlf) catch raw;
         return TextReplaceError.OldStrNotFound;
     };
 
@@ -192,7 +192,7 @@ pub fn text_replace(
     const new_str_ends_with_newline = new_str.len > 0 and new_str[new_str.len - 1] == '\n';
 
     if (had_crlf and new_str_ends_with_newline and !old_str_ends_with_newline) {
-        const new_str_crlf = try lf_to_crlf(allocator, new_str);
+        const new_str_crlf = try lfToCrlf(allocator, new_str);
         defer allocator.free(new_str_crlf);
         try content.appendSlice(allocator, new_str_crlf);
     } else {

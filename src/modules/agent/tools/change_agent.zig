@@ -231,12 +231,12 @@ pub fn parse_change_agent_input(allocator: std.mem.Allocator, json_str: []const 
 pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, input: ChangeAgentInput) ![]const u8 {
     // Check if path is provided - load from file
     if (input.path) |path| {
-        return load_agent_from_path(allocator, path);
+        return loadAgentFromPath(allocator, path);
     }
 
     // Otherwise try to parse by agent name
     if (input.agent_name) |agent_name| {
-        return load_agent_by_name(allocator, agent_name);
+        return loadAgentByName(allocator, agent_name);
     }
 
     // No agent_name or path provided
@@ -244,7 +244,7 @@ pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, input: Chang
 }
 
 /// Load agent from absolute file path
-fn load_agent_from_path(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const file = std.fs.openFileAbsolute(path, .{}) catch {
         const result = try std.fmt.allocPrint(allocator,
             \\<agent>
@@ -287,7 +287,7 @@ fn load_agent_from_path(allocator: std.mem.Allocator, path: []const u8) ![]const
 }
 
 /// Load agent by name from built-in agents
-fn load_agent_by_name(allocator: std.mem.Allocator, agent_name: []const u8) ![]const u8 {
+fn loadAgentByName(allocator: std.mem.Allocator, agent_name: []const u8) ![]const u8 {
     // Try to parse the agent
     if (agents.parse_agent(allocator, agent_name)) |content| {
         defer allocator.free(content);

@@ -115,13 +115,13 @@ pub fn parse_sub_agents(
 
     // Try to get sub_agents - either directly from root or from json_input field
     if (root_obj.get("sub_agents")) |_| {
-        return parse_sub_agents_from_value(allocator, root_obj, max_agents);
+        return parseSubAgentsFromValue(allocator, root_obj, max_agents);
     } else {
         // Check if json_input is present
         if (root_obj.get("json_input")) |json_input_val| {
             // Case 1: json_input is an object (LLM mistake) containing sub_agents
             if (json_input_val == .object) {
-                return parse_sub_agents_from_value(allocator, json_input_val.object, max_agents);
+                return parseSubAgentsFromValue(allocator, json_input_val.object, max_agents);
             }
             // Case 2: json_input is a string (correct format) - parse it recursively
             if (json_input_val == .string) {
@@ -134,7 +134,7 @@ pub fn parse_sub_agents(
 }
 
 /// Parse sub_agents from an already-parsed object
-fn parse_sub_agents_from_value(
+fn parseSubAgentsFromValue(
     allocator: std.mem.Allocator,
     root_obj: std.json.ObjectMap,
     max_agents: usize,

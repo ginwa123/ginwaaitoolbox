@@ -165,7 +165,7 @@ test "lsp_references_tool has description mentioning textDocument/references" {
 // =============================================================================
 
 // Test 3.1: Format found single reference
-test "lspReferencesToString formats found reference" {
+test "lsp_references_to_string formats found reference" {
     const allocator = std.testing.allocator;
 
     const references = try allocator.alloc(lsp_types.LspLocation, 1);
@@ -184,7 +184,7 @@ test "lspReferencesToString formats found reference" {
         allocator.free(output.definitions);
     }
 
-    const str = try lsp_references.lspReferencesToString(allocator, output);
+    const str = try lsp_references.lsp_references_to_string(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>true</found>"));
@@ -200,21 +200,21 @@ test "lspReferencesToString formats found reference" {
 }
 
 // Test 3.2: Format not found
-test "lspReferencesToString formats not found" {
+test "lsp_references_to_string formats not found" {
     const allocator = std.testing.allocator;
     const output = lsp_types.LspReferencesOutput{
         .definitions = &.{},
         .found = false,
     };
 
-    const str = try lsp_references.lspReferencesToString(allocator, output);
+    const str = try lsp_references.lsp_references_to_string(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>false</found>"));
 }
 
 // Test 3.3: Format multiple references
-test "lspReferencesToString formats multiple references" {
+test "lsp_references_to_string formats multiple references" {
     const allocator = std.testing.allocator;
 
     const references = try allocator.alloc(lsp_types.LspLocation, 2);
@@ -240,7 +240,7 @@ test "lspReferencesToString formats multiple references" {
         allocator.free(output.definitions);
     }
 
-    const str = try lsp_references.lspReferencesToString(allocator, output);
+    const str = try lsp_references.lsp_references_to_string(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<found>true</found>"));
@@ -251,7 +251,7 @@ test "lspReferencesToString formats multiple references" {
 }
 
 // Test 3.4: Format with end_line and end_character
-test "lspReferencesToString includes end positions when present" {
+test "lsp_references_to_string includes end positions when present" {
     const allocator = std.testing.allocator;
 
     const references = try allocator.alloc(lsp_types.LspLocation, 1);
@@ -272,19 +272,19 @@ test "lspReferencesToString includes end positions when present" {
         allocator.free(output.definitions);
     }
 
-    const str = try lsp_references.lspReferencesToString(allocator, output);
+    const str = try lsp_references.lsp_references_to_string(allocator, output);
     defer allocator.free(str);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<end_line>15</end_line>"));
     try std.testing.expect(std.mem.containsAtLeast(u8, str, 1, "<end_character>20</end_character>"));
 }
 
-// Test 3.5: createMessage helper
-test "createMessage formats Content-Length header" {
+// Test 3.5: create_message helper
+test "create_message formats Content-Length header" {
     const allocator = std.testing.allocator;
     const content = "{\"jsonrpc\":\"2.0\"}";
 
-    const msg = try lsp_references.createMessage(allocator, content);
+    const msg = try lsp_references.create_message(allocator, content);
     defer allocator.free(msg);
 
     try std.testing.expect(std.mem.startsWith(u8, msg, "Content-Length:"));
@@ -297,7 +297,7 @@ test "createMessage formats Content-Length header" {
 // =============================================================================
 
 // Test 4.1: Non-existent file returns FileNotFound
-test "executeLspReferences returns error for non-existent file" {
+test "execute_lsp_references returns error for non-existent file" {
     const allocator = std.testing.allocator;
     const input = lsp_types.LspReferencesInput{
         .lsp = "zls",
@@ -308,7 +308,7 @@ test "executeLspReferences returns error for non-existent file" {
         .include_declaration = true,
     };
 
-    const result = lsp_references.executeLspReferences(allocator, input);
+    const result = lsp_references.execute_lsp_references(allocator, input);
     try std.testing.expectError(error.FileNotFound, result);
 }
 
@@ -366,7 +366,7 @@ test "integration: lsp_references finds references in real Zig file" {
         .include_declaration = true,
     };
 
-    const output = lsp_references.executeLspReferences(allocator, input) catch |e| {
+    const output = lsp_references.execute_lsp_references(allocator, input) catch |e| {
         if (e == error.BinaryNotFound) {
             std.debug.print("Skipping integration test - zls not found\n", .{});
             return;
@@ -438,7 +438,7 @@ test "integration: lsp_references respects include_declaration=false" {
         .include_declaration = false, // Exclude declaration
     };
 
-    const output = lsp_references.executeLspReferences(allocator, input) catch |e| {
+    const output = lsp_references.execute_lsp_references(allocator, input) catch |e| {
         if (e == error.BinaryNotFound) {
             std.debug.print("Skipping integration test - zls not found\n", .{});
             return;

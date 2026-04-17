@@ -1,7 +1,7 @@
 const std = @import("std");
-const timing = @import("timing.zig");
-const request_id = @import("request_id.zig");
-const formatter = @import("formatter.zig");
+const timing = @import("Timing.zig");
+const request_id = @import("RequestId.zig");
+const formatter = @import("Formatter.zig");
 
 /// Re-export types from formatter module
 pub const LogLevel = formatter.LogLevel;

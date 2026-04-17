@@ -1,6 +1,6 @@
 # AGENT.md — Project Summary
 
-> **Last Updated:** 2025-04-16
+> **Last Updated:** 2025-04-17
 > **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
 
 ---
@@ -58,9 +58,10 @@ src/
 │   └── mod.zig                    # XML parsing utilities
 ├── modules/
 │   ├── agent/                     # AI agent core
-│   │   ├── agent.zig              # Agent orchestration
-│   │   ├── prompt.zig             # Prompt building
-│   │   ├── prompts/               # Modular prompts
+│   │   ├── Agent.zig             # Agent orchestration (type)
+│   │   ├── LLMModels.zig         # LLM model definitions (type)
+│   │   ├── prompts.zig           # Prompt building (namespace)
+│   │   ├── prompts/               # Modular prompts (all namespaces)
 │   │   │   ├── core.zig           # Universal rules
 │   │   │   ├── agent.zig          # Main directive
 │   │   │   ├── parallel.zig       # Parallel work rules
@@ -69,7 +70,8 @@ src/
 │   │   │   ├── subagent.zig       # Sub-agent brief
 │   │   │   ├── execution.zig      # Classification/execution
 │   │   │   ├── memory.zig         # Tasks, AGENTS.md, git
-│   │   │   └── special.zig         # CompactionAgent, DestroyIdea
+│   │   │   ├── special.zig        # CompactionAgent, DestroyIdea
+│   │   │   └── prompts.zig        # Re-exports
 │   │   ├── tools/                 # Agent tools (35+)
 │   │   │   ├── bash.zig           # Shell execution
 │   │   │   ├── read_file.zig      # File reading
@@ -95,25 +97,33 @@ src/
 │   │   │   ├── loop_detector.zig   # Prevent infinite loops
 │   │   │   └── bash_selfkill.zig  # Block self-kill commands
 │   │   └── mcp/                    # MCP protocol support
-│   ├── config/                     # LLM configuration
+│   ├── config/
+│   │   └── Config.zig              # LLM configuration (type)
 │   ├── databases/
-│   │   ├── database.zig            # DB abstraction
-│   │   └── sqlite/                 # SQLite implementation
-│   │       ├── sqlite.zig
-│   │       └── migrations.zig
-│   ├── http/                       # HTTP client
-│   ├── http_server/                # HTTP server
-│   │   ├── http_server.zig         # Router + handlers
-│   │   └── sse_manager.zig         # SSE streaming
-│   ├── ipc/                        # IPC (XML format)
-│   ├── logger/                     # Structured logging
-│   │   ├── logger.zig
-│   │   ├── formatter.zig
-│   │   ├── request_id.zig
-│   │   └── timing.zig
-│   ├── session/                    # Session management
-│   │   └── session_monitor.zig
-│   └── cronjob/                    # Background scheduler
+│   │   ├── database.zig            # DB abstraction (placeholder)
+│   │   └── sqlite/
+│   │       ├── Sqlite.zig           # SQLite implementation (type)
+│   │       └── Migrations.zig      # Database migrations (type)
+│   ├── http/
+│   │   └── HttpClient.zig          # HTTP client (type)
+│   ├── http_server/
+│   │   ├── HttpServer.zig          # Router + handlers (type)
+│   │   └── SseManager.zig          # SSE streaming (type)
+│   ├── ipc/
+│   │   └── Ipc.zig                 # IPC (XML format) (type)
+│   ├── logger/
+│   │   ├── Logger.zig              # Main logger (type)
+│   │   ├── Formatter.zig           # Log formatters (type)
+│   │   ├── RequestId.zig           # Request ID generation (type)
+│   │   └── Timing.zig              # Timing utilities (type)
+│   ├── session/
+│   │   ├── mod.zig                 # Re-exports (namespace)
+│   │   ├── SessionMonitor.zig       # Session monitoring (type)
+│   │   └── SessionRegistry.zig      # Session registry (type)
+│   └── cronjob/
+│       ├── mod.zig                 # Re-exports (namespace)
+│       ├── Cronjob.zig             # Cronjob scheduler (type)
+│       └── ProcessChecker.zig       # Process checking (type)
 ├── ai_workflow/tui/                # TUI workflow orchestration
 │   ├── workflow.zig                # Main workflow
 │   ├── http_handlers.zig           # REST handlers
@@ -215,7 +225,14 @@ Just use it - read the file first to see its current content.
 ## Important Conventions
 
 - **Max lines per file:** 400 lines — split larger files
-- **Naming:** snake_case (vars/functions), PascalCase (structs/types)
+- **Zig Naming Convention:**
+  - `camelCaseFunctionName` — callable functions
+  - `TitleCaseTypeName` — types, type aliases, structs with fields, callable that returns `type`
+  - `snake_case_variable_name` — variables, constants, namespaces (structs with 0 fields, never instantiated)
+  - **Acronyms/initialisms** (e.g., XML, HTTP, URL) follow standard conventions like any other word
+  - **File names:** `TitleCase.zig` if struct has fields, `snake_case.zig` otherwise
+  - **Directory names:** `snake_case`
+  - Established conventions (e.g., ENOENT) take precedence
 - `ArrayList.empty` replaces `ArrayList.init` (Zig 0.15)
 - `ArrayList.deinit(allocator)` — allocator required
 - Never return stack-allocated slices from functions

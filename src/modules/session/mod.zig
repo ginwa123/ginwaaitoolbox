@@ -1,1 +1,1 @@
-pub const session_registry = @import("session_registry.zig");
+pub const session_registry = @import("SessionRegistry.zig");

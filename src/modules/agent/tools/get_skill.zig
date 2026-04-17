@@ -53,12 +53,12 @@ pub const get_skill_tool = AgentTool{
 pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, input: GetSkillInput) ![]const u8 {
     // Check if path is provided - load from file
     if (input.path) |path| {
-        return load_skill_from_path(allocator, path);
+        return loadSkillFromPath(allocator, path);
     }
 
     // Otherwise try to parse by skill name
     if (input.skill_name) |skill_name| {
-        return load_skill_by_name(allocator, skill_name);
+        return loadSkillByName(allocator, skill_name);
     }
 
     // No skill_name or path provided
@@ -66,7 +66,7 @@ pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, input: GetSkill
 }
 
 /// Load skill from absolute file path
-fn load_skill_from_path(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+fn loadSkillFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const file = std.fs.openFileAbsolute(path, .{}) catch {
         const result = try std.fmt.allocPrint(allocator,
             \\<skill_name></skill_name>
@@ -103,7 +103,7 @@ fn load_skill_from_path(allocator: std.mem.Allocator, path: []const u8) ![]const
 }
 
 /// Load skill by name from built-in skills
-fn load_skill_by_name(allocator: std.mem.Allocator, skill_name: []const u8) ![]const u8 {
+fn loadSkillByName(allocator: std.mem.Allocator, skill_name: []const u8) ![]const u8 {
     // Try to parse the skill
     if (skills.parse_skill(allocator, skill_name)) |content| {
         defer allocator.free(content);

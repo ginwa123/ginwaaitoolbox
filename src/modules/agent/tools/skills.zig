@@ -45,7 +45,7 @@ pub const ParsedFrontmatter = struct {
 ///
 /// Returns allocated ParsedFrontmatter with owned name and description strings
 /// Caller owns the returned memory and must free name and description.
-fn parse_yaml_frontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
+fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
     // Find the first --- marker
     const first_newline = std.mem.indexOf(u8, content, "\n") orelse return null;
     const after_first_line = content[first_newline + 1 ..];
@@ -98,8 +98,8 @@ fn parse_yaml_frontmatter(allocator: std.mem.Allocator, content: []const u8) ?Pa
     };
 }
 
-/// Free a ParsedFrontmatter allocated by parse_yaml_frontmatter
-fn free_parsed_frontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) void {
+/// Free a ParsedFrontmatter allocated by parseYamlFrontmatter
+fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) void {
     allocator.free(fm.name);
     allocator.free(fm.description);
 }
@@ -373,8 +373,8 @@ pub fn parse_skill_from_dir(allocator: std.mem.Allocator, skill_name: []const u8
             continue;
         }
 
-        if (parse_yaml_frontmatter(allocator, content)) |parsed| {
-            defer free_parsed_frontmatter(allocator, parsed);
+        if (parseYamlFrontmatter(allocator, content)) |parsed| {
+            defer freeParsedFrontmatter(allocator, parsed);
             if (std.mem.eql(u8, parsed.name, skill_name)) {
                 // Return the full content (including frontmatter)
                 return content;
@@ -413,12 +413,12 @@ pub fn list_skills_from_dir(allocator: std.mem.Allocator) []SkillInfo {
             continue;
         }
 
-        if (parse_yaml_frontmatter(allocator, content)) |parsed| {
+        if (parseYamlFrontmatter(allocator, content)) |parsed| {
             skills_list.append(allocator, .{
                 .name = parsed.name,
                 .description = parsed.description,
             }) catch {
-                free_parsed_frontmatter(allocator, parsed);
+                freeParsedFrontmatter(allocator, parsed);
                 allocator.free(content);
                 continue;
             };

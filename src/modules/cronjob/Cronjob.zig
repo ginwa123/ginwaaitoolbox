@@ -1,6 +1,6 @@
 const std = @import("std");
-const process_checker = @import("process_checker.zig");
-const sqlite = @import("../databases/sqlite/sqlite.zig");
+const process_checker = @import("ProcessChecker.zig");
+const sqlite = @import("../databases/sqlite/Sqlite.zig");
 
 /// Cronjob configuration
 pub const CronjobConfig = struct {
@@ -246,5 +246,5 @@ pub fn cleanupOldProcesses(allocator: std.mem.Allocator, db_path: []const u8, ol
 }
 
 test {
-    _ = @import("process_checker.zig");
+    _ = @import("ProcessChecker.zig");
 }
