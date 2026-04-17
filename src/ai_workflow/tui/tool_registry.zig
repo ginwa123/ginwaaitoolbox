@@ -3,6 +3,8 @@ const root_mod = @import("nalarcore");
 const agent = root_mod.agent;
 const tool_models = root_mod.tool_models;
 const sqlite = root_mod.sqlite;
+const logger_mod = root_mod.logger;
+const config_mod = root_mod.config;
 const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
 
 // Tool imports for exec functions and tool_defs
@@ -35,20 +37,39 @@ const background_process = @import("background_process.zig");
 // CODE EXEC TOOL TYPES AND FUNCTIONS
 // ============================================================================
 
-/// Function signature for sub-agent tool executors
-pub const SubAgentToolExec = *const fn (
+/// Context passed to all tool handlers (shared between tool_registry and handle_tool)
+pub const ToolExecContext = struct {
     allocator: std.mem.Allocator,
-    tc: agent.ToolCall,
     db: *sqlite.SqliteBackend,
+    logger: *logger_mod.Logger,
     session_id: []const u8,
-) anyerror![]const u8;
+    model: []const u8,
+    cwd: []const u8,
+    api_key: []const u8,
+    base_url: []const u8,
+    config: *const config_mod.LlmConfig,
+    agent_temperature: *f32,
+    is_thinking: *bool,
+};
 
-/// Tool execution result with optional auto-save metadata
-pub const SubAgentToolResult = struct {
+/// Tool execution result with optional agent state changes
+pub const ToolExecResult = struct {
     output: []const u8,
+    temperature: ?f32 = null,
+    is_thinking: ?bool = null,
     skill_save: ?SkillSaveInfo = null,
     agent_save: ?AgentSaveInfo = null,
 };
+
+/// Legacy alias for backward compatibility
+pub const SubAgentToolResult = ToolExecResult;
+
+/// Function signature for tool executors
+/// Takes full context to enable tools like set_agent_properties and spawn_sub_agent
+pub const ToolExecFunc = *const fn (ctx: ToolExecContext, tc: agent.ToolCall) anyerror!ToolExecResult;
+
+/// Legacy alias for backward compatibility
+pub const SubAgentToolExec = ToolExecFunc;
 
 pub const SkillSaveInfo = struct {
     name: []const u8,
@@ -129,19 +150,21 @@ pub fn runWithContext(
     return res_bash;
 }
 
-// Individual tool executors
-pub fn execBash(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    return runWithContext(allocator, tc, db, session_id);
+// Individual tool executors - all use unified ToolExecFunc signature
+
+pub fn execBash(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const output = try runWithContext(ctx.allocator, tc, ctx.db, ctx.session_id);
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
+pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    _ = ctx.db;
+    _ = ctx.session_id;
 
     // Parse arguments JSON to ReadFileInput
     const parsed = try std.json.parseFromSlice(
         tool_models.ReadFileInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     );
@@ -153,31 +176,30 @@ pub fn execReadFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlit
         .show_line_numbers = parsed.value.show_line_numbers,
     };
 
-    const read_result = try read_file_mod.read_file(allocator, parsed.value.path, read_opts);
-    defer read_result.deinit(allocator);
+    const read_result = try read_file_mod.read_file(ctx.allocator, parsed.value.path, read_opts);
+    defer read_result.deinit(ctx.allocator);
 
     // Single allocation: combines path and content into XML result
-    return try read_file_mod.to_xml(allocator, read_result, parsed.value.path);
+    const output = try read_file_mod.to_xml(ctx.allocator, read_result, parsed.value.path);
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // Check for empty arguments first
     if (tc.function.arguments.len == 0) {
-        return try std.fmt.allocPrint(allocator,
+        const output = try std.fmt.allocPrint(ctx.allocator,
             \\<error>text_replace failed: Missing arguments (empty JSON)</error>
             \\<path></path>
             \\<old_str></old_str>
             \\<new_str></new_str>
             \\<success>false</success>
         , .{});
+        return ToolExecResult{ .output = output };
     }
 
     const parsed = std.json.parseFromSlice(
         text_replace_mod.TextReplaceInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch |err| {
@@ -185,215 +207,210 @@ pub fn execTextReplace(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
             error.UnexpectedEndOfInput => "text_replace failed: UnexpectedEndOfInput - arguments may be incomplete or malformed",
             else => "text_replace failed: Invalid JSON arguments",
         };
-        return try std.fmt.allocPrint(allocator,
+        const output = try std.fmt.allocPrint(ctx.allocator,
             \\<error>{s}</error>
             \\<path></path>
             \\<old_str></old_str>
             \\<new_str></new_str>
             \\<success>false</success>
         , .{err_msg});
+        return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
     const result = try text_replace_mod.text_replace(
-        allocator,
+        ctx.allocator,
         parsed.value.path,
         parsed.value.old_str,
         parsed.value.new_str,
     );
 
-    return text_replace_mod.to_xml(allocator, result);
+    const output = text_replace_mod.to_xml(ctx.allocator, result);
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execWriteFile(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = try std.json.parseFromSlice(
         write_file_mod.WriteFileInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     );
     defer parsed.deinit();
 
-    const write_result = try write_file_mod.write_file(allocator, parsed.value);
-    const res_write = try write_file_mod.write_file_to_string(allocator, write_result);
-    write_result.deinit(allocator);
+    const write_result = try write_file_mod.write_file(ctx.allocator, parsed.value);
+    const res_write = try write_file_mod.write_file_to_string(ctx.allocator, write_result);
+    write_result.deinit(ctx.allocator);
 
-    return res_write;
+    return ToolExecResult{ .output = res_write };
 }
 
-pub fn execListSkills(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
-    _ = db;
-    _ = session_id;
 
-    return list_skills_mod.execute_list_skills(allocator) catch blk: {
-        break :blk "{\"error\": \"Failed to list skills\"}";
+    const output = list_skills_mod.execute_list_skills(ctx.allocator) catch blk: {
+        break :blk try std.fmt.allocPrint(ctx.allocator, "{{\"error\": \"Failed to list skills\"}}", .{});
     };
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execGetSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         get_skill_mod.GetSkillInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        return "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to parse get_skill arguments</error>";
+        const output = "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to parse get_skill arguments</error>";
+        return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
-    return get_skill_mod.execute_get_skill_to_string(allocator, parsed.value) catch {
-        return "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>";
+    const output = get_skill_mod.execute_get_skill_to_string(ctx.allocator, parsed.value) catch {
+        return ToolExecResult{ .output = "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>" };
     };
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execRemoveSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         remove_skill_mod.RemoveSkillInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        return try std.fmt.allocPrint(allocator,
+        const output = try std.fmt.allocPrint(ctx.allocator,
             \\<skill_name></skill_name>
             \\<removed>false</removed>
             \\<error>Failed to parse remove_skill arguments</error>
         , .{});
+        return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
-    return remove_skill_mod.execute_remove_skill_to_string(allocator, parsed.value) catch {
-        return try std.fmt.allocPrint(allocator,
+    const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, parsed.value) catch {
+        const out = try std.fmt.allocPrint(ctx.allocator,
             \\<skill_name>{s}</skill_name>
             \\<removed>false</removed>
             \\<error>Unknown error</error>
         , .{parsed.value.skill_name});
+        return ToolExecResult{ .output = out };
     };
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execAddSkill(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         add_skill_mod.AddSkillInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        return try std.fmt.allocPrint(allocator,
+        const output = try std.fmt.allocPrint(ctx.allocator,
             \\<skill>
             \\<name></name>
             \\<created>false</created>
             \\<error>Failed to parse add_skill arguments</error>
             \\</skill>
         , .{});
+        return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
-    return add_skill_mod.executeAddSkillToString(allocator, parsed.value) catch {
-        return try std.fmt.allocPrint(allocator,
+    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, parsed.value) catch {
+        const out = try std.fmt.allocPrint(ctx.allocator,
             \\<skill>
             \\<name>{s}</name>
             \\<created>false</created>
             \\<error>Failed to add skill</error>
             \\</skill>
         , .{parsed.value.name});
+        return ToolExecResult{ .output = out };
     };
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execAddAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execAddAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         add_agent_mod.AddAgentInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        return try std.fmt.allocPrint(allocator,
+        const output = try std.fmt.allocPrint(ctx.allocator,
             \\<agent>
             \\<name></name>
             \\<created>false</created>
             \\<error>Failed to parse add_agent arguments</error>
             \\</agent>
         , .{});
+        return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
-    return add_agent_mod.executeAddAgentToString(allocator, parsed.value) catch {
-        return try std.fmt.allocPrint(allocator,
+    const output = add_agent_mod.executeAddAgentToString(ctx.allocator, parsed.value) catch {
+        const out = try std.fmt.allocPrint(ctx.allocator,
             \\<agent>
             \\<name>{s}</name>
             \\<created>false</created>
             \\<error>Failed to add agent</error>
             \\</agent>
         , .{parsed.value.name});
+        return ToolExecResult{ .output = out };
     };
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execRemoveAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         remove_agent_mod.RemoveAgentInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        return try std.fmt.allocPrint(allocator,
+        const output = try std.fmt.allocPrint(ctx.allocator,
             \\<name></name>
             \\<removed>false</removed>
             \\<error>Failed to parse remove_agent arguments</error>
         , .{});
+        return ToolExecResult{ .output = output };
     };
-    defer parsed.deinit();
+    errdefer parsed.deinit();
 
-    return remove_agent_mod.execute_remove_agent_to_string(allocator, parsed.value) catch {
-        return try std.fmt.allocPrint(allocator,
+    const output = remove_agent_mod.execute_remove_agent_to_string(ctx.allocator, parsed.value) catch {
+        const out = try std.fmt.allocPrint(ctx.allocator,
             \\<name>{s}</name>
             \\<removed>false</removed>
             \\<error>Failed to remove agent</error>
         , .{parsed.value.name});
+        return ToolExecResult{ .output = out };
     };
+    parsed.deinit();
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execListAgents(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
+pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
-    _ = db;
-    _ = session_id;
 
-    return list_agents_mod.execute_list_agents(allocator) catch {
-        return try std.fmt.allocPrint(allocator,
+    const output = list_agents_mod.execute_list_agents(ctx.allocator) catch {
+        const out = try std.fmt.allocPrint(ctx.allocator,
             \\<agents>
             \\  <error>Failed to list agents</error>
             \\</agents>
         , .{});
+        return ToolExecResult{ .output = out };
     };
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execChangeAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         change_agent_mod.ChangeAgentInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        return try std.fmt.allocPrint(allocator,
+        const output = try std.fmt.allocPrint(ctx.allocator,
             \\<agent>
             \\  <agent_name></agent_name>
             \\  <content></content>
@@ -401,11 +418,12 @@ pub fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
             \\  <error>Failed to parse change_agent arguments</error>
             \\</agent>
         , .{});
+        return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
-    return change_agent_mod.execute_change_agent_to_string(allocator, parsed.value) catch {
-        return try std.fmt.allocPrint(allocator,
+    const output = change_agent_mod.execute_change_agent_to_string(ctx.allocator, parsed.value) catch {
+        const out = try std.fmt.allocPrint(ctx.allocator,
             \\<agent>
             \\  <agent_name></agent_name>
             \\  <content></content>
@@ -413,163 +431,173 @@ pub fn execChangeAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sq
             \\  <error>Failed to get agent</error>
             \\</agent>
         , .{});
+        return ToolExecResult{ .output = out };
     };
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execLspDefinition(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execLspDefinition(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         lsp_definition_mod.LspDefinitionInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch |err| {
-        return try std.fmt.allocPrint(
-            allocator,
+        const output = try std.fmt.allocPrint(
+            ctx.allocator,
             "<error>Failed to parse lsp_definition arguments: {s}</error>",
             .{@errorName(err)},
         );
+        return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
-    const result = lsp_definition_mod.execute_lsp_definition(allocator, parsed.value) catch |err| {
-        return try std.fmt.allocPrint(
-            allocator,
+    const result = lsp_definition_mod.execute_lsp_definition(ctx.allocator, parsed.value) catch |err| {
+        const output = try std.fmt.allocPrint(
+            ctx.allocator,
             "<error>Failed to get definition: {s}</error>",
             .{@errorName(err)},
         );
+        return ToolExecResult{ .output = output };
     };
-    defer result.deinit(allocator);
+    defer result.deinit(ctx.allocator);
 
-    return lsp_definition_mod.lsp_definition_to_string(allocator, result);
+    const output = try lsp_definition_mod.lsp_definition_to_string(ctx.allocator, result);
+    return ToolExecResult{ .output = output };
 }
 
-// Placeholder for restricted tools
-pub fn execSpawnSubAgent(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return "spawn_sub_agent should not be called from sub-agent context";
+// set_agent_properties implementation - modifies agent temperature/is_thinking
+pub fn execSetAgentProperties(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
+
+    const result = try handle_set_agent_properties.handle_set_agent_properties_run(ctx.allocator, tc);
+
+    return ToolExecResult{
+        .output = result.arguments,
+        .temperature = result.temperature,
+        .is_thinking = result.is_thinking,
+    };
 }
 
-pub fn execSetAgentProperties(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
-    _ = tc;
-    _ = db;
-    _ = session_id;
-    return "set_agent_properties should not be called from sub-agent context";
+// spawn_sub_agent implementation - spawns parallel sub-agents
+pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
+
+    const result = try handle_spawn_sub_agent.handle_spawn_sub_agent_run(
+        ctx.allocator,
+        ctx.db,
+        ctx.logger,
+        ctx.session_id,
+        ctx.model,
+        ctx.cwd,
+        0,
+        tc,
+        ctx.agent_temperature.*,
+        ctx.is_thinking.*,
+        ctx.api_key,
+        ctx.base_url,
+        ctx.config,
+    );
+
+    return ToolExecResult{ .output = result };
 }
 
 // Placeholder LSP exec functions
-pub fn execLspReferences(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
+pub fn execLspReferences(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    _ = ctx;
     _ = tc;
-    _ = db;
-    _ = session_id;
-    return "lsp_references not implemented";
+    const output = "lsp_references not implemented";
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execLspWorkspaceSymbol(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
+pub fn execLspWorkspaceSymbol(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    _ = ctx;
     _ = tc;
-    _ = db;
-    _ = session_id;
-    return "lsp_workspace_symbol not implemented";
+    const output = "lsp_workspace_symbol not implemented";
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execLspDocumentSymbol(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
+pub fn execLspDocumentSymbol(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    _ = ctx;
     _ = tc;
-    _ = db;
-    _ = session_id;
-    return "lsp_document_symbol not implemented";
+    const output = "lsp_document_symbol not implemented";
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execLspHover(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = allocator;
+pub fn execLspHover(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    _ = ctx;
     _ = tc;
-    _ = db;
-    _ = session_id;
-    return "lsp_hover not implemented";
+    const output = "lsp_hover not implemented";
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execWebSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = try std.json.parseFromSlice(
         tool_models.WebSearchInput,
-        allocator,
+        ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     );
     defer parsed.deinit();
 
-    const result = try web_search_mod.execute_web_search(allocator, parsed.value);
-    defer result.deinit(allocator);
+    const result = try web_search_mod.execute_web_search(ctx.allocator, parsed.value);
+    defer result.deinit(ctx.allocator);
 
-    return try web_search_mod.web_search_result_to_string(allocator, result);
+    const output = try web_search_mod.web_search_result_to_string(ctx.allocator, result);
+    return ToolExecResult{ .output = output };
 }
 
-pub fn execGlob(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const args = tc.function.arguments;
     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
 
     const parsed = try std.json.parseFromSlice(
         glob_tool_mod.GlobInput,
-        allocator,
+        ctx.allocator,
         args_to_parse,
         .{ .allocate = .alloc_always },
     );
     defer parsed.deinit();
 
-    var glob_result = try glob_tool_mod.execute_glob(allocator, parsed.value);
-    const res_glob = try glob_tool_mod.glob_result_to_string(allocator, glob_result);
-    glob_result.deinit(allocator);
+    var glob_result = try glob_tool_mod.execute_glob(ctx.allocator, parsed.value);
+    const res_glob = try glob_tool_mod.glob_result_to_string(ctx.allocator, glob_result);
+    glob_result.deinit(ctx.allocator);
 
-    return res_glob;
+    return ToolExecResult{ .output = res_glob };
 }
 
-pub fn execSearch(allocator: std.mem.Allocator, tc: agent.ToolCall, db: *sqlite.SqliteBackend, session_id: []const u8) ![]const u8 {
-    _ = db;
-    _ = session_id;
-
+pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const args = tc.function.arguments;
     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
 
     const parsed = try std.json.parseFromSlice(
         search_tool_mod.SearchInput,
-        allocator,
+        ctx.allocator,
         args_to_parse,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
 
-    var search_result = search_tool_mod.execute_search(allocator, parsed.value) catch |err| {
+    var search_result = search_tool_mod.execute_search(ctx.allocator, parsed.value) catch |err| {
         if (err == error.StdoutStreamTooLong) {
-            return try allocator.dupe(u8,
+            const output = try ctx.allocator.dupe(u8,
                 \\<warning>Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.</warning>
             );
+            return ToolExecResult{ .output = output };
         }
         return err;
     };
 
     if (search_result.matches.items.len == 0) {
-        const content = try allocator.dupe(u8, search_result.content);
-        search_result.deinit(allocator);
-        return content;
+        const output = try ctx.allocator.dupe(u8, search_result.content);
+        search_result.deinit(ctx.allocator);
+        return ToolExecResult{ .output = output };
     }
 
-    const res_search = try search_tool_mod.search_result_to_string(allocator, search_result);
-    search_result.deinit(allocator);
+    const res_search = try search_tool_mod.search_result_to_string(ctx.allocator, search_result);
+    search_result.deinit(ctx.allocator);
 
-    return res_search;
+    return ToolExecResult{ .output = res_search };
 }
 
 // ============================================================================

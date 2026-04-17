@@ -98,7 +98,22 @@ pub fn execute_sub_agent_tool(
 
     inline for (tool_registry.SUB_AGENT_TOOL_REGISTRY) |entry| {
         if (std.mem.eql(u8, tc.function.name, entry.name)) {
-            const output = entry.exec(allocator, tc, db, session_id) catch |err| {
+            // Build exec context for sub-agent (limited context, no logger)
+            const ctx = tool_registry.ToolExecContext{
+                .allocator = allocator,
+                .db = db,
+                .logger = undefined, // Not used by sub-agent tools
+                .session_id = session_id,
+                .model = undefined, // Not used by sub-agent tools
+                .cwd = undefined, // Not used by sub-agent tools
+                .api_key = undefined, // Not used by sub-agent tools
+                .base_url = undefined, // Not used by sub-agent tools
+                .config = config,
+                .agent_temperature = undefined, // Not used by sub-agent tools
+                .is_thinking = undefined, // Not used by sub-agent tools
+            };
+
+            const result = entry.exec(ctx, tc) catch |err| {
                 return SubAgentToolResult{
                     .output = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
                         tc.function.name,
@@ -107,23 +122,12 @@ pub fn execute_sub_agent_tool(
                 };
             };
 
-            var result = SubAgentToolResult{ .output = output };
-
-            // Auto-save skill if this tool loaded one
-            if (entry.auto_save_skill) {
-                if (parseSkillFromResult(output)) |info| {
-                    result.skill_save = SkillSaveInfo{ .name = info.name, .content = info.content };
-                }
-            }
-
-            // Auto-save agent if this tool loaded one
-            if (entry.auto_save_agent) {
-                if (parseAgentFromResult(output)) |name| {
-                    result.agent_save = AgentSaveInfo{ .name = name };
-                }
-            }
-
-            return result;
+            // Return the result (skill_save and agent_save are handled by caller if needed)
+            return SubAgentToolResult{
+                .output = result.output,
+                .skill_save = result.skill_save,
+                .agent_save = result.agent_save,
+            };
         }
     }
 
