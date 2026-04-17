@@ -1,8 +1,24 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const list_skills = @import("tools/list_skills.zig");
 const agents = @import("tools/agents.zig");
 const prompts = @import("prompts/prompts.zig");
 const tool_models = @import("nalarcore").tool_models;
+
+/// Get the current operating system as a human-readable string
+fn getCurrentOs() []const u8 {
+    return switch (builtin.os.tag) {
+        .linux => "Linux",
+        .macos => "macOS",
+        .windows => "Windows",
+        .freebsd => "FreeBSD",
+        .netbsd => "NetBSD",
+        .openbsd => "OpenBSD",
+        .dragonfly => "DragonFly",
+        .ios => "iOS",
+        else => @tagName(builtin.os.tag),
+    };
+}
 
 // Re-export all prompts for easy access
 pub const UniversalRules = prompts.UniversalRules;
@@ -209,6 +225,12 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, "\n\n**Tree Directory:**\n");
         try result.appendSlice(allocator, treeDir);
     }
+
+    // OS info
+    const os_name = getCurrentOs();
+    try result.appendSlice(allocator, "\n\n**Operating System:** ");
+    try result.appendSlice(allocator, os_name);
+    try result.appendSlice(allocator, "\n\n**Important:** Always use OS-specific commands. Check the current OS before running system commands or shell scripts.");
 
     // Background process info
     if (backgroundProcessContent.len > 0) {

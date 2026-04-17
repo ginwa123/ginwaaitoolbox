@@ -328,4 +328,5 @@ for testing use this command always
 ---
 
 # Mandatory
-- Dont ever kill the process port 8081 !!!
+- Dont ever kill the process port 8081  or process nalar !!!
+- If you want to test use process port 8080 and process nalar-dev !!!

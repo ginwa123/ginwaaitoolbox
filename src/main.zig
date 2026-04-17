@@ -296,6 +296,9 @@ pub fn main() !void {
 
             // Ping endpoint - checks if session is connected via SSE
             router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
+            
+            // System folder endpoint - returns current directory relative to home
+            router.get("/api/system/folder", http_handlers.system_folder_handler, .{});
         }
     };
     try server.runWithConfig(HttpRoutes.setup);

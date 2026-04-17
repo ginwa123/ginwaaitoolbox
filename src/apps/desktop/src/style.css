@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+/* Kanagawa Dragon Theme - inspired by Japanese woodblock prints */
+:root {
+  /* Background shades */
+  --color-bg-dim: #12120f;
+  --color-bg-gutter: #282727;
+  --color-bg-m3: #0d0c0c;
+  --color-bg-m2: #12120f;
+  --color-bg-m1: #1D1C19;
+  --color-bg: #181616;
+  --color-bg-p1: #282727;
+  --color-bg-p2: #393836;
+
+  /* Text */
+  --color-fg: #c5c9c5;
+  --color-fg-dim: #C8C093;
+  --color-fg-reverse: #223249;
+
+  /* Grays */
+  --color-gray: #a6a69c;
+  --color-gray-2: #9e9b93;
+  --color-gray-3: #7a8382;
+
+  /* Accent colors */
+  --color-violet: #8992a7;
+  --color-aqua: #8ea4a2;
+  --color-yellow: #c4b28a;
+  --color-blue: #8ba4b0;
+  --color-green: #87a987;
+  --color-green-2: #8a9a7b;
+  --color-pink: #a292a3;
+  --color-orange: #b6927b;
+  --color-red: #c4746e;
+  --color-ash: #737c73;
+
+  /* Special */
+  --color-special: #7a8382;
+  --color-whitespace: #625e5a;
+  --color-nontext: #625e5a;
+
+  /* UI states */
+  --color-blue-1: #223249;
+  --color-blue-2: #2D4F67;
+
+  /* Borders */
+  --color-border: #282727;
+  --color-border-light: #393836;
+
+  /* Semantic tokens */
+  --semantic-sidebar-bg: #12120f;
+  --semantic-sidebar-border: #282727;
+  --semantic-content-bg: #181616;
+  --semantic-card-bg: #1D1C19;
+
+  --semantic-text: #c5c9c5;
+  --semantic-text-muted: #a6a69c;
+  --semantic-text-dim: #7a8382;
+
+  --semantic-link: #8ba4b0;
+  --semantic-link-hover: #a3d4d5;
+  --semantic-accent: #8992a7;
+  --semantic-accent-hover: #9CABCA;
+
+  --semantic-success: #87a987;
+  --semantic-warning: #c4b28a;
+  --semantic-error: #c4746e;
+  --semantic-info: #8ba4b0;
+
+  --semantic-active-bg: #282727;
+  --semantic-active-text: #c5c9c5;
+  --semantic-hover-bg: #1D1C19;
+  --semantic-hover-text: #d5cea3;
+
+  /* Tailwind integration - extend theme */
+  --color-primary: var(--color-violet);
+  --color-secondary: var(--color-aqua);
+  --color-accent: var(--color-yellow);
+}
+
+/* Custom Tailwind theme */
+@theme {
+  /* Font families */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* Base layer styles */
+@layer base {
+  body {
+    @apply bg-[--color-bg] text-[--color-fg] font-sans antialiased;
+  }
+
+  /* Selection */
+  ::selection {
+    @apply bg-[--color-violet]/30 text-[--color-fg];
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--color-bg-m1);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-gray-3);
+  }
+}
