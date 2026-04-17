@@ -1,9 +1,9 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const agent = root_mod.agent;
-const logger_mod = root_mod.logger;
-const sqlite = root_mod.sqlite;
-const config_mod = root_mod.config;
+const nalar = @import("nalarcore");
+const agent = nalar.agent;
+const logger_mod = nalar.logger;
+const sqlite = nalar.sqlite;
+const config_mod = nalar.config;
 const tool_registry = @import("tool_registry.zig");
 const handle_spawn = @import("handle_spawn_sub_agent.zig");
 const SubAgentToolExec = handle_spawn.SubAgentToolExec;
@@ -15,7 +15,7 @@ const SaveSkill = @import("session_skills.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
 const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
-const tool_models = root_mod.tool_models;
+const tool_models = nalar.tool_models;
 const get_messagesLatest = llm_history.get_message_latest;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 
