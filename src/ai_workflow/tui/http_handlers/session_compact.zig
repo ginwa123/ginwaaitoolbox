@@ -70,7 +70,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                         };
 
                         var workflow = ai_workflow.TUIWorkflow.init(sqliteDb, loggerPtr);
-                        workflow.run(threadAlloc2, sessId, "", cwd, api_key, model, base_url, &llm_cfg);
+                        workflow.run(threadAlloc2, sessId, "", cwd, api_key, model, base_url, &llm_cfg, "", "");
                     }
                 }.run, .{ sqlite_db, session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb, server.allocator, ctxTui.logger });
                 thread.detach();

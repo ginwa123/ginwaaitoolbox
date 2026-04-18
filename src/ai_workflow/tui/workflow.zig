@@ -102,8 +102,8 @@ pub const TUIWorkflow = struct {
         };
     }
 
-    pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) void {
-        self.run_internal(allocator, session_id, message, cwd, api_key, model, base_url, config) catch |err| {
+    pub fn run(self: *TUIWorkflow, allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig, body: []const u8, allowed_tools: []const u8) void {
+        self.run_internal(allocator, session_id, message, cwd, api_key, model, base_url, config, body, allowed_tools) catch |err| {
             const err_msg = std.fmt.allocPrint(allocator, "{s}", .{@errorName(err)}) catch return;
             on_event_send_new(allocator, .{
                 .session_id = session_id,
@@ -128,7 +128,7 @@ pub const TUIWorkflow = struct {
         };
     }
 
-    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
+    fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig, body: []const u8, allowed_tools: []const u8) !void {
         var is_have_queue_message = false;
         // Register this session for activity/cancellation tracking
         if (session_registry.get_global_registry()) |registry| {
@@ -138,7 +138,7 @@ pub const TUIWorkflow = struct {
         }
 
         // Also register in worker table for enrichment info
-        llm_history.upsert_worker(parent_allocator, self.db, session_id, session_id, cwd) catch {
+        llm_history.upsertWorker(parent_allocator, self.db, session_id, session_id, cwd) catch {
             self.logger.warnFmt("Failed to upsert worker info for {s}", .{session_id}) catch {};
         };
 
@@ -177,8 +177,6 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
         var loopCounter: u32 = 0;
-        const base_base_tools: []const tool_models.AgentTool = tool_registry.ALL_AGENT_TOOLS;
-        const base_tools = try parent_allocator.dupe(tool_models.AgentTool, base_base_tools);
 
         // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
         const mcp_tools_fetched = (buildMcpTools.build_mcp_tools_run(parent_allocator, config) catch |err| blk: {
@@ -187,12 +185,44 @@ pub const TUIWorkflow = struct {
         }) orelse &[_]tool_models.AgentTool{};
         // Note: mcp_tools_fetched memory is managed by parent_allocator
 
+        // Get base tools and filter based on allowed_tools
+        var base_base_tools: []const tool_models.AgentTool = tool_registry.ALL_AGENT_TOOLS;
+        if (allowed_tools.len > 0 and !std.mem.eql(u8, allowed_tools, "all")) {
+            // Filter tools based on allowed_tools comma-separated list
+            var allowed_tools_list: std.StringArrayHashMap(void) = std.StringArrayHashMap(void).init(parent_allocator);
+            defer allowed_tools_list.deinit();
+            var it = std.mem.splitScalar(u8, allowed_tools, ',');
+            while (it.next()) |tool_name| {
+                // Trim whitespace
+                const trimmed = std.mem.trim(u8, tool_name, " ");
+                if (trimmed.len > 0) {
+                    allowed_tools_list.put(trimmed, {}) catch {};
+                }
+            }
+            // Filter base tools
+            var filtered_tools: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
+            errdefer filtered_tools.deinit(parent_allocator);
+            for (base_base_tools) |tool| {
+                if (allowed_tools_list.contains(tool.name)) {
+                    try filtered_tools.append(parent_allocator, tool);
+                }
+            }
+            base_base_tools = try filtered_tools.toOwnedSlice(parent_allocator);
+        }
+
         // Merge base tools and MCP tools once outside the loop
         var all_tools_list: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
         defer all_tools_list.deinit(parent_allocator);
-        try all_tools_list.appendSlice(parent_allocator, base_tools);
+        try all_tools_list.appendSlice(parent_allocator, base_base_tools);
         try all_tools_list.appendSlice(parent_allocator, mcp_tools_fetched);
         const merged_tools = try all_tools_list.toOwnedSlice(parent_allocator);
+
+        // Handle body message - add as initial user message if provided
+        if (body.len > 0) {
+            if (session_registry.get_global_registry()) |registry| {
+                _ = registry.queueMessage(session_id, body);
+            }
+        }
 
         while (true) {
             if (session_registry.get_global_registry()) |registry| {

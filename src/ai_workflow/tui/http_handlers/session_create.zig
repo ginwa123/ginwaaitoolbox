@@ -26,6 +26,8 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     var session_name: []const u8 = "New Session";
     var queue_message: ?[]const u8 = null;
     var cwd_session: ?[]const u8 = null;
+    var allowed_tools: []const u8 = ""; // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
+    var body_message: []const u8 = ""; // initial message from body field
 
     const body = req.body() orelse "";
 
@@ -74,6 +76,20 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                 cwd_session = val.string;
             }
         }
+
+        // Extract body field (initial message from body field)
+        if (root.get("body")) |val| {
+            if (val == .string) {
+                body_message = val.string;
+            }
+        }
+
+        // Extract allowed_tools field (comma-separated list or "all")
+        if (root.get("allowed_tools")) |val| {
+            if (val == .string) {
+                allowed_tools = val.string;
+            }
+        }
     } else {
         // No body provided, generate session ID
         session_id = try generateSessionId(alloc);
@@ -106,6 +122,8 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                     .model = ctxTui.llm_config.model,
                     .base_url = ctxTui.llm_config.base_url,
                     .llm_config = ctxTui.llm_config,
+                    .body = try server.allocator.dupe(u8, body_message),
+                    .allowed_tools = try server.allocator.dupe(u8, allowed_tools),
                 };
 
                 const thread = try std.Thread.spawn(.{}, struct {
@@ -114,6 +132,8 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                             args.allocator.free(args.session_id);
                             args.allocator.free(args.message);
                             args.allocator.free(args.cwd);
+                            args.allocator.free(args.body);
+                            args.allocator.free(args.allowed_tools);
                             args.allocator.destroy(args);
                         }
                         var arena = std.heap.ArenaAllocator.init(args.allocator);
@@ -128,6 +148,8 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                             args.model,
                             args.base_url,
                             args.llm_config,
+                            args.body,
+                            args.allowed_tools,
                         );
                     }
                 }.run, .{workflow_args});

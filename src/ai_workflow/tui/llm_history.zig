@@ -1039,7 +1039,7 @@ pub fn get_active_workers(
 }
 
 /// Register or update a worker
-pub fn upsert_worker(
+pub fn upsertWorker(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     worker_id: []const u8,
@@ -1056,7 +1056,7 @@ pub fn upsert_worker(
 }
 
 /// Update worker's last activity timestamp with description
-pub fn update_worker_activity_with_description(
+pub fn updateWorkerActivityWithDescription(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     worker_id: []const u8,

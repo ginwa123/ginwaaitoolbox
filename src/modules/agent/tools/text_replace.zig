@@ -239,10 +239,9 @@ pub fn text_replace(
 }
 
 /// Serialize result to XML string
-pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult) []const u8 {
-    _ = allocator;
+pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, path: []const u8) []const u8 {
     _ = result;
-    return "<success>true</success>";
+    return std.fmt.allocPrint(allocator, "<success>true</success><path>{s}</path>", .{path}) catch "<success>true</success><path>Unknown</path>";
 }
 
 pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const u8, old_str: []const u8) []const u8 {

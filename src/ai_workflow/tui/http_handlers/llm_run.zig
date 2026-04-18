@@ -100,6 +100,8 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
                             args.model,
                             args.base_url,
                             args.llm_config,
+                            "",
+                            "",
                         );
                     }
                 }.run, .{workflow_args});

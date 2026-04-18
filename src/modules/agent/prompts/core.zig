@@ -105,7 +105,7 @@ pub const ResponseFormatting =
 pub const UpdateActivityRule =
     \\## 🏃 Activity Tracking (MANDATORY)
     \\
-    \\**⚠️ You MUST call `update_activity` tool after EVERY LLM response!**
+    \\**⚠️ You MUST call `update_activity` tool BEFORE writing files or running bash commands!**
     \\
     \\This tool updates the agent's current thinking, reasoning, or work status. Always include:
     \\- Timestamp (use format: YYYY-MM-DD HH:MM)
@@ -118,10 +118,12 @@ pub const UpdateActivityRule =
     \\use update_activity with thought="[YYYY-MM-DD HH:MM] session_XXXX @ /path/to/dir | Action | Details"
     \\```
     \\
-    \\**Examples:**
-    \\- `use update_activity with thought="[2025-01-15 10:30] session_123 @ /project | Reading main.zig | Analyzing file structure"`
-    \\- `use update_activity with thought="[2025-01-15 10:31] session_123 @ /project | Implementing | Writing new function to core.zig"`
-    \\- `use update_activity with thought="[2025-01-15 10:32] session_123 @ /project | Testing | Running build command to verify changes"`
+    \\**MANDATORY before:**
+    \\- `write_file`, `text_replace`, `remove_file` tools
+    \\- `bash` commands (any shell execution)
     \\
-    \\**Rule: ALWAYS call update_activity after every LLM response. Never skip this!**
+    \\**Examples:**
+    \\- `use update_activity with thought="[2025-01-15 10:30] session_123 @ /project | Implementing | Writing new function to core.zig"`
+    \\- `use update_activity with thought="[2025-01-15 10:31] session_123 @ /project | Testing | Running build command to verify changes"`
+    \\- `use update_activity with thought="[2025-01-15 10:32] session_123 @ /project | Debugging | Searching for bug in main.zig"`
 ;

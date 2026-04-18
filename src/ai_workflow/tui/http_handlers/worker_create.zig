@@ -140,6 +140,8 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                                 args.model,
                                 args.base_url,
                                 args.llm_config,
+                                "",
+                                "",
                             );
                         }
                     }.run, .{workflow_args});

@@ -1,37 +1,37 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const agent = root_mod.agent;
-const tool_models = root_mod.tool_models;
-const sqlite = root_mod.sqlite;
-const logger_mod = root_mod.logger;
-const config_mod = root_mod.config;
-const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
-const llm_history = root_mod.llm_history;
+const nalar_mod = @import("nalarcore");
+const agent = nalar_mod.agent;
+const tool_models = nalar_mod.tool_models;
+const sqlite = nalar_mod.sqlite;
+const logger_mod = nalar_mod.logger;
+const config_mod = nalar_mod.config;
+const spawn_sub_agent_tool = nalar_mod.spawn_sub_agent;
+const llm_history = nalar_mod.llm_history;
 
 // Tool imports for exec functions and tool_defs
-const bash_tool_mod = root_mod.bash_tool;
-const read_file_mod = root_mod.read_file;
-const text_replace_mod = root_mod.text_replace_tool;
-const write_file_mod = root_mod.write_file;
-const list_skills_mod = root_mod.list_skills_tool;
-const get_skill_mod = root_mod.get_skill_tool;
-const remove_skill_mod = root_mod.remove_skill_tool;
-const list_agents_mod = root_mod.list_agents;
-const add_skill_mod = root_mod.add_skill;
-const add_agent_mod = root_mod.add_agent;
-const remove_agent_mod = root_mod.remove_agent;
-const remove_file_mod = root_mod.remove_file;
-const change_agent_mod = root_mod.change_agent;
-const lsp_definition_mod = root_mod.tools.lsp_definition;
-const lsp_references_mod = root_mod.tools.lsp_references;
-const lsp_workspace_symbol_mod = root_mod.tools.lsp_workspace_symbol;
-const lsp_document_symbol_mod = root_mod.tools.lsp_document_symbol;
-const lsp_hover_mod = root_mod.tools.lsp_hover;
-const set_agent_properties_mod = root_mod.set_agent_properties;
-const web_search_mod = root_mod.web_search;
-const update_activity_mod = root_mod.update_activity;
-const glob_tool_mod = root_mod.glob_tool;
-const search_tool_mod = root_mod.search_tool;
+const bash_tool_mod = nalar_mod.bash_tool;
+const read_file_mod = nalar_mod.read_file;
+const text_replace_mod = nalar_mod.text_replace_tool;
+const write_file_mod = nalar_mod.write_file;
+const list_skills_mod = nalar_mod.list_skills_tool;
+const get_skill_mod = nalar_mod.get_skill_tool;
+const remove_skill_mod = nalar_mod.remove_skill_tool;
+const list_agents_mod = nalar_mod.list_agents;
+const add_skill_mod = nalar_mod.add_skill;
+const add_agent_mod = nalar_mod.add_agent;
+const remove_agent_mod = nalar_mod.remove_agent;
+const remove_file_mod = nalar_mod.remove_file;
+const change_agent_mod = nalar_mod.change_agent;
+const lsp_definition_mod = nalar_mod.tools.lsp_definition;
+const lsp_references_mod = nalar_mod.tools.lsp_references;
+const lsp_workspace_symbol_mod = nalar_mod.tools.lsp_workspace_symbol;
+const lsp_document_symbol_mod = nalar_mod.tools.lsp_document_symbol;
+const lsp_hover_mod = nalar_mod.tools.lsp_hover;
+const set_agent_properties_mod = nalar_mod.set_agent_properties;
+const web_search_mod = nalar_mod.web_search;
+const update_activity_mod = nalar_mod.update_activity;
+const glob_tool_mod = nalar_mod.glob_tool;
+const search_tool_mod = nalar_mod.search_tool;
 
 // Handle tool imports for exec functions
 const background_process = @import("background_process.zig");
@@ -244,7 +244,7 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    const output = text_replace_mod.toXmlSuccess(ctx.allocator, result);
+    const output = text_replace_mod.toXmlSuccess(ctx.allocator, result, parsed.value.path);
     return ToolExecResult{ .output = output };
 }
 
@@ -568,12 +568,15 @@ fn handleSetAgentProperties(
 
 // update_activity implementation - records thought as worker activity
 pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    ctx.logger.debugFmt("[update_activity] Starting for session {s}", .{ctx.session_id}) catch {};
+
     const parsed = std.json.parseFromSlice(
         update_activity_mod.UpdateActivityInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
+        ctx.logger.errFmt("[update_activity] Failed to parse arguments for session {s}", .{ctx.session_id}) catch {};
         const output = try std.fmt.allocPrint(ctx.allocator,
             \\<update_activity>
             \\  <updated>false</updated>
@@ -584,20 +587,22 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     };
     defer parsed.deinit();
 
-    // Get worker_id from session_id
-    const worker_id = std.fmt.allocPrint(ctx.allocator, "worker_{s}", .{ctx.session_id}) catch {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<update_activity>
-            \\  <updated>false</updated>
-            \\  <error>Failed to generate worker_id</error>
-            \\</update_activity>
-        , .{});
-        return ToolExecResult{ .output = output };
-    };
+    // Use session_id directly as worker_id (matches how worker is registered)
+    const worker_id = try ctx.allocator.dupe(u8, ctx.session_id);
     defer ctx.allocator.free(worker_id);
 
     // Update worker activity with the thought
-    llm_history.update_worker_activity_with_description(ctx.allocator, ctx.db, worker_id, parsed.value.thought) catch {
+    if (llm_history.updateWorkerActivityWithDescription(ctx.allocator, ctx.db, worker_id, parsed.value.thought)) |_| {
+        ctx.logger.infoFmt("[update_activity] Updated activity for {s}: {s}", .{ worker_id, parsed.value.thought }) catch {};
+        const output = try std.fmt.allocPrint(ctx.allocator,
+            \\<update_activity>
+            \\  <updated>true</updated>
+            \\  <thought>{s}</thought>
+            \\</update_activity>
+        , .{parsed.value.thought});
+        return ToolExecResult{ .output = output };
+    } else |err| {
+        ctx.logger.errFmt("[update_activity] Failed to update worker activity for {s}: {}", .{ worker_id, err }) catch {};
         const output = try std.fmt.allocPrint(ctx.allocator,
             \\<update_activity>
             \\  <updated>false</updated>
@@ -605,15 +610,7 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
             \\</update_activity>
         , .{});
         return ToolExecResult{ .output = output };
-    };
-
-    const output = try std.fmt.allocPrint(ctx.allocator,
-        \\<update_activity>
-        \\  <updated>true</updated>
-        \\  <thought>{s}</thought>
-        \\</update_activity>
-    , .{parsed.value.thought});
-    return ToolExecResult{ .output = output, .output_allocated = true };
+    }
 }
 
 // spawn_sub_agent implementation - spawns parallel sub-agents

@@ -107,6 +107,8 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                             args.model,
                             args.base_url,
                             args.llm_config,
+                            "",
+                            "",
                         );
                     }
                 }.run, .{workflow_args});

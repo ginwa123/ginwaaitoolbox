@@ -66,6 +66,8 @@ pub const WorkflowArgs = struct {
     model: []const u8,
     base_url: []const u8,
     llm_config: *const config.LlmConfig,
+    body: []const u8 = "",
+    allowed_tools: []const u8 = "", // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
 };
 
 /// Handler arguments for async message handling
