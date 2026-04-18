@@ -290,7 +290,7 @@ pub fn printSSEEventContent(event: SSEEventData) void {
         std.debug.print("\n Assistant: \n", .{});
         std.debug.print("{s}\n", .{content_str});
         if (tool_name_str.len > 0) {
-            std.debug.print("\nPlannig NextMove: {s}\n", .{tool_name_str});
+            std.debug.print("\nPlanning NextMove: {s}\n", .{tool_name_str});
         }
     } else if (event.is_output) {
         if (tool_name_str.len > 0) {
