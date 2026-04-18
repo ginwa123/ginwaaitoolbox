@@ -42,8 +42,9 @@ pub fn buildMessages(
 
     // buildAgentPrompt now handles processMessages internally
     const activity_info = try buildActivityInfo(allocator, db, session_id);
+    defer allocator.free(activity_info);
+
     const systemContent = try prompt.build_agent_prompt(allocator, cwd, "", skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info);
-    allocator.free(activity_info);
 
     const systemMessage = agent.AgentMessage{
         .role = .system,
