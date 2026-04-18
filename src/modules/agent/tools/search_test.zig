@@ -42,7 +42,7 @@ test "search returns warning XML when no matches found" {
     try std.testing.expect(has_not_found);
 }
 
-test "search_result_to_string returns empty for no matches" {
+test "search_result_to_string_grouped returns empty for no matches" {
     const allocator = std.testing.allocator;
 
     var empty_matches = std.ArrayList(search.SearchMatch).empty;
@@ -53,9 +53,8 @@ test "search_result_to_string returns empty for no matches" {
         .content = "<warning>pattern not found</warning>",
     };
 
-    // search_result_to_string should return empty for no matches
-    // because the warning is in the raw content from execute_search
-    const output = try search.search_result_to_string(allocator, result);
+    // search_result_to_string_grouped should return empty for no matches
+    const output = try search.search_result_to_string_grouped(allocator, result);
     defer allocator.free(output);
 
     try std.testing.expectEqual(@as(usize, 0), output.len);
@@ -112,19 +111,3 @@ test "search_result_to_string_grouped groups matches by file" {
     try std.testing.expect(std.mem.indexOf(u8, output, "count=\"1\"") != null);
 }
 
-test "search_result_to_string_grouped returns empty for no matches" {
-    const allocator = std.testing.allocator;
-
-    var empty_matches = std.ArrayList(search.SearchMatch).empty;
-    defer empty_matches.deinit(allocator);
-
-    const result = search.SearchResult{
-        .matches = empty_matches,
-        .content = "",
-    };
-
-    const output = try search.search_result_to_string_grouped(allocator, result);
-    defer allocator.free(output);
-
-    try std.testing.expectEqual(@as(usize, 0), output.len);
-}

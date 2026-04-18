@@ -47,9 +47,6 @@ pub const worker_status_handler = @import("worker_status.zig").worker_status_han
 pub const worker_list_handler = @import("worker_list.zig").worker_list_handler;
 pub const worker_cancel_handler = @import("worker_cancel.zig").worker_cancel_handler;
 
-// System folder handler
-pub const system_folder_handler = @import("system_folder.zig").system_folder_handler;
-
 // =============================================================================
 // Shared Types & Helpers
 // =============================================================================

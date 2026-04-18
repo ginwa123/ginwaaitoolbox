@@ -19,6 +19,7 @@ const list_agents_mod = root_mod.list_agents;
 const add_skill_mod = root_mod.add_skill;
 const add_agent_mod = root_mod.add_agent;
 const remove_agent_mod = root_mod.remove_agent;
+const remove_file_mod = root_mod.remove_file;
 const change_agent_mod = root_mod.change_agent;
 const lsp_definition_mod = root_mod.tools.lsp_definition;
 const lsp_references_mod = root_mod.tools.lsp_references;
@@ -408,6 +409,34 @@ pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     return ToolExecResult{ .output = output };
 }
 
+pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        remove_file_mod.RemoveFileInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        const output = try std.fmt.allocPrint(ctx.allocator,
+            \\<path></path>
+            \\<deleted>false</deleted>
+            \\<error>Failed to parse remove_file arguments</error>
+        , .{});
+        return ToolExecResult{ .output = output };
+    };
+    errdefer parsed.deinit();
+
+    const output = remove_file_mod.execute_remove_file_to_string(ctx.allocator, parsed.value) catch {
+        const out = try std.fmt.allocPrint(ctx.allocator,
+            \\<path></path>
+            \\<deleted>false</deleted>
+            \\<error>Failed to remove file</error>
+        , .{});
+        return ToolExecResult{ .output = out };
+    };
+    parsed.deinit();
+    return ToolExecResult{ .output = output };
+}
+
 pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
 
@@ -487,14 +516,51 @@ pub fn execLspDefinition(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
 
 // set_agent_properties implementation - modifies agent temperature/is_thinking
 pub fn execSetAgentProperties(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
-
-    const result = try handle_set_agent_properties.handle_set_agent_properties_run(ctx.allocator, tc);
+    const result = try handleSetAgentProperties(ctx.allocator, tc);
 
     return ToolExecResult{
         .output = result.arguments,
         .temperature = result.temperature,
         .is_thinking = result.is_thinking,
+    };
+}
+
+/// Result of parsing set_agent_properties arguments
+pub const SetAgentPropertiesResult = struct {
+    temperature: ?f32,
+    is_thinking: ?bool,
+    tool_call_id: []const u8,
+    arguments: []const u8,
+};
+
+/// Stateless set_agent_properties tool handler - only handles core logic:
+/// 1. Parse arguments from tool_call.function.arguments
+/// Returns SetAgentPropertiesResult with parsed data.
+///
+/// Note: All side effects (modifying temperature/is_thinking, DB, SSE) must be handled by caller.
+fn handleSetAgentProperties(
+    allocator: std.mem.Allocator,
+    tool_call: agent.ToolCall,
+) !SetAgentPropertiesResult {
+    const parsed = try std.json.parseFromSlice(
+        set_agent_properties_mod.SetAgentPropertiesResult,
+        allocator,
+        tool_call.function.arguments,
+        .{},
+    );
+    defer parsed.deinit();
+
+    const contentSetAgentProps = try std.fmt.allocPrint(
+        allocator,
+        "<set_agent_properties>\n{s}\n<set_agent_properties>",
+        .{tool_call.function.arguments},
+    );
+
+    return SetAgentPropertiesResult{
+        .temperature = parsed.value.temperature,
+        .is_thinking = parsed.value.is_thinking,
+        .tool_call_id = try allocator.dupe(u8, tool_call.id),
+        .arguments = contentSetAgentProps,
     };
 }
 
@@ -613,7 +679,7 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         return ToolExecResult{ .output = output };
     }
 
-    const res_search = try search_tool_mod.search_result_to_string(ctx.allocator, search_result);
+    const res_search = try search_tool_mod.search_result_to_string_grouped(ctx.allocator, search_result);
     search_result.deinit(ctx.allocator);
 
     return ToolExecResult{ .output = res_search };
@@ -658,6 +724,7 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool },
     .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool },
     .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool },
+    .{ .name = "remove_file", .exec = execRemoveFile, .tool_def = remove_file_mod.remove_file_tool },
 
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
@@ -698,6 +765,7 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     read_file_mod.read_file_tool,
     write_file_mod.write_file_tool,
     text_replace_mod.text_replace_tool,
+    remove_file_mod.remove_file_tool,
     lsp_definition_mod.lsp_definition_tool,
     lsp_references_mod.lsp_references_tool,
     lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
@@ -729,6 +797,7 @@ pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool },
     .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool },
     .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool },
+    .{ .name = "remove_file", .exec = execRemoveFile, .tool_def = remove_file_mod.remove_file_tool },
 
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },

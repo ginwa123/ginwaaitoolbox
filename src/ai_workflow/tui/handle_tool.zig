@@ -8,7 +8,6 @@ const tool_registry = @import("tool_registry.zig");
 const handle_spawn = @import("handle_spawn_sub_agent.zig");
 const SubAgentToolExec = handle_spawn.SubAgentToolExec;
 const llm_history = @import("llm_history.zig");
-const save_message = llm_history.saveMessage;
 const on_event_sent = @import("on_event_sent.zig");
 const on_event_send_new = on_event_sent.on_event_send_new;
 const SaveSkill = @import("session_skills.zig").SaveSkill;
@@ -179,11 +178,24 @@ pub fn getToolNames() []const []const u8 {
 
 /// set_agent_properties returns temperature/is_thinking changes
 fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
-    const result = try handle_set_agent_properties.handle_set_agent_properties_run(ctx.allocator, tool_call);
+    const tool_registry_mod = @import("tool_registry.zig");
+    const ctx_exec = tool_registry_mod.ToolExecContext{
+        .allocator = ctx.allocator,
+        .db = ctx.db,
+        .logger = ctx.logger,
+        .session_id = ctx.session_id,
+        .model = ctx.model,
+        .cwd = ctx.cwd,
+        .api_key = ctx.api_key,
+        .base_url = ctx.base_url,
+        .config = ctx.config,
+        .agent_temperature = ctx.agent_temperature,
+        .is_thinking = ctx.is_thinking,
+    };
+    const result = try tool_registry_mod.execSetAgentProperties(ctx_exec, tool_call);
 
     return ToolResult{
-        .output = result.arguments,
+        .output = result.output,
         .temperature = result.temperature,
         .is_thinking = result.is_thinking,
     };
@@ -286,7 +298,7 @@ pub fn handle_tool(
         const current_agent_state = try get_current_agent_by_session_id(allocator, db, session_id);
         const current_agent_for_save = current_agent_state.agent;
 
-        _ = try save_message(allocator, db, .{
+        _ = try llm_history.saveMessage(allocator, db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -404,7 +416,7 @@ fn saveAndSendToolResult(
     is_thinking: bool,
     agent_name: []const u8,
 ) !void {
-    _ = try save_message(allocator, db, .{
+    _ = try llm_history.saveMessage(allocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,

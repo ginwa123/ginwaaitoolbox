@@ -100,6 +100,7 @@ pub const config = @import("modules/config/Config.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");
+pub const remove_file = @import("modules/agent/tools/remove_file.zig");
 pub const system_folder = @import("modules/system_folder/system_folder.zig");
 
 

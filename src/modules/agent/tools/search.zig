@@ -250,33 +250,7 @@ pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchR
     };
 }
 
-/// Convert SearchResult to compressed XML string format
-pub fn search_result_to_string(allocator: std.mem.Allocator, result: SearchResult) ![]const u8 {
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
 
-    for (result.matches.items) |m| {
-        const match_xml = try std.fmt.allocPrint(allocator,
-            \\<m>
-            \\  <f>{s}</f>
-            \\  <l>{d}</l>
-            \\  <t>{d}</t>
-            \\  <s>{s}</s>
-            \\</m>
-        , .{
-            std.mem.trim(u8, m.file, &std.ascii.whitespace),
-            m.line_number,
-            m.file_total_lines,
-            std.mem.trim(u8, m.snippet, &std.ascii.whitespace),
-        });
-        try output.appendSlice(allocator, match_xml);
-        allocator.free(match_xml);
-    }
-
-    return try output.toOwnedSlice(allocator);
-}
-
-/// Convert SearchResult to XML string format grouped by file
 /// Multiple matches in the same file are grouped together under a <file> element
 pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: SearchResult) ![]const u8 {
     var output = std.ArrayList(u8).empty;

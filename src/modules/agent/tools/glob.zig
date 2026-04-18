@@ -181,6 +181,27 @@ fn parseGlobArgs(tokens: [][]const u8, allocator: std.mem.Allocator) !ParsedGlob
     return .{ .pattern = pattern, .path = path, .options = options };
 }
 
+/// Default fd binary locations (ordered by preference)
+const FD_PATHS = &[_][]const u8{
+    "/usr/bin/fd",       // Most common on modern Linux
+    "/usr/local/bin/fd", // macOS homebrew or custom installs
+    "/usr/sbin/fd",       // Older systems
+    "/bin/fd",           // Fallback
+};
+
+/// Find the fd binary in common locations.
+/// Falls back to "fd" to use PATH lookup.
+fn findFdPath() []const u8 {
+    for (FD_PATHS) |path| {
+        if (std.fs.openFileAbsolute(path, .{})) |file| {
+            file.close();
+            return path;
+        } else |_| {}
+    }
+    // Fall back to PATH lookup
+    return "fd";
+}
+
 /// Execute a glob search using the `fd` CLI tool.
 ///
 /// Parses the `any` field as shell-like arguments and passes them to fd CLI:
@@ -208,8 +229,9 @@ pub fn execute_glob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult 
     var args = std.ArrayListUnmanaged([]const u8){};
     errdefer args.deinit(allocator);
 
-    // fd path
-    try args.append(allocator, "/usr/sbin/fd");
+    // fd path - discover at runtime from common locations
+    const fd_path = findFdPath();
+    try args.append(allocator, fd_path);
 
     // Add options first
     for (parsed.options.items) |opt| {
