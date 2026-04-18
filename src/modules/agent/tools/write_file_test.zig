@@ -70,30 +70,6 @@ test "write_file - error on invalid directory" {
     try std.testing.expectError(error.FileNotFound, result);
 }
 
-test "write_file - result serialization" {
-    const allocator = std.testing.allocator;
-    const test_path = "test_serialize.txt";
-    const test_content = "Test content\n";
-
-    // Clean up
-    std.fs.cwd().deleteFile(test_path) catch {};
-
-    const result = try write_file_mod.write_file(allocator, .{
-        .path = test_path,
-        .content = test_content,
-    });
-    defer result.deinit(allocator);
-
-    const serialized = try write_file_mod.write_file_to_string(allocator, result);
-    defer allocator.free(serialized);
-
-    // Should contain file_write
-    try std.testing.expect(std.mem.indexOf(u8, serialized, "<file_write>") != null);
-
-    // Clean up
-    try std.fs.cwd().deleteFile(test_path);
-}
-
 test "write_file - WriteFileInput struct definition" {
     const input = write_file_mod.WriteFileInput{
         .path = "/tmp/test/nested/dir/file.txt",

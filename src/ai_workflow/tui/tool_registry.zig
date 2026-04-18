@@ -55,10 +55,18 @@ pub const ToolExecContext = struct {
 /// Tool execution result with optional agent state changes
 pub const ToolExecResult = struct {
     output: []const u8,
+    /// If true, the caller must free output with allocator.free()
+    output_allocated: bool = false,
     temperature: ?f32 = null,
     is_thinking: ?bool = null,
     skill_save: ?SkillSaveInfo = null,
     agent_save: ?AgentSaveInfo = null,
+
+    pub fn deinit(self: *const ToolExecResult, allocator: std.mem.Allocator) void {
+        if (self.output_allocated) {
+            allocator.free(self.output);
+        }
+    }
 };
 
 /// Legacy alias for backward compatibility
@@ -230,7 +238,7 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
             parsed.value.path,
             parsed.value.old_str,
         );
-        return ToolExecResult{ .output = output };
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
     const output = text_replace_mod.toXmlSuccess(ctx.allocator, result);
@@ -262,7 +270,7 @@ pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     const output = list_skills_mod.execute_list_skills(ctx.allocator) catch blk: {
         break :blk try std.fmt.allocPrint(ctx.allocator, "{{\"error\": \"Failed to list skills\"}}", .{});
     };
-    return ToolExecResult{ .output = output };
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

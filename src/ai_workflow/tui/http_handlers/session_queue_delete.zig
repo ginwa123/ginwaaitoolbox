@@ -36,7 +36,7 @@ pub fn sessionQueueDeleteHandler(
 
     // Call the activity registry method
     if (session_registry.get_global_registry()) |registry| {
-        registry.delete_queue_messages(session_id, message);
+        registry.deleteQueueMessages(session_id, message);
         res.status = 200;
         res.body = try std.fmt.allocPrint(
             req.arena,

@@ -60,3 +60,71 @@ test "search_result_to_string returns empty for no matches" {
 
     try std.testing.expectEqual(@as(usize, 0), output.len);
 }
+
+test "search_result_to_string_grouped groups matches by file" {
+    const allocator = std.testing.allocator;
+
+    var matches = std.ArrayList(search.SearchMatch).empty;
+    defer matches.deinit(allocator);
+
+    // Add matches from two different files
+    try matches.append(allocator, .{
+        .file = "src/main.zig",
+        .line_number = 10,
+        .file_total_lines = 100,
+        .snippet = "match 1 in main",
+    });
+    try matches.append(allocator, .{
+        .file = "src/utils.zig",
+        .line_number = 5,
+        .file_total_lines = 50,
+        .snippet = "match 1 in utils",
+    });
+    try matches.append(allocator, .{
+        .file = "src/main.zig",
+        .line_number = 25,
+        .file_total_lines = 100,
+        .snippet = "match 2 in main",
+    });
+
+    const result = search.SearchResult{
+        .matches = matches,
+        .content = "",
+    };
+
+    const output = try search.search_result_to_string_grouped(allocator, result);
+    defer allocator.free(output);
+
+    // Verify grouped format contains file headers
+    try std.testing.expect(std.mem.indexOf(u8, output, "<file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "</file>") != null);
+
+    // Verify file paths are present
+    try std.testing.expect(std.mem.indexOf(u8, output, "src/main.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "src/utils.zig") != null);
+
+    // Verify total lines are present
+    try std.testing.expect(std.mem.indexOf(u8, output, "total=\"100\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "total=\"50\"") != null);
+
+    // Verify counts are present (main has 2, utils has 1)
+    try std.testing.expect(std.mem.indexOf(u8, output, "count=\"2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "count=\"1\"") != null);
+}
+
+test "search_result_to_string_grouped returns empty for no matches" {
+    const allocator = std.testing.allocator;
+
+    var empty_matches = std.ArrayList(search.SearchMatch).empty;
+    defer empty_matches.deinit(allocator);
+
+    const result = search.SearchResult{
+        .matches = empty_matches,
+        .content = "",
+    };
+
+    const output = try search.search_result_to_string_grouped(allocator, result);
+    defer allocator.free(output);
+
+    try std.testing.expectEqual(@as(usize, 0), output.len);
+}

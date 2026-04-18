@@ -670,7 +670,7 @@ pub fn saveMessage(
 ) !void {
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
     defer allocator.free(id);
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
     defer allocator.free(created_at);
 
     const contentStr = input.content orelse "";
@@ -771,28 +771,28 @@ pub fn getMessages(
     var results: std.ArrayList(TUIHistory) = .empty;
 
     const sql =
-    \\SELECT 
-    \\    h.id, h.session_id, h.model, h.created_at, 
-    \\    h.response_content, h.finish_reason, 
-    \\    COALESCE(h.role, 'assistant'), 
-    \\    COALESCE(h.tool_calls_json, ''), 
-    \\    COALESCE(h.reasoning_content, ''), 
-    \\    COALESCE(h.agent, 'Agent'), 
-    \\    COALESCE(s.name, ''), 
-    \\    COALESCE(h.loop_index, 0), 
-    \\    COALESCE(h.tool_name, ''), 
-    \\    COALESCE(h.parent_session_id, ''), 
-    \\    COALESCE(h.temperature, 0.2), 
-    \\    COALESCE(h.is_thinking, 0), 
-    \\    COALESCE(h.prompt_tokens, 0), 
-    \\    COALESCE(h.completion_tokens, 0), 
-    \\    COALESCE(h.total_tokens, 0), 
-    \\    COALESCE(h.is_input, 0), 
-    \\    COALESCE(h.is_output, 0) 
-    \\FROM llm_history h 
-    \\LEFT JOIN sessions s ON h.session_id = s.id 
-    \\WHERE h.session_id = ? 
-    \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL) 
+    \\SELECT
+    \\    h.id, h.session_id, h.model, h.created_at,
+    \\    h.response_content, h.finish_reason,
+    \\    COALESCE(h.role, 'assistant'),
+    \\    COALESCE(h.tool_calls_json, ''),
+    \\    COALESCE(h.reasoning_content, ''),
+    \\    COALESCE(h.agent, 'Agent'),
+    \\    COALESCE(s.name, ''),
+    \\    COALESCE(h.loop_index, 0),
+    \\    COALESCE(h.tool_name, ''),
+    \\    COALESCE(h.parent_session_id, ''),
+    \\    COALESCE(h.temperature, 0.2),
+    \\    COALESCE(h.is_thinking, 0),
+    \\    COALESCE(h.prompt_tokens, 0),
+    \\    COALESCE(h.completion_tokens, 0),
+    \\    COALESCE(h.total_tokens, 0),
+    \\    COALESCE(h.is_input, 0),
+    \\    COALESCE(h.is_output, 0)
+    \\FROM llm_history h
+    \\LEFT JOIN sessions s ON h.session_id = s.id
+    \\WHERE h.session_id = ?
+    \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
     \\ORDER BY h.created_at ASC
 ;
 
@@ -837,29 +837,29 @@ pub fn getLatestMessage(
     session_id: []const u8,
 ) !?TUIHistory {
     const sql =
-    \\SELECT 
-    \\    h.id, h.session_id, h.model, h.created_at, 
-    \\    h.response_content, h.finish_reason, 
-    \\    COALESCE(h.role, 'assistant'), 
-    \\    COALESCE(h.tool_calls_json, ''), 
-    \\    COALESCE(h.reasoning_content, ''), 
-    \\    COALESCE(h.agent, 'Agent'), 
-    \\    COALESCE(s.name, ''), 
-    \\    COALESCE(h.loop_index, 0), 
-    \\    COALESCE(h.tool_name, ''), 
-    \\    COALESCE(h.parent_session_id, ''), 
-    \\    COALESCE(h.temperature, 0.2), 
-    \\    COALESCE(h.is_thinking, 0), 
-    \\    COALESCE(h.prompt_tokens, 0), 
-    \\    COALESCE(h.completion_tokens, 0), 
-    \\    COALESCE(h.total_tokens, 0), 
-    \\    COALESCE(h.is_input, 0), 
-    \\    COALESCE(h.is_output, 0) 
-    \\FROM llm_history h 
-    \\LEFT JOIN sessions s ON h.session_id = s.id 
-    \\WHERE h.session_id = ? 
-    \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL) 
-    \\ORDER BY h.created_at DESC 
+    \\SELECT
+    \\    h.id, h.session_id, h.model, h.created_at,
+    \\    h.response_content, h.finish_reason,
+    \\    COALESCE(h.role, 'assistant'),
+    \\    COALESCE(h.tool_calls_json, ''),
+    \\    COALESCE(h.reasoning_content, ''),
+    \\    COALESCE(h.agent, 'Agent'),
+    \\    COALESCE(s.name, ''),
+    \\    COALESCE(h.loop_index, 0),
+    \\    COALESCE(h.tool_name, ''),
+    \\    COALESCE(h.parent_session_id, ''),
+    \\    COALESCE(h.temperature, 0.2),
+    \\    COALESCE(h.is_thinking, 0),
+    \\    COALESCE(h.prompt_tokens, 0),
+    \\    COALESCE(h.completion_tokens, 0),
+    \\    COALESCE(h.total_tokens, 0),
+    \\    COALESCE(h.is_input, 0),
+    \\    COALESCE(h.is_output, 0)
+    \\FROM llm_history h
+    \\LEFT JOIN sessions s ON h.session_id = s.id
+    \\WHERE h.session_id = ?
+    \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
+    \\ORDER BY h.created_at DESC
     \\LIMIT 1
 ;
 
@@ -1070,7 +1070,7 @@ pub fn update_worker_activity_with_description(
 }
 
 /// Update worker's last activity timestamp
-pub fn update_worker_activity(
+pub fn updateWorkerActivity(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     worker_id: []const u8,
@@ -1166,7 +1166,7 @@ pub fn update_worker_description(
 
 
 /// Remove a worker
-pub fn remove_worker(
+pub fn removeWorker(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     worker_id: []const u8,

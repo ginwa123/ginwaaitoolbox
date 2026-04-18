@@ -121,7 +121,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                             args.allocator.destroy(args);
                             // Mark as idle when workflow completes
                             if (activity_registry.get_global_registry()) |reg| {
-                                reg.mark_idle(args.session_id);
+                                reg.markIdle(args.session_id);
                             }
                         }
                         var arena = std.heap.ArenaAllocator.init(args.allocator);
@@ -296,7 +296,7 @@ pub fn main() !void {
 
             // Ping endpoint - checks if session is connected via SSE
             router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
-            
+
             // System folder endpoint - returns current directory relative to home
             router.get("/api/system/folder", http_handlers.system_folder_handler, .{});
         }

@@ -23,7 +23,7 @@ pub fn sessionQueueGetHandler(
     };
 
     if (session_registry.get_global_registry()) |registry| {
-        if (registry.get_queue_messages(session_id)) |messages| {
+        if (registry.getQueueMessages(session_id)) |messages| {
             var msgs = messages;
             defer {
                 for (msgs.items) |msg| req.arena.free(msg);
@@ -33,8 +33,8 @@ pub fn sessionQueueGetHandler(
             // Build JSON array response
             if (msgs.items.len == 0) {
                 res.status = 200;
-                res.body = try std.fmt.allocPrint(req.arena, 
-                    "{{\"session_id\":\"{s}\",\"messages\":[],\"count\":0}}", 
+                res.body = try std.fmt.allocPrint(req.arena,
+                    "{{\"session_id\":\"{s}\",\"messages\":[],\"count\":0}}",
                     .{session_id});
                 return;
             }

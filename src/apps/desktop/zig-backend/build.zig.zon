@@ -1,0 +1,17 @@
+.{
+    .name = .desktop_backend,
+    .version = "0.0.0",
+    .fingerprint = 0x492a50539a2ef3fc,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .http = .{
+            .url = "https://github.com/karlseguin/http.zig/archive/refs/heads/master.tar.gz",
+            .hash = "1220e5c727dfcf038da48f63f5d62a2965f1a295356422ede02d3d932e8c916bf8cb",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

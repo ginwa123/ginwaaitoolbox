@@ -12,6 +12,12 @@ pub const SearchMatch = struct {
     snippet: []const u8,
 };
 
+/// Internal struct for grouped file matches
+const MatchInFile = struct {
+    line_number: usize,
+    snippet: []const u8,
+};
+
 pub const SearchInput = struct {
     pattern: []const u8,
     path: []const u8,
@@ -19,6 +25,7 @@ pub const SearchInput = struct {
     head: ?usize = null,
     tail: ?usize = null,
     max_output: ?usize = 1024 * 1024, // default 1MB
+    group_by_file: bool = true, // when true, results are grouped by file
 };
 
 pub const SearchResult = struct {
@@ -269,16 +276,108 @@ pub fn search_result_to_string(allocator: std.mem.Allocator, result: SearchResul
     return try output.toOwnedSlice(allocator);
 }
 
+/// Convert SearchResult to XML string format grouped by file
+/// Multiple matches in the same file are grouped together under a <file> element
+pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: SearchResult) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    if (result.matches.items.len == 0) {
+        return try output.toOwnedSlice(allocator);
+    }
+
+    // Group matches by file
+    var file_groups = std.StringHashMap(std.ArrayList(MatchInFile)).init(allocator);
+    defer {
+        var it = file_groups.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.deinit(allocator);
+        }
+        file_groups.deinit();
+    }
+
+    // Collect all matches grouped by file
+    for (result.matches.items) |m| {
+        const file_entry = try file_groups.getOrPut(m.file);
+        if (!file_entry.found_existing) {
+            file_entry.value_ptr.* = std.ArrayList(MatchInFile).empty;
+        }
+        try file_entry.value_ptr.append(allocator, .{
+            .line_number = m.line_number,
+            .snippet = m.snippet,
+        });
+    }
+
+    // Get total_lines for each file
+    var file_totals = std.StringHashMap(usize).init(allocator);
+    defer file_totals.deinit();
+
+    for (result.matches.items) |m| {
+        if (m.file_total_lines > 0) {
+            try file_totals.put(m.file, m.file_total_lines);
+        }
+    }
+
+    // Output grouped format
+    var it = file_groups.iterator();
+    while (it.next()) |entry| {
+        const file_path = entry.key_ptr.*;
+        const matches_in_file = entry.value_ptr.*;
+
+        const total = file_totals.get(file_path) orelse 0;
+        const trimmed_path = std.mem.trim(u8, file_path, &std.ascii.whitespace);
+
+        // File header
+        try output.appendSlice(allocator, "<file ");
+        try output.appendSlice(allocator, "path=\"");
+        try output.appendSlice(allocator, trimmed_path);
+        try output.appendSlice(allocator, "\" ");
+        try output.appendSlice(allocator, "total=\"");
+        const total_str = try std.fmt.allocPrint(allocator, "{d}", .{total});
+        try output.appendSlice(allocator, total_str);
+        allocator.free(total_str);
+        try output.appendSlice(allocator, "\" ");
+        try output.appendSlice(allocator, "count=\"");
+        const count_str = try std.fmt.allocPrint(allocator, "{d}", .{matches_in_file.items.len});
+        try output.appendSlice(allocator, count_str);
+        allocator.free(count_str);
+        try output.appendSlice(allocator, "\">\n");
+
+        // Each match in this file
+        for (matches_in_file.items) |m| {
+            const trimmed_snippet = std.mem.trim(u8, m.snippet, &std.ascii.whitespace);
+            const match_xml = try std.fmt.allocPrint(allocator,
+                \\  <m><l>{d}</l><s>{s}</s></m>
+            
+            , .{
+                m.line_number,
+                trimmed_snippet,
+            });
+            try output.appendSlice(allocator, match_xml);
+            allocator.free(match_xml);
+        }
+
+        try output.appendSlice(allocator, "</file>\n");
+    }
+
+    return try output.toOwnedSlice(allocator);
+}
+
 pub const search_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "search",
         .description =
         \\Search for a pattern in files using ripgrep.
-        \\Returns: f=file, l=line_number, t=file_total_lines, s=snippet for each match.
+        \\Results are grouped by file by default. Response format:
+        \\<file path="path/to/file.zig" total="100" count="3">
+        \\  <m><l>10</l><s>snippet at line 10</s></m>
+        \\  <m><l>25</l><s>snippet at line 25</s></m>
+        \\  <m><l>42</l><s>snippet at line 42</s></m>
+        \\</file>
+        \\Where: total=file total lines, count=number of matches in this file.
         \\
         \\- Use this to locate symbols, functions, or types before reading.
-        \\- t is the total line count of the file, not the number of matches.
         \\- Prefer this over bash+rg for code navigation.
         ,
         .parameters = .{

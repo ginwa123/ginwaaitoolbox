@@ -57,11 +57,11 @@ const update_worker_description = llm_history.update_worker_description;
 const handle_tool = @import("handle_tool.zig");
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const StreamingContext = @import("workflow.zig").StreamingContext;
-const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
+const BuildSkillContent = @import("build_messages_for_agent_prompt.zig").BuildSkillContent;
 const SaveSkill = @import("session_skills.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
-const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
+const buildMcpTools = @import("build_messages_for_agent_prompt.zig");
 
 const MAX_SUB_AGENTS = 20;
 
@@ -110,24 +110,34 @@ pub fn execute_sub_agent_tool(
             };
             const exec_result = try entry.exec(ctx, tc);
 
+            // Capture output_allocated BEFORE we copy the result
+            const needs_free = exec_result.output_allocated;
+
+            // Transfer ownership of output to result
             var result = SubAgentToolResult{
                 .output = exec_result.output,
+                .output_allocated = needs_free,
                 .temperature = exec_result.temperature,
                 .is_thinking = exec_result.is_thinking,
                 .skill_save = exec_result.skill_save,
                 .agent_save = exec_result.agent_save,
             };
+            // Clear flag so deinit doesn't double-free
+            const mutable_for_deinit = result;
+            var to_deinit = mutable_for_deinit;
+            to_deinit.output_allocated = false;
+            to_deinit.deinit(ctx.allocator);
 
             // Auto-save skill if this tool loaded one
             if (entry.auto_save_skill) {
-                if (parseSkillFromResult(exec_result.output)) |info| {
+                if (parseSkillFromResult(result.output)) |info| {
                     result.skill_save = SkillSaveInfo{ .name = info.name, .content = info.content };
                 }
             }
 
             // Auto-save agent if this tool loaded one
             if (entry.auto_save_agent) {
-                if (parseAgentFromResult(exec_result.output)) |name| {
+                if (parseAgentFromResult(result.output)) |name| {
                     result.agent_save = AgentSaveInfo{ .name = name };
                 }
             }
@@ -535,7 +545,7 @@ fn runSubAgentThread(
         parent_id,
     );
 
-    llm_history.remove_worker(thread_alloc, database, worker_id) catch {
+    llm_history.removeWorker(thread_alloc, database, worker_id) catch {
         log.errFmt("Failed to remove worker from database for session {s}", .{sessionId}) catch {};
     };
 

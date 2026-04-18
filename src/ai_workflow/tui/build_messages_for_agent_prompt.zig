@@ -1,4 +1,5 @@
 const std = @import("std");
+const json = std.json;
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const llm_history = @import("llm_history.zig");
@@ -8,8 +9,15 @@ const prompt = tree1_mod.prompt;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_messages = @import("transform_llm_history_to_agent_messages.zig");
 const tool_models = tree1_mod.tool_models;
+const config_mod = tree1_mod.config;
+const http_client = tree1_mod.http_client;
 
-pub fn BuildMessages(
+const AgentTool = tool_models.AgentTool;
+const AgentToolFunction = tool_models.AgentToolFunction;
+const ToolParameters = tool_models.ToolParameters;
+const ToolProperty = tool_models.ToolProperty;
+
+pub fn buildMessages(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     cwd: []const u8,
@@ -110,5 +118,401 @@ pub fn formatRelativeTime(seconds: i64) []const u8 {
     } else {
         return "> 24h";
     }
+}
+
+/// Build skills content string from database for persistence
+pub fn BuildSkillContent(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    if (session_id.len == 0) {
+        return allocator.dupe(u8, "");
+    }
+
+    var skillsBuilder: std.ArrayList(u8) = .empty;
+    errdefer skillsBuilder.deinit(allocator);
+
+    const sql = "SELECT skill_name, content FROM session_skills WHERE session_id = ?";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    var hasSkills = false;
+    while (try rows.next()) |row| {
+        hasSkills = true;
+        const skill_name = row.values[0];
+        const content = row.values[1];
+        try skillsBuilder.appendSlice(allocator, "### ");
+        try skillsBuilder.appendSlice(allocator, skill_name);
+        try skillsBuilder.appendSlice(allocator, "\n\n");
+        try skillsBuilder.appendSlice(allocator, content);
+        try skillsBuilder.appendSlice(allocator, "\n\n");
+        row.deinit(allocator);
+    }
+
+    if (!hasSkills) {
+        return allocator.dupe(u8, "");
+    }
+
+    // Prepend the header to the existing content
+    const header = "\n\n## Loaded Skills\n\n";
+    const result = try allocator.alloc(u8, header.len + skillsBuilder.items.len);
+    @memcpy(result[0..header.len], header);
+    @memcpy(result[header.len..], skillsBuilder.items);
+    return result;
+}
+
+/// Strip SSE "data:" prefix from response body if present
+/// MCP servers may return responses in SSE format: "data: {...}\n\n"
+fn stripSsePrefix(body: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "data:")) {
+        const json_start = trimmed["data:".len..];
+        const json_trimmed = std.mem.trim(u8, json_start, " \t");
+        return json_trimmed;
+    }
+    return null;
+}
+
+/// Error types for MCP tool fetching
+pub const McpToolError = error{
+    ConfigLoadError,
+    HttpRequestError,
+    JsonParseError,
+    InvalidResponse,
+    OutOfMemory,
+};
+
+/// Header struct for MCP requests
+const McpHeader = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+/// MCP Tool response from server
+const McpToolResponse = struct {
+    name: []const u8,
+    description: []const u8,
+    inputSchema: InputSchema,
+};
+
+const InputSchema = struct {
+    @"type": []const u8,
+    properties: json.Value,
+    required: ?[]const []const u8 = null,
+};
+
+/// List tools response
+const ListToolsResult = struct {
+    tools: []const McpToolResponse,
+};
+
+/// Fetch MCP tools from all configured servers
+pub fn build_mcp_tools_run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) !?[]tool_models.AgentTool {
+    // Check if mcpServers is configured
+    if (config.mcpServers == null) {
+        return null;
+    }
+
+    const mcp_value = config.mcpServers.?;
+    const mcp_servers = switch (mcp_value) {
+        .object => |obj| obj,
+        else => return null,
+    };
+
+    var all_tools: std.ArrayList(AgentTool) = .empty;
+    defer all_tools.deinit(allocator);
+
+    // Iterate over each MCP server
+    var server_iter = mcp_servers.iterator();
+    while (server_iter.next()) |entry| {
+        const server_name = entry.key_ptr.*;
+        const server_config = entry.value_ptr.*;
+
+        const server_obj = switch (server_config) {
+            .object => |obj| obj,
+            else => continue,
+        };
+
+        // Get URL
+        const url_value = server_obj.get("url") orelse continue;
+        const url = url_value.string;
+
+        // Build headers
+        var headers: std.ArrayList(McpHeader) = .empty;
+        defer headers.deinit(allocator);
+
+        if (server_obj.get("headers")) |headers_value| {
+            const headers_obj = switch (headers_value) {
+                .object => |obj| obj,
+                else => continue,
+            };
+            var header_iter = headers_obj.iterator();
+            while (header_iter.next()) |h_entry| {
+                const key = h_entry.key_ptr.*;
+                const value = switch (h_entry.value_ptr.*) {
+                    .string => |s| s,
+                    else => continue,
+                };
+                try headers.append(allocator, .{ .key = key, .value = value });
+            }
+        }
+
+        // Fetch tools from this server
+        const tools = try fetchToolsFromServer(allocator, url, headers.items, server_name);
+
+        try all_tools.appendSlice(allocator, tools);
+    }
+
+    return try all_tools.toOwnedSlice(allocator);
+}
+
+/// Fetch tools from a single MCP server
+fn fetchToolsFromServer(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    _headers: []const McpHeader,
+    server_name: []const u8,
+) ![]tool_models.AgentTool {
+    const tools_url = url;
+
+    var client = http_client.HttpClient.init(allocator);
+    defer client.deinit();
+
+    const request_body = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{}}");
+    defer allocator.free(request_body);
+
+    var headers_hash = std.StringHashMap([]const u8).init(allocator);
+    defer headers_hash.deinit();
+
+    try headers_hash.put("Accept", "application/json, text/event-stream");
+
+    for (_headers) |header| {
+        try headers_hash.put(header.key, header.value);
+    }
+
+    const result = client.post(tools_url, request_body, headers_hash) catch |err| {
+        std.log.warn("Failed to fetch MCP tools from {s}: {s}", .{ server_name, @errorName(err) });
+        return error.HttpRequestError;
+    };
+    defer allocator.free(result.body);
+
+    if (result.status_code != 200) {
+        std.log.warn("MCP server {s} returned status {d}", .{ server_name, result.status_code });
+        return error.InvalidResponse;
+    }
+
+    const clean_body = stripSsePrefix(result.body);
+    const body_to_parse = if (clean_body) |b| b else result.body;
+
+    std.log.warn("MCP response from {s}: {d} bytes", .{ server_name, body_to_parse.len });
+
+    var parse_arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer parse_arena.deinit();
+
+    const parsed = json.parseFromSlice(json.Value, parse_arena.allocator(), body_to_parse, .{
+        .ignore_unknown_fields = true,
+        .duplicate_field_behavior = .use_last,
+    }) catch |err| {
+        std.log.warn("Failed to parse MCP response from {s}: {s}", .{ server_name, @errorName(err) });
+        return error.JsonParseError;
+    };
+
+    const root = switch (parsed.value) {
+        .object => |obj| obj,
+        else => {
+            std.log.warn("Invalid MCP response from {s}: expected object", .{server_name});
+            return error.InvalidResponse;
+        },
+    };
+
+    const result_value = root.get("result") orelse {
+        std.log.warn("Invalid MCP response from {s}: missing result", .{server_name});
+        return error.InvalidResponse;
+    };
+
+    const result_obj = switch (result_value) {
+        .object => |obj| obj,
+        else => {
+            std.log.warn("Invalid MCP response from {s}: result not an object", .{server_name});
+            return error.InvalidResponse;
+        },
+    };
+
+    const tools_value = result_obj.get("tools") orelse {
+        std.log.warn("Invalid MCP response from {s}: missing tools", .{server_name});
+        return error.InvalidResponse;
+    };
+
+    const tools_array = switch (tools_value) {
+        .array => |arr| arr,
+        else => {
+            std.log.warn("Invalid MCP response from {s}: tools not an array", .{server_name});
+            return error.InvalidResponse;
+        },
+    };
+
+    var agent_tools: std.ArrayList(AgentTool) = .empty;
+    defer agent_tools.deinit(allocator);
+
+    for (tools_array.items) |tool_value| {
+        const tool_obj: ?std.json.ObjectMap = switch (tool_value) {
+            .object => |obj| obj,
+            .null, .bool, .integer, .float, .string, .array, .number_string => null,
+        };
+        const tool_obj_inner = tool_obj orelse continue;
+
+        const name_value = tool_obj_inner.get("name") orelse continue;
+        const name: []const u8 = switch (name_value) {
+            .string => |s| s,
+            .null, .bool, .integer, .float, .array, .object, .number_string => continue,
+        };
+
+        const desc_value = tool_obj_inner.get("description") orelse continue;
+        const description: []const u8 = switch (desc_value) {
+            .string => |s| s,
+            .null, .bool, .integer, .float, .array, .object, .number_string => continue,
+        };
+
+        const schema_value = tool_obj_inner.get("inputSchema") orelse continue;
+        const schema_obj: ?std.json.ObjectMap = switch (schema_value) {
+            .object => |obj| obj,
+            .null, .bool, .integer, .float, .string, .array, .number_string => null,
+        };
+        const schema_obj_inner = schema_obj orelse continue;
+
+        const props_value = schema_obj_inner.get("properties") orelse continue;
+        const properties = try parseProperties(allocator, props_value, server_name);
+
+        var required: []const []const u8 = &[_][]const u8{};
+        if (schema_obj_inner.get("required")) |req_value| {
+            const req_array: ?[]const json.Value = switch (req_value) {
+                .array => |arr| arr.items,
+                else => null,
+            };
+            if (req_array) |items| {
+                var req_list: std.ArrayList([]const u8) = .empty;
+                defer req_list.deinit(allocator);
+                for (items) |req_item| {
+                    const req_str: []const u8 = switch (req_item) {
+                        .string => |s| s,
+                        .null, .bool, .integer, .float, .array, .object, .number_string => continue,
+                    };
+                    try req_list.append(allocator, try allocator.dupe(u8, req_str));
+                }
+                required = try req_list.toOwnedSlice(allocator);
+            }
+        }
+
+        const agent_tool = AgentTool{
+            .type = "function",
+            .function = AgentToolFunction{
+                .name = try std.fmt.allocPrint(allocator, "mcp_{s}_{s}", .{ server_name, name }),
+                .description = try allocator.dupe(u8, description),
+                .parameters = ToolParameters{
+                    .type = "object",
+                    .properties = properties,
+                    .required = required,
+                },
+            },
+        };
+
+        try agent_tools.append(allocator, agent_tool);
+    }
+
+    return try agent_tools.toOwnedSlice(allocator);
+}
+
+/// Parse JSON properties into ToolProperty array
+pub fn parseProperties(
+    allocator: std.mem.Allocator,
+    props_value: json.Value,
+    server_name: []const u8,
+) ![]tool_models.ToolProperty {
+    _ = server_name;
+    const props_obj: ?std.json.ObjectMap = switch (props_value) {
+        .object => |obj| obj,
+        .null, .bool, .integer, .float, .string, .array, .number_string => null,
+    };
+    const props_obj_inner = props_obj orelse return &[_]ToolProperty{};
+
+    var properties: std.ArrayList(ToolProperty) = .empty;
+    defer properties.deinit(allocator);
+
+    var prop_iter = props_obj_inner.iterator();
+    while (prop_iter.next()) |entry| {
+        const prop_name = entry.key_ptr.*;
+        const prop_value = entry.value_ptr.*;
+
+        const prop_obj: ?std.json.ObjectMap = switch (prop_value) {
+            .object => |obj| obj,
+            .null, .bool, .integer, .float, .string, .array, .number_string => null,
+        };
+        const prop_obj_inner = prop_obj orelse continue;
+
+        const type_value = prop_obj_inner.get("type") orelse continue;
+        const prop_type: []const u8 = switch (type_value) {
+            .string => |s| s,
+            .null, .bool, .integer, .float, .array, .object, .number_string => continue,
+        };
+
+        var prop_desc: []const u8 = "";
+        if (prop_obj_inner.get("description")) |desc_value| {
+            prop_desc = switch (desc_value) {
+                .string => |s| s,
+                .null, .bool, .integer, .float, .array, .object, .number_string => "",
+            };
+        }
+
+        try properties.append(allocator, ToolProperty{
+            .name = try allocator.dupe(u8, prop_name),
+            .type = try allocator.dupe(u8, prop_type),
+            .description = try allocator.dupe(u8, prop_desc),
+        });
+    }
+
+    return try properties.toOwnedSlice(allocator);
+}
+
+const memory_files = [_][]const u8{ "MEMORY.md", "AGENT.md", "CLAUDE.md" };
+
+pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
+
+    const effective_cwd = if (cwd.len == 0) "." else cwd;
+    const absolute_cwd = if (std.fs.path.isAbsolute(effective_cwd))
+        try allocator.dupe(u8, effective_cwd)
+    else
+        try std.fs.cwd().realpathAlloc(allocator, effective_cwd);
+    defer allocator.free(absolute_cwd);
+
+    for (memory_files) |filename| {
+        const file_path = try std.fs.path.join(allocator, &[_][]const u8{ absolute_cwd, filename });
+        defer allocator.free(file_path);
+
+        const file = std.fs.openFileAbsolute(file_path, .{
+            .mode = .read_write,
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                const new_file = try std.fs.createFileAbsolute(file_path, .{});
+                new_file.close();
+                continue;
+            }
+            return err;
+        };
+        defer file.close();
+
+        const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+        defer allocator.free(content);
+
+        try result.appendSlice(allocator, content);
+
+        if (content.len > 0 and content[content.len - 1] != '\n') {
+            try result.append(allocator, '\n');
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
 }
 

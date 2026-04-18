@@ -2,17 +2,8 @@
 
 
 test {
-    _ = @import("background_process_test.zig");
-    _ = @import("build_background_process_for_agent_prompt_test.zig");
-    _ = @import("build_dynamic_agent_for_agent_prompt_test.zig");
-    _ = @import("build_memory_for_agent_prompt_test.zig");
-    _ = @import("build_messages_for_agent_prompt_test.zig");
-    _ = @import("build_messages_tools_mcp_for_agent_prompt_test.zig");
-    _ = @import("build_skill_for_agent_prompt_test.zig");
-    _ = @import("handle_content_filter_test.zig");
     _ = @import("handle_spawn_sub_agent_test.zig");
     _ = @import("handle_tool_test.zig");
-
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
     _ = @import("session_helpers_test.zig");

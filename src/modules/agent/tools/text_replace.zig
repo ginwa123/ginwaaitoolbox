@@ -246,13 +246,18 @@ pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult) []c
 }
 
 pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const u8, old_str: []const u8) []const u8 {
-    const error_msg: []const u8 = switch (result) {
+    const error_msg = switch (result) {
         error.OldStrNotFound => std.fmt.allocPrint(allocator, "Text '{s}' not found in file '{s}'. Make sure the text exists exactly once in the file.", .{ old_str, path }) catch return "<success>false</success><error>UnknownError</error>",
         error.OldStrNotUnique => std.fmt.allocPrint(allocator, "Text '{s}' appears multiple times in file '{s}'. Expand old_str to include more context to make it unique.", .{ old_str, path }) catch return "<success>false</success><error>UnknownError</error>",
         error.PathNotFound => std.fmt.allocPrint(allocator, "File '{s}' not found. Check if the path is correct.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
         else => std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(result)}) catch return "<success>false</success><error>UnknownError</error>",
     };
-    return std.fmt.allocPrint(allocator, "<success>false</success><error>{s}</error>", .{error_msg}) catch "<success>false</success><error>UnknownError</error>";
+    const output = std.fmt.allocPrint(allocator, "<success>false</success><error>{s}</error>", .{error_msg}) catch {
+        allocator.free(error_msg);
+        return "<success>false</success><error>UnknownError</error>";
+    };
+    allocator.free(error_msg);
+    return output;
 }
 
 /// Properties for text_replace tool

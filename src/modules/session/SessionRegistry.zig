@@ -162,7 +162,7 @@ pub const SessionRegistry = struct {
         // Re-create key since fetchPut might have consumed it
         const cancelled_key = try self.allocator.dupe(u8, session_id);
         errdefer self.allocator.free(cancelled_key);
-        
+
         const existing_cancelled = try self.cancelled.fetchPut(cancelled_key, cancelled_atomic);
         if (existing_cancelled) |kv| {
             // Key already existed - cleanup our new atomic
@@ -179,7 +179,7 @@ pub const SessionRegistry = struct {
         }
         const queue_key = try self.allocator.dupe(u8, session_id);
         errdefer self.allocator.free(queue_key);
-        
+
         const existing_queue = try self.message_queues.fetchPut(queue_key, queue);
         if (existing_queue) |kv| {
             // Key already existed - cleanup our new queue
@@ -225,7 +225,7 @@ pub const SessionRegistry = struct {
         }
     }
 
-    pub fn is_registered(self: *Self, session_id: []const u8) bool {
+    pub fn isRegistered(self: *Self, session_id: []const u8) bool {
         return self.activity.contains(session_id);
     }
 
@@ -237,13 +237,13 @@ pub const SessionRegistry = struct {
         }
     }
 
-    pub fn mark_idle(self: *Self, session_id: []const u8) void {
+    pub fn markIdle(self: *Self, session_id: []const u8) void {
         if (self.activity.get(session_id)) |atomic| {
             _ = atomic.fetchSub(1, .seq_cst);
         }
     }
 
-    pub fn mark_stopped(self: *Self, session_id: []const u8) void {
+    pub fn markStopped(self: *Self, session_id: []const u8) void {
         self.register_mutex.lock();
         defer self.register_mutex.unlock();
 
@@ -289,7 +289,7 @@ pub const SessionRegistry = struct {
     }
 
     /// Check if a session is cancelled
-    pub fn is_cancelled(self: *Self, session_id: []const u8) bool {
+    pub fn isCancelled(self: *Self, session_id: []const u8) bool {
         if (self.cancelled.get(session_id)) |atomic| {
             return atomic.load(.seq_cst);
         }
@@ -334,7 +334,7 @@ pub const SessionRegistry = struct {
 
     // ========== Message Queues ==========
 
-    pub fn queue_message(self: *Self, session_id: []const u8, message: []const u8) void {
+    pub fn queueMessage(self: *Self, session_id: []const u8, message: []const u8) void {
         self.register_mutex.lock();
         defer self.register_mutex.unlock();
 
@@ -355,7 +355,7 @@ pub const SessionRegistry = struct {
 
     /// Get and clear all queued messages. Returns null if queue is empty.
     /// Caller must call deinit() on the returned list.
-    pub fn get_queue_messages(self: *Self, session_id: []const u8) ?std.ArrayList([]const u8) {
+    pub fn getQueueMessages(self: *Self, session_id: []const u8) ?std.ArrayList([]const u8) {
         if (self.message_queues.get(session_id)) |queue| {
             if (queue.items.len == 0) return null;
             const result = queue.*;
@@ -366,7 +366,7 @@ pub const SessionRegistry = struct {
     }
 
     /// Delete a specific message from the queue (removes first occurrence)
-    pub fn delete_queue_messages(self: *Self, session_id: []const u8, message: []const u8) void {
+    pub fn deleteQueueMessages(self: *Self, session_id: []const u8, message: []const u8) void {
         self.register_mutex.lock();
         defer self.register_mutex.unlock();
 

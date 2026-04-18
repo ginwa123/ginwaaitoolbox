@@ -25,17 +25,14 @@ const logger_mod = nalar_mod.logger;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
-const upsert_worker = llm_history.upsert_worker;
-const update_worker_activity = llm_history.update_worker_activity;
-const remove_worker = llm_history.remove_worker;
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
-const BuildMessages = @import("build_messages_for_agent_prompt.zig").BuildMessages;
+const buildMessages = @import("build_messages_for_agent_prompt.zig").buildMessages;
 const getMessages = session_helpers.getMessages;
 const getLatestMessage = session_helpers.getLatestMessage;
 const mark_messages_not_for_llm = @import("llm_history.zig");
 const handle_set_agent_properties = @import("handle_set_agent_properties.zig");
-const BuildMemoryForAgent = @import("build_memory_for_agent_prompt.zig").BuildMemoryForAgent;
+const BuildMemoryForAgent = @import("build_messages_for_agent_prompt.zig").BuildMemoryForAgent;
 const WriteFileTool = nalar_mod.write_file;
 const TextReplaceTool = nalar_mod.text_replace_tool;
 
@@ -51,16 +48,17 @@ const ResponseType = on_event_sent.ResponseType;
 const Response = on_event_sent.Response;
 
 const handle_content_filter = @import("handle_content_filter.zig");
-const BuildSkillContent = @import("build_skill_for_agent_prompt.zig").BuildSkillContent;
+const BuildSkillContent = @import("build_messages_for_agent_prompt.zig").BuildSkillContent;
 const BuildDynamicAgentContent = @import("build_dynamic_agent_for_agent_prompt.zig").BuildDynamicAgentContent;
 const BuildBackgroundProcessContent = @import("build_background_process_for_agent_prompt.zig").BuildBackgroundProcessPrompt;
 const save_skill_mod = @import("session_skills.zig");
-const buildMcpTools = @import("build_messages_tools_mcp_for_agent_prompt.zig");
+const buildMcpTools = @import("build_messages_for_agent_prompt.zig");
 const config_mod = nalar_mod.config;
 pub const session_registry = nalar_mod.session.session_registry;
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const SpawnSubAgentTool = nalar_mod.agents;
 const tool_registry = @import("tool_registry.zig");
+
 /// Compaction configuration constants
 const COMPACTION_CONFIG = struct {
     pub const target_body_size: usize = 50 * 1024; // 50KB target
@@ -132,25 +130,30 @@ pub const TUIWorkflow = struct {
     }
 
     fn run_internal(self: *TUIWorkflow, parent_allocator: std.mem.Allocator, session_id: []const u8, message: []const u8, cwd: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, config: *const config_mod.LlmConfig) !void {
+        var is_have_queue_message = false;
         // Register this session for activity/cancellation tracking
         if (session_registry.get_global_registry()) |registry| {
-            try registry.register(session_id);
+            if (registry.isRegistered(session_id) == false) {
+                try registry.register(session_id);
+            }
         }
 
         // Also register in worker table for enrichment info
-        upsert_worker(parent_allocator, self.db, session_id, session_id, cwd) catch {
+        llm_history.upsert_worker(parent_allocator, self.db, session_id, session_id, cwd) catch {
             self.logger.warnFmt("Failed to upsert worker info for {s}", .{session_id}) catch {};
         };
 
         // Ensure cleanup happens even on error - balances mark_running() and unregisters session
         defer {
-            if (session_registry.get_global_registry()) |registry| {
-                registry.mark_idle(session_id);
-                registry.mark_stopped(session_id);
-                registry.unregister(session_id);
+            if (is_have_queue_message == false) {
+                if (session_registry.get_global_registry()) |registry| {
+                    registry.markIdle(session_id);
+                    registry.markStopped(session_id);
+                    registry.unregister(session_id);
+                }
+                // Also remove from worker table
+                llm_history.removeWorker(parent_allocator, self.db, session_id) catch {};
             }
-            // Also remove from worker table
-            remove_worker(parent_allocator, self.db, session_id) catch {};
         }
 
         const initial_agent_state = try get_current_agent_by_session_id(
@@ -163,12 +166,13 @@ pub const TUIWorkflow = struct {
         if (session_registry.get_global_registry()) |registry| {
             const is_running = registry.is_running(session_id);
             if (is_running) {
-                _ = registry.queue_message(session_id, message);
+                _ = registry.queueMessage(session_id, message);
                 self.logger.debugFmt("WORKFLOW: queued message for session {s}", .{session_id}) catch {};
+                is_have_queue_message = true;
                 return;
             }
 
-            _ = registry.queue_message(session_id, message);
+            _ = registry.queueMessage(session_id, message);
         }
 
         var retryCount: usize = 0;
@@ -193,12 +197,12 @@ pub const TUIWorkflow = struct {
 
         while (true) {
             if (session_registry.get_global_registry()) |registry| {
-                if (registry.is_cancelled(session_id)) {
+                if (registry.isCancelled(session_id)) {
                     _ = try self.logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
                     break;
                 }
 
-                const queued_messages = registry.get_queue_messages(session_id);
+                const queued_messages = registry.getQueueMessages(session_id);
                 if (queued_messages) |messages| {
                     for (messages.items) |msg| {
                         _ = try llm_history.saveMessage(parent_allocator, self.db, .{
@@ -223,14 +227,14 @@ pub const TUIWorkflow = struct {
                             .is_input = true,
                             .is_output = false,
                         });
-                        _ = registry.delete_queue_messages(session_id, msg);
+                        _ = registry.deleteQueueMessages(session_id, msg);
                     }
                 }
                 registry.mark_running(session_id);
             }
 
             // Update worker activity in DB to show we're actively processing
-            update_worker_activity(parent_allocator, self.db, session_id) catch {};
+            llm_history.updateWorkerActivity(parent_allocator, self.db, session_id) catch {};
 
             var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
             defer arenaAllocatorWhileLoop.deinit();
@@ -265,7 +269,7 @@ pub const TUIWorkflow = struct {
                 }
                 break :blk max_token;
             };
-            const initialMessages = try BuildMessages(allocator, self.db, cwd, session_id, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id), merged_tools);
+            const initialMessages = try buildMessages(allocator, self.db, cwd, session_id, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id), merged_tools);
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
@@ -277,7 +281,7 @@ pub const TUIWorkflow = struct {
                 }
             }
 
-            const res_dynamic_agent = self.call_dynamic_agent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, merged_tools) catch |err| {
+            const res_dynamic_agent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, api_key, model, base_url, session_id, merged_tools) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{session_id}) catch {};
                     break;
@@ -428,7 +432,7 @@ pub const TUIWorkflow = struct {
 
         _ = try self.logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{session_id});
     }
-    fn call_dynamic_agent(
+    fn callDynamicAgent(
         self: *TUIWorkflow,
         allocator: std.mem.Allocator,
         messages_list: *std.ArrayList(agent.AgentMessage),
