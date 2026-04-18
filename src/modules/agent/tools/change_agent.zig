@@ -19,15 +19,15 @@ const agents = struct {
     /// Caller owns the returned memory and must free it with allocator.free()
     pub fn parseAgent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
         // Placeholder implementation - will be replaced when agents.zig is available
-        // Try to find agent in .nalar/agents/<agent_name>/AGENT.md
+        // Try to find agent in .nalar/agents/<agent_name>/NALAR.md
         const LOCAL_AGENTS_DIR = ".nalar/agents";
-        const AGENT_FILE_NAME = "AGENT.md";
+        const AGENT_FILE_NAME = "NALAR.md";
 
         // Get current working directory
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd = std.posix.getcwd(&cwd_buf) catch return null;
 
-        // Build path: cwd/.nalar/agents/<agent_name>/AGENT.md
+        // Build path: cwd/.nalar/agents/<agent_name>/NALAR.md
         const agent_path = std.fs.path.join(allocator, &[_][]const u8{
             cwd,
             LOCAL_AGENTS_DIR,
@@ -73,9 +73,9 @@ const agents = struct {
         while (iter.next() catch null) |entry| {
             if (entry.kind != .directory) continue;
 
-            // Try to read AGENT.md to get name and description
+            // Try to read NALAR.md to get name and description
             const agent_file_path = std.fs.path.join(allocator, &[_][]const u8{
-                agents_path, entry.name, "AGENT.md",
+                agents_path, entry.name, "NALAR.md",
             }) catch continue;
             defer allocator.free(agent_file_path);
 

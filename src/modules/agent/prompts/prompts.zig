@@ -59,7 +59,7 @@ pub const TDD = execution.TDD;
 
 pub const MemoryPrompt = memory.MemoryPrompt;
 pub const GitPrompt = memory.GitPrompt;
-pub const AgentMdAutoUpdate = memory.AgentMdAutoUpdate;
+pub const NalarMdAutoUpdate = memory.NalarMdAutoUpdate;
 pub const TaskManagementPrompt = memory.TaskManagementPrompt;
 
 pub const CompactionAgent = special.CompactionAgent;

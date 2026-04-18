@@ -10,9 +10,9 @@ pub const MemoryPrompt =
     \\**Task Tracking:** `.nalar/tasks.md` (append-only). Format: `## [status] YYYYMMDD_HHMMSS — task`
     \\- `[active]` when starting, `[x]` per completed subtask, `[done]` on finish.
     \\
-    \\**AGENT.md:** Update after project changes. Keep concise (~200 lines). One change = one update.
+    \\**NALAR.md:** Update after project changes. Keep concise (~200 lines). One change = one update.
     \\
-    \\**MEMORY.md:** AI learning & mistakes — document for future reference.
+    \\**NALAR.md:** AI learning & mistakes — document for future reference.
     \\
     \\## 📚 Self-Learning: Environment & Conventions
     \\
@@ -23,8 +23,8 @@ pub const MemoryPrompt =
     \\4. **Error patterns** — Learn from errors and how they were resolved
     \\
     \\**Update memory files PROACTIVELY:**
-    \\* After discovering a convention → update AGENT.md or project docs
-    \\* After solving an error → update MEMORY.md with what worked
+    \\* After discovering a convention → update NALAR.md or project docs
+    \\* After solving an error → update NALAR.md with what worked
     \\* After learning a workflow → consider creating a skill
     \\
     \\**Self-Review Checklist (AFTER EVERY TASK):**
@@ -69,10 +69,10 @@ pub const GitPrompt =
     \\- Original intent behind abstractions
 ;
 
-pub const AgentMdAutoUpdate =
-    \\## AGENT.md Auto-Update Rule
+pub const NalarMdAutoUpdate =
+    \\## NALAR.md Auto-Update Rule
     \\
-    \\**MANDATORY: Update AGENT.md after any project change.**
+    \\**MANDATORY: Update NALAR.md after any project change.**
     \\
     \\Keep concise (~200 lines). Include: project overview, build commands,
     \\file structure, key conventions. One change = one update.

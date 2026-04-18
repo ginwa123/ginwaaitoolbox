@@ -8,7 +8,7 @@ test "constants are defined" {
     try std.testing.expect(agents.MAX_AGENT_SIZE == 100 * 1024); // 100KB
     try std.testing.expectEqualStrings("nalar", agents.APP_NAME);
     try std.testing.expectEqualStrings(".nalar/agents", agents.LOCAL_AGENTS_DIR);
-    try std.testing.expectEqualStrings("AGENT.md", agents.AGENT_FILE_NAME);
+    try std.testing.expectEqualStrings("NALAR.md", agents.AGENT_FILE_NAME);
 }
 
 // Test: AgentInfo struct exists and can be instantiated
@@ -231,7 +231,7 @@ test "listAgents returns array" {
 test "loadAgentFromPath returns null for non-existent file" {
     const allocator = std.testing.allocator;
 
-    const content = agents.loadAgentFromPath(allocator, "/nonexistent/path/AGENT.md");
+    const content = agents.loadAgentFromPath(allocator, "/nonexistent/path/NALAR.md");
     try std.testing.expect(content == null);
 }
 
@@ -256,16 +256,16 @@ test "integration: create and load agent" {
     var dir = tmp_dir.dir;
     try dir.makePath(agent_dir);
 
-    // Create AGENT.md file
+    // Create NALAR.md file
     const agent_content = "---\nname: test-agent\ndescription: A test agent for integration testing\n---\n# Test Agent\n\nThis is test content.\n";
 
-    const agent_file = try dir.createFile("test-agent/AGENT.md", .{});
+    const agent_file = try dir.createFile("test-agent/NALAR.md", .{});
     defer agent_file.close();
     try agent_file.writeAll(agent_content);
 
     // Get the full path to the agent file
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const agent_path = try dir.realpath("test-agent/AGENT.md", &path_buf);
+    const agent_path = try dir.realpath("test-agent/NALAR.md", &path_buf);
 
     // Load the agent content
     const loaded_content = agents.loadAgentFromPath(allocator, agent_path) orelse {

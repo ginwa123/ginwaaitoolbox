@@ -485,7 +485,7 @@ pub fn parseProperties(
     return try properties.toOwnedSlice(allocator);
 }
 
-const memory_files = [_][]const u8{ "MEMORY.md", "AGENT.md", "CLAUDE.md" };
+const memory_files = [_][]const u8{ "NALAR.md", "CLAUDE.md" };
 
 pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;

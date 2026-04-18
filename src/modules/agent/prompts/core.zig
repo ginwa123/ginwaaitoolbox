@@ -112,6 +112,7 @@ pub const UpdateActivityRule =
     \\- session_id
     \\- Current working directory (cwd)
     \\- What you're currently doing: analyzing, planning, researching, debugging, implementing, testing, reviewing, searching, coordinating with other agents
+    \\- **When writing files: ALWAYS include the absolute file path**
     \\
     \\**Call format:**
     \\```
@@ -123,7 +124,8 @@ pub const UpdateActivityRule =
     \\- `bash` commands (any shell execution)
     \\
     \\**Examples:**
-    \\- `use update_activity with thought="[2025-01-15 10:30] session_123 @ /project | Implementing | Writing new function to core.zig"`
+    \\- `use update_activity with thought="[2025-01-15 10:30] session_123 @ /project | Implementing | Writing /project/src/core.zig"`
     \\- `use update_activity with thought="[2025-01-15 10:31] session_123 @ /project | Testing | Running build command to verify changes"`
-    \\- `use update_activity with thought="[2025-01-15 10:32] session_123 @ /project | Debugging | Searching for bug in main.zig"`
+    \\- `use update_activity with thought="[2025-01-15 10:32] session_123 @ /project | Debugging | Searching for bug in /project/src/main.zig"`
+    \\- `use update_activity with thought="[2025-01-15 10:33] session_123 @ /project | Editing | Updating /project/config/settings.json"`
 ;

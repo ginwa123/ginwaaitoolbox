@@ -13,8 +13,8 @@ fn create_test_agent_file(dir: std.fs.Dir, agent_name: []const u8, description: 
     const agent_content = try std.fmt.allocPrint(std.testing.allocator, "---\nname: {s}\ndescription: \"{s}\"\n---\n\n{s}", .{ agent_name, description, content });
     defer std.testing.allocator.free(agent_content);
 
-    // Create the AGENT.md file
-    const file_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ agent_name, "AGENT.md" });
+    // Create the NALAR.md file
+    const file_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ agent_name, "NALAR.md" });
     defer std.testing.allocator.free(file_path);
 
     const file = try dir.createFile(file_path, .{});
@@ -81,7 +81,7 @@ test "full agent workflow - list and get agents" {
     }
 
     // Test 2: Verify we can parse the agent files we created
-    const test_agent_path = try std.fs.path.join(allocator, &[_][]const u8{ agents_path, "test-coder", "AGENT.md" });
+    const test_agent_path = try std.fs.path.join(allocator, &[_][]const u8{ agents_path, "test-coder", "NALAR.md" });
     defer allocator.free(test_agent_path);
 
     const loaded_content = agents.loadAgentFromPath(allocator, test_agent_path);
@@ -144,13 +144,13 @@ test "parse_agent returns valid XML" {
     // Create test agent file
     const agent_content = "---\nname: xml-test-agent\ndescription: \"Agent for XML testing\"\n---\n\n# XML Test Agent\n\nThis is content for XML testing.";
 
-    const file = try tmp_dir.dir.createFile(".nalar/agents/xml-test-agent/AGENT.md", .{});
+    const file = try tmp_dir.dir.createFile(".nalar/agents/xml-test-agent/NALAR.md", .{});
     defer file.close();
     try file.writeAll(agent_content);
 
     // Get the path to the agent file
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const agent_file_path = try tmp_dir.dir.realpath(".nalar/agents/xml-test-agent/AGENT.md", &path_buf);
+    const agent_file_path = try tmp_dir.dir.realpath(".nalar/agents/xml-test-agent/NALAR.md", &path_buf);
 
     // Test loading via path
     const input = ChangeAgentInput{
@@ -215,12 +215,12 @@ test "integration with proper cleanup" {
 
     const agent_content = "---\nname: cleanup-test\ndescription: \"Test for cleanup\"\n---\n\n# Cleanup Test";
 
-    const file = try tmp_dir.dir.createFile(".nalar/agents/cleanup-test/AGENT.md", .{});
+    const file = try tmp_dir.dir.createFile(".nalar/agents/cleanup-test/NALAR.md", .{});
     defer file.close();
     try file.writeAll(agent_content);
 
     // Verify file exists
-    const stat = try tmp_dir.dir.statFile(".nalar/agents/cleanup-test/AGENT.md");
+    const stat = try tmp_dir.dir.statFile(".nalar/agents/cleanup-test/NALAR.md");
     try std.testing.expect(stat.size > 0);
 
     // Cleanup
@@ -251,13 +251,13 @@ test "full workflow with multiple agents" {
     try create_test_agent_file(agents_dir, "agent-gamma", "Third test agent", "# Agent Gamma\n\nGamma content.");
 
     // Verify files were created
-    var alpha_file = try agents_dir.openFile("agent-alpha/AGENT.md", .{});
+    var alpha_file = try agents_dir.openFile("agent-alpha/NALAR.md", .{});
     alpha_file.close();
 
-    var beta_file = try agents_dir.openFile("agent-beta/AGENT.md", .{});
+    var beta_file = try agents_dir.openFile("agent-beta/NALAR.md", .{});
     beta_file.close();
 
-    var gamma_file = try agents_dir.openFile("agent-gamma/AGENT.md", .{});
+    var gamma_file = try agents_dir.openFile("agent-gamma/NALAR.md", .{});
     gamma_file.close();
 
     // Test loading each agent
@@ -267,7 +267,7 @@ test "full workflow with multiple agents" {
     const alpha_path = try std.fs.path.join(allocator, &[_][]const u8{
         try tmp_dir.dir.realpath(".nalar/agents", &path_buf),
         "agent-alpha",
-        "AGENT.md",
+        "NALAR.md",
     });
     defer allocator.free(alpha_path);
 
@@ -282,7 +282,7 @@ test "full workflow with multiple agents" {
     const beta_path = try std.fs.path.join(allocator, &[_][]const u8{
         try tmp_dir.dir.realpath(".nalar/agents", &path_buf),
         "agent-beta",
-        "AGENT.md",
+        "NALAR.md",
     });
     defer allocator.free(beta_path);
 
@@ -297,7 +297,7 @@ test "full workflow with multiple agents" {
     const gamma_path = try std.fs.path.join(allocator, &[_][]const u8{
         try tmp_dir.dir.realpath(".nalar/agents", &path_buf),
         "agent-gamma",
-        "AGENT.md",
+        "NALAR.md",
     });
     defer allocator.free(gamma_path);
 

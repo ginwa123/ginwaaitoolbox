@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Maximum size for AGENT.md file (100KB)
+/// Maximum size for NALAR.md file (100KB)
 pub const MAX_AGENT_SIZE: usize = 100 * 1024;
 
 /// App name for config directory
@@ -11,7 +11,7 @@ pub const APP_NAME = "nalar";
 pub const LOCAL_AGENTS_DIR = ".nalar/agents";
 
 /// Agents file name inside each agent folder
-pub const AGENT_FILE_NAME = "AGENT.md";
+pub const AGENT_FILE_NAME = "NALAR.md";
 
 /// Agent information structure
 pub const AgentInfo = struct {
@@ -224,7 +224,7 @@ pub fn freeAgentsPath(allocator: std.mem.Allocator, path: []const u8) void {
 }
 
 /// List all agent files in the agents directory
-/// Returns allocated array of file paths to AGENT.md files inside agent folders
+/// Returns allocated array of file paths to NALAR.md files inside agent folders
 /// Empty files are excluded from the list
 pub fn listAgentFiles(allocator: std.mem.Allocator) ?[][]const u8 {
     const dir_path = resolveAgentsPath(allocator) orelse return null;
@@ -250,10 +250,10 @@ pub fn listAgentFiles(allocator: std.mem.Allocator) ?[][]const u8 {
 
         const folder_name = entry.name;
 
-        // Build path to AGENT.md inside the folder
+        // Build path to NALAR.md inside the folder
         const agent_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, AGENT_FILE_NAME }) catch continue;
 
-        // Check if AGENT.md exists and is non-empty
+        // Check if NALAR.md exists and is non-empty
         const file = std.fs.cwd().openFile(agent_file_path, .{}) catch {
             allocator.free(agent_file_path);
             continue;
