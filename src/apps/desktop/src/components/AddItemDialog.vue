@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
+import { getSystemFolder, listFolder, type FolderEntry } from '../api'
 
 export interface FolderOption {
   name: string
@@ -26,8 +27,6 @@ const error = ref<string | null>(null)
 const currentPath = ref('')
 const breadcrumbs = ref<{ name: string; path: string }[]>([])
 
-const API_BASE = ''
-
 // Navigate to a folder
 const navigateToFolder = (folder: FolderOption) => {
   if (!folder.is_directory) return
@@ -49,8 +48,10 @@ const goBack = () => {
   if (breadcrumbs.value.length > 0) {
     // Go to previous breadcrumb
     const prevCrumb = breadcrumbs.value[breadcrumbs.value.length - 1]
-    currentPath.value = prevCrumb.path
-    breadcrumbs.value = breadcrumbs.value.slice(0, -1)
+    if (prevCrumb) {
+      currentPath.value = prevCrumb.path
+      breadcrumbs.value = breadcrumbs.value.slice(0, -1)
+    }
   } else {
     // Go to root
     currentPath.value = ''
@@ -66,8 +67,10 @@ const navigateToBreadcrumb = (index: number) => {
     breadcrumbs.value = []
   } else {
     const crumb = breadcrumbs.value[index]
-    currentPath.value = crumb.path
-    breadcrumbs.value = breadcrumbs.value.slice(0, index)
+    if (crumb) {
+      currentPath.value = crumb.path
+      breadcrumbs.value = breadcrumbs.value.slice(0, index)
+    }
   }
   fetchFolders(currentPath.value || undefined)
 }
@@ -78,13 +81,10 @@ const fetchFolders = async (path?: string) => {
   error.value = null
 
   try {
-    const url = path
-      ? `${API_BASE}/api/system/folder?path=${encodeURIComponent(path)}&action=list`
-      : `${API_BASE}/api/system/folder?action=list`
-    const response = await fetch(url)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = await response.json()
-    folderList.value = (data.entries || []).map((entry: FolderOption) => ({
+    const data = path ? await listFolder(path) : await getSystemFolder()
+    const entries: FolderEntry[] = data.entries || []
+    
+    folderList.value = entries.map((entry: FolderEntry) => ({
       name: entry.name,
       path: entry.path,
       is_directory: entry.is_directory,

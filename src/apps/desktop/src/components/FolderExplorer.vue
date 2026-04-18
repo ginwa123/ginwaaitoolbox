@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useWorkspacesStore, type FolderEntry } from '../stores/workspaces'
+import { useWorkspacesStore } from '../stores/workspaces'
+import { listFolder, type FolderEntry } from '../api'
 
 const workspacesStore = useWorkspacesStore()
 
@@ -31,9 +32,7 @@ const toggleFolder = async (entry: FolderEntry) => {
   } else {
     // Fetch nested contents
     try {
-      const response = await fetch(`/api/system/folder?path=${encodeURIComponent(pathKey)}&action=list`)
-      if (!response.ok) return
-      const data = await response.json()
+      const data = await listFolder(pathKey)
       nestedEntriesCache.value = {
         ...nestedEntriesCache.value,
         [pathKey]: data.entries || []
@@ -107,7 +106,7 @@ const handleClick = (entry: FolderEntry) => {
       <span v-if="activeItem">{{ activeItem.name }}</span>
       <span v-else style="color: var(--semantic-text-dim);">No project selected</span>
     </div>
-
+  
     <!-- Loading -->
     <div v-if="isLoading" class="flex-1 flex items-center justify-center">
       <svg class="animate-spin w-5 h-5" style="color: var(--color-aqua);" viewBox="0 0 24 24" fill="none">
@@ -137,7 +136,7 @@ const handleClick = (entry: FolderEntry) => {
         Empty folder
       </p>
     </div>
-
+  
     <!-- File/Folder List -->
     <div v-else class="flex-1 overflow-y-auto py-1">
       <button

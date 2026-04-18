@@ -46,7 +46,8 @@ export interface Task {
   createdAt?: Date
 }
 
-const API_BASE = ''
+import * as api from '../api'
+
 const STORAGE_KEY = 'nalar-workspaces'
 
 // Load persisted state from localStorage
@@ -140,17 +141,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   })
 
   // Actions
-  async function fetchSystemFolder(path?: string) {
+  async function fetchSystemFolder(folderPath?: string) {
     systemFolderLoading.value = true
     systemFolderError.value = null
 
     try {
-      const url = path ? `${API_BASE}/api/system/folder?path=${encodeURIComponent(path)}&action=list` : `${API_BASE}/api/system/folder`
-      const response = await fetch(url)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-      const data = await response.json()
+      const data = folderPath ? await api.listFolder(folderPath) : await api.getSystemFolder()
       systemFolderInfo.value = {
         path: data.path,
         absolute: data.absolute,

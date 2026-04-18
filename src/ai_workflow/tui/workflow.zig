@@ -48,8 +48,8 @@ const ResponseType = on_event_sent.ResponseType;
 const Response = on_event_sent.Response;
 
 const BuildSkillContent = @import("build_messages_for_agent_prompt.zig").BuildSkillContent;
-const BuildDynamicAgentContent = @import("build_dynamic_agent_for_agent_prompt.zig").BuildDynamicAgentContent;
-const BuildBackgroundProcessContent = @import("build_background_process_for_agent_prompt.zig").BuildBackgroundProcessPrompt;
+const BuildDynamicAgentContent = @import("build_messages_for_agent_prompt.zig").BuildDynamicAgentContent;
+const BuildBackgroundProcessContent = @import("build_messages_for_agent_prompt.zig").BuildBackgroundProcessPrompt;
 const save_skill_mod = @import("session_skills.zig");
 const buildMcpTools = @import("build_messages_for_agent_prompt.zig");
 const config_mod = nalar_mod.config;

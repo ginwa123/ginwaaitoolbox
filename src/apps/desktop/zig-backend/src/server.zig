@@ -7,6 +7,7 @@ const PORT = 3000;
 pub const AppContext = struct {
     allocator: std.mem.Allocator,
     workspaces_dir: []const u8,
+    root_dir: []const u8,
 };
 
 /// Folder entry structure (matches TypeScript interface)
@@ -19,13 +20,16 @@ pub const FolderEntry = struct {
 
 /// Run the server with the given allocator and port
 pub fn run(allocator: std.mem.Allocator, port: u16) !void {
+    const home = std.posix.getenv("HOME") orelse "/tmp";
+    
     const ctx = AppContext{
         .allocator = allocator,
         .workspaces_dir = try allocator.dupe(u8, "workspaces"),
+        .root_dir = try allocator.dupe(u8, home),
     };
     defer allocator.free(ctx.workspaces_dir);
+    defer allocator.free(ctx.root_dir);
 
-    // Ensure workspaces directory exists
     std.fs.cwd().makePath(ctx.workspaces_dir) catch |err| {
         std.log.err("Failed to create workspaces directory: {s}", .{@errorName(err)});
         return err;
@@ -39,107 +43,104 @@ pub fn run(allocator: std.mem.Allocator, port: u16) !void {
 
     const router = try server.router(.{});
 
-    // System folder routes
     router.get("/api/system/folder", getSystemFolder, .{});
     router.get("/api/system/folder/list", listFolder, .{});
-
-    // Workspace routes
     router.get("/api/workspaces", listWorkspaces, .{});
     router.post("/api/workspaces", createWorkspace, .{});
     router.get("/api/workspaces/{id}", getWorkspace, .{});
     router.delete("/api/workspaces/{id}", deleteWorkspace, .{});
-
-    // Task routes
     router.get("/api/workspaces/{workspace_id}/items/{item_id}/tasks", listTasks, .{});
     router.post("/api/workspaces/{workspace_id}/items/{item_id}/tasks", createTask, .{});
     router.put("/api/workspaces/{workspace_id}/items/{item_id}/tasks/{task_id}", updateTask, .{});
     router.delete("/api/workspaces/{workspace_id}/items/{item_id}/tasks/{task_id}", deleteTask, .{});
-
-    // Chat routes (placeholder for future AI integration)
     router.post("/api/chat", chatMessage, .{});
     router.get("/api/chat/history/{session_id}", getChatHistory, .{});
-
-    // Health check
     router.get("/health", healthCheck, .{});
 
     std.log.info("Server listening on http://localhost:{d}", .{port});
     try server.listen();
 }
 
-/// Helper to write error response using request arena
+/// Helper to write error response
 fn writeError(res: *httpz.Response, status: u16, msg: []const u8) !void {
     res.status = status;
-    res.body = try std.fmt.allocPrint(res.arena, "{{\"error\":\"{s}\"}}", .{msg});
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(res.arena);
+    try buf.writer(res.arena).print("{{\"error\":\"{s}\"}}", .{msg});
+    res.body = try buf.toOwnedSlice(res.arena);
 }
 
 /// Health check handler
 fn healthCheck(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req;
     res.content_type = .JSON;
-    res.body = try std.fmt.allocPrint(res.arena, "{{\"status\":\"ok\",\"timestamp\":{d}}}", .{std.time.timestamp()});
+    const resp = .{
+        .status = "ok",
+        .timestamp = std.time.timestamp(),
+    };
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(res.arena);
+    try buf.writer(res.arena).print("{f}", .{std.json.fmt(resp, .{})});
+    res.body = try buf.toOwnedSlice(res.arena);
 }
 
-/// Escape string for JSON - handles basic escaping
-fn jsonEscapeStr(input: []const u8) []const u8 {
-    // For now, just return the string as-is
-    // In production, you'd escape ", \, etc.
-    return input;
+/// Build a JSON string for an entry
+fn buildEntryJson(allocator: std.mem.Allocator, entry: FolderEntry) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+
+    try buf.writer(allocator).print("{f}", .{std.json.fmt(entry, .{})});
+
+    return buf.toOwnedSlice(allocator);
 }
 
-/// GET /api/system/folder - Get system folder info
+/// Response struct for folder listing
+const FolderResponse = struct {
+    path: []const u8,
+    absolute: []const u8,
+    home: []const u8,
+    parent: ?[]const u8,
+    entries: []const FolderEntry,
+};
+
+/// GET /api/system/folder
 fn getSystemFolder(ctx: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req;
 
-    const cwd = std.fs.cwd().realpathAlloc(ctx.allocator, ".") catch {
-        try writeError(res, 500, "Failed to get current directory");
+    const absolute_path = std.fs.cwd().realpathAlloc(ctx.allocator, ctx.root_dir) catch {
+        try writeError(res, 500, "Failed to resolve root directory");
         return;
     };
-    defer ctx.allocator.free(cwd);
+    defer ctx.allocator.free(absolute_path);
 
-    const home = std.posix.getenv("HOME") orelse {
-        try writeError(res, 500, "HOME not set");
-        return;
+    const parent = std.fs.path.dirname(absolute_path);
+    const basename = std.fs.path.basename(absolute_path);
+
+    const entries = listDirectoryEntries(ctx.allocator, absolute_path) catch &[0]FolderEntry{};
+    defer {
+        for (entries) |entry| {
+            ctx.allocator.free(entry.name);
+            ctx.allocator.free(entry.path);
+        }
+        ctx.allocator.free(entries);
+    }
+
+    const resp = FolderResponse{
+        .path = basename,
+        .absolute = absolute_path,
+        .home = ctx.root_dir,
+        .parent = parent,
+        .entries = entries,
     };
-
-    const parent = std.fs.path.dirname(cwd);
-    const basename = std.fs.path.basename(cwd);
-    
-    // Get entries
-    const entries = listDirectoryEntries(ctx.allocator, cwd) catch &[_]FolderEntry{};
-    
-    // Build entries JSON
-    var entries_json = std.ArrayList(u8).empty;
-    defer entries_json.deinit(ctx.allocator);
-    
-    for (entries, 0..) |entry, i| {
-        if (i > 0) try entries_json.appendSlice(ctx.allocator, ",");
-        try entries_json.appendSlice(ctx.allocator, "{\"name\":\"");
-        try entries_json.appendSlice(ctx.allocator, jsonEscapeStr(entry.name));
-        try entries_json.appendSlice(ctx.allocator, "\",\"path\":\"");
-        try entries_json.appendSlice(ctx.allocator, jsonEscapeStr(entry.path));
-        try entries_json.appendSlice(ctx.allocator, "\",\"is_directory\":");
-        try entries_json.appendSlice(ctx.allocator, if (entry.is_directory) "true" else "false");
-        try entries_json.appendSlice(ctx.allocator, ",\"is_symlink\":");
-        try entries_json.appendSlice(ctx.allocator, if (entry.is_symlink) "true" else "false");
-        try entries_json.appendSlice(ctx.allocator, "}");
-    }
-    
-    // Free entries memory
-    for (entries) |entry| {
-        ctx.allocator.free(entry.name);
-        ctx.allocator.free(entry.path);
-    }
-    ctx.allocator.free(entries);
 
     res.content_type = .JSON;
-    res.body = try std.fmt.allocPrint(ctx.allocator, 
-        "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"parent\":\"{s}\",\"entries\":[{s}]}}", .{
-        jsonEscapeStr(basename), jsonEscapeStr(cwd), jsonEscapeStr(home), 
-        if (parent) |p| jsonEscapeStr(p) else "", entries_json.items
-    });
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(ctx.allocator);
+    try buf.writer(ctx.allocator).print("{f}", .{std.json.fmt(resp, .{})});
+    res.body = try buf.toOwnedSlice(ctx.allocator);
 }
 
-/// GET /api/system/folder/list?path=xxx - List specific folder contents
+/// GET /api/system/folder/list
 fn listFolder(ctx: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     const query_params = try req.query();
     const path_to_list = query_params.get("path") orelse ".";
@@ -150,116 +151,101 @@ fn listFolder(ctx: AppContext, req: *httpz.Request, res: *httpz.Response) !void 
     };
     defer ctx.allocator.free(absolute_path);
 
-    const home = std.posix.getenv("HOME") orelse "";
     const parent = std.fs.path.dirname(absolute_path);
     const basename = std.fs.path.basename(absolute_path);
-    
-    // Get entries
-    const entries = listDirectoryEntries(ctx.allocator, absolute_path) catch &[_]FolderEntry{};
-    
-    // Build entries JSON
-    var entries_json = std.ArrayList(u8).empty;
-    defer entries_json.deinit(ctx.allocator);
-    
-    for (entries, 0..) |entry, i| {
-        if (i > 0) try entries_json.appendSlice(ctx.allocator, ",");
-        try entries_json.appendSlice(ctx.allocator, "{\"name\":\"");
-        try entries_json.appendSlice(ctx.allocator, jsonEscapeStr(entry.name));
-        try entries_json.appendSlice(ctx.allocator, "\",\"path\":\"");
-        try entries_json.appendSlice(ctx.allocator, jsonEscapeStr(entry.path));
-        try entries_json.appendSlice(ctx.allocator, "\",\"is_directory\":");
-        try entries_json.appendSlice(ctx.allocator, if (entry.is_directory) "true" else "false");
-        try entries_json.appendSlice(ctx.allocator, ",\"is_symlink\":");
-        try entries_json.appendSlice(ctx.allocator, if (entry.is_symlink) "true" else "false");
-        try entries_json.appendSlice(ctx.allocator, "}");
+
+    const entries = listDirectoryEntries(ctx.allocator, absolute_path) catch &[0]FolderEntry{};
+    defer {
+        for (entries) |entry| {
+            ctx.allocator.free(entry.name);
+            ctx.allocator.free(entry.path);
+        }
+        ctx.allocator.free(entries);
     }
-    
-    // Free entries memory
-    for (entries) |entry| {
-        ctx.allocator.free(entry.name);
-        ctx.allocator.free(entry.path);
-    }
-    ctx.allocator.free(entries);
+
+    const resp = FolderResponse{
+        .path = basename,
+        .absolute = absolute_path,
+        .home = ctx.root_dir,
+        .parent = parent,
+        .entries = entries,
+    };
 
     res.content_type = .JSON;
-    res.body = try std.fmt.allocPrint(ctx.allocator, 
-        "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"parent\":\"{s}\",\"entries\":[{s}]}}", .{
-        jsonEscapeStr(basename), jsonEscapeStr(absolute_path), jsonEscapeStr(home),
-        if (parent) |p| jsonEscapeStr(p) else "", entries_json.items
-    });
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(ctx.allocator);
+    try buf.writer(ctx.allocator).print("{f}", .{std.json.fmt(resp, .{})});
+    res.body = try buf.toOwnedSlice(ctx.allocator);
 }
 
-/// List workspaces
 fn listWorkspaces(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req;
     res.content_type = .JSON;
     res.body = "{\"workspaces\":[]}";
 }
 
-/// Create a new workspace
 fn createWorkspace(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req.body();
     res.content_type = .JSON;
     res.body = "{\"id\":\"placeholder\",\"name\":\"New Workspace\",\"items\":[]}";
 }
 
-/// Get workspace by ID
 fn getWorkspace(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     const workspace_id = req.param("id").?;
     res.content_type = .JSON;
-    res.body = try std.fmt.allocPrint(res.arena, "{{\"id\":\"{s}\",\"name\":\"Workspace\",\"items\":[]}}", .{workspace_id});
+    const resp = .{
+        .id = workspace_id,
+        .name = "Workspace",
+        .items = &[_]u8{},
+    };
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(res.arena);
+    try buf.writer(res.arena).print("{f}", .{std.json.fmt(resp, .{})});
+    res.body = try buf.toOwnedSlice(res.arena);
 }
 
-/// Delete workspace
 fn deleteWorkspace(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req.param("id").?;
     res.content_type = .JSON;
     res.body = "{\"success\":true}";
 }
 
-/// List tasks for a workspace item
 fn listTasks(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req;
     res.content_type = .JSON;
     res.body = "{\"tasks\":[]}";
 }
 
-/// Create a new task
 fn createTask(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req.body();
     res.content_type = .JSON;
     res.body = "{\"id\":\"placeholder\",\"name\":\"New Task\"}";
 }
 
-/// Update a task
 fn updateTask(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req.body();
     res.content_type = .JSON;
     res.body = "{\"success\":true}";
 }
 
-/// Delete a task
 fn deleteTask(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req;
     res.content_type = .JSON;
     res.body = "{\"success\":true}";
 }
 
-/// Chat message handler (placeholder)
 fn chatMessage(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req.body();
     res.content_type = .JSON;
     res.body = "{\"response\":\"AI integration coming soon\",\"session_id\":\"placeholder\"}";
 }
 
-/// Get chat history
 fn getChatHistory(_: AppContext, req: *httpz.Request, res: *httpz.Response) !void {
     _ = req.param("session_id").?;
     res.content_type = .JSON;
     res.body = "{\"messages\":[]}";
 }
 
-/// List directory entries for a path
 fn listDirectoryEntries(allocator: std.mem.Allocator, path: []const u8) ![]FolderEntry {
     var entries = std.ArrayList(FolderEntry).empty;
     errdefer {

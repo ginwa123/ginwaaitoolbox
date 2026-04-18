@@ -11,6 +11,8 @@ const transform_llm_history_to_agent_messages = @import("transform_llm_history_t
 const tool_models = tree1_mod.tool_models;
 const config_mod = tree1_mod.config;
 const http_client = tree1_mod.http_client;
+const background_process = @import("background_process.zig");
+const ProcessInfo = background_process.ProcessInfo;
 
 const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
@@ -514,5 +516,97 @@ pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, cwd: []const u8) ![]con
     }
 
     return try result.toOwnedSlice(allocator);
+}
+
+/// Build background processes content string from database for system prompt
+pub fn BuildBackgroundProcessPrompt(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    if (session_id.len == 0) {
+        return allocator.dupe(u8, "");
+    }
+
+    var processesBuilder: std.ArrayList(u8) = .empty;
+    errdefer processesBuilder.deinit(allocator);
+
+    // Get all background processes for this session
+    const processes = try background_process.getBySession(db, allocator, session_id);
+    defer {
+        for (processes) |p| {
+            allocator.free(p.command);
+            allocator.free(p.log_path);
+            allocator.free(p.status);
+        }
+        allocator.free(processes);
+    }
+
+    if (processes.len == 0) {
+        return allocator.dupe(u8, "");
+    }
+
+    try processesBuilder.appendSlice(allocator, "## Running Background Processes\n\n");
+    try processesBuilder.appendSlice(allocator, "The following background processes are running for this session:\n\n");
+
+    for (processes) |p| {
+        try processesBuilder.appendSlice(allocator, "- **PID: ");
+        const pid_str = try std.fmt.allocPrint(allocator, "{}", .{p.pid});
+        defer allocator.free(pid_str);
+        try processesBuilder.appendSlice(allocator, pid_str);
+        try processesBuilder.appendSlice(allocator, "** | Status: ");
+        try processesBuilder.appendSlice(allocator, p.status);
+        try processesBuilder.appendSlice(allocator, " | Command: `");
+        try processesBuilder.appendSlice(allocator, p.command);
+        try processesBuilder.appendSlice(allocator, "`\n");
+
+        // Add log path info
+        try processesBuilder.appendSlice(allocator, "  - Log: ");
+        try processesBuilder.appendSlice(allocator, p.log_path);
+        try processesBuilder.appendSlice(allocator, "\n");
+    }
+
+    try processesBuilder.appendSlice(allocator, "\nYou can check the status of these processes by reading their log files.\n");
+
+    return processesBuilder.toOwnedSlice(allocator);
+}
+
+/// Build dynamic agents content string from database for persistence
+pub fn BuildDynamicAgentContent(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    if (session_id.len == 0) {
+        return allocator.dupe(u8, "");
+    }
+
+    var agentsBuilder: std.ArrayList(u8) = .empty;
+    errdefer agentsBuilder.deinit(allocator);
+
+    const sql = "SELECT agent_name FROM session_agents WHERE session_id = ?";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    var hasAgents = false;
+    while (try rows.next()) |row| {
+        hasAgents = true;
+        const agent_name = row.values[0];
+        try agentsBuilder.appendSlice(allocator, "- ");
+        try agentsBuilder.appendSlice(allocator, agent_name);
+        try agentsBuilder.appendSlice(allocator, "\n");
+        row.deinit(allocator);
+    }
+
+    if (!hasAgents) {
+        return allocator.dupe(u8, "");
+    }
+
+    // Prepend the header to the existing content
+    const header = "\n\n## Loaded Dynamic Agents\n\n";
+    const result = try allocator.alloc(u8, header.len + agentsBuilder.items.len);
+    @memcpy(result[0..header.len], header);
+    @memcpy(result[header.len..], agentsBuilder.items);
+    return result;
 }
 
