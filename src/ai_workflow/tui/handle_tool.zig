@@ -90,15 +90,6 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 /// Dispatch tool execution from registry entry
 /// Calls exec directly and handles auto-save via registry flags
 fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAgentToolExec) !ToolResult {
-    const tool_name = tool_call.function.name;
-    // Handle special tools that need extended context
-    if (std.mem.eql(u8, tool_name, "set_agent_properties")) {
-        return dispatchSetAgentProperties(ctx, tool_call);
-    }
-    if (std.mem.eql(u8, tool_name, "spawn_sub_agent")) {
-        return dispatchSpawnSubAgent(ctx, tool_call);
-    }
-
     // Standard tools: call exec directly and wrap result
     const ctx_local = tool_registry.ToolExecContext{
         .allocator = ctx.allocator,
@@ -232,12 +223,12 @@ fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content:
     const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
     const name_begin = name_start + "<skill_name>".len;
     const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
-    const skill_name = result[name_begin..name_begin + name_end];
+    const skill_name = result[name_begin .. name_begin + name_end];
 
     const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
     const content_begin = content_start + "<content>".len;
     const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
-    const skill_content = result[content_begin..content_begin + content_end];
+    const skill_content = result[content_begin .. content_begin + content_end];
 
     return .{ .name = skill_name, .content = skill_content };
 }
@@ -248,7 +239,7 @@ fn parseAgentFromResult(result: []const u8) ?[]const u8 {
     const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
     const name_begin = name_start + "<agent_name>".len;
     const name_end = std.mem.indexOf(u8, result[name_begin..], "</agent_name>") orelse return null;
-    return result[name_begin..name_begin + name_end];
+    return result[name_begin .. name_begin + name_end];
 }
 
 // ============================================================================
@@ -416,11 +407,15 @@ fn saveAndSendToolResult(
     is_thinking: bool,
     agent_name: []const u8,
 ) !void {
+    var content = result;
+    if (std.mem.eql(u8, tool_call.function.name, "update_activity")) {
+        content = "";
+    }
     _ = try llm_history.saveMessage(allocator, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
-        .content = result,
+        .content = content,
         .reasoning_content = null,
         .role = agent.Role.tool.to_str(),
         .finish_reason = agent.FinishReason.tool.to_str(),

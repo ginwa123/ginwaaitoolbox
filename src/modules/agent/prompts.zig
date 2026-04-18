@@ -57,6 +57,7 @@ pub const SkillsTriggers = prompts.SkillsTriggers;
 pub const LoadedSkills = prompts.LoadedSkills;
 pub const ProceduralMemory = prompts.ProceduralMemory;
 pub const ResponseFormatting = prompts.ResponseFormatting;
+pub const UpdateActivityRule = prompts.UpdateActivityRule;
 
 // Legacy exports for backwards compatibility
 pub const BasePrompt = UniversalRules;
@@ -65,6 +66,67 @@ pub const AgentsMdPrompt = prompts.MemoryPrompt;
 // =============================================================================
 // PROMPT BUILDERS
 // =============================================================================
+
+/// Build sub-agent prompt with a focused, minimal set of rules
+/// Sub-agents get a simple, research-focused prompt (NOT the full main agent prompt)
+pub fn build_sub_agent_prompt(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    treeDir: []const u8,
+    task_brief: []const u8,
+    tools: []const tool_models.AgentTool,
+) ![]const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    // 1. Universal rules (minimal safety + file editing basics)
+    try result.appendSlice(allocator, UniversalRules);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 2. Sub-agent prompt (research-focused instructions)
+    try result.appendSlice(allocator, SubAgentPrompt);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 3. Task brief from parent agent (the specific mission)
+    if (task_brief.len > 0) {
+        try result.appendSlice(allocator, "## Your Mission\n\n");
+        try result.appendSlice(allocator, task_brief);
+        try result.appendSlice(allocator, "\n\n");
+    }
+
+    // 4. Output format
+    try result.appendSlice(allocator, SubAgentBrief);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 5. Available tools
+    if (tools.len > 0) {
+        try result.appendSlice(allocator, "## Available Tools\n\nUse these exact tool names in your tool_calls:\n\n");
+        for (tools) |tool| {
+            try result.appendSlice(allocator, "- **");
+            try result.appendSlice(allocator, tool.function.name);
+            try result.appendSlice(allocator, "**: ");
+            try result.appendSlice(allocator, tool.function.description);
+            try result.appendSlice(allocator, "\n");
+        }
+        try result.appendSlice(allocator, "\n\n");
+    }
+
+    // 6. Working directory context
+    if (cwd.len > 0) {
+        try result.appendSlice(allocator, "**Current working directory:** ");
+        try result.appendSlice(allocator, cwd);
+        try result.appendSlice(allocator, "\n\n**Tree Directory:**\n");
+        try result.appendSlice(allocator, treeDir);
+    }
+
+    // 7. OS info
+    const os_name = getCurrentOs();
+    try result.appendSlice(allocator, "\n\n**Operating System:** ");
+    try result.appendSlice(allocator, os_name);
+    try result.appendSlice(allocator, "\n\n**Important:** Always use OS-specific commands. Check the current OS before running system commands or shell scripts.");
+
+    return result.toOwnedSlice(allocator);
+}
 
 /// Build main agent prompt with all components combined
 pub fn build_agent_prompt(
@@ -91,6 +153,10 @@ pub fn build_agent_prompt(
 
     // 3. Response formatting - markdown and thinking
     try result.appendSlice(allocator, ResponseFormatting);
+    try result.appendSlice(allocator, "\n\n");
+
+    // 4. ✅ MANDATORY: Update activity after every response
+    try result.appendSlice(allocator, UpdateActivityRule);
     try result.appendSlice(allocator, "\n\n");
 
     // 4. Main agent directive (IMPORTANT - agent needs context before anything else)

@@ -6,6 +6,7 @@ const sqlite = root_mod.sqlite;
 const logger_mod = root_mod.logger;
 const config_mod = root_mod.config;
 const spawn_sub_agent_tool = root_mod.spawn_sub_agent;
+const llm_history = root_mod.llm_history;
 
 // Tool imports for exec functions and tool_defs
 const bash_tool_mod = root_mod.bash_tool;
@@ -28,6 +29,7 @@ const lsp_document_symbol_mod = root_mod.tools.lsp_document_symbol;
 const lsp_hover_mod = root_mod.tools.lsp_hover;
 const set_agent_properties_mod = root_mod.set_agent_properties;
 const web_search_mod = root_mod.web_search;
+const update_activity_mod = root_mod.update_activity;
 const glob_tool_mod = root_mod.glob_tool;
 const search_tool_mod = root_mod.search_tool;
 
@@ -564,6 +566,56 @@ fn handleSetAgentProperties(
     };
 }
 
+// update_activity implementation - records thought as worker activity
+pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        update_activity_mod.UpdateActivityInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        const output = try std.fmt.allocPrint(ctx.allocator,
+            \\<update_activity>
+            \\  <updated>false</updated>
+            \\  <error>Failed to parse update_activity arguments</error>
+            \\</update_activity>
+        , .{});
+        return ToolExecResult{ .output = output };
+    };
+    defer parsed.deinit();
+
+    // Get worker_id from session_id
+    const worker_id = std.fmt.allocPrint(ctx.allocator, "worker_{s}", .{ctx.session_id}) catch {
+        const output = try std.fmt.allocPrint(ctx.allocator,
+            \\<update_activity>
+            \\  <updated>false</updated>
+            \\  <error>Failed to generate worker_id</error>
+            \\</update_activity>
+        , .{});
+        return ToolExecResult{ .output = output };
+    };
+    defer ctx.allocator.free(worker_id);
+
+    // Update worker activity with the thought
+    llm_history.update_worker_activity_with_description(ctx.allocator, ctx.db, worker_id, parsed.value.thought) catch {
+        const output = try std.fmt.allocPrint(ctx.allocator,
+            \\<update_activity>
+            \\  <updated>false</updated>
+            \\  <error>Failed to update worker activity</error>
+            \\</update_activity>
+        , .{});
+        return ToolExecResult{ .output = output };
+    };
+
+    const output = try std.fmt.allocPrint(ctx.allocator,
+        \\<update_activity>
+        \\  <updated>true</updated>
+        \\  <thought>{s}</thought>
+        \\</update_activity>
+    , .{parsed.value.thought});
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
 // spawn_sub_agent implementation - spawns parallel sub-agents
 pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
@@ -640,7 +692,7 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         glob_tool_mod.GlobInput,
         ctx.allocator,
         args_to_parse,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
 
@@ -704,6 +756,7 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     // === AGENT CONTROL (main agent only) ===
     .{ .name = "set_agent_properties", .exec = execSetAgentProperties, .tool_def = set_agent_properties_mod.set_agent_properties_tool },
     .{ .name = "spawn_sub_agent", .exec = execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawn_sub_agent_tool },
+    .{ .name = "update_activity", .exec = execUpdateActivity, .tool_def = update_activity_mod.update_activity_tool },
 
     // === AGENT MANAGEMENT (auto-save) ===
     .{ .name = "list_agents", .exec = execListAgents, .tool_def = list_agents_mod.list_agents_tool, .auto_save_agent = true },
@@ -753,6 +806,7 @@ pub const MAIN_AGENT_TOOL_REGISTRY: []const ToolInfo = UNIFIED_TOOL_REGISTRY;
 pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     set_agent_properties_mod.set_agent_properties_tool,
     spawn_sub_agent_tool.spawn_sub_agent_tool,
+    update_activity_mod.update_activity_tool,
     list_agents_mod.list_agents_tool,
     change_agent_mod.change_agent_tool,
     remove_agent_mod.remove_agent_tool,
@@ -778,6 +832,9 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
 
 /// Registry for sub-agents (excludes dangerous tools: spawn_sub_agent, set_agent_properties)
 pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
+    // === AGENT ACTIVITY ===
+    .{ .name = "update_activity", .exec = execUpdateActivity, .tool_def = update_activity_mod.update_activity_tool },
+
     // === AGENT MANAGEMENT (auto-save) ===
     .{ .name = "list_agents", .exec = execListAgents, .tool_def = list_agents_mod.list_agents_tool, .auto_save_agent = true },
     .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .auto_save_agent = true },

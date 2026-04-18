@@ -8,7 +8,9 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
-const log = @import("nalarcore").logger;
+
+/// Log level for agent logging
+const LogLevel = enum { err, warn, info, debug };
 
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
@@ -550,15 +552,14 @@ pub const Agent = struct {
     httpClient: std.http.Client,
     thinkingEnabled: bool = true,
     allocator: std.mem.Allocator,
-    logger: *log.Logger,
     httpOptions: HttpOptions = .{},
 
-    pub fn init(allocator: std.mem.Allocator, logger_ptr: *log.Logger) !Agent {
-        return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator }, .logger = logger_ptr };
+    pub fn init(allocator: std.mem.Allocator) !Agent {
+        return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator } };
     }
 
     /// Initialize agent with custom HTTP options
-    pub fn init_with_options(allocator: std.mem.Allocator, options: HttpOptions, logger_ptr: *log.Logger) !Agent {
+    pub fn init_with_options(allocator: std.mem.Allocator, options: HttpOptions) !Agent {
         return Agent{
             .allocator = allocator,
             .httpClient = std.http.Client{
@@ -566,16 +567,15 @@ pub const Agent = struct {
                 .read_buffer_size = options.header_buffer_size,
             },
             .httpOptions = options,
-            .logger = logger_ptr,
         };
     }
 
-    pub fn log_msg(self: Agent, level: log.LogLevel, message: []const u8) void {
-        self.logger.log(level, message) catch {};
+    pub fn log_msg(_: Agent, level: LogLevel, message: []const u8) void {
+        std.debug.print("[{s}] {s}\n", .{ @tagName(level), message });
     }
 
     /// Log with formatted message and context
-    pub fn log_fmt(self: Agent, comptime level: log.LogLevel, comptime fmt: []const u8, args: anytype) void {
+    pub fn log_fmt(self: Agent, comptime level: LogLevel, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch {
             std.debug.print("fmt alloc failed\n", .{});
             return;

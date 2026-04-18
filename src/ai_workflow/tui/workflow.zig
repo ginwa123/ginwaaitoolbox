@@ -432,7 +432,7 @@ pub const TUIWorkflow = struct {
         _ = try self.logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{session_id});
     }
     fn callDynamicAgent(
-        self: *TUIWorkflow,
+        _: *TUIWorkflow,
         allocator: std.mem.Allocator,
         messages_list: *std.ArrayList(agent.AgentMessage),
         agent_temperature: f32,
@@ -444,7 +444,7 @@ pub const TUIWorkflow = struct {
         session_id: []const u8,
         tools: []const tool_models.AgentTool,
     ) !agent.CallResponse {
-        var dynamic_agent = try agent.Agent.init(allocator, self.logger);
+        var dynamic_agent = try agent.Agent.init(allocator);
         dynamic_agent.apiKey = api_key;
         dynamic_agent.model = model;
         dynamic_agent.baseUrl = base_url;
@@ -511,7 +511,7 @@ pub const TUIWorkflow = struct {
         compaction_messages[0] = .{ .role = .system, .content = prompt.CompactionAgent };
         compaction_messages[1] = .{ .role = .user, .content = try history_buf.toOwnedSlice(arena) };
 
-        var compaction_agent = try agent.Agent.init(arena, self.logger);
+        var compaction_agent = try agent.Agent.init(arena);
         defer compaction_agent.deinit();
         compaction_agent.apiKey = api_key;
         compaction_agent.model = model;

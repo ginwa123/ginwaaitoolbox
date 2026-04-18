@@ -87,7 +87,7 @@ pub const set_agent_properties = @import("modules/agent/tools/set_agent_properti
 pub const http_server = @import("modules/http_server/HttpServer.zig");
 pub const http_client = @import("modules/http/HttpClient.zig");
 pub const logger = @import("modules/logger/Logger.zig");
-pub const migrations = @import("modules/databases/sqlite/Migrations.zig");
+pub const migrations = @import("ai_workflow/tui/migration.zig");
 pub const ai_workflow = @import("ai_workflow/tui/workflow.zig");
 pub const session_monitor = @import("modules/session/SessionMonitor.zig");
 pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
@@ -102,6 +102,8 @@ pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");
 pub const remove_file = @import("modules/agent/tools/remove_file.zig");
 pub const system_folder = @import("modules/system_folder/system_folder.zig");
+
+pub const update_activity = @import("modules/agent/tools/update_activity.zig");
 
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");

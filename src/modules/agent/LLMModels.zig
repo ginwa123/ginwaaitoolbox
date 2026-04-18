@@ -7,7 +7,7 @@ pub const LLMModels = struct {
 pub const MINIMAX_2_7 = LLMModels{
     .name = "MiniMax-M2.7",
     .description = "Minimax-M2.7 is a large language model trained by Anthropic. It is a variant of the MiniMax model, which is a transformer-based language model. It is trained on a diverse range of text sources, including books, articles, and websites.",
-    .token_count = 2000000,
+    .token_count = 200000,
 };
 
 /// Get model token count by model name string

@@ -1,6 +1,6 @@
 # AGENT.md — Project Summary
 
-> **Last Updated:** 2025-04-17
+> **Last Updated:** 2025-04-18
 > **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
 
 ---
@@ -11,7 +11,7 @@
 ## Project Overview
 
 **Name:** nalarcore
-**Executable:** `nalar`
+**Executables:** `nalar` (server), `nalar-tui` (TUI), `nalar-dev`/`nalar-dev-tui` (debug builds)
 **Language:** Zig 0.15.2
 **Type:** AI agentic coding toolbox with HTTP server + TUI interfaces
 
@@ -31,7 +31,17 @@ When needing **latest documentation, examples, or best practices** for any libra
 zig build              # Build all targets
 zig build run          # Run HTTP server (port 8080)
 zig build run:tui      # Run TUI app
-zig build test         # Run tests
+zig build test         # Run all tests
+
+# Dev builds (debug symbols)
+zig build install:dev:linux:system   # Build nalar-dev
+zig build install:dev:tui:linux:system # Build nalar-dev-tui
+
+# Platform builds
+zig build install:linux:system      # Linux x86_64 → /usr/local/bin
+zig build install:windows            # Windows x86_64
+zig build install:macos              # macOS x86_64
+zig build install:macos-arm          # macOS aarch64
 ```
 
 **Deps:** httpz, libsqlite3, libssl, libcrypto
@@ -41,8 +51,7 @@ zig build test         # Run tests
 ```zig
 const nalarcore = @import("nalarcore");  // Main module
 const agent = nalarcore.agent;
-const ai_workflow = nalarcore.ai_workflow;
-const http_server = nalarcore.http_server;
+const sqlite = nalarcore.sqlite;
 const logger = nalarcore.logger;
 // etc.
 ```
@@ -51,103 +60,73 @@ const logger = nalarcore.logger;
 
 ```
 src/
-├── main.zig                      # HTTP server entry point
-├── root.zig                       # Module exports + panic handler
-├── test_main.zig                  # Test entry
+├── main.zig                           # HTTP server entry point
+├── root.zig                          # Module exports + panic handler
 ├── helpers/
-│   └── mod.zig                    # XML parsing utilities
+│   ├── mod.zig                        # Helpers re-exports
+│   └── xml.zig                        # XML parsing utilities
 ├── modules/
-│   ├── agent/                     # AI agent core
-│   │   ├── Agent.zig             # Agent orchestration (type)
-│   │   ├── LLMModels.zig         # LLM model definitions (type)
-│   │   ├── prompts.zig           # Prompt building (namespace)
-│   │   ├── prompts/               # Modular prompts (all namespaces)
-│   │   │   ├── core.zig           # Universal rules
-│   │   │   ├── agent.zig          # Main directive
-│   │   │   ├── parallel.zig       # Parallel work rules
-│   │   │   ├── research.zig       # Research rules
-│   │   │   ├── specialized.zig    # change_agent rules
-│   │   │   ├── subagent.zig       # Sub-agent brief
-│   │   │   ├── execution.zig      # Classification/execution
-│   │   │   ├── memory.zig         # Tasks, AGENTS.md, git
-│   │   │   ├── special.zig        # CompactionAgent, DestroyIdea
-│   │   │   └── prompts.zig        # Re-exports
-│   │   ├── tools/                 # Agent tools (35+)
-│   │   │   ├── bash.zig           # Shell execution
-│   │   │   ├── read_file.zig      # File reading
-│   │   │   ├── write_file.zig     # File writing
-│   │   │   ├── text_replace.zig   # File editing
-│   │   │   ├── search.zig         # Ripgrep search
-│   │   │   ├── glob.zig           # File discovery
-│   │   │   ├── web_search.zig     # Web browser (agent-browser CLI)
-│   │   │   ├── lsp_*.zig          # LSP tools (definition, hover, refs, etc.)
-│   │   │   ├── skills.zig         # Skills management
-│   │   │   ├── agents.zig         # Dynamic agents
-│   │   │   ├── spawn_sub_agent.zig # Parallel agents
-│   │   │   ├── change_agent.zig   # Switch agent persona
-│   │   │   ├── set_agent_properties.zig
-│   │   │   ├── list_skills.zig    # List available skills
-│   │   │   ├── get_skill.zig      # Load skill content
-│   │   │   ├── remove_skill.zig   # Delete skill file from .nalar/skills/
-│   │   │   ├── add_skill.zig      # Create new skill file
-│   │   │   ├── list_agents.zig    # List available agents
-│   │   │   ├── add_agent.zig      # Create new agent file
-│   │   │   ├── remove_agent.zig   # Delete agent file from .nalar/agents/
-│   │   │   ├── schemas.zig        # Tool schemas
-│   │   │   ├── loop_detector.zig   # Prevent infinite loops
-│   │   │   └── bash_selfkill.zig  # Block self-kill commands
-│   │   └── mcp/                    # MCP protocol support
-│   ├── config/
-│   │   └── Config.zig              # LLM configuration (type)
+│   ├── agent/
+│   │   ├── Agent.zig                  # Agent orchestration (type)
+│   │   ├── LLMModels.zig               # LLM model definitions (type)
+│   │   ├── prompts.zig                # Prompt building (namespace)
+│   │   ├── prompts/                    # Modular prompts
+│   │   │   ├── agent.zig, core.zig, execution.zig, memory.zig,
+│   │   │   ├── parallel.zig, research.zig, special.zig,
+│   │   │   ├── specialized.zig, subagent.zig, prompts.zig
+│   │   ├── mcp/mcp/                   # MCP protocol implementation
+│   │   │   ├── mcp_server.zig, mcp_tools.zig, mcp_transport.zig, mcp_types.zig
+│   │   └── tools/                     # Agent tools (40+ files)
+│   │       ├── bash.zig, read_file.zig, write_file.zig, text_replace.zig
+│   │       ├── search.zig, glob.zig, web_search.zig, remove_file.zig
+│   │       ├── lsp.zig, lsp_definition.zig, lsp_hover.zig, lsp_references.zig
+│   │       ├── lsp_document_symbol.zig, lsp_workspace_symbol.zig, lsp_types.zig
+│   │       ├── spawn_sub_agent.zig, change_agent.zig, agents.zig
+│   │       ├── skills.zig, get_skill.zig, list_skills.zig, add_skill.zig, remove_skill.zig
+│   │       ├── list_agents.zig, add_agent.zig, remove_agent.zig
+│   │       ├── set_agent_properties.zig, loop_detector.zig, bash_selfkill.zig
+│   │       ├── helper.zig, schemas.zig, tools.zig
+│   ├── config/Config.zig              # LLM configuration
 │   ├── databases/
-│   │   ├── database.zig            # DB abstraction (placeholder)
-│   │   └── sqlite/
-│   │       ├── Sqlite.zig           # SQLite implementation (type)
-│   │       └── Migrations.zig      # Database migrations (type)
-│   ├── http/
-│   │   └── HttpClient.zig          # HTTP client (type)
-│   ├── http_server/
-│   │   ├── HttpServer.zig          # Router + handlers (type)
-│   │   └── SseManager.zig          # SSE streaming (type)
-│   ├── ipc/
-│   │   └── Ipc.zig                 # IPC (XML format) (type)
-│   ├── logger/
-│   │   ├── Logger.zig              # Main logger (type)
-│   │   ├── Formatter.zig           # Log formatters (type)
-│   │   ├── RequestId.zig           # Request ID generation (type)
-│   │   └── Timing.zig              # Timing utilities (type)
+│   │   ├── database.zig               # DB abstraction (placeholder)
+│   │   └── sqlite/Sqlite.zig          # SQLite implementation
+│   ├── http/HttpClient.zig            # HTTP client
+│   ├── http_server/HttpServer.zig     # Router + handlers
+│   ├── logger/                        # Logger module
+│   │   ├── Logger.zig, Formatter.zig, RequestId.zig, Timing.zig
 │   ├── session/
-│   │   ├── mod.zig                 # Re-exports (namespace)
-│   │   ├── SessionMonitor.zig       # Session monitoring (type)
-│   │   └── SessionRegistry.zig      # Session registry (type)
-│   └── cronjob/
-│       ├── mod.zig                 # Re-exports (namespace)
-│       ├── Cronjob.zig             # Cronjob scheduler (type)
-│       └── ProcessChecker.zig       # Process checking (type)
-├── ai_workflow/tui/                # TUI workflow orchestration
-│   ├── workflow.zig                # Main workflow
-│   ├── http_handlers.zig           # REST handlers
-│   ├── session_db.zig              # Session persistence
-│   ├── session_table.zig            # Session table model
-│   ├── session_helpers.zig         # Session helpers
-│   ├── build_*.zig                # Prompt builders
-│   ├── handle_*.zig               # Tool handlers
-│   └── save_*.zig                 # Persistence
-└── apps/tui/                       # Terminal UI app
-    ├── main.zig                    # TUI entry
-    ├── network/                    # SSE + HTTP client
-    │   ├── streaming.zig           # SSE stream parsing (uses tool_parser)
-    │   └── ...
-    ├── display/                    # Response rendering
-    │   ├── response.zig           # XML content extraction
-    │   ├── tool_renderer.zig       # Terminal UI renderer for tool calls
-    │   └── tool_results.zig       # Tool-specific display functions
-    ├── helpers/
-    │   ├── xml_entities.zig       # XML entity decoder
-    │   ├── tool_parser.zig        # Tool call XML parser (mirrors frontend)
-    │   └── utils.zig
-    ├── input/                      # Keyboard input
-    └── terminal/                  # Terminal backend
+│   │   ├── mod.zig                    # Re-exports
+│   │   ├── SessionMonitor.zig, SessionRegistry.zig
+│   ├── cronjob/
+│   │   ├── mod.zig                    # Re-exports
+│   │   ├── Cronjob.zig, ProcessChecker.zig
+│   └── system_folder/system_folder.zig  # System folder operations
+├── ai_workflow/tui/                   # TUI workflow orchestration
+│   ├── workflow.zig                   # Main workflow
+│   ├── http_handlers/                 # REST API handlers
+│   │   ├── mod.zig, cors.zig, llm_run.zig, ping.zig
+│   │   ├── session_*.zig              # Session CRUD handlers
+│   │   ├── worker_*.zig               # Worker management handlers
+│   │   ├── sse_disconnect.zig, stream.zig, system_folder.zig
+│   ├── session_table.zig              # Session table model
+│   ├── llm_history.zig                # LLM history persistence
+│   ├── session_skills.zig             # Session skills management
+│   ├── save_agent.zig, build_messages_for_agent_prompt.zig
+│   ├── handle_tool.zig, handle_spawn_sub_agent.zig, handle_mcp_tool.zig
+│   ├── migration.zig                  # Database migrations
+│   ├── transform_llm_history_to_agent_messages.zig
+│   ├── on_event_sent.zig, tool_registry.zig, models.zig, startup.zig
+└── apps/tui/                          # Terminal UI app
+    ├── main.zig                       # TUI entry
+    ├── box.zig, keybindings.zig, globals.zig, opts.zig
+    ├── cli/opts.zig
+    ├── commands/command_defs.zig, handlers.zig
+    ├── display/response.zig, tool_results.zig
+    ├── helpers/tool_parser.zig, xml_parser.zig, utils.zig
+    ├── input.zig, input/escape.zig, input/handle_input.zig
+    ├── network/connection.zig, debug.zig, messaging.zig
+    │   ├── sse.zig, sse_test.zig, streaming.zig, streaming_test.zig
+    └── terminal/backend.zig, raw_mode.zig
 ```
 
 ## Key Tool Conventions
@@ -156,10 +135,19 @@ src/
 Just use it - read the file first to see its current content.
 
 ### glob Tool
-- Uses `/usr/sbin/fd` with `--glob` pattern matching
-- **Truncation Detection:** When results exceed `max_results`, includes `<truncated>` with count
-- Returns: `<f>path</f>` for each match, plus `<truncated>{n} files truncated` if limited
-- Supports `offset` + `max_results` for pagination
+- **Pure Zig implementation** (like node-glob/Minimatch) - no external dependencies
+- **Parameters:**
+  - `pattern` - Glob pattern (e.g., "*.zig", "**/*.ts", "{*.js,*.ts}")
+  - `path` - Directory to search (default: ".")
+  - `max_results` - Maximum results (default: 100, max: 500)
+  - `offset` - Skip first N results for pagination
+  - `hidden` - Include hidden files (default: false)
+  - `ignore_case` - Case insensitive matching (default: false)
+  - `file_type` - Filter: "f" for files, "d" for directories
+  - `follow` - Follow symlinks (default: false)
+- **Glob patterns:** `*`, `**`, `?`, `[abc]`, `{a,b,c}`, `{1..5}`
+- **Auto-truncation:** Output limited to ~50KB to protect LLM context window
+- **Returns:** `<f>path</f>` wrapped in `<glob_summary total="" returned="" offset="" truncated="">`
 
 ### web_search Tool
 - Uses `agent-browser` CLI
@@ -181,7 +169,7 @@ Just use it - read the file first to see its current content.
 | POST | `/api/session/:session_id/cancel` | Cancel session |
 | POST | `/api/session/:session_id/compact` | Trigger compaction |
 | DELETE | `/api/session/:session_id/queue/message?message=` | Delete queued message |
-| GET | `/api/session/:session_id/queue/messages` | Get queued messages (clears queue) |
+| GET | `/api/session/:session_id/queue/messages` | Get queued messages |
 | POST | `/api/llm/run` | Run LLM workflow |
 | GET | `/api/ping/:session_id` | Health check |
 | POST | `/api/worker` | Create/register a worker |
@@ -213,103 +201,41 @@ Just use it - read the file first to see its current content.
 
 ## Database Schema Notes
 
-**Session Name Derivation:** The `llm_history` table uses `LEFT JOIN sessions` to derive session names instead of storing a denormalized `session_name` column.
+**Latest Migration:** `Migration021RemoveSessionNameFromLlmHistory` — moved to `ai_workflow/tui/migration.zig`
 
 | Table | Key Column | Purpose |
 |-------|------------|---------|
 | `sessions` | `id` (PK), `name` | Session metadata |
 | `llm_history` | `session_id` (FK) | References `sessions.id` |
 
-**Latest Migration (v21):** `Migration021RemoveSessionNameFromLlmHistory` — drops `session_name` from `llm_history`
-
 ## Important Conventions
 
 - **Max lines per file:** 400 lines — split larger files
 - **Zig Naming Convention:**
   - `camelCaseFunctionName` — callable functions
-  - `TitleCaseTypeName` — types, type aliases, structs with fields, callable that returns `type`
-  - `snake_case_variable_name` — variables, constants, namespaces (structs with 0 fields, never instantiated)
-  - **Acronyms/initialisms** (e.g., XML, HTTP, URL) follow standard conventions like any other word
+  - `TitleCaseTypeName` — types, type aliases, structs with fields
+  - `snake_case_variable_name` — variables, constants, namespaces
   - **File names:** `TitleCase.zig` if struct has fields, `snake_case.zig` otherwise
   - **Directory names:** `snake_case`
-  - Established conventions (e.g., ENOENT) take precedence
 - `ArrayList.empty` replaces `ArrayList.init` (Zig 0.15)
 - `ArrayList.deinit(allocator)` — allocator required
 - Never return stack-allocated slices from functions
 - **Memory:** Prefer `ArenaAllocator` over manual `free()`
 - **JSON keys:** Always `snake_case` (e.g., `session_id`, `created_at`)
-- **ActivityRegistry:** Uses TWO separate concepts:
-  - **Activity count** (`mark_running`/`mark_idle`) — tracks nested processing
-  - **Stopped flag** (`mark_stopped`/`is_stopped`) — persistent flag that blocks `is_running()` until re-registered
-  - **Critical:** `is_running()` checks stopped flag first, then activity count
-
-## MCP Tool Handling
-
-**Key files:**
-- `src/ai_workflow/tui/handle_mcp_tool.zig` — Executes MCP tool calls
-- `src/ai_workflow/tui/build_messages_tools_mcp_for_agent_prompt.zig` — Fetches MCP tools from servers
-
-**Important fixes applied:**
-1. **SSE Response Parsing:** MCP servers may return `text/event-stream` responses with `data:` prefix. The handler now strips this prefix before JSON parsing.
-2. **Memory Safety:** When extracting strings from parsed JSON, the handler copies them to the parent allocator to avoid use-after-free when the parsed tree is deallocated.
-3. **Use `std.heap.c_allocator` for JSON parsing** — Avoids nested arena alignment issues.
-
-**JSON Parse Error Prevention:**
-- Always use `std.heap.c_allocator` instead of arenas for `json.parseFromSlice`
-- Strip SSE framing before parsing if server may return event-stream responses
-- Copy extracted strings if they need to outlive the parsed value
-
-## Logging Conventions
-
-**Desktop Bun Frontend (`src/apps/desktop-bun/`):**
-- Use `logger.ts` — Never use `console.log/warn/error`
-- Import: `import { log } from '../utils/logger';`
-- Usage: `log.info('msg')`, `log.warn('msg')`, `log.error('msg')`
-
-**Zig Backend:** Use `root_mod.logger.getGlobal()` for custom logger
-```zig
-const logger = root_mod.logger;
-
-// Get global logger instance
-const log = logger.getGlobal();
-
-// Use formatted methods (catch {} to ignore errors)
-log.?.infoFmt("message: {s}", .{arg}) catch {};
-log.?.warnFmt("warning: {}", .{err}) catch {};
-log.?.errFmt("error: {s}", .{@errorName(err)}) catch {};
-log.?.debugFmt("debug: {}", .{value}) catch {};
-log.?.traceFmt("trace: {}", .{value}) catch {};
-
-// Simple methods (also need error handling)
-log.?.info("simple message") catch {};
-log.?.warn("warning message") catch {};
-log.?.err("error message") catch {};
-```
-
-**Note:** For void functions, use `catch {}` to silently ignore logging errors.
 
 ## Dev Test
 
-for testing use this command always
-    you can use -q to use cli
-
-- ./zig-out/bin/nalar-dev-tui --port 8082 --process nalar-dev
+```bash
+./zig-out/bin/nalar-dev-tui --port 8082 --process nalar-dev
+```
 
 ## Unit Testing
 
-### Zig
-- Use `zig build test` to run all tests
-- Tests go in `_test.zig` files next to source
-- Import test runners in `root.zig`
-
-### Desktop Bun (Vitest)
-- Run: `bun test src/apps/desktop-bun/src/.../<filename>.test.tsx`
-- Uses source-code verification approach (no DOM rendering)
-- Test files: `*.test.tsx` alongside source files
-- Pattern: Read source file → regex match expected patterns
-- Example test files:
-  - `src/mainview/components/Sidebar.test.tsx`
-  - `src/mainview/pages/MessageRow.test.tsx`
+```bash
+zig build test              # Run all Zig tests
+zig build test:ai_workflow:tui  # Run AI workflow TUI tests
+zig build test:desktop      # Run desktop Bun tests
+```
 
 ---
 
@@ -328,5 +254,5 @@ for testing use this command always
 ---
 
 # Mandatory
-- Dont ever kill the process port 8081  or process nalar !!!
+- Dont ever kill the process port 8081 or process nalar !!!
 - If you want to test use process port 8080 and process nalar-dev !!!

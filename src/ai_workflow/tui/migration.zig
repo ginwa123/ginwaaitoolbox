@@ -1,7 +1,7 @@
 const std = @import("std");
-const sqlite = @import("Sqlite.zig");
+const sqlite_mod = @import("../../modules/databases/sqlite/Sqlite.zig");
 
-pub const SqliteBackend = sqlite.SqliteBackend;
+pub const SqliteBackend = sqlite_mod.SqliteBackend;
 
 pub const Migration = struct {
     version: u32,
@@ -393,5 +393,5 @@ pub fn registerAllMigrations(manager: *MigrationManager) !void {
 }
 
 test {
-    _ = @import("migrations_test.zig");
+    _ = @import("migration_test.zig");
 }

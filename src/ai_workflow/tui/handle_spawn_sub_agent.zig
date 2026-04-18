@@ -53,11 +53,9 @@ const session_helpers = llm_history;
 const getCurrentAgentBySessionId = llm_history.get_current_agent_by_session_id;
 const upsert_worker = llm_history.upsert_worker;
 const update_worker_activity_with_description = llm_history.update_worker_activity_with_description;
-const update_worker_description = llm_history.update_worker_description;
 const handle_tool = @import("handle_tool.zig");
 const TransformLLMHistory = @import("transform_llm_history_to_agent_messages.zig");
 const StreamingContext = @import("workflow.zig").StreamingContext;
-const BuildSkillContent = @import("build_messages_for_agent_prompt.zig").BuildSkillContent;
 const SaveSkill = @import("session_skills.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
@@ -184,14 +182,14 @@ pub fn validate_allowed_tool(
 ) !void {
     // If no restriction, all tools are allowed
     if (allowed_tools == null) return;
-    
+
     // Check if tool is in allowed list
     for (allowed_tools.?) |allowed| {
         if (std.mem.eql(u8, tool_name, allowed)) {
             return;
         }
     }
-    
+
     // Tool not in allowed list - build error message and return error
     var allowed_list = std.ArrayList(u8).empty;
     const w = allowed_list.writer(allocator);
@@ -199,7 +197,7 @@ pub fn validate_allowed_tool(
         if (idx > 0) try w.writeAll(", ");
         try w.writeAll(allowed);
     }
-    
+
     // Return error - caller will display a user-friendly message
     _ = try std.fmt.allocPrint(allocator,
         \\ERROR: Tool '{s}' is not allowed for this sub-agent.
@@ -335,7 +333,7 @@ fn runSubAgent(
     // Get tools based on allowed_tools (null = all tools except restricted)
     const sub_agent_tools = try get_allowed_tools(parentAllocator, allowed_tools, mcp_tools);
 
-    var sub_agent = try agent.Agent.init(parentAllocator, logger);
+    var sub_agent = try agent.Agent.init(parentAllocator);
 
     sub_agent.apiKey = api_key;
     sub_agent.model = model;
@@ -351,10 +349,14 @@ fn runSubAgent(
         defer arena_allocator.deinit();
         const allocator = arena_allocator.allocator();
 
-        const skillContents = try BuildSkillContent(allocator, db, session_id);
-        const activity_info = try buildSubagentActivityInfo(allocator, db, session_id);
-        const systemPrompt = try prompt.build_agent_prompt(allocator, cwd, "", skillContents, "", "", "", sub_agent_tools, activity_info);
-        // Note: Don't free activity_info - it's allocated from arena and will be freed automatically
+        // Sub-agents get a focused, minimal prompt - no skills or activity info (that's for main agent)
+        const systemPrompt = try prompt.build_sub_agent_prompt(
+            allocator,
+            cwd,
+            "", // treeDir - sub-agents don't need full tree
+            instruction, // task brief from parent
+            sub_agent_tools,
+        );
 
         var messages: std.ArrayList(agent.AgentMessage) = .empty;
         try messages.append(allocator, .{
@@ -450,11 +452,15 @@ fn runSubAgent(
                         }
 
                         // Save tool result to DB
+                        var tool_output = tool_result.output;
+                        if (std.mem.eql(u8, tc.function.name, "update_activity")) {
+                            tool_output = "";
+                        }
                         _ = try llm_history.saveMessage(allocator, db, .{
                             .session_id = session_id,
                             .model = model,
                             .cwd = cwd,
-                            .content = tool_result.output,
+                            .content = tool_output,
                             .reasoning_content = null,
                             .role = agent.Role.tool.to_str(),
                             .finish_reason = agent.FinishReason.tool.to_str(),
@@ -492,7 +498,7 @@ fn runSubAgent(
                         // Add tool result message
                         try messages.append(allocator, .{
                             .role = .tool,
-                            .content = tool_result.output,
+                            .content = tool_output,
                             .tool_call_id = try allocator.dupe(u8, tc.id),
                         });
                     }
@@ -653,7 +659,7 @@ pub fn handle_spawn_sub_agent_run(
     }
 
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
-    
+
     // Log individual sub-agent info for debugging
     for (parsed.sub_agents, 0..) |sub_agent, idx| {
         logger.infoFmt("spawn_sub_agent[{}]: '{s}' - tools: {}", .{
@@ -766,7 +772,7 @@ pub fn handle_spawn_sub_agent_run(
     for (parsed.sub_agents, 0..) |sub_agent, i| {
         const idx = i + 1;
         const result_str = if (i < results.items.len) results.items[i] else "";
-        
+
         // Check if this is an error result
         if (std.mem.startsWith(u8, result_str, "<error>") or std.mem.startsWith(u8, result_str, "ERROR:")) {
             try w.print("### ❌ Agent {d}: {s}\n", .{idx, sub_agent.name});

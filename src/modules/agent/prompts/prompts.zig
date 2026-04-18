@@ -27,6 +27,7 @@ pub const UniversalRules = core.UniversalRules;
 pub const PromptAutoFix = core.PromptAutoFix;
 pub const DynamicProperties = core.DynamicProperties;
 pub const ResponseFormatting = core.ResponseFormatting;
+pub const UpdateActivityRule = core.UpdateActivityRule;
 
 pub const Agent = agent.Agent;
 
