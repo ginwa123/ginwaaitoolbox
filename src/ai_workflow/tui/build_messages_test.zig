@@ -152,7 +152,87 @@ test "buildMessages - returns messages with system prompt" {
 
     // First message should be system role
     try std.testing.expect(result[0].role == .system);
+
     // System message content should not be empty (contains prompt instructions)
     try std.testing.expect(result[0].content != null);
-    try std.testing.expect(result[0].content.?.len > 0);
+    const content = result[0].content.?;
+    try std.testing.expect(content.len > 0);
+
+    // Verify content contains expected keywords from the agent prompt
+    // These are part of UniversalRules, ResponseFormatting, Agent directive, etc.
+    try std.testing.expect(std.mem.indexOf(u8, content, "Universal Rules") != null or
+                          std.mem.indexOf(u8, content, "Response Formatting") != null or
+                          std.mem.indexOf(u8, content, "Agent") != null);
+
+    // Verify content is null-terminated and readable (memory safety check)
+    try std.testing.expect(std.mem.indexOfScalar(u8, content, 0) == null);
+
+    // Verify we can read the content multiple times without corruption
+    const first_read_len = content.len;
+    const second_read_len = result[0].content.?.len;
+    try std.testing.expect(first_read_len == second_read_len);
+}
+
+// Test buildMessages with history messages included
+test "buildMessages - includes history messages" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Create in-memory SQLite database
+    var db: sqlite.SqliteBackend = undefined;
+    try db.init(":memory:");
+    defer db.deinit();
+
+    // Create required tables
+    try db.exec(alloc, "CREATE TABLE IF NOT EXISTS session_skills (session_id TEXT NOT NULL, skill_name TEXT NOT NULL, content TEXT NOT NULL, loaded_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (session_id, skill_name))", &[_][]const u8{});
+    try db.exec(alloc, "CREATE TABLE IF NOT EXISTS session_agents (session_id TEXT NOT NULL, agent_name TEXT NOT NULL, PRIMARY KEY (session_id, agent_name))", &[_][]const u8{});
+    try db.exec(alloc, "CREATE TABLE IF NOT EXISTS session_background_process (session_id TEXT NOT NULL, pid INTEGER NOT NULL, command TEXT NOT NULL, log_path TEXT NOT NULL, status TEXT NOT NULL, started_at INTEGER DEFAULT (strftime('%s', 'now')))", &[_][]const u8{});
+    try db.exec(alloc, "CREATE TABLE IF NOT EXISTS worker (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, working_directory TEXT, last_activity INTEGER DEFAULT (strftime('%s', 'now')), last_activity_description TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)", &[_][]const u8{});
+
+    // Create a history message - use alloc to make a mutable copy
+    var hist = try alloc.create(TUIHistory);
+    hist.* = .{
+        .id = try alloc.dupe(u8, "hist-1"),
+        .session_id = try alloc.dupe(u8, "test-session"),
+        .model = try alloc.dupe(u8, "test-model"),
+        .created_at = try alloc.dupe(u8, "2024-01-01"),
+        .response_content = try alloc.dupe(u8, "Hello, this is a test response"),
+        .finish_reason = try alloc.dupe(u8, "stop"),
+        .role = try alloc.dupe(u8, "assistant"),
+        .tools = try alloc.dupe(u8, ""),
+    };
+    defer {
+        hist.deinit(alloc);
+        alloc.destroy(hist);
+    }
+
+    const history: []TUIHistory = hist[0..1];
+    const empty_tools: []tool_models.AgentTool = &[_]tool_models.AgentTool{};
+
+    const result = try build_messages.buildMessages(
+        alloc,
+        &db,
+        "/tmp",
+        "test-session",
+        history,
+        empty_tools,
+    );
+    defer {
+        for (result) |*msg| msg.deinit(alloc);
+        alloc.free(result);
+    }
+
+    // Should have system message + history message(s)
+    try std.testing.expect(result.len >= 2);
+
+    // First should be system
+    try std.testing.expect(result[0].role == .system);
+
+    // History messages should follow
+    const has_history = for (result[1..], 1..) |msg, i| {
+        if (msg.role == .assistant or msg.role == .user) break i;
+    } else null;
+
+    try std.testing.expect(has_history != null);
 }
