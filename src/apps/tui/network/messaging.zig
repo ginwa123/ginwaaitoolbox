@@ -37,7 +37,7 @@ pub fn sendMessage(app: *App, message: []const u8) !void {
     //   - cwd_session: working directory (string, optional)
 
     const json_payload = try std.fmt.allocPrint(allocator,
-        \\{{"session_id":"{s}","queue_message":"{s}","cwd_session":"{s}"}}
+        \\{{"session_id":"{s}","queue_message":"{s}","cwd_session":"{s}","allowed_tools":"all"}}
     , .{ app.session_id, escaped_msg, escaped_cwd });
     const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
     defer std.posix.close(sock);

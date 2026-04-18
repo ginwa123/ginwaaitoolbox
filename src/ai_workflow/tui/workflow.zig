@@ -88,6 +88,51 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     _ = chunk;
     // Streaming is disabled for now - content is sent via on_event_send_new after completion
 }
+
+/// Filter and merge tools based on allowed_tools setting
+/// - allowed_tools: "" = no tools, "all" = all tools, comma-separated = specific tools
+/// Returns filtered base tools merged with MCP tools
+pub fn filterAndMergeTools(
+    allocator: std.mem.Allocator,
+    mcp_tools: []const tool_models.AgentTool,
+    allowed_tools: []const u8,
+) ![]tool_models.AgentTool {
+    var base_tools: []tool_models.AgentTool = allocator.alloc(tool_models.AgentTool, tool_registry.ALL_AGENT_TOOLS.len) catch return error.OutOfMemory;
+    @memcpy(base_tools, tool_registry.ALL_AGENT_TOOLS);
+
+    // Filter base tools if allowed_tools is specified
+    if (allowed_tools.len > 0 and !std.mem.eql(u8, allowed_tools, "all")) {
+        var allowed_tools_set: std.StringArrayHashMap(void) = std.StringArrayHashMap(void).init(allocator);
+        defer allowed_tools_set.deinit();
+
+        var it = std.mem.splitScalar(u8, allowed_tools, ',');
+        while (it.next()) |tool_name| {
+            const trimmed = std.mem.trim(u8, tool_name, " ");
+            if (trimmed.len > 0) {
+                allowed_tools_set.put(trimmed, {}) catch {};
+            }
+        }
+
+        var filtered_tools: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
+        defer filtered_tools.deinit(allocator);
+
+        for (base_tools) |tool| {
+            if (allowed_tools_set.contains(tool.function.name)) {
+                try filtered_tools.append(allocator, tool);
+            }
+        }
+        base_tools = try filtered_tools.toOwnedSlice(allocator);
+    }
+
+    // Merge base tools and MCP tools
+    var all_tools_list: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
+    defer all_tools_list.deinit(allocator);
+    try all_tools_list.appendSlice(allocator, base_tools);
+    try all_tools_list.appendSlice(allocator, mcp_tools);
+
+    return try all_tools_list.toOwnedSlice(allocator);
+}
+
 pub const TUIWorkflow = struct {
     // allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -185,37 +230,8 @@ pub const TUIWorkflow = struct {
         }) orelse &[_]tool_models.AgentTool{};
         // Note: mcp_tools_fetched memory is managed by parent_allocator
 
-        // Get base tools and filter based on allowed_tools
-        var base_base_tools: []const tool_models.AgentTool = tool_registry.ALL_AGENT_TOOLS;
-        if (allowed_tools.len > 0 and !std.mem.eql(u8, allowed_tools, "all")) {
-            // Filter tools based on allowed_tools comma-separated list
-            var allowed_tools_list: std.StringArrayHashMap(void) = std.StringArrayHashMap(void).init(parent_allocator);
-            defer allowed_tools_list.deinit();
-            var it = std.mem.splitScalar(u8, allowed_tools, ',');
-            while (it.next()) |tool_name| {
-                // Trim whitespace
-                const trimmed = std.mem.trim(u8, tool_name, " ");
-                if (trimmed.len > 0) {
-                    allowed_tools_list.put(trimmed, {}) catch {};
-                }
-            }
-            // Filter base tools
-            var filtered_tools: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
-            errdefer filtered_tools.deinit(parent_allocator);
-            for (base_base_tools) |tool| {
-                if (allowed_tools_list.contains(tool.name)) {
-                    try filtered_tools.append(parent_allocator, tool);
-                }
-            }
-            base_base_tools = try filtered_tools.toOwnedSlice(parent_allocator);
-        }
-
-        // Merge base tools and MCP tools once outside the loop
-        var all_tools_list: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
-        defer all_tools_list.deinit(parent_allocator);
-        try all_tools_list.appendSlice(parent_allocator, base_base_tools);
-        try all_tools_list.appendSlice(parent_allocator, mcp_tools_fetched);
-        const merged_tools = try all_tools_list.toOwnedSlice(parent_allocator);
+        // Filter and merge tools based on allowed_tools setting
+        const merged_tools = try filterAndMergeTools(parent_allocator, mcp_tools_fetched, allowed_tools);
 
         // Handle body message - add as initial user message if provided
         if (body.len > 0) {
@@ -373,10 +389,10 @@ pub const TUIWorkflow = struct {
                     _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
+                    try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, merged_tools, &messagesLists);
                 } else if (finish_reason == .assistant) {
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, base_tools, &messagesLists);
+                        try handle_tool(allocator, self.db, self.logger, session_id, model, cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, api_key, base_url, config, merged_tools, &messagesLists);
                     } else {
                         // Treat as normal completion
                         _ = try llm_history.saveMessage(allocator, self.db, .{
