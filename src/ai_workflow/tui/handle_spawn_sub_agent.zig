@@ -65,6 +65,22 @@ const buildMcpTools = @import("build_messages_for_agent_prompt.zig");
 
 const MAX_SUB_AGENTS = 20;
 
+/// Sub-agent execution options
+pub const SubAgentOptions = struct {
+    /// Timeout in nanoseconds (0 = no timeout)
+    timeout_ns: u64 = 0,
+    /// Include execution metadata in output
+    include_metadata: bool = true,
+};
+
+/// Result of a sub-agent execution with metadata
+pub const SubAgentExecutionResult = struct {
+    name: []const u8,
+    output: []const u8,
+    err: ?[]const u8 = null,
+    duration_ms: i64 = 0,
+};
+
 /// Execute a tool by name, returning the result
 pub fn execute_sub_agent_tool(
     allocator: std.mem.Allocator,
@@ -75,6 +91,7 @@ pub fn execute_sub_agent_tool(
     cwd: []const u8,
     config: *const config_mod.LlmConfig,
     logger: ?*logger_mod.Logger,
+    allowed_tools: ?[]const []const u8,
 ) !SubAgentToolResult {
     // Create minimal logger if none provided
     const fallback_logger: *logger_mod.Logger = if (logger) |log| log else blk: {
@@ -85,6 +102,15 @@ pub fn execute_sub_agent_tool(
         break :blk &minimal_logger;
     };
     defer if (logger == null) fallback_logger.deinit();
+
+    // Check if tool is allowed before executing
+    validate_allowed_tool(allocator, tc.function.name, allowed_tools) catch {
+        const msg = try std.fmt.allocPrint(allocator,
+            \\<error>Tool '{s}' is not allowed</error>
+            \\<tool>{s}</tool>
+        , .{ tc.function.name, tc.function.name });
+        return SubAgentToolResult{ .output = msg, .output_allocated = true };
+    };
 
     // Check if it's an MCP tool first (dynamic handling)
     if (isMcpTool(config, tc.function.name)) {
@@ -146,6 +172,42 @@ pub fn execute_sub_agent_tool(
         }
     }
 
+    return error.UnknownTool;
+}
+
+/// Check if a tool name is an allowed tool
+/// Returns error with message if tool is not allowed
+pub fn validate_allowed_tool(
+    allocator: std.mem.Allocator,
+    tool_name: []const u8,
+    allowed_tools: ?[]const []const u8,
+) !void {
+    // If no restriction, all tools are allowed
+    if (allowed_tools == null) return;
+    
+    // Check if tool is in allowed list
+    for (allowed_tools.?) |allowed| {
+        if (std.mem.eql(u8, tool_name, allowed)) {
+            return;
+        }
+    }
+    
+    // Tool not in allowed list - build error message and return error
+    var allowed_list = std.ArrayList(u8).empty;
+    const w = allowed_list.writer(allocator);
+    for (allowed_tools.?, 0..) |allowed, idx| {
+        if (idx > 0) try w.writeAll(", ");
+        try w.writeAll(allowed);
+    }
+    
+    // Return error - caller will display a user-friendly message
+    _ = try std.fmt.allocPrint(allocator,
+        \\ERROR: Tool '{s}' is not allowed for this sub-agent.
+        \\Allowed tools: {s}
+    , .{
+        tool_name,
+        allowed_list.items,
+    });
     return error.UnknownTool;
 }
 
@@ -364,7 +426,7 @@ fn runSubAgent(
                     for (tcs) |tc| {
                         logger.infoFmt("[SUB_AGENT] Tool: '{s}'", .{tc.function.name}) catch {};
 
-                        const tool_result = execute_sub_agent_tool(allocator, tc, db, session_id, model, cwd, config, logger) catch |err| blk: {
+                        const tool_result = execute_sub_agent_tool(allocator, tc, db, session_id, model, cwd, config, logger, allowed_tools) catch |err| blk: {
                             const msg = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
                                 tc.function.name,
                                 @errorName(err),
@@ -591,6 +653,15 @@ pub fn handle_spawn_sub_agent_run(
     }
 
     logger.infoFmt("spawn_sub_agent: spawning {} parallel sub-agents", .{parsed.sub_agents.len}) catch {};
+    
+    // Log individual sub-agent info for debugging
+    for (parsed.sub_agents, 0..) |sub_agent, idx| {
+        logger.infoFmt("spawn_sub_agent[{}]: '{s}' - tools: {}", .{
+            idx,
+            sub_agent.name,
+            if (sub_agent.tools) |t| t.len else 0,
+        }) catch {};
+    }
 
     // Fetch current agent from DB (before running sub-agents)
     const current_agent_state = try getCurrentAgentBySessionId(
@@ -675,7 +746,7 @@ pub fn handle_spawn_sub_agent_run(
         } else if (result) |res| {
             try results.append(allocator, try allocator.dupe(u8, res));
         } else {
-            try results.append(allocator, "<error> unknown result</error>");
+            try results.append(allocator, "<error> sub-agent returned no output</error>");
         }
     }
 
@@ -686,13 +757,24 @@ pub fn handle_spawn_sub_agent_run(
     }
     allocator.free(thread_results);
 
-    // Format combined results
+    // Format combined results with better error reporting
     var combined_result = std.ArrayList(u8).empty;
     const w = combined_result.writer(allocator);
 
+    try w.print("## Sub-Agent Results ({d} agents)\n\n", .{num_agents});
+
     for (parsed.sub_agents, 0..) |sub_agent, i| {
-        try w.print("<name>{s}</name>\n", .{sub_agent.name});
-        try w.print("<result>{s}</result>\n", .{if (i < results.items.len) results.items[i] else ""});
+        const idx = i + 1;
+        const result_str = if (i < results.items.len) results.items[i] else "";
+        
+        // Check if this is an error result
+        if (std.mem.startsWith(u8, result_str, "<error>") or std.mem.startsWith(u8, result_str, "ERROR:")) {
+            try w.print("### ❌ Agent {d}: {s}\n", .{idx, sub_agent.name});
+            try w.print("{s}\n\n", .{result_str});
+        } else {
+            try w.print("### ✅ Agent {d}: {s}\n", .{idx, sub_agent.name});
+            try w.print("{s}\n\n", .{result_str});
+        }
     }
 
     return try combined_result.toOwnedSlice(allocator);

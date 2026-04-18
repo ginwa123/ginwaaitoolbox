@@ -425,7 +425,7 @@ pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     };
     errdefer parsed.deinit();
 
-    const output = remove_file_mod.execute_remove_file_to_string(ctx.allocator, parsed.value) catch {
+    const output = remove_file_mod.executeRemoveFileToString(ctx.allocator, parsed.value) catch {
         const out = try std.fmt.allocPrint(ctx.allocator,
             \\<path></path>
             \\<deleted>false</deleted>

@@ -50,7 +50,7 @@ test "execute_sub_agent_tool - list_skills executes successfully" {
     const config = makeDummyConfig();
 
     // The list_skills tool doesn't need actual DB connection
-    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null, null);
     defer allocator.free(result.output);
 
     // Result should contain valid JSON with skills array
@@ -65,7 +65,7 @@ test "execute_sub_agent_tool - unknown tool returns error.UnknownTool" {
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null, null);
     try std.testing.expectError(error.UnknownTool, result);
 }
 
@@ -79,7 +79,7 @@ test "execute_sub_agent_tool - list_skills tool works" {
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null, null);
     defer {
         if (result.output_allocated) {
             allocator.free(result.output);
@@ -250,7 +250,7 @@ test "execute_sub_agent_tool - SubAgentToolResult with auto_save fields" {
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null, null);
     defer allocator.free(result.output);
 
     // list_skills doesn't auto-save, so these should be null
@@ -269,7 +269,7 @@ test "execute_sub_agent_tool - write_file tool is available" {
     const config = makeDummyConfig();
 
     // This should execute (may succeed or fail based on permissions, but shouldn't UnknownTool
-    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null, null);
     defer allocator.free(result.output);
 
     // Should get some output (success or error)
@@ -283,7 +283,7 @@ test "execute_sub_agent_tool - list_agents tool executes" {
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null, null);
     defer allocator.free(result.output);
 
     // Should return JSON with agents
@@ -298,7 +298,7 @@ test "execute_sub_agent_tool - change_agent tool with valid name" {
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null, null);
     defer allocator.free(result.output);
 
     // Should get agent definition or error
@@ -312,7 +312,7 @@ test "execute_sub_agent_tool - remove_skill tool is available" {
     const session_id = "test-session";
     const config = makeDummyConfig();
 
-    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null);
+    const result = try handle_spawn_sub_agent.execute_sub_agent_tool(allocator, tc, &db, session_id, "test-model", "/tmp", &config, null, null);
     defer allocator.free(result.output);
 
     // Should get output (skill not found or success)

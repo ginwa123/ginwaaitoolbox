@@ -9,6 +9,7 @@ pub const SubAgentInput = struct {
     name: []const u8,
     instruction: []const u8,
     tools: ?[]const []const u8 = null, // optional list of tool names to allow
+    timeout_seconds: ?u32 = null, // optional timeout for this sub-agent (0 = no timeout)
 };
 
 pub const SubAgentsInput = struct {
@@ -24,6 +25,7 @@ pub const SubAgentsInput = struct {
                 }
                 allocator.free(t);
             }
+            // Note: timeout_seconds doesn't need freeing (it's an optional primitive)
         }
         allocator.free(self.sub_agents);
     }
@@ -56,6 +58,12 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\TOOL SELECTION GUIDE (optional "tools" field):
         \\- Omit "tools" to give the sub-agent access to ALL default tools.
         \\- Specify "tools" to restrict the sub-agent to only those tools (saves tokens, improves focus).
+        \\- Unknown tools will return an error message explaining why they can't be used.
+        \\
+        \\TIMEOUT OPTION:
+        \\- Each sub-agent can have an optional "timeout_seconds" field.
+        \\- If a sub-agent exceeds its timeout, it will be terminated and return an error.
+        \\- Default: no timeout (sub-agent runs until completion).
         \\
         \\EXAMPLE USE CASES:
         \\  - Spawn 3 agents: one to browse URL A, one to browse URL B, one to browse URL C
@@ -78,7 +86,8 @@ pub const spawn_sub_agent_tool = AgentTool{
                     \\      "name": "descriptive-agent-name",   // Required. Used to label results.
                     \\      "instruction": "Full task details", // Required. Must be self-contained —
                     \\                                          //   include ALL context the agent needs.
-                    \\      "tools": ["bash", "web_browse"]     // Optional. Omit for all tools.
+                    \\      "tools": ["bash", "web_browse"],    // Optional. Omit for all tools.
+                    \\      "timeout_seconds": 300              // Optional. Timeout in seconds (0 = no limit).
                     \\    }
                     \\  ]
                     \\}
@@ -188,10 +197,17 @@ fn parseSubAgentsFromValue(
             tools = try tools_list.toOwnedSlice(allocator);
         }
 
+        // Parse optional "timeout_seconds" field
+        var timeout_seconds: ?u32 = null;
+        if (agent_obj.get("timeout_seconds")) |timeout_val| {
+            timeout_seconds = @intCast(timeout_val.integer);
+        }
+
         try sub_agents_list.append(allocator, .{
             .name = name,
             .instruction = instruction,
             .tools = tools,
+            .timeout_seconds = timeout_seconds,
         });
     }
 

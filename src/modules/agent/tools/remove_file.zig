@@ -47,7 +47,7 @@ fn isDirectory(path: []const u8) bool {
 
 /// Execute the remove_file tool - deletes a file or directory
 /// Returns an XML string with result
-pub fn execute_remove_file_to_string(
+pub fn executeRemoveFileToString(
     allocator: std.mem.Allocator,
     input: RemoveFileInput,
 ) ![]const u8 {

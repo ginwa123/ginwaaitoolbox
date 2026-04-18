@@ -225,6 +225,3 @@ pub const SqliteBackend = struct {
     }
 };
 
-test {
-    _ = @import("sqlite_test.zig");
-}
