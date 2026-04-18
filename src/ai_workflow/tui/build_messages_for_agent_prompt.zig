@@ -25,12 +25,20 @@ pub fn buildMessages(
     cwd: []const u8,
     session_id: []const u8,
     historyMessages: []TUIHistory,
-    skills: []const u8,
-    memoryMd: []const u8,
-    backgroundProcessmessage: []const u8,
-    agentUsed: []const u8,
     tools: []tool_models.AgentTool,
 ) ![]agent.AgentMessage {
+    // Build content strings internally
+    const skills = try BuildSkillContent(allocator, db, session_id);
+    defer allocator.free(skills);
+
+    const memoryMd = try BuildMemoryForAgent(allocator, cwd);
+    defer allocator.free(memoryMd);
+
+    const backgroundProcessmessage = try BuildBackgroundProcessPrompt(allocator, db, session_id);
+    defer allocator.free(backgroundProcessmessage);
+
+    const agentUsed = try BuildDynamicAgentContent(allocator, db, session_id);
+    defer allocator.free(agentUsed);
 
     // buildAgentPrompt now handles processMessages internally
     const activity_info = try buildActivityInfo(allocator, db, session_id);

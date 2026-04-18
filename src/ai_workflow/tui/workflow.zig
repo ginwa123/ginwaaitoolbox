@@ -314,7 +314,7 @@ pub const TUIWorkflow = struct {
                 }
                 break :blk max_token;
             };
-            const initialMessages = try buildMessages(allocator, self.db, cwd, session_id, db_messages, try BuildSkillContent(allocator, self.db, session_id), try BuildMemoryForAgent(allocator, cwd), try BuildBackgroundProcessContent(allocator, self.db, session_id), try BuildDynamicAgentContent(allocator, self.db, session_id), merged_tools);
+            const initialMessages = try buildMessages(allocator, self.db, cwd, session_id, db_messages, merged_tools);
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
