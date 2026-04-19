@@ -614,10 +614,28 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     }
 }
 
+// Heap-allocated struct for sub-agent thread arguments
+// This avoids capturing pointers from stack frames that may become invalid
+const SubAgentThreadArgs = struct {
+    allocator: std.mem.Allocator,
+    sqlite_db: *sqlite.SqliteBackend,
+    logger: *logger_mod.Logger,
+    parent_sess_id: []const u8,
+    agent_name: []const u8,
+    instruction: []const u8,
+    tools: ?[]const []const u8,
+    api_key: []const u8,
+    model: []const u8,
+    base_url: []const u8,
+    config: *const config_mod.LlmConfig,
+    cwd: []const u8,
+};
+
 // spawn_sub_agent implementation - uses workflow.zig logic
 pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // Parse sub-agents from tool call arguments
     const parsed = try spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20);
+    defer parsed.deinit(ctx.allocator);
 
     // Build results array for sub-agent outputs
     var results = std.ArrayList(u8).empty;
@@ -629,64 +647,60 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     defer threads.deinit(ctx.allocator);
 
     const sub_agent_count = parsed.sub_agents.len;
-    const parent_session_id = ctx.session_id;
 
     for (parsed.sub_agents, 0..) |sub_agent, _idx| {
         _ = _idx; // Index not needed
-        const thread_alloc = ctx.allocator;
-        const db = ctx.db;
-        const logger = ctx.logger;
-        const session_id = parent_session_id;
-        const agent_name = sub_agent.name;
-        const instruction = sub_agent.instruction;
-        const allowed_tools = sub_agent.tools;
-        const api_key = ctx.api_key;
-        const model = ctx.model;
-        const base_url = ctx.base_url;
-        const config = ctx.config;
-        const cwd = ctx.cwd;
+
+        // Allocate thread args on the heap to avoid pointer stability issues
+        // This ensures the data remains valid even if stack frames are deallocated
+        const args = try ctx.allocator.create(SubAgentThreadArgs);
+        args.* = .{
+            .allocator = ctx.allocator,
+            .sqlite_db = ctx.db,
+            .logger = ctx.logger,
+            .parent_sess_id = ctx.session_id,
+            .agent_name = sub_agent.name,
+            .instruction = sub_agent.instruction,
+            .tools = sub_agent.tools,
+            .api_key = ctx.api_key,
+            .model = ctx.model,
+            .base_url = ctx.base_url,
+            .config = ctx.config,
+            .cwd = ctx.cwd,
+        };
 
         const thread = try std.Thread.spawn(.{}, struct {
-            fn run(
-                alloc: std.mem.Allocator,
-                sqlite_db: *sqlite.SqliteBackend,
-                log: *logger_mod.Logger,
-                parent_sess_id: []const u8,
-                sub_agent_name: []const u8,
-                sub_agent_instruction: []const u8,
-                sub_agent_tools: ?[]const []const u8,
-                sub_agent_api_key: []const u8,
-                sub_agent_model: []const u8,
-                sub_agent_base_url: []const u8,
-                sub_agent_config: *const config_mod.LlmConfig,
-                sub_agent_cwd: []const u8,
-            ) void {
+            fn run(args_ptr: *SubAgentThreadArgs) void {
+                defer {
+                    // Clean up the heap-allocated args
+                    args_ptr.allocator.destroy(args_ptr);
+                }
                 // Generate unique session ID for this sub-agent
-                const sess_id = std.fmt.allocPrint(alloc, "subagent_{}_{s}", .{ std.time.nanoTimestamp(), sub_agent_name }) catch return;
-                defer alloc.free(sess_id);
+                const sess_id = std.fmt.allocPrint(args_ptr.allocator, "subagent_{}_{s}", .{ std.time.nanoTimestamp(), args_ptr.agent_name }) catch return;
+                defer args_ptr.allocator.free(sess_id);
 
                 // Register sub-agent as worker
-                llm_history.upsertWorker(alloc, sqlite_db, sess_id, sess_id, sub_agent_cwd) catch {};
-                defer llm_history.removeWorker(alloc, sqlite_db, sess_id) catch {};
+                llm_history.upsertWorker(args_ptr.allocator, args_ptr.sqlite_db, sess_id, sess_id, args_ptr.cwd) catch {};
+                defer llm_history.removeWorker(args_ptr.allocator, args_ptr.sqlite_db, sess_id) catch {};
 
-                var workflow = ai_workflow.TUIWorkflow.init(sqlite_db, log);
+                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.sqlite_db, args_ptr.logger);
                 workflow.run(.{
-                    .parent_allocator = alloc,
-                    .parent_session_id = parent_sess_id,
+                    .parent_allocator = args_ptr.allocator,
+                    .parent_session_id = args_ptr.parent_sess_id,
                     .session_id = sess_id,
-                    .message = sub_agent_instruction,
-                    .cwd = sub_agent_cwd,
-                    .api_key = sub_agent_api_key,
-                    .model = sub_agent_model,
-                    .base_url = sub_agent_base_url,
-                    .config = sub_agent_config,
+                    .message = args_ptr.instruction,
+                    .cwd = args_ptr.cwd,
+                    .api_key = args_ptr.api_key,
+                    .model = args_ptr.model,
+                    .base_url = args_ptr.base_url,
+                    .config = args_ptr.config,
                     .body = "",
-                    .allowed_tools = if (sub_agent_tools) |tools|
+                    .allowed_tools = if (args_ptr.tools) |tools|
                         blk: {
                             var tools_str = std.ArrayList(u8).empty;
                             for (tools, 0..) |tool, i| {
-                                if (i > 0) tools_str.append(alloc, ',') catch break;
-                                tools_str.appendSlice(alloc, tool) catch break;
+                                if (i > 0) tools_str.append(args_ptr.allocator, ',') catch break;
+                                tools_str.appendSlice(args_ptr.allocator, tool) catch break;
                             }
                             break :blk tools_str.items;
                         }
@@ -697,20 +711,8 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                     return;
                 };
             }
-        }.run, .{
-            thread_alloc,
-            db,
-            logger,
-            session_id,
-            agent_name,
-            instruction,
-            allowed_tools,
-            api_key,
-            model,
-            base_url,
-            config,
-            cwd,
-        });
+        }.run, .{args});
+
         try threads.append(ctx.allocator, thread);
     }
 
@@ -837,7 +839,6 @@ pub const ToolInfo = struct {
 };
 
 /// The ONE registry for all tool metadata.
-/// Main agent gets all tools. Sub-agents get SUB_AGENT_TOOL_REGISTRY (hard filtered).
 pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     // === AGENT CONTROL (main agent only) ===
     .{ .name = "set_agent_properties", .exec = execSetAgentProperties, .tool_def = set_agent_properties_mod.set_agent_properties_tool },
@@ -916,46 +917,7 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     search_tool_mod.search_tool,
 };
 
-/// Registry for sub-agents (excludes dangerous tools: spawn_sub_agent, set_agent_properties)
-pub const SUB_AGENT_TOOL_REGISTRY: []const ToolInfo = &.{
-    // === AGENT ACTIVITY ===
-    .{ .name = "update_activity", .exec = execUpdateActivity, .tool_def = update_activity_mod.update_activity_tool },
 
-    // === AGENT MANAGEMENT (auto-save) ===
-    .{ .name = "list_agents", .exec = execListAgents, .tool_def = list_agents_mod.list_agents_tool, .auto_save_agent = true },
-    .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .auto_save_agent = true },
-    .{ .name = "remove_agent", .exec = execRemoveAgent, .tool_def = remove_agent_mod.remove_agent_tool },
-
-    // === SKILL MANAGEMENT ===
-    .{ .name = "list_skills", .exec = execListSkills, .tool_def = list_skills_mod.list_skills_tool },
-    .{ .name = "get_skill", .exec = execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .auto_save_skill = true },
-    .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool },
-
-    // === SKILL/AGENT CREATION ===
-    .{ .name = "add_skill", .exec = execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
-    .{ .name = "add_agent", .exec = execAddAgent, .tool_def = add_agent_mod.add_agent_tool, .auto_save_agent = true },
-
-    // === FILE OPERATIONS ===
-    .{ .name = "bash", .exec = execBash, .tool_def = bash_tool_mod.bash_tool },
-    .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool },
-    .{ .name = "write_file", .exec = execWriteFile, .tool_def = write_file_mod.write_file_tool },
-    .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool },
-    .{ .name = "remove_file", .exec = execRemoveFile, .tool_def = remove_file_mod.remove_file_tool },
-
-    // === LSP TOOLS ===
-    .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
-    .{ .name = "lsp_references", .exec = execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool },
-    .{ .name = "lsp_workspace_symbol", .exec = execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool },
-    .{ .name = "lsp_document_symbol", .exec = execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool },
-    .{ .name = "lsp_hover", .exec = execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool },
-
-    // === WEB SEARCH TOOLS ===
-    .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool },
-
-    // === FILE SEARCH TOOLS ===
-    .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool },
-    .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool },
-};
 
 /// Get tool metadata by name from registry
 pub fn getToolByName(name: []const u8) ?*const ToolInfo {

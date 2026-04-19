@@ -120,16 +120,6 @@ pub const AvailableTools =
     \\- `list_skills` — **BROWSE available skills** ⭐ USE THIS FIRST
     \\- `get_skill("name")` — **LOAD a skill** ⭐ USE THIS FOR SPECIALIZED WORK
     \\
-    \\**🚨 MANDATORY PARALLEL WORK (NOT OPTIONAL!):**
-    \\
-    \\| When | Action |
-    \\|-----|--------|
-    \\| **2+ research topics** | Spawn 1 agent per topic |
-    \\| **2+ files to read** | Spawn 1 agent per file |
-    \\| **2+ patterns to search** | Spawn 1 agent per pattern |
-    \\| **2+ URLs to browse** | Spawn 1 agent per URL |
-    \\| **2+ failures to debug** | Spawn 1 agent per failure |
-    \\
     \\**⚡ Tool Selection Guide (FOLLOW THIS EXACTLY!):**
     \\- **Reading files?** → `read_file` (**NEVER `cat`, `less`, `more`**)**
     \\- **Creating files?** → `write_file` (**NEVER `echo >`, `tee`, `touch`**)**

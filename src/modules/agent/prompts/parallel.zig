@@ -48,11 +48,3 @@ pub const ParallelWork =
     \\3. spawn_sub_agent(...) → spawn parallel agents
     \\```
 ;
-
-// Legacy exports for backwards compatibility
-pub const ParallelMandatory = ParallelWork;
-pub const ParallelWorkflow = ParallelWork;
-pub const ParallelExamples = "";
-pub const ParallelAntiPatterns = "";
-pub const ParallelSubAgentGuidance = "";
-pub const ParallelSkillReminder = "";

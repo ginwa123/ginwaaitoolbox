@@ -25,18 +25,10 @@ pub const UniversalRules = prompts.UniversalRules;
 pub const PromptAutoFix = prompts.PromptAutoFix;
 pub const DynamicProperties = prompts.DynamicProperties;
 pub const Agent = prompts.Agent;
-pub const ParallelWork = prompts.ParallelWork; // ✅ CONSOLIDATED parallel rules
-pub const ParallelMandatoryIntro = prompts.ParallelMandatoryIntro;
-pub const ParallelMandatory = prompts.ParallelMandatory;
-pub const ParallelWorkflow = prompts.ParallelWorkflow;
-pub const ParallelExamples = prompts.ParallelExamples;
-pub const ParallelAntiPatterns = prompts.ParallelAntiPatterns;
-pub const ParallelSubAgentGuidance = prompts.ParallelSubAgentGuidance;
-pub const ParallelSkillReminder = prompts.ParallelSkillReminder;
+pub const ParallelWork = prompts.ParallelWork;
 pub const Research = prompts.Research;
 pub const ResearchTriggers = prompts.ResearchTriggers;
 pub const FileEditingRules = prompts.FileEditingRules;
-pub const AvailableTools = prompts.AvailableTools;
 pub const ChangeAgent = prompts.ChangeAgent;
 pub const SpecializationTable = prompts.SpecializationTable;
 pub const SubAgentPrompt = prompts.SubAgentPrompt;
@@ -47,21 +39,35 @@ pub const Escalation = prompts.Escalation;
 pub const PlanBlock = prompts.PlanBlock;
 pub const TDD = prompts.TDD;
 pub const MemoryPrompt = prompts.MemoryPrompt;
-pub const GitPrompt = prompts.GitPrompt;
 pub const NalarMdAutoUpdate = prompts.NalarMdAutoUpdate;
-pub const TaskManagementPrompt = prompts.TaskManagementPrompt;
+pub const GitPrompt = prompts.GitPrompt;
 pub const CompactionAgent = prompts.CompactionAgent;
-pub const DestroyIdea = prompts.DestroyIdea;
 pub const SkillsUsage = prompts.SkillsUsage;
 pub const SkillsTriggers = prompts.SkillsTriggers;
-pub const LoadedSkills = prompts.LoadedSkills;
 pub const ProceduralMemory = prompts.ProceduralMemory;
 pub const ResponseFormatting = prompts.ResponseFormatting;
 pub const UpdateActivityRule = prompts.UpdateActivityRule;
 
-// Legacy exports for backwards compatibility
-pub const BasePrompt = UniversalRules;
-pub const AgentsMdPrompt = prompts.MemoryPrompt;
+pub const ThinkBeforeCoding = prompts.ThinkBeforeCoding;
+pub const SimplicityFirst = prompts.SimplicityFirst;
+pub const SurgicalChanges = prompts.SurgicalChanges;
+pub const GoalDrivenExecution = prompts.GoalDrivenExecution;
+pub const SuccessCriteria = prompts.SuccessCriteria;
+pub const AntiPatterns = prompts.AntiPatterns;
+pub const GuidelinesSummary = prompts.GuidelinesSummary;
+
+// Agentic Coding enhancements
+pub const AutonomousBehavior = prompts.AutonomousBehavior;
+pub const DeepResearch = prompts.DeepResearch;
+pub const QualityGates = prompts.QualityGates;
+pub const ErrorRecovery = prompts.ErrorRecovery;
+pub const ToolChaining = prompts.ToolChaining;
+pub const ContextAwareness = prompts.ContextAwareness;
+pub const ProactiveLearning = prompts.ProactiveLearning;
+pub const DecisionFramework = prompts.DecisionFramework;
+pub const AggressiveDelegation = prompts.AggressiveDelegation;
+pub const IterationMindset = prompts.IterationMindset;
+pub const SafetyFirst = prompts.SafetyFirst;
 
 // =============================================================================
 // PROMPT BUILDERS
@@ -143,84 +149,113 @@ pub fn build_agent_prompt(
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
-    // 1. Base rules
+    // Helper to append section with newline separator
+    const appendSection = struct {
+        fn func(a: std.mem.Allocator, r: *std.ArrayList(u8), section: []const u8) !void {
+            if (section.len > 0) {
+                try r.appendSlice(a, "\n\n");
+                try r.appendSlice(a, section);
+            }
+        }
+    }.func;
+
+    // 1. Base rules - safety and universal guidelines
     try result.appendSlice(allocator, UniversalRules);
-    try result.appendSlice(allocator, "\n\n");
+    try appendSection(allocator, &result, PromptAutoFix);
 
-    // 2. ✅ MOVED UP: Prompt auto-fix (CRITICAL - must be early!)
-    try result.appendSlice(allocator, PromptAutoFix);
-    try result.appendSlice(allocator, "\n\n");
+    // 2. ✅ Agent directive EARLY - agent needs context before anything else
+    try appendSection(allocator, &result, Agent);
 
-    // 3. Response formatting - markdown and thinking
-    try result.appendSlice(allocator, ResponseFormatting);
-    try result.appendSlice(allocator, "\n\n");
+    // 3. Core execution guidelines
+    try appendSection(allocator, &result, ThinkBeforeCoding);
+    try appendSection(allocator, &result, SimplicityFirst);
+    try appendSection(allocator, &result, SurgicalChanges);
+    try appendSection(allocator, &result, GoalDrivenExecution);
+    try appendSection(allocator, &result, SuccessCriteria);
+    try appendSection(allocator, &result, AntiPatterns);
+    try appendSection(allocator, &result, GuidelinesSummary);
 
-    // 4. ✅ MANDATORY: Update activity after every response
-    try result.appendSlice(allocator, UpdateActivityRule);
-    try result.appendSlice(allocator, "\n\n");
+    // 4. Agentic Coding enhancements (autonomous, proactive, quality-focused)
+    try appendSection(allocator, &result, AutonomousBehavior);
+    try appendSection(allocator, &result, DeepResearch);
+    try appendSection(allocator, &result, QualityGates);
+    try appendSection(allocator, &result, ErrorRecovery);
+    try appendSection(allocator, &result, ToolChaining);
+    try appendSection(allocator, &result, ContextAwareness);
+    try appendSection(allocator, &result, ProactiveLearning);
+    try appendSection(allocator, &result, DecisionFramework);
+    try appendSection(allocator, &result, AggressiveDelegation);
+    try appendSection(allocator, &result, IterationMindset);
+    try appendSection(allocator, &result, SafetyFirst);
 
-    // 4. Main agent directive (IMPORTANT - agent needs context before anything else)
-    try result.appendSlice(allocator, Agent);
-    try result.appendSlice(allocator, "\n\n");
+    // 5. Response formatting - markdown and thinking
+    try appendSection(allocator, &result, ResponseFormatting);
 
-    // 5. ✅ CONSOLIDATED: Parallel work rules (was duplicated 5x, now once)
-    try result.appendSlice(allocator, ParallelWork);
-    try result.appendSlice(allocator, "\n\n");
+    // 6. MANDATORY: Update activity after every response
+    try appendSection(allocator, &result, UpdateActivityRule);
 
-    // 6. Tool-First Approach + Research triggers
-    try result.appendSlice(allocator, Research);
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, ResearchTriggers);
-    try result.appendSlice(allocator, "\n\n");
+    // 7. CONSOLIDATED: Parallel work rules (single source of truth)
+    try appendSection(allocator, &result, ParallelWork);
 
-    // 7. Dynamic Properties - encourage on-demand property changes
-    // Only include if set_agent_properties tool is enabled
+    // 8. Tool-First Approach + Research triggers
+    try appendSection(allocator, &result, Research);
+    try appendSection(allocator, &result, ResearchTriggers);
+
+    // 9. Dynamic Properties - only if set_agent_properties tool is available
     const has_set_agent_properties = for (tools) |tool| {
         if (std.mem.eql(u8, tool.function.name, "set_agent_properties")) {
             break true;
         }
     } else false;
     if (has_set_agent_properties) {
-        try result.appendSlice(allocator, DynamicProperties);
-        try result.appendSlice(allocator, "\n\n");
+        try appendSection(allocator, &result, DynamicProperties);
     }
 
-    // 8. Classification + Plan + TDD + Execution
-    try result.appendSlice(allocator, Classification);
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, PlanBlock);
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, TDD);
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, Execution);
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, Escalation);
-    try result.appendSlice(allocator, "\n\n");
+    // 10. Classification + Plan + TDD + Execution
+    try appendSection(allocator, &result, Classification);
+    try appendSection(allocator, &result, PlanBlock);
+    try appendSection(allocator, &result, TDD);
+    try appendSection(allocator, &result, Execution);
+    try appendSection(allocator, &result, Escalation);
 
-    // 9. ✅ MOVED: Skills section (after agent knows context)
-    try result.appendSlice(allocator, SkillsUsage);
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, SkillsTriggers);
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, GitPrompt);
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, ProceduralMemory);
-    try result.appendSlice(allocator, "\n\n");
+    // 11. Skills + Memory section (agent knows context by now)
+    try appendSection(allocator, &result, SkillsUsage);
+    try appendSection(allocator, &result, SkillsTriggers);
+    try appendSection(allocator, &result, MemoryPrompt);
+    try appendSection(allocator, &result, NalarMdAutoUpdate);
+    try appendSection(allocator, &result, GitPrompt);
+    try appendSection(allocator, &result, ProceduralMemory);
 
-    // 10. Skills list (dynamic)
-    const skills_json = try list_skills.execute_list_skills(allocator);
-    defer allocator.free(skills_json);
+    // 12. Skills list (dynamic from file system)
+    try result.appendSlice(allocator, "\n\n<available_skills>\n");
+    {
+        const skills_json = try list_skills.execute_list_skills(allocator);
+        defer allocator.free(skills_json);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{});
-    defer parsed.deinit();
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{}) catch {
+            try result.appendSlice(allocator, "Error: Could not parse skills list.\n");
+            try result.appendSlice(allocator, "</available_skills>");
+            return result.toOwnedSlice(allocator);
+        };
+        defer parsed.deinit();
 
-    const skills_array = parsed.value.object.get("skills");
-    if (skills_array) |arr| {
-        try result.appendSlice(allocator, "\n\n<available_skills>\n");
-        if (arr.array.items.len == 0) {
+        const skills_value = parsed.value.object.get("skills") orelse {
+            try result.appendSlice(allocator, "No skills available.\n");
+            try result.appendSlice(allocator, "</available_skills>");
+            return result.toOwnedSlice(allocator);
+        };
+
+        if (skills_value != .array) {
+            try result.appendSlice(allocator, "Error: Invalid skills format.\n");
+            try result.appendSlice(allocator, "</available_skills>");
+            return result.toOwnedSlice(allocator);
+        }
+
+        const skills_array = skills_value.array;
+        if (skills_array.items.len == 0) {
             try result.appendSlice(allocator, "No skills available.\n");
         } else {
-            for (arr.array.items) |skill| {
+            for (skills_array.items) |skill| {
                 const name = skill.object.get("name") orelse continue;
                 const description = skill.object.get("description") orelse continue;
                 if (name == .string and description == .string) {
@@ -232,10 +267,10 @@ pub fn build_agent_prompt(
                 }
             }
         }
-        try result.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
     }
+    try result.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
 
-    // 11. Custom skills content + Memory markdown
+    // 13. Custom skills content + Memory markdown
     if (skillsContent.len > 0) {
         try result.appendSlice(allocator, "\n\n");
         try result.appendSlice(allocator, skillsContent);
@@ -245,46 +280,36 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, memoryMd);
     }
 
-    // Dynamic tool listing - enumerate actual tools available
-    if (tools.len > 0) {
-        try result.appendSlice(allocator, "\n\n## Available Tools\n\nUse these exact tool names in your tool_calls:\n\n");
-        for (tools) |tool| {
-            try result.appendSlice(allocator, "- **");
-            try result.appendSlice(allocator, tool.function.name);
-            try result.appendSlice(allocator, "**: ");
-            try result.appendSlice(allocator, tool.function.description);
-            try result.appendSlice(allocator, "\n");
+    // 14. Dynamic tool listing
+    try appendToolListing(allocator, &result, tools);
+
+    // 15. File editing rules - CRITICAL, follow the workflow!
+    try appendSection(allocator, &result, FileEditingRules);
+
+    // 16. Change agent rules
+    try appendSection(allocator, &result, ChangeAgent);
+
+    // 17. Specialization table
+    try appendSection(allocator, &result, SpecializationTable);
+
+    // 18. Dynamic agents list
+    {
+        const agents_list = agents.listAgents(allocator);
+        defer agents.freeAgentsList(allocator, agents_list);
+
+        if (agents_list.len > 0) {
+            try result.appendSlice(allocator, "\n\n## Available Dynamic Agents\n\n");
+            for (agents_list) |info| {
+                try result.appendSlice(allocator, "- **");
+                try result.appendSlice(allocator, info.name);
+                try result.appendSlice(allocator, "**: ");
+                try result.appendSlice(allocator, info.description);
+                try result.appendSlice(allocator, "\n");
+            }
         }
     }
 
-    // File editing rules - CRITICAL, follow the workflow!
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, FileEditingRules);
-
-    // Change agent rules
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, ChangeAgent);
-
-    // Specialization table
-    try result.appendSlice(allocator, "\n\n");
-    try result.appendSlice(allocator, SpecializationTable);
-
-    // Dynamic agents
-    const agents_list = agents.listAgents(allocator);
-    defer agents.freeAgentsList(allocator, agents_list);
-
-    if (agents_list.len > 0) {
-        try result.appendSlice(allocator, "\n\n## Available Dynamic Agents\n\n");
-        for (agents_list) |info| {
-            try result.appendSlice(allocator, "- **");
-            try result.appendSlice(allocator, info.name);
-            try result.appendSlice(allocator, "**: ");
-            try result.appendSlice(allocator, info.description);
-            try result.appendSlice(allocator, "\n");
-        }
-    }
-
-    // Working directory context
+    // 19. Working directory context
     if (cwd.len > 0) {
         try result.appendSlice(allocator, "\n\n**Current working directory:** ");
         try result.appendSlice(allocator, cwd);
@@ -292,25 +317,25 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, treeDir);
     }
 
-    // OS info
+    // 20. OS info
     const os_name = getCurrentOs();
     try result.appendSlice(allocator, "\n\n**Operating System:** ");
     try result.appendSlice(allocator, os_name);
     try result.appendSlice(allocator, "\n\n**Important:** Always use OS-specific commands. Check the current OS before running system commands or shell scripts.");
 
-    // Background process info
+    // 21. Background process info
     if (backgroundProcessContent.len > 0) {
         try result.appendSlice(allocator, "\n\n");
         try result.appendSlice(allocator, backgroundProcessContent);
     }
 
-    // Active specialized agent
+    // 22. Active specialized agent
     if (agent.len > 0) {
         try result.appendSlice(allocator, "\n\n## Active Specialized Agent\n\n");
         try result.appendSlice(allocator, agent);
     }
 
-    // Active workers/threads info
+    // 23. Active workers/threads info
     if (activity_info.len > 0) {
         try result.appendSlice(allocator, "\n\n## Active Workers\n\n");
         try result.appendSlice(allocator, activity_info);
@@ -318,4 +343,18 @@ pub fn build_agent_prompt(
     }
 
     return result.toOwnedSlice(allocator);
+}
+
+/// Append tool listing to the result ArrayList
+fn appendToolListing(allocator: std.mem.Allocator, result: *std.ArrayList(u8), tools: []const tool_models.AgentTool) !void {
+    if (tools.len == 0) return;
+
+    try result.appendSlice(allocator, "\n\n## Available Tools\n\nUse these exact tool names in your tool_calls:\n\n");
+    for (tools) |tool| {
+        try result.appendSlice(allocator, "- **");
+        try result.appendSlice(allocator, tool.function.name);
+        try result.appendSlice(allocator, "**: ");
+        try result.appendSlice(allocator, tool.function.description);
+        try result.appendSlice(allocator, "\n");
+    }
 }
