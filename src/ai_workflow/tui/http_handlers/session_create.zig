@@ -139,18 +139,21 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                         var arena = std.heap.ArenaAllocator.init(args.allocator);
                         defer arena.deinit();
                         var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.logger);
-                        workflow.run(
-                            arena.allocator(),
-                            args.session_id,
-                            args.message,
-                            args.cwd,
-                            args.api_key,
-                            args.model,
-                            args.base_url,
-                            args.llm_config,
-                            args.body,
-                            args.allowed_tools,
-                        );
+                        workflow.run(.{
+                            .parent_allocator = arena.allocator(),
+                            .parent_session_id = args.session_id,
+                            .session_id = args.session_id,
+                            .message = args.message,
+                            .cwd = args.cwd,
+                            .api_key = args.api_key,
+                            .model = args.model,
+                            .base_url = args.base_url,
+                            .config = args.llm_config,
+                            .body = args.body,
+                            .allowed_tools = args.allowed_tools,
+                        }) catch |err| {
+                            args.logger.errFmt("workflow.run failed: {s}", .{@errorName(err)}) catch {};
+                        };
                     }
                 }.run, .{workflow_args});
                 thread.detach();

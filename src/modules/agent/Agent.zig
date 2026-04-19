@@ -881,7 +881,7 @@ pub const Agent = struct {
         return chunk;
     }
     /// Streaming call with callback for each chunk - synchronous, no thread needed
-    pub fn call_streaming(
+    pub fn callStreaming(
         self: *Agent,
         params: AgentCall,
         ctx: ?*anyopaque,

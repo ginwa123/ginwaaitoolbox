@@ -7,6 +7,7 @@ const logger_mod = nalar_mod.logger;
 const config_mod = nalar_mod.config;
 const spawn_sub_agent_tool = nalar_mod.spawn_sub_agent;
 const llm_history = nalar_mod.llm_history;
+const ai_workflow = nalar_mod.ai_workflow;
 
 // Tool imports for exec functions and tool_defs
 const bash_tool_mod = nalar_mod.bash_tool;
@@ -613,27 +614,115 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     }
 }
 
-// spawn_sub_agent implementation - spawns parallel sub-agents
+// spawn_sub_agent implementation - uses workflow.zig logic
 pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
+    // Parse sub-agents from tool call arguments
+    const parsed = try spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20);
 
-    const result = try handle_spawn_sub_agent.handle_spawn_sub_agent_run(
-        ctx.allocator,
-        ctx.db,
-        ctx.logger,
-        ctx.session_id,
-        ctx.model,
-        ctx.cwd,
-        0,
-        tc,
-        ctx.agent_temperature.*,
-        ctx.is_thinking.*,
-        ctx.api_key,
-        ctx.base_url,
-        ctx.config,
-    );
+    // Build results array for sub-agent outputs
+    var results = std.ArrayList(u8).empty;
+    defer results.deinit(ctx.allocator);
+    const w = results.writer(ctx.allocator);
 
-    return ToolExecResult{ .output = result };
+    // Run each sub-agent in its own thread
+    var threads = std.ArrayList(std.Thread).empty;
+    defer threads.deinit(ctx.allocator);
+
+    const sub_agent_count = parsed.sub_agents.len;
+    const parent_session_id = ctx.session_id;
+
+    for (parsed.sub_agents, 0..) |sub_agent, _idx| {
+        _ = _idx; // Index not needed
+        const thread_alloc = ctx.allocator;
+        const db = ctx.db;
+        const logger = ctx.logger;
+        const session_id = parent_session_id;
+        const agent_name = sub_agent.name;
+        const instruction = sub_agent.instruction;
+        const allowed_tools = sub_agent.tools;
+        const api_key = ctx.api_key;
+        const model = ctx.model;
+        const base_url = ctx.base_url;
+        const config = ctx.config;
+        const cwd = ctx.cwd;
+
+        const thread = try std.Thread.spawn(.{}, struct {
+            fn run(
+                alloc: std.mem.Allocator,
+                sqlite_db: *sqlite.SqliteBackend,
+                log: *logger_mod.Logger,
+                parent_sess_id: []const u8,
+                sub_agent_name: []const u8,
+                sub_agent_instruction: []const u8,
+                sub_agent_tools: ?[]const []const u8,
+                sub_agent_api_key: []const u8,
+                sub_agent_model: []const u8,
+                sub_agent_base_url: []const u8,
+                sub_agent_config: *const config_mod.LlmConfig,
+                sub_agent_cwd: []const u8,
+            ) void {
+                // Generate unique session ID for this sub-agent
+                const sess_id = std.fmt.allocPrint(alloc, "subagent_{}_{s}", .{ std.time.nanoTimestamp(), sub_agent_name }) catch return;
+                defer alloc.free(sess_id);
+
+                // Register sub-agent as worker
+                llm_history.upsertWorker(alloc, sqlite_db, sess_id, sess_id, sub_agent_cwd) catch {};
+                defer llm_history.removeWorker(alloc, sqlite_db, sess_id) catch {};
+
+                var workflow = ai_workflow.TUIWorkflow.init(sqlite_db, log);
+                workflow.run(.{
+                    .parent_allocator = alloc,
+                    .parent_session_id = parent_sess_id,
+                    .session_id = sess_id,
+                    .message = sub_agent_instruction,
+                    .cwd = sub_agent_cwd,
+                    .api_key = sub_agent_api_key,
+                    .model = sub_agent_model,
+                    .base_url = sub_agent_base_url,
+                    .config = sub_agent_config,
+                    .body = "",
+                    .allowed_tools = if (sub_agent_tools) |tools|
+                        blk: {
+                            var tools_str = std.ArrayList(u8).empty;
+                            for (tools, 0..) |tool, i| {
+                                if (i > 0) tools_str.append(alloc, ',') catch break;
+                                tools_str.appendSlice(alloc, tool) catch break;
+                            }
+                            break :blk tools_str.items;
+                        }
+                    else
+                        "",
+                }) catch {
+                    // Capture error
+                    return;
+                };
+            }
+        }.run, .{
+            thread_alloc,
+            db,
+            logger,
+            session_id,
+            agent_name,
+            instruction,
+            allowed_tools,
+            api_key,
+            model,
+            base_url,
+            config,
+            cwd,
+        });
+        try threads.append(ctx.allocator, thread);
+    }
+
+    // Wait for all threads to complete
+    for (threads.items) |thread| {
+        thread.join();
+    }
+
+    // Format results
+    try w.print("Spawned {} sub-agent(s) - use /api/session to query results\n", .{sub_agent_count});
+
+    return ToolExecResult{ .output = try results.toOwnedSlice(ctx.allocator) };
 }
 
 // Placeholder LSP exec functions

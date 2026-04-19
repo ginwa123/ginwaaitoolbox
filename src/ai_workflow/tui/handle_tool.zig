@@ -5,8 +5,7 @@ const logger_mod = nalar.logger;
 const sqlite = nalar.sqlite;
 const config_mod = nalar.config;
 const tool_registry = @import("tool_registry.zig");
-const handle_spawn = @import("handle_spawn_sub_agent.zig");
-const SubAgentToolExec = handle_spawn.SubAgentToolExec;
+const SubAgentToolExec = tool_registry.SubAgentToolExec;
 const llm_history = @import("llm_history.zig");
 const on_event_sent = @import("on_event_sent.zig");
 const on_event_send_new = on_event_sent.on_event_send_new;
@@ -192,27 +191,6 @@ fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !Tool
     };
 }
 
-/// spawn_sub_agent needs full context (logger, model, etc.)
-fn dispatchSpawnSubAgent(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const handle_spawn_sub_agent = @import("handle_spawn_sub_agent.zig");
-    const result = try handle_spawn_sub_agent.handle_spawn_sub_agent_run(
-        ctx.allocator,
-        ctx.db,
-        ctx.logger,
-        ctx.session_id,
-        ctx.model,
-        ctx.cwd,
-        0,
-        tool_call,
-        ctx.agent_temperature.*,
-        ctx.is_thinking.*,
-        ctx.api_key,
-        ctx.base_url,
-        ctx.config,
-    );
-    return ToolResult{ .output = result };
-}
-
 // ============================================================================
 // HELPER FUNCTIONS - XML Parsing
 // ============================================================================
@@ -251,6 +229,7 @@ pub fn handle_tool(
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
     session_id: []const u8,
+    parent_session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
     loop_counter: u32,
@@ -309,12 +288,12 @@ pub fn handle_tool(
             .is_input = true,
             .is_output = false,
             .tool_name = try std.mem.join(allocator, ",", toolNames.items),
-            .parent_id = session_id,
-            .parent_session_id = session_id,
+            .parent_id = parent_session_id,
+            .parent_session_id = parent_session_id,
         });
 
         // Send SSE for assistant message
-        try sendSSEForLatestMessage(allocator, db, session_id, cwd, current_agent_for_save, session_id, agent_temperature.*, isThinking.*, true, false);
+        try sendSSEForLatestMessage(allocator, db, session_id, cwd, current_agent_for_save, parent_session_id, agent_temperature.*, isThinking.*, true, false);
 
         // Build context for dispatch
         const ctx = ToolContext{
@@ -350,10 +329,10 @@ pub fn handle_tool(
                         tool_call.function.name,
                         @errorName(err),
                     });
-                    try saveAndSendToolResult(allocator, db, session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                    try saveAndSendToolResult(allocator, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                     continue;
                 };
-                try saveAndSendToolResult(allocator, db, session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                try saveAndSendToolResult(allocator, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                 continue;
             }
 
@@ -363,7 +342,7 @@ pub fn handle_tool(
                     tool_call.function.name,
                     @errorName(err),
                 });
-                try saveAndSendToolResult(allocator, db, session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                try saveAndSendToolResult(allocator, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                 continue;
             };
 
@@ -387,7 +366,7 @@ pub fn handle_tool(
                 };
             }
 
-            try saveAndSendToolResult(allocator, db, session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+            try saveAndSendToolResult(allocator, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
         }
     }
 
@@ -398,6 +377,7 @@ fn saveAndSendToolResult(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
+    parent_session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
     loop_counter: u32,
@@ -431,11 +411,11 @@ fn saveAndSendToolResult(
         .is_output = true,
         .is_input = false,
         .tool_name = tool_call.function.name,
-        .parent_id = session_id,
-        .parent_session_id = session_id,
+        .parent_id = parent_session_id,
+        .parent_session_id = parent_session_id,
     });
 
-    try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, session_id, temperature, is_thinking, false, true);
+    try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true);
 }
 
 fn sendSSEForLatestMessage(

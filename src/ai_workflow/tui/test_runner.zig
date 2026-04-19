@@ -2,7 +2,6 @@
 
 
 test {
-    _ = @import("handle_spawn_sub_agent_test.zig");
     _ = @import("handle_tool_test.zig");
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
