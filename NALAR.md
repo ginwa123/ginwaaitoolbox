@@ -11,9 +11,17 @@
 ## Project Overview
 
 **Name:** nalarcore
-**Executables:** `nalar` (server), `nalar-tui` (TUI), `nalar-dev`/`nalar-dev-tui` (debug builds)
+**Executables:** `nalar` (server), `nalar-tui` (old TUI), `nalar-new-tui` (new ZigZag TUI), `nalar-dev`/`nalar-dev-tui` (debug builds)
 **Language:** Zig 0.15.2
 **Type:** AI agentic coding toolbox with HTTP server + TUI interfaces
+
+## ZigZag TUI Framework
+
+The new TUI (`nalar-new-tui`) is built using the **ZigZag** framework (https://github.com/meszmate/zigzag):
+- Elm-style Model-Update-View pattern
+- Built-in terminal handling, keyboard/mouse input
+- Styles, colors, borders, layout utilities
+- See `src/apps/new_tui/src/main.zig` for the new TUI implementation
 
 ## Research Rule
 
@@ -30,7 +38,8 @@ When needing **latest documentation, examples, or best practices** for any libra
 ```bash
 zig build              # Build all targets
 zig build run          # Run HTTP server (port 8080)
-zig build run:tui      # Run TUI app
+zig build run:tui      # Run old TUI app
+zig build run:new_tui  # Run new ZigZag TUI app
 zig build test         # Run all tests
 
 # Dev builds (debug symbols)
