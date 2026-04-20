@@ -90,6 +90,7 @@ pub fn filterAndMergeTools(
     allocator: std.mem.Allocator,
     mcp_tools: []const tool_models.AgentTool,
     allowed_tools: []const u8,
+    is_sub_agent: bool,
 ) ![]tool_models.AgentTool {
     var base_tools: []tool_models.AgentTool = allocator.alloc(tool_models.AgentTool, tool_registry.ALL_AGENT_TOOLS.len) catch return error.OutOfMemory;
     @memcpy(base_tools, tool_registry.ALL_AGENT_TOOLS);
@@ -118,6 +119,18 @@ pub fn filterAndMergeTools(
         base_tools = try filtered_tools.toOwnedSlice(allocator);
     }
 
+    // Sub-agents cannot spawn more sub-agents - strip spawn_sub_agent to prevent infinite recursion
+    if (is_sub_agent) {
+        var filtered: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
+        defer filtered.deinit(allocator);
+        for (base_tools) |tool| {
+            if (!std.mem.eql(u8, tool.function.name, "spawn_sub_agent")) {
+                try filtered.append(allocator, tool);
+            }
+        }
+        base_tools = try filtered.toOwnedSlice(allocator);
+    }
+
     // Merge base tools and MCP tools
     var all_tools_list: std.ArrayList(tool_models.AgentTool) = std.ArrayList(tool_models.AgentTool).empty;
     defer all_tools_list.deinit(allocator);
@@ -139,6 +152,8 @@ pub const RunParams = struct {
     config: *const config_mod.LlmConfig,
     body: []const u8,
     allowed_tools: []const u8,
+    /// If true, this is a sub-agent and spawn_sub_agent will be stripped from tools
+    is_sub_agent: bool = false,
 };
 
 pub const TUIWorkflow = struct {
@@ -211,7 +226,7 @@ pub const TUIWorkflow = struct {
         // Note: mcp_tools_fetched memory is managed by allocator
 
         // Filter and merge tools based on allowed_tools setting
-        const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools);
+        const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools, params.is_sub_agent);
 
         // Handle body message - add as initial user message if provided
         if (params.body.len > 0) {

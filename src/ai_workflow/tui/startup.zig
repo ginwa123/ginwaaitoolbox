@@ -20,6 +20,7 @@ pub const WorkflowArgs = struct {
     model: []const u8,
     base_url: []const u8,
     llm_config: *const nalar_mod.config.LlmConfig,
+    is_sub_agent: bool,
 };
 
 /// Startup handler - queries worker table and starts a thread for each worker
@@ -40,7 +41,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
 
             // Query all workers from the database
-            const workers = llm_history.get_active_workers(allocator, sqlite_db) catch |err| {
+            const workers = llm_history.getActiveWorker(allocator, sqlite_db) catch |err| {
                 global_logger_ptr.errFmt("Failed to query workers: {s}", .{@errorName(err)}) catch {};
                 return err;
             };
@@ -80,6 +81,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                     .model = ctxTui.llm_config.model,
                     .base_url = ctxTui.llm_config.base_url,
                     .llm_config = ctxTui.llm_config,
+                    .is_sub_agent = worker.isSubAgent(),
                 };
 
                 // Spawn thread to run workflow
@@ -110,6 +112,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                             .config = args.llm_config,
                             .body = "",
                             .allowed_tools = "",
+                            .is_sub_agent = args.is_sub_agent,
                         }) catch |err| {
                             args.logger.errFmt("workflow.run failed: {s}", .{@errorName(err)}) catch {};
                         };

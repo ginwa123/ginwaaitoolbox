@@ -629,6 +629,7 @@ const SubAgentThreadArgs = struct {
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
     cwd: []const u8,
+    is_sub_agent: bool,
 };
 
 // spawn_sub_agent implementation - uses workflow.zig logic
@@ -667,6 +668,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .base_url = ctx.base_url,
             .config = ctx.config,
             .cwd = ctx.cwd,
+            .is_sub_agent = true,
         };
 
         const thread = try std.Thread.spawn(.{}, struct {
@@ -684,6 +686,8 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 defer llm_history.removeWorker(args_ptr.allocator, args_ptr.sqlite_db, sess_id) catch {};
 
                 var workflow = ai_workflow.TUIWorkflow.init(args_ptr.sqlite_db, args_ptr.logger);
+                // Derive is_sub_agent from session_id - no need to pass it explicitly
+                const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
                 workflow.run(.{
                     .parent_allocator = args_ptr.allocator,
                     .parent_session_id = args_ptr.parent_sess_id,
@@ -706,6 +710,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                         }
                     else
                         "",
+                    .is_sub_agent = is_sub_agent,
                 }) catch {
                     // Capture error
                     return;

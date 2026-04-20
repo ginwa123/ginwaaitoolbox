@@ -33,8 +33,8 @@
     // internet connectivity.
     .dependencies = .{
         .http = .{
-            .url = "https://github.com/karlseguin/http.zig/archive/refs/heads/master.tar.gz",
-            .hash = "12201d11e30a97097125e56e716be54487a04009cd881f7661b2befe66c4a7d02d34",
+            .url = "git+https://github.com/karlseguin/http.zig#zig-0.15",
+            .hash = "1220e5c727dfcf038da48f63f5d62a2965f1a295356422ede02d3d932e8c916bf8cb",
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{

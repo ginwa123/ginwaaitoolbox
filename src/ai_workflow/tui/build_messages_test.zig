@@ -11,7 +11,7 @@ test "filterAndMergeTools - all tools allowed" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const result = try workflow.filterAndMergeTools(alloc, &[_]tool_models.AgentTool{}, "all");
+    const result = try workflow.filterAndMergeTools(alloc, &[_]tool_models.AgentTool{}, "all", false);
     defer alloc.free(result);
 
     try std.testing.expect(result.len > 0);
@@ -23,7 +23,7 @@ test "filterAndMergeTools - filters to specific tools" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const result = try workflow.filterAndMergeTools(alloc, &[_]tool_models.AgentTool{}, "read_file,glob");
+    const result = try workflow.filterAndMergeTools(alloc, &[_]tool_models.AgentTool{}, "read_file,glob", false);
     defer alloc.free(result);
 
     for (result) |tool| {
@@ -53,7 +53,7 @@ test "filterAndMergeTools - mcp tools are merged" {
         },
     };
 
-    const result = try workflow.filterAndMergeTools(alloc, &[_]tool_models.AgentTool{mcp_tool}, "all");
+    const result = try workflow.filterAndMergeTools(alloc, &[_]tool_models.AgentTool{mcp_tool}, "all", false);
     defer alloc.free(result);
 
     const has_mcp_tool = for (result) |tool| {

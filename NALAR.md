@@ -227,6 +227,12 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 - They're tracked in the activity registry during execution
 - On completion, their activity description is updated and they become idle
 
+**Sub-agent Detection:** Workers are identified as sub-agents by checking if their `session_id` contains "subagent" string:
+```zig
+// WorkerInfo.isSubAgent() - checks if session_id contains "subagent"
+const is_sub_agent = std.mem.indexOf(u8, session_id, "subagent") != null;
+```
+
 ## Data Locations
 
 | Data | Path |

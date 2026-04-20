@@ -68,7 +68,7 @@ pub fn buildMessages(
 /// Uses worker table as the SOLE source of active workers info
 /// Filters out current session to avoid self-reference
 fn buildActivityInfo(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
-    const workers = try llm_history.get_active_workers(allocator, db);
+    const workers = try llm_history.getActiveWorker(allocator, db);
     defer {
         for (workers) |*worker| worker.deinit(allocator);
         allocator.free(workers);

@@ -1005,10 +1005,15 @@ pub const WorkerInfo = struct {
         allocator.free(self.working_directory);
         allocator.free(self.last_activity_description);
     }
+
+    /// Determine if this worker is a sub-agent by checking if session_id contains "subagent"
+    pub fn isSubAgent(self: *const WorkerInfo) bool {
+        return std.mem.indexOf(u8, self.session_id, "subagent") != null;
+    }
 };
 
 /// Get all active workers with their info
-pub fn get_active_workers(
+pub fn getActiveWorker(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]WorkerInfo {
