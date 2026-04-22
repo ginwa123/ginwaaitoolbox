@@ -41,7 +41,7 @@ test "get_session" {
     try db.exec(allocator, "CREATE TABLE sessions (id TEXT, name TEXT, status TEXT)", &.{});
     try db.exec(allocator, "INSERT INTO sessions (id, name, status) VALUES ('session-1', 'My Session', 'active')", &.{});
 
-    const session = try session_table.get_session(allocator, &db, "session-1");
+    const session = try session_table.getSession(allocator, &db, "session-1");
     try std.testing.expect(session != null);
     defer session.?.deinit(allocator);
 
@@ -61,7 +61,7 @@ test "update_session_status" {
 
     try session_table.update_session_status(allocator, &db, "session-1", "inactive");
 
-    const session = try session_table.get_session(allocator, &db, "session-1");
+    const session = try session_table.getSession(allocator, &db, "session-1");
     try std.testing.expect(session != null);
     defer session.?.deinit(allocator);
 
@@ -79,7 +79,7 @@ test "delete_session" {
 
     try session_table.delete_session(allocator, &db, "session-1");
 
-    const session = try session_table.get_session(allocator, &db, "session-1");
+    const session = try session_table.getSession(allocator, &db, "session-1");
     try std.testing.expect(session == null);
 }
 
@@ -112,6 +112,6 @@ test "get_session returns null for non-existent id" {
 
     try db.exec(allocator, "CREATE TABLE sessions (id TEXT, name TEXT, status TEXT)", &.{});
 
-    const session = try session_table.get_session(allocator, &db, "non-existent");
+    const session = try session_table.getSession(allocator, &db, "non-existent");
     try std.testing.expect(session == null);
 }

@@ -460,8 +460,9 @@ pub fn get_session_messages_sorted(
     const has_more = messages.items.len > @as(usize, limit);
 
     // Get next cursor from last message if has_more
+    // Use created_at timestamp as cursor for proper pagination
     const next_cursor: ?[]const u8 = if (has_more and messages.items.len > 0)
-        messages.items[@as(usize, limit) - 1].id
+        messages.items[@as(usize, limit) - 1].timestamp
     else
         null;
 

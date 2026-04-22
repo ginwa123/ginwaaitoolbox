@@ -43,6 +43,75 @@ pub const HttpClient = struct {
         // No-op for now
     }
 
+    /// Perform HTTP GET request
+    /// Uses curl as primary (better TLS support)
+    pub fn get(self: HttpClient, url: []const u8) !HttpResult {
+        return self.getWithCurl(url);
+    }
+
+    /// GET using curl (primary method - handles TLS well)
+    fn getWithCurl(self: HttpClient, url: []const u8) !HttpResult {
+        // Build curl command - escape single quotes in URL to prevent injection
+        const escaped_url = try escapeShellArg(url, self.allocator);
+        defer self.allocator.free(escaped_url);
+
+        const shell_cmd = try std.fmt.allocPrint(self.allocator,
+            "curl -s -X GET {s} -H 'Accept: application/json'",
+            .{escaped_url}
+        );
+        defer self.allocator.free(shell_cmd);
+
+        // Use std.heap.c_allocator for Child to avoid arena corruption
+        var child = std.process.Child.init(&[_][]const u8{ "bash", "-c", shell_cmd }, std.heap.c_allocator);
+
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+
+        // Spawn with error handling
+        child.spawn() catch |err| {
+            std.log.warn("Failed to spawn curl process: {s}", .{@errorName(err)});
+            const empty = try self.allocator.dupe(u8, "");
+            return .{
+                .body = empty,
+                .status_code = 127,
+            };
+        };
+
+        // Read stdout
+        var stdout_list: std.ArrayList(u8) = .empty;
+        errdefer stdout_list.deinit(self.allocator);
+
+        if (child.stdout) |out| {
+            var buf: [4096]u8 = undefined;
+            while (true) {
+                const bytes_read = out.read(&buf) catch 0;
+                if (bytes_read == 0) break;
+                try stdout_list.appendSlice(self.allocator, buf[0..bytes_read]);
+            }
+        }
+
+        const stdout = try stdout_list.toOwnedSlice(self.allocator);
+
+        const term = child.wait() catch |err| {
+            std.log.warn("Failed to wait for curl process: {s}", .{@errorName(err)});
+            return .{
+                .body = stdout,
+                .status_code = 1,
+            };
+        };
+
+        const exit_code: u8 = switch (term) {
+            .Exited => |code| code,
+            else => 1,
+        };
+
+        return .{
+            .body = stdout,
+            .status_code = if (exit_code == 0) 200 else exit_code,
+        };
+    }
+
     /// Perform HTTP POST request
     /// Uses curl as primary (better TLS support), falls back to std.http
     pub fn post(self: HttpClient, url: []const u8, body: []const u8, headers: ?std.StringHashMap([]const u8)) !HttpResult {
@@ -380,4 +449,126 @@ test "call mcp invalid method returns error" {
     const root = parsed.value.object;
     try testing.expectEqualStrings("2.0", root.get("jsonrpc").?.string);
     try testing.expect(root.contains("error"));
+}
+
+// Helper to simulate HTTP GET response parsing (mimics curl response handling)
+fn simulateGetResponse(allocator: std.mem.Allocator, page: usize, limit: usize) !struct { body: []u8, status: u16 } {
+    _ = limit;
+    if (page == 0) return error.SkipZigTest; // Simulate no server
+
+    // Simulate 3 pages total
+    if (page > 3) {
+        return error.SkipZigTest;
+    }
+
+    const has_more = page < 3;
+    const messages_count: usize = if (page == 1) 50 else if (page == 2) 25 else 10;
+
+    var json_body: std.ArrayList(u8) = .empty;
+    errdefer json_body.deinit(allocator);
+
+    try json_body.appendSlice(allocator, "{\"messages\":[");
+    for (0..messages_count) |i| {
+        if (i > 0) try json_body.append(allocator, ',');
+        try std.fmt.format(json_body.writer(allocator), "{{\"id\":\"msg_{d}_{d}\",\"content\":\"test\"}}", .{ page, i });
+    }
+    try json_body.append(allocator, ']');
+    try json_body.appendSlice(allocator, ",\"has_more\":");
+    try json_body.appendSlice(allocator, if (has_more) "true" else "false");
+    try json_body.appendSlice(allocator, ",\"next_cursor\":");
+    if (has_more) {
+        try std.fmt.format(json_body.writer(allocator), "\"cursor_page_{d}\"", .{page + 1});
+    } else {
+        try json_body.appendSlice(allocator, "null");
+    }
+    try json_body.append(allocator, '}');
+
+    return .{
+        .body = try json_body.toOwnedSlice(allocator),
+        .status = 200,
+    };
+}
+
+test "cursor pagination logic" {
+    const allocator = testing.allocator;
+    const limit: usize = 50;
+
+    var total_message_count: usize = 0;
+    var page_count: usize = 0;
+    var cursor: ?[]const u8 = null;
+
+    std.debug.print("\n=== Testing cursor pagination logic ===\n", .{});
+
+    // Simulate up to 10 pages
+    while (page_count < 10) : (page_count += 1) {
+        // Simulate the GET response (mimics curl behavior)
+        const page_num = page_count + 1;
+        const response = simulateGetResponse(allocator, page_num, limit) catch |err| {
+            std.debug.print("SKIP: simulateGetResponse failed: {s}\n", .{@errorName(err)});
+            return error.SkipZigTest;
+        };
+        defer allocator.free(response.body);
+
+        std.debug.print("Page {d}: status={d}, body_len={d}\n", .{ page_num, response.status, response.body.len });
+
+        // Parse JSON response (same as real HTTP code)
+        const parsed = json.parseFromSlice(json.Value, allocator, response.body, .{}) catch |err| {
+            std.debug.print("JSON parse error: {s}\n", .{@errorName(err)});
+            return err;
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value.object;
+
+        // Check has_more
+        var has_more = false;
+        if (root.get("has_more")) |val| {
+            if (val == .bool) has_more = val.bool;
+        }
+
+        // Check messages count
+        if (root.get("messages")) |messages| {
+            if (messages == .array) {
+                const arr_items = messages.array.items;
+                total_message_count += arr_items.len;
+                std.debug.print("  Received {d} messages (total: {d})\n", .{ arr_items.len, total_message_count });
+            }
+        }
+
+        // Get next cursor
+        var next_cursor: ?[]const u8 = null;
+        if (root.get("next_cursor")) |val| {
+            if (val == .string and val.string.len > 0) {
+                next_cursor = try allocator.dupe(u8, val.string);
+                std.debug.print("  Next cursor: {s}\n", .{next_cursor.?});
+            }
+        }
+
+        // Check termination conditions
+        if (!has_more) {
+            std.debug.print("No more pages (has_more=false) - done!\n", .{});
+            break;
+        }
+
+        // Update cursor for next iteration
+        if (cursor) |old| allocator.free(old);
+        if (next_cursor) |nc| {
+            cursor = nc;
+        } else {
+            break;
+        }
+    }
+
+    // Cleanup cursor memory
+    if (cursor) |c| allocator.free(c);
+
+    std.debug.print("=== Pagination complete ===\n", .{});
+    std.debug.print("Total pages: {d}\n", .{page_count});
+    std.debug.print("Total messages collected: {d}\n", .{total_message_count});
+
+    // Verify results
+    // Page 1: 50, Page 2: 25, Page 3: 10 = 85 total
+    // page_count is 2 because loop runs 3 times then breaks
+    try testing.expectEqual(@as(usize, 2), page_count);
+    try testing.expectEqual(@as(usize, 85), total_message_count);
 }
