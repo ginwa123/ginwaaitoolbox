@@ -259,6 +259,21 @@ const is_sub_agent = std.mem.indexOf(u8, session_id, "subagent") != null;
 | `sessions` | `id` (PK), `name` | Session metadata |
 | `llm_history` | `session_id` (FK) | References `sessions.id` |
 
+## Session Name Generation
+
+When a session is created without a name (empty string or null), the LLM automatically generates a descriptive session name based on the user's first message intent.
+
+**Implementation:**
+- `session_table.zig` — `update_session_name()` function to update session name in DB
+- `workflow.zig` — `generateSessionName()` method called after first LLM response
+- `special.zig` — `GenerateSessionNameAgent` prompt for name generation
+
+**Rules for generated names:**
+- 2-5 words capturing the user's intent
+- Max 50 characters
+- Lowercase with hyphens (e.g., "fix-login-bug")
+- Strip common prefixes ("help me", "can you", "please")
+
 ## Important Conventions
 
 - **Max lines per file:** 400 lines — split larger files

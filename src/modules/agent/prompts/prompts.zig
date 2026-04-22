@@ -67,6 +67,7 @@ pub const GitPrompt = memory.GitPrompt;
 pub const NalarMdAutoUpdate = memory.NalarMdAutoUpdate;
 
 pub const CompactionAgent = special.CompactionAgent;
+pub const GenerateSessionNameAgent = special.GenerateSessionNameAgent;
 
 // Agentic Coding enhancements
 pub const AutonomousBehavior = agentic.AutonomousBehavior;

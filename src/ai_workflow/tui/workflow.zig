@@ -57,6 +57,7 @@ pub const session_registry = nalar_mod.session.session_registry;
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const SpawnSubAgentTool = nalar_mod.agents;
 const tool_registry = @import("tool_registry.zig");
+const session_table = @import("session_table.zig");
 
 pub const SessionInfo = struct {
     session_id: []const u8,
@@ -317,7 +318,7 @@ pub const TUIWorkflow = struct {
             if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(params.model))) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
                 if (try self.callCompactAgent(messagesLists.items, allocator, params.api_key, params.model, params.base_url)) |compacted_xml| {
-                    try self.compact_message_in_memory(allocator, &messagesLists, compacted_xml, params.session_id, params.model, params.cwd);
+                    try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, params.model, params.cwd);
                 }
             }
 
@@ -378,6 +379,19 @@ pub const TUIWorkflow = struct {
                         .parent_session_id = params.parent_session_id,
                         .parent_id = params.parent_session_id,
                     });
+
+                    const session_info = session_table.getSession(allocator, self.db, params.session_id) catch |err| {
+                        self.logger.errFmt("Error getting session: {s}", .{@errorName(err)}) catch {};
+                        break;
+                    };
+
+                    // Generate session name from first user message if this is the first response
+                    if (session_info) |session| {
+                        if (loopCounter == 1 and std.mem.eql(u8, session.name, "New Session")) {
+                            self.generateSessionName(db_messages, allocator, params.api_key, params.model, params.base_url, params.session_id);
+                        }
+                    }
+
                     break;
                 } else if (finish_reason == .length) {
                     current_max_tokens += 4096;
@@ -592,9 +606,73 @@ pub const TUIWorkflow = struct {
         _ = chunk;
     }
 
+    /// Generate session name from the first user message using LLM
+    fn generateSessionName(
+        self: *TUIWorkflow,
+        db_messages: []TUIHistory,
+        allocator: std.mem.Allocator,
+        api_key: []const u8,
+        model: []const u8,
+        base_url: []const u8,
+        session_id: []const u8,
+    ) void {
+        // Find the first user message from db_messages (TUIHistory)
+        var first_user_message: ?[]const u8 = null;
+        for (db_messages) |msg| {
+            // role is stored as string "user" in TUIHistory
+            if (std.mem.eql(u8, msg.role, "user") and msg.response_content.len > 0) {
+                first_user_message = msg.response_content;
+                break;
+            }
+        }
+
+        if (first_user_message == null) {
+            self.logger.debugFmt("No user message found in db_messages", .{}) catch {};
+            return;
+        }
+
+        // Build messages for the name generation prompt
+        const name_messages = allocator.alloc(agent.AgentMessage, 2) catch return;
+        name_messages[0] = .{ .role = .system, .content = prompt.GenerateSessionNameAgent };
+        name_messages[1] = .{ .role = .user, .content = first_user_message.? };
+
+        var name_agent = agent.Agent.init(allocator) catch return;
+        defer name_agent.deinit();
+        name_agent.apiKey = api_key;
+        name_agent.model = model;
+        name_agent.baseUrl = base_url;
+
+        const params = agent.AgentCall{
+            .tools = &.{},
+            .messages = name_messages,
+        };
+
+        const response = name_agent.callStreaming(params, null, noopStreamCallback) catch {
+            self.logger.errFmt("[SESSION NAME] Failed to call LLM for session name", .{}) catch {};
+            return;
+        };
+        defer response.deinit();
+
+        if (response.content) |content| {
+            // Trim and limit to 50 chars
+            var trimmed = std.mem.trim(u8, content, " \n\t");
+            if (trimmed.len > 50) {
+                trimmed = trimmed[0..50];
+            }
+            if (trimmed.len > 0) {
+                // Update session name in database
+                session_table.updateSessionName(allocator, self.db, session_id, trimmed) catch {
+                    self.logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{trimmed}) catch {};
+                    return;
+                };
+                self.logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{trimmed}) catch {};
+            }
+        }
+    }
+
     /// Compact messages in memory based on CompactionAgent output
     /// Also persists to database: marks old messages as not for LLM, saves new compacted message
-    fn compact_message_in_memory(
+    fn compactMessageInMemory(
         self: *TUIWorkflow,
         allocator: std.mem.Allocator,
         messages: *std.ArrayList(agent.AgentMessage),

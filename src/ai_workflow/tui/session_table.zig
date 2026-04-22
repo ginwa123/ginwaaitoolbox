@@ -32,7 +32,7 @@ pub fn create_session(
 }
 
 /// Get a session by id
-pub fn get_session(
+pub fn getSession(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     id: []const u8,
@@ -64,6 +64,17 @@ pub fn update_session_status(
 ) !void {
     const sql = "UPDATE sessions SET status = ? WHERE id = ?";
     try db.exec(allocator, sql, &.{ new_status, id });
+}
+
+/// Update session name
+pub fn updateSessionName(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    new_name: []const u8,
+) !void {
+    const sql = "UPDATE sessions SET name = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ new_name, id });
 }
 
 /// Delete a session by id

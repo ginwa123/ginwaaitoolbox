@@ -42,6 +42,7 @@ pub const MemoryPrompt = prompts.MemoryPrompt;
 pub const NalarMdAutoUpdate = prompts.NalarMdAutoUpdate;
 pub const GitPrompt = prompts.GitPrompt;
 pub const CompactionAgent = prompts.CompactionAgent;
+pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
 pub const SkillsUsage = prompts.SkillsUsage;
 pub const SkillsTriggers = prompts.SkillsTriggers;
 pub const ProceduralMemory = prompts.ProceduralMemory;
