@@ -127,25 +127,41 @@ pub fn getSessionListWithCursor(
     defer allocator.free(limit_str);
 
     // Build query with session_dir filter and cursor condition
+    // Join with sessions table to get session_name from sessions.name
     const sql_final: []u8 = if (session_dir) |dir| blk: {
         if (cursor) |c| {
             break :blk try std.fmt.allocPrint(allocator,
-                "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 AND session_dir = '{s}' AND created_at < '{s}' GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
-                .{dir, c, limit});
+                \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
+                \\FROM llm_history h
+                \\LEFT JOIN sessions s ON h.session_id = s.id
+                \\WHERE h.session_dir = '{s}' AND h.created_at < '{s}'
+                \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
+            , .{dir, c, limit});
         } else {
             break :blk try std.fmt.allocPrint(allocator,
-                "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 AND session_dir = '{s}' GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
-                .{dir, limit});
+                \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
+                \\FROM llm_history h
+                \\LEFT JOIN sessions s ON h.session_id = s.id
+                \\WHERE h.session_dir = '{s}'
+                \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
+            , .{dir, limit});
         }
     } else blk: {
         if (cursor) |c| {
             break :blk try std.fmt.allocPrint(allocator,
-                "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 AND created_at < '{s}' GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
-                .{c, limit});
+                \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
+                \\FROM llm_history h
+                \\LEFT JOIN sessions s ON h.session_id = s.id
+                \\WHERE h.created_at < '{s}'
+                \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
+            , .{c, limit});
         } else {
             break :blk try std.fmt.allocPrint(allocator,
-                "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, '') FROM llm_history WHERE 1=1 GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT {d}",
-                .{limit});
+                \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
+                \\FROM llm_history h
+                \\LEFT JOIN sessions s ON h.session_id = s.id
+                \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
+            , .{limit});
         }
     };
     defer allocator.free(sql_final);
