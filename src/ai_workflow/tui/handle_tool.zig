@@ -89,6 +89,10 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 /// Dispatch tool execution from registry entry
 /// Calls exec directly and handles auto-save via registry flags
 fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAgentToolExec) !ToolResult {
+    std.debug.print("DEBUG dispatchFromRegistry: tool='{s}', args_len={}\n", .{ tool_call.function.name, tool_call.function.arguments.len });
+    if (std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent")) {
+        std.debug.print("DEBUG: spawn_sub_agent detected!\n", .{});
+    }
     // Standard tools: call exec directly and wrap result
     const ctx_local = tool_registry.ToolExecContext{
         .allocator = ctx.allocator,
@@ -338,6 +342,7 @@ pub fn handle_tool(
 
             // Dispatch to the appropriate handler
             const exec_result = dispatchTool(ctx, tool_call) catch |err| {
+                std.debug.print("DEBUG: dispatchTool failed with error: {s}\n", .{@errorName(err)});
                 tool_result = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
                     tool_call.function.name,
                     @errorName(err),

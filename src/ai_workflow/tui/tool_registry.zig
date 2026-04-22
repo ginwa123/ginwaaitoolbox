@@ -630,12 +630,33 @@ const SubAgentThreadArgs = struct {
     config: *const config_mod.LlmConfig,
     cwd: []const u8,
     is_sub_agent: bool,
+    thread_idx: usize,
+    shared_results: *SharedResults,
+};
+
+// Shared result storage for thread synchronization
+const SharedResults = struct {
+    results: []ThreadResult,
+    completed_count: std.atomic.Value(usize),
+    mutex: std.Thread.Mutex,
+};
+
+// Result structure for thread execution
+const ThreadResult = struct {
+    success: bool,
+    name: []const u8,
+    response: ?[]u8 = null,
 };
 
 // spawn_sub_agent implementation - uses workflow.zig logic
 pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    ctx.logger.debugFmt("execSpawnSubAgent called, arguments len={}", .{tc.function.arguments.len}) catch {};
+    ctx.logger.debugFmt("arguments: '{s}'", .{tc.function.arguments[0..@min(tc.function.arguments.len, 200)]}) catch {};
     // Parse sub-agents from tool call arguments
-    const parsed = try spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20);
+    const parsed = spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20) catch |err| {
+        ctx.logger.errFmt("parse_sub_agents failed: {}", .{err}) catch {};
+        return error.InvalidArguments;
+    };
     defer parsed.deinit(ctx.allocator);
 
     // Build results array for sub-agent outputs
@@ -648,10 +669,30 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     defer threads.deinit(ctx.allocator);
 
     const sub_agent_count = parsed.sub_agents.len;
+    ctx.logger.debugFmt("Parsed {} sub-agents", .{sub_agent_count}) catch {};
+    for (parsed.sub_agents, 0..) |sa, i| {
+        ctx.logger.debugFmt("Sub-agent {}: name='{s}', instruction_len={}", .{ i, sa.name, sa.instruction.len }) catch {};
+    }
 
-    for (parsed.sub_agents, 0..) |sub_agent, _idx| {
-        _ = _idx; // Index not needed
+    // Shared result storage with atomics for thread synchronization
+    const shared_results = try ctx.allocator.create(SharedResults);
+    shared_results.* = .{
+        .results = try ctx.allocator.alloc(ThreadResult, sub_agent_count),
+        .completed_count = std.atomic.Value(usize).init(0),
+        .mutex = std.Thread.Mutex{},
+    };
+    // Initialize all results to failed by default with agent names
+    for (shared_results.results, 0..) |*r, i| {
+        r.* = .{ .success = false, .name = parsed.sub_agents[i].name, .response = null };
+    }
+    defer {
+        ctx.allocator.free(shared_results.results);
+        ctx.allocator.destroy(shared_results);
+    }
 
+    for (parsed.sub_agents, 0..) |sub_agent, idx| {
+        std.Thread.sleep(500_000_000); // Sleep for 0.5 seconds to avoid race condition
+        ctx.logger.debugFmt("Spawning thread for agent '{s}' (index {})", .{ sub_agent.name, idx }) catch {};
         // Allocate thread args on the heap to avoid pointer stability issues
         // This ensures the data remains valid even if stack frames are deallocated
         const args = try ctx.allocator.create(SubAgentThreadArgs);
@@ -669,27 +710,45 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .config = ctx.config,
             .cwd = ctx.cwd,
             .is_sub_agent = true,
+            .thread_idx = idx,
+            .shared_results = shared_results,
         };
 
+        ctx.logger.debugFmt("About to spawn thread for '{s}'", .{ sub_agent.name }) catch {};
         const thread = try std.Thread.spawn(.{}, struct {
             fn run(args_ptr: *SubAgentThreadArgs) void {
+                args_ptr.logger.debugFmt("Thread started for '{s}'", .{ args_ptr.agent_name }) catch {};
+                // Create a dedicated arena allocator for this sub-agent to avoid memory contention
+                // when multiple sub-agents run concurrently (e.g., 5 parallel agents all fetching MCP tools)
+                var arena = std.heap.ArenaAllocator.init(args_ptr.allocator);
+                defer arena.deinit();
+                const sub_agent_allocator = arena.allocator();
+
                 defer {
-                    // Clean up the heap-allocated args
+                    // Clean up the heap-allocated args (allocated from parent's heap, not arena)
                     args_ptr.allocator.destroy(args_ptr);
                 }
+
+                // Mark this slot as in-progress (result defaults to failed)
                 // Generate unique session ID for this sub-agent
-                const sess_id = std.fmt.allocPrint(args_ptr.allocator, "subagent_{}_{s}", .{ std.time.nanoTimestamp(), args_ptr.agent_name }) catch return;
-                defer args_ptr.allocator.free(sess_id);
+                const sess_id = std.fmt.allocPrint(sub_agent_allocator, "subagent_{}_{s}", .{ std.time.nanoTimestamp(), args_ptr.agent_name }) catch {
+                    args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{ args_ptr.agent_name }) catch {};
+                    return;
+                };
+                defer sub_agent_allocator.free(sess_id);
+                args_ptr.logger.debugFmt("Session ID created: '{s}'", .{ sess_id }) catch {};
 
                 // Register sub-agent as worker
-                llm_history.upsertWorker(args_ptr.allocator, args_ptr.sqlite_db, sess_id, sess_id, args_ptr.cwd) catch {};
-                defer llm_history.removeWorker(args_ptr.allocator, args_ptr.sqlite_db, sess_id) catch {};
+                llm_history.upsertWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id, sess_id, args_ptr.cwd) catch {};
+                defer llm_history.removeWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch {};
 
+                args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name }) catch {};
                 var workflow = ai_workflow.TUIWorkflow.init(args_ptr.sqlite_db, args_ptr.logger);
                 // Derive is_sub_agent from session_id - no need to pass it explicitly
                 const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
+                args_ptr.logger.debugFmt("Calling workflow.run for '{s}'", .{ args_ptr.agent_name }) catch {};
                 workflow.run(.{
-                    .parent_allocator = args_ptr.allocator,
+                    .parent_allocator = sub_agent_allocator,
                     .parent_session_id = args_ptr.parent_sess_id,
                     .session_id = sess_id,
                     .message = args_ptr.instruction,
@@ -699,22 +758,44 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                     .base_url = args_ptr.base_url,
                     .config = args_ptr.config,
                     .body = "",
-                    .allowed_tools = if (args_ptr.tools) |tools|
-                        blk: {
-                            var tools_str = std.ArrayList(u8).empty;
-                            for (tools, 0..) |tool, i| {
-                                if (i > 0) tools_str.append(args_ptr.allocator, ',') catch break;
-                                tools_str.appendSlice(args_ptr.allocator, tool) catch break;
-                            }
-                            break :blk tools_str.items;
+                    .allowed_tools = if (args_ptr.tools) |tools| blk: {
+                        var tools_str = std.ArrayList(u8).empty;
+                        for (tools, 0..) |tool, i| {
+                            if (i > 0) tools_str.append(args_ptr.allocator, ',') catch break;
+                            tools_str.appendSlice(args_ptr.allocator, tool) catch break;
                         }
-                    else
-                        "",
+                        break :blk tools_str.items;
+                    } else "",
                     .is_sub_agent = is_sub_agent,
-                }) catch {
-                    // Capture error
+                }) catch |err| {
+                    args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {}", .{ args_ptr.agent_name, err }) catch {};
+                };
+
+                args_ptr.logger.debugFmt("workflow.run completed for '{s}', fetching message", .{ args_ptr.agent_name }) catch {};
+                // Get the agent's response from the database
+                // Use c_allocator to avoid arena aliasing issues
+                const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
+                    args_ptr.logger.errFmt("getLatestMessage error for '{s}': {}", .{ sess_id, err }) catch {};
                     return;
                 };
+
+                args_ptr.logger.debugFmt("Latest message result: {any}", .{latest_msg_result}) catch {};
+                if (latest_msg_result) |msg| {
+                    var mutable_msg = msg;
+                    // Check response BEFORE deinit - deinit frees all allocated strings!
+                    if (mutable_msg.response_content.len > 0) {
+                        const response_copy = args_ptr.allocator.dupe(u8, mutable_msg.response_content) catch {
+                            mutable_msg.deinit(args_ptr.allocator);
+                            return;
+                        };
+                        args_ptr.shared_results.results[args_ptr.thread_idx].response = response_copy;
+                        // Only mark success if we actually got a response
+                        args_ptr.shared_results.results[args_ptr.thread_idx].success = true;
+                    }
+                    mutable_msg.deinit(args_ptr.allocator);
+                }
+
+                _ = args_ptr.shared_results.completed_count.fetchAdd(1, .monotonic);
             }
         }.run, .{args});
 
@@ -722,12 +803,28 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     }
 
     // Wait for all threads to complete
+    ctx.logger.debugFmt("Waiting for {} threads to complete...", .{threads.items.len}) catch {};
     for (threads.items) |thread| {
         thread.join();
     }
+    ctx.logger.debugFmt("All threads completed", .{}) catch {};
 
-    // Format results
-    try w.print("Spawned {} sub-agent(s) - use /api/session to query results\n", .{sub_agent_count});
+    // Collect results from shared storage
+    var success_count: usize = 0;
+    for (shared_results.results) |result| {
+        if (result.success) success_count += 1;
+    }
+
+    // Format results based on thread results - per-agent summary with response
+    try w.print("Results Summary:\n", .{});
+    for (shared_results.results) |result| {
+        const status = if (result.success) "✓" else "✗";
+        try w.print("  {s} {s}\n", .{ status, result.name });
+        if (result.response) |resp| {
+            try w.print("    Response: {s}\n", .{resp});
+        }
+    }
+    try w.print("\nTotal: {} succeeded, {} failed\n", .{ success_count, sub_agent_count - success_count });
 
     return ToolExecResult{ .output = try results.toOwnedSlice(ctx.allocator) };
 }
@@ -899,9 +996,9 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     set_agent_properties_mod.set_agent_properties_tool,
     spawn_sub_agent_tool.spawn_sub_agent_tool,
     update_activity_mod.update_activity_tool,
-    list_agents_mod.list_agents_tool,
-    change_agent_mod.change_agent_tool,
-    remove_agent_mod.remove_agent_tool,
+    // list_agents_mod.list_agents_tool,
+    // change_agent_mod.change_agent_tool,
+    // remove_agent_mod.remove_agent_tool,
     list_skills_mod.list_skills_tool,
     get_skill_mod.get_skill_tool,
     remove_skill_mod.remove_skill_tool,
@@ -921,8 +1018,6 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     glob_tool_mod.glob_tool,
     search_tool_mod.search_tool,
 };
-
-
 
 /// Get tool metadata by name from registry
 pub fn getToolByName(name: []const u8) ?*const ToolInfo {

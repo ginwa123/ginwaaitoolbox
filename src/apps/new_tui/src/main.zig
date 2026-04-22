@@ -32,20 +32,24 @@ pub const MessageEntry = struct {
 
     pub fn init() MessageEntry {
         return .{
-            .role = undefined,
+            .role = [_]u8{0} ** 16,
             .role_len = 0,
-            .content = undefined,
+            .content = [_]u8{0} ** MAX_MESSAGE_LEN,
             .content_len = 0,
             .timestamp = 0,
         };
     }
 
     pub fn setRole(msg: *MessageEntry, role: []const u8) void {
-        @memcpy(msg.role[0..role.len], role);
-        msg.role_len = role.len;
+        const copy_len = @min(role.len, 15);
+        @memcpy(msg.role[0..copy_len], role[0..copy_len]);
+        msg.role[copy_len] = 0;
+        msg.role_len = copy_len;
     }
 
     pub fn setContent(msg: *MessageEntry, content: []const u8) void {
+        // Zero the buffer first to avoid garbage
+        @memset(&msg.content, 0);
         const copy_len = @min(content.len, MAX_MESSAGE_LEN - 1);
         @memcpy(msg.content[0..copy_len], content[0..copy_len]);
         msg.content[copy_len] = 0;
@@ -107,12 +111,12 @@ pub const Model = struct {
             .input = TextInput.init(ctx.allocator),
             .allocator = ctx.allocator,
         };
-        
+
         // Initialize session ID
         const sid = std.fmt.allocPrint(ctx.allocator, "session_{}", .{std.time.timestamp()}) catch "";
         @memcpy(self.session_id[0..sid.len], sid);
         self.session_id_len = sid.len;
-        
+
         // Initialize messages array
         for (0..MAX_MESSAGES) |i| {
             self.messages[i] = MessageEntry.init();
@@ -126,25 +130,37 @@ pub const Model = struct {
     pub fn update(self: *Model, msg: Msg, _: *zz.Context) Cmd(Msg) {
         switch (msg) {
             .key => |k| {
-                // Handle Enter key for submit
-                if (k.key == .enter) {
-                    const text = self.input.getValue();
-                    if (text.len > 0 and self.message_count < MAX_MESSAGES) {
-                        // Add message to history
-                        self.messages[self.message_count].setRole("user");
-                        self.messages[self.message_count].setContent(text);
-                        self.messages[self.message_count].timestamp = std.time.timestamp();
-                        self.message_count += 1;
-                        self.input.setValue("") catch {};
-                    }
-                    return .none;
+                switch (k.key) {
+                    .enter => {
+                        // TextInput doesn't handle Enter, so we handle it here
+                        const text = self.input.getValue();
+                        if (text.len > 0 and self.message_count < MAX_MESSAGES) {
+                            // Add message to history
+                            self.messages[self.message_count].setRole("user");
+                            self.messages[self.message_count].setContent(text);
+                            self.messages[self.message_count].timestamp = std.time.timestamp();
+                            self.message_count += 1;
+                            self.input.setValue("") catch {};
+                        }
+                        return .none;
+                    },
+                    .char => |_| {
+                        // Handle regular character input
+                        self.input.handleKey(k);
+                    },
+                    .paste => |text| {
+                        // Handle paste events (piped input)
+                        for (text) |c| {
+                            if (c != '\n' and c != '\r') {
+                                self.input.handleKey(.{ .modifiers = .{}, .key = .{ .char = c } });
+                            }
+                        }
+                    },
+                    else => {
+                        // Pass other keys (backspace, arrows, etc.) to the text input
+                        self.input.handleKey(k);
+                    },
                 }
-                // Handle Tab for autocomplete
-                if (k.key == .tab) {
-                    return .none;
-                }
-                // Pass all other keys to the text input
-                self.input.handleKey(k);
             },
             .clear => {
                 self.message_count = 0;
@@ -156,86 +172,79 @@ pub const Model = struct {
     }
 
     pub fn view(self: *const Model, ctx: *const zz.Context) []const u8 {
-        // Title style
+        // Build styles
         var title_style = zz.Style{};
         title_style = title_style.bold(true);
         title_style = title_style.fg(zz.Color.cyan());
         title_style = title_style.inline_style(true);
 
-        // Border style for messages
-        var msg_box_style = zz.Style{};
-        msg_box_style = msg_box_style.borderAll(zz.Border.rounded);
-        msg_box_style = msg_box_style.borderForeground(zz.Color.magenta());
-        msg_box_style = msg_box_style.paddingAll(1);
+        var dim_style = zz.Style{};
+        dim_style = dim_style.dim(true);
+        dim_style = dim_style.fg(zz.Color.gray(8));
+        dim_style = dim_style.inline_style(true);
 
-        // Connection status style
-        var status_style = zz.Style{};
-        status_style = status_style.inline_style(true);
+        var help_style = zz.Style{};
+        help_style = help_style.fg(zz.Color.gray(12));
+        help_style = help_style.inline_style(true);
+
         const status_color: zz.Color = if (self.is_connected) zz.Color.green() else zz.Color.red();
+        var status_style = zz.Style{};
         status_style = status_style.fg(status_color);
-
-        const status_text = if (self.is_connected) "Connected" else "Disconnected";
-        const status = status_style.render(ctx.allocator, status_text) catch status_text;
+        status_style = status_style.inline_style(true);
 
         // Build header
         const title = title_style.render(ctx.allocator, "Nalar ZigZag TUI") catch "Nalar TUI";
-        const port_str = std.fmt.allocPrint(ctx.allocator, "{d}", .{self.http_port}) catch "8080";
+        const status_text = if (self.is_connected) "Connected" else "Disconnected";
+        const status = status_style.render(ctx.allocator, status_text) catch status_text;
         const session = self.session_id[0..self.session_id_len];
+        const port_str = std.fmt.allocPrint(ctx.allocator, "{d}", .{self.http_port}) catch "8080";
 
         const header = std.fmt.allocPrint(
             ctx.allocator,
-            "{s}\nSession: {s}  Port: {s}  Status: {s}",
+            "{s}\nSession: {s}  Port: {s}  Status: {s}\n",
             .{ title, session, port_str, status },
         ) catch "Error";
 
-        // Build messages section
+        // Build messages with simple ASCII box
         var messages_text = std.ArrayList(u8).empty;
         defer messages_text.deinit(ctx.allocator);
         const msg_writer = messages_text.writer(ctx.allocator);
 
+        msg_writer.print("+", .{}) catch {};
+        for (0..24) |_| msg_writer.print("-", .{}) catch {};
+        msg_writer.print("+\n", .{}) catch {};
+
         if (self.message_count == 0) {
-            msg_writer.print("No messages yet...\n", .{}) catch {};
+            const dim_text = dim_style.render(ctx.allocator, " No messages yet...") catch " No messages yet...";
+            msg_writer.print("|{s} |\n", .{dim_text}) catch {};
         } else {
             for (0..self.message_count) |i| {
                 const m = &self.messages[i];
-                msg_writer.print("[{s}] {s}\n", .{ m.getRole(), m.getContent() }) catch {};
+                const content = m.getContent();
+                const role = m.getRole();
+                // Truncate if needed
+                const display_content = if (content.len > 20) content[0..20] else content;
+                msg_writer.print("| [{s}] {s}\n", .{ role, display_content }) catch {};
             }
         }
 
-        const messages_rendered = msg_box_style.render(ctx.allocator, messages_text.items) catch messages_text.items;
+        msg_writer.print("+", .{}) catch {};
+        for (0..24) |_| msg_writer.print("-", .{}) catch {};
+        msg_writer.print("+\n", .{}) catch {};
 
         // Build input section
-        var input_style = zz.Style{};
-        input_style = input_style.borderAll(zz.Border.rounded);
-        input_style = input_style.borderForeground(zz.Color.cyan());
-        input_style = input_style.paddingLeft(1);
-        input_style = input_style.paddingRight(1);
-
         const input_text = self.input.view(ctx.allocator) catch "";
-        const input_rendered = input_style.render(ctx.allocator, input_text) catch input_text;
-
         // Help text
-        var help_style = zz.Style{};
-        help_style = help_style.fg(zz.Color.gray(12));
-        help_style = help_style.inline_style(true);
         const help = help_style.render(
             ctx.allocator,
-            "Enter: Send  |  h: Help  |  c: Clear  |  q: Quit",
+            "Enter: Send  |  c: Clear  |  q: Quit",
         ) catch "";
-
-        // Process indicator
-        const process_text = if (self.is_processing) blk: {
-            var proc_style = zz.Style{};
-            proc_style = proc_style.fg(zz.Color.yellow());
-            proc_style = proc_style.bold(true);
-            break :blk proc_style.render(ctx.allocator, "[Processing...]") catch "";
-        } else "";
 
         // Combine all parts
         const final_str = std.fmt.allocPrint(
             ctx.allocator,
-            "{s}\n\n{s}\n\n{s}\n{s}\n\n{s}",
-            .{ header, messages_rendered, input_rendered, process_text, help },
+            "{s}\n{s}\n{s}\n\n{s}",
+            .{ header, messages_text.items, input_text, help },
         ) catch "Error";
 
         // Center in terminal
@@ -267,7 +276,7 @@ pub fn spawnBackend(verbose: bool, port: u16, process_name: []const u8) !void {
     std.posix.connect(test_socket, &addr.any, @sizeOf(std.net.Address)) catch {
         // Connection failed = not running, we should spawn
         if (verbose) std.debug.print("Spawning backend on port {d}\n", .{port});
-        
+
         const c = @cImport({
             @cInclude("unistd.h");
             @cInclude("sys/wait.h");
@@ -317,6 +326,109 @@ pub fn waitForHttpServer(timeout_ms: u64, port: u16) !void {
         };
         return;
     }
+}
+
+// Minimal test for MessageEntry behavior
+test "MessageEntry basic operations" {
+    // Create a Model-like structure
+    var messages: [MAX_MESSAGES]MessageEntry = undefined;
+    
+    // Initialize all messages
+    for (0..MAX_MESSAGES) |i| {
+        messages[i] = MessageEntry.init();
+    }
+    
+    // Test 1: Add a message manually to messages[0]
+    messages[0].setRole("user");
+    messages[0].setContent("Hello, this is a test message!");
+    messages[0].timestamp = std.time.timestamp();
+    
+    // Test 2: Verify getRole() and getContent()
+    const role = messages[0].getRole();
+    const content = messages[0].getContent();
+    
+    std.debug.print("\n=== MessageEntry Test Results ===\n", .{});
+    std.debug.print("Role: '{s}' (len={d})\n", .{ role, role.len });
+    std.debug.print("Content: '{s}' (len={d})\n", .{ content, content.len });
+    std.debug.print("Timestamp: {d}\n", .{messages[0].timestamp});
+    
+    // Verify the values
+    try std.testing.expectEqualStrings("user", role);
+    try std.testing.expectEqualStrings("Hello, this is a test message!", content);
+    
+    std.debug.print("\n✓ All assertions passed!\n", .{});
+    
+    // Test 3: Add assistant message
+    messages[1].setRole("assistant");
+    messages[1].setContent("I am the assistant responding.");
+    
+    const role2 = messages[1].getRole();
+    const content2 = messages[1].getContent();
+    
+    std.debug.print("\n=== Second Message Test ===\n", .{});
+    std.debug.print("Role: '{s}' (len={d})\n", .{ role2, role2.len });
+    std.debug.print("Content: '{s}' (len={d})\n", .{ content2, content2.len });
+    
+    try std.testing.expectEqualStrings("assistant", role2);
+    try std.testing.expectEqualStrings("I am the assistant responding.", content2);
+    
+    std.debug.print("✓ Second message test passed!\n", .{});
+}
+
+// Test to verify messages array initialization doesn't have issues
+test "MessageEntry array initialization" {
+    var messages: [10]MessageEntry = undefined;
+    
+    // This mimics what Model.init() does
+    for (0..10) |i| {
+        messages[i] = MessageEntry.init();
+    }
+    
+    // Check that content_len is 0 for uninitialized access
+    std.debug.print("\n=== Array Initialization Test ===\n", .{});
+    std.debug.print("messages[5].content_len = {d}\n", .{messages[5].content_len});
+    std.debug.print("messages[5].role_len = {d}\n", .{messages[5].role_len});
+    
+    // Verify empty message returns empty slice
+    const empty_content = messages[5].getContent();
+    const empty_role = messages[5].getRole();
+    
+    std.debug.print("Empty content slice len: {d}\n", .{empty_content.len});
+    std.debug.print("Empty role slice len: {d}\n", .{empty_role.len});
+    
+    try std.testing.expect(empty_content.len == 0);
+    try std.testing.expect(empty_role.len == 0);
+    
+    std.debug.print("✓ Array initialization test passed!\n", .{});
+}
+
+// Test session_id initialization issue
+test "session_id undefined behavior" {
+    var session_id: [64]u8 = undefined;
+    const session_id_len: usize = 0;
+    
+    // This is what happens in Model.init() when allocPrint fails or returns empty
+    // The memcpy is skipped, but session_id_len stays 0
+    // session_id remains undefined!
+    
+    std.debug.print("\n=== Session ID Undefined Test ===\n", .{});
+    std.debug.print("session_id_len = {d}\n", .{session_id_len});
+    
+    // This is SAFE because we're slicing 0..0
+    const session_slice = session_id[0..session_id_len];
+    std.debug.print("session_slice.len = {d}\n", .{session_slice.len});
+    
+    // But if we try to print the actual bytes when undefined...
+    std.debug.print("First 8 bytes of undefined session_id: ", .{});
+    for (0..8) |i| {
+        std.debug.print("{d} ", .{session_id[i]});
+    }
+    std.debug.print("\n", .{});
+    
+    // This shows the garbage values!
+    std.debug.print("\n⚠️  WARNING: If allocPrint fails, session_id contains garbage!\n", .{});
+    
+    try std.testing.expect(session_id_len == 0);
 }
 
 pub fn main() !void {

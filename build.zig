@@ -28,15 +28,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const http_dep = b.dependency("http", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const zigzag_dep = b.dependency("zigzag", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    const http_dep = b.dependency("http", .{ .target = target, .optimize = optimize });
 
     const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
@@ -281,30 +273,6 @@ pub fn build(b: *std.Build) void {
     });
     copy_dev_tui_to_system.step.dependOn(&install_dev_tui.step);
     dev_tui_linux_system_step.dependOn(&copy_dev_tui_to_system.step);
-
-    // New TUI with ZigZag framework
-    const new_tui_exe = b.addExecutable(.{
-        .name = "nalar-new-tui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/apps/new_tui/src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "nalarcore", .module = mod },
-                .{ .name = "zigzag", .module = zigzag_dep.module("zigzag") },
-            },
-        }),
-    });
-    new_tui_exe.linkSystemLibrary("sqlite3");
-    new_tui_exe.linkSystemLibrary("ssl");
-    new_tui_exe.linkSystemLibrary("crypto");
-    new_tui_exe.linkLibC();
-    b.installArtifact(new_tui_exe);
-
-    const new_tui_step = b.step("run:new_tui", "Run the new ZigZag TUI");
-    const new_tui_cmd = b.addRunArtifact(new_tui_exe);
-    new_tui_step.dependOn(&new_tui_cmd.step);
-    new_tui_cmd.step.dependOn(b.getInstallStep());
 
     // Desktop executable disabled - desktop source files not present
     // Uncomment when desktop files are added back
