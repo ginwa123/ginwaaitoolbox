@@ -134,7 +134,7 @@ pub fn getSessionListWithCursor(
                 \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
                 \\FROM llm_history h
                 \\LEFT JOIN sessions s ON h.session_id = s.id
-                \\WHERE h.session_dir = '{s}' AND h.created_at < '{s}'
+                \\WHERE h.session_dir = '{s}' AND h.created_at < '{s}' AND h.session_id NOT LIKE '%subagent%'
                 \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
             , .{dir, c, limit});
         } else {
@@ -142,7 +142,7 @@ pub fn getSessionListWithCursor(
                 \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
                 \\FROM llm_history h
                 \\LEFT JOIN sessions s ON h.session_id = s.id
-                \\WHERE h.session_dir = '{s}'
+                \\WHERE h.session_dir = '{s}' AND h.session_id NOT LIKE '%subagent%'
                 \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
             , .{dir, limit});
         }
@@ -152,7 +152,7 @@ pub fn getSessionListWithCursor(
                 \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
                 \\FROM llm_history h
                 \\LEFT JOIN sessions s ON h.session_id = s.id
-                \\WHERE h.created_at < '{s}'
+                \\WHERE h.created_at < '{s}' AND h.session_id NOT LIKE '%subagent%'
                 \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
             , .{c, limit});
         } else {
@@ -160,6 +160,7 @@ pub fn getSessionListWithCursor(
                 \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
                 \\FROM llm_history h
                 \\LEFT JOIN sessions s ON h.session_id = s.id
+                \\WHERE h.session_id NOT LIKE '%subagent%'
                 \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
             , .{limit});
         }
