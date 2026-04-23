@@ -2,7 +2,7 @@ const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
 const nalarcore = root_mod;
-const sqlite = nalarcore.sqlite;
+const ai_workflow = nalarcore.ai_workflow;
 
 const httpz = http_server.httpz;
 const llm_history = nalarcore.llm_history;
@@ -61,8 +61,9 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
     };
 
     if (http_server.global_server) |server| {
-        if (server.db) |db| {
-            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+        if (server.ctx) |ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+            const sqlite_db = ctxTui.db;
 
             const msg_response = llm_history.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
                 res.status = 500;

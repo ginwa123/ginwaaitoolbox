@@ -2,7 +2,7 @@ const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
 const nalarcore = root_mod;
-const sqlite = nalarcore.sqlite;
+const ai_workflow = nalarcore.ai_workflow;
 
 const httpz = http_server.httpz;
 const llm_history = nalarcore.llm_history;
@@ -20,8 +20,9 @@ pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *http
     const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 50;
 
     if (http_server.global_server) |server| {
-        if (server.db) |db| {
-            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+        if (server.ctx) |ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+            const sqlite_db = ctxTui.db;
 
             // Use unified getSessionListWithCursor with session_dir support
             const result = llm_history.getSessionListWithCursor(alloc, sqlite_db, null, null, session_dir, limit_val, cursor) catch {

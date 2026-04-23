@@ -125,7 +125,6 @@ pub fn main() !void {
     }
 
     var server = http_server.HttpServer.init(parentAllocator, ctxParent, port);
-    server.setDb(@ptrCast(&dbSqlite));
 
     // Start the startup worker (get worker and run TUIWorkflow in thread)
     startup(parentAllocator, &server) catch |err| {

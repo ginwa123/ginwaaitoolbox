@@ -60,60 +60,58 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
     const cwd_session = if (root.get("cwd_session")) |v| if (v == .string) v.string else "" else "";
 
     if (http_server.global_server) |server| {
-        if (server.db) |db| {
-            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
-            if (server.ctx) |ctx| {
-                const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+        if (server.ctx) |ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+            const sqlite_db = ctxTui.db;
 
-                // Spawn workflow in detached thread
-                const workflow_args = try server.allocator.create(WorkflowArgs);
-                workflow_args.* = .{
-                    .allocator = server.allocator,
-                    .sqlite_db = sqlite_db,
-                    .logger = ctxTui.logger,
-                    .session_id = try server.allocator.dupe(u8, session_id.string),
-                    .message = try server.allocator.dupe(u8, message.string),
-                    .cwd = try server.allocator.dupe(u8, cwd_session),
-                    .api_key = ctxTui.llm_config.api_key,
-                    .model = ctxTui.llm_config.model,
-                    .base_url = ctxTui.llm_config.base_url,
-                    .llm_config = ctxTui.llm_config,
-                };
+            // Spawn workflow in detached thread
+            const workflow_args = try server.allocator.create(WorkflowArgs);
+            workflow_args.* = .{
+                .allocator = server.allocator,
+                .sqlite_db = sqlite_db,
+                .logger = ctxTui.logger,
+                .session_id = try server.allocator.dupe(u8, session_id.string),
+                .message = try server.allocator.dupe(u8, message.string),
+                .cwd = try server.allocator.dupe(u8, cwd_session),
+                .api_key = ctxTui.llm_config.api_key,
+                .model = ctxTui.llm_config.model,
+                .base_url = ctxTui.llm_config.base_url,
+                .llm_config = ctxTui.llm_config,
+            };
 
-                const thread = try std.Thread.spawn(.{}, struct {
-                    fn run(args: *WorkflowArgs) void {
-                        defer {
-                            args.allocator.free(args.session_id);
-                            args.allocator.free(args.message);
-                            args.allocator.free(args.cwd);
-                            args.allocator.destroy(args);
-                        }
-                        var arena = std.heap.ArenaAllocator.init(args.allocator);
-                        defer arena.deinit();
-                        var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.logger);
-                        workflow.run(.{
-                            .parent_allocator = arena.allocator(),
-                            .parent_session_id = args.session_id,
-                            .session_id = args.session_id,
-                            .message = args.message,
-                            .cwd = args.cwd,
-                            .api_key = args.api_key,
-                            .model = args.model,
-                            .base_url = args.base_url,
-                            .config = args.llm_config,
-                            .body = "",
-                            .allowed_tools = "",
-                        }) catch |err| {
-                            args.logger.errFmt("workflow.run failed: {s}", .{@errorName(err)}) catch {};
-                        };
+            const thread = try std.Thread.spawn(.{}, struct {
+                fn run(args: *WorkflowArgs) void {
+                    defer {
+                        args.allocator.free(args.session_id);
+                        args.allocator.free(args.message);
+                        args.allocator.free(args.cwd);
+                        args.allocator.destroy(args);
                     }
-                }.run, .{workflow_args});
-                thread.detach();
+                    var arena = std.heap.ArenaAllocator.init(args.allocator);
+                    defer arena.deinit();
+                    var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.logger);
+                    workflow.run(.{
+                        .parent_allocator = arena.allocator(),
+                        .parent_session_id = args.session_id,
+                        .session_id = args.session_id,
+                        .message = args.message,
+                        .cwd = args.cwd,
+                        .api_key = args.api_key,
+                        .model = args.model,
+                        .base_url = args.base_url,
+                        .config = args.llm_config,
+                        .body = "",
+                        .allowed_tools = "",
+                    }) catch |err| {
+                        args.logger.errFmt("workflow.run failed: {s}", .{@errorName(err)}) catch {};
+                    };
+                }
+            }.run, .{workflow_args});
+            thread.detach();
 
-                res.status = 202;
-                res.body = try std.fmt.allocPrint(alloc, "{{\"status\":\"processing\",\"session_id\":\"{s}\"}}", .{session_id.string});
-                return;
-            }
+            res.status = 202;
+            res.body = try std.fmt.allocPrint(alloc, "{{\"status\":\"processing\",\"session_id\":\"{s}\"}}", .{session_id.string});
+            return;
         }
     }
     res.status = 500;

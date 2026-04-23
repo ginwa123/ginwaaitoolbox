@@ -45,9 +45,8 @@ pub const HttpServer = struct {
     port: u16,
     message_handler: ?MessageHandler = null,
     session_handler: ?SessionHandler = null,
-    ctx: ?*anyopaque = null,
+    ctx: ?*anyopaque = null, // Contains ContextIPCTui which has .db inside
     sse_manager: SseConnectionManager,
-    db: ?*anyopaque = null, // Opaque database handle for handlers
 
     pub fn init(allocator: std.mem.Allocator, ctx: ?*anyopaque, port: u16) Self {
         return .{
@@ -60,11 +59,6 @@ pub const HttpServer = struct {
 
     pub fn deinit(self: *Self) void {
         self.sse_manager.deinit();
-    }
-
-    /// Set the database handle for handlers
-    pub fn setDb(self: *Self, db: *anyopaque) void {
-        self.db = db;
     }
 
     pub fn setTUIHandler(self: *Self, handler: MessageHandler) void {

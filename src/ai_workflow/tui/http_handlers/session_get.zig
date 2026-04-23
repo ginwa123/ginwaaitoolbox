@@ -2,7 +2,7 @@ const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
 const nalarcore = root_mod;
-const sqlite = nalarcore.sqlite;
+const ai_workflow = nalarcore.ai_workflow;
 
 const httpz = http_server.httpz;
 const llm_history = nalarcore.llm_history;
@@ -19,8 +19,9 @@ pub fn session_get_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz
     };
 
     if (http_server.global_server) |server| {
-        if (server.db) |db| {
-            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+        if (server.ctx) |ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+            const sqlite_db = ctxTui.db;
             const session = llm_history.get_session(alloc, sqlite_db, session_id) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Database query failed\"}";

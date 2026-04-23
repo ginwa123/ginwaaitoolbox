@@ -2,7 +2,7 @@ const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
 const nalarcore = root_mod;
-const sqlite = nalarcore.sqlite;
+const ai_workflow = nalarcore.ai_workflow;
 
 const httpz = http_server.httpz;
 const session_helpers = nalarcore.session_helpers;
@@ -19,8 +19,9 @@ pub fn session_latest_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     };
 
     if (http_server.global_server) |server| {
-        if (server.db) |db| {
-            const sqlite_db = @as(*sqlite.SqliteBackend, @ptrCast(@alignCast(db)));
+        if (server.ctx) |ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+            const sqlite_db = ctxTui.db;
             var arena = std.heap.ArenaAllocator.init(server.allocator);
             defer arena.deinit();
 

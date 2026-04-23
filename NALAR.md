@@ -1,6 +1,6 @@
 # NALAR.md — Project Summary
 
-> **Last Updated:** 2025-04-18
+> **Last Updated:** 2025-04-20
 > **Auto-Update Rule:** MUST update after making changes. Keep concise, max ~200 lines.
 
 ---
@@ -14,6 +14,22 @@
 **Executables:** `nalar` (server), `nalar-tui` (old TUI), `nalar-new-tui` (new ZigZag TUI), `nalar-dev`/`nalar-dev-tui` (debug builds)
 **Language:** Zig 0.15.2
 **Type:** AI agentic coding toolbox with HTTP server + TUI interfaces
+
+## HTTP Server Architecture
+
+**HttpServer** (`src/modules/http_server/HttpServer.zig`) uses a single `ctx` field of type `?*anyopaque` to hold application context. This context contains `ContextIPCTui` which includes:
+- `db: *sqlite.SqliteBackend` — database handle
+- `llm_config: *const config.LlmConfig` — LLM configuration
+- `logger: *logger.Logger` — global logger
+
+**Access pattern:** Cast `ctx` to `*ai_workflow.ContextIPCTui` to get both db and config:
+```zig
+if (server.ctx) |ctx| {
+    const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    const sqlite_db = ctxTui.db;  // Access database
+    const api_key = ctxTui.llm_config.api_key;  // Access LLM config
+}
+```
 
 ## ZigZag TUI Framework
 
