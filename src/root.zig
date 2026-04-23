@@ -90,9 +90,9 @@ pub const logger = @import("modules/logger/Logger.zig");
 pub const migrations = @import("ai_workflow/tui/migration.zig");
 pub const ai_workflow = @import("ai_workflow/tui/workflow.zig");
 pub const session_monitor = @import("modules/session/SessionMonitor.zig");
-pub const loop_detector = @import("modules/agent/tools/loop_detector.zig");
 pub const skills = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
+pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
 pub const add_agent = @import("modules/agent/tools/add_agent.zig");
 pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");
 

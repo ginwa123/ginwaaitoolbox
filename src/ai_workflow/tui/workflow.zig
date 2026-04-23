@@ -19,7 +19,6 @@ const ListSkillsTool = nalar_mod.list_skills_tool;
 const GetSkillTool = nalar_mod.get_skill_tool;
 const RemoveSkillTool = nalar_mod.remove_skill_tool;
 const skills = nalar_mod.skills;
-const loop_detector = nalar_mod.loop_detector;
 const bash_helper = nalar_mod.helperTool;
 const logger_mod = nalar_mod.logger;
 const llm_history = @import("llm_history.zig");

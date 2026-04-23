@@ -21,6 +21,87 @@ pub const Research =
     \\**Never write code you haven't verified with tools first.**
 ;
 
+pub const DynamicAdaptation =
+    \\## 🎯 DYNAMIC SKILL ADAPTATION
+    \\
+    \\**Dynamically adapts skill guidance based on environment, project context, and issues. USE THIS for EVERY task to get tailored recommendations.**
+    \\
+    \\### Step 1: Environment Detection
+    \\
+    \\**Auto-detect using these signals:**
+    \\
+    \\| Signal | What It Means | Action |
+    \\|--------|---------------|--------|
+    \\| `*.zig`, `build.zig` | Zig project | Follow Zig 0.15 conventions |
+    \\| `*.ts`, `*.js`, `node_modules` | Node.js/TypeScript | Follow JS patterns |
+    \\| `package.json` | Node.js ecosystem | Check for frameworks |
+    \\| `Cargo.toml` | Rust project | Follow Rust patterns |
+    \\| `go.mod` | Go project | Follow Go patterns |
+    \\| `.nalar/`, `AGENTS.md` | Agentic toolbox | Follow agentic conventions |
+    \\| `zig build` output | Build system | Analyze for errors |
+    \\| `zig test` output | Testing | Check test failures |
+    \\
+    \\### Step 2: Issue Classification
+    \\
+    \\**Classify the current issue type:**
+    \\
+    \\| Issue Pattern | Classification | Response |
+    \\|--------------|----------------|----------|
+    \\| `error:` at start of line | Compilation error | Syntax/type fix needed |
+    \\| `FAIL` or `test failed` | Test failure | Logic or test bug |
+    \\| `undefined:` or `null` | Runtime error | Edge case handling |
+    \\| Slow execution | Performance | Profiling + optimization |
+    \\| Security warning | Security | Immediate fix required |
+    \\| Deadlock/timeout | Concurrency | Synchronization issue |
+    \\
+    \\### Step 3: Context-Aware Adaptation (Zig Projects)
+    \\
+    \\**For Zig 0.15 projects, ADAPT your approach:**
+    \\
+    \\```
+    \\CRITICAL Rules for Zig 0.15:
+    \\- Never return stack-allocated slices from functions
+    \\- ArrayList.init → ArrayList.empty (allocator required)
+    \\- ArrayList.deinit(allocator) — allocator REQUIRED
+    \\- Use ArenaAllocator over manual free()
+    \\- {s} format needs []u8, use @errorName(err)
+    \\- std.posix.* APIs return void, not error union
+    \\```
+    \\
+    \\### Step 4: Adaptive Response Template
+    \\
+    \\When starting any task, follow this adaptive template:
+    \\
+    \\```
+    \\## Task Analysis
+    \\
+    \\### 1. Environment Signals
+    \\- Language/Framework: [detected]
+    \\- Build System: [detected]
+    \\- Key Conventions: [detected]
+    \\
+    \\### 2. Issue Classification
+    \\- Type: [compilation|test|runtime|performance|security]
+    \\- Severity: [blocking|warning|minor]
+    \\- Root Cause: [estimated]
+    \\
+    \\### 3. Adaptation Plan
+    \\- Skills to load: [list from available skills]
+    \\- Approach: [specific to context]
+    \\- Verification: [how to confirm fix]
+    \\
+    \\### 4. Execution
+    \\- Step 1: [action]
+    \\- Step 2: [action]
+    \\...
+    \\
+    \\### 5. Verification
+    \\- Build: [command + expected output]
+    \\- Test: [command + expected output]
+    \\- Regression: [command + expected output]
+    \\```
+;
+
 pub const ResearchTriggers =
     \\**⚡ When to Use Tools (ALWAYS):**
     \\- **Reading code?** → `read_file` — don't guess structure
@@ -153,12 +234,21 @@ pub const SkillsUsage =
     \\6. REPEAT → Load more skills as needed for different aspects
     \\```
     \\
+    \\### ⚡ DYNAMIC ADAPTATION (USE FIRST!)
+    \\
+    \\**See the `DynamicAdaptation` section above for context-aware guidance that adapts to:**
+    \\- Current environment and project context
+    \\- Language/framework detection
+    \\- Issue classification (compilation, test, runtime, etc.)
+    \\
     \\### ⚡ QUICK SKILL COMMANDS
     \\
     \\| Command | When to Use |
     \\|---------|-------------|
-    \\| `list_skills` | **FIRST STEP** for any task — browse available skills |
+    \\| `list_skills` | Browse all available skills |
     \\| `get_skill("name")` | Load a specific skill's full guidance |
+    \\| `add_skill` | Create a new skill |
+    \\| `edit_skill` | Update existing skills for your needs |
     \\
     \\### ⚡ SKILL + PARALLEL COMBO
     \\
@@ -169,35 +259,42 @@ pub const SkillsUsage =
     \\3. spawn_sub_agent(...) → spawn parallel agents with guidance
     \\```
     \\
-    \\### ⚡ SKILL TRIGGER PATTERNS
+    \\### ⚡ DYNAMIC SKILL SELECTION
     \\
-    \\**DISCOVER → MATCH → LOAD:** First call `list_skills` to see what's available, then load the matching skill:
+    \\**Based on your detected context, load relevant skills:**
     \\
-    \\| Task Type | What to Do |
-    \\|-----------|------------|
-    \\| Language-specific code (`.zig`, `.py`, `.js`, `.go`, etc.) | `list_skills` → find matching language skill → load it |
-    \\| Frontend/UI work (components, styling, web) | `list_skills` → find frontend/design skill → load it |
-    \\| Backend/API development | `list_skills` → find backend or API skill → load it |
-    \\| Database/SQL/NoSQL work | `list_skills` → find database skill → load it |
-    \\| DevOps/Infrastructure/Cloud | `list_skills` → find DevOps/cloud skill → load it |
-    \\| Mobile development | `list_skills` → find mobile skill → load it |
-    \\| Creative work (features, design) | `list_skills` → find brainstorming/creative skill → load it |
-    \\| Multi-step implementation | `list_skills` → find planning skill → load it |
-    \\| Code review | `list_skills` → find review skill → load it |
-    \\| Testing/QATesting/QA | `list_skills` → find testing skill → load it |
-    \\| Security work | `list_skills` → find security skill → load it |
-    \\| Data science/ML/AI | `list_skills` → find data/ML skill → load it |
-    \\| Parallel work / Multi-agent tasks | `list_skills` → find `dispatching-parallel-agents` skill → load it |
-    \\| **ANY unfamiliar task** | `list_skills` first → find matching skill → load it |
+    \\| Context | Skill to Load |
+    \\|---------|---------------|
+    \\| `.zig`, `Zig`, `build.zig` files | `zig-expert` |
+    \\| `.py`, `Python`, `pip`, `venv` | Python skill |
+    \\| `.js`, `.ts`, `node_modules`, `npm` | JS/Node skill |
+    \\| `.go`, `Go`, `golang` files | Go skill |
+    \\| `.rs`, `Rust`, `Cargo` files | Rust skill |
+    \\| Frontend/UI/HTML/CSS/components | `frontend-design` |
+    \\| Database/SQL/NoSQL/queries | Database skill |
+    \\| Backend/API development | API skill |
+    \\| DevOps/Infrastructure/Cloud | DevOps skill |
+    \\| Docker/Kubernetes/containers | DevOps skill |
+    \\| Mobile development | Mobile skill |
+    \\| Creative work (features, design) | `brainstorming` |
+    \\| Multi-step implementation | `writing-plans` |
+    \\| Code review | `requesting-code-review` |
+    \\| Testing/QA/test cases | `test-driver-development` |
+    \\| Security work | Security skill |
+    \\| Data science/ML/AI | Data/ML skill |
+    \\| Parallel work / Multi-agent | `dispatching-parallel-agents` |
+    \\| **Bug/Debug/Error** | `systematic-debugging` |
+    \\| **Creating skills** | `skill-creator` |
+    \\| **SKILL DOESN'T EXIST** | `add_skill` to create new skill |
     \\
-    \\### ⚡ RULES
+    \\### ⚡ SKILL ADAPTATION RULES
     \\
-    \\1. **NEVER skip the skill check** — skills exist for a reason
-    \\2. **DISCOVER first with `list_skills`** — skill names vary by platform
-    \\3. **LOAD skills BEFORE writing code** — not after
-    \\4. **Multiple skills are OK** — load what each task part needs
-    \\5. **Skills are FREE** — no performance penalty for using them
-    \\6. **When in doubt → `list_skills`** — browse and find what fits
+    \\1. **ADAPT skills dynamically** — use `edit_skill` to update existing skills
+    \\2. **CREATE skills on-demand** — use `add_skill`/`edit_skill` as needed
+    \\3. **PREVENT recurrence** — document fixes in skills
+    \\4. **Skills evolve** — update them as you learn better patterns
+    \\
+    \\**REMEMBER: Skill loading is MANDATORY. Discover → Adapt → Load → Work.**
 ;
 
 pub const SkillsTriggers =
@@ -256,22 +353,43 @@ pub const LoadedSkills =
 ;
 
 pub const ProceduralMemory =
-    \\## 🧠 Procedural Memory (Skill Creation)
+    \\## 🧠 Procedural Memory (Skill Creation & Adaptation)
     \\
-    \\When you discover a non-trivial workflow that works well, save it as a skill for future reuse.
+    \\When you discover a non-trivial workflow that works well, save it as a skill for future reuse. Adapt existing skills to fit your project context.
     \\
     \\**CREATE SKILLS WHEN:**
     \\1. **Complex tasks (5+ tool calls)** — You found an effective approach worth remembering
     \\2. **Error recovery** — You hit errors and found the working path through them
     \\3. **User corrections** — The user corrected your approach and showed the right way
+    \\4. **Recurring patterns** — You see the same type of issue/fix multiple times
+    \\
+    \\**EDIT SKILLS WHEN:**
+    \\1. **Project-specific patterns** — Existing skills need adaptation for this codebase
+    \\2. **Language/framework updates** — Skills need to reflect new conventions
+    \\3. **Issue prevention** — You want to prevent recurring mistakes
+    \\
+    \\**SKILL MANAGEMENT TOOLS:**
+    \\| Tool | Purpose |
+    \\|------|---------|
+    \\| `add_skill("name", "desc", "content")` | Create a new skill |
+    \\| `edit_skill("name", "description", "content")` | Update existing skill |
+    \\| `remove_skill("name")` | Delete a skill |
+    \\| `list_skills` | List all available skills |
+    \\| `get_skill("name")` | Load a skill's full content |
     \\
     \\**SKILL CREATION WORKFLOW:**
     \\1. Identify the workflow pattern that worked
-    \\2. Use `save_skill` with:
+    \\2. Use `add_skill` with:
     \\   - `name`: descriptive skill name (e.g., "zig-error-handling", "debugging-async-issues")
     \\   - `description`: what problem this skill solves
     \\   - `content`: the learned workflow/best practices
     \\3. The skill is saved to `.nalar/skills/<name>/SKILL.MD`
+    \\
+    \\**SKILL EDIT WORKFLOW:**
+    \\1. Load the skill: `get_skill("existing-skill")`
+    \\2. Identify what needs adaptation
+    \\3. Use `edit_skill("existing-skill", "new-description", "new-content")`
+    \\   - Omit description/content to keep existing values
     \\
     \\**SKILL STRUCTURE:**
     \\```
@@ -296,6 +414,13 @@ pub const ProceduralMemory =
     \\ After a complex task, ask: "Should I save this as a skill?"
     \\ After error recovery, ask: "What did I learn that should be documented?"
     \\ After user correction, ask: "What pattern should I remember?"
+    \\ After project discovery, ask: "Do existing skills need adaptation?"
     \\
-    \\**NOTE:** Skills persist across sessions. Created skills are available via `list_skills` and `get_skill` in future sessions.
+    \\**DYNAMIC SKILL ADAPTATION:**
+    \\ Skills should evolve with your project. When you discover project-specific patterns:
+    \\1. Read the existing skill with `get_skill("skill-name")`
+    \\2. Adapt the content to your project's conventions
+    \\3. Use `edit_skill` to update it
+    \\
+    \\**NOTE:** Skills persist across sessions. Created/edited skills are available via `list_skills` and `get_skill` in future sessions.
 ;

@@ -19,6 +19,7 @@ const get_skill_mod = nalar_mod.get_skill_tool;
 const remove_skill_mod = nalar_mod.remove_skill_tool;
 const list_agents_mod = nalar_mod.list_agents;
 const add_skill_mod = nalar_mod.add_skill;
+const edit_skill_mod = nalar_mod.edit_skill;
 const add_agent_mod = nalar_mod.add_agent;
 const remove_agent_mod = nalar_mod.remove_agent;
 const remove_file_mod = nalar_mod.remove_file;
@@ -292,6 +293,39 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const output = get_skill_mod.execute_get_skill_to_string(ctx.allocator, parsed.value) catch {
         return ToolExecResult{ .output = "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>" };
     };
+
+    // Check if skill was successfully loaded and extract skill info for auto-save
+    if (std.mem.indexOf(u8, output, "<loaded>true</loaded>") != null) {
+        // Parse skill_name from XML output
+        const name_start = std.mem.indexOf(u8, output, "<skill_name>") orelse {
+            return ToolExecResult{ .output = output };
+        };
+        const name_begin = name_start + "<skill_name>".len;
+        const name_end = std.mem.indexOf(u8, output[name_begin..], "</skill_name>") orelse {
+            return ToolExecResult{ .output = output };
+        };
+        const skill_name = output[name_begin..name_begin + name_end];
+
+        // Parse content from XML output
+        const content_start = std.mem.indexOf(u8, output, "<content>") orelse {
+            return ToolExecResult{ .output = output };
+        };
+        const content_begin = content_start + "<content>".len;
+        const content_end = std.mem.indexOf(u8, output[content_begin..], "</content>") orelse {
+            return ToolExecResult{ .output = output };
+        };
+        const skill_content = output[content_begin..content_begin + content_end];
+
+        // Return with skill_save info so handle_tool can auto-save to session_skills
+        return ToolExecResult{
+            .output = output,
+            .skill_save = SkillSaveInfo{
+                .name = skill_name,
+                .content = skill_content,
+            },
+        };
+    }
+
     return ToolExecResult{ .output = output };
 }
 
@@ -348,6 +382,37 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
             \\<error>Failed to add skill</error>
             \\</skill>
         , .{parsed.value.name});
+        return ToolExecResult{ .output = out };
+    };
+    return ToolExecResult{ .output = output };
+}
+
+pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        edit_skill_mod.EditSkillInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        const output = try std.fmt.allocPrint(ctx.allocator,
+            \\<skill>
+            \\<name></name>
+            \\<edited>false</edited>
+            \\<error>Failed to parse edit_skill arguments</error>
+            \\</skill>
+        , .{});
+        return ToolExecResult{ .output = output };
+    };
+    defer parsed.deinit();
+
+    const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, parsed.value) catch {
+        const out = try std.fmt.allocPrint(ctx.allocator,
+            \\<skill>
+            \\<name>{s}</name>
+            \\<edited>false</edited>
+            \\<error>Failed to edit skill</error>
+            \\</skill>
+        , .{parsed.value.skill_name});
         return ToolExecResult{ .output = out };
     };
     return ToolExecResult{ .output = output };
@@ -948,9 +1013,6 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "update_activity", .exec = execUpdateActivity, .tool_def = update_activity_mod.update_activity_tool },
 
     // === AGENT MANAGEMENT (auto-save) ===
-    .{ .name = "list_agents", .exec = execListAgents, .tool_def = list_agents_mod.list_agents_tool, .auto_save_agent = true },
-    .{ .name = "change_agent", .exec = execChangeAgent, .tool_def = change_agent_mod.change_agent_tool, .auto_save_agent = true },
-    .{ .name = "remove_agent", .exec = execRemoveAgent, .tool_def = remove_agent_mod.remove_agent_tool },
 
     // === SKILL MANAGEMENT ===
     .{ .name = "list_skills", .exec = execListSkills, .tool_def = list_skills_mod.list_skills_tool },
@@ -959,7 +1021,7 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 
     // === SKILL/AGENT CREATION ===
     .{ .name = "add_skill", .exec = execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
-    .{ .name = "add_agent", .exec = execAddAgent, .tool_def = add_agent_mod.add_agent_tool, .auto_save_agent = true },
+    .{ .name = "edit_skill", .exec = execEditSkill, .tool_def = edit_skill_mod.edit_skill_tool },
 
     // === FILE OPERATIONS ===
     .{ .name = "bash", .exec = execBash, .tool_def = bash_tool_mod.bash_tool },
@@ -996,24 +1058,21 @@ pub const ALL_AGENT_TOOLS: []const tool_models.AgentTool = &.{
     set_agent_properties_mod.set_agent_properties_tool,
     spawn_sub_agent_tool.spawn_sub_agent_tool,
     update_activity_mod.update_activity_tool,
-    // list_agents_mod.list_agents_tool,
-    // change_agent_mod.change_agent_tool,
-    // remove_agent_mod.remove_agent_tool,
     list_skills_mod.list_skills_tool,
     get_skill_mod.get_skill_tool,
     remove_skill_mod.remove_skill_tool,
     add_skill_mod.add_skill_tool,
-    add_agent_mod.add_agent_tool,
+    edit_skill_mod.edit_skill_tool,
     bash_tool_mod.bash_tool,
     read_file_mod.read_file_tool,
     write_file_mod.write_file_tool,
     text_replace_mod.text_replace_tool,
     remove_file_mod.remove_file_tool,
-    lsp_definition_mod.lsp_definition_tool,
-    lsp_references_mod.lsp_references_tool,
-    lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
-    lsp_document_symbol_mod.lsp_document_symbol_tool,
-    lsp_hover_mod.lsp_hover_tool,
+    // lsp_definition_mod.lsp_definition_tool,
+    // lsp_references_mod.lsp_references_tool,
+    // lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
+    // lsp_document_symbol_mod.lsp_document_symbol_tool,
+    // lsp_hover_mod.lsp_hover_tool,
     web_search_mod.web_search_tool,
     glob_tool_mod.glob_tool,
     search_tool_mod.search_tool,

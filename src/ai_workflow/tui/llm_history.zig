@@ -126,45 +126,30 @@ pub fn getSessionListWithCursor(
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     defer allocator.free(limit_str);
 
-    // Build query with session_dir filter and cursor condition
-    // Join with sessions table to get session_name from sessions.name
-    const sql_final: []u8 = if (session_dir) |dir| blk: {
-        if (cursor) |c| {
-            break :blk try std.fmt.allocPrint(allocator,
-                \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
-                \\FROM llm_history h
-                \\LEFT JOIN sessions s ON h.session_id = s.id
-                \\WHERE h.session_dir = '{s}' AND h.created_at < '{s}' AND h.session_id NOT LIKE '%subagent%'
-                \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
-            , .{dir, c, limit});
-        } else {
-            break :blk try std.fmt.allocPrint(allocator,
-                \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
-                \\FROM llm_history h
-                \\LEFT JOIN sessions s ON h.session_id = s.id
-                \\WHERE h.session_dir = '{s}' AND h.session_id NOT LIKE '%subagent%'
-                \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
-            , .{dir, limit});
-        }
-    } else blk: {
-        if (cursor) |c| {
-            break :blk try std.fmt.allocPrint(allocator,
-                \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
-                \\FROM llm_history h
-                \\LEFT JOIN sessions s ON h.session_id = s.id
-                \\WHERE h.created_at < '{s}' AND h.session_id NOT LIKE '%subagent%'
-                \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
-            , .{c, limit});
-        } else {
-            break :blk try std.fmt.allocPrint(allocator,
-                \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
-                \\FROM llm_history h
-                \\LEFT JOIN sessions s ON h.session_id = s.id
-                \\WHERE h.session_id NOT LIKE '%subagent%'
-                \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
-            , .{limit});
-        }
-    };
+    // Build dynamic WHERE clause from optional filters
+    var where_parts = std.ArrayList([]const u8).empty;
+    defer where_parts.deinit(allocator);
+
+    try where_parts.append(allocator, "h.session_id NOT LIKE '%subagent%'");
+
+    if (session_dir) |dir| {
+        try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "h.session_dir = '{s}'", .{dir}));
+    }
+
+    if (cursor) |c| {
+        try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "h.created_at < '{s}'", .{c}));
+    }
+
+    const where_clause = try std.mem.join(allocator, " AND ", where_parts.items);
+    defer allocator.free(where_clause);
+
+    const sql_final = try std.fmt.allocPrint(allocator,
+        \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
+        \\FROM llm_history h
+        \\LEFT JOIN sessions s ON h.session_id = s.id
+        \\WHERE {s}
+        \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
+    , .{where_clause, limit});
     defer allocator.free(sql_final);
 
     var rows = try db.query(allocator, sql_final, &.{});

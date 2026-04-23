@@ -342,7 +342,7 @@ fn walkDir(
                     const remaining_pat = pat[pat_idx..];
                     
                     // Check if this is a directory name prefix we need to match
-                    const slash_idx = std.mem.indexOfScalar(u8, remaining_pat, '/') orelse pat.len;
+                    const slash_idx = std.mem.indexOfScalar(u8, remaining_pat, '/') orelse remaining_pat.len;
                     const dir_part = remaining_pat[0..slash_idx];
                     
                     // Check if the current directory entry name matches this prefix

@@ -36,6 +36,7 @@ pub const Agent = agent.Agent;
 pub const ParallelWork = parallel.ParallelWork;
 
 pub const Research = research.Research;
+pub const DynamicAdaptation = research.DynamicAdaptation;
 pub const ResearchTriggers = research.ResearchTriggers;
 pub const FileEditingRules = research.FileEditingRules;
 pub const SkillsUsage = research.SkillsUsage;

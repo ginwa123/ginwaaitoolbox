@@ -27,6 +27,7 @@ pub const DynamicProperties = prompts.DynamicProperties;
 pub const Agent = prompts.Agent;
 pub const ParallelWork = prompts.ParallelWork;
 pub const Research = prompts.Research;
+pub const DynamicAdaptation = prompts.DynamicAdaptation;
 pub const ResearchTriggers = prompts.ResearchTriggers;
 pub const FileEditingRules = prompts.FileEditingRules;
 pub const ChangeAgent = prompts.ChangeAgent;
@@ -201,6 +202,7 @@ pub fn build_agent_prompt(
     // 8. Tool-First Approach + Research triggers
     try appendSection(allocator, &result, Research);
     try appendSection(allocator, &result, ResearchTriggers);
+    try appendSection(allocator, &result, DynamicAdaptation);
 
     // 9. Dynamic Properties - only if set_agent_properties tool is available
     const has_set_agent_properties = for (tools) |tool| {

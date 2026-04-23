@@ -107,9 +107,9 @@ src/
 │   │       ├── lsp.zig, lsp_definition.zig, lsp_hover.zig, lsp_references.zig
 │   │       ├── lsp_document_symbol.zig, lsp_workspace_symbol.zig, lsp_types.zig
 │   │       ├── spawn_sub_agent.zig, change_agent.zig, agents.zig
-│   │       ├── skills.zig, get_skill.zig, list_skills.zig, add_skill.zig, remove_skill.zig
+│   │       ├── skills.zig, get_skill.zig, list_skills.zig, add_skill.zig, edit_skill.zig, remove_skill.zig
 │   │       ├── list_agents.zig, add_agent.zig, remove_agent.zig
-│   │       ├── set_agent_properties.zig, loop_detector.zig, bash_selfkill.zig
+│   │       ├── set_agent_properties.zig, bash_selfkill.zig
 │   │       ├── helper.zig, schemas.zig, tools.zig
 │   ├── config/Config.zig              # LLM configuration
 │   ├── databases/
@@ -178,6 +178,9 @@ src/
 - [zig@0.15] `std.posix.sigaction()` returns `void`, not error union — no `catch` needed
 - [zig@0.15] `std.posix.execveZ()` returns error union directly — use `catch` without `|err|`
 - [zig@0.15] `std.posix.sigemptyset()` returns `sigset_t` for signal mask initialization
+
+## Bug Fixes (Development Notes)
+- [glob.zig:346] Fixed index out of bounds: when slicing a substring pattern, use `remaining_pat.len` instead of `pat.len` for the "no slash found" fallback
 
 ## Key Tool Conventions
 
