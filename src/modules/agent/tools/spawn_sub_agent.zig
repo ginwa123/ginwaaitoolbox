@@ -151,7 +151,23 @@ fn parseSubAgentsFromValue(
     const agents_val = root_obj.get("sub_agents") orelse {
         return error.MissingSubAgentsField;
     };
-    const agents_array = agents_val.array;
+    // Check if sub_agents is an array or a string (handle LLM mistakes)
+    const agents_array: std.json.Array = if (agents_val == .array)
+        agents_val.array
+    else if (agents_val == .string)
+        // Parse the string as JSON to get the actual array
+        blk: {
+            const parsed_str = try std.json.parseFromSlice(std.json.Value, allocator, agents_val.string, .{
+                .ignore_unknown_fields = true,
+            });
+            defer parsed_str.deinit();
+            if (parsed_str.value != .array) {
+                return error.InvalidSubAgentsFormat;
+            }
+            break :blk parsed_str.value.array;
+        }
+    else
+        return error.InvalidSubAgentsFormat;
 
     if (agents_array.items.len == 0) {
         return error.NoSubAgents;

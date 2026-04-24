@@ -457,17 +457,20 @@ pub fn get_session_messages_sorted(
     const result_messages = if (has_more) messages.items[0..limit] else messages.items;
 
     // Get cwd from sessions table
-    const cwd = blk: {
+    // ⚠️ IMPORTANT: Duplicate BEFORE defer deinit() runs because SQLite's text pointer
+    // is invalidated when the statement is finalized. The defer order means we must
+    // duplicate the value before exiting this scope.
+    var cwd: ?[]u8 = null;
+    {
         var cwd_rows = try db.query(allocator, "SELECT COALESCE(cwd, '') FROM sessions WHERE id = ?", &.{session_id});
         defer cwd_rows.deinit();
         if (try cwd_rows.next()) |row| {
             const cwd_val = row.values[0];
             if (cwd_val.len > 0) {
-                break :blk try allocator.dupe(u8, cwd_val);
+                cwd = try allocator.dupe(u8, cwd_val);
             }
         }
-        break :blk null;
-    };
+    }
     defer if (cwd) |c| allocator.free(c);
 
     return SessionMessageResponse{

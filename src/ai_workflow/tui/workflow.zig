@@ -92,8 +92,8 @@ pub fn filterAndMergeTools(
     allowed_tools: []const u8,
     is_sub_agent: bool,
 ) ![]tool_models.AgentTool {
-    var base_tools: []tool_models.AgentTool = allocator.alloc(tool_models.AgentTool, tool_registry.ALL_AGENT_TOOLS.len) catch return error.OutOfMemory;
-    @memcpy(base_tools, tool_registry.ALL_AGENT_TOOLS);
+    var base_tools = try allocator.alloc(tool_models.AgentTool, tool_registry.allAgentTools(allocator).len);
+    @memcpy(base_tools, tool_registry.allAgentTools(allocator));
 
     // Filter base tools if allowed_tools is specified
     if (allowed_tools.len > 0 and !std.mem.eql(u8, allowed_tools, "all")) {
@@ -441,7 +441,7 @@ pub const TUIWorkflow = struct {
             self.logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len }) catch {};
             if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(self.config.model))) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
-                if (try self.callCompactAgent(messagesLists.items, allocator, self.config.api_key, self.config.model, self.config.base_url)) |compacted_xml| {
+                if (try self.callCompactAgent(messagesLists.items, allocator, self.config.api_key, self.config.model, self.config.base_url, params.cwd)) |compacted_xml| {
                     try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, self.config.model, params.cwd);
                 }
             }
@@ -649,17 +649,37 @@ pub const TUIWorkflow = struct {
         api_key: []const u8,
         model: []const u8,
         base_url: []const u8,
+        cwd: []const u8,
     ) !?[]const u8 {
         // Serialize messages as-is for CompactionAgent to reason over
         var history_buf: std.ArrayList(u8) = .empty;
         defer history_buf.deinit(arena);
         var w = history_buf.writer(arena);
 
+        try w.print("Working directory: {s}\n", .{cwd});
         try w.print("Current context size: {} messages\n\n", .{messages.len});
+
+        // Include system prompt so CompactionAgent knows what tools/constraints exist
+        if (messages.len > 0) {
+            if (messages[0].content) |system_content| {
+                try w.writeAll("=== SYSTEM PROMPT (for context) ===\n");
+                // Truncate system prompt to avoid token explosion
+                const max_len = 8000;
+                if (system_content.len > max_len) {
+                    try w.writeAll("System prompt (truncated): ");
+                    try w.writeAll(system_content[0..max_len]);
+                    try w.writeAll("\n... [truncated]\n");
+                } else {
+                    try w.writeAll(system_content);
+                }
+                try w.writeAll("\n=== END SYSTEM PROMPT ===\n\n");
+            }
+        }
+
         try w.writeAll("Conversation history to compact:\n\n");
 
         for (messages, 0..) |msg, i| {
-            if (i == 0) continue; // Skip system prompt
+            if (i == 0) continue; // System prompt already included above
 
             if (msg.role == .tool) {
                 try w.print("--- Message {} (tool_result id:{s}) ---\n", .{ i, msg.tool_call_id orelse "unknown" });
@@ -685,6 +705,10 @@ pub const TUIWorkflow = struct {
 
             try w.writeAll("\n");
         }
+
+        // Add file listing to give CompactionAgent project awareness
+        try w.writeAll("\n=== PROJECT FILE LISTING ===\n");
+        try self.addFileListing(w, cwd, arena);
 
         const compaction_messages = try arena.alloc(agent.AgentMessage, 2);
         compaction_messages[0] = .{ .role = .system, .content = prompt.CompactionAgent };
@@ -860,5 +884,42 @@ pub const TUIWorkflow = struct {
         messages.* = new_messages;
 
         self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len }) catch {};
+    }
+
+    /// Add a file listing to the writer for project context
+    fn addFileListing(self: *TUIWorkflow, w: anytype, cwd: []const u8, arena: std.mem.Allocator) !void {
+        inline for (.{ ".zig", ".c", ".h", ".cpp", ".js", ".ts", ".json", ".md", ".txt", ".toml", ".yaml", ".yml" }) |ext| {
+            try self.findFilesWithExtension(w, cwd, ext, arena, 0, 3);
+        }
+    }
+
+    /// Recursively find files with specific extension
+    fn findFilesWithExtension(self: *TUIWorkflow, w: anytype, dir_path: []const u8, ext: []const u8, arena: std.mem.Allocator, depth: usize, max_depth: usize) !void {
+        if (depth > max_depth) return;
+
+        var dir = std.fs.cwd().openDir(dir_path, .{}) catch return;
+        defer dir.close();
+
+        var iterator = dir.iterate();
+        while (iterator.next() catch null) |entry| {
+            if (std.mem.eql(u8, entry.name, ".git")) continue;
+            if (std.mem.eql(u8, entry.name, "node_modules")) continue;
+            if (std.mem.eql(u8, entry.name, "zig-cache")) continue;
+            if (std.mem.eql(u8, entry.name, "zig-out")) continue;
+            if (std.mem.eql(u8, entry.name, ".cache")) continue;
+            if (entry.name[0] == '.') continue;
+
+            if (entry.kind == .directory) {
+                const subdir = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name });
+                defer arena.free(subdir);
+                try self.findFilesWithExtension(w, subdir, ext, arena, depth + 1, max_depth);
+            } else if (entry.kind == .file) {
+                if (std.mem.endsWith(u8, entry.name, ext)) {
+                    const rel_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name });
+                    defer arena.free(rel_path);
+                    try w.print("  {s}\n", .{rel_path});
+                }
+            }
+        }
     }
 };
