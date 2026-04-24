@@ -59,13 +59,10 @@ pub const WorkflowArgs = struct {
     allocator: std.mem.Allocator,
     sqlite_db: *sqlite.SqliteBackend,
     logger: *logger.Logger,
+    llm_config: *const config.LlmConfig,
     session_id: []u8,
     message: []u8,
     cwd: []u8,
-    api_key: []const u8,
-    model: []const u8,
-    base_url: []const u8,
-    llm_config: *const config.LlmConfig,
     body: []const u8 = "",
     allowed_tools: []const u8 = "", // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
 };

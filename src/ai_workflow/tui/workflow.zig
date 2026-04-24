@@ -146,10 +146,6 @@ pub const RunParams = struct {
     session_id: []const u8,
     message: []const u8,
     cwd: []const u8,
-    api_key: []const u8,
-    model: []const u8,
-    base_url: []const u8,
-    config: *const config_mod.LlmConfig,
     body: []const u8,
     allowed_tools: []const u8,
     is_sub_agent: bool = false,
@@ -158,11 +154,13 @@ pub const RunParams = struct {
 pub const TUIWorkflow = struct {
     // allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
+    config: *const config_mod.LlmConfig,
     logger: *logger_mod.Logger,
 
-    pub fn init(db: *sqlite.SqliteBackend, logger: *logger_mod.Logger) TUIWorkflow {
+    pub fn init(db: *sqlite.SqliteBackend, config: *const config_mod.LlmConfig, logger: *logger_mod.Logger) TUIWorkflow {
         return .{
             .db = db,
+            .config = config,
             .logger = logger,
         };
     }
@@ -212,7 +210,7 @@ pub const TUIWorkflow = struct {
         }
 
         // Fetch MCP tools
-        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, params.config) catch |err| blk: {
+        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.config.mcpServers orelse .null) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
             break :blk null;
         }) orelse &[_]tool_models.AgentTool{};
@@ -240,9 +238,9 @@ pub const TUIWorkflow = struct {
             agent_temperature,
             8000,
             isThinking,
-            params.api_key,
-            params.model,
-            params.base_url,
+            self.config.api_key,
+            self.config.model,
+            self.config.base_url,
             params.session_id,
             merged_tools,
         ) catch |err| {
@@ -253,7 +251,7 @@ pub const TUIWorkflow = struct {
         // Save assistant response to database
         _ = try llm_history.saveMessage(allocator, self.db, .{
             .session_id = params.session_id,
-            .model = params.model,
+            .model = self.config.model,
             .cwd = params.cwd,
             .content = res.content,
             .reasoning_content = res.reasoning_content,
@@ -275,7 +273,7 @@ pub const TUIWorkflow = struct {
         // Send SSE event with the response
         _ = try on_event_send_new(allocator, .{
             .session_id = params.session_id,
-            .model = params.model,
+            .model = self.config.model,
             .cwd = params.cwd,
             .content = res.content,
             .reasoning_content = res.reasoning_content,
@@ -346,7 +344,7 @@ pub const TUIWorkflow = struct {
         var loopCounter: u32 = 0;
 
         // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, params.config) catch |err| blk: {
+        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.config.mcpServers orelse .null) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
             break :blk null;
         }) orelse &[_]tool_models.AgentTool{};
@@ -378,7 +376,7 @@ pub const TUIWorkflow = struct {
                     for (messages.items) |msg| {
                         _ = try llm_history.saveMessage(allocator, self.db, .{
                             .session_id = params.session_id,
-                            .model = params.model,
+                            .model = self.config.model,
                             .cwd = params.cwd,
                             .content = msg,
                             .reasoning_content = null,
@@ -441,14 +439,14 @@ pub const TUIWorkflow = struct {
             try messagesLists.appendSlice(allocator, initialMessages);
 
             self.logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len }) catch {};
-            if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(params.model))) {
+            if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(self.config.model))) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
-                if (try self.callCompactAgent(messagesLists.items, allocator, params.api_key, params.model, params.base_url)) |compacted_xml| {
-                    try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, params.model, params.cwd);
+                if (try self.callCompactAgent(messagesLists.items, allocator, self.config.api_key, self.config.model, self.config.base_url)) |compacted_xml| {
+                    try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, self.config.model, params.cwd);
                 }
             }
 
-            const res_dynamic_agent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, params.api_key, params.model, params.base_url, params.session_id, merged_tools) catch |err| {
+            const res_dynamic_agent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, self.config.api_key, self.config.model, self.config.base_url, params.session_id, merged_tools) catch |err| {
                 if (err == error.Cancelled) {
                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{params.session_id}) catch {};
                     break;
@@ -464,7 +462,7 @@ pub const TUIWorkflow = struct {
                 if (finish_reason == .stop) {
                     _ = try llm_history.saveMessage(allocator, self.db, .{
                         .session_id = params.session_id,
-                        .model = params.model,
+                        .model = self.config.model,
                         .cwd = params.cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
@@ -487,7 +485,7 @@ pub const TUIWorkflow = struct {
                     // Don't use getLatestMessage as it might return wrong message if timestamps collide
                     _ = try on_event_send_new(allocator, .{
                         .session_id = params.session_id,
-                        .model = params.model,
+                        .model = self.config.model,
                         .cwd = params.cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
@@ -514,7 +512,7 @@ pub const TUIWorkflow = struct {
                     // Generate session name from first user message if this is the first response
                     if (session_info) |session| {
                         if (loopCounter == 1 and std.mem.eql(u8, session.name, "New Session")) {
-                            self.generateSessionName(db_messages, allocator, params.api_key, params.model, params.base_url, params.session_id);
+                            self.generateSessionName(db_messages, allocator, self.config.api_key, self.config.model, self.config.base_url, params.session_id);
                         }
                     }
 
@@ -524,15 +522,15 @@ pub const TUIWorkflow = struct {
                     _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool(allocator, self.db, self.logger, params.session_id, params.parent_session_id, params.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, params.api_key, params.base_url, params.config, merged_tools, &messagesLists);
+                    try handle_tool(allocator, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, merged_tools, &messagesLists);
                 } else if (finish_reason == .assistant) {
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        try handle_tool(allocator, self.db, self.logger, params.session_id, params.parent_session_id, params.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, params.api_key, params.base_url, params.config, merged_tools, &messagesLists);
+                        try handle_tool(allocator, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, merged_tools, &messagesLists);
                     } else {
                         // Treat as normal completion
                         _ = try llm_history.saveMessage(allocator, self.db, .{
                             .session_id = params.session_id,
-                            .model = params.model,
+                            .model = self.config.model,
                             .cwd = params.cwd,
                             .content = res_dynamic_agent.content,
                             .reasoning_content = res_dynamic_agent.reasoning_content,
@@ -555,7 +553,7 @@ pub const TUIWorkflow = struct {
                         // Don't use getLatestMessage as it might return wrong message if timestamps collide
                         _ = try on_event_send_new(allocator, .{
                             .session_id = params.session_id,
-                            .model = params.model,
+                            .model = self.config.model,
                             .cwd = params.cwd,
                             .content = res_dynamic_agent.content,
                             .reasoning_content = res_dynamic_agent.reasoning_content,
@@ -580,7 +578,7 @@ pub const TUIWorkflow = struct {
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
                     on_event_send_new(allocator, .{
                         .session_id = params.session_id,
-                        .model = params.model,
+                        .model = self.config.model,
                         .cwd = params.cwd,
                         .content = null,
                         .reasoning_content = null,

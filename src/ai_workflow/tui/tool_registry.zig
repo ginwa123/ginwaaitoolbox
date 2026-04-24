@@ -689,10 +689,7 @@ const SubAgentThreadArgs = struct {
     agent_name: []const u8,
     instruction: []const u8,
     tools: ?[]const []const u8,
-    api_key: []const u8,
-    model: []const u8,
-    base_url: []const u8,
-    config: *const config_mod.LlmConfig,
+    llm_config: *const config_mod.LlmConfig,
     cwd: []const u8,
     is_sub_agent: bool,
     thread_idx: usize,
@@ -769,10 +766,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .agent_name = sub_agent.name,
             .instruction = sub_agent.instruction,
             .tools = sub_agent.tools,
-            .api_key = ctx.api_key,
-            .model = ctx.model,
-            .base_url = ctx.base_url,
-            .config = ctx.config,
+            .llm_config = ctx.config,
             .cwd = ctx.cwd,
             .is_sub_agent = true,
             .thread_idx = idx,
@@ -808,7 +802,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 defer llm_history.removeWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch {};
 
                 args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name }) catch {};
-                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.sqlite_db, args_ptr.logger);
+                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger);
                 // Derive is_sub_agent from session_id - no need to pass it explicitly
                 const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
                 args_ptr.logger.debugFmt("Calling workflow.runAgenticSimpleStep for '{s}'", .{ args_ptr.agent_name }) catch {};
@@ -818,10 +812,6 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                     .session_id = sess_id,
                     .message = args_ptr.instruction,
                     .cwd = args_ptr.cwd,
-                    .api_key = args_ptr.api_key,
-                    .model = args_ptr.model,
-                    .base_url = args_ptr.base_url,
-                    .config = args_ptr.config,
                     .body = "",
                     .allowed_tools = if (args_ptr.tools) |tools| blk: {
                         var tools_str = std.ArrayList(u8).empty;

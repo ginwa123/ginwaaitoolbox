@@ -13,13 +13,10 @@ pub const WorkflowArgs = struct {
     allocator: std.mem.Allocator,
     sqlite_db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
+    llm_config: *const nalar_mod.config.LlmConfig,
     session_id: []u8,
     message: []u8,
     cwd: []u8,
-    api_key: []const u8,
-    model: []const u8,
-    base_url: []const u8,
-    llm_config: *const nalar_mod.config.LlmConfig,
     is_sub_agent: bool,
 };
 
@@ -73,13 +70,10 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                 .allocator = allocator,
                 .sqlite_db = sqlite_db,
                 .logger = ctxTui.logger,
+                .llm_config = ctxTui.llm_config,
                 .session_id = try allocator.dupe(u8, worker.session_id),
                 .message = try allocator.dupe(u8, ""),
                 .cwd = try allocator.dupe(u8, worker.working_directory),
-                .api_key = ctxTui.llm_config.api_key,
-                .model = ctxTui.llm_config.model,
-                .base_url = ctxTui.llm_config.base_url,
-                .llm_config = ctxTui.llm_config,
                 .is_sub_agent = worker.isSubAgent(),
             };
 
@@ -98,17 +92,13 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                     }
                     var arena = std.heap.ArenaAllocator.init(args.allocator);
                     defer arena.deinit();
-                    var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.logger);
+                    var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.llm_config, args.logger);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = arena.allocator(),
                         .parent_session_id = args.session_id,
                         .session_id = args.session_id,
                         .message = args.message,
                         .cwd = args.cwd,
-                        .api_key = args.api_key,
-                        .model = args.model,
-                        .base_url = args.base_url,
-                        .config = args.llm_config,
                         .body = "",
                         .allowed_tools = "",
                         .is_sub_agent = args.is_sub_agent,

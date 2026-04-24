@@ -70,13 +70,10 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
                 .allocator = server.allocator,
                 .sqlite_db = sqlite_db,
                 .logger = ctxTui.logger,
+                .llm_config = ctxTui.llm_config,
                 .session_id = try server.allocator.dupe(u8, session_id.string),
                 .message = try server.allocator.dupe(u8, message.string),
                 .cwd = try server.allocator.dupe(u8, cwd_session),
-                .api_key = ctxTui.llm_config.api_key,
-                .model = ctxTui.llm_config.model,
-                .base_url = ctxTui.llm_config.base_url,
-                .llm_config = ctxTui.llm_config,
             };
 
             const thread = try std.Thread.spawn(.{}, struct {
@@ -89,17 +86,13 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
                     }
                     var arena = std.heap.ArenaAllocator.init(args.allocator);
                     defer arena.deinit();
-                    var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.logger);
+                    var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.llm_config, args.logger);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = arena.allocator(),
                         .parent_session_id = args.session_id,
                         .session_id = args.session_id,
                         .message = args.message,
                         .cwd = args.cwd,
-                        .api_key = args.api_key,
-                        .model = args.model,
-                        .base_url = args.base_url,
-                        .config = args.llm_config,
                         .body = "",
                         .allowed_tools = "",
                     }) catch |err| {

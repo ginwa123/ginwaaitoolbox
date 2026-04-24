@@ -40,6 +40,25 @@ if (server.ctx) |ctx| {
 | `runAgenticSimpleStep` | Single LLM call, no tool execution — answers questions only |
 | `runAgenticMultiStep` | Loop with tool execution — full agentic behavior |
 
+**Initialization:**
+```zig
+var workflow = TUIWorkflow.init(db, llm_config, logger);
+```
+
+**RunParams (simplified):**
+```zig
+pub const RunParams = struct {
+    parent_allocator: std.mem.Allocator,
+    parent_session_id: []const u8,
+    session_id: []const u8,
+    message: []const u8,
+    cwd: []const u8,
+    body: []const u8,
+    allowed_tools: []const u8,
+    is_sub_agent: bool = false,
+};
+```
+
 All HTTP handlers use `runAgenticMultiStep`. Sub-agents use `runAgenticSimpleStep`.
 
 ## ZigZag TUI Framework
