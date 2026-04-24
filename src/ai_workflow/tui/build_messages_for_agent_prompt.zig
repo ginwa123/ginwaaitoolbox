@@ -219,7 +219,7 @@ const ListToolsResult = struct {
 };
 
 /// Fetch MCP tools from all configured servers
-pub fn build_mcp_tools_run(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) !?[]tool_models.AgentTool {
+pub fn buildMCPToolsRun(allocator: std.mem.Allocator, config: *const config_mod.LlmConfig) !?[]tool_models.AgentTool {
     // Check if mcpServers is configured
     if (config.mcpServers == null) {
         return null;

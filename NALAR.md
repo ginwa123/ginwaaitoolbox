@@ -31,6 +31,17 @@ if (server.ctx) |ctx| {
 }
 ```
 
+## Workflow Methods
+
+**TUIWorkflow** (`src/ai_workflow/tui/workflow.zig`) has two workflow modes:
+
+| Method | Behavior |
+|--------|----------|
+| `runAgenticSimpleStep` | Single LLM call, no tool execution — answers questions only |
+| `runAgenticMultiStep` | Loop with tool execution — full agentic behavior |
+
+All HTTP handlers use `runAgenticMultiStep`. Sub-agents use `runAgenticSimpleStep`.
+
 ## ZigZag TUI Framework
 
 The new TUI (`nalar-new-tui`) is built using the **ZigZag** framework (https://github.com/meszmate/zigzag):

@@ -152,7 +152,6 @@ pub const RunParams = struct {
     config: *const config_mod.LlmConfig,
     body: []const u8,
     allowed_tools: []const u8,
-    /// If true, this is a sub-agent and spawn_sub_agent will be stripped from tools
     is_sub_agent: bool = false,
 };
 
@@ -168,7 +167,135 @@ pub const TUIWorkflow = struct {
         };
     }
 
-    pub fn run(self: *TUIWorkflow, params: RunParams) !void {
+    pub fn runAgenticSimpleStep(self: *TUIWorkflow, params: RunParams) !void {
+        // Single-step mode: only answer the question, no tool execution
+        // Register this session for activity/cancellation tracking
+        if (session_registry.get_global_registry()) |registry| {
+            if (registry.isRegistered(params.session_id) == false) {
+                try registry.register(params.session_id);
+            }
+        }
+
+        // Also register in worker table for enrichment info
+        llm_history.upsertWorker(params.parent_allocator, self.db, params.session_id, params.session_id, params.cwd) catch {
+            self.logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id}) catch {};
+        };
+
+        // Cleanup on exit - unregister session
+        defer {
+            if (session_registry.get_global_registry()) |registry| {
+                registry.markIdle(params.session_id);
+                registry.markStopped(params.session_id);
+                registry.unregister(params.session_id);
+            }
+            // Also remove from worker table
+            llm_history.removeWorker(params.parent_allocator, self.db, params.session_id) catch {};
+        }
+
+        // Get current agent state
+        const agent_state = try get_current_agent_by_session_id(
+            params.parent_allocator,
+            self.db,
+            params.session_id,
+        );
+        const current_agent = agent_state.agent;
+        const agent_temperature = agent_state.temperature;
+        const isThinking = agent_state.is_thinking;
+
+        var arenaAllocator = std.heap.ArenaAllocator.init(params.parent_allocator);
+        defer arenaAllocator.deinit();
+        const allocator = arenaAllocator.allocator();
+
+        // Mark session as running
+        if (session_registry.get_global_registry()) |registry| {
+            registry.mark_running(params.session_id);
+        }
+
+        // Fetch MCP tools
+        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, params.config) catch |err| blk: {
+            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
+            break :blk null;
+        }) orelse &[_]tool_models.AgentTool{};
+
+        // Filter and merge tools
+        const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools, params.is_sub_agent);
+
+        // Get messages from database
+        const db_messages = try getMessages(allocator, self.db, params.session_id);
+        defer {
+            for (db_messages) |*msg| msg.deinit(allocator);
+            allocator.free(db_messages);
+        }
+
+        // Build messages for LLM
+        var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
+        defer messagesLists.deinit(allocator);
+        const initialMessages = try buildMessages(allocator, self.db, params.cwd, params.session_id, db_messages, merged_tools);
+        try messagesLists.appendSlice(allocator, initialMessages);
+
+        // Call the dynamic agent (single call only)
+        const res = self.callDynamicAgent(
+            allocator,
+            &messagesLists,
+            agent_temperature,
+            8000,
+            isThinking,
+            params.api_key,
+            params.model,
+            params.base_url,
+            params.session_id,
+            merged_tools,
+        ) catch |err| {
+            self.logger.errFmt("runAgenticSimpleStep: Error calling dynamic agent: {s}", .{@errorName(err)}) catch {};
+            return err;
+        };
+
+        // Save assistant response to database
+        _ = try llm_history.saveMessage(allocator, self.db, .{
+            .session_id = params.session_id,
+            .model = params.model,
+            .cwd = params.cwd,
+            .content = res.content,
+            .reasoning_content = res.reasoning_content,
+            .role = agent.Role.assistant.to_str(),
+            .finish_reason = if (res.finish_reason) |fr| fr.to_str() else null,
+            .tool_calls = null,
+            .tool_call_id = null,
+            .agent_name = current_agent,
+            .loop_index = 0,
+            .temperature = agent_temperature,
+            .is_thinking = isThinking,
+            .prompt_tokens = res.usage.prompt_tokens,
+            .completion_tokens = res.usage.completion_tokens,
+            .total_tokens = res.usage.total_tokens,
+            .parent_id = params.parent_session_id,
+            .parent_session_id = params.parent_session_id,
+        });
+
+        // Send SSE event with the response
+        _ = try on_event_send_new(allocator, .{
+            .session_id = params.session_id,
+            .model = params.model,
+            .cwd = params.cwd,
+            .content = res.content,
+            .reasoning_content = res.reasoning_content,
+            .role = "assistant",
+            .finish_reason = if (res.finish_reason) |fr| fr.to_str() else "stop",
+            .tool_calls = null,
+            .tool_call_id = null,
+            .tool_name = null,
+            .agent_name = current_agent,
+            .loop_index = 0,
+            .temperature = agent_temperature,
+            .is_thinking = isThinking,
+            .is_input = false,
+            .is_output = true,
+            .parent_session_id = params.parent_session_id,
+            .parent_id = params.parent_session_id,
+        });
+    }
+
+    pub fn runAgenticMultiStep(self: *TUIWorkflow, params: RunParams) !void {
         var is_have_queue_message = false;
         // Register this session for activity/cancellation tracking
         if (session_registry.get_global_registry()) |registry| {
@@ -219,7 +346,7 @@ pub const TUIWorkflow = struct {
         var loopCounter: u32 = 0;
 
         // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-        const mcp_tools_fetched = (buildMcpTools.build_mcp_tools_run(params.parent_allocator, params.config) catch |err| blk: {
+        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, params.config) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
             break :blk null;
         }) orelse &[_]tool_models.AgentTool{};

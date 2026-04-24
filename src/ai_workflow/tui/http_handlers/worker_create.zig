@@ -129,7 +129,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                         var arena = std.heap.ArenaAllocator.init(args.allocator);
                         defer arena.deinit();
                         var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.logger);
-                        workflow.run(.{
+                        workflow.runAgenticMultiStep(.{
                             .parent_allocator = arena.allocator(),
                             .parent_session_id = args.session_id,
                             .session_id = args.session_id,
@@ -142,7 +142,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                             .body = "",
                             .allowed_tools = "",
                         }) catch |err| {
-                            args.logger.errFmt("workflow.run failed: {s}", .{@errorName(err)}) catch {};
+                            args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)}) catch {};
                         };
                     }
                 }.run, .{workflow_args});

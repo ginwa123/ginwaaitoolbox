@@ -811,8 +811,8 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 var workflow = ai_workflow.TUIWorkflow.init(args_ptr.sqlite_db, args_ptr.logger);
                 // Derive is_sub_agent from session_id - no need to pass it explicitly
                 const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
-                args_ptr.logger.debugFmt("Calling workflow.run for '{s}'", .{ args_ptr.agent_name }) catch {};
-                workflow.run(.{
+                args_ptr.logger.debugFmt("Calling workflow.runAgenticSimpleStep for '{s}'", .{ args_ptr.agent_name }) catch {};
+                workflow.runAgenticSimpleStep(.{
                     .parent_allocator = sub_agent_allocator,
                     .parent_session_id = args_ptr.parent_sess_id,
                     .session_id = sess_id,
@@ -833,10 +833,10 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                     } else "",
                     .is_sub_agent = is_sub_agent,
                 }) catch |err| {
-                    args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {}", .{ args_ptr.agent_name, err }) catch {};
+                    args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) }) catch {};
                 };
 
-                args_ptr.logger.debugFmt("workflow.run completed for '{s}', fetching message", .{ args_ptr.agent_name }) catch {};
+                args_ptr.logger.debugFmt("workflow.runAgenticSimpleStep completed for '{s}', fetching message", .{ args_ptr.agent_name }) catch {};
                 // Get the agent's response from the database
                 // Use c_allocator to avoid arena aliasing issues
                 const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
