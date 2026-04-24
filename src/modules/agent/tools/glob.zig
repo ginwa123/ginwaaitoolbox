@@ -336,21 +336,21 @@ fn walkDir(
             // We need to recurse into directories that could match the pattern prefix
             for (regular_patterns.items) |pat| {
                 var pat_idx: usize = 0;
-                
+
                 // Check if pattern starts with a literal directory name followed by /
                 while (pat_idx < pat.len) {
                     const remaining_pat = pat[pat_idx..];
-                    
+
                     // Check if this is a directory name prefix we need to match
                     const slash_idx = std.mem.indexOfScalar(u8, remaining_pat, '/') orelse remaining_pat.len;
                     const dir_part = remaining_pat[0..slash_idx];
-                    
+
                     // Check if the current directory entry name matches this prefix
                     if (globMatch(dir_part, name, opts.nocase)) {
                         // Check if there's more pattern after the directory
                         if (slash_idx < pat.len) {
                             const remaining_pattern = pat[pat_idx + slash_idx + 1 ..];
-                            
+
                             // Check if remaining pattern starts with ** (recursive)
                             if (remaining_pattern.len >= 2 and remaining_pattern[0] == '*' and remaining_pattern[1] == '*') {
                                 // This is a recursive pattern - recurse into this directory
@@ -360,7 +360,7 @@ fn walkDir(
                                     inner_start += 1;
                                 }
                                 const inner_pattern = if (inner_start < remaining_pattern.len) remaining_pattern[inner_start..] else "*";
-                                
+
                                 // Recurse with the inner pattern
                                 var new_patterns = std.ArrayListUnmanaged([]const u8){};
                                 new_patterns.append(allocator, inner_pattern) catch break;
@@ -389,7 +389,7 @@ fn walkDir(
                     }
                 }
             }
-            
+
             // Also do normal recursive descent
             walkDir(allocator, full_path, patterns, opts, results, depth + 1);
         }
@@ -414,7 +414,7 @@ pub const GlobOptions = struct {
 // Main Glob Execution
 // ============================================================================
 
-pub fn execute_glob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
+pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
     // Expand brace patterns
     const expanded = try expandBraces(input.pattern, allocator);
     defer {
@@ -474,7 +474,7 @@ pub fn execute_glob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult 
 // Output Formatting
 // ============================================================================
 
-pub fn glob_result_to_string(allocator: std.mem.Allocator, result: GlobResult) ![]const u8 {
+pub fn toXmlSuccess(allocator: std.mem.Allocator, result: GlobResult) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 

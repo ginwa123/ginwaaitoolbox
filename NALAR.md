@@ -301,12 +301,18 @@ const is_sub_agent = std.mem.indexOf(u8, session_id, "subagent") != null;
 
 ## Database Schema Notes
 
-**Latest Migration:** `Migration021RemoveSessionNameFromLlmHistory` — moved to `ai_workflow/tui/migration.zig`
+**Latest Migration:** `Migration023DropSessionDirFromLlmHistory` — dropped `session_dir` column from `llm_history`, uses `cwd` from `sessions` table
 
 | Table | Key Column | Purpose |
 |-------|------------|---------|
-| `sessions` | `id` (PK), `name` | Session metadata |
+| `sessions` | `id` (PK), `name`, `cwd` | Session metadata (cwd = working directory) |
 | `llm_history` | `session_id` (FK) | References `sessions.id` |
+
+**Schema Change (Migration023):**
+- Removed `session_dir` column from `llm_history`
+- `cwd` is now stored in `sessions.cwd` column
+- `saveMessage()` updates `sessions.cwd` when saving messages
+- All queries that read `session_dir` now JOIN with `sessions` table to get `cwd`
 
 ## Session Name Generation
 

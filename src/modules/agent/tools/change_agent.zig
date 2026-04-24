@@ -243,6 +243,30 @@ pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, input: Chang
     return error.InvalidInput;
 }
 
+/// Generate error XML response
+pub fn xmlError(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<agent>
+        \\  <agent_name></agent_name>
+        \\  <content></content>
+        \\  <loaded>false</loaded>
+        \\  <error>{s}</error>
+        \\</agent>
+    , .{error_msg}) catch "<agent><error>UnknownError</error></agent>";
+}
+
+/// Generate error XML response (comptime, no allocation)
+pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<agent>
+        \\  <agent_name></agent_name>
+        \\  <content></content>
+        \\  <loaded>false</loaded>
+        \\  <error>{s}</error>
+        \\</agent>
+    , .{error_msg}) catch "<agent><error>UnknownError</error></agent>";
+}
+
 /// Load agent from absolute file path
 fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const file = std.fs.openFileAbsolute(path, .{}) catch {

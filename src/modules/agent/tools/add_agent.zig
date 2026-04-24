@@ -60,7 +60,7 @@ pub fn executeAddAgentToString(allocator: std.mem.Allocator, input: AddAgentInpu
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = std.posix.getcwd(&cwd_buf) catch {
-        return try errorToXml(allocator, input.name, "Failed to get current working directory");
+        return errorToXml(allocator, input.name, "Failed to get current working directory");
     };
 
     // Build paths
@@ -76,7 +76,7 @@ pub fn executeAddAgentToString(allocator: std.mem.Allocator, input: AddAgentInpu
     // Create directories if needed
     if (input.create_with_dir) {
         std.fs.cwd().makePath(agent_dir) catch {
-            return try errorToXml(allocator, input.name, "Failed to create agent directory");
+            return errorToXml(allocator, input.name, "Failed to create agent directory");
         };
     }
 
@@ -86,12 +86,12 @@ pub fn executeAddAgentToString(allocator: std.mem.Allocator, input: AddAgentInpu
 
     // Write the file
     const file = std.fs.createFileAbsolute(agent_file, .{}) catch {
-        return try errorToXml(allocator, input.name, "Failed to create agent file");
+        return errorToXml(allocator, input.name, "Failed to create agent file");
     };
     defer file.close();
 
     file.writeAll(file_content) catch {
-        return try errorToXml(allocator, input.name, "Failed to write agent file");
+        return errorToXml(allocator, input.name, "Failed to write agent file");
     };
 
     // Return success XML
@@ -166,13 +166,29 @@ fn successToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8
     , .{ name, path });
 }
 
-/// Generate error XML response
-fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) ![]const u8 {
-    return try std.fmt.allocPrint(allocator,
+/// Internal error-to-XML helper (doesn't return error)
+fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
         \\<agent>
         \\<name>{s}</name>
         \\<created>false</created>
         \\<error>{s}</error>
         \\</agent>
-    , .{ name, error_msg });
+    , .{ name, error_msg }) catch "<agent><name></name><created>false</created><error>UnknownError</error></agent>";
+}
+
+/// Generate error XML response
+pub fn xmlError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
+    return errorToXml(allocator, name, error_msg);
+}
+
+/// Generate error XML response for parse failures (no name available)
+pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<agent>
+        \\<name></name>
+        \\<created>false</created>
+        \\<error>{s}</error>
+        \\</agent>
+    , .{error_msg}) catch "<agent><name></name><created>false</created><error>UnknownError</error></agent>";
 }

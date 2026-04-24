@@ -8,7 +8,7 @@ const httpz = http_server.httpz;
 const llm_history = nalarcore.llm_history;
 
 /// List all sessions - returns sessions from database with cursor pagination
-/// Optionally filtered by session_dir query parameter
+/// Optionally filtered by cwd query parameter
 pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
@@ -16,7 +16,7 @@ pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *http
     const query = try req.query();
     const limit_str = query.get("limit") orelse "50";
     const cursor = query.get("cursor");
-    const session_dir = query.get("session_dir"); // Optional filter by directory
+    const cwd = query.get("cwd"); // Optional filter by cwd from sessions table
     const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 50;
 
     if (http_server.global_server) |server| {
@@ -24,8 +24,8 @@ pub fn session_list_handler(_: *http_server.HttpServer.ServerHandler, req: *http
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            // Use unified getSessionListWithCursor with session_dir support
-            const result = llm_history.getSessionListWithCursor(alloc, sqlite_db, null, null, session_dir, limit_val, cursor) catch {
+            // Use unified getSessionListWithCursor with cwd support
+            const result = llm_history.getSessionListWithCursor(alloc, sqlite_db, null, null, cwd, limit_val, cursor) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Database query failed\"}";
                 return;

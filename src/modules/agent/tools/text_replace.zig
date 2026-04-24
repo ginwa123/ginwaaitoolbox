@@ -141,7 +141,7 @@ fn lfToCrlf(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
 }
 
 /// Text replace - applies a single replacement in a file
-pub fn text_replace(
+pub fn executeTextReplace(
     allocator: std.mem.Allocator,
     path: []const u8,
     old_str: []const u8,
@@ -236,6 +236,17 @@ pub fn text_replace(
     content.deinit(allocator);
 
     return TextReplaceResult{ .ok = {} };
+}
+
+/// Create a minimal XML error output (no success field, just error + original args)
+pub fn xmlError(allocator: std.mem.Allocator, err_msg: []const u8, path: []const u8, old_str: []const u8, new_str: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<error>{s}</error>
+        \\<path>{s}</path>
+        \\<old_str>{s}</old_str>
+        \\<new_str>{s}</new_str>
+        \\<success>false</success>
+    , .{ err_msg, path, old_str, new_str }) catch "<success>false</success><error>UnknownError</error>";
 }
 
 /// Serialize result to XML string

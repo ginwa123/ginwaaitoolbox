@@ -29,7 +29,7 @@ pub fn session_get_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz
             };
 
             if (session) |s| {
-                const response = try std.fmt.allocPrint(alloc, "{{\"sessionId\":\"{s}\",\"sessionDir\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}", .{ s.session_id, s.session_dir, s.created_at, s.agent, s.session_name });
+                const response = try std.fmt.allocPrint(alloc, "{{\"sessionId\":\"{s}\",\"cwd\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}", .{ s.session_id, s.cwd, s.created_at, s.agent, s.session_name });
                 s.deinit(alloc);
                 res.status = 200;
                 res.body = response;

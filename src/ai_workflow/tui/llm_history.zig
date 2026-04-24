@@ -16,14 +16,14 @@ pub fn mark_message_not_for_llm_run(
 /// Session info for list view
 pub const SessionInfo = struct {
     session_id: []const u8,
-    session_dir: []const u8,
+    cwd: []const u8,
     created_at: []const u8,
     agent: []const u8,
     session_name: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
-        allocator.free(self.session_dir);
+        allocator.free(self.cwd);
         allocator.free(self.created_at);
         allocator.free(self.agent);
         allocator.free(self.session_name);
@@ -33,7 +33,7 @@ pub const SessionInfo = struct {
 /// Detailed session info
 pub const SessionDetail = struct {
     session_id: []const u8,
-    session_dir: []const u8,
+    cwd: []const u8,
     created_at: []const u8,
     agent: []const u8,
     session_name: []const u8,
@@ -42,7 +42,7 @@ pub const SessionDetail = struct {
 
     pub fn deinit(self: *const SessionDetail, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
-        allocator.free(self.session_dir);
+        allocator.free(self.cwd);
         allocator.free(self.created_at);
         allocator.free(self.agent);
         allocator.free(self.session_name);
@@ -62,7 +62,7 @@ pub fn getSessionList(
     _ = status;
     _ = agent_type;
 
-    const sql = "SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE 1=1 GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT ? OFFSET ?";
+    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE 1=1 GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT ? OFFSET ?";
 
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{offset});
@@ -83,7 +83,7 @@ pub fn getSessionList(
     while (try rows.next()) |row| {
         const session = SessionInfo{
             .session_id = try allocator.dupe(u8, row.values[0]),
-            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .cwd = try allocator.dupe(u8, row.values[1]),
             .created_at = try allocator.dupe(u8, row.values[2]),
             .agent = try allocator.dupe(u8, row.values[3]),
             .session_name = try allocator.dupe(u8, row.values[4]),
@@ -110,13 +110,13 @@ pub fn getSessionList(
 }
 
 /// Get a list of sessions with cursor-based pagination
-/// Optionally filtered by session_dir
+/// Optionally filtered by cwd (from sessions table)
 pub fn getSessionListWithCursor(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     status: ?[]const u8,
     agent_type: ?[]const u8,
-    session_dir: ?[]const u8,
+    cwd: ?[]const u8,
     limit: u32,
     cursor: ?[]const u8,
 ) !struct { sessions: []SessionInfo, total: u32 } {
@@ -132,8 +132,8 @@ pub fn getSessionListWithCursor(
 
     try where_parts.append(allocator, "h.session_id NOT LIKE '%subagent%'");
 
-    if (session_dir) |dir| {
-        try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "h.session_dir = '{s}'", .{dir}));
+    if (cwd) |dir| {
+        try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "s.cwd = '{s}'", .{dir}));
     }
 
     if (cursor) |c| {
@@ -144,7 +144,7 @@ pub fn getSessionListWithCursor(
     defer allocator.free(where_clause);
 
     const sql_final = try std.fmt.allocPrint(allocator,
-        \\SELECT h.session_id, COALESCE(h.session_dir, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
+        \\SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE {s}
@@ -164,7 +164,7 @@ pub fn getSessionListWithCursor(
     while (try rows.next()) |row| {
         const session = SessionInfo{
             .session_id = try allocator.dupe(u8, row.values[0]),
-            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .cwd = try allocator.dupe(u8, row.values[1]),
             .created_at = try allocator.dupe(u8, row.values[2]),
             .agent = try allocator.dupe(u8, row.values[3]),
             .session_name = try allocator.dupe(u8, row.values[4]),
@@ -173,10 +173,10 @@ pub fn getSessionListWithCursor(
         row.deinit(allocator);
     }
 
-    // Build count query with session_dir filter
-    const count_sql: []u8 = if (session_dir) |dir|
+    // Build count query with cwd filter
+    const count_sql: []u8 = if (cwd) |dir|
         try std.fmt.allocPrint(allocator,
-            "SELECT COUNT(DISTINCT session_id) FROM llm_history WHERE session_dir = '{s}'",
+            "SELECT COUNT(DISTINCT session_id) FROM llm_history WHERE session_id IN (SELECT session_id FROM sessions WHERE cwd = '{s}')",
             .{dir})
     else
         try allocator.dupe(u8, "SELECT COUNT(DISTINCT session_id) FROM llm_history");
@@ -217,8 +217,8 @@ pub fn buildSessionListJson(
         try json_sessions.appendSlice(allocator, "\"session_id\":");
         try jsonAppendEscaped(allocator, &json_sessions, sess.session_id);
         try json_sessions.append(allocator, ',');
-        try json_sessions.appendSlice(allocator, "\"session_dir\":");
-        try jsonAppendEscaped(allocator, &json_sessions, sess.session_dir);
+        try json_sessions.appendSlice(allocator, "\"cwd\":");
+        try jsonAppendEscaped(allocator, &json_sessions, sess.cwd);
         try json_sessions.append(allocator, ',');
         try json_sessions.appendSlice(allocator, "\"created_at\":");
         try jsonAppendEscaped(allocator, &json_sessions, sess.created_at);
@@ -269,7 +269,7 @@ pub fn get_session(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?SessionDetail {
-    const sql = "SELECT DISTINCT session_id, COALESCE(session_dir, ''), MAX(created_at) as created_at, COALESCE(agent, 'Agent'), COALESCE(session_name, ''), COALESCE(model, 'gpt-4'), COALESCE(temperature, 0.2) FROM llm_history WHERE session_id = ? GROUP BY session_id";
+    const sql = "SELECT DISTINCT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, ''), COALESCE(h.model, 'gpt-4'), COALESCE(h.temperature, 0.2) FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE h.session_id = ? GROUP BY h.session_id";
 
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
@@ -277,7 +277,7 @@ pub fn get_session(
     if (try rows.next()) |row| {
         const session = SessionDetail{
             .session_id = try allocator.dupe(u8, row.values[0]),
-            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .cwd = try allocator.dupe(u8, row.values[1]),
             .created_at = try allocator.dupe(u8, row.values[2]),
             .agent = try allocator.dupe(u8, row.values[3]),
             .session_name = try allocator.dupe(u8, row.values[4]),
@@ -344,6 +344,7 @@ pub const SessionMessageResponse = struct {
     messages: []SessionMessage,
     has_more: bool,
     next_cursor: ?[]const u8,
+    cwd: ?[]const u8 = null,
 };
 
 /// Sort direction
@@ -455,10 +456,25 @@ pub fn get_session_messages_sorted(
     // Return only limit messages if has_more
     const result_messages = if (has_more) messages.items[0..limit] else messages.items;
 
+    // Get cwd from sessions table
+    const cwd = blk: {
+        var cwd_rows = try db.query(allocator, "SELECT COALESCE(cwd, '') FROM sessions WHERE id = ?", &.{session_id});
+        defer cwd_rows.deinit();
+        if (try cwd_rows.next()) |row| {
+            const cwd_val = row.values[0];
+            if (cwd_val.len > 0) {
+                break :blk try allocator.dupe(u8, cwd_val);
+            }
+        }
+        break :blk null;
+    };
+    defer if (cwd) |c| allocator.free(c);
+
     return SessionMessageResponse{
         .messages = result_messages,
         .has_more = has_more,
         .next_cursor = next_cursor,
+        .cwd = cwd,
     };
 }
 
@@ -505,9 +521,16 @@ pub fn buildSessionMessagesJson(
         try std.fmt.allocPrint(allocator, "null", .{});
     defer allocator.free(next_cursor_str);
 
+    // Build cwd field
+    const cwd_str = if (response.cwd) |c|
+        try std.fmt.allocPrint(allocator, "\"{s}\"", .{c})
+    else
+        try std.fmt.allocPrint(allocator, "null", .{});
+    defer allocator.free(cwd_str);
+
     const result = try std.fmt.allocPrint(allocator,
-        "{{\"messages\":{s},\"has_more\":{s},\"next_cursor\":{s}}}",
-        .{json_messages.items, has_more_str, next_cursor_str});
+        "{{\"messages\":{s},\"has_more\":{s},\"next_cursor\":{s},\"cwd\":{s}}}",
+        .{json_messages.items, has_more_str, next_cursor_str, cwd_str});
     json_messages.deinit(allocator);
     return result;
 }
@@ -584,6 +607,11 @@ pub fn buildSessionMessagesXml(
         try xml_messages.appendSlice(allocator, c);
     }
     try xml_messages.appendSlice(allocator, "</next_cursor>");
+    try xml_messages.appendSlice(allocator, "<cwd>");
+    if (response.cwd) |c| {
+        try xml_messages.appendSlice(allocator, c);
+    }
+    try xml_messages.appendSlice(allocator, "</cwd>");
     try xml_messages.appendSlice(allocator, "</messages>");
 
     return try xml_messages.toOwnedSlice(allocator);
@@ -693,7 +721,7 @@ pub fn saveMessage(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     // Use safeDupe to avoid arena aliasing issues
     const copy_session_id = try safeDupe(allocator, input.session_id);
@@ -710,8 +738,6 @@ pub fn saveMessage(
     defer std.heap.c_allocator.free(copy_tool_calls);
     const copy_reasoning = try safeDupe(allocator, reasoningStr);
     defer std.heap.c_allocator.free(copy_reasoning);
-    const copy_cwd = try safeDupe(allocator, input.cwd);
-    defer std.heap.c_allocator.free(copy_cwd);
     const copy_agent = try safeDupe(allocator, agentStr);
     defer std.heap.c_allocator.free(copy_agent);
     const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{input.loop_index});
@@ -732,9 +758,14 @@ pub fn saveMessage(
     const total_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.total_tokens});
     defer allocator.free(total_tokens_str);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_cwd, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name };
 
     try db.exec(allocator, sql, sqlArgs);
+
+    // Update the session's cwd in the sessions table
+    const copy_cwd = try safeDupe(allocator, input.cwd);
+    defer std.heap.c_allocator.free(copy_cwd);
+    try db.exec(allocator, "UPDATE sessions SET cwd = ? WHERE id = ?", &.{ copy_cwd, copy_session_id });
 }
 
 /// Check if a session exists in the database
@@ -905,18 +936,18 @@ pub fn getLatestMessage(
 pub fn get_sessions_by_dir(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    session_dir: []const u8,
+    cwd: []const u8,
 ) ![]SessionInfo {
     var results: std.ArrayList(SessionInfo) = .empty;
 
-    const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created_at) as created_at FROM llm_history WHERE session_dir = ? GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT 10";
-    var rows = try db.query(allocator, sql, &[_][]const u8{session_dir});
+    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE s.cwd = ? GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT 10";
+    var rows = try db.query(allocator, sql, &[_][]const u8{cwd});
     defer rows.deinit();
 
     while (try rows.next()) |row| {
         const session = SessionInfo{
             .session_id = try allocator.dupe(u8, row.values[0]),
-            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .cwd = try allocator.dupe(u8, row.values[1]),
             .created_at = try allocator.dupe(u8, row.values[2]),
             .agent = try allocator.dupe(u8, ""),
             .session_name = try allocator.dupe(u8, ""),
@@ -933,16 +964,16 @@ pub fn get_sessions_by_dir(
 pub fn getLatestSessionByDir(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    session_dir: []const u8,
+    cwd: []const u8,
 ) !?SessionInfo {
-    const sql = "SELECT session_id, COALESCE(session_dir, '') as session_dir, MAX(created_at) as created_at FROM llm_history WHERE session_dir = ? GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT 1";
-    var rows = try db.query(allocator, sql, &[_][]const u8{session_dir});
+    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE s.cwd = ? GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT 1";
+    var rows = try db.query(allocator, sql, &[_][]const u8{cwd});
     defer rows.deinit();
 
     if (try rows.next()) |row| {
         const session = SessionInfo{
             .session_id = try allocator.dupe(u8, row.values[0]),
-            .session_dir = try allocator.dupe(u8, row.values[1]),
+            .cwd = try allocator.dupe(u8, row.values[1]),
             .created_at = try allocator.dupe(u8, row.values[2]),
             .agent = try allocator.dupe(u8, ""),
             .session_name = try allocator.dupe(u8, ""),

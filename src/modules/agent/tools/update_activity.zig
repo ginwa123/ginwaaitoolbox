@@ -30,3 +30,23 @@ pub const update_activity_tool = AgentTool{
         },
     },
 };
+
+/// Generate error XML response
+pub fn xmlError(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<update_activity>
+        \\  <updated>false</updated>
+        \\  <error>{s}</error>
+        \\</update_activity>
+    , .{error_msg}) catch "<update_activity><updated>false</updated><error>UnknownError</error></update_activity>";
+}
+
+/// Generate success XML response
+pub fn xmlSuccess(allocator: std.mem.Allocator, thought: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<update_activity>
+        \\  <updated>true</updated>
+        \\  <thought>{s}</thought>
+        \\</update_activity>
+    , .{thought}) catch "<update_activity><updated>true</updated></update_activity>";
+}

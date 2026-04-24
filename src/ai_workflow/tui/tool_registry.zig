@@ -200,13 +200,13 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // Check for empty arguments first
     if (tc.function.arguments.len == 0) {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<error>text_replace failed: Missing arguments (empty JSON)</error>
-            \\<path></path>
-            \\<old_str></old_str>
-            \\<new_str></new_str>
-            \\<success>false</success>
-        , .{});
+        const output = text_replace_mod.xmlError(
+            ctx.allocator,
+            "text_replace failed: Missing arguments (empty JSON)",
+            "",
+            "",
+            "",
+        );
         return ToolExecResult{ .output = output };
     }
 
@@ -220,18 +220,12 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
             error.UnexpectedEndOfInput => "text_replace failed: UnexpectedEndOfInput - arguments may be incomplete or malformed",
             else => "text_replace failed: Invalid JSON arguments",
         };
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<error>{s}</error>
-            \\<path></path>
-            \\<old_str></old_str>
-            \\<new_str></new_str>
-            \\<success>false</success>
-        , .{err_msg});
+        const output = text_replace_mod.xmlError(ctx.allocator, err_msg, "", "", "");
         return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
-    const result = text_replace_mod.text_replace(
+    const result = text_replace_mod.executeTextReplace(
         ctx.allocator,
         parsed.value.path,
         parsed.value.old_str,
@@ -336,21 +330,13 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<skill_name></skill_name>
-            \\<removed>false</removed>
-            \\<error>Failed to parse remove_skill arguments</error>
-        , .{});
-        return ToolExecResult{ .output = output };
+        const output = remove_skill_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse remove_skill arguments");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
     defer parsed.deinit();
 
     const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, parsed.value) catch {
-        const out = try std.fmt.allocPrint(ctx.allocator,
-            \\<skill_name>{s}</skill_name>
-            \\<removed>false</removed>
-            \\<error>Unknown error</error>
-        , .{parsed.value.skill_name});
+        const out = remove_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Unknown error");
         return ToolExecResult{ .output = out };
     };
     return ToolExecResult{ .output = output };
@@ -363,25 +349,13 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<skill>
-            \\<name></name>
-            \\<created>false</created>
-            \\<error>Failed to parse add_skill arguments</error>
-            \\</skill>
-        , .{});
+        const output = add_skill_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse add_skill arguments");
         return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
     const output = add_skill_mod.executeAddSkillToString(ctx.allocator, parsed.value) catch {
-        const out = try std.fmt.allocPrint(ctx.allocator,
-            \\<skill>
-            \\<name>{s}</name>
-            \\<created>false</created>
-            \\<error>Failed to add skill</error>
-            \\</skill>
-        , .{parsed.value.name});
+        const out = add_skill_mod.xmlError(ctx.allocator, parsed.value.name, "Failed to add skill");
         return ToolExecResult{ .output = out };
     };
     return ToolExecResult{ .output = output };
@@ -394,25 +368,13 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<skill>
-            \\<name></name>
-            \\<edited>false</edited>
-            \\<error>Failed to parse edit_skill arguments</error>
-            \\</skill>
-        , .{});
+        const output = edit_skill_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse edit_skill arguments");
         return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
     const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, parsed.value) catch {
-        const out = try std.fmt.allocPrint(ctx.allocator,
-            \\<skill>
-            \\<name>{s}</name>
-            \\<edited>false</edited>
-            \\<error>Failed to edit skill</error>
-            \\</skill>
-        , .{parsed.value.skill_name});
+        const out = edit_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Failed to edit skill");
         return ToolExecResult{ .output = out };
     };
     return ToolExecResult{ .output = output };
@@ -425,25 +387,13 @@ pub fn execAddAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<agent>
-            \\<name></name>
-            \\<created>false</created>
-            \\<error>Failed to parse add_agent arguments</error>
-            \\</agent>
-        , .{});
+        const output = add_agent_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse add_agent arguments");
         return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
     const output = add_agent_mod.executeAddAgentToString(ctx.allocator, parsed.value) catch {
-        const out = try std.fmt.allocPrint(ctx.allocator,
-            \\<agent>
-            \\<name>{s}</name>
-            \\<created>false</created>
-            \\<error>Failed to add agent</error>
-            \\</agent>
-        , .{parsed.value.name});
+        const out = add_agent_mod.xmlError(ctx.allocator, parsed.value.name, "Failed to add agent");
         return ToolExecResult{ .output = out };
     };
     return ToolExecResult{ .output = output };
@@ -456,24 +406,15 @@ pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<name></name>
-            \\<removed>false</removed>
-            \\<error>Failed to parse remove_agent arguments</error>
-        , .{});
+        const output = remove_agent_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse remove_agent arguments");
         return ToolExecResult{ .output = output };
     };
-    errdefer parsed.deinit();
+    defer parsed.deinit();
 
     const output = remove_agent_mod.execute_remove_agent_to_string(ctx.allocator, parsed.value) catch {
-        const out = try std.fmt.allocPrint(ctx.allocator,
-            \\<name>{s}</name>
-            \\<removed>false</removed>
-            \\<error>Failed to remove agent</error>
-        , .{parsed.value.name});
+        const out = remove_agent_mod.xmlError(ctx.allocator, parsed.value.name, "Failed to remove agent");
         return ToolExecResult{ .output = out };
     };
-    parsed.deinit();
     return ToolExecResult{ .output = output };
 }
 
@@ -484,24 +425,15 @@ pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<path></path>
-            \\<deleted>false</deleted>
-            \\<error>Failed to parse remove_file arguments</error>
-        , .{});
+        const output = remove_file_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse remove_file arguments");
         return ToolExecResult{ .output = output };
     };
-    errdefer parsed.deinit();
+    defer parsed.deinit();
 
     const output = remove_file_mod.executeRemoveFileToString(ctx.allocator, parsed.value) catch {
-        const out = try std.fmt.allocPrint(ctx.allocator,
-            \\<path></path>
-            \\<deleted>false</deleted>
-            \\<error>Failed to remove file</error>
-        , .{});
+        const out = remove_file_mod.xmlError(ctx.allocator, "", "Failed to remove file");
         return ToolExecResult{ .output = out };
     };
-    parsed.deinit();
     return ToolExecResult{ .output = output };
 }
 
@@ -509,11 +441,7 @@ pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     _ = tc;
 
     const output = list_agents_mod.executeListAgents(ctx.allocator) catch {
-        const out = try std.fmt.allocPrint(ctx.allocator,
-            \\<agents>
-            \\  <error>Failed to list agents</error>
-            \\</agents>
-        , .{});
+        const out = list_agents_mod.jsonError("Failed to list agents");
         return ToolExecResult{ .output = out };
     };
     return ToolExecResult{ .output = output };
@@ -526,27 +454,13 @@ pub fn execChangeAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<agent>
-            \\  <agent_name></agent_name>
-            \\  <content></content>
-            \\  <loaded>false</loaded>
-            \\  <error>Failed to parse change_agent arguments</error>
-            \\</agent>
-        , .{});
+        const output = change_agent_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse change_agent arguments");
         return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
     const output = change_agent_mod.execute_change_agent_to_string(ctx.allocator, parsed.value) catch {
-        const out = try std.fmt.allocPrint(ctx.allocator,
-            \\<agent>
-            \\  <agent_name></agent_name>
-            \\  <content></content>
-            \\  <loaded>false</loaded>
-            \\  <error>Failed to get agent</error>
-            \\</agent>
-        , .{});
+        const out = change_agent_mod.xmlError(ctx.allocator, "Failed to get agent");
         return ToolExecResult{ .output = out };
     };
     return ToolExecResult{ .output = output };
@@ -559,21 +473,13 @@ pub fn execLspDefinition(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch |err| {
-        const output = try std.fmt.allocPrint(
-            ctx.allocator,
-            "<error>Failed to parse lsp_definition arguments: {s}</error>",
-            .{@errorName(err)},
-        );
+        const output = lsp_definition_mod.xmlError(ctx.allocator, std.fmt.allocPrint(ctx.allocator, "Failed to parse lsp_definition arguments: {s}", .{@errorName(err)}) catch "Unknown error");
         return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
 
     const result = lsp_definition_mod.execute_lsp_definition(ctx.allocator, parsed.value) catch |err| {
-        const output = try std.fmt.allocPrint(
-            ctx.allocator,
-            "<error>Failed to get definition: {s}</error>",
-            .{@errorName(err)},
-        );
+        const output = lsp_definition_mod.xmlError(ctx.allocator, std.fmt.allocPrint(ctx.allocator, "Failed to get definition: {s}", .{@errorName(err)}) catch "Unknown error");
         return ToolExecResult{ .output = output };
     };
     defer result.deinit(ctx.allocator);
@@ -643,12 +549,7 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
         .{ .allocate = .alloc_always },
     ) catch {
         ctx.logger.errFmt("[update_activity] Failed to parse arguments for session {s}", .{ctx.session_id}) catch {};
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<update_activity>
-            \\  <updated>false</updated>
-            \\  <error>Failed to parse update_activity arguments</error>
-            \\</update_activity>
-        , .{});
+        const output = update_activity_mod.xmlError(ctx.allocator, "Failed to parse update_activity arguments");
         return ToolExecResult{ .output = output };
     };
     defer parsed.deinit();
@@ -660,21 +561,11 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     // Update worker activity with the thought
     if (llm_history.updateWorkerActivityWithDescription(ctx.allocator, ctx.db, worker_id, parsed.value.thought)) |_| {
         ctx.logger.infoFmt("[update_activity] Updated activity for {s}: {s}", .{ worker_id, parsed.value.thought }) catch {};
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<update_activity>
-            \\  <updated>true</updated>
-            \\  <thought>{s}</thought>
-            \\</update_activity>
-        , .{parsed.value.thought});
+        const output = update_activity_mod.xmlSuccess(ctx.allocator, parsed.value.thought);
         return ToolExecResult{ .output = output };
     } else |err| {
         ctx.logger.errFmt("[update_activity] Failed to update worker activity for {s}: {}", .{ worker_id, err }) catch {};
-        const output = try std.fmt.allocPrint(ctx.allocator,
-            \\<update_activity>
-            \\  <updated>false</updated>
-            \\  <error>Failed to update worker activity</error>
-            \\</update_activity>
-        , .{});
+        const output = update_activity_mod.xmlError(ctx.allocator, "Failed to update worker activity");
         return ToolExecResult{ .output = output };
     }
 }
@@ -805,8 +696,8 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 var workflow = ai_workflow.TUIWorkflow.init(args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger);
                 // Derive is_sub_agent from session_id - no need to pass it explicitly
                 const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
-                args_ptr.logger.debugFmt("Calling workflow.runAgenticSimpleStep for '{s}'", .{ args_ptr.agent_name }) catch {};
-                workflow.runAgenticSimpleStep(.{
+                args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{ args_ptr.agent_name }) catch {};
+                workflow.runAgenticMultiStep(.{
                     .parent_allocator = sub_agent_allocator,
                     .parent_session_id = args_ptr.parent_sess_id,
                     .session_id = sess_id,
@@ -826,7 +717,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                     args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) }) catch {};
                 };
 
-                args_ptr.logger.debugFmt("workflow.runAgenticSimpleStep completed for '{s}', fetching message", .{ args_ptr.agent_name }) catch {};
+                args_ptr.logger.debugFmt("workflow.runAgenticMultiStep completed for '{s}', fetching message", .{ args_ptr.agent_name }) catch {};
                 // Get the agent's response from the database
                 // Use c_allocator to avoid arena aliasing issues
                 const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
@@ -941,8 +832,8 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    var glob_result = try glob_tool_mod.execute_glob(ctx.allocator, parsed.value);
-    const res_glob = try glob_tool_mod.glob_result_to_string(ctx.allocator, glob_result);
+    var glob_result = try glob_tool_mod.executeGlob(ctx.allocator, parsed.value);
+    const res_glob = try glob_tool_mod.toXmlSuccess(ctx.allocator, glob_result);
     glob_result.deinit(ctx.allocator);
 
     return ToolExecResult{ .output = res_glob };

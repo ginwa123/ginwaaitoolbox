@@ -53,12 +53,7 @@ pub fn execute_remove_agent_to_string(
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = std.posix.getcwd(&cwd_buf) catch {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<name></name>
-            \\<removed>false</removed>
-            \\<error>Failed to get current working directory</error>
-        , .{});
-        return result;
+        return errorToXml(allocator, input.name, "Failed to get current working directory");
     };
 
     // Build path to agent directory: .nalar/agents/<name>/
@@ -75,22 +70,12 @@ pub fn execute_remove_agent_to_string(
 
     if (!dir_exists) {
         // Agent directory doesn't exist
-        const result = try std.fmt.allocPrint(allocator,
-            \\<name>{s}</name>
-            \\<removed>false</removed>
-            \\<error>Agent directory not found in .nalar/agents/</error>
-        , .{input.name});
-        return result;
+        return errorToXml(allocator, input.name, "Agent directory not found in .nalar/agents/");
     }
 
     // Delete the agent directory recursively
     std.fs.deleteTreeAbsolute(agent_dir_path) catch {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<name>{s}</name>
-            \\<removed>false</removed>
-            \\<error>Failed to delete agent directory</error>
-        , .{input.name});
-        return result;
+        return errorToXml(allocator, input.name, "Failed to delete agent directory");
     };
 
     // Return success
@@ -101,4 +86,27 @@ pub fn execute_remove_agent_to_string(
     , .{ input.name, agent_dir_path });
 
     return result;
+}
+
+/// Generate error XML response
+pub fn xmlError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<name>{s}</name>
+        \\<removed>false</removed>
+        \\<error>{s}</error>
+    , .{ name, error_msg }) catch "<name></name><removed>false</removed><error>UnknownError</error>";
+}
+
+/// Generate error XML response for parse failures (no name available)
+pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<name></name>
+        \\<removed>false</removed>
+        \\<error>{s}</error>
+    , .{error_msg}) catch "<name></name><removed>false</removed><error>UnknownError</error>";
+}
+
+/// Internal error-to-XML helper (doesn't return error)
+fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
+    return xmlError(allocator, name, error_msg);
 }

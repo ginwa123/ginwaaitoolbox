@@ -34,11 +34,11 @@ pub fn session_latest_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
             if (latest_session) |session| {
                 defer {
                     arena.allocator().free(session.session_id);
-                    arena.allocator().free(session.session_dir);
+                    arena.allocator().free(session.cwd);
                     arena.allocator().free(session.created_at);
                 }
                 res.status = 200;
-                res.body = try std.fmt.allocPrint(req.arena, "{{\"session_id\":\"{s}\",\"session_dir\":\"{s}\",\"created_at\":\"{s}\",\"found\":true}}", .{ session.session_id, session.session_dir, session.created_at });
+                res.body = try std.fmt.allocPrint(req.arena, "{{\"session_id\":\"{s}\",\"cwd\":\"{s}\",\"created_at\":\"{s}\",\"found\":true}}", .{ session.session_id, session.cwd, session.created_at });
             } else {
                 res.status = 200;
                 res.body = "{\"found\":false}";

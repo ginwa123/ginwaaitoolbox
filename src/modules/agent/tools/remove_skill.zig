@@ -19,6 +19,24 @@ pub const RemoveSkillResult = struct {
     err_msg: ?[]const u8 = null,
 };
 
+/// Create XML error output for remove_skill
+pub fn xmlError(allocator: std.mem.Allocator, skill_name: []const u8, err_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<skill_name>{s}</skill_name>
+        \\<removed>false</removed>
+        \\<error>{s}</error>
+    , .{ skill_name, err_msg }) catch "<skill_name></skill_name><removed>false</removed><error>UnknownError</error>";
+}
+
+/// Create XML error output for remove_skill when skill_name is empty/missing
+pub fn xmlErrorEmpty(allocator: std.mem.Allocator, err_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<skill_name></skill_name>
+        \\<removed>false</removed>
+        \\<error>{s}</error>
+    , .{err_msg}) catch "<skill_name></skill_name><removed>false</removed><error>UnknownError</error>";
+}
+
 /// Tool definition for remove_skill
 pub const remove_skill_tool = AgentTool{
     .type = "function",

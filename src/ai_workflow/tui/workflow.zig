@@ -60,12 +60,12 @@ const session_table = @import("session_table.zig");
 
 pub const SessionInfo = struct {
     session_id: []const u8,
-    session_dir: []const u8,
+    cwd: []const u8,
     created_at: []const u8,
 
     pub fn deinit(self: *SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
-        allocator.free(self.session_dir);
+        allocator.free(self.cwd);
         allocator.free(self.created_at);
     }
 };
@@ -825,8 +825,13 @@ pub const TUIWorkflow = struct {
         const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
         defer allocator.free(created_at);
 
-        const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, session_dir, is_feed_to_llm, agent, loop_index, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
-        try self.db.exec(allocator, sql, &.{ id, session_id, model, summary_content, "stop", "user", "", "", cwd, "Agent", "0", created_at, "1", "0", "" });
+        const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
+        try self.db.exec(allocator, sql, &.{ id, session_id, model, summary_content, "stop", "user", "", "", "Agent", "0", created_at, "1", "0", "" });
+
+        // Update the session's cwd in the sessions table
+        const copy_cwd = try std.heap.c_allocator.dupe(u8, cwd);
+        defer std.heap.c_allocator.free(copy_cwd);
+        try self.db.exec(allocator, "UPDATE sessions SET cwd = ? WHERE id = ?", &.{ copy_cwd, session_id });
 
         // Build new in-memory message list: system message + compacted summary
         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;

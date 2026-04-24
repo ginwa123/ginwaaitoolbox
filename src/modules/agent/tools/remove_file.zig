@@ -52,11 +52,7 @@ pub fn executeRemoveFileToString(
     input: RemoveFileInput,
 ) ![]const u8 {
     if (input.path.len == 0) {
-        return try std.fmt.allocPrint(allocator,
-            \\<path></path>
-            \\<deleted>false</deleted>
-            \\<error>path cannot be empty</error>
-        , .{});
+        return xmlError(allocator, "", "path cannot be empty");
     }
 
     const path_exists = blk: {
@@ -67,11 +63,7 @@ pub fn executeRemoveFileToString(
     };
 
     if (!path_exists) {
-        return try std.fmt.allocPrint(allocator,
-            \\<path>{s}</path>
-            \\<deleted>false</deleted>
-            \\<error>Path not found</error>
-        , .{input.path});
+        return xmlError(allocator, input.path, "Path not found");
     }
 
     // Check if it's a directory by trying to open as dir
@@ -80,20 +72,12 @@ pub fn executeRemoveFileToString(
     if (is_directory) {
         // It's a directory
         if (!input.recursive) {
-            return try std.fmt.allocPrint(allocator,
-                \\<path>{s}</path>
-                \\<deleted>false</deleted>
-                \\<error>Path is a directory. Use recursive=true to delete directories with contents.</error>
-            , .{input.path});
+            return xmlError(allocator, input.path, "Path is a directory. Use recursive=true to delete directories with contents.");
         }
 
         // Recursive delete using deleteTree
         std.fs.deleteTreeAbsolute(input.path) catch {
-            return try std.fmt.allocPrint(allocator,
-                \\<path>{s}</path>
-                \\<deleted>false</deleted>
-                \\<error>Failed to delete directory</error>
-            , .{input.path});
+            return xmlError(allocator, input.path, "Failed to delete directory");
         };
 
         return try std.fmt.allocPrint(allocator,
@@ -105,15 +89,29 @@ pub fn executeRemoveFileToString(
 
     // It's a file - delete it
     std.fs.cwd().deleteFile(input.path) catch {
-        return try std.fmt.allocPrint(allocator,
-            \\<path>{s}</path>
-            \\<deleted>false</deleted>
-            \\<error>Failed to delete file</error>
-        , .{input.path});
+        return xmlError(allocator, input.path, "Failed to delete file");
     };
 
     return try std.fmt.allocPrint(allocator,
         \\<path>{s}</path>
         \\<deleted>true</deleted>
     , .{input.path});
+}
+
+/// Generate error XML response
+pub fn xmlError(allocator: std.mem.Allocator, path: []const u8, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<path>{s}</path>
+        \\<deleted>false</deleted>
+        \\<error>{s}</error>
+    , .{ path, error_msg }) catch "<path></path><deleted>false</deleted><error>UnknownError</error>";
+}
+
+/// Generate error XML response for parse failures (no path available)
+pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<path></path>
+        \\<deleted>false</deleted>
+        \\<error>{s}</error>
+    , .{error_msg}) catch "<path></path><deleted>false</deleted><error>UnknownError</error>";
 }

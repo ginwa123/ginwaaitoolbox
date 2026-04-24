@@ -52,18 +52,18 @@ pub const edit_skill_tool = AgentTool{
 pub fn executeEditSkillToString(allocator: std.mem.Allocator, input: EditSkillInput) ![]const u8 {
     // Validate input
     if (input.skill_name.len == 0) {
-        return try errorToXml(allocator, input.skill_name, "Skill name cannot be empty");
+        return errorToXml(allocator, input.skill_name, "Skill name cannot be empty");
     }
 
     // At least one of description or content must be provided
     if (input.description == null and input.content == null) {
-        return try errorToXml(allocator, input.skill_name, "At least one of description or content must be provided");
+        return errorToXml(allocator, input.skill_name, "At least one of description or content must be provided");
     }
 
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd = std.posix.getcwd(&cwd_buf) catch {
-        return try errorToXml(allocator, input.skill_name, "Failed to get current working directory");
+        return errorToXml(allocator, input.skill_name, "Failed to get current working directory");
     };
 
     // Build path to skill file
@@ -79,12 +79,12 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, input: EditSkillIn
     };
 
     if (!file_exists) {
-        return try errorToXml(allocator, input.skill_name, "Skill file not found in .nalar/skills/");
+        return errorToXml(allocator, input.skill_name, "Skill file not found in .nalar/skills/");
     }
 
     // Read existing skill content
     const existing_content = std.fs.cwd().readFileAlloc(allocator, skill_file, 1024 * 1024) catch {
-        return try errorToXml(allocator, input.skill_name, "Failed to read existing skill file");
+        return errorToXml(allocator, input.skill_name, "Failed to read existing skill file");
     };
     defer allocator.free(existing_content);
 
@@ -105,12 +105,12 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, input: EditSkillIn
 
     // Write the updated file
     const file = std.fs.createFileAbsolute(skill_file, .{}) catch {
-        return try errorToXml(allocator, input.skill_name, "Failed to create skill file for writing");
+        return errorToXml(allocator, input.skill_name, "Failed to create skill file for writing");
     };
     defer file.close();
 
     file.writeAll(updated_content) catch {
-        return try errorToXml(allocator, input.skill_name, "Failed to write skill file");
+        return errorToXml(allocator, input.skill_name, "Failed to write skill file");
     };
 
     // Return success XML
@@ -301,13 +301,29 @@ fn successToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8
     , .{ name, path });
 }
 
-/// Generate error XML response
-fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) ![]const u8 {
-    return try std.fmt.allocPrint(allocator,
+/// Internal error-to-XML helper (doesn't return error)
+fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
         \\<skill>
         \\<name>{s}</name>
         \\<edited>false</edited>
         \\<error>{s}</error>
         \\</skill>
-    , .{ name, error_msg });
+    , .{ name, error_msg }) catch "<skill><name></name><edited>false</edited><error>UnknownError</error></skill>";
+}
+
+/// Generate error XML response
+pub fn xmlError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
+    return errorToXml(allocator, name, error_msg);
+}
+
+/// Generate error XML response for parse failures (no name available)
+pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<skill>
+        \\<name></name>
+        \\<edited>false</edited>
+        \\<error>{s}</error>
+        \\</skill>
+    , .{error_msg}) catch "<skill><name></name><edited>false</edited><error>UnknownError</error></skill>";
 }

@@ -58,6 +58,13 @@ pub fn executeListAgents(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8, result.items) catch "";
 }
 
+/// Generate error JSON response
+pub fn jsonError(error_msg: []const u8) []const u8 {
+    return std.fmt.comptimePrint(
+        \\{{"error":"{s}","agents":[]}}
+    , .{error_msg});
+}
+
 /// Escape a string for JSON output
 pub fn escapeJsonString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
     var result: std.ArrayList(u8) = .empty;

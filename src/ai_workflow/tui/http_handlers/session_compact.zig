@@ -48,11 +48,11 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                     // Get cwd from session
                     var cwd_buf: [4096]u8 = undefined;
                     const cwd = blk: {
-                        const result = llm_history.get_session(threadAlloc2, sqliteDb, sessId) catch null;
-                        if (result) |session| {
+                        const cwd_rows = llm_history.get_session(threadAlloc2, sqliteDb, sessId) catch null;
+                        if (cwd_rows) |session| {
                             defer session.deinit(threadAlloc2);
-                            if (session.session_dir.len > 0) {
-                                break :blk std.fmt.bufPrint(&cwd_buf, "{s}", .{session.session_dir}) catch ".";
+                            if (session.cwd.len > 0) {
+                                break :blk std.fmt.bufPrint(&cwd_buf, "{s}", .{session.cwd}) catch ".";
                             }
                         }
                         break :blk std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";

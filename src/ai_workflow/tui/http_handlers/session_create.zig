@@ -10,6 +10,18 @@ const httpz = http_server.httpz;
 const WorkflowArgs = @import("mod.zig").WorkflowArgs;
 const generateSessionId = @import("mod.zig").generateSessionId;
 
+/// Thread arguments for session creation workflow
+const SessionCreateThreadArgs = struct {
+    allocator: std.mem.Allocator,
+    ctxTui: *ai_workflow.ContextIPCTui,
+    session_id: []u8,
+    session_name: []u8,
+    queue_message: []u8,
+    cwd_session: []u8,
+    body_message: []u8,
+    allowed_tools: []u8,
+};
+
 /// Create a new session
 /// Request body (JSON, optional):
 ///   - name: session name (string, defaults to "New Session")
@@ -98,56 +110,98 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     if (http_server.global_server) |server| {
         if (server.ctx) |ctx| {
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
-            const sqlite_db = ctxTui.db;
-
-            // Ensure session exists in sessions table (for JOIN queries)
-            const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status) VALUES (?, ?, 'active')";
-            const copy_session_name = try alloc.dupe(u8, session_name);
-            defer alloc.free(copy_session_name);
-            sqlite_db.exec(alloc, session_sql, &.{ session_id, copy_session_name }) catch {
-                // Non-fatal error, continue anyway
-            };
 
             // Spawn workflow in detached thread (fire-and-forget)
-            const workflow_args = try server.allocator.create(WorkflowArgs);
-            workflow_args.* = .{
+            // First allocate all strings, then create struct (to handle partial failures)
+            const session_id_alloc = try server.allocator.dupe(u8, session_id);
+            errdefer server.allocator.free(session_id_alloc);
+            const session_name_alloc = try server.allocator.dupe(u8, session_name);
+            errdefer server.allocator.free(session_name_alloc);
+            const queue_message_alloc = if (queue_message) |m| try server.allocator.dupe(u8, m) else try server.allocator.dupe(u8, "");
+            errdefer server.allocator.free(queue_message_alloc);
+            const cwd_session_alloc = if (cwd_session) |c| try server.allocator.dupe(u8, c) else try server.allocator.dupe(u8, "");
+            errdefer server.allocator.free(cwd_session_alloc);
+            const body_message_alloc = try server.allocator.dupe(u8, body_message);
+            errdefer server.allocator.free(body_message_alloc);
+            const allowed_tools_alloc = try server.allocator.dupe(u8, allowed_tools);
+            errdefer server.allocator.free(allowed_tools_alloc);
+
+            const thread_args = try server.allocator.create(SessionCreateThreadArgs);
+            errdefer server.allocator.destroy(thread_args);
+
+            thread_args.* = .{
                 .allocator = server.allocator,
-                .sqlite_db = sqlite_db,
-                .logger = ctxTui.logger,
-                .llm_config = ctxTui.llm_config,
-                .session_id = try server.allocator.dupe(u8, session_id),
-                .message = try server.allocator.dupe(u8, queue_message orelse ""),
-                .cwd = try server.allocator.dupe(u8, cwd_session orelse ""),
-                .body = try server.allocator.dupe(u8, body_message),
-                .allowed_tools = try server.allocator.dupe(u8, allowed_tools),
+                .ctxTui = ctxTui,
+                .session_id = session_id_alloc,
+                .session_name = session_name_alloc,
+                .queue_message = queue_message_alloc,
+                .cwd_session = cwd_session_alloc,
+                .body_message = body_message_alloc,
+                .allowed_tools = allowed_tools_alloc,
             };
 
             const thread = try std.Thread.spawn(.{}, struct {
-                fn run(args: *WorkflowArgs) void {
-                    defer {
-                        args.allocator.free(args.session_id);
-                        args.allocator.free(args.message);
-                        args.allocator.free(args.cwd);
-                        args.allocator.free(args.body);
-                        args.allocator.free(args.allowed_tools);
-                        args.allocator.destroy(args);
+                fn run(args: *SessionCreateThreadArgs) void {
+                    var thread_arena = std.heap.ArenaAllocator.init(args.allocator);
+                    defer thread_arena.deinit();
+                    const thread_alloc = thread_arena.allocator();
+
+                    const sqlite_db = args.ctxTui.db;
+
+                    // Ensure session exists in sessions table (for JOIN queries)
+                    if (args.cwd_session.len > 0) {
+                        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd) VALUES (?, ?, 'active', ?)";
+                        const copy_session_name = thread_alloc.dupe(u8, args.session_name) catch return;
+                        sqlite_db.exec(thread_alloc, session_sql, &.{ args.session_id, copy_session_name, args.cwd_session }) catch {
+                            // Non-fatal error, continue anyway
+                        };
+                    } else {
+                        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status) VALUES (?, ?, 'active')";
+                        const copy_session_name = thread_alloc.dupe(u8, args.session_name) catch return;
+                        sqlite_db.exec(thread_alloc, session_sql, &.{ args.session_id, copy_session_name }) catch {
+                            // Non-fatal error, continue anyway
+                        };
                     }
-                    var arena = std.heap.ArenaAllocator.init(args.allocator);
-                    defer arena.deinit();
-                    var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.llm_config, args.logger);
-                    workflow.runAgenticMultiStep(.{
-                        .parent_allocator = arena.allocator(),
-                        .parent_session_id = args.session_id,
+
+                    // Create workflow args
+                    const workflow_args = thread_alloc.create(WorkflowArgs) catch return;
+
+                    workflow_args.* = .{
+                        .allocator = thread_alloc,
+                        .sqlite_db = sqlite_db,
+                        .logger = args.ctxTui.logger,
+                        .llm_config = args.ctxTui.llm_config,
                         .session_id = args.session_id,
-                        .message = args.message,
-                        .cwd = args.cwd,
-                        .body = args.body,
+                        .message = args.queue_message,
+                        .cwd = args.cwd_session,
+                        .body = args.body_message,
                         .allowed_tools = args.allowed_tools,
-                    }) catch |err| {
-                        args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)}) catch {};
                     };
+
+                    var workflow = ai_workflow.TUIWorkflow.init(workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger);
+                    workflow.runAgenticMultiStep(.{
+                        .parent_allocator = thread_alloc,
+                        .parent_session_id = workflow_args.session_id,
+                        .session_id = workflow_args.session_id,
+                        .message = workflow_args.message,
+                        .cwd = workflow_args.cwd,
+                        .body = workflow_args.body,
+                        .allowed_tools = workflow_args.allowed_tools,
+                    }) catch |err| {
+                        workflow_args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)}) catch {};
+                    };
+
+                    // Clean up thread_args allocations (allocated before thread started)
+                    const server_alloc = args.allocator;
+                    server_alloc.free(args.session_id);
+                    server_alloc.free(args.session_name);
+                    server_alloc.free(args.queue_message);
+                    server_alloc.free(args.cwd_session);
+                    server_alloc.free(args.body_message);
+                    server_alloc.free(args.allowed_tools);
+                    server_alloc.destroy(args);
                 }
-            }.run, .{workflow_args});
+            }.run, .{thread_args});
             thread.detach();
 
             res.status = 201;

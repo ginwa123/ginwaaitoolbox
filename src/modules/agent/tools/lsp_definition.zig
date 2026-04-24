@@ -489,6 +489,13 @@ pub fn lsp_definition_to_string(allocator: std.mem.Allocator, result: LspDefinit
     }
 }
 
+/// Generate error XML response
+pub fn xmlError(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<error>{s}</error>
+    , .{error_msg}) catch "<error>UnknownError</error>";
+}
+
 pub const lsp_definition_tool = AgentTool{
     .type = "function",
     .function = .{
