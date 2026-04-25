@@ -10,6 +10,49 @@ const httpz = http_server.httpz;
 const WorkflowArgs = @import("mod.zig").WorkflowArgs;
 const generateSessionId = @import("mod.zig").generateSessionId;
 
+/// Helper to get nalar data directory (~/local/share/nalar/data/apps)
+fn getDataAppsDir(allocator: std.mem.Allocator) ![]u8 {
+    const home = std.posix.getenv("HOME") orelse {
+        return error.HomeNotFound;
+    };
+    return std.fs.path.join(allocator, &[_][]const u8{
+        home,
+        ".local",
+        "share",
+        "nalar",
+        "data",
+        "apps",
+    });
+}
+
+/// Create a sandbox directory in data/apps and return the path
+fn createSandbox(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
+    const data_apps_dir = try getDataAppsDir(allocator);
+    defer allocator.free(data_apps_dir);
+
+    // Create the data/apps directory and all parent directories if they don't exist
+    try std.fs.cwd().makePath(data_apps_dir);
+
+    // Generate a unique folder name using session_id
+    const sandbox_name = try allocator.dupe(u8, session_id);
+    errdefer allocator.free(sandbox_name);
+
+    const sandbox_path = try std.fs.path.join(allocator, &[_][]const u8{
+        data_apps_dir,
+        sandbox_name,
+    });
+    errdefer allocator.free(sandbox_path);
+
+    // Create the sandbox directory (ignore if already exists)
+    std.fs.makeDirAbsolute(sandbox_path) catch |err| {
+        if (err != error.PathAlreadyExists) {
+            return err;
+        }
+    };
+
+    return sandbox_path;
+}
+
 /// Thread arguments for session creation workflow
 const SessionCreateThreadArgs = struct {
     allocator: std.mem.Allocator,
@@ -149,10 +192,26 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                     const sqlite_db = args.ctxTui.db;
 
                     // Ensure session exists in sessions table (for JOIN queries)
+                    // If cwd_session is empty, create a sandbox in data/apps
+                    var effective_cwd: []u8 = "";
                     if (args.cwd_session.len > 0) {
+                        effective_cwd = args.cwd_session;
+                    } else {
+                        // Create sandbox in data/apps with session_id as folder name
+                        effective_cwd = createSandbox(thread_alloc, args.session_id) catch blk: {
+                            // Fallback: use tmp directory if sandbox creation fails
+                            const tmp_dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+                            break :blk (thread_alloc.dupe(u8, tmp_dir) catch return);
+                        };
+                    }
+
+                    // effective_cwd is now set - use it for session and workflow
+
+                    if (effective_cwd.len > 0) {
                         const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd) VALUES (?, ?, 'active', ?)";
                         const copy_session_name = thread_alloc.dupe(u8, args.session_name) catch return;
-                        sqlite_db.exec(thread_alloc, session_sql, &.{ args.session_id, copy_session_name, args.cwd_session }) catch {
+                        const copy_cwd = thread_alloc.dupe(u8, effective_cwd) catch return;
+                        sqlite_db.exec(thread_alloc, session_sql, &.{ args.session_id, copy_session_name, copy_cwd }) catch {
                             // Non-fatal error, continue anyway
                         };
                     } else {
@@ -173,7 +232,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                         .llm_config = args.ctxTui.llm_config,
                         .session_id = args.session_id,
                         .message = args.queue_message,
-                        .cwd = args.cwd_session,
+                        .cwd = effective_cwd,
                         .body = args.body_message,
                         .allowed_tools = args.allowed_tools,
                     };

@@ -142,8 +142,8 @@ pub fn main() !void {
 
             // Session management endpoints
             router.options("/api/session", http_handlers.corsPreflightHandler, .{});
-            router.post("/api/session", http_handlers.session_create_handler, .{});
-            router.get("/api/session", http_handlers.session_list_handler, .{});
+            router.post("/api/session", http_handlers.sessionCreateHandler, .{});
+            router.get("/api/session", http_handlers.sessionListHandler, .{});
             router.get("/api/session/:session_id", http_handlers.session_get_handler, .{});
             router.get("/api/session/:session_id/messages", http_handlers.session_message_handler, .{});
             router.get("/api/session/exists/:session_id", http_handlers.session_exist_handler, .{});
