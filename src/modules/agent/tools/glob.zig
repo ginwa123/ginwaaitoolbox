@@ -591,3 +591,17 @@ pub const glob_tool = AgentTool{
         },
     },
 };
+
+// ============================================================================
+// Test Compatibility Aliases (snake_case names for backward compatibility)
+// ============================================================================
+
+/// Alias for executeGlob (snake_case name used by tests)
+pub fn execute_glob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
+    return executeGlob(allocator, input);
+}
+
+/// Alias for toXmlSuccess (snake_case name used by tests)
+pub fn glob_result_to_string(allocator: std.mem.Allocator, result: GlobResult) ![]const u8 {
+    return toXmlSuccess(allocator, result);
+}

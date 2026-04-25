@@ -47,15 +47,26 @@ pub const SseQueueItem = struct {
 };
 
 /// Thread-safe queue-based SSE connection manager
-/// Uses a channel approach: the SSE handler thread owns the stream and reads from a queue
-/// while other threads enqueue events. This avoids concurrent stream access.
+/// Supports MULTIPLE clients per session_id - each session can have many concurrent connections
+/// Uses a channel approach: each SSE handler thread owns its stream and reads from its own queue
+/// while other threads enqueue events to ALL client queues for a session.
 pub const SseConnectionManager = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    /// Map from session_id to event queue
-    queues: std.StringHashMap(*Queue),
+    /// Map from session_id to list of client info (queues)
+    /// Each client gets its own queue, allowing independent streaming
+    clients: std.StringHashMap(std.ArrayList(ClientInfo)),
+    /// Mutex to protect the clients map
     mutex: std.Thread.Mutex,
+    /// Condition for client count changes (for cleanup tracking)
+    cond: std.Thread.Condition = .{},
+
+    /// Client info - holds a queue for a specific client connection
+    pub const ClientInfo = struct {
+        queue: *Queue,
+        connected_at: i64,
+    };
 
     pub const Queue = struct {
         head: ?*SseQueueItem = null,
@@ -112,8 +123,9 @@ pub const SseConnectionManager = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .queues = std.StringHashMap(*Queue).init(allocator),
+            .clients = std.StringHashMap(std.ArrayList(ClientInfo)).init(allocator),
             .mutex = .{},
+            .cond = .{},
         };
     }
 
@@ -121,36 +133,90 @@ pub const SseConnectionManager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var iter = self.queues.iterator();
+        var iter = self.clients.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            entry.value_ptr.close();
-            self.allocator.destroy(entry.value_ptr);
+            // Close and destroy all client queues
+            for (entry.value_ptr.*.items) |client_info| {
+                client_info.queue.close();
+                self.allocator.destroy(client_info.queue);
+            }
+            entry.value_ptr.*.deinit(self.allocator);
         }
-        self.queues.deinit();
+        self.clients.deinit();
     }
 
-    /// Register a new SSE connection with its event queue
-    pub fn register(self: *Self, session_id: []const u8, queue: *Queue) !void {
+    /// Register a new client SSE connection with its event queue
+    /// Multiple clients can register for the same session_id - each gets their own queue
+    pub fn registerClient(self: *Self, session_id: []const u8, queue: *Queue) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         const key = try self.allocator.dupe(u8, session_id);
-        errdefer self.allocator.free(key);
 
-        try self.queues.put(key, queue);
-        std.log.info("SSE registered: session_id={s}", .{session_id});
+        // Get or create the client list for this session
+        if (self.clients.getPtr(key)) |client_list| {
+            // Session exists, append new client
+            try client_list.append(self.allocator, ClientInfo{
+                .queue = queue,
+                .connected_at = std.time.timestamp(),
+            });
+            std.log.info("SSE: Client connected to existing session: {s}, total clients: {d}", .{
+                session_id, client_list.items.len,
+            });
+        } else {
+            // New session, create client list
+            var client_list = std.ArrayList(ClientInfo).empty;
+            errdefer client_list.deinit(self.allocator);
+            try client_list.append(self.allocator, ClientInfo{
+                .queue = queue,
+                .connected_at = std.time.timestamp(),
+            });
+            try self.clients.put(key, client_list);
+            std.log.info("SSE: First client connected to new session: {s}", .{session_id});
+        }
     }
 
-    /// Remove a connection
-    pub fn remove(self: *Self, session_id: []const u8) void {
+    /// Remove a specific client connection
+    /// Returns true if this was the last client for the session
+    pub fn removeClient(self: *Self, session_id: []const u8, queue: *Queue) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.queues.fetchRemove(session_id)) |entry| {
-            self.allocator.free(entry.key);
-            std.log.info("SSE removed: session_id={s}", .{session_id});
+        if (self.clients.getEntry(session_id)) |entry| {
+            const client_list = &entry.value_ptr.*;
+
+            // Find and remove the specific client
+            var found_idx: ?usize = null;
+            for (client_list.items, 0..) |client_info, idx| {
+                if (client_info.queue == queue) {
+                    found_idx = idx;
+                    break;
+                }
+            }
+
+            if (found_idx) |idx| {
+                const client_info = client_list.orderedRemove(idx);
+                client_info.queue.close();
+                self.allocator.destroy(client_info.queue);
+
+                const remaining = client_list.items.len;
+                if (remaining == 0) {
+                    // Last client disconnected - clean up the session
+                    self.allocator.free(entry.key_ptr.*);
+                    entry.value_ptr.*.deinit(self.allocator);
+                    _ = self.clients.remove(entry.key_ptr.*);
+                    std.log.info("SSE: Last client disconnected from session: {s}", .{session_id});
+                    return true; // Session removed
+                } else {
+                    std.log.info("SSE: Client disconnected from session: {s}, remaining: {d}", .{
+                        session_id, remaining,
+                    });
+                    return false; // Session still has clients
+                }
+            }
         }
+        return false;
     }
 
     /// Create a new queue for a session
@@ -160,68 +226,109 @@ pub const SseConnectionManager = struct {
         return queue;
     }
 
-    /// Enqueue an event to send to a specific session
+    /// Enqueue an event to send to ALL clients of a specific session
     pub fn enqueueEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
-        // Get queue pointer while holding mutex
+        // Get client list pointer while holding mutex
         self.mutex.lock();
-        const q = self.queues.get(session_id);
-        if (q == null) {
+        const client_list_ptr = self.clients.getPtr(session_id);
+        if (client_list_ptr == null) {
             self.mutex.unlock();
             return error.SessionNotFound;
         }
-        const queue_ptr = q.?;
+        const client_list = client_list_ptr.?;
+        const client_count = client_list.items.len;
         self.mutex.unlock();
 
-        // Create the item (outside manager mutex)
-        const item = try self.allocator.create(SseQueueItem);
-        errdefer self.allocator.destroy(item);
-        item.* = .{
-            .data = try self.allocator.dupe(u8, event.data),
-            .event_type = if (event.event_type) |et| try self.allocator.dupe(u8, et) else null,
-        };
-        errdefer {
-            self.allocator.free(item.data);
-            if (item.event_type) |et| self.allocator.free(et);
-        }
-
-        // Re-acquire manager mutex to check queue still exists, then enqueue
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        const queueStillExists = self.queues.get(session_id);
-        if (queueStillExists == queue_ptr) {
-            queue_ptr.enqueue(item);
-        } else {
-            return error.SessionNotFound;
-        }
-    }
-
-    /// Check if a session exists
-    pub fn hasSession(self: *Self, session_id: []const u8) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.queues.contains(session_id);
-    }
-
-    /// Broadcast an event to ALL connected sessions
-    pub fn broadcast(self: *Self, event: SseEvent) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        var iter = self.queues.iterator();
-        while (iter.next()) |entry| {
+        // Fan-out the event to ALL clients
+        var failed_clients: usize = 0;
+        for (client_list.items) |*client_info| {
+            // Create the item for this client
             const item = self.allocator.create(SseQueueItem) catch {
-                std.log.warn("SSE broadcast: failed to create item for session {s}", .{entry.key_ptr.*});
+                failed_clients += 1;
                 continue;
             };
             item.* = .{
                 .data = self.allocator.dupe(u8, event.data) catch {
                     self.allocator.destroy(item);
-                    std.log.warn("SSE broadcast: failed to dupe data for session {s}", .{entry.key_ptr.*});
+                    failed_clients += 1;
                     continue;
                 },
-                .event_type = if (event.event_type) |et| self.allocator.dupe(u8, et) catch null else null,
+                .event_type = if (event.event_type) |et|
+                    self.allocator.dupe(u8, et) catch null
+                else
+                    null,
             };
-            entry.value_ptr.enqueue(item);
+            client_info.queue.enqueue(item);
+        }
+
+        if (failed_clients > 0) {
+            std.log.warn("SSE: Failed to enqueue event to {d}/{d} clients for session {s}", .{
+                failed_clients, client_count, session_id,
+            });
+        }
+    }
+
+    /// Check if a session has any connected clients
+    pub fn hasSession(self: *Self, session_id: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.clients.contains(session_id);
+    }
+
+    /// Get the number of connected clients for a session
+    pub fn getClientCount(self: *Self, session_id: []const u8) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.clients.get(session_id)) |list| {
+            return list.items.len;
+        }
+        return 0;
+    }
+
+    /// Remove ALL clients for a session (forceful disconnect of entire session)
+    /// Returns the number of clients that were removed
+    pub fn removeSession(self: *Self, session_id: []const u8) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getEntry(session_id)) |entry| {
+            const count = entry.value_ptr.*.items.len;
+            // Close and destroy all client queues
+            for (entry.value_ptr.*.items) |client_info| {
+                client_info.queue.close();
+                self.allocator.destroy(client_info.queue);
+            }
+            entry.value_ptr.*.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
+            _ = self.clients.remove(session_id);
+            std.log.info("SSE: Session {s} removed, {d} clients disconnected", .{ session_id, count });
+            return count;
+        }
+        return 0;
+    }
+
+    /// Broadcast an event to ALL clients of ALL sessions
+    pub fn broadcast(self: *Self, event: SseEvent) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var iter = self.clients.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.*.items) |*client_info| {
+                const item = self.allocator.create(SseQueueItem) catch {
+                    std.log.warn("SSE broadcast: failed to create item for session {s}", .{entry.key_ptr.*});
+                    continue;
+                };
+                item.* = .{
+                    .data = self.allocator.dupe(u8, event.data) catch {
+                        self.allocator.destroy(item);
+                        std.log.warn("SSE broadcast: failed to dupe data for session {s}", .{entry.key_ptr.*});
+                        continue;
+                    },
+                    .event_type = if (event.event_type) |et| self.allocator.dupe(u8, et) catch null else null,
+                };
+                client_info.queue.enqueue(item);
+            }
         }
     }
 };

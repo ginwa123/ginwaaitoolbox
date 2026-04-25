@@ -309,3 +309,13 @@ pub const text_replace_tool: AgentTool = .{
         },
     },
 };
+
+// ============================================================================
+// Test Compatibility Aliases
+// ============================================================================
+
+/// Alias for executeTextReplace (snake_case name used by tests)
+/// Takes individual parameters instead of TextReplaceInput struct
+pub fn text_replace(allocator: std.mem.Allocator, path: []const u8, old_str: []const u8, new_str: []const u8) !void {
+    _ = try executeTextReplace(allocator, path, old_str, new_str);
+}

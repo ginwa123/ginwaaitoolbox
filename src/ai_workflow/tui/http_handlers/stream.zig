@@ -33,12 +33,13 @@ fn formatQueueItem(allocator: std.mem.Allocator, item: *http_server.SseQueueItem
     return try buf.toOwnedSlice(allocator);
 }
 
-/// SSE stream handler - this thread OWNS the stream and reads events from the queue
+/// SSE stream handler - this thread OWNS the stream and reads events from its own queue
+/// Each client gets its own queue, so multiple clients can connect to the same session
 fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
     const log = logger.getGlobal();
     log.?.infoFmt("SSE stream handler started: session_id={s}", .{ctx.session_id}) catch {};
 
-    // Create a queue for this session - we'll register it with the manager
+    // Create a queue for this specific client
     const queue = ctx.server.sse_manager.createQueue() catch {
         log.?.errFmt("SSE: Failed to create queue for session: {s}", .{ctx.session_id}) catch {};
         return;
@@ -48,12 +49,20 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
         ctx.server.allocator.destroy(queue);
     }
 
-    // Register the queue (not the stream) with the manager
-    ctx.server.sse_manager.register(ctx.session_id, queue) catch {
-        log.?.errFmt("SSE: Failed to register queue for session: {s}", .{ctx.session_id}) catch {};
+    // Register this client with its own queue (supports multiple clients per session)
+    ctx.server.sse_manager.registerClient(ctx.session_id, queue) catch |err| {
+        log.?.errFmt("SSE: Failed to register client for session: {s}, error: {s}", .{
+            ctx.session_id, @errorName(err),
+        }) catch {};
         return;
     };
-    defer ctx.server.sse_manager.remove(ctx.session_id);
+    defer {
+        // Remove only this specific client, not the whole session
+        const was_last = ctx.server.sse_manager.removeClient(ctx.session_id, queue);
+        if (was_last) {
+            log.?.infoFmt("SSE: Last client removed, session cleaned up: {s}", .{ctx.session_id}) catch {};
+        }
+    }
 
     // Send connected event
     const connected_data = std.fmt.allocPrint(ctx.server.allocator, "event: connected\n{{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id}) catch {
@@ -67,7 +76,11 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
         return;
     };
 
-    log.?.infoFmt("SSE: Connected event sent for session: {s}", .{ctx.session_id}) catch {};
+    // Get client count for logging
+    const client_count = ctx.server.sse_manager.getClientCount(ctx.session_id);
+    log.?.infoFmt("SSE: Connected event sent for session: {s}, total clients: {d}", .{
+        ctx.session_id, client_count,
+    }) catch {};
 
     // Main loop: process events from queue and keepalive
     while (ctx.server.sse_manager.hasSession(ctx.session_id)) {
