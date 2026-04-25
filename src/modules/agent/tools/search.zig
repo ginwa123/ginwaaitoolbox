@@ -252,11 +252,20 @@ pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchR
 
 
 /// Multiple matches in the same file are grouped together under a <file> element
-pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: SearchResult) ![]const u8 {
+/// Wrapped in <search> tag containing the pattern and path used
+pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: SearchResult, pattern: []const u8, search_path: []const u8) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
+    // Opening <search> tag with pattern and path
+    try output.appendSlice(allocator, "<search pattern=\"");
+    try output.appendSlice(allocator, pattern);
+    try output.appendSlice(allocator, "\" path=\"");
+    try output.appendSlice(allocator, search_path);
+    try output.appendSlice(allocator, "\">\n");
+
     if (result.matches.items.len == 0) {
+        try output.appendSlice(allocator, "</search>\n");
         return try output.toOwnedSlice(allocator);
     }
 
@@ -302,16 +311,13 @@ pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: Sea
         const trimmed_path = std.mem.trim(u8, file_path, &std.ascii.whitespace);
 
         // File header
-        try output.appendSlice(allocator, "<file ");
-        try output.appendSlice(allocator, "path=\"");
+        try output.appendSlice(allocator, "  <file path=\"");
         try output.appendSlice(allocator, trimmed_path);
-        try output.appendSlice(allocator, "\" ");
-        try output.appendSlice(allocator, "total=\"");
+        try output.appendSlice(allocator, "\" total=\"");
         const total_str = try std.fmt.allocPrint(allocator, "{d}", .{total});
         try output.appendSlice(allocator, total_str);
         allocator.free(total_str);
-        try output.appendSlice(allocator, "\" ");
-        try output.appendSlice(allocator, "count=\"");
+        try output.appendSlice(allocator, "\" count=\"");
         const count_str = try std.fmt.allocPrint(allocator, "{d}", .{matches_in_file.items.len});
         try output.appendSlice(allocator, count_str);
         allocator.free(count_str);
@@ -321,8 +327,7 @@ pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: Sea
         for (matches_in_file.items) |m| {
             const trimmed_snippet = std.mem.trim(u8, m.snippet, &std.ascii.whitespace);
             const match_xml = try std.fmt.allocPrint(allocator,
-                \\  <m><l>{d}</l><s>{s}</s></m>
-            
+                \\    <m><l>{d}</l><s>{s}</s></m>\n
             , .{
                 m.line_number,
                 trimmed_snippet,
@@ -331,8 +336,10 @@ pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: Sea
             allocator.free(match_xml);
         }
 
-        try output.appendSlice(allocator, "</file>\n");
+        try output.appendSlice(allocator, "  </file>\n");
     }
+
+    try output.appendSlice(allocator, "</search>\n");
 
     return try output.toOwnedSlice(allocator);
 }
@@ -343,12 +350,15 @@ pub const search_tool = AgentTool{
         .name = "search",
         .description =
         \\Search for a pattern in files using ripgrep.
-        \\Results are grouped by file by default. Response format:
-        \\<file path="path/to/file.zig" total="100" count="3">
-        \\  <m><l>10</l><s>snippet at line 10</s></m>
-        \\  <m><l>25</l><s>snippet at line 25</s></m>
-        \\  <m><l>42</l><s>snippet at line 42</s></m>
-        \\</file>
+        \\Results wrapped in <search> tag with pattern/path attributes.
+        \\No matches returns: <search pattern="..." path="..."></search>
+        \\Response format:
+        \\<search pattern="regex" path="path">
+        \\  <file path="path/to/file.zig" total="100" count="3">
+        \\    <m><l>10</l><s>snippet at line 10</s></m>
+        \\    <m><l>25</l><s>snippet at line 25</s></m>
+        \\  </file>
+        \\</search>
         \\Where: total=file total lines, count=number of matches in this file.
         \\
         \\- Use this to locate symbols, functions, or types before reading.

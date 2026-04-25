@@ -42,7 +42,7 @@ test "search returns warning XML when no matches found" {
     try std.testing.expect(has_not_found);
 }
 
-test "search_result_to_string_grouped returns empty for no matches" {
+test "search_result_to_string_grouped returns wrapper for no matches" {
     const allocator = std.testing.allocator;
 
     var empty_matches = std.ArrayList(search.SearchMatch).empty;
@@ -53,11 +53,15 @@ test "search_result_to_string_grouped returns empty for no matches" {
         .content = "<warning>pattern not found</warning>",
     };
 
-    // search_result_to_string_grouped should return empty for no matches
-    const output = try search.search_result_to_string_grouped(allocator, result);
+    // search_result_to_string_grouped should return wrapper with pattern/path even for no matches
+    const output = try search.search_result_to_string_grouped(allocator, result, "test_pattern", "src/");
     defer allocator.free(output);
 
-    try std.testing.expectEqual(@as(usize, 0), output.len);
+    // Should contain the wrapper tags with pattern and path
+    try std.testing.expect(std.mem.indexOf(u8, output, "<search") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "</search>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "pattern=\"test_pattern\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "path=\"src/\"") != null);
 }
 
 test "search_result_to_string_grouped groups matches by file" {
@@ -91,8 +95,14 @@ test "search_result_to_string_grouped groups matches by file" {
         .content = "",
     };
 
-    const output = try search.search_result_to_string_grouped(allocator, result);
+    const output = try search.search_result_to_string_grouped(allocator, result, "test_pattern", "src/");
     defer allocator.free(output);
+
+    // Verify grouped format contains search wrapper
+    try std.testing.expect(std.mem.indexOf(u8, output, "<search") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "</search>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "pattern=\"test_pattern\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "path=\"src/\"") != null);
 
     // Verify grouped format contains file headers
     try std.testing.expect(std.mem.indexOf(u8, output, "<file") != null);

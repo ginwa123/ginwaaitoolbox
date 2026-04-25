@@ -867,7 +867,12 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         return ToolExecResult{ .output = output };
     }
 
-    const res_search = try search_tool_mod.search_result_to_string_grouped(ctx.allocator, search_result);
+    const res_search = try search_tool_mod.search_result_to_string_grouped(
+        ctx.allocator,
+        search_result,
+        parsed.value.pattern,
+        parsed.value.path,
+    );
     search_result.deinit(ctx.allocator);
 
     return ToolExecResult{ .output = res_search };

@@ -402,12 +402,12 @@ pub fn get_session_messages_sorted(
         argv = &.{ session_id, c, limit_str };
     } else {
         const order_part = switch (sort_spec) {
-            .created_at_asc => " ORDER BY created_at ASC, id ASC",
-            .created_at_desc => " ORDER BY created_at DESC, id DESC",
+            .created_at_asc => " ORDER BY created_at ASC, h.id ASC",
+            .created_at_desc => " ORDER BY created_at DESC, h.id DESC",
             .id_asc => " ORDER BY id ASC",
             .id_desc => " ORDER BY id DESC",
-            .role_asc => " ORDER BY role ASC, created_at ASC, id ASC",
-            .role_desc => " ORDER BY role DESC, created_at DESC, id DESC",
+            .role_asc => " ORDER BY role ASC, created_at ASC, h.id ASC",
+            .role_desc => " ORDER BY role DESC, created_at DESC, h.id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
