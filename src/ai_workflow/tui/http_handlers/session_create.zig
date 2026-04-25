@@ -9,6 +9,7 @@ const logger = nalarcore.logger;
 const httpz = http_server.httpz;
 const WorkflowArgs = @import("mod.zig").WorkflowArgs;
 const generateSessionId = @import("mod.zig").generateSessionId;
+const broadcastSessionCreated = @import("mod.zig").broadcastSessionCreated;
 
 /// Helper to get nalar data directory (~/local/share/nalar/data/apps)
 fn getDataAppsDir(allocator: std.mem.Allocator) ![]u8 {
@@ -221,6 +222,9 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                             // Non-fatal error, continue anyway
                         };
                     }
+
+                    // Broadcast session_created event to all connected session stream clients
+                    broadcastSessionCreated(thread_alloc, args.session_id, args.session_name);
 
                     // Create workflow args
                     const workflow_args = thread_alloc.create(WorkflowArgs) catch return;

@@ -256,6 +256,7 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | GET | `/api/stream/:session_id` | SSE real-time events |
 | POST | `/api/session` | Create session |
 | GET | `/api/session` | List sessions (cursor pagination) |
+| GET | `/api/session/stream` | SSE session events (session_created notifications) |
 | GET | `/api/session/:session_id` | Get session |
 | GET | `/api/session/:session_id/messages` | Get messages |
 | GET | `/api/session/exists/:session_id` | Check exists |

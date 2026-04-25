@@ -960,9 +960,9 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
     // tools[15] = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
     // tools[16] = lsp_document_symbol_mod.lsp_document_symbol_tool,
     // tools[17] = lsp_hover_mod.lsp_hover_tool,
-    tools[13] = web_search_mod.web_search_tool;
-    tools[14] = glob_tool_mod.glob_tool;
-    tools[15] = search_tool_mod.search_tool;
+    
+    tools[13] = glob_tool_mod.glob_tool;
+    tools[14] = search_tool_mod.search_tool;
     return tools;
 }
 

@@ -47,6 +47,10 @@ pub const worker_status_handler = @import("worker_status.zig").worker_status_han
 pub const worker_list_handler = @import("worker_list.zig").worker_list_handler;
 pub const worker_cancel_handler = @import("worker_cancel.zig").worker_cancel_handler;
 
+// Session stream handler
+pub const sessionStreamHandler = @import("session_stream.zig").sessionStreamHandler;
+pub const broadcastSessionCreated = @import("session_stream.zig").broadcastSessionCreated;
+
 // =============================================================================
 // Shared Types & Helpers
 // =============================================================================

@@ -442,6 +442,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, input: BashInput) !BashOutput 
 
 pub fn bash_result_to_string(allocator: std.mem.Allocator, result: BashOutput) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
+        \\<command>{s}</command>
         \\<stdout>{s}</stdout>
         \\<stderr>{s}</stderr>
         \\<exit_code>{d}</exit_code>
@@ -451,6 +452,7 @@ pub fn bash_result_to_string(allocator: std.mem.Allocator, result: BashOutput) !
         \\<stderr_lines>{d}</stderr_lines>
         \\<is_self>{}</is_self>
     , .{
+        result.command,
         result.stdout,
         result.stderr,
         result.exit_code,
