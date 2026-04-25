@@ -144,7 +144,7 @@ pub fn getSessionListWithCursor(
     defer allocator.free(where_clause);
 
     const sql_final = try std.fmt.allocPrint(allocator,
-        \\SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') 
+        \\SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE {s}
@@ -385,18 +385,19 @@ pub fn get_session_messages_sorted(
         const cursor_cmp = if (is_asc) " AND created_at > ?" else " AND created_at < ?";
 
         const order_part = switch (sort_spec) {
-            .created_at_asc => " ORDER BY created_at ASC, id ASC",
-            .created_at_desc => " ORDER BY created_at DESC, id DESC",
-            .id_asc => " ORDER BY created_at ASC, id ASC",
-            .id_desc => " ORDER BY created_at DESC, id DESC",
-            .role_asc => " ORDER BY role ASC, created_at ASC, id ASC",
-            .role_desc => " ORDER BY role DESC, created_at DESC, id DESC",
+            .created_at_asc => " ORDER BY created_at ASC, h.id ASC",
+            .created_at_desc => " ORDER BY created_at DESC, h.id DESC",
+            .id_asc => " ORDER BY created_at ASC, h.id ASC",
+            .id_desc => " ORDER BY created_at DESC, h.id DESC",
+            .role_asc => " ORDER BY role ASC, created_at ASC, h.id ASC",
+            .role_desc => " ORDER BY role DESC, created_at DESC, h.id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
-            \\SELECT id, session_id, role, response_content, created_at,
-            \\       COALESCE(is_input, 0), COALESCE(is_output, 0), COALESCE(tool_name, ''),
-            \\       COALESCE(finish_reason, '')
-            \\FROM llm_history WHERE session_id = ?{s}{s} LIMIT ?
+            \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
+            \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, '')
+            \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
+            \\WHERE h.session_id = ?{s}{s} LIMIT ?
             , .{ cursor_cmp, order_part });
         argv = &.{ session_id, c, limit_str };
     } else {
@@ -409,10 +410,11 @@ pub fn get_session_messages_sorted(
             .role_desc => " ORDER BY role DESC, created_at DESC, id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
-            \\SELECT id, session_id, role, response_content, created_at,
-            \\       COALESCE(is_input, 0), COALESCE(is_output, 0), COALESCE(tool_name, ''),
-            \\       COALESCE(finish_reason, '')
-            \\FROM llm_history WHERE session_id = ?{s} LIMIT ?
+            \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
+            \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, '')
+            \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
+            \\WHERE h.session_id = ?{s} LIMIT ?
             , .{order_part});
         argv = &.{ session_id, limit_str };
     }
@@ -427,7 +429,18 @@ pub fn get_session_messages_sorted(
         messages.deinit(allocator);
     }
 
+    // Get cwd from first row (same for all rows since we filter by session_id)
+    var cwd: ?[]u8 = null;
+
     while (try rows.next()) |row| {
+        // Extract cwd from last column of first row
+        if (cwd == null) {
+            const cwd_val = row.values[9];
+            if (cwd_val.len > 0) {
+                cwd = try allocator.dupe(u8, cwd_val);
+            }
+        }
+
         const msg = SessionMessage{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -455,23 +468,6 @@ pub fn get_session_messages_sorted(
 
     // Return only limit messages if has_more
     const result_messages = if (has_more) messages.items[0..limit] else messages.items;
-
-    // Get cwd from sessions table
-    // ⚠️ IMPORTANT: Duplicate BEFORE defer deinit() runs because SQLite's text pointer
-    // is invalidated when the statement is finalized. The defer order means we must
-    // duplicate the value before exiting this scope.
-    var cwd: ?[]u8 = null;
-    {
-        var cwd_rows = try db.query(allocator, "SELECT COALESCE(cwd, '') FROM sessions WHERE id = ?", &.{session_id});
-        defer cwd_rows.deinit();
-        if (try cwd_rows.next()) |row| {
-            const cwd_val = row.values[0];
-            if (cwd_val.len > 0) {
-                cwd = try allocator.dupe(u8, cwd_val);
-            }
-        }
-    }
-    defer if (cwd) |c| allocator.free(c);
 
     return SessionMessageResponse{
         .messages = result_messages,
