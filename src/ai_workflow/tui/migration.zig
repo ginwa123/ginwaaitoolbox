@@ -259,9 +259,9 @@ pub const Migration018CreateSessionQueueMessages = struct {
             \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             \\)
         , &[_][]const u8{});
-        
-        try db.exec(allocator, 
-            "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session ON session_queue_messages(session_id)", 
+
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session ON session_queue_messages(session_id)",
             &[_][]const u8{}
         );
     }
@@ -282,9 +282,9 @@ pub const Migration019CreateWorkerTable = struct {
             \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             \\)
         , &[_][]const u8{});
-        
-        try db.exec(allocator, 
-            "CREATE INDEX IF NOT EXISTS idx_worker_session ON worker(session_id)", 
+
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_worker_session ON worker(session_id)",
             &[_][]const u8{}
         );
     }
@@ -391,7 +391,7 @@ pub const MigrationManager = struct {
         return .{
             .allocator = allocator,
             .db = db,
-            .migrations = .{},
+            .migrations = .empty,
         };
     }
 

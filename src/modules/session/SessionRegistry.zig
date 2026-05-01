@@ -46,7 +46,7 @@ pub const SessionRegistry = struct {
     /// Stopped flag per session - once stopped, is_running returns false until re-registered
     stopped: std.StringHashMap(?[]const u8),
     /// Mutex for thread-safe registration
-    register_mutex: std.Thread.Mutex = .{},
+    register_mutex: std.Io.Mutex = std.Io.Mutex.init,
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
@@ -98,8 +98,8 @@ pub const SessionRegistry = struct {
     }
 
     pub fn register(self: *Self, session_id: []const u8) !void {
-        self.register_mutex.lock();
-        defer self.register_mutex.unlock();
+        self.register_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.register_mutex.unlock(std.Options.debug_io);
 
         // Always clean up any orphaned entries first (entry might exist in some maps but not all)
         _ = self.cancelled.remove(session_id);
@@ -192,8 +192,8 @@ pub const SessionRegistry = struct {
     }
 
     pub fn unregister(self: *Self, session_id: []const u8) void {
-        self.register_mutex.lock();
-        defer self.register_mutex.unlock();
+        self.register_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.register_mutex.unlock(std.Options.debug_io);
 
         // Clean up message queue
         if (self.message_queues.fetchRemove(session_id)) |entry| {
@@ -244,8 +244,8 @@ pub const SessionRegistry = struct {
     }
 
     pub fn markStopped(self: *Self, session_id: []const u8) void {
-        self.register_mutex.lock();
-        defer self.register_mutex.unlock();
+        self.register_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.register_mutex.unlock(std.Options.debug_io);
 
         // Reset activity count to 0
         if (self.activity.get(session_id)) |atomic| {
@@ -335,8 +335,8 @@ pub const SessionRegistry = struct {
     // ========== Message Queues ==========
 
     pub fn queueMessage(self: *Self, session_id: []const u8, message: []const u8) void {
-        self.register_mutex.lock();
-        defer self.register_mutex.unlock();
+        self.register_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.register_mutex.unlock(std.Options.debug_io);
 
         if (self.message_queues.get(session_id)) |queue| {
             const msg_copy = self.allocator.dupe(u8, message) catch return;
@@ -367,8 +367,8 @@ pub const SessionRegistry = struct {
 
     /// Delete a specific message from the queue (removes first occurrence)
     pub fn deleteQueueMessages(self: *Self, session_id: []const u8, message: []const u8) void {
-        self.register_mutex.lock();
-        defer self.register_mutex.unlock();
+        self.register_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.register_mutex.unlock(std.Options.debug_io);
 
         if (self.message_queues.get(session_id)) |queue| {
             for (queue.items, 0..) |msg, i| {
@@ -385,13 +385,13 @@ pub const SessionRegistry = struct {
 // ========== Global Registry ==========
 
 var g_registry: ?*SessionRegistry = null;
-var g_mutex: std.Thread.Mutex = .{};
+var g_mutex: std.Io.Mutex = std.Io.Mutex.init;
 var g_allocator: ?std.mem.Allocator = null;
 
 /// Initialize the global registry (call once at startup)
 pub fn init_global_registry(allocator: std.mem.Allocator) void {
-    g_mutex.lock();
-    defer g_mutex.unlock();
+    g_mutex.lockUncancelable(std.Options.debug_io);
+    defer g_mutex.unlock(std.Options.debug_io);
     if (g_registry == null) {
         g_allocator = allocator;
         const registry = allocator.create(SessionRegistry) catch unreachable;
@@ -402,15 +402,15 @@ pub fn init_global_registry(allocator: std.mem.Allocator) void {
 
 /// Get the global registry instance
 pub fn get_global_registry() ?*SessionRegistry {
-    g_mutex.lock();
-    defer g_mutex.unlock();
+    g_mutex.lockUncancelable(std.Options.debug_io);
+    defer g_mutex.unlock(std.Options.debug_io);
     return g_registry;
 }
 
 /// Deinitialize the global registry (call at shutdown)
 pub fn deinit_global_registry() void {
-    g_mutex.lock();
-    defer g_mutex.unlock();
+    g_mutex.lockUncancelable(std.Options.debug_io);
+    defer g_mutex.unlock(std.Options.debug_io);
     if (g_registry) |registry| {
         if (g_allocator) |allocator| {
             registry.deinit();

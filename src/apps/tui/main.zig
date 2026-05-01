@@ -44,21 +44,21 @@ pub const App = struct {
     http_port: u16 = 8080,
     process_name: []const u8 = "nalar",
 
-    pub fn init(allocator: std.mem.Allocator, verbose: bool, is_noninteractive: bool, http_port: u16, process_name: []const u8, json: bool) !App {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, verbose: bool, is_noninteractive: bool, http_port: u16, process_name: []const u8, json: bool) !App {
         // Spawn the backend if it's not already running
-        backend.spawnBackend(verbose, http_port, process_name) catch |err| {
+        backend.spawnBackend(allocator, io, verbose, http_port, process_name) catch |err| {
             std.debug.print("{s}Error: Failed to spawn {s} backend: {s}{s}\n", .{ globals.red, process_name, @errorName(err), globals.reset });
             std.debug.print("{s}Make sure /usr/local/bin/{s} exists (run: zig build install){s}\n", .{ globals.yellow, process_name, globals.reset });
             return err;
         };
         // std.log.info("Spawned backend", .{});
-        try backend.waitForHttpServer(10000, http_port);
+        try backend.waitForHttpServer(io, 10000, http_port);
         // std.log.info("HTTP server ready", .{});
 
         // Only enable raw mode when running interactively (has a real TTY)
         // In non-interactive mode (e.g., -q flag), there's no terminal
         var original_termios: ?std.posix.termios = null;
-        const stdin_is_tty = std.posix.isatty(std.posix.STDIN_FILENO);
+        const stdin_is_tty = std.Io.File.isTty(std.Io.File.stdin(), std.Options.debug_io) catch false;
         if (!is_noninteractive) {
             if (stdin_is_tty) {
                 original_termios = try raw_mode.enableRawMode();
@@ -71,7 +71,7 @@ pub const App = struct {
         const kb = try keybindings.loadKeybindings(allocator);
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
-        const http_client = std.http.Client{ .allocator = arena.allocator() };
+        const http_client = std.http.Client{ .allocator = arena.allocator(), .io = io };
         return App{
             .http_client = http_client,
             .allocator = allocator,
@@ -167,6 +167,7 @@ pub fn main(init: std.process.Init) !void {
     // Initialize app (always needed, even for query mode)
     var app = try App.init(
         allocator,
+        io,
         opts.verbose,
         is_noninteractive,
         opts.port,

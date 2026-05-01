@@ -27,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("HOME={s}", .{home});
     }
 
-    var llm_config = nalar_mod.config.LlmConfig.init(parent_allocator, null, environment) catch |err| {
+    var llm_config = nalar_mod.config.LlmConfig.init(parent_allocator, io, null, environment) catch |err| {
         std.log.err("Failed to load config: {s}", .{@errorName(err)});
         return err;
     };
@@ -39,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
 
     var dbSqlite: sqlite.SqliteBackend = .{};
     defer dbSqlite.deinit();
-    try dbSqlite.init(db_path);
+    try dbSqlite.init(io, db_path);
 
     var migrationManager = migrations.MigrationManager.init(parent_allocator, &dbSqlite);
     defer migrationManager.deinit();
@@ -96,7 +96,7 @@ pub fn main(init: std.process.Init) !void {
 
     var port: u16 = 0;
 
-    var args_iter = std.process.argsIterate(init.minimal.args);
+    var args_iter = std.process.Args.Iterator.init(init.minimal.args);
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--port")) {
             if (args_iter.next()) |port_arg| {

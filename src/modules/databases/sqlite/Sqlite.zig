@@ -1,26 +1,29 @@
 const std = @import("std");
 
-pub const Error = error{
-    OpenFailed,
-    DatabaseNotFound,
-    PermissionDenied,
-    DiskFull,
-    DatabaseCorrupt,
-    QueryFailed,
-    PrepareFailed,
-    BindFailed,
-    ExecuteFailed,
-    RowNotFound,
-    OutOfMemory,
-};
+    pub const Error = error{
+        OpenFailed,
+        DatabaseNotFound,
+        PermissionDenied,
+        DiskFull,
+        DatabaseCorrupt,
+        QueryFailed,
+        PrepareFailed,
+        BindFailed,
+        ExecuteFailed,
+        RowNotFound,
+        OutOfMemory,
+        Canceled,
+    };
 
 pub const SqliteBackend = struct {
     const c = @cImport(@cInclude("sqlite3.h"));
 
+    io: std.Io = .failing,
     db: ?*c.sqlite3 = null,
     mutex: std.Io.Mutex = .init,
 
-    pub fn init(self: *SqliteBackend, db_path: [:0]const u8) Error!void {
+    pub fn init(self: *SqliteBackend, io: std.Io, db_path: [:0]const u8) Error!void {
+        self.io = io;
         var db: ?*c.sqlite3 = null;
         const rc = c.sqlite3_open(db_path.ptr, &db);
         if (rc != c.SQLITE_OK) {
@@ -48,8 +51,8 @@ pub const SqliteBackend = struct {
 
     pub fn exec(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!void {
         _ = allocator;
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
         const db = self.db orelse return Error.DatabaseNotFound;
 
         var stmt: ?*c.sqlite3_stmt = null;
@@ -94,8 +97,8 @@ pub const SqliteBackend = struct {
     }
 
     pub fn queryRow(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!Row {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
 
         const db = self.db orelse return Error.DatabaseNotFound;
 
@@ -190,8 +193,8 @@ pub const SqliteBackend = struct {
     };
 
     pub fn query(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!Rows {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
         const db = self.db orelse return Error.DatabaseNotFound;
 
         var stmt: ?*c.sqlite3_stmt = null;

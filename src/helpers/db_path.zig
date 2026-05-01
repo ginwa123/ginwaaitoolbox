@@ -1,7 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-pub fn getDbPath(allocator: std.mem.Allocator, io: std.Io, environment: *std.process.Environ.Map) ![]u8 {
+pub fn getDbPath(allocator: std.mem.Allocator, io: std.Io, environment: *std.process.Environ.Map) ![:0]const u8 {
     const home = environment.get("HOME") orelse {
         std.log.err("Failed to get HOME environment variable", .{});
         return error.FailedToGetHome;

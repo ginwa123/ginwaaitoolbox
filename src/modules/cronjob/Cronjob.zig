@@ -53,7 +53,7 @@ pub const Cronjob = struct {
 
         while (running.load(.seq_cst)) {
             // Sleep for the configured interval
-            std.Thread.sleep(config.check_interval_ms * std.time.ns_per_ms);
+            std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = config.check_interval_ms * std.time.ns_per_ms }, .real) catch {};
 
             // Check if we should still be running
             if (!running.load(.seq_cst)) break;
@@ -77,7 +77,7 @@ fn checkAndUpdateProcesses(allocator: std.mem.Allocator, db_path: []const u8) !v
     const db_path_z = try allocator.dupeZ(u8, db_path);
     defer allocator.free(db_path_z);
     
-    try db.init(db_path_z);
+    try db.init(std.Options.debug_io, db_path_z);
     defer db.deinit();
 
     // Query all processes with 'running' status
@@ -145,7 +145,7 @@ pub fn getProcessStatus(allocator: std.mem.Allocator, db_path: []const u8, sessi
     const db_path_z = try allocator.dupeZ(u8, db_path);
     defer allocator.free(db_path_z);
     
-    try db.init(db_path_z);
+    try db.init(std.Options.debug_io, db_path_z);
     defer db.deinit();
 
     const query_sql = "SELECT status FROM session_background_process WHERE session_id = ? AND pid = ?";
@@ -169,7 +169,7 @@ pub fn getSessionProcesses(allocator: std.mem.Allocator, db_path: []const u8, se
     const db_path_z = try allocator.dupeZ(u8, db_path);
     defer allocator.free(db_path_z);
     
-    try db.init(db_path_z);
+    try db.init(std.Options.debug_io, db_path_z);
     defer db.deinit();
 
     const query_sql = "SELECT pid, command, log_path, started_at, status FROM session_background_process WHERE session_id = ?";
@@ -229,7 +229,7 @@ pub fn cleanupOldProcesses(allocator: std.mem.Allocator, db_path: []const u8, ol
     const db_path_z = try allocator.dupeZ(u8, db_path);
     defer allocator.free(db_path_z);
     
-    try db.init(db_path_z);
+    try db.init(std.Options.debug_io, db_path_z);
     defer db.deinit();
 
     const cutoff_time = std.time.timestamp() - older_than_seconds;

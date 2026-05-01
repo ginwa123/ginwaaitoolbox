@@ -24,7 +24,7 @@ pub const LogLevel = enum {
     pub fn fromString(str: []const u8) ?LogLevel {
         const upper = std.ascii.allocUpperString(std.heap.page_allocator, str) catch return null;
         defer std.heap.page_allocator.free(upper);
-        
+
         if (std.mem.eql(u8, upper, "TRACE")) return .trace;
         if (std.mem.eql(u8, upper, "DEBUG")) return .debug;
         if (std.mem.eql(u8, upper, "INFO")) return .info;
@@ -63,7 +63,7 @@ pub const AnsiColors = struct {
     pub const magenta = "\x1b[35m";
     pub const blue = "\x1b[34m";
     pub const white = "\x1b[37m";
-    
+
     /// Color rotation for agent output
     pub const agent_colors = [_][]const u8{ cyan, green, yellow, dim };
 };
@@ -99,41 +99,40 @@ pub const TextFormatter = struct {
 
     fn formatImpl(formatter_ctx: *anyopaque, allocator: std.mem.Allocator, entry: LogEntry) ![]const u8 {
         const self: *TextFormatter = @ptrCast(@alignCast(formatter_ctx));
-        
-        var list: std.ArrayList(u8) = .{};
+
+        var list: std.ArrayList(u8) = .empty;
         defer list.deinit(allocator);
-        const writer = list.writer(allocator);
-        
+
         // Timestamp
         if (self.include_timestamp) {
             const iso = try timing.timestampIso(allocator);
             defer allocator.free(iso);
-            try writer.print("[{s}] ", .{iso});
+            try list.print(allocator, "[{s}] ", .{iso});
         }
-        
+
         // Level
-        try writer.print("[{s}] ", .{entry.level.toString()});
-        
+        try list.print(allocator, "[{s}] ", .{entry.level.toString()});
+
         // Request ID
         if (self.include_request_id and entry.request_id != null) {
-            try writer.print("[{s}] ", .{entry.request_id.?});
+            try list.print(allocator, "[{s}] ", .{entry.request_id.?});
         }
-        
+
         // Location (file:line)
         if (self.include_location and entry.file != null) {
-            try writer.print("[{s}:{d}] ", .{entry.file.?, entry.line.?});
+            try list.print(allocator, "[{s}:{d}] ", .{entry.file.?, entry.line.?});
         }
-        
+
         // Message
-        try writer.print("{s}", .{entry.message});
-        
+        try list.print(allocator, "{s}", .{entry.message});
+
         // Context
         if (entry.context) |entry_ctx| {
-            try writer.print(" ({s})", .{entry_ctx});
+            try list.print(allocator, " ({s})", .{entry_ctx});
         }
-        
-        try writer.writeByte('\n');
-        
+
+        try list.append(allocator, '\n');
+
         return list.toOwnedSlice(allocator);
     }
 };
@@ -155,7 +154,7 @@ pub const JsonFormatter = struct {
 
     fn formatImpl(formatter_ctx: *anyopaque, allocator: std.mem.Allocator, entry: LogEntry) ![]const u8 {
         _ = formatter_ctx;
-        
+
         // Build JSON object using anonymous struct
         const json_obj = struct {
             level: []const u8,
@@ -174,7 +173,7 @@ pub const JsonFormatter = struct {
             .file = entry.file,
             .line = entry.line,
         };
-        
+
         const options: std.json.Stringify.Options = if (false) .{ .whitespace = .indent_2 } else .{};
         return std.json.Stringify.valueAlloc(allocator, json_obj, options);
     }
@@ -210,44 +209,43 @@ pub const ColorFormatter = struct {
 
     fn formatImpl(formatter_ctx: *anyopaque, allocator: std.mem.Allocator, entry: LogEntry) ![]const u8 {
         const self: *ColorFormatter = @ptrCast(@alignCast(formatter_ctx));
-        
-        var list: std.ArrayList(u8) = .{};
+
+        var list: std.ArrayList(u8) = .empty;
         defer list.deinit(allocator);
-        const writer = list.writer(allocator);
-        
+
         const level_color = if (self.color_by_level) getLevelColor(entry.level) else "";
         const reset = if (self.color_by_level) AnsiColors.reset else "";
-        
+
         // Timestamp (dimmed)
         if (self.include_timestamp) {
             const iso = try timing.timestampIso(allocator);
             defer allocator.free(iso);
-            try writer.print("{s}{s}{s} ", .{ AnsiColors.dim, iso, AnsiColors.reset });
+            try list.print(allocator, "{s}{s}{s} ", .{ AnsiColors.dim, iso, AnsiColors.reset });
         }
-        
+
         // Level (colored)
-        try writer.print("{s}{s}{s} ", .{ level_color, entry.level.toString(), reset });
-        
+        try list.print(allocator, "{s}{s}{s} ", .{ level_color, entry.level.toString(), reset });
+
         // Request ID (cyan)
         if (self.include_request_id and entry.request_id != null) {
-            try writer.print("{s}[{s}]{s} ", .{ AnsiColors.cyan, entry.request_id.?, AnsiColors.reset });
+            try list.print(allocator, "{s}[{s}]{s} ", .{ AnsiColors.cyan, entry.request_id.?, AnsiColors.reset });
         }
-        
+
         // Location (dimmed)
         if (self.include_location and entry.file != null) {
-            try writer.print("{s}[{s}:{d}]{s} ", .{ AnsiColors.dim, entry.file.?, entry.line.?, AnsiColors.reset });
+            try list.print(allocator, "{s}[{s}:{d}]{s} ", .{ AnsiColors.dim, entry.file.?, entry.line.?, AnsiColors.reset });
         }
-        
+
         // Message
-        try writer.print("{s}", .{entry.message});
-        
+        try list.print(allocator, "{s}", .{entry.message});
+
         // Context (dimmed)
         if (entry.context) |entry_ctx| {
-            try writer.print(" {s}({s}){s}", .{ AnsiColors.dim, entry_ctx, AnsiColors.reset });
+            try list.print(allocator, " {s}({s}){s}", .{ AnsiColors.dim, entry_ctx, AnsiColors.reset });
         }
-        
-        try writer.writeByte('\n');
-        
+
+        try list.append(allocator, '\n');
+
         return list.toOwnedSlice(allocator);
     }
 };

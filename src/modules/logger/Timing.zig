@@ -2,7 +2,7 @@ const std = @import("std");
 
 /// Get current timestamp in milliseconds since epoch
 pub fn timestampMs() i64 {
-    return std.time.milliTimestamp();
+    return @divTrunc(@as(i64, @intCast(std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds)), std.time.ns_per_ms);
 }
 
 /// Calculate elapsed time in milliseconds
@@ -27,21 +27,21 @@ pub fn formatDuration(ms: i64) Duration {
 /// Get current timestamp as ISO 8601 string (caller owns memory)
 /// Format: YYYY-MM-DDTHH:MM:SS.mmmZ
 pub fn timestampIso(allocator: std.mem.Allocator) ![]const u8 {
-    const ts = std.time.timestamp();
+    const ts_ns = std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds;
+    const ts = @divTrunc(ts_ns, std.time.ns_per_s);
     const epoch_seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(ts) };
     const epoch_day = epoch_seconds.getEpochDay();
     const day_seconds = epoch_seconds.getDaySeconds();
     const year_day = epoch_day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
-    
+
     const hours = day_seconds.getHoursIntoDay();
     const minutes = day_seconds.getMinutesIntoHour();
     const seconds = day_seconds.getSecondsIntoMinute();
-    
-    // Get milliseconds from millisecond timestamp
-    const ms_ts = std.time.milliTimestamp();
-    const ms = @as(u32, @intCast(@mod(ms_ts, 1000)));
-    
+
+    // Get milliseconds from nanoseconds timestamp
+    const ms = @as(u32, @intCast(@divTrunc(@mod(ts_ns, std.time.ns_per_s), std.time.ns_per_ms)));
+
     return std.fmt.allocPrint(
         allocator,
         "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z",

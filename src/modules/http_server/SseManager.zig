@@ -58,9 +58,9 @@ pub const SseConnectionManager = struct {
     /// Each client gets its own queue, allowing independent streaming
     clients: std.StringHashMap(std.ArrayList(ClientInfo)),
     /// Mutex to protect the clients map
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
     /// Condition for client count changes (for cleanup tracking)
-    cond: std.Thread.Condition = .{},
+    cond: std.Io.Condition = std.Io.Condition.init,
 
     /// Client info - holds a queue for a specific client connection
     pub const ClientInfo = struct {
@@ -71,8 +71,8 @@ pub const SseConnectionManager = struct {
     pub const Queue = struct {
         head: ?*SseQueueItem = null,
         tail: ?*SseQueueItem = null,
-        cond: std.Thread.Condition = .{},
-        mutex: std.Thread.Mutex = .{},
+        cond: std.Io.Condition = std.Io.Condition.init,
+        mutex: std.Io.Mutex = std.Io.Mutex.init,
         closed: bool = false,
 
         /// Add an item to the queue (thread-safe)
@@ -124,8 +124,8 @@ pub const SseConnectionManager = struct {
         return .{
             .allocator = allocator,
             .clients = std.StringHashMap(std.ArrayList(ClientInfo)).init(allocator),
-            .mutex = .{},
-            .cond = .{},
+            .mutex = std.Io.Mutex.init,
+            .cond = std.Io.Condition.init,
         };
     }
 

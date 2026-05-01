@@ -71,14 +71,10 @@ pub const LlmConfig = struct {
         };
 
         if (config_json.mcpServers) |mcp| {
-            var mcp_str: std.ArrayList(u8) = .empty;
-            defer mcp_str.deinit(allocator);
-
-            std.json.stringify(mcp, .{}, mcp_str.writer(allocator)) catch |err| {
+            const mcp_str_owned = std.json.Stringify.valueAlloc(allocator, mcp, .{}) catch |err| {
                 std.log.err("Failed to serialize mcpServers: {s}", .{@errorName(err)});
                 return error.ConfigFileReadError;
             };
-            const mcp_str_owned = try mcp_str.toOwnedSlice();
             defer allocator.free(mcp_str_owned);
 
             const reparsed = json.parseFromSlice(json.Value, allocator, mcp_str_owned, .{
@@ -115,17 +111,12 @@ pub const LlmConfig = struct {
         }
 
         if (self.mcpServers) |mcp| {
-            var mcp_str: std.ArrayList(u8) = .empty;
-            defer mcp_str.deinit(config.allocator);
-
-            std.json.stringify(mcp, .{}, mcp_str.writer(config.allocator)) catch {
+            const mcp_str_owned = std.json.Stringify.valueAlloc(config.allocator, mcp, .{}) catch {
                 self.allocator.free(config.api_key);
                 self.allocator.free(config.model);
                 self.allocator.free(config.base_url);
                 return error.InvalidJson;
             };
-
-            const mcp_str_owned = try mcp_str.toOwnedSlice();
             errdefer self.allocator.free(mcp_str_owned);
 
             const reparsed = json.parseFromSlice(json.Value, config.allocator, mcp_str_owned, .{

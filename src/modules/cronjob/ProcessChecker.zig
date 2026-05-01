@@ -21,8 +21,8 @@ pub const ProcessInfo = struct {
 pub fn checkProcessStatus(pid: i32) ProcessStatus {
     // Use kill with signal 0 to check if process exists
     // Signal 0 is a special signal that performs error checking without sending any signal
-    const result = std.posix.kill(@intCast(pid), 0);
-    
+    const result = std.posix.kill(@intCast(pid), @enumFromInt(0));
+
     if (result) |_| {
         // Process exists and is running
         return .running;

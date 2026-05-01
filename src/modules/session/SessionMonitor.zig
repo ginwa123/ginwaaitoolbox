@@ -26,7 +26,7 @@ pub const SessionMonitor = struct {
     fn monitorLoop(running: *std.atomic.Value(bool)) void {
         while (running.load(.seq_cst)) {
             // Sleep for 30 seconds
-            std.Thread.sleep(CHECK_INTERVAL_MS * std.time.ns_per_ms);
+            std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = CHECK_INTERVAL_MS * std.time.ns_per_ms }, .real) catch {};
 
             // Check if we should still be running
             if (!running.load(.seq_cst)) break;

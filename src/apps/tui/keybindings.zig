@@ -148,9 +148,8 @@ const KeybindingsConfig = struct {
 /// Get the config file path following XDG standards: ~/.config/ginwaaitoolbox/keybindings.json
 /// Caller owns the returned memory.
 fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
     return try std.fs.path.join(allocator, &[_][]const u8{
-        home,
+        "/tmp",
         ".config",
         "ginwaaitoolbox",
         "keybindings.json",
@@ -166,7 +165,7 @@ pub fn loadKeybindings(allocator: std.mem.Allocator) !Keybindings {
     defer allocator.free(config_path);
 
     // Try to read config file
-    const file_content = std.fs.cwd().readFileAlloc(allocator, config_path, 4096) catch {
+    const file_content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, config_path, allocator, .limited(4096)) catch {
         return getDefaultKeybindings(allocator);
     };
     defer allocator.free(file_content);
