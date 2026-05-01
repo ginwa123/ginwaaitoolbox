@@ -18,7 +18,7 @@ pub const SqliteBackend = struct {
     const c = @cImport(@cInclude("sqlite3.h"));
 
     db: ?*c.sqlite3 = null,
-    mutex: std.Thread.Mutex = std.Thread.Mutex{},
+    mutex: std.Io.Mutex = .init,
 
     pub fn init(self: *SqliteBackend, db_path: [:0]const u8) Error!void {
         var db: ?*c.sqlite3 = null;

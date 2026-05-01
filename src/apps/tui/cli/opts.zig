@@ -1,47 +1,38 @@
 const std = @import("std");
 
-/// CLI options structure
 pub const CliOptions = struct {
     query: ?[]const u8 = null,
-    continue_session: bool = false,  // true = auto-detect latest session
-    continue_session_id: ?[]const u8 = null,  // specific session ID if provided
+    continue_session: bool = false,
+    continue_session_id: ?[]const u8 = null,
     show_help: bool = false,
     show_version: bool = false,
     verbose: bool = false,
     port: u16 = 8080,
-    process: []const u8 = "nalar",  // backend binary name to spawn
-    json: bool = false,              // output response as clean JSON
+    process: []const u8 = "nalar",
+    json: bool = false,
 };
 
-/// Parse command line arguments
-pub fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
+pub fn parseCliArgs(allocator: std.mem.Allocator, io: std.Io, environment: *std.process.Environ.Map, args: std.process.Args) !CliOptions {
+    _ = io;
+    _ = environment;
     var opts = CliOptions{};
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
 
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    var args_iter = std.process.Args.iterate(args);
+    var i: usize = 0;
+    while (args_iter.next()) |arg| {
+        i += 1;
+        if (i == 1) continue;
         if (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--query")) {
-            if (i + 1 >= args.len) {
+            if (args_iter.next()) |next_arg| {
+                opts.query = try allocator.dupe(u8, next_arg);
+            } else {
                 return error.MissingQueryArgument;
             }
-            i += 1;
-            // CRITICAL: Allocate query BEFORE args is freed
-            opts.query = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--continue") or std.mem.eql(u8, arg, "--session")) {
-            // -c alone = auto-detect latest session
-            // -c <session_id> = continue specific session
             opts.continue_session = true;
-            if (i + 1 < args.len) {
-                // Check if next arg is a flag or a session ID
-                const next_arg = args[i + 1];
-                if (std.mem.startsWith(u8, next_arg, "-")) {
-                    // Next arg is a flag, not a session ID - auto-detect only
-                } else {
-                    // Next arg is a session ID
-                    i += 1;
-                    opts.continue_session_id = try allocator.dupe(u8, args[i]);
+            if (args_iter.next()) |next_arg| {
+                if (!std.mem.startsWith(u8, next_arg, "-")) {
+                    opts.continue_session_id = try allocator.dupe(u8, next_arg);
                 }
             }
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -51,29 +42,27 @@ pub fn parseCliArgs(allocator: std.mem.Allocator) !CliOptions {
         } else if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-V")) {
             opts.verbose = true;
         } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--port")) {
-            if (i + 1 >= args.len) {
+            if (args_iter.next()) |port_arg| {
+                opts.port = std.fmt.parseInt(u16, port_arg, 10) catch {
+                    return error.InvalidPortArgument;
+                };
+            } else {
                 return error.MissingPortArgument;
             }
-            i += 1;
-            opts.port = std.fmt.parseInt(u16, args[i], 10) catch {
-                return error.InvalidPortArgument;
-            };
         } else if (std.mem.eql(u8, arg, "--process")) {
-            if (i + 1 >= args.len) {
+            if (args_iter.next()) |process_name| {
+                opts.process = try allocator.dupe(u8, process_name);
+            } else {
                 return error.MissingProcessArgument;
             }
-            i += 1;
-            opts.process = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--json")) {
             opts.json = true;
         } else {
-            // Unknown argument, ignore for compatibility
         }
     }
     return opts;
 }
 
-/// Print help text
 pub fn printHelp() void {
     std.debug.print("nalar-tui - AI Agent Terminal UI\n\n", .{});
     std.debug.print("Usage: nalar-tui [options]\n\n", .{});

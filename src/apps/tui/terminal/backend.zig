@@ -1,12 +1,12 @@
 const std = @import("std");
+const Io = std.Io;
 const globals = @import("../globals.zig");
 
-/// Spawn the backend server as a daemon process
-pub fn spawnBackend(verbose: bool, port: u16, process_name: []const u8) !void {
+pub fn spawnBackend(allocator: std.mem.Allocator, io: std.Io, verbose: bool, port: u16, process_name: []const u8) !void {
     const backend_path_str = try std.fmt.allocPrint(std.heap.page_allocator, "/usr/local/bin/{s}", .{process_name});
     defer std.heap.page_allocator.free(backend_path_str);
-    const backend_path = try std.fs.realpathAlloc(std.heap.page_allocator, backend_path_str);
-    defer std.heap.page_allocator.free(backend_path);
+
+    const backend_path = try Io.Dir.realPathFileAbsoluteAlloc(io, backend_path_str, allocator);
 
     // Check if backend is already running by trying to connect to HTTP port
     const test_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch {

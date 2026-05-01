@@ -7,3 +7,4 @@ test_main
 /.worktrees
 .nalar/tasks/
 /docs
+/zig-pkg

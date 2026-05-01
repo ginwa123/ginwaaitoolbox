@@ -1063,7 +1063,7 @@ pub const Agent = struct {
         // This is a workaround for a potential Zig std lib issue where the state
         // might not be properly set by bodyReader
         const state_is_valid = switch (response.request.reader.state) {
-            .body_remaining_content_length => |_| response.head.transfer_encoding == .none and response.head.content_length != null,
+            .body_remaining_content_length => response.head.transfer_encoding == .none and response.head.content_length != null,
             .body_remaining_chunk_len => response.head.transfer_encoding == .chunked,
             .body_none => response.head.transfer_encoding == .none and response.head.content_length == null,
             else => false,

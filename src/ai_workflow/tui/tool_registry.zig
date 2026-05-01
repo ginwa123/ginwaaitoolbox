@@ -983,10 +983,13 @@ pub fn isKnownTool(name: []const u8) bool {
 
 /// Get all tool names
 pub fn getToolNames() []const []const u8 {
-    var names: [UNIFIED_TOOL_REGISTRY.len][]const u8 = undefined;
-    for (UNIFIED_TOOL_REGISTRY, 0..) |tool, i| {
-        names[i] = tool.name;
-    }
+    const names = comptime blk: {
+        var n: [UNIFIED_TOOL_REGISTRY.len][]const u8 = undefined;
+        for (UNIFIED_TOOL_REGISTRY, 0..) |tool, i| {
+            n[i] = tool.name;
+        }
+        break :blk n;
+    };
     return &names;
 }
 

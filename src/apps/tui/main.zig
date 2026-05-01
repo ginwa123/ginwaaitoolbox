@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const keybindings = @import("keybindings.zig");
+const Io = std.Io;
 
 // Enable TLS support for HTTP client
 pub const std_options: std.Options = .{
@@ -113,15 +114,17 @@ fn runQueryMode(app: *App, query: []const u8) !void {
     // Response is already printed by readResponseAndStreamRunLLM
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    var arena_allocator = std.heap.ArenaAllocator.init(gpa.allocator());
+pub fn main(init: std.process.Init) !void {
+    const arena_allocator = init.arena;
     defer arena_allocator.deinit();
     const allocator = arena_allocator.allocator();
+    const io = init.io;
+    const environment = init.environ_map;
+    const args = init.minimal.args;
+
 
     // Parse CLI arguments
-    const opts = cli.parseCliArgs(allocator) catch |err| {
+    const opts = cli.parseCliArgs(allocator, io, environment, args) catch |err| {
         if (err == error.MissingQueryArgument) {
             std.debug.print("Error: -q/--query requires an argument\n", .{});
             return error.MissingQueryArgument;
@@ -158,7 +161,7 @@ pub fn main() !void {
 
     // Determine if we're in non-interactive mode (CLI query mode vs interactive TUI)
     // Also consider non-interactive if stdin is not a TTY
-    const stdin_is_tty = std.posix.isatty(std.posix.STDIN_FILENO);
+    const stdin_is_tty = Io.File.stdin().isTty(io) catch false;
     const is_noninteractive = opts.query != null or !stdin_is_tty;
 
     // Initialize app (always needed, even for query mode)
