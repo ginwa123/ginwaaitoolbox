@@ -35,8 +35,8 @@ pub const list_skills_tool = AgentTool{
 /// Execute the list_skills tool
 /// Returns a JSON string with the list of available skills
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn execute_list_skills(allocator: std.mem.Allocator) ![]const u8 {
-    const skills_list = skills.list_skills(allocator);
+pub fn execute_list_skills(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const skills_list = skills.list_skills(allocator, io);
     defer skills.free_skills_list(allocator, skills_list);
 
     // Build JSON array

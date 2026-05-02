@@ -28,8 +28,8 @@ pub const list_agents_tool = AgentTool{
 /// Execute the list_agents tool
 /// Returns a JSON string with the list of available agents
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeListAgents(allocator: std.mem.Allocator) ![]const u8 {
-    const agents_list = agents.listAgents(allocator);
+pub fn executeListAgents(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const agents_list = agents.listAgents(allocator, io);
     defer agents.freeAgentsList(allocator, agents_list);
 
     // Build JSON array

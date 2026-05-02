@@ -159,26 +159,26 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const max_lines = input.max_lines orelse 1000;
     const timeout_sec = input.timeout orelse 30;
 
-    var child = std.process.Child.init(&.{ "bash", "-c", input.command }, allocator);
-    if (input.cwd) |cwd| {
-        child.cwd = cwd;
-    }
-    child.stdin_behavior = if (input.stdin_data != null) .Pipe else .Close;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    try child.spawn();
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "bash", "-c", input.command },
+        .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
+        .stdin = if (input.stdin_data != null) .pipe else .close,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
 
     if (input.stdin_data) |data| {
         if (child.stdin) |stdin| {
-            try stdin.writeAll(data);
-            stdin.close();
+            var write_buf: [1024]u8 = undefined;
+            var stdin_writer = std.Io.File.writer(stdin, io, &write_buf);
+            try stdin_writer.interface.writeAll(data);
+            stdin.close(io);
             child.stdin = null;
         }
     }
 
     const timeout_ns = @as(u64, timeout_sec) * std.time.ns_per_s;
-    const start_time = std.time.nanoTimestamp();
+    const start_time = std.Io.Timestamp.now(io, .real).nanoseconds;
 
     const ArrayList = std.ArrayList;
     var stdout_data: ArrayList(u8) = .empty;
@@ -226,11 +226,11 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
 
     while (true) {
         // Check timeout first
-        const elapsed = std.time.nanoTimestamp() - start_time;
+        const elapsed = std.Io.Timestamp.now(io, .real).nanoseconds - start_time;
         if (elapsed > timeout_ns) {
             timeout_hit = true;
-            _ = child.kill() catch {};
-            child_term = child.wait() catch .{ .Unknown = 1 };
+            child.kill(io);
+            child_term = child.wait(io) catch .{ .unknown = 1 };
             break;
         }
 
@@ -252,7 +252,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         // Check stdout using stored index
         if (stdout_idx) |idx| {
             if (poll_fds[idx].revents & posix.POLL.IN != 0) {
-                const bytes_read = child.stdout.?.read(&buf) catch 0;
+                const bytes_read = std.Io.File.readStreaming(child.stdout.?, io, &.{&buf}) catch 0;
                 if (bytes_read > 0) {
                     any_read = true;
                     // Always count newlines
@@ -300,7 +300,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         // Check stderr using stored index
         if (stderr_idx) |idx| {
             if (poll_fds[idx].revents & posix.POLL.IN != 0) {
-                const bytes_read = child.stderr.?.read(&buf) catch 0;
+                const bytes_read = std.Io.File.readStreaming(child.stderr.?, io, &.{&buf}) catch 0;
                 if (bytes_read > 0) {
                     any_read = true;
                     // Always count newlines
@@ -352,20 +352,20 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
 
         if (all_closed or (!any_read and ready > 0)) {
             // Pipes closed or poll returned but no data = process likely exited
-            child_term = child.wait() catch .{ .Unknown = 1 };
+            child_term = child.wait(io) catch .{ .unknown = 1 };
             break;
         }
     }
 
     if (child_term == null) {
-        child_term = child.wait() catch .{ .Unknown = 1 };
+        child_term = child.wait(io) catch .{ .unknown = 1 };
     }
 
     const exit_code: i32 = switch (child_term.?) {
-        .Exited => |code| @as(i32, @intCast(code)),
-        .Signal => |sig| -@as(i32, @intCast(sig)),
-        .Stopped => |code| -@as(i32, @intCast(code)),
-        .Unknown => -1,
+        .exited => |code| @as(i32, @intCast(code)),
+        .signal => |sig| -@as(i32, @intCast(@intFromEnum(sig))),
+        .stopped => |code| -@as(i32, @intCast(@intFromEnum(code))),
+        .unknown => -1,
     };
 
     // Truncate output by line count if max_lines was exceeded

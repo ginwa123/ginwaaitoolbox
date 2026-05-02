@@ -61,7 +61,8 @@ fn read_message(allocator: std.mem.Allocator, io: std.Io, stdout: std.Io.File) !
 
     var total_read: usize = 0;
     while (total_read < content_len) {
-        const n = try stdout.read(body[total_read..]);
+        const remaining = body[total_read..];
+        const n = try std.Io.File.readStreaming(stdout, io, &.{remaining});
         if (n == 0) return LspError.InvalidResponse;
         total_read += n;
     }
@@ -267,7 +268,7 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: L
     defer allocator.free(content);
 
     // Find zls binary
-    const zls_path = try find_zls(allocator);
+    const zls_path = try find_zls(allocator, io);
     defer allocator.free(zls_path);
 
     // Spawn zls
@@ -290,7 +291,7 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: L
     defer allocator.free(uri);
 
     // Find project root by searching upward for build.zig
-    const root_dir = try find_project_root(allocator, input.file_path);
+    const root_dir = try find_project_root(allocator, io, input.file_path);
     defer allocator.free(root_dir);
     const root_uri = try std.fmt.allocPrint(allocator, "file://{s}", .{root_dir});
     defer allocator.free(root_uri);
@@ -318,7 +319,7 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: L
     const max_init_attempts = 10;
 
     while (init_attempts < max_init_attempts) {
-        const msg_data = try read_message(allocator, stdout);
+        const msg_data = try read_message(allocator, io, stdout);
 
         // Parse to check if this is the response with id: 1
         var temp_parsed = json.parseFromSlice(json.Value, allocator, msg_data, .{}) catch {
@@ -351,7 +352,7 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: L
         \\{"jsonrpc":"2.0","method":"initialized","params":{}}
     );
     defer allocator.free(initialized_msg);
-    try stdin.writeAll(initialized_msg);
+    try std.Io.File.writeStreamingAll(stdin, io, initialized_msg);
 
     // 3. Send didOpen - build JSON manually for simplicity
     const didopen_json = try std.fmt.allocPrint(allocator,
@@ -382,28 +383,27 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: L
     const didopen_msg = try create_message(allocator, full_didopen);
     defer allocator.free(didopen_msg);
     std.debug.print("didOpen message: {s}\n", .{didopen_msg});
-    try stdin.writeAll(didopen_msg);
+    try std.Io.File.writeStreamingAll(stdin, io, didopen_msg);
     std.debug.print("Sent didOpen message\n", .{});
 
     // Small delay to let zls process the didOpen
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    std.Io.sleep(io, std.Io.Duration{ .nanoseconds = 100 * std.time.ns_per_ms }, .real) catch {};
 
     // 4. Send definition request - build JSON using ArrayList
     var def_json = std.ArrayList(u8).empty;
     defer def_json.deinit(allocator);
-    const w = def_json.writer(allocator);
-    try w.print("{{", .{});
-    try w.print("\"jsonrpc\":\"2.0\",", .{});
-    try w.print("\"id\":2,", .{});
-    try w.print("\"method\":\"textDocument/definition\",", .{});
-    try w.print("\"params\":{{", .{});
-    try w.print("\"textDocument\":{{\"uri\":\"{s}\"}},", .{uri});
-    try w.print("\"position\":{{\"line\":{d},\"character\":{d}}}", .{ input.line, input.character });
-    try w.print("}}}}", .{});
+    try def_json.print(allocator, "{{", .{});
+    try def_json.print(allocator, "\"jsonrpc\":\"2.0\",", .{});
+    try def_json.print(allocator, "\"id\":2,", .{});
+    try def_json.print(allocator, "\"method\":\"textDocument/definition\",", .{});
+    try def_json.print(allocator, "\"params\":{{", .{});
+    try def_json.print(allocator, "\"textDocument\":{{\"uri\":\"{s}\"}},", .{uri});
+    try def_json.print(allocator, "\"position\":{{\"line\":{d},\"character\":{d}}}", .{ input.line, input.character });
+    try def_json.print(allocator, "}}}}", .{});
 
     const def_msg = try create_message(allocator, def_json.items);
     defer allocator.free(def_msg);
-    try stdin.writeAll(def_msg);
+    try std.Io.File.writeStreamingAll(stdin, io, def_msg);
 
     // 5. Read definition response (may need to skip notifications)
     var def_response: []u8 = undefined;
@@ -411,7 +411,7 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: L
     const max_attempts = 10;
 
     while (attempts < max_attempts) {
-        const msg_data = try read_message(allocator, stdout);
+        const msg_data = try read_message(allocator, io, stdout);
 
         // Parse to check if this is the response with id: 2
         var temp_parsed = json.parseFromSlice(json.Value, allocator, msg_data, .{}) catch {

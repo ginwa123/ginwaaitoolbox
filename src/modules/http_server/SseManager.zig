@@ -99,11 +99,17 @@ pub const SseConnectionManager = struct {
             defer self.mutex.unlock(self.io);
 
             // Wait for an item or timeout
-            const deadline = std.time.nanoTimestamp() + @as(i64, @intCast(timeout_ns));
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            const now_ns = @as(i64, ts.sec) * 1_000_000_000 + @as(i64, ts.nsec);
+            const deadline = now_ns + @as(i64, @intCast(timeout_ns));
             while (self.head == null and !self.closed) {
-                const remaining = @as(u64, @intCast(deadline - std.time.nanoTimestamp()));
+                var ts2: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts2);
+                const now_ns2 = @as(i64, ts2.sec) * 1_000_000_000 + @as(i64, ts2.nsec);
+                const remaining = @as(u64, @intCast(deadline - now_ns2));
                 if (remaining == 0) break;
-                self.cond.wait(&self.mutex);
+                self.cond.wait(self.io, &self.mutex) catch {};
             }
 
             if (self.head) |item| {

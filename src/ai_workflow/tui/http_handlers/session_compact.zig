@@ -40,7 +40,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
             std.debug.print("[COMPACTION] Manual compaction triggered for session {s}\n", .{session_id});
 
             const thread = try std.Thread.spawn(.{}, struct {
-                fn run(sqliteDb: *sqlite.SqliteBackend, sessId: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, compaction_kb: usize, threadAlloc: std.mem.Allocator, loggerPtr: *logger.Logger) void {
+                fn run(sqliteDb: *sqlite.SqliteBackend, sessId: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, compaction_kb: usize, threadAlloc: std.mem.Allocator, loggerPtr: *logger.Logger, io: std.Io) void {
                     var arena = std.heap.ArenaAllocator.init(threadAlloc);
                     defer arena.deinit();
                     const threadAlloc2 = arena.allocator();
@@ -68,7 +68,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                         .mcpServers = null,
                     };
 
-                    var workflow = ai_workflow.TUIWorkflow.init(ctxTui.io, sqliteDb, &llm_cfg, loggerPtr);
+                    var workflow = ai_workflow.TUIWorkflow.init(io, sqliteDb, &llm_cfg, loggerPtr);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = threadAlloc2,
                         .parent_session_id = sessId,
@@ -81,7 +81,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                         loggerPtr.errFmt("workflow.runAgenticMultiStep failed for session {s}", .{sessId}) catch {};
                     };
                 }
-            }.run, .{ sqlite_db, session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb, server.allocator, ctxTui.logger });
+            }.run, .{ sqlite_db, session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb, server.allocator, ctxTui.logger, ctxTui.io });
             thread.detach();
 
             res.status = 202;

@@ -83,7 +83,7 @@ pub fn handle_input(app: *App) !bool {
         if (app.is_noninteractive) {
             return true;
         }
-        std.Thread.sleep(10000000);
+        _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 10000000 }, null);
         return false;
     }
     const keystroke = buf[0];
@@ -108,7 +108,11 @@ pub fn handle_input(app: *App) !bool {
             std.debug.print("{s}[PASTED TEXT END]{s}", .{ globals.dim, globals.reset });
         } else {
             // Check for double escape (quick consecutive escape presses)
-            const now = std.time.milliTimestamp();
+            const now: i64 = blk: {
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+    };
             var is_double_escape = false;
             if (app.last_esc_time) |last| {
                 if (now - last < globals.DOUBLE_ESC_WINDOW_MS) {

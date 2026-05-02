@@ -150,7 +150,9 @@ pub fn runWithContext(
                         const log_path = stdout[log_path_start..];
 
                         // Save to database
-                        const started_at = std.time.timestamp();
+                        var ts: std.c.timespec = undefined;
+                        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                        const started_at: i64 = ts.sec;
                         background_process.save(db_ptr, allocator, sess_id, pid, parsed.value.command, log_path, started_at) catch {
                             // Log error but don't fail the tool execution
                         };
@@ -686,7 +688,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
 
                 // Mark this slot as in-progress (result defaults to failed)
                 // Generate unique session ID for this sub-agent
-                const sess_id = std.fmt.allocPrint(sub_agent_allocator, "subagent_{}_{s}", .{ std.Io.Timestamp.now(ctx.io, .real).nanoseconds, args_ptr.agent_name }) catch {
+                const sess_id = std.fmt.allocPrint(sub_agent_allocator, "subagent_{}_{s}", .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, args_ptr.agent_name }) catch {
                     args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{ args_ptr.agent_name }) catch {};
                     return;
                 };

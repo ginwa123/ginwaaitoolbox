@@ -35,8 +35,8 @@ pub const HttpClient = struct {
     allocator: std.mem.Allocator,
 
     /// Initialize HTTP client
-    pub fn init(allocator: std.mem.Allocator) HttpClient {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) HttpClient {
+        return .{ .allocator = allocator, .io = io };
     }
 
     /// Deinitialize HTTP client
@@ -239,7 +239,7 @@ pub const HttpClient = struct {
 pub fn callMcp(json_rpc_body: []const u8, allocator: std.mem.Allocator) !HttpResult {
     const url = "https://mcp.context7.com/mcp";
 
-    var client = HttpClient.init(allocator);
+    var client = HttpClient.init(allocator, std.testing.io);
     defer client.deinit();
 
     // Create headers with Accept header for MCP
@@ -254,13 +254,13 @@ pub fn callMcp(json_rpc_body: []const u8, allocator: std.mem.Allocator) !HttpRes
 
 test "http client init and deinit" {
     const allocator = testing.allocator;
-    var client = HttpClient.init(allocator);
+    var client = HttpClient.init(allocator, std.testing.io);
     client.deinit();
 }
 
 test "http client post with std.http" {
     const allocator = testing.allocator;
-    var client = HttpClient.init(allocator);
+    var client = HttpClient.init(allocator, std.testing.io);
     defer client.deinit();
 
     // Test POST to a simple endpoint
@@ -288,7 +288,7 @@ test "http client post with std.http" {
 
 test "http client post fallback to curl" {
     const allocator = testing.allocator;
-    var client = HttpClient.init(allocator);
+    var client = HttpClient.init(allocator, std.testing.io);
     defer client.deinit();
 
     // Test POST - should use curl fallback
@@ -372,7 +372,7 @@ test "postWithCurl handles multi-read responses" {
     // We test with a known large response endpoint.
 
     const allocator = testing.allocator;
-    var client = HttpClient.init(allocator);
+    var client = HttpClient.init(allocator, std.testing.io);
     defer client.deinit();
 
     // Use httpbin to get a response large enough to potentially
