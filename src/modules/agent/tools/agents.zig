@@ -191,7 +191,7 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
 /// Returns allocated string that caller must free, or null if neither exists
 pub fn resolveAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
     // Try local path first
-    if (getLocalAgentsPath(allocator)) |local_path| {
+    if (getLocalAgentsPath(allocator, io)) |local_path| {
         // Check if directory exists
         const exists = blk: {
             std.Io.Dir.cwd().access(io, local_path, .{}) catch {
@@ -232,7 +232,7 @@ pub fn freeAgentsPath(allocator: std.mem.Allocator, path: []const u8) void {
 /// Returns allocated array of file paths to NALAR.md files inside agent folders
 /// Empty files are excluded from the list
 pub fn listAgentFiles(allocator: std.mem.Allocator, io: std.Io) ?[][]const u8 {
-    const dir_path = resolveAgentsPath(allocator) orelse return null;
+    const dir_path = resolveAgentsPath(allocator, io) orelse return null;
     defer allocator.free(dir_path);
 
     // Open the agents directory
@@ -369,15 +369,15 @@ pub fn parseAgentFromDir(allocator: std.mem.Allocator, agent_name: []const u8) ?
 /// List all available agents from the agents directory
 /// Returns allocated array of AgentInfo structs
 /// Caller owns the returned memory and must free it with freeAgentsList()
-pub fn listAgents(allocator: std.mem.Allocator) []AgentInfo {
-    return listAgentsFromDir(allocator);
+pub fn listAgents(allocator: std.mem.Allocator, io: std.Io) []AgentInfo {
+    return listAgentsFromDir(allocator, io);
 }
 
 /// List all available agents from the agents directory
 /// Returns allocated array of AgentInfo structs
 /// Caller owns the returned memory and must free it with freeAgentsList()
-pub fn listAgentsFromDir(allocator: std.mem.Allocator) []AgentInfo {
-    const files = listAgentFiles(allocator) orelse return &.{};
+pub fn listAgentsFromDir(allocator: std.mem.Allocator, io: std.Io) []AgentInfo {
+    const files = listAgentFiles(allocator, io) orelse return &.{};
     defer freeAgentFiles(allocator, files);
 
     if (files.len == 0) return &.{};
@@ -387,7 +387,7 @@ pub fn listAgentsFromDir(allocator: std.mem.Allocator) []AgentInfo {
     defer agents_list.deinit(allocator);
 
     for (files) |file_path| {
-        const content = loadAgentFromPath(allocator, file_path);
+        const content = loadAgentFromPath(allocator, io, file_path);
         if (content == null) {
             continue;
         }

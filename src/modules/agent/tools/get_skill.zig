@@ -50,15 +50,15 @@ pub const get_skill_tool = AgentTool{
 /// Execute the get_skill tool
 /// Returns an XML string with the skill content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, input: GetSkillInput) ![]const u8 {
+pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, io: std.Io, input: GetSkillInput) ![]const u8 {
     // Check if path is provided - load from file
     if (input.path) |path| {
-        return loadSkillFromPath(allocator, path);
+        return loadSkillFromPath(allocator, io, path);
     }
 
     // Otherwise try to parse by skill name
     if (input.skill_name) |skill_name| {
-        return loadSkillByName(allocator, skill_name);
+        return loadSkillByName(allocator, io, skill_name);
     }
 
     // No skill_name or path provided
@@ -103,9 +103,9 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
 }
 
 /// Load skill by name from built-in skills
-fn loadSkillByName(allocator: std.mem.Allocator, skill_name: []const u8) ![]const u8 {
+fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8) ![]const u8 {
     // Try to parse the skill
-    if (skills.parse_skill(allocator, skill_name)) |content| {
+    if (skills.parse_skill(allocator, io, skill_name)) |content| {
         defer allocator.free(content);
         // Success - return the skill content
         const result = try std.fmt.allocPrint(allocator,
@@ -116,7 +116,7 @@ fn loadSkillByName(allocator: std.mem.Allocator, skill_name: []const u8) ![]cons
         return result;
     } else {
         // Skill not found - list available skills
-        const skills_list = skills.list_skills(allocator);
+        const skills_list = skills.list_skills(allocator, io);
         defer skills.free_skills_list(allocator, skills_list);
 
         // Build XML string for available skills

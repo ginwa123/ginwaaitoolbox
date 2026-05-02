@@ -28,12 +28,11 @@ pub fn buildMessages(
     historyMessages: []TUIHistory,
     tools: []tool_models.AgentTool,
 ) ![]agent.AgentMessage {
-    _ = io;
     // Build content strings internally
     const skills = try BuildSkillContent(allocator, db, session_id);
     defer allocator.free(skills);
 
-    const memoryMd = try BuildMemoryForAgent(allocator, cwd);
+    const memoryMd = try BuildMemoryForAgent(allocator, io, cwd);
     defer allocator.free(memoryMd);
 
     const backgroundProcessmessage = try BuildBackgroundProcessPrompt(allocator, db, session_id);
@@ -43,10 +42,10 @@ pub fn buildMessages(
     defer allocator.free(agentUsed);
 
     // buildAgentPrompt now handles processMessages internally
-    const activity_info = try buildActivityInfo(allocator, db, session_id);
+    const activity_info = try buildActivityInfo(allocator, io, db, session_id);
     defer allocator.free(activity_info);
 
-    const systemContent = try prompt.build_agent_prompt(allocator, cwd, "", skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info);
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, "", skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info);
 
     const systemMessage = agent.AgentMessage{
         .role = .system,
@@ -221,7 +220,7 @@ const ListToolsResult = struct {
 };
 
 /// Fetch MCP tools from all configured servers
-pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value) !?[]tool_models.AgentTool {
+pub fn buildMCPToolsRun(allocator: std.mem.Allocator, io: std.Io, mcpServers: std.json.Value) !?[]tool_models.AgentTool {
     // Check if mcpServers is configured
     const mcp_servers = switch (mcpServers) {
         .object => |obj| obj,
@@ -267,7 +266,7 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
         }
 
         // Fetch tools from this server
-        const tools = try fetchToolsFromServer(allocator, url, headers.items, server_name);
+        const tools = try fetchToolsFromServer(allocator, io, url, headers.items, server_name);
 
         try all_tools.appendSlice(allocator, tools);
     }
@@ -278,13 +277,14 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
 /// Fetch tools from a single MCP server
 fn fetchToolsFromServer(
     allocator: std.mem.Allocator,
+    io: std.Io,
     url: []const u8,
     _headers: []const McpHeader,
     server_name: []const u8,
 ) ![]tool_models.AgentTool {
     const tools_url = url;
 
-    var client = http_client.HttpClient.init(allocator);
+    var client = http_client.HttpClient.init(allocator, io);
     defer client.deinit();
 
     const request_body = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{}}");

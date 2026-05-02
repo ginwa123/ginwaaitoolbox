@@ -365,21 +365,21 @@ fn walkDir(
                                 // Recurse with the inner pattern
                                 var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, inner_pattern) catch break;
-                                walkDir(allocator, full_path, new_patterns.items, opts, results, depth + 1);
+                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1);
                                 new_patterns.deinit(allocator);
                             } else {
                                 // Non-recursive pattern with directory prefix
                                 // Match against the remaining pattern in this directory
                                 var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, remaining_pattern) catch break;
-                                walkDir(allocator, full_path, new_patterns.items, opts, results, depth + 1);
+                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1);
                                 new_patterns.deinit(allocator);
                             }
                         } else {
                             // Pattern ends with directory name - this directory itself matches
                             // (already handled above, but we recurse to check children if pattern has *)
                             if (pat[pat_idx + slash_idx - 1] != '*') {
-                                walkDir(allocator, full_path, patterns, opts, results, depth + 1);
+                                walkDir(allocator, io, full_path, patterns, opts, results, depth + 1);
                             }
                         }
                         break;
@@ -392,7 +392,7 @@ fn walkDir(
             }
 
             // Also do normal recursive descent
-            walkDir(allocator, full_path, patterns, opts, results, depth + 1);
+            walkDir(allocator, io, full_path, patterns, opts, results, depth + 1);
         }
     }
     std.Io.Dir.close(dir, io);
@@ -415,7 +415,7 @@ pub const GlobOptions = struct {
 // Main Glob Execution
 // ============================================================================
 
-pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
+pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !GlobResult {
     // Expand brace patterns
     const expanded = try expandBraces(input.pattern, allocator);
     defer {
@@ -439,7 +439,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
         results.deinit(allocator);
     }
 
-    walkDir(allocator, input.path, expanded, opts, &results, 0);
+    walkDir(allocator, io, input.path, expanded, opts, &results, 0);
 
     // Apply offset and limit
     const total = results.items.len;

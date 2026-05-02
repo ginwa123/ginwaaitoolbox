@@ -101,6 +101,7 @@ pub const AgentSaveInfo = struct {
 /// Run with database context for background process tracking
 pub fn runWithContext(
     allocator: std.mem.Allocator,
+    io: std.Io,
     tool_call: agent.ToolCall,
     db: ?*sqlite.SqliteBackend,
     session_id: ?[]const u8,
@@ -116,7 +117,7 @@ pub fn runWithContext(
 
     const is_background = parsed.value.background;
 
-    const bash_output = try bash_tool_mod.execute_bash(allocator, parsed.value);
+    const bash_output = try bash_tool_mod.execute_bash(allocator, io, parsed.value);
 
     // If background mode and DB is available, save the process info
     if (is_background and db != null and session_id != null) {
@@ -167,7 +168,7 @@ pub fn runWithContext(
 // Individual tool executors - all use unified ToolExecFunc signature
 
 pub fn execBash(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const output = try runWithContext(ctx.allocator, tc, ctx.db, ctx.session_id);
+    const output = try runWithContext(ctx.allocator, ctx.io, tc, ctx.db, ctx.session_id);
     return ToolExecResult{ .output = output };
 }
 
@@ -190,7 +191,7 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         .show_line_numbers = parsed.value.show_line_numbers,
     };
 
-    const read_result = try read_file_mod.read_file(ctx.allocator, parsed.value.path, read_opts);
+    const read_result = try read_file_mod.read_file(ctx.allocator, ctx.io, parsed.value.path, read_opts);
     defer read_result.deinit(ctx.allocator);
 
     // Single allocation: combines path and content into XML result
@@ -228,6 +229,7 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
 
     const result = text_replace_mod.executeTextReplace(
         ctx.allocator,
+        ctx.io,
         parsed.value.path,
         parsed.value.old_str,
         parsed.value.new_str,
@@ -254,7 +256,7 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    const write_result = write_file_mod.write_file(ctx.allocator, parsed.value) catch |err| {
+    const write_result = write_file_mod.write_file(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const output = write_file_mod.toXmlError(ctx.allocator, err, parsed.value.path);
         return ToolExecResult{ .output = output };
     };
@@ -267,7 +269,7 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
 
-    const output = list_skills_mod.execute_list_skills(ctx.allocator) catch blk: {
+    const output = list_skills_mod.execute_list_skills(ctx.allocator, ctx.io) catch blk: {
         break :blk try std.fmt.allocPrint(ctx.allocator, "{{\"error\": \"Failed to list skills\"}}", .{});
     };
     return ToolExecResult{ .output = output, .output_allocated = true };
@@ -285,7 +287,7 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const output = get_skill_mod.execute_get_skill_to_string(ctx.allocator, parsed.value) catch {
+    const output = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, parsed.value) catch {
         return ToolExecResult{ .output = "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>" };
     };
 
@@ -336,7 +338,7 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, parsed.value) catch {
+    const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, parsed.value) catch {
         const out = remove_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Unknown error");
         return ToolExecResult{ .output = out };
     };
@@ -355,7 +357,7 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, parsed.value) catch {
+    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, parsed.value) catch {
         const out = add_skill_mod.xmlError(ctx.allocator, parsed.value.name, "Failed to add skill");
         return ToolExecResult{ .output = out };
     };
@@ -374,7 +376,7 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, parsed.value) catch {
+    const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, ctx.io, parsed.value) catch {
         const out = edit_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Failed to edit skill");
         return ToolExecResult{ .output = out };
     };
@@ -431,7 +433,7 @@ pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     };
     defer parsed.deinit();
 
-    const output = remove_file_mod.executeRemoveFileToString(ctx.allocator, parsed.value) catch {
+    const output = remove_file_mod.executeRemoveFileToString(ctx.allocator, ctx.io, parsed.value) catch {
         const out = remove_file_mod.xmlError(ctx.allocator, "", "Failed to remove file");
         return ToolExecResult{ .output = out };
     };
@@ -441,7 +443,7 @@ pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
 pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
 
-    const output = list_agents_mod.executeListAgents(ctx.allocator) catch {
+    const output = list_agents_mod.executeListAgents(ctx.allocator, ctx.io) catch {
         const out = list_agents_mod.jsonError("Failed to list agents");
         return ToolExecResult{ .output = out };
     };
@@ -479,7 +481,7 @@ pub fn execLspDefinition(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit();
 
-    const result = lsp_definition_mod.execute_lsp_definition(ctx.allocator, parsed.value) catch |err| {
+    const result = lsp_definition_mod.execute_lsp_definition(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const output = lsp_definition_mod.xmlError(ctx.allocator, std.fmt.allocPrint(ctx.allocator, "Failed to get definition: {s}", .{@errorName(err)}) catch "Unknown error");
         return ToolExecResult{ .output = output };
     };
@@ -575,6 +577,7 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
 // This avoids capturing pointers from stack frames that may become invalid
 const SubAgentThreadArgs = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     sqlite_db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
     parent_sess_id: []const u8,
@@ -652,6 +655,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         const args = try ctx.allocator.create(SubAgentThreadArgs);
         args.* = .{
             .allocator = ctx.allocator,
+            .io = ctx.io,
             .sqlite_db = ctx.db,
             .logger = ctx.logger,
             .parent_sess_id = ctx.session_id,
@@ -694,7 +698,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 defer llm_history.removeWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch {};
 
                 args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name }) catch {};
-                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger);
+                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.io, args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger);
                 // Derive is_sub_agent from session_id - no need to pass it explicitly
                 const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
                 args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{ args_ptr.agent_name }) catch {};
@@ -814,7 +818,7 @@ pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    const result = try web_search_mod.execute_web_search(ctx.allocator, parsed.value);
+    const result = try web_search_mod.execute_web_search(ctx.allocator, ctx.io, parsed.value);
     defer result.deinit(ctx.allocator);
 
     const output = try web_search_mod.web_search_result_to_string(ctx.allocator, result);
@@ -833,7 +837,7 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    var glob_result = try glob_tool_mod.executeGlob(ctx.allocator, parsed.value);
+    var glob_result = try glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value);
     const res_glob = try glob_tool_mod.toXmlSuccess(ctx.allocator, glob_result);
     glob_result.deinit(ctx.allocator);
 
@@ -852,7 +856,7 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    var search_result = search_tool_mod.execute_search(ctx.allocator, parsed.value) catch |err| {
+    var search_result = search_tool_mod.execute_search(ctx.allocator, ctx.io, parsed.value) catch |err| {
         if (err == error.StdoutStreamTooLong) {
             const output = try ctx.allocator.dupe(u8,
                 \\<warning>Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.</warning>

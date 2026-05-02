@@ -29,6 +29,7 @@ fn stripSsePrefix(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
 /// nested arena issues that can cause @memcpy aliasing errors.
 pub fn handle_mcp_tool_run(
     parent_allocator: std.mem.Allocator,
+    io: std.Io,
     logger: *logger_mod.Logger,
     tool_call: agent.ToolCall,
     config: *const config_mod.LlmConfig,
@@ -123,7 +124,7 @@ pub fn handle_mcp_tool_run(
     }
 
     // Make HTTP request
-    var client = http_client.HttpClient.init(allocator);
+    var client = http_client.HttpClient.init(allocator, io);
     defer client.deinit();
 
     const result = client.post(url, request_body, headers) catch |err| {

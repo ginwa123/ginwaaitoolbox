@@ -119,13 +119,14 @@ pub const SseConnectionManager = struct {
             self.mutex.lockUncancelable(self.io);
             defer self.mutex.unlock(self.io);
             self.closed = true;
-            self.cond.broadcast();
+            self.cond.broadcast(self.io);
         }
     };
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
             .allocator = allocator,
+            .io = io,
             .clients = std.StringHashMap(std.ArrayList(ClientInfo)).init(allocator),
             .mutex = std.Io.Mutex.init,
             .cond = std.Io.Condition.init,
@@ -160,9 +161,11 @@ pub const SseConnectionManager = struct {
         // Get or create the client list for this session
         if (self.clients.getPtr(key)) |client_list| {
             // Session exists, append new client
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
             try client_list.append(self.allocator, ClientInfo{
                 .queue = queue,
-                .connected_at = std.time.timestamp(),
+                .connected_at = ts.sec,
             });
             std.log.info("SSE: Client connected to existing session: {s}, total clients: {d}", .{
                 session_id, client_list.items.len,
@@ -171,9 +174,11 @@ pub const SseConnectionManager = struct {
             // New session, create client list
             var client_list = std.ArrayList(ClientInfo).empty;
             errdefer client_list.deinit(self.allocator);
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
             try client_list.append(self.allocator, ClientInfo{
                 .queue = queue,
-                .connected_at = std.time.timestamp(),
+                .connected_at = ts.sec,
             });
             try self.clients.put(key, client_list);
             std.log.info("SSE: First client connected to new session: {s}", .{session_id});
@@ -225,7 +230,7 @@ pub const SseConnectionManager = struct {
     /// Create a new queue for a session
     pub fn createQueue(self: *Self) !*Queue {
         const queue = try self.allocator.create(Queue);
-        queue.* = .{};
+        queue.* = .{ .io = self.io };
         return queue;
     }
 

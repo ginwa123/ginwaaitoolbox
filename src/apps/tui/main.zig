@@ -76,6 +76,7 @@ pub const App = struct {
         return App{
             .http_client = http_client,
             .allocator = allocator,
+            .io = io,
             .original_termios = original_termios,
             .session_id = "",
             .input = std.ArrayList(u8).empty,
@@ -201,7 +202,7 @@ pub fn main(init: std.process.Init) !void {
         const cwd_slice = cwd_buf[0..cwd_len];
 
         var opt_session_id: ?[]const u8 = null;
-        opt_session_id = try messaging.get_latest_session_by_dir(app.allocator, app.http_port, cwd_slice);
+        opt_session_id = try messaging.get_latest_session_by_dir(app.allocator, app.io, app.http_port, cwd_slice);
         if (opt_session_id) |session_id| {
             app.session_id = try app.allocator.dupe(u8, session_id);
             std.debug.print("{s}Resuming latest session for this directory: {s}{s}\n", .{ globals.green, session_id, globals.reset });

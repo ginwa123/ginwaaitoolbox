@@ -61,6 +61,7 @@ pub const ResponseFormat = enum { json, xml };
 /// Workflow arguments for async LLM execution
 pub const WorkflowArgs = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     sqlite_db: *sqlite.SqliteBackend,
     logger: *logger.Logger,
     llm_config: *const config.LlmConfig,
@@ -84,9 +85,11 @@ const hexDigits = "0123456789abcdef";
 
 /// Generate a unique session ID using timestamp and random suffix
 pub fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
-    const timestamp = std.time.timestamp();
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const timestamp = ts.sec;
     var random_bytes: [8]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
+    std.c.arc4random_buf(&random_bytes, random_bytes.len);
 
     // Convert random bytes to hex string
     var hex_chars: [16]u8 = undefined;

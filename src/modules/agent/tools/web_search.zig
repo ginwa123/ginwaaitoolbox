@@ -7,7 +7,7 @@ const WebSearchResult = schemas.WebSearchResult;
 const AgentTool = schemas.AgentTool;
 
 /// Simple web browser - just takes a URL and returns page content
-pub fn execute_web_search(allocator: std.mem.Allocator, input: WebSearchInput) !WebSearchResult {
+pub fn execute_web_search(allocator: std.mem.Allocator, io: std.Io, input: WebSearchInput) !WebSearchResult {
     const command = try std.fmt.allocPrint(allocator, "agent-browser snapshot {s}", .{input.url});
     defer allocator.free(command);
 
@@ -17,7 +17,7 @@ pub fn execute_web_search(allocator: std.mem.Allocator, input: WebSearchInput) !
         .max_output = 1024 * 1024,
     };
 
-    const result = bashMod.execute_bash(allocator, bashInput) catch |err| {
+    const result = bashMod.execute_bash(allocator, io, bashInput) catch |err| {
         return WebSearchResult{
             .success = false,
             .content = try allocator.dupe(u8, ""),

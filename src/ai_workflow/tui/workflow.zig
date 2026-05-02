@@ -157,8 +157,9 @@ pub const TUIWorkflow = struct {
     config: *const config_mod.LlmConfig,
     logger: *logger_mod.Logger,
 
-    pub fn init(db: *sqlite.SqliteBackend, config: *const config_mod.LlmConfig, logger: *logger_mod.Logger) TUIWorkflow {
+    pub fn init(io: std.Io, db: *sqlite.SqliteBackend, config: *const config_mod.LlmConfig, logger: *logger_mod.Logger) TUIWorkflow {
         return .{
+            .io = io,
             .db = db,
             .config = config,
             .logger = logger,
@@ -210,7 +211,7 @@ pub const TUIWorkflow = struct {
         }
 
         // Fetch MCP tools
-        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.config.mcpServers orelse .null) catch |err| blk: {
+        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.io, self.config.mcpServers orelse .null) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
             break :blk null;
         }) orelse &[_]tool_models.AgentTool{};
@@ -228,7 +229,7 @@ pub const TUIWorkflow = struct {
         // Build messages for LLM
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
         defer messagesLists.deinit(allocator);
-        const initialMessages = try buildMessages(allocator, self.db, params.cwd, params.session_id, db_messages, merged_tools);
+        const initialMessages = try buildMessages(allocator, self.io, self.db, params.cwd, params.session_id, db_messages, merged_tools);
         try messagesLists.appendSlice(allocator, initialMessages);
 
         // Call the dynamic agent (single call only)
@@ -249,7 +250,7 @@ pub const TUIWorkflow = struct {
         };
 
         // Save assistant response to database
-        _ = try llm_history.saveMessage(allocator, self.db, .{
+        _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
             .session_id = params.session_id,
             .model = self.config.model,
             .cwd = params.cwd,
@@ -344,7 +345,7 @@ pub const TUIWorkflow = struct {
         var loopCounter: u32 = 0;
 
         // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.config.mcpServers orelse .null) catch |err| blk: {
+        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.io, self.config.mcpServers orelse .null) catch |err| blk: {
             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
             break :blk null;
         }) orelse &[_]tool_models.AgentTool{};
@@ -374,7 +375,7 @@ pub const TUIWorkflow = struct {
                 const queued_messages = registry.getQueueMessages(params.session_id);
                 if (queued_messages) |messages| {
                     for (messages.items) |msg| {
-                        _ = try llm_history.saveMessage(allocator, self.db, .{
+                        _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
                             .session_id = params.session_id,
                             .model = self.config.model,
                             .cwd = params.cwd,
@@ -434,7 +435,7 @@ pub const TUIWorkflow = struct {
                 }
                 break :blk max_token;
             };
-            const initialMessages = try buildMessages(allocator, self.db, params.cwd, params.session_id, db_messages, merged_tools);
+const initialMessages = try buildMessages(allocator, self.io, self.db, params.cwd, params.session_id, db_messages, merged_tools);
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
@@ -460,7 +461,7 @@ pub const TUIWorkflow = struct {
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
-                    _ = try llm_history.saveMessage(allocator, self.db, .{
+                    _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
                         .session_id = params.session_id,
                         .model = self.config.model,
                         .cwd = params.cwd,
@@ -522,13 +523,13 @@ pub const TUIWorkflow = struct {
                     _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool(allocator, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, merged_tools, &messagesLists);
+                    try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, merged_tools, &messagesLists);
                 } else if (finish_reason == .assistant) {
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        try handle_tool(allocator, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, merged_tools, &messagesLists);
+                        try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, merged_tools, &messagesLists);
                     } else {
                         // Treat as normal completion
-                        _ = try llm_history.saveMessage(allocator, self.db, .{
+                        _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
                             .session_id = params.session_id,
                             .model = self.config.model,
                             .cwd = params.cwd,

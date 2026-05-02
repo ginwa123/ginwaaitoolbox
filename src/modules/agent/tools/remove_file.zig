@@ -67,7 +67,7 @@ pub fn executeRemoveFileToString(
     }
 
     // Check if it's a directory by trying to open as dir
-    const is_directory = isDirectory(input.path);
+    const is_directory = isDirectory(io, input.path);
 
     if (is_directory) {
         // It's a directory

@@ -231,6 +231,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
 
                     workflow_args.* = .{
                         .allocator = thread_alloc,
+                        .io = args.ctxTui.io,
                         .sqlite_db = sqlite_db,
                         .logger = args.ctxTui.logger,
                         .llm_config = args.ctxTui.llm_config,
@@ -241,7 +242,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                         .allowed_tools = args.allowed_tools,
                     };
 
-                    var workflow = ai_workflow.TUIWorkflow.init(workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger);
+                    var workflow = ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = thread_alloc,
                         .parent_session_id = workflow_args.session_id,

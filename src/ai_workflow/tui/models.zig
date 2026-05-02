@@ -4,6 +4,7 @@ const logger = @import("nalarcore").logger;
 const std = @import("std");
 
 pub const ContextIPCTui = struct {
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     llm_config: *const config.LlmConfig,
     logger: *logger.Logger,

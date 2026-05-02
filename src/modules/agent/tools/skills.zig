@@ -131,7 +131,7 @@ pub fn get_skills_dir_path(allocator: std.mem.Allocator, io: std.Io) ?[]const u8
 /// Returns allocated array of file paths to SKILL.MD files inside skill folders
 /// Empty files are excluded from the list
 pub fn list_skill_files(allocator: std.mem.Allocator, io: std.Io) ?[][]const u8 {
-    const dir_path = get_skills_dir_path(allocator) orelse return null;
+    const dir_path = get_skills_dir_path(allocator, io) orelse return null;
     defer allocator.free(dir_path);
 
     // Open the skills directory
@@ -356,19 +356,19 @@ pub fn load_skills_from_path(allocator: std.mem.Allocator, io: std.Io, path: []c
 /// Parse a specific skill from the skills directory by name
 /// Returns allocated string with skill content, or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_skill(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
-    return parse_skill_from_dir(allocator, skill_name);
+pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8) ?[]const u8 {
+    return parse_skill_from_dir(allocator, io, skill_name);
 }
 
 /// Parse a specific skill from the skills directory by name
 /// Returns allocated string with skill content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_skill_from_dir(allocator: std.mem.Allocator, skill_name: []const u8) ?[]const u8 {
-    const files = list_skill_files(allocator) orelse return null;
+pub fn parse_skill_from_dir(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8) ?[]const u8 {
+    const files = list_skill_files(allocator, io) orelse return null;
     defer free_skill_files(allocator, files);
 
     for (files) |file_path| {
-        const content = load_skills_from_path(allocator, file_path);
+        const content = load_skills_from_path(allocator, io, file_path);
         if (content.len == 0) {
             allocator.free(content);
             continue;
@@ -390,15 +390,15 @@ pub fn parse_skill_from_dir(allocator: std.mem.Allocator, skill_name: []const u8
 /// List all available skills from the skills directory
 /// Returns allocated array of SkillInfo structs
 /// Caller owns the returned memory and must free it with free_skills_list()
-pub fn list_skills(allocator: std.mem.Allocator) []SkillInfo {
-    return list_skills_from_dir(allocator);
+pub fn list_skills(allocator: std.mem.Allocator, io: std.Io) []SkillInfo {
+    return list_skills_from_dir(allocator, io);
 }
 
 /// List all available skills from the skills directory
 /// Returns allocated array of SkillInfo structs
 /// Caller owns the returned memory and must free it with free_skills_list()
-pub fn list_skills_from_dir(allocator: std.mem.Allocator) []SkillInfo {
-    const files = list_skill_files(allocator) orelse return &.{};
+pub fn list_skills_from_dir(allocator: std.mem.Allocator, io: std.Io) []SkillInfo {
+    const files = list_skill_files(allocator, io) orelse return &.{};
     defer free_skill_files(allocator, files);
 
     if (files.len == 0) return &.{};
@@ -408,7 +408,7 @@ pub fn list_skills_from_dir(allocator: std.mem.Allocator) []SkillInfo {
     defer skills_list.deinit(allocator);
 
     for (files) |file_path| {
-        const content = load_skills_from_path(allocator, file_path);
+        const content = load_skills_from_path(allocator, io, file_path);
         if (content.len == 0) {
             allocator.free(content);
             continue;

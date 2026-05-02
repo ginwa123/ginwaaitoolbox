@@ -35,7 +35,7 @@ fn formatSessionEvent(allocator: std.mem.Allocator, data: []const u8, event_type
 
 /// SSE stream handler for session events - broadcasts session_created events
 /// Clients connect to receive notifications when sessions are created
-fn sessionSseStreamHandler(ctx: SessionStreamCtx, stream: std.net.Stream) void {
+fn sessionSseStreamHandler(ctx: SessionStreamCtx, stream: std.Io.net.Stream) void {
     ctx.log.infoFmt("Session SSE stream handler started", .{}) catch {};
 
     // Create a queue for this specific client

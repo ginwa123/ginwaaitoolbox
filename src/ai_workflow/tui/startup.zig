@@ -11,6 +11,7 @@ const logger_mod = nalar_mod.logger;
 /// Workflow args for spawning startup threads
 pub const WorkflowArgs = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     sqlite_db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
     llm_config: *const nalar_mod.config.LlmConfig,
@@ -68,6 +69,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
             const workflow_args = try allocator.create(WorkflowArgs);
             workflow_args.* = .{
                 .allocator = allocator,
+                .io = ctxTui.io,
                 .sqlite_db = sqlite_db,
                 .logger = ctxTui.logger,
                 .llm_config = ctxTui.llm_config,
@@ -92,7 +94,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                     }
                     var arena = std.heap.ArenaAllocator.init(args.allocator);
                     defer arena.deinit();
-                    var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.llm_config, args.logger);
+                    var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = arena.allocator(),
                         .parent_session_id = args.session_id,

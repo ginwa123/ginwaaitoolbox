@@ -68,7 +68,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                         .mcpServers = null,
                     };
 
-                    var workflow = ai_workflow.TUIWorkflow.init(sqliteDb, &llm_cfg, loggerPtr);
+                    var workflow = ai_workflow.TUIWorkflow.init(ctxTui.io, sqliteDb, &llm_cfg, loggerPtr);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = threadAlloc2,
                         .parent_session_id = sessId,

@@ -49,12 +49,13 @@ pub const HttpServer = struct {
     ctx: ?*anyopaque = null, // Contains ContextIPCTui which has .db inside
     sse_manager: SseConnectionManager,
 
-    pub fn init(allocator: std.mem.Allocator, ctx: ?*anyopaque, port: u16) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, ctx: ?*anyopaque, port: u16) Self {
         return .{
             .allocator = allocator,
+            .io = io,
             .port = if (port == 0) 8080 else port,
             .ctx = ctx,
-            .sse_manager = SseConnectionManager.init(allocator),
+            .sse_manager = SseConnectionManager.init(allocator, io),
         };
     }
 
@@ -72,7 +73,7 @@ pub const HttpServer = struct {
     }
 
     /// Run server with custom route configuration
-    pub fn runWithConfig(self: *Self, custom_routes: *const fn (port: u16, router: anytype) anyerror!void) !void {
+    pub fn runWithConfig(self: *Self, comptime custom_routes: fn (port: u16, router: anytype) anyerror!void) !void {
         global_server = self;
         defer global_server = null;
 

@@ -70,6 +70,7 @@ pub fn main(init: std.process.Init) !void {
     const ctxParent = try parent_allocator.create(ai_workflow_mod.ContextIPCTui);
     defer parent_allocator.destroy(ctxParent);
     ctxParent.* = ai_workflow_mod.ContextIPCTui{
+        .io = io,
         .db = &dbSqlite,
         .llm_config = &llm_config,
         .logger = global_logger_ptr,
@@ -115,7 +116,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var server = http_server.HttpServer.init(parent_allocator, ctxParent, port);
+    var server = http_server.HttpServer.init(parent_allocator, io, ctxParent, port);
 
     startup(parent_allocator, &server) catch |err| {
         std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});

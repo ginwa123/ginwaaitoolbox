@@ -114,7 +114,7 @@ test "cursor pagination logic" {
 
 test "HttpClient get method with curl" {
     const allocator = testing.allocator;
-    var client = HttpClient.init(allocator);
+    var client = HttpClient.init(allocator, std.testing.io);
     defer client.deinit();
 
     // This test verifies the GET method works with curl

@@ -103,6 +103,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                 const workflow_args = try server.allocator.create(WorkflowArgs);
                 workflow_args.* = .{
                     .allocator = server.allocator,
+                    .io = ctxTui.io,
                     .sqlite_db = sqlite_db,
                     .logger = ctxTui.logger,
                     .llm_config = ctxTui.llm_config,
@@ -125,7 +126,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                         }
                         var arena = std.heap.ArenaAllocator.init(args.allocator);
                         defer arena.deinit();
-                        var workflow = ai_workflow.TUIWorkflow.init(args.sqlite_db, args.llm_config, args.logger);
+                        var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger);
                         workflow.runAgenticMultiStep(.{
                             .parent_allocator = arena.allocator(),
                             .parent_session_id = args.session_id,

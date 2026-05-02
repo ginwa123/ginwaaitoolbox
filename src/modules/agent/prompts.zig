@@ -139,6 +139,7 @@ pub fn build_sub_agent_prompt(
 /// Build main agent prompt with all components combined
 pub fn build_agent_prompt(
     allocator: std.mem.Allocator,
+    io: std.Io,
     cwd: []const u8,
     treeDir: []const u8,
     skillsContent: []const u8,
@@ -232,7 +233,7 @@ pub fn build_agent_prompt(
     // 12. Skills list (dynamic from file system)
     try result.appendSlice(allocator, "\n\n<available_skills>\n");
     {
-        const skills_json = try list_skills.execute_list_skills(allocator);
+        const skills_json = try list_skills.execute_list_skills(allocator, io);
         defer allocator.free(skills_json);
 
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{}) catch {
@@ -297,7 +298,7 @@ pub fn build_agent_prompt(
 
     // 18. Dynamic agents list
     {
-        const agents_list = agents.listAgents(allocator);
+        const agents_list = agents.listAgents(allocator, io);
         defer agents.freeAgentsList(allocator, agents_list);
 
         if (agents_list.len > 0) {
