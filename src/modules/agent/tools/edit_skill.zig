@@ -49,7 +49,7 @@ pub const edit_skill_tool = AgentTool{
 /// Updates an existing skill file at .nalar/skills/<skill_name>/SKILL.MD
 /// Returns an XML string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeEditSkillToString(allocator: std.mem.Allocator, input: EditSkillInput) ![]const u8 {
+pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, input: EditSkillInput) ![]const u8 {
     // Validate input
     if (input.skill_name.len == 0) {
         return errorToXml(allocator, input.skill_name, "Skill name cannot be empty");
@@ -62,9 +62,10 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, input: EditSkillIn
 
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = std.posix.getcwd(&cwd_buf) catch {
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
         return errorToXml(allocator, input.skill_name, "Failed to get current working directory");
     };
+    const cwd = cwd_buf[0..cwd_len];
 
     // Build path to skill file
     const skill_file = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills", input.skill_name, "SKILL.MD" });
@@ -72,7 +73,7 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, input: EditSkillIn
 
     // Check if the skill file exists
     const file_exists = blk: {
-        std.fs.cwd().access(skill_file, .{}) catch {
+        std.Io.Dir.cwd().access(io, skill_file, .{}) catch {
             break :blk false;
         };
         break :blk true;
@@ -83,7 +84,7 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, input: EditSkillIn
     }
 
     // Read existing skill content
-    const existing_content = std.fs.cwd().readFileAlloc(allocator, skill_file, 1024 * 1024) catch {
+    const existing_content = std.Io.Dir.cwd().readFileAlloc(io, skill_file, allocator, std.Io.Limit.limited(1024 * 1024)) catch {
         return errorToXml(allocator, input.skill_name, "Failed to read existing skill file");
     };
     defer allocator.free(existing_content);
@@ -104,12 +105,12 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, input: EditSkillIn
     errdefer allocator.free(updated_content);
 
     // Write the updated file
-    const file = std.fs.createFileAbsolute(skill_file, .{}) catch {
+    const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
         return errorToXml(allocator, input.skill_name, "Failed to create skill file for writing");
     };
-    defer file.close();
+    defer std.Io.File.close(file, io);
 
-    file.writeAll(updated_content) catch {
+    std.Io.File.writeStreamingAll(file, io, updated_content) catch {
         return errorToXml(allocator, input.skill_name, "Failed to write skill file");
     };
 

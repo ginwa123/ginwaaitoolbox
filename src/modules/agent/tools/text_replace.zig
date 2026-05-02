@@ -143,6 +143,7 @@ fn lfToCrlf(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
 /// Text replace - applies a single replacement in a file
 pub fn executeTextReplace(
     allocator: std.mem.Allocator,
+    io: std.Io,
     path: []const u8,
     old_str: []const u8,
     new_str: []const u8,
@@ -152,10 +153,10 @@ pub fn executeTextReplace(
     }
 
     // Read existing file
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer std.Io.File.close(file, io);
 
-    var raw = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    var raw = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(std.math.maxInt(usize)));
     defer allocator.free(raw);
 
     // Detect and normalize line endings (CRLF -> LF)
@@ -228,10 +229,13 @@ pub fn executeTextReplace(
     }
 
     // Write back to file
-    const file_write = try std.fs.cwd().createFile(path, .{});
-    defer file_write.close();
+    const file_write = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer std.Io.File.close(file_write, io);
 
-    try file_write.writeAll(content.items);
+    std.Io.File.writeStreamingAll(file_write, io, content.items) catch {
+        content.deinit(allocator);
+        return error.WriteFailed;
+    };
 
     content.deinit(allocator);
 

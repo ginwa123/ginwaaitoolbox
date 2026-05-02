@@ -188,7 +188,7 @@ fn expandBraces(pattern: []const u8, allocator: std.mem.Allocator) ![]const []co
                     // Check for negation pattern {![pattern]}
                     if (inner.len > 1 and inner[0] == '!') {
                         const negated_content = inner[1..];
-                        var results = std.ArrayListUnmanaged([]const u8){};
+var results: std.ArrayListUnmanaged([]const u8) = .empty;
                         errdefer results.deinit(allocator);
 
                         // Return the negated pattern marker
@@ -202,7 +202,7 @@ fn expandBraces(pattern: []const u8, allocator: std.mem.Allocator) ![]const []co
                         const before = inner[0..idx];
                         const after = inner[idx + 2..];
                         if (isNumeric(before) and isNumeric(after)) {
-                            var results = std.ArrayListUnmanaged([]const u8){};
+var results: std.ArrayListUnmanaged([]const u8) = .empty;
                             errdefer results.deinit(allocator);
 
                             const start_num = std.fmt.parseInt(i64, before, 10) catch 0;
@@ -222,7 +222,7 @@ fn expandBraces(pattern: []const u8, allocator: std.mem.Allocator) ![]const []co
                     }
 
                     // Parse comma-separated
-                    var results = std.ArrayListUnmanaged([]const u8){};
+                    var results: std.ArrayListUnmanaged([]const u8) = .empty;
                     errdefer results.deinit(allocator);
 
                     var seg_start: usize = 0;
@@ -257,6 +257,7 @@ fn expandBraces(pattern: []const u8, allocator: std.mem.Allocator) ![]const []co
 
 fn walkDir(
     allocator: std.mem.Allocator,
+    io: std.Io,
     dir_path: []const u8,
     patterns: []const []const u8,
     opts: GlobOptions,
@@ -265,14 +266,14 @@ fn walkDir(
 ) void {
     if (opts.max_depth) |max| if (depth >= max) return;
 
-    var dir: std.fs.Dir = if (std.fs.path.isAbsolute(dir_path))
-        std.fs.openDirAbsolute(dir_path, .{ .iterate = true, .no_follow = !opts.follow }) catch return
+    var dir: std.Io.Dir = if (std.fs.path.isAbsolute(dir_path))
+        std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true, .follow_symlinks = opts.follow }) catch return
     else
-        std.fs.cwd().openDir(dir_path, .{ .iterate = true, .no_follow = !opts.follow }) catch return;
+        std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true, .follow_symlinks = opts.follow }) catch return;
 
     // Separate regular patterns from negation patterns
-    var negation_patterns = std.ArrayListUnmanaged([]const u8){};
-    var regular_patterns = std.ArrayListUnmanaged([]const u8){};
+    var negation_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
+    var regular_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
     defer negation_patterns.deinit(allocator);
     defer regular_patterns.deinit(allocator);
 
@@ -286,7 +287,7 @@ fn walkDir(
 
     var iter = dir.iterate();
     while (true) {
-        const entry = iter.next() catch break orelse break;
+        const entry = iter.next(io) catch break orelse break;
         const name = entry.name;
         if (!opts.dot and name.len > 0 and name[0] == '.') continue;
 
@@ -362,14 +363,14 @@ fn walkDir(
                                 const inner_pattern = if (inner_start < remaining_pattern.len) remaining_pattern[inner_start..] else "*";
 
                                 // Recurse with the inner pattern
-                                var new_patterns = std.ArrayListUnmanaged([]const u8){};
+                                var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, inner_pattern) catch break;
                                 walkDir(allocator, full_path, new_patterns.items, opts, results, depth + 1);
                                 new_patterns.deinit(allocator);
                             } else {
                                 // Non-recursive pattern with directory prefix
                                 // Match against the remaining pattern in this directory
-                                var new_patterns = std.ArrayListUnmanaged([]const u8){};
+                                var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, remaining_pattern) catch break;
                                 walkDir(allocator, full_path, new_patterns.items, opts, results, depth + 1);
                                 new_patterns.deinit(allocator);
@@ -394,7 +395,7 @@ fn walkDir(
             walkDir(allocator, full_path, patterns, opts, results, depth + 1);
         }
     }
-    dir.close();
+    std.Io.Dir.close(dir, io);
 }
 
 // ============================================================================
@@ -432,7 +433,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, input: GlobInput) !GlobResult {
     };
 
     // Walk directory
-    var results = std.ArrayListUnmanaged([]const u8){};
+    var results: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
         for (results.items) |r| allocator.free(r);
         results.deinit(allocator);

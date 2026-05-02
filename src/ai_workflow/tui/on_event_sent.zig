@@ -161,7 +161,7 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
     defer buf.deinit(allocator);
 
     // Use std.json.fmt with format writer
-    try buf.writer(allocator).print("{f}", .{std.json.fmt(payload, .{
+    try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
         .whitespace = .indent_tab,
     })});
 

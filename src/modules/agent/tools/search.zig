@@ -73,7 +73,7 @@ fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
     return null;
 }
 
-pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchResult {
+pub fn execute_search(allocator: std.mem.Allocator, io: std.Io, input: SearchInput) !SearchResult {
     // Validate head/tail are mutually exclusive
     if (input.head != null and input.tail != null) {
         return error.HeadAndTailMutuallyExclusive;
@@ -90,10 +90,9 @@ pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchR
     };
 
     const max_output = input.max_output orelse 1024 * 1024;
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = argv,
-        .max_output_bytes = max_output,
+        .stdout_limit = std.Io.Limit.limited(max_output),
     });
 
     defer allocator.free(result.stdout);
@@ -249,7 +248,6 @@ pub fn execute_search(allocator: std.mem.Allocator, input: SearchInput) !SearchR
         .content = try output.toOwnedSlice(allocator),
     };
 }
-
 
 /// Multiple matches in the same file are grouped together under a <file> element
 /// Wrapped in <search> tag containing the pattern and path used

@@ -22,7 +22,7 @@ pub fn create_message(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
 }
 
 // Read one JSON-RPC message from LSP stdout
-fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
+fn read_message(allocator: std.mem.Allocator, io: std.Io, stdout: std.Io.File) ![]u8 {
     // Read headers until empty line
     var header_buf: [1024]u8 = undefined;
     var header_len: usize = 0;
@@ -30,7 +30,7 @@ fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
 
     while (!found_empty) {
         var byte: [1]u8 = undefined;
-        const n = stdout.read(&byte) catch return LspError.InvalidResponse;
+        const n = std.Io.File.readStreaming(stdout, io, &.{&byte}) catch return LspError.InvalidResponse;
         if (n == 0) return LspError.InvalidResponse;
 
         if (header_len < header_buf.len) {
@@ -70,9 +70,10 @@ fn read_message(allocator: std.mem.Allocator, stdout: std.fs.File) ![]u8 {
 }
 
 /// Find the zls binary in PATH or return BinaryNotFound error
-fn find_zls(allocator: std.mem.Allocator) ![]u8 {
+fn find_zls(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     // First check if zls exists in PATH
-    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch return LspError.BinaryNotFound;
+    const c_path = std.c.getenv("PATH");
+    const path_env = if (c_path) |ptr| try allocator.dupe(u8, std.mem.sliceTo(ptr, 0)) else return LspError.BinaryNotFound;
     defer allocator.free(path_env);
 
     var path_iter = std.mem.splitScalar(u8, path_env, ':');
@@ -80,7 +81,7 @@ fn find_zls(allocator: std.mem.Allocator) ![]u8 {
         const zls_path = try std.fmt.allocPrint(allocator, "{s}/zls", .{dir});
         defer allocator.free(zls_path);
 
-        if (std.fs.accessAbsolute(zls_path, .{})) {
+        if (std.Io.Dir.accessAbsolute(io, zls_path, .{})) {
             return zls_path;
         } else |_| {}
     }
@@ -89,20 +90,20 @@ fn find_zls(allocator: std.mem.Allocator) ![]u8 {
 }
 
 /// Find project root by searching upward for build.zig
-fn find_project_root(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
+fn find_project_root(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8) ![]u8 {
     var dir = std.fs.path.dirname(file_path) orelse ".";
 
     while (true) {
         const build_zig_path = try std.fmt.allocPrint(allocator, "{s}/build.zig", .{dir});
         defer allocator.free(build_zig_path);
 
-        std.fs.accessAbsolute(build_zig_path, .{}) catch {
+        std.Io.Dir.accessAbsolute(io, build_zig_path, .{}) catch {
             const parent = std.fs.path.dirname(dir);
             if (parent) |p| {
                 dir = p;
             } else {
                 // No build.zig found, use current directory
-                return try std.process.getCwdAlloc(allocator);
+                return try std.process.currentPathAlloc(io, allocator);
             }
             continue;
         };
@@ -255,14 +256,14 @@ fn parse_definition_result(allocator: std.mem.Allocator, result: json.Value) !Ls
     };
 }
 
-pub fn execute_lsp_definition(allocator: std.mem.Allocator, input: LspDefinitionInput) !LspDefinitionOutput {
+pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: LspDefinitionInput) !LspDefinitionOutput {
     // Verify file exists
-    std.fs.accessAbsolute(input.file_path, .{}) catch return LspError.FileNotFound;
+    std.Io.Dir.accessAbsolute(io, input.file_path, .{}) catch return LspError.FileNotFound;
 
     // Read file content
-    const file = try std.fs.cwd().openFile(input.file_path, .{});
-    defer file.close();
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    const file = try std.Io.Dir.cwd().openFile(io, input.file_path, .{});
+    defer std.Io.File.close(file, io);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, input.file_path, allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(content);
 
     // Find zls binary
@@ -270,15 +271,15 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, input: LspDefinition
     defer allocator.free(zls_path);
 
     // Spawn zls
-    var child = std.process.Child.init(&.{zls_path}, allocator);
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-
-    try child.spawn();
+    var child = try std.process.spawn(io, .{
+        .argv = &.{zls_path},
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
     defer {
-        _ = child.kill() catch {};
-        _ = child.wait() catch {};
+        child.kill(io);
+        _ = child.wait(io) catch {};
     }
 
     const stdin = child.stdin.?;
@@ -297,20 +298,19 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, input: LspDefinition
     // 1. Send initialize with rootUri
     var init_json_buf = std.ArrayList(u8).empty;
     defer init_json_buf.deinit(allocator);
-    const init_writer = init_json_buf.writer(allocator);
-    try init_writer.print("{{", .{});
-    try init_writer.print("\"jsonrpc\":\"2.0\",", .{});
-    try init_writer.print("\"id\":1,", .{});
-    try init_writer.print("\"method\":\"initialize\",", .{});
-    try init_writer.print("\"params\":{{", .{});
-    try init_writer.print("\"processId\":null,", .{});
-    try init_writer.print("\"rootUri\":\"{s}\",", .{root_uri});
-    try init_writer.print("\"capabilities\":{{}}}}}}", .{});
+    try init_json_buf.print(allocator, "{{", .{});
+    try init_json_buf.print(allocator, "\"jsonrpc\":\"2.0\",", .{});
+    try init_json_buf.print(allocator, "\"id\":1,", .{});
+    try init_json_buf.print(allocator, "\"method\":\"initialize\",", .{});
+    try init_json_buf.print(allocator, "\"params\":{{", .{});
+    try init_json_buf.print(allocator, "\"processId\":null,", .{});
+    try init_json_buf.print(allocator, "\"rootUri\":\"{s}\",", .{root_uri});
+    try init_json_buf.print(allocator, "\"capabilities\":{{}}}}}}", .{});
     const init_json = try init_json_buf.toOwnedSlice(allocator);
     defer allocator.free(init_json);
     const init_msg = try create_message(allocator, init_json);
     defer allocator.free(init_msg);
-    try stdin.writeAll(init_msg);
+    try std.Io.File.writeStreamingAll(stdin, io, init_msg);
 
     // Read initialize response (may need to skip notifications)
     var init_response: []u8 = undefined;

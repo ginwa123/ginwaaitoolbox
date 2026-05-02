@@ -58,6 +58,7 @@ pub const LoggerConfig = struct {
 /// Thread-safe logger with pluggable formatters
 pub const Logger = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: LoggerConfig,
     mutex: std.Io.Mutex,
     formatter_ctx: FormatterContext,
@@ -72,7 +73,7 @@ pub const Logger = struct {
     };
 
     /// Initialize a new Logger with text formatter
-    pub fn init(allocator: std.mem.Allocator, config: LoggerConfig) Logger {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: LoggerConfig) Logger {
         return .{
             .allocator = allocator,
             .config = config,
@@ -83,6 +84,7 @@ pub const Logger = struct {
                 .include_location = config.include_location,
             } },
             .request_id = null,
+            .io = io,
         };
     }
 
@@ -98,7 +100,7 @@ pub const Logger = struct {
     }
 
     /// Initialize a new Logger with color formatter (for TUI)
-    pub fn initColor(allocator: std.mem.Allocator, config: LoggerConfig) Logger {
+    pub fn initColor(allocator: std.mem.Allocator, io: std.Io, config: LoggerConfig) Logger {
         return .{
             .allocator = allocator,
             .config = config,
@@ -110,6 +112,7 @@ pub const Logger = struct {
                 .include_location = config.include_location,
             } },
             .request_id = null,
+            .io = io,
         };
     }
 
@@ -117,7 +120,7 @@ pub const Logger = struct {
     pub fn deinit(self: *Logger) void {
         // Close log file if open
         if (self.log_file) |file| {
-            file.close(std.Options.debug_io);
+            file.close(self.io);
             self.log_file = null;
         }
     }
@@ -130,39 +133,39 @@ pub const Logger = struct {
 
         // Create parent directories if they don't exist
         const dir_path = std.fs.path.dirname(path) orelse ".";
-        try std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dir_path);
+        try std.Io.Dir.cwd().createDirPath(self.io, dir_path);
 
         // Open or create the log file
-        const file = try std.Io.Dir.cwd().createFile(std.Options.debug_io, path, .{ .truncate = false });
-        errdefer file.close(std.Options.debug_io);
+        const file = try std.Io.Dir.cwd().createFile(self.io, path, .{ .truncate = false });
+        errdefer file.close(self.io);
 
         // Get current file size (to append at end)
-        const file_size = std.Io.File.length(file, std.Options.debug_io) catch 0;
+        const file_size = std.Io.File.length(file, self.io) catch 0;
         self.current_file_size = file_size;
     }
 
     /// Rotate log file when it exceeds max size (delete and recreate)
     fn rotateLogFile(self: *Logger) !void {
         if (self.log_file) |file| {
-            file.close(std.Options.debug_io);
+            file.close(self.io);
             self.log_file = null;
         }
 
         const path = self.config.log_file_path orelse return;
 
         // Delete the old file
-        std.Io.Dir.cwd().deleteFile(std.Options.debug_io, path) catch {};
+        std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
 
         // Create a new empty file
-        const file = try std.Io.Dir.cwd().createFile(std.Options.debug_io, path, .{});
+        const file = try std.Io.Dir.cwd().createFile(self.io, path, .{});
         self.log_file = file;
         self.current_file_size = 0;
     }
 
     /// Set a new request ID for subsequent log messages
     pub fn setRequestId(self: *Logger, id: RequestId) void {
-        self.mutex.lockUncancelable(std.Options.debug_io);
-        defer self.mutex.unlock(std.Options.debug_io);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.request_id = id;
     }
 
@@ -175,8 +178,8 @@ pub const Logger = struct {
 
     /// Clear the current request ID
     pub fn clearRequestId(self: *Logger) void {
-        self.mutex.lockUncancelable(std.Options.debug_io);
-        defer self.mutex.unlock(std.Options.debug_io);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.request_id = null;
     }
 
@@ -295,8 +298,8 @@ pub const Logger = struct {
         defer self.allocator.free(output);
 
         // Thread-safe write to output
-        self.mutex.lockUncancelable(std.Options.debug_io);
-        defer self.mutex.unlock(std.Options.debug_io);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Handle file output if configured
         if (self.config.log_file_path != null and
@@ -314,21 +317,21 @@ pub const Logger = struct {
 
             // Write to file
             if (self.log_file) |log_file| {
-                try std.Io.File.writeStreamingAll(log_file, std.Options.debug_io, output);
+                try std.Io.File.writeStreamingAll(log_file, self.io, output);
                 self.current_file_size += output.len;
             }
         }
 
         // Handle stdout output if configured
         if (self.config.output_mode == .stdout or self.config.output_mode == .both) {
-            try std.Io.File.writeStreamingAll(std.Io.File.stderr(), std.Options.debug_io, output);
+            try std.Io.File.writeStreamingAll(std.Io.File.stderr(), self.io, output);
         }
     }
 
     /// Set the minimum log level
     pub fn setMinLevel(self: *Logger, level: LogLevel) void {
-        self.mutex.lockUncancelable(std.Options.debug_io);
-        defer self.mutex.unlock(std.Options.debug_io);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.config.min_level = level;
     }
 
@@ -343,31 +346,31 @@ var global_logger: ?Logger = null;
 var global_mutex: std.Io.Mutex = std.Io.Mutex.init;
 
 /// Initialize the global logger
-pub fn initGlobal(allocator: std.mem.Allocator, config: LoggerConfig) void {
-    global_mutex.lockUncancelable(std.Options.debug_io);
-    defer global_mutex.unlock(std.Options.debug_io);
+pub fn initGlobal(allocator: std.mem.Allocator, io: std.Io, config: LoggerConfig) void {
+    global_mutex.lockUncancelable(io);
+    defer global_mutex.unlock(io);
 
     if (global_logger) |*logger| {
         logger.deinit();
     }
-    global_logger = Logger.init(allocator, config);
+    global_logger = Logger.init(allocator, io, config);
 }
 
 /// Initialize the global logger with color formatter
-pub fn initGlobalColor(allocator: std.mem.Allocator, config: LoggerConfig) void {
+pub fn initGlobalColor(allocator: std.mem.Allocator, io: std.Io, config: LoggerConfig) void {
     global_mutex.lockUncancelable(std.Options.debug_io);
     defer global_mutex.unlock(std.Options.debug_io);
 
     if (global_logger) |*logger| {
         logger.deinit();
     }
-    global_logger = Logger.initColor(allocator, config);
+    global_logger = Logger.initColor(allocator, io, config);
 }
 
 /// Deinitialize the global logger
-pub fn deinitGlobal() void {
-    global_mutex.lockUncancelable(std.Options.debug_io);
-    defer global_mutex.unlock(std.Options.debug_io);
+pub fn deinitGlobal(io: std.Io) void {
+    global_mutex.lockUncancelable(io);
+    defer global_mutex.unlock(io);
 
     if (global_logger) |*logger| {
         logger.deinit();
@@ -377,8 +380,8 @@ pub fn deinitGlobal() void {
 
 /// Get the global logger (returns null if not initialized)
 pub fn getGlobal() ?*Logger {
-    global_mutex.lockUncancelable(std.Options.debug_io);
-    defer global_mutex.unlock(std.Options.debug_io);
+    // global_mutex.lockUncancelable(std.Options.debug_io);
+    // defer global_mutex.unlock(std.Options.debug_io);
 
     if (global_logger) |*logger| {
         return logger;

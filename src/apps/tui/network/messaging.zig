@@ -113,19 +113,24 @@ pub fn check_session_exists(app: *App) !bool {
     var arena = std.heap.ArenaAllocator.init(app.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", app.http_port);
+    const stream = try std.Io.net.IpAddress.connect(&address, app.io, .{ .mode = .stream });
+    defer stream.socket.close(app.io);
 
     const request = try std.fmt.allocPrint(allocator, "GET /api/session/exists/{s} HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(sock, request);
+    defer allocator.free(request);
+
+    var write_buffer: [1024]u8 = undefined;
+    var writer = stream.writer(app.io, &write_buffer);
+    try std.Io.Writer.writeAll(&writer.interface, request);
 
     // Read response to check if session exists
-    var buf: [1024]u8 = undefined;
-    const n = std.posix.read(sock, &buf) catch return false;
+    var read_buffer: [1024]u8 = undefined;
+    var reader = stream.reader(app.io, &read_buffer);
+    const n = std.Io.Reader.readSliceShort(&reader.interface, &read_buffer) catch return false;
     if (n > 0) {
-        const response = buf[0..n];
+        const response = read_buffer[0..n];
         // Parse JSON response: {"session_id":"...","exists":true/false}
         if (std.mem.indexOf(u8, response, "\"exists\":true") != null) {
             return true;
@@ -136,26 +141,29 @@ pub fn check_session_exists(app: *App) !bool {
 
 /// Get the latest session for a given working directory
 /// Returns the session_id if found, null otherwise
-pub fn get_latest_session_by_dir(allocator: std.mem.Allocator, http_port: u16, cwd: []const u8) !?[]const u8 {
+pub fn get_latest_session_by_dir(allocator: std.mem.Allocator, io: std.Io, http_port: u16, cwd: []const u8) !?[]const u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    const addr: std.Io.net.IpAddress = .{ .ip4 = std.Io.net.Ip4Address.loopback(http_port) };
+    var stream = try addr.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
 
     // URL encode the cwd for the query parameter
     // For simplicity, we'll assume the cwd doesn't contain special URL chars that need encoding
     const request = try std.fmt.allocPrint(alloc, "GET /api/session/latest?cwd={s} HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ cwd, globals.HTTP_HOST, http_port });
-    _ = try std.posix.write(sock, request);
+    var write_buf: [1024]u8 = undefined;
+    var stream_writer = std.Io.net.Stream.Writer.init(stream, io, &write_buf);
+    try stream_writer.interface.writeAll(request);
 
     // Read response
-    var buf: [2048]u8 = undefined;
-    const n = std.posix.read(sock, &buf) catch return error.ConnectionFailed;
+    var read_buf: [2048]u8 = undefined;
+    var stream_reader = std.Io.net.Stream.Reader.init(stream, io, &read_buf);
+    var slices: [1][]u8 = .{read_buf[0..]};
+    const n = try stream_reader.interface.readVec(&slices);
     if (n > 0) {
-        const response = buf[0..n];
+        const response = read_buf[0..n];
         // Parse JSON response: {"session_id":"...","found":true} or {"found":false}
         if (std.mem.indexOf(u8, response, "\"found\":true") != null) {
             // Extract session_id from the response

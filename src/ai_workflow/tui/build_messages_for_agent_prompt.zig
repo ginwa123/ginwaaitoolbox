@@ -21,12 +21,14 @@ const ToolProperty = tool_models.ToolProperty;
 
 pub fn buildMessages(
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     cwd: []const u8,
     session_id: []const u8,
     historyMessages: []TUIHistory,
     tools: []tool_models.AgentTool,
 ) ![]agent.AgentMessage {
+    _ = io;
     // Build content strings internally
     const skills = try BuildSkillContent(allocator, db, session_id);
     defer allocator.free(skills);
@@ -67,7 +69,7 @@ pub fn buildMessages(
 /// Build activity info string for the agent prompt
 /// Uses worker table as the SOLE source of active workers info
 /// Filters out current session to avoid self-reference
-fn buildActivityInfo(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
+fn buildActivityInfo(allocator: std.mem.Allocator, io: std.Io,db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
     const workers = try llm_history.getActiveWorker(allocator, db);
     defer {
         for (workers) |*worker| worker.deinit(allocator);
@@ -100,7 +102,7 @@ fn buildActivityInfo(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, cu
             try result.appendSlice(allocator, worker.working_directory);
         }
         if (worker.last_activity > 0) {
-            const now: i64 = @intCast(std.time.timestamp());
+            const now: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000_000));
             const diff_secs = now - worker.last_activity;
             try result.appendSlice(allocator, " | last activity: ");
             try result.appendSlice(allocator, formatRelativeTime(diff_secs));
@@ -482,7 +484,7 @@ pub fn parseProperties(
 
 const memory_files = [_][]const u8{ "NALAR.md", "CLAUDE.md" };
 
-pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
+pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
 
@@ -490,26 +492,26 @@ pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, cwd: []const u8) ![]con
     const absolute_cwd = if (std.fs.path.isAbsolute(effective_cwd))
         try allocator.dupe(u8, effective_cwd)
     else
-        try std.fs.cwd().realpathAlloc(allocator, effective_cwd);
+        try std.Io.Dir.cwd().realPathFileAlloc(io, effective_cwd, allocator);
     defer allocator.free(absolute_cwd);
 
     for (memory_files) |filename| {
         const file_path = try std.fs.path.join(allocator, &[_][]const u8{ absolute_cwd, filename });
         defer allocator.free(file_path);
 
-        const file = std.fs.openFileAbsolute(file_path, .{
+        const file = std.Io.Dir.openFileAbsolute(io, file_path, .{
             .mode = .read_write,
         }) catch |err| {
             if (err == error.FileNotFound) {
-                const new_file = try std.fs.createFileAbsolute(file_path, .{});
-                new_file.close();
+                const new_file = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+                std.Io.File.close(new_file, io);
                 continue;
             }
             return err;
         };
-        defer file.close();
+        defer std.Io.File.close(file, io);
 
-        const content = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+        const content = try std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(std.math.maxInt(usize)));
         defer allocator.free(content);
 
         try result.appendSlice(allocator, content);

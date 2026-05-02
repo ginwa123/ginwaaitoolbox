@@ -75,7 +75,7 @@ fn parseSSEEventData(allocator: std.mem.Allocator, json_str: []const u8) !SSEEve
 /// Read response and stream LLM output
 /// Simplified: collects raw buffer, displays content at the end
 pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
-    var raw_buffer = std.ArrayListUnmanaged(u8){};
+    var raw_buffer: std.ArrayListUnmanaged(u8) = .empty;
     errdefer raw_buffer.deinit(app.allocator);
 
     var arena = std.heap.ArenaAllocator.init(app.allocator);
@@ -83,7 +83,7 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     const alloc = arena.allocator();
 
     const PING_INTERVAL_MS: i64 = 1000;
-    var last_ping_ms: i64 = std.time.milliTimestamp();
+    var last_ping_ms: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(app.io, .real).nanoseconds, 1_000_000));
 
     var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
     defer std.posix.close(stream_socket);

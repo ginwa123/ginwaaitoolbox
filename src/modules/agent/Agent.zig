@@ -16,7 +16,7 @@ const LogLevel = enum { err, warn, info, debug };
 
 /// Get current timestamp in milliseconds since epoch
 fn timestampMs() i64 {
-    return @divTrunc(std.time.milliTimestamp(), 1);
+    return @intCast(@divTrunc(std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds, 1_000_000));
 }
 
 /// Calculate elapsed time in milliseconds
@@ -555,7 +555,7 @@ pub const Agent = struct {
     httpOptions: HttpOptions = .{},
 
     pub fn init(allocator: std.mem.Allocator) !Agent {
-        return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator } };
+        return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator, .io = std.Options.debug_io } };
     }
 
     /// Initialize agent with custom HTTP options
@@ -690,9 +690,9 @@ pub const Agent = struct {
         };
 
         // Serialize to JSON
-        var aw: std.io.Writer.Allocating = .init(allocator);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
         try aw.writer.print("{f}", .{std.json.fmt(json_request, .{})});
-        return try aw.toOwnedSlice();
+        return aw.toOwnedSlice();
     }
 
     pub const CallError = error{
@@ -935,19 +935,6 @@ pub const Agent = struct {
         };
         defer req.deinit();
 
-        // Set socket timeouts for responsive cancellation
-        if (req.connection) |conn| {
-            const stream = conn.stream_reader.getStream();
-            const handle = stream.handle;
-            const timeout = std.posix.timeval{
-                .sec = @intCast(self.httpOptions.read_timeout_ms / 1000),
-                .usec = @intCast((self.httpOptions.read_timeout_ms % 1000) * 1000),
-            };
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
-            std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&@as(u32, 1))) catch {};
-        }
-
         req.sendBodyComplete(json_body) catch |err| {
             self.log_error("sendBodyComplete", err, null);
             return error.SendBodyFailed;
@@ -1148,7 +1135,7 @@ pub const Agent = struct {
             // Add small yield to prevent tight CPU spinning during streaming
             // This ensures we don't monopolize CPU when reading small chunks rapidly
             if (bytes_read < 64) {
-                std.Thread.sleep(100_000); // 100 microseconds for small reads
+                std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = 100_000 }, .real) catch {};
             }
 
             total_bytes_read += bytes_read;

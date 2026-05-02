@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
 
     nalar_mod.setPanicLogPath(log_file_path);
 
-    nalar_mod.logger.initGlobalColor(parent_allocator, .{
+    nalar_mod.logger.initGlobalColor(parent_allocator, io, .{
         .min_level = .debug,
         .output_mode = .file,
         .log_file_path = log_file_path,
@@ -63,7 +63,7 @@ pub fn main(init: std.process.Init) !void {
         .include_request_id = true,
         .include_timestamp = true,
     });
-    defer nalar_mod.logger.deinitGlobal();
+    defer nalar_mod.logger.deinitGlobal(io);
 
     const global_logger_ptr = nalar_mod.logger.getGlobal().?;
 

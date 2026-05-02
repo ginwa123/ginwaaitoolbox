@@ -149,7 +149,7 @@ pub fn getSessionListWithCursor(
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE {s}
         \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
-    , .{where_clause, limit});
+    , .{ where_clause, limit });
     defer allocator.free(sql_final);
 
     var rows = try db.query(allocator, sql_final, &.{});
@@ -175,9 +175,7 @@ pub fn getSessionListWithCursor(
 
     // Build count query with cwd filter
     const count_sql: []u8 = if (cwd) |dir|
-        try std.fmt.allocPrint(allocator,
-            "SELECT COUNT(DISTINCT session_id) FROM llm_history WHERE session_id IN (SELECT session_id FROM sessions WHERE cwd = '{s}')",
-            .{dir})
+        try std.fmt.allocPrint(allocator, "SELECT COUNT(DISTINCT session_id) FROM llm_history WHERE session_id IN (SELECT session_id FROM sessions WHERE cwd = '{s}')", .{dir})
     else
         try allocator.dupe(u8, "SELECT COUNT(DISTINCT session_id) FROM llm_history");
     defer allocator.free(count_sql);
@@ -240,9 +238,7 @@ pub fn buildSessionListJson(
         "";
     defer if (next_cursor) |_| allocator.free(next_cursor_json);
 
-    const result = try std.fmt.allocPrint(allocator,
-        "{{\"sessions\":{s},\"total\":{d},\"has_more\":{s}{s}}}",
-        .{ json_sessions.items, total, has_more_str, next_cursor_json });
+    const result = try std.fmt.allocPrint(allocator, "{{\"sessions\":{s},\"total\":{d},\"has_more\":{s}{s}}}", .{ json_sessions.items, total, has_more_str, next_cursor_json });
     json_sessions.deinit(allocator);
     return result;
 }
@@ -398,7 +394,7 @@ pub fn get_session_messages_sorted(
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
-            , .{ cursor_cmp, order_part });
+        , .{ cursor_cmp, order_part });
         argv = &.{ session_id, c, limit_str };
     } else {
         const order_part = switch (sort_spec) {
@@ -415,7 +411,7 @@ pub fn get_session_messages_sorted(
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
-            , .{order_part});
+        , .{order_part});
         argv = &.{ session_id, limit_str };
     }
     defer allocator.free(sql);
@@ -504,8 +500,7 @@ pub fn buildSessionMessagesJson(
         const msg_json = try std.fmt.allocPrint(allocator,
             \\{{"id":"{s}","session_id":"{s}","role":"{s}","content":"{s}","timestamp":"{s}",
             \\"is_input":"{s}","is_output":"{s}","tool_name":"{s}","finish_reason":"{s}"}}
-            ,
-            .{ msg.id, msg.session_id, msg.role, escaped_content.items, msg.timestamp, msg.is_input, msg.is_output, msg.tool_name, msg.finish_reason });
+        , .{ msg.id, msg.session_id, msg.role, escaped_content.items, msg.timestamp, msg.is_input, msg.is_output, msg.tool_name, msg.finish_reason });
         defer allocator.free(msg_json);
         try json_messages.appendSlice(allocator, msg_json);
         escaped_content.deinit(allocator);
@@ -527,9 +522,7 @@ pub fn buildSessionMessagesJson(
         try std.fmt.allocPrint(allocator, "null", .{});
     defer allocator.free(cwd_str);
 
-    const result = try std.fmt.allocPrint(allocator,
-        "{{\"messages\":{s},\"has_more\":{s},\"next_cursor\":{s},\"cwd\":{s}}}",
-        .{json_messages.items, has_more_str, next_cursor_str, cwd_str});
+    const result = try std.fmt.allocPrint(allocator, "{{\"messages\":{s},\"has_more\":{s},\"next_cursor\":{s},\"cwd\":{s}}}", .{ json_messages.items, has_more_str, next_cursor_str, cwd_str });
     json_messages.deinit(allocator);
     return result;
 }
@@ -589,9 +582,7 @@ pub fn buildSessionMessagesXml(
             \\<tool_name>{s}</tool_name>
             \\<finish_reason>{s}</finish_reason>
             \\</message>
-            ,
-            .{ escaped_id, escaped_session_id, escaped_role, escaped_content,
-               escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason });
+        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason });
         defer allocator.free(msg_xml);
         try xml_messages.appendSlice(allocator, msg_xml);
     }
@@ -656,9 +647,9 @@ pub fn createSession(
 
 /// Serialize tool_calls array to JSON string
 pub fn serializeToolCalls(allocator: std.mem.Allocator, tool_calls: []agent.ToolCall) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     try aw.writer.print("{f}", .{std.json.fmt(tool_calls, .{})});
-    return try aw.toOwnedSlice();
+    return aw.toOwnedSlice();
 }
 
 pub const SaveMessageInput = struct {
@@ -695,12 +686,13 @@ fn safeDupe(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 
 pub fn saveMessage(
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     input: SaveMessageInput,
 ) !void {
-    const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(id);
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
 
     const contentStr = input.content orelse "";
@@ -801,30 +793,30 @@ pub fn getMessages(
     var results: std.ArrayList(TUIHistory) = .empty;
 
     const sql =
-    \\SELECT
-    \\    h.id, h.session_id, h.model, h.created_at,
-    \\    h.response_content, h.finish_reason,
-    \\    COALESCE(h.role, 'assistant'),
-    \\    COALESCE(h.tool_calls_json, ''),
-    \\    COALESCE(h.reasoning_content, ''),
-    \\    COALESCE(h.agent, 'Agent'),
-    \\    COALESCE(s.name, ''),
-    \\    COALESCE(h.loop_index, 0),
-    \\    COALESCE(h.tool_name, ''),
-    \\    COALESCE(h.parent_session_id, ''),
-    \\    COALESCE(h.temperature, 0.2),
-    \\    COALESCE(h.is_thinking, 0),
-    \\    COALESCE(h.prompt_tokens, 0),
-    \\    COALESCE(h.completion_tokens, 0),
-    \\    COALESCE(h.total_tokens, 0),
-    \\    COALESCE(h.is_input, 0),
-    \\    COALESCE(h.is_output, 0)
-    \\FROM llm_history h
-    \\LEFT JOIN sessions s ON h.session_id = s.id
-    \\WHERE h.session_id = ?
-    \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
-    \\ORDER BY h.created_at ASC
-;
+        \\SELECT
+        \\    h.id, h.session_id, h.model, h.created_at,
+        \\    h.response_content, h.finish_reason,
+        \\    COALESCE(h.role, 'assistant'),
+        \\    COALESCE(h.tool_calls_json, ''),
+        \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.agent, 'Agent'),
+        \\    COALESCE(s.name, ''),
+        \\    COALESCE(h.loop_index, 0),
+        \\    COALESCE(h.tool_name, ''),
+        \\    COALESCE(h.parent_session_id, ''),
+        \\    COALESCE(h.temperature, 0.2),
+        \\    COALESCE(h.is_thinking, 0),
+        \\    COALESCE(h.prompt_tokens, 0),
+        \\    COALESCE(h.completion_tokens, 0),
+        \\    COALESCE(h.total_tokens, 0),
+        \\    COALESCE(h.is_input, 0),
+        \\    COALESCE(h.is_output, 0)
+        \\FROM llm_history h
+        \\LEFT JOIN sessions s ON h.session_id = s.id
+        \\WHERE h.session_id = ?
+        \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
+        \\ORDER BY h.created_at ASC
+    ;
 
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
@@ -867,31 +859,31 @@ pub fn getLatestMessage(
     session_id: []const u8,
 ) !?TUIHistory {
     const sql =
-    \\SELECT
-    \\    h.id, h.session_id, h.model, h.created_at,
-    \\    h.response_content, h.finish_reason,
-    \\    COALESCE(h.role, 'assistant'),
-    \\    COALESCE(h.tool_calls_json, ''),
-    \\    COALESCE(h.reasoning_content, ''),
-    \\    COALESCE(h.agent, 'Agent'),
-    \\    COALESCE(s.name, ''),
-    \\    COALESCE(h.loop_index, 0),
-    \\    COALESCE(h.tool_name, ''),
-    \\    COALESCE(h.parent_session_id, ''),
-    \\    COALESCE(h.temperature, 0.2),
-    \\    COALESCE(h.is_thinking, 0),
-    \\    COALESCE(h.prompt_tokens, 0),
-    \\    COALESCE(h.completion_tokens, 0),
-    \\    COALESCE(h.total_tokens, 0),
-    \\    COALESCE(h.is_input, 0),
-    \\    COALESCE(h.is_output, 0)
-    \\FROM llm_history h
-    \\LEFT JOIN sessions s ON h.session_id = s.id
-    \\WHERE h.session_id = ?
-    \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
-    \\ORDER BY h.created_at DESC
-    \\LIMIT 1
-;
+        \\SELECT
+        \\    h.id, h.session_id, h.model, h.created_at,
+        \\    h.response_content, h.finish_reason,
+        \\    COALESCE(h.role, 'assistant'),
+        \\    COALESCE(h.tool_calls_json, ''),
+        \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.agent, 'Agent'),
+        \\    COALESCE(s.name, ''),
+        \\    COALESCE(h.loop_index, 0),
+        \\    COALESCE(h.tool_name, ''),
+        \\    COALESCE(h.parent_session_id, ''),
+        \\    COALESCE(h.temperature, 0.2),
+        \\    COALESCE(h.is_thinking, 0),
+        \\    COALESCE(h.prompt_tokens, 0),
+        \\    COALESCE(h.completion_tokens, 0),
+        \\    COALESCE(h.total_tokens, 0),
+        \\    COALESCE(h.is_input, 0),
+        \\    COALESCE(h.is_output, 0)
+        \\FROM llm_history h
+        \\LEFT JOIN sessions s ON h.session_id = s.id
+        \\WHERE h.session_id = ?
+        \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
+        \\ORDER BY h.created_at DESC
+        \\LIMIT 1
+    ;
 
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();

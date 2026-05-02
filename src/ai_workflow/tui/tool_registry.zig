@@ -45,6 +45,7 @@ const background_process = @import("background_process.zig");
 /// Context passed to all tool handlers (shared between tool_registry and handle_tool)
 pub const ToolExecContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
     session_id: []const u8,
@@ -591,7 +592,7 @@ const SubAgentThreadArgs = struct {
 const SharedResults = struct {
     results: []ThreadResult,
     completed_count: std.atomic.Value(usize),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 };
 
 // Result structure for thread execution
@@ -615,7 +616,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     // Build results array for sub-agent outputs
     var results = std.ArrayList(u8).empty;
     defer results.deinit(ctx.allocator);
-    const w = results.writer(ctx.allocator);
+    var w = std.Io.Writer.fromArrayList(&results);
 
     // Run each sub-agent in its own thread
     var threads = std.ArrayList(std.Thread).empty;
@@ -632,7 +633,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     shared_results.* = .{
         .results = try ctx.allocator.alloc(ThreadResult, sub_agent_count),
         .completed_count = std.atomic.Value(usize).init(0),
-        .mutex = std.Thread.Mutex{},
+        .mutex = std.Io.Mutex.init,
     };
     // Initialize all results to failed by default with agent names
     for (shared_results.results, 0..) |*r, i| {
@@ -644,7 +645,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     }
 
     for (parsed.sub_agents, 0..) |sub_agent, idx| {
-        std.Thread.sleep(500_000_000); // Sleep for 0.5 seconds to avoid race condition
+        std.Io.sleep(ctx.io, .{ .nanoseconds = 500_000_000 }, .real) catch {};
         ctx.logger.debugFmt("Spawning thread for agent '{s}' (index {})", .{ sub_agent.name, idx }) catch {};
         // Allocate thread args on the heap to avoid pointer stability issues
         // This ensures the data remains valid even if stack frames are deallocated
@@ -681,7 +682,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
 
                 // Mark this slot as in-progress (result defaults to failed)
                 // Generate unique session ID for this sub-agent
-                const sess_id = std.fmt.allocPrint(sub_agent_allocator, "subagent_{}_{s}", .{ std.time.nanoTimestamp(), args_ptr.agent_name }) catch {
+                const sess_id = std.fmt.allocPrint(sub_agent_allocator, "subagent_{}_{s}", .{ std.Io.Timestamp.now(ctx.io, .real).nanoseconds, args_ptr.agent_name }) catch {
                     args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{ args_ptr.agent_name }) catch {};
                     return;
                 };
@@ -960,7 +961,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
     // tools[15] = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
     // tools[16] = lsp_document_symbol_mod.lsp_document_symbol_tool,
     // tools[17] = lsp_hover_mod.lsp_hover_tool,
-    
+
     tools[13] = glob_tool_mod.glob_tool;
     tools[14] = search_tool_mod.search_tool;
     return tools;

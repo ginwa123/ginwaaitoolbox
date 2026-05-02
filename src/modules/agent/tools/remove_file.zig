@@ -39,9 +39,8 @@ pub const remove_file_tool = AgentTool{
 };
 
 /// Check if path is a directory
-fn isDirectory(path: []const u8) bool {
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    defer dir.close();
+fn isDirectory(io : std.Io, path: []const u8) bool {
+    _ = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
     return true;
 }
 
@@ -49,6 +48,7 @@ fn isDirectory(path: []const u8) bool {
 /// Returns an XML string with result
 pub fn executeRemoveFileToString(
     allocator: std.mem.Allocator,
+    io: std.Io,
     input: RemoveFileInput,
 ) ![]const u8 {
     if (input.path.len == 0) {
@@ -56,7 +56,7 @@ pub fn executeRemoveFileToString(
     }
 
     const path_exists = blk: {
-        std.fs.cwd().access(input.path, .{}) catch {
+        std.Io.Dir.cwd().access(io, input.path, .{}) catch {
             break :blk false;
         };
         break :blk true;
@@ -76,7 +76,7 @@ pub fn executeRemoveFileToString(
         }
 
         // Recursive delete using deleteTree
-        std.fs.deleteTreeAbsolute(input.path) catch {
+        std.Io.Dir.cwd().deleteTree(io, input.path) catch {
             return xmlError(allocator, input.path, "Failed to delete directory");
         };
 
@@ -88,7 +88,7 @@ pub fn executeRemoveFileToString(
     }
 
     // It's a file - delete it
-    std.fs.cwd().deleteFile(input.path) catch {
+    std.Io.Dir.cwd().deleteFile(io, input.path) catch {
         return xmlError(allocator, input.path, "Failed to delete file");
     };
 

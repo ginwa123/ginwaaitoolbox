@@ -62,6 +62,8 @@ pub const SseConnectionManager = struct {
     /// Condition for client count changes (for cleanup tracking)
     cond: std.Io.Condition = std.Io.Condition.init,
 
+    io: std.Io,
+
     /// Client info - holds a queue for a specific client connection
     pub const ClientInfo = struct {
         queue: *Queue,
@@ -74,11 +76,12 @@ pub const SseConnectionManager = struct {
         cond: std.Io.Condition = std.Io.Condition.init,
         mutex: std.Io.Mutex = std.Io.Mutex.init,
         closed: bool = false,
+        io: std.Io,
 
         /// Add an item to the queue (thread-safe)
         pub fn enqueue(self: *Queue, item: *SseQueueItem) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
             item.next = null;
             if (self.tail) |tail| {
                 tail.next = item;
@@ -86,14 +89,14 @@ pub const SseConnectionManager = struct {
                 self.head = item;
             }
             self.tail = item;
-            self.cond.signal();
+            self.cond.signal(self.io);
         }
 
         /// Get an item from the queue with timeout (thread-safe)
         /// Returns null if timeout expires or queue is closed
         pub fn dequeueWithTimeout(self: *Queue, timeout_ns: u64) ?*SseQueueItem {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
 
             // Wait for an item or timeout
             const deadline = std.time.nanoTimestamp() + @as(i64, @intCast(timeout_ns));
@@ -113,8 +116,8 @@ pub const SseConnectionManager = struct {
 
         /// Close the queue (signals no more items)
         pub fn close(self: *Queue) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
             self.closed = true;
             self.cond.broadcast();
         }
@@ -130,8 +133,8 @@ pub const SseConnectionManager = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var iter = self.clients.iterator();
         while (iter.next()) |entry| {
@@ -149,8 +152,8 @@ pub const SseConnectionManager = struct {
     /// Register a new client SSE connection with its event queue
     /// Multiple clients can register for the same session_id - each gets their own queue
     pub fn registerClient(self: *Self, session_id: []const u8, queue: *Queue) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         const key = try self.allocator.dupe(u8, session_id);
 
@@ -180,8 +183,8 @@ pub const SseConnectionManager = struct {
     /// Remove a specific client connection
     /// Returns true if this was the last client for the session
     pub fn removeClient(self: *Self, session_id: []const u8, queue: *Queue) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.clients.getEntry(session_id)) |entry| {
             const client_list = &entry.value_ptr.*;
@@ -229,15 +232,15 @@ pub const SseConnectionManager = struct {
     /// Enqueue an event to send to ALL clients of a specific session
     pub fn enqueueEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
         // Get client list pointer while holding mutex
-        self.mutex.lock();
+        self.mutex.lockUncancelable(self.io);
         const client_list_ptr = self.clients.getPtr(session_id);
         if (client_list_ptr == null) {
-            self.mutex.unlock();
+            self.mutex.unlock(self.io);
             return error.SessionNotFound;
         }
         const client_list = client_list_ptr.?;
         const client_count = client_list.items.len;
-        self.mutex.unlock();
+        self.mutex.unlock(self.io);
 
         // Fan-out the event to ALL clients
         var failed_clients: usize = 0;
@@ -270,15 +273,15 @@ pub const SseConnectionManager = struct {
 
     /// Check if a session has any connected clients
     pub fn hasSession(self: *Self, session_id: []const u8) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.clients.contains(session_id);
     }
 
     /// Get the number of connected clients for a session
     pub fn getClientCount(self: *Self, session_id: []const u8) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.clients.get(session_id)) |list| {
             return list.items.len;
         }
@@ -288,8 +291,8 @@ pub const SseConnectionManager = struct {
     /// Remove ALL clients for a session (forceful disconnect of entire session)
     /// Returns the number of clients that were removed
     pub fn removeSession(self: *Self, session_id: []const u8) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.clients.getEntry(session_id)) |entry| {
             const count = entry.value_ptr.*.items.len;
@@ -309,8 +312,8 @@ pub const SseConnectionManager = struct {
 
     /// Broadcast an event to ALL clients of ALL sessions
     pub fn broadcast(self: *Self, event: SseEvent) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var iter = self.clients.iterator();
         while (iter.next()) |entry| {

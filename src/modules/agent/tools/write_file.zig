@@ -21,6 +21,7 @@ pub const WriteFileResult = struct {
 
 pub fn write_file(
     allocator: std.mem.Allocator,
+    io: std.Io,
     input: WriteFileInput,
 ) !WriteFileResult {
     const path = input.path;
@@ -29,11 +30,11 @@ pub fn write_file(
     if (input.create_with_dir) {
         if (std.mem.lastIndexOf(u8, path, "/")) |idx| {
             const dir_path = path[0..idx];
-            try std.fs.cwd().makePath(dir_path);
+            try std.Io.Dir.cwd().createDirPath(io, dir_path);
         }
     }
 
-    const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().createFile(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) {
             var path_copy = try allocator.dupe(u8, path);
             defer allocator.free(path_copy);
@@ -41,11 +42,11 @@ pub fn write_file(
             const last_slash = std.mem.lastIndexOf(u8, path_copy, "/");
             if (last_slash) |idx| {
                 const dir_path = path_copy[0..idx];
-                try std.fs.cwd().makeDir(dir_path);
-                const file = try std.fs.cwd().createFile(path, .{});
-                defer file.close();
+                try std.Io.Dir.cwd().createDirPath(io, dir_path);
+                const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+                defer std.Io.File.close(file, io);
 
-                try file.writeAll(input.content);
+                try std.Io.File.writeStreamingAll(file, io, input.content);
                 return WriteFileResult{
                     .path = try allocator.dupe(u8, path),
                 };
@@ -53,9 +54,9 @@ pub fn write_file(
         }
         return err;
     };
-    defer file.close();
+    defer std.Io.File.close(file, io);
 
-    try file.writeAll(input.content);
+    try std.Io.File.writeStreamingAll(file, io, input.content);
     return WriteFileResult{
         .path = try allocator.dupe(u8, path),
     };

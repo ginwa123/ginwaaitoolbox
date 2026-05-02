@@ -42,6 +42,7 @@ pub const HttpServer = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
+    io: std.Io,
     port: u16,
     message_handler: ?MessageHandler = null,
     session_handler: ?SessionHandler = null,
@@ -79,7 +80,7 @@ pub const HttpServer = struct {
         var handler = ServerHandler{
             .server = self,
         };
-        var server = try httpz.Server(*ServerHandler).init(self.allocator, .{
+        var server = try httpz.Server(*ServerHandler).init(self.io, self.allocator, .{
             .address = .localhost(self.port),
         }, &handler);
         defer server.deinit();

@@ -30,6 +30,7 @@ pub const CompletionState = struct {
 pub const App = struct {
     http_client: std.http.Client,
     allocator: std.mem.Allocator,
+    io: std.Io,
     original_termios: ?std.posix.termios,
     session_id: []u8,
     input: std.ArrayList(u8),
@@ -58,7 +59,7 @@ pub const App = struct {
         // Only enable raw mode when running interactively (has a real TTY)
         // In non-interactive mode (e.g., -q flag), there's no terminal
         var original_termios: ?std.posix.termios = null;
-        const stdin_is_tty = std.Io.File.isTty(std.Io.File.stdin(), std.Options.debug_io) catch false;
+        const stdin_is_tty = std.Io.File.isTty(std.Io.File.stdin(), io) catch false;
         if (!is_noninteractive) {
             if (stdin_is_tty) {
                 original_termios = try raw_mode.enableRawMode();
@@ -193,11 +194,11 @@ pub fn main(init: std.process.Init) !void {
     } else if (opts.continue_session) {
         // -c alone = auto-detect latest session
         var cwd_buf: [4096]u8 = undefined;
-        const cwd = std.posix.getcwd(&cwd_buf) catch |err| {
+        const cwd_len = std.Io.Dir.cwd().realPath(std.Options.debug_io, &cwd_buf) catch |err| {
             std.debug.print("{s}Error: Failed to get current directory: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
             return err;
         };
-        const cwd_slice = std.mem.sliceTo(cwd, 0);
+        const cwd_slice = cwd_buf[0..cwd_len];
 
         var opt_session_id: ?[]const u8 = null;
         opt_session_id = try messaging.get_latest_session_by_dir(app.allocator, app.http_port, cwd_slice);
@@ -212,7 +213,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Always ensure we have a session_id (either from -c, auto-detected, or new)
     if (std.mem.eql(u8, app.session_id, "")) {
-        app.session_id = try std.fmt.allocPrint(app.allocator, "session_{}", .{std.time.timestamp()});
+        app.session_id = try std.fmt.allocPrint(app.allocator, "session_{}", .{@divTrunc(std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds, 1_000_000_000)});
     }
 
     // Query mode: send single query and exit

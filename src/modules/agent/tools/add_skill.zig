@@ -51,7 +51,7 @@ pub const add_skill_tool = AgentTool{
 /// Creates a new skill file at .nalar/skills/<name>/SKILL.MD
 /// Returns an XML string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeAddSkillToString(allocator: std.mem.Allocator, input: AddSkillInput) ![]const u8 {
+pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, input: AddSkillInput) ![]const u8 {
     // Validate input
     if (input.name.len == 0) return error.InvalidInput;
     if (input.description.len == 0) return error.InvalidInput;
@@ -59,9 +59,10 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, input: AddSkillInpu
 
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = std.posix.getcwd(&cwd_buf) catch {
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
         return errorToXml(allocator, input.name, "Failed to get current working directory");
     };
+    const cwd = cwd_buf[0..cwd_len];
 
     // Build paths
     const skills_dir = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
@@ -75,7 +76,7 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, input: AddSkillInpu
 
     // Create directories if needed
     if (input.create_with_dir) {
-        std.fs.cwd().makePath(skill_dir) catch {
+        std.Io.Dir.cwd().createDirPath(io, skill_dir) catch {
             return errorToXml(allocator, input.name, "Failed to create skill directory");
         };
     }
@@ -85,12 +86,12 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, input: AddSkillInpu
     defer allocator.free(file_content);
 
     // Write the file
-    const file = std.fs.createFileAbsolute(skill_file, .{}) catch {
+    const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
         return errorToXml(allocator, input.name, "Failed to create skill file");
     };
-    defer file.close();
+    defer std.Io.File.close(file, io);
 
-    file.writeAll(file_content) catch {
+    std.Io.File.writeStreamingAll(file, io, file_content) catch {
         return errorToXml(allocator, input.name, "Failed to write skill file");
     };
 

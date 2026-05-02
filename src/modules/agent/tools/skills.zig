@@ -106,13 +106,14 @@ fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) vo
 
 /// Get the local skills directory path (.nalar/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
-pub fn get_skills_dir_path(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn get_skills_dir_path(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = std.posix.getcwd(&cwd_buf) catch {
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
         std.log.debug("Could not get current working directory", .{});
         return null;
     };
+    const cwd = cwd_buf[0..cwd_len];
 
     // Build path: .nalar/skills/
     const path = std.fs.path.join(allocator, &[_][]const u8{
@@ -129,23 +130,23 @@ pub fn get_skills_dir_path(allocator: std.mem.Allocator) ?[]const u8 {
 /// List all skill files in the skills directory
 /// Returns allocated array of file paths to SKILL.MD files inside skill folders
 /// Empty files are excluded from the list
-pub fn list_skill_files(allocator: std.mem.Allocator) ?[][]const u8 {
+pub fn list_skill_files(allocator: std.mem.Allocator, io: std.Io) ?[][]const u8 {
     const dir_path = get_skills_dir_path(allocator) orelse return null;
     defer allocator.free(dir_path);
 
     // Open the skills directory
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.debug("Could not open skills directory at {s}: {s}", .{ dir_path, @errorName(err) });
         return null;
     };
-    defer dir.close();
+    defer std.Io.Dir.close(dir, io);
 
     // Collect skill file paths
     var files: std.ArrayList([]const u8) = .empty;
     defer files.deinit(allocator);
 
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(io) catch null) |entry| {
         // Only process directories
         if (entry.kind != .directory) {
             continue;
@@ -157,13 +158,13 @@ pub fn list_skill_files(allocator: std.mem.Allocator) ?[][]const u8 {
         const skill_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, SKILL_FILE_NAME }) catch continue;
 
         // Check if SKILL.MD exists and is non-empty
-        const file = std.fs.cwd().openFile(skill_file_path, .{}) catch {
+        const file = std.Io.Dir.cwd().openFile(io, skill_file_path, .{}) catch {
             allocator.free(skill_file_path);
             continue;
         };
-        defer file.close();
+        defer std.Io.File.close(file, io);
 
-        const stat = file.stat() catch {
+        const stat = std.Io.File.stat(file, io) catch {
             allocator.free(skill_file_path);
             continue;
         };
@@ -316,17 +317,17 @@ pub fn free_skills_path(allocator: std.mem.Allocator, path: []const u8) void {
 /// Load skills content from a specific file path
 /// Returns allocated string with skills content, or empty string if file not found/invalid
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn load_skills_from_path(allocator: std.mem.Allocator, path: []const u8) []const u8 {
+pub fn load_skills_from_path(allocator: std.mem.Allocator, io: std.Io, path: []const u8) []const u8 {
     // Open file
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         // Log warning but don't crash - skills are optional
         std.log.warn("Could not open skills file at {s}: {s}", .{ path, @errorName(err) });
         return allocator.dupe(u8, "") catch "";
     };
-    defer file.close();
+    defer std.Io.File.close(file, io);
 
     // Check file size
-    const stat = file.stat() catch |err| {
+    const stat = std.Io.File.stat(file, io) catch |err| {
         std.log.warn("Could not stat skills file at {s}: {s}", .{ path, @errorName(err) });
         return allocator.dupe(u8, "") catch "";
     };
@@ -337,7 +338,7 @@ pub fn load_skills_from_path(allocator: std.mem.Allocator, path: []const u8) []c
     }
 
     // Read file content
-    const content = file.readToEndAlloc(allocator, MAX_SKILLS_SIZE) catch |err| {
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(MAX_SKILLS_SIZE)) catch |err| {
         std.log.warn("Could not read skills file at {s}: {s}", .{ path, @errorName(err) });
         return allocator.dupe(u8, "") catch "";
     };

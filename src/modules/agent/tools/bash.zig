@@ -54,7 +54,7 @@ fn isForbiddenCommand(command: []const u8) bool {
     return false;
 }
 
-pub fn execute_bash(allocator: std.mem.Allocator, input: BashInput) !BashOutput {
+pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) !BashOutput {
     // --- Forbidden pattern check ---
     if (isForbiddenCommand(input.command)) {
         return error.CommandForbidden;
@@ -92,7 +92,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, input: BashInput) !BashOutput 
 
     // --- Background mode ---
     if (input.background) {
-        const ts = std.time.milliTimestamp();
+        const ts: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000));
         const log_path = try std.fmt.allocPrint(
             allocator,
             "/tmp/bg_{d}.log",
@@ -107,19 +107,20 @@ pub fn execute_bash(allocator: std.mem.Allocator, input: BashInput) !BashOutput 
         );
         defer allocator.free(bg_command);
 
-        var child = std.process.Child.init(&.{ "bash", "-c", bg_command }, allocator);
-        if (input.cwd) |cwd| child.cwd = cwd;
-        child.stdin_behavior = .Close;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Ignore;
-        try child.spawn();
+        var child = try std.process.spawn(io, .{
+            .argv = &.{ "bash", "-c", bg_command },
+            .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
+            .stdin = .close,
+            .stdout = .pipe,
+            .stderr = .ignore,
+        });
 
         // Read PID from stdout
         var pid_buf: [32]u8 = undefined;
-        const pid_len = child.stdout.?.read(&pid_buf) catch 0;
-        const pid_str = std.mem.trimRight(u8, pid_buf[0..pid_len], "\n\r ");
+        const pid_len = std.Io.File.readStreaming(child.stdout.?, io, &.{&pid_buf}) catch 0;
+        const pid_str = std.mem.trimEnd(u8, pid_buf[0..pid_len], "\n\r ");
 
-        _ = child.wait() catch {};
+        _ = child.wait(io) catch {};
 
         const stdout_msg = try std.fmt.allocPrint(
             allocator,

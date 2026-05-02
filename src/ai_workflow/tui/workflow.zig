@@ -97,14 +97,13 @@ pub fn filterAndMergeTools(
 
     // Filter base tools if allowed_tools is specified
     if (allowed_tools.len > 0 and !std.mem.eql(u8, allowed_tools, "all")) {
-        var allowed_tools_set: std.StringArrayHashMap(void) = std.StringArrayHashMap(void).init(allocator);
-        defer allowed_tools_set.deinit();
+        var allowed_tools_set: std.StringArrayHashMapUnmanaged(void) = .{};
 
         var it = std.mem.splitScalar(u8, allowed_tools, ',');
         while (it.next()) |tool_name| {
             const trimmed = std.mem.trim(u8, tool_name, " ");
             if (trimmed.len > 0) {
-                allowed_tools_set.put(trimmed, {}) catch {};
+                try allowed_tools_set.put(allocator, trimmed, {});
             }
         }
 
@@ -153,6 +152,7 @@ pub const RunParams = struct {
 
 pub const TUIWorkflow = struct {
     // allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     config: *const config_mod.LlmConfig,
     logger: *logger_mod.Logger,
@@ -654,10 +654,7 @@ pub const TUIWorkflow = struct {
         // Serialize messages as-is for CompactionAgent to reason over
         var history_buf: std.ArrayList(u8) = .empty;
         defer history_buf.deinit(arena);
-        var w = history_buf.writer(arena);
-
-        try w.print("Working directory: {s}\n", .{cwd});
-        try w.print("Current context size: {} messages\n\n", .{messages.len});
+        var w = std.Io.Writer.fromArrayList(&history_buf);
 
         // Include system prompt so CompactionAgent knows what tools/constraints exist
         if (messages.len > 0) {
@@ -708,7 +705,7 @@ pub const TUIWorkflow = struct {
 
         // Add file listing to give CompactionAgent project awareness
         try w.writeAll("\n=== PROJECT FILE LISTING ===\n");
-        try self.addFileListing(w, cwd, arena);
+        try self.addFileListing(&w, cwd, arena);
 
         const compaction_messages = try arena.alloc(agent.AgentMessage, 2);
         compaction_messages[0] = .{ .role = .system, .content = prompt.CompactionAgent };
@@ -838,15 +835,14 @@ pub const TUIWorkflow = struct {
         // Build the compacted summary content
         var summary: std.ArrayList(u8) = .empty;
         defer summary.deinit(allocator);
-        var w = summary.writer(allocator);
-        try w.writeAll("[CONTEXT SUMMARY]\n\n");
-        try w.writeAll(compacted_xml);
+        try summary.print(allocator, "[CONTEXT SUMMARY]\n\n", .{});
+        try summary.print(allocator, "{s}", .{compacted_xml});
         const summary_content = try summary.toOwnedSlice(allocator);
 
         // Save the compacted summary to the database with is_feed_to_llm = 1
-        const id = try std.fmt.allocPrint(allocator, "{}", .{std.time.nanoTimestamp()});
+        const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(self.io, .real).nanoseconds});
         defer allocator.free(id);
-        const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.time.milliTimestamp()});
+        const created_at = try std.fmt.allocPrint(allocator, "{}", .{@divTrunc(std.Io.Timestamp.now(self.io, .real).nanoseconds, 1_000_000)});
         defer allocator.free(created_at);
 
         const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
@@ -887,21 +883,21 @@ pub const TUIWorkflow = struct {
     }
 
     /// Add a file listing to the writer for project context
-    fn addFileListing(self: *TUIWorkflow, w: anytype, cwd: []const u8, arena: std.mem.Allocator) !void {
+    fn addFileListing(self: *TUIWorkflow, w: *anyopaque, cwd: []const u8, arena: std.mem.Allocator) !void {
         inline for (.{ ".zig", ".c", ".h", ".cpp", ".js", ".ts", ".json", ".md", ".txt", ".toml", ".yaml", ".yml" }) |ext| {
             try self.findFilesWithExtension(w, cwd, ext, arena, 0, 3);
         }
     }
 
     /// Recursively find files with specific extension
-    fn findFilesWithExtension(self: *TUIWorkflow, w: anytype, dir_path: []const u8, ext: []const u8, arena: std.mem.Allocator, depth: usize, max_depth: usize) !void {
+    fn findFilesWithExtension(self: *TUIWorkflow, w: *anyopaque, dir_path: []const u8, ext: []const u8, arena: std.mem.Allocator, depth: usize, max_depth: usize) !void {
         if (depth > max_depth) return;
 
-        var dir = std.fs.cwd().openDir(dir_path, .{}) catch return;
-        defer dir.close();
+        var dir = std.Io.Dir.cwd().openDir(self.io, dir_path, .{}) catch return;
+        defer std.Io.Dir.close(dir, self.io);
 
         var iterator = dir.iterate();
-        while (iterator.next() catch null) |entry| {
+        while (iterator.next(self.io) catch null) |entry| {
             if (std.mem.eql(u8, entry.name, ".git")) continue;
             if (std.mem.eql(u8, entry.name, "node_modules")) continue;
             if (std.mem.eql(u8, entry.name, "zig-cache")) continue;
@@ -917,7 +913,8 @@ pub const TUIWorkflow = struct {
                 if (std.mem.endsWith(u8, entry.name, ext)) {
                     const rel_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name });
                     defer arena.free(rel_path);
-                    try w.print("  {s}\n", .{rel_path});
+                    const writer: *std.Io.Writer = @alignCast(@ptrCast(w));
+                    try writer.print("  {s}\n", .{rel_path});
                 }
             }
         }

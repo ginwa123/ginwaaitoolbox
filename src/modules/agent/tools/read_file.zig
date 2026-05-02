@@ -26,13 +26,14 @@ pub const ReadFileOptions = struct {
 
 pub fn read_file(
     allocator: std.mem.Allocator,
+    io: std.Io,
     path: []const u8,
     opts: ReadFileOptions,
 ) !ReadFileResult {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer std.Io.File.close(file, io);
 
-    const raw = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    const raw = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(std.math.maxInt(usize)));
     defer allocator.free(raw);
 
     // count lines

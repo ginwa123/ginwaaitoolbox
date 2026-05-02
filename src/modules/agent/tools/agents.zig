@@ -103,13 +103,14 @@ pub fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedAgentFrontm
 
 /// Get the local agents directory path (.nalar/agents/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
-pub fn getLocalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = std.posix.getcwd(&cwd_buf) catch {
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
         std.log.debug("Could not get current working directory", .{});
         return null;
     };
+    const cwd = cwd_buf[0..cwd_len];
 
     // Build path: .nalar/agents/
     const path = std.fs.path.join(allocator, &[_][]const u8{
@@ -134,7 +135,8 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
 
     switch (builtin.os.tag) {
         .windows => {
-            const appdata = std.posix.getenv("APPDATA") orelse {
+            const c_appdata = std.c.getenv("APPDATA");
+            const appdata = if (c_appdata) |ptr| std.mem.sliceTo(ptr, 0) else {
                 std.log.debug("APPDATA environment variable not set", .{});
                 return null;
             };
@@ -142,7 +144,8 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
             if (config_dir != null) needs_free = true;
         },
         .macos => {
-            const home = std.posix.getenv("HOME") orelse {
+            const c_home = std.c.getenv("HOME");
+            const home = if (c_home) |ptr| std.mem.sliceTo(ptr, 0) else {
                 std.log.debug("HOME environment variable not set", .{});
                 return null;
             };
@@ -153,11 +156,13 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
         },
         else => { // Linux, FreeBSD, etc.
             // XDG_CONFIG_HOME or default to ~/.config
-            if (std.posix.getenv("XDG_CONFIG_HOME")) |xdg_config| {
+            if (std.c.getenv("XDG_CONFIG_HOME")) |ptr| {
+                const xdg_config = std.mem.sliceTo(ptr, 0);
                 config_dir = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME }) catch null;
                 if (config_dir != null) needs_free = true;
             } else {
-                const home = std.posix.getenv("HOME") orelse {
+                const c_home = std.c.getenv("HOME");
+                const home = if (c_home) |ptr| std.mem.sliceTo(ptr, 0) else {
                     std.log.debug("HOME environment variable not set", .{});
                     return null;
                 };
@@ -184,12 +189,12 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
 
 /// Resolve the agents directory path by checking local first, then global
 /// Returns allocated string that caller must free, or null if neither exists
-pub fn resolveAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn resolveAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
     // Try local path first
     if (getLocalAgentsPath(allocator)) |local_path| {
         // Check if directory exists
         const exists = blk: {
-            std.fs.cwd().access(local_path, .{}) catch {
+            std.Io.Dir.cwd().access(io, local_path, .{}) catch {
                 break :blk false;
             };
             break :blk true;
@@ -204,7 +209,7 @@ pub fn resolveAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
     if (getGlobalAgentsPath(allocator)) |global_path| {
         // Check if directory exists
         const exists = blk: {
-            std.fs.cwd().access(global_path, .{}) catch {
+            std.Io.Dir.cwd().access(io, global_path, .{}) catch {
                 break :blk false;
             };
             break :blk true;
@@ -226,23 +231,23 @@ pub fn freeAgentsPath(allocator: std.mem.Allocator, path: []const u8) void {
 /// List all agent files in the agents directory
 /// Returns allocated array of file paths to NALAR.md files inside agent folders
 /// Empty files are excluded from the list
-pub fn listAgentFiles(allocator: std.mem.Allocator) ?[][]const u8 {
+pub fn listAgentFiles(allocator: std.mem.Allocator, io: std.Io) ?[][]const u8 {
     const dir_path = resolveAgentsPath(allocator) orelse return null;
     defer allocator.free(dir_path);
 
     // Open the agents directory
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.debug("Could not open agents directory at {s}: {s}", .{ dir_path, @errorName(err) });
         return null;
     };
-    defer dir.close();
+    defer std.Io.Dir.close(dir, io);
 
     // Collect agent file paths
     var files: std.ArrayList([]const u8) = .empty;
     defer files.deinit(allocator);
 
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(io) catch null) |entry| {
         // Only process directories
         if (entry.kind != .directory) {
             continue;
@@ -254,13 +259,13 @@ pub fn listAgentFiles(allocator: std.mem.Allocator) ?[][]const u8 {
         const agent_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, AGENT_FILE_NAME }) catch continue;
 
         // Check if NALAR.md exists and is non-empty
-        const file = std.fs.cwd().openFile(agent_file_path, .{}) catch {
+        const file = std.Io.Dir.cwd().openFile(io, agent_file_path, .{}) catch {
             allocator.free(agent_file_path);
             continue;
         };
-        defer file.close();
+        defer std.Io.File.close(file, io);
 
-        const stat = file.stat() catch {
+        const stat = std.Io.File.stat(file, io) catch {
             allocator.free(agent_file_path);
             continue;
         };
@@ -291,17 +296,17 @@ pub fn freeAgentFiles(allocator: std.mem.Allocator, files: [][]const u8) void {
 /// Load agent content from a specific file path
 /// Returns allocated string with agent content, or null if file not found/invalid
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ?[]const u8 {
+pub fn loadAgentFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8 {
     // Open file
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         // Log warning but don't crash - agents are optional
         std.log.warn("Could not open agent file at {s}: {s}", .{ path, @errorName(err) });
         return null;
     };
-    defer file.close();
+    defer std.Io.File.close(file, io);
 
     // Check file size
-    const stat = file.stat() catch |err| {
+    const stat = std.Io.File.stat(file, io) catch |err| {
         std.log.warn("Could not stat agent file at {s}: {s}", .{ path, @errorName(err) });
         return null;
     };
@@ -312,7 +317,7 @@ pub fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ?[]cons
     }
 
     // Read file content
-    const content = file.readToEndAlloc(allocator, MAX_AGENT_SIZE) catch |err| {
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(MAX_AGENT_SIZE)) catch |err| {
         std.log.warn("Could not read agent file at {s}: {s}", .{ path, @errorName(err) });
         return null;
     };

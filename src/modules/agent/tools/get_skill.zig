@@ -66,8 +66,8 @@ pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, input: GetSkill
 }
 
 /// Load skill from absolute file path
-fn loadSkillFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const file = std.fs.openFileAbsolute(path, .{}) catch {
+fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch {
         const result = try std.fmt.allocPrint(allocator,
             \\<skill_name></skill_name>
             \\<content></content>
@@ -76,9 +76,9 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
         , .{});
         return result;
     };
-    defer file.close();
+    defer std.Io.File.close(file, io);
 
-    const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch {
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(std.math.maxInt(usize))) catch {
         const result = try std.fmt.allocPrint(allocator,
             \\<skill_name></skill_name>
             \\<content></content>

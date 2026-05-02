@@ -31,6 +31,7 @@ const HttpError = error{
 
 /// HTTP Client interface
 pub const HttpClient = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
 
     /// Initialize HTTP client
@@ -62,21 +63,12 @@ pub const HttpClient = struct {
         defer self.allocator.free(shell_cmd);
 
         // Use std.heap.c_allocator for Child to avoid arena corruption
-        var child = std.process.Child.init(&[_][]const u8{ "bash", "-c", shell_cmd }, std.heap.c_allocator);
-
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        // Spawn with error handling
-        child.spawn() catch |err| {
-            std.log.warn("Failed to spawn curl process: {s}", .{@errorName(err)});
-            const empty = try self.allocator.dupe(u8, "");
-            return .{
-                .body = empty,
-                .status_code = 127,
-            };
-        };
+        var child = try std.process.spawn(self.io, .{
+            .argv = &[_][]const u8{ "bash", "-c", shell_cmd },
+            .stdin = .ignore,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        });
 
         // Read stdout
         var stdout_list: std.ArrayList(u8) = .empty;
@@ -84,8 +76,9 @@ pub const HttpClient = struct {
 
         if (child.stdout) |out| {
             var buf: [4096]u8 = undefined;
+            var reader = out.reader(self.io, &buf);
             while (true) {
-                const bytes_read = out.read(&buf) catch 0;
+                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &buf) catch 0;
                 if (bytes_read == 0) break;
                 try stdout_list.appendSlice(self.allocator, buf[0..bytes_read]);
             }
@@ -93,7 +86,7 @@ pub const HttpClient = struct {
 
         const stdout = try stdout_list.toOwnedSlice(self.allocator);
 
-        const term = child.wait() catch |err| {
+        const term = child.wait(self.io) catch |err| {
             std.log.warn("Failed to wait for curl process: {s}", .{@errorName(err)});
             return .{
                 .body = stdout,
@@ -128,7 +121,7 @@ pub const HttpClient = struct {
 
     /// POST using std.http.Client (currently not used - curl is primary due to TLS issues in test env)
     fn postWithStdHttp(self: HttpClient, url: []const u8, body: []const u8, headers: ?std.StringHashMap([]const u8)) !HttpResult {
-        var client = std.http.Client{ .allocator = self.allocator };
+        var client = std.http.Client{ .allocator = self.allocator, .io = self.io };
         defer client.deinit();
 
         const uri = try std.Uri.parse(url);
@@ -185,10 +178,10 @@ pub const HttpClient = struct {
         // Build curl command - escape single quotes in URL and body to prevent injection
         const escaped_url = try escapeShellArg(url, self.allocator);
         defer self.allocator.free(escaped_url);
-        
+
         const escaped_body = try escapeShellArg(body, self.allocator);
         defer self.allocator.free(escaped_body);
-        
+
         const shell_cmd = try std.fmt.allocPrint(self.allocator,
             "curl -s -X POST {s} -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d {s}",
             .{ escaped_url, escaped_body }
@@ -199,22 +192,12 @@ pub const HttpClient = struct {
         // IMPORTANT: Use std.heap.c_allocator for Child to avoid arena corruption
         // The Child.process internally creates its own arena, and using an arena
         // wrapped in another arena can cause memory corruption
-        var child = std.process.Child.init(&[_][]const u8{ "bash", "-c", shell_cmd }, std.heap.c_allocator);
-
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        // Spawn with error handling - if spawn fails, return proper error
-        child.spawn() catch |err| {
-            std.log.warn("Failed to spawn curl process: {s}", .{@errorName(err)});
-            // Return empty response with error status
-            const empty = try self.allocator.dupe(u8, "");
-            return .{
-                .body = empty,
-                .status_code = 127, // Command not found
-            };
-        };
+        var child = try std.process.spawn(self.io, .{
+            .argv = &[_][]const u8{ "bash", "-c", shell_cmd },
+            .stdin = .ignore,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        });
 
         // Read stdout BEFORE waiting - important for capturing output!
         // Use a loop to read all data since network responses may arrive in multiple chunks
@@ -223,8 +206,9 @@ pub const HttpClient = struct {
 
         if (child.stdout) |out| {
             var buf: [4096]u8 = undefined;
+            var reader = out.reader(self.io, &buf);
             while (true) {
-                const bytes_read = out.read(&buf) catch 0;
+                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &buf) catch 0;
                 if (bytes_read == 0) break;
                 try stdout_list.appendSlice(self.allocator, buf[0..bytes_read]);
             }
@@ -232,7 +216,7 @@ pub const HttpClient = struct {
 
         const stdout = try stdout_list.toOwnedSlice(self.allocator);
 
-        const term = child.wait() catch |err| {
+        const term = child.wait(self.io) catch |err| {
             std.log.warn("Failed to wait for curl process: {s}", .{@errorName(err)});
             return .{
                 .body = stdout,
@@ -242,7 +226,7 @@ pub const HttpClient = struct {
 
         // Check exit code
         const exit_code: u8 = switch (term) {
-            .Exited => |code| code,
+            .exited => |code| code,
             else => 1,
         };
 
