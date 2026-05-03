@@ -75,12 +75,13 @@ pub const HttpClient = struct {
         errdefer stdout_list.deinit(self.allocator);
 
         if (child.stdout) |out| {
-            var buf: [4096]u8 = undefined;
-            var reader = out.reader(self.io, &buf);
+            var tmp_buf: [4096]u8 = undefined;
+            // Read into tmp_buf first, then append to avoid aliasing
             while (true) {
-                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &buf) catch 0;
+                var reader = out.reader(self.io, &tmp_buf);
+                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &tmp_buf) catch 0;
                 if (bytes_read == 0) break;
-                try stdout_list.appendSlice(self.allocator, buf[0..bytes_read]);
+                try stdout_list.appendSlice(self.allocator, tmp_buf[0..bytes_read]);
             }
         }
 
@@ -205,12 +206,13 @@ pub const HttpClient = struct {
         errdefer stdout_list.deinit(self.allocator);
 
         if (child.stdout) |out| {
-            var buf: [4096]u8 = undefined;
-            var reader = out.reader(self.io, &buf);
+            var tmp_buf: [4096]u8 = undefined;
+            // Read into tmp_buf first, then append to avoid aliasing
             while (true) {
-                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &buf) catch 0;
+                var reader = out.reader(self.io, &tmp_buf);
+                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &tmp_buf) catch 0;
                 if (bytes_read == 0) break;
-                try stdout_list.appendSlice(self.allocator, buf[0..bytes_read]);
+                try stdout_list.appendSlice(self.allocator, tmp_buf[0..bytes_read]);
             }
         }
 

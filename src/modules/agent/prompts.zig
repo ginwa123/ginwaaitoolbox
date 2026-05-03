@@ -285,7 +285,7 @@ pub fn build_agent_prompt(
     }
 
     // 14. Dynamic tool listing
-    try appendToolListing(allocator, &result, tools);
+   // try appendToolListing(allocator, &result, tools);
 
     // 15. File editing rules - CRITICAL, follow the workflow!
     try appendSection(allocator, &result, FileEditingRules);
@@ -353,8 +353,32 @@ pub fn build_agent_prompt(
 fn appendToolListing(allocator: std.mem.Allocator, result: *std.ArrayList(u8), tools: []const tool_models.AgentTool) !void {
     if (tools.len == 0) return;
 
-    try result.appendSlice(allocator, "\n\n## Available Tools\n\nUse these exact tool names in your tool_calls:\n\n");
+    const header = "\n\n## Available Tools\n\nUse these exact tool names in your tool_calls:\n\n";
+    try result.appendSlice(allocator, header);
+
+    // Limit total tools to prevent allocation overflow
+    // const max_tools = 20;
+    // const tools_to_process = if (tools.len > max_tools) tools[0..max_tools] else tools;
+
     for (tools) |tool| {
+        std.debug.print("Processing tool: {s}", .{tool.function.name});
+        std.debug.print("Tool description: {s}", .{tool.function.description});
+        const name = tool.function.name;
+        const desc = tool.function.description;
+
+        // Guard against corrupted/uninitialized slices
+        if (name.len == 0) {
+            std.debug.print("Skipping tool with empty name: {s}", .{name});
+            continue;
+        }
+        if (desc.len == 0) {
+            std.debug.print("Skipping tool with empty description: {s}", .{name});
+            continue;
+        }
+
+        // Skip tools with excessively long names or descriptions to avoid allocation issues
+        // if (tool.function.name.len > 64 or tool.function.description.len > 1024) continue;
+
         try result.appendSlice(allocator, "- **");
         try result.appendSlice(allocator, tool.function.name);
         try result.appendSlice(allocator, "**: ");

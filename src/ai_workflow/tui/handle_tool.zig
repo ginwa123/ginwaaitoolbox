@@ -27,6 +27,7 @@ pub const TOOL_REGISTRY = tool_registry.MAIN_AGENT_TOOL_REGISTRY;
 /// Context passed to all tool handlers
 const ToolContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
     session_id: []const u8,
@@ -96,6 +97,7 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAg
     // Standard tools: call exec directly and wrap result
     const ctx_local = tool_registry.ToolExecContext{
         .allocator = ctx.allocator,
+        .io = ctx.io,
         .db = ctx.db,
         .logger = ctx.logger,
         .session_id = ctx.session_id,
@@ -142,6 +144,7 @@ fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
 fn dispatchMCP(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const result = try handle_mcp_tool.handle_mcp_tool_run(
         ctx.allocator,
+        ctx.io,
         ctx.logger,
         tool_call,
         ctx.config,
@@ -230,6 +233,7 @@ fn parseAgentFromResult(result: []const u8) ?[]const u8 {
 
 pub fn handle_tool(
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     logger: *logger_mod.Logger,
     session_id: []const u8,
@@ -243,11 +247,7 @@ pub fn handle_tool(
     api_key: []const u8,
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
-    base_tools: []const tool_models.AgentTool,
-    messages_list: *std.ArrayList(agent.AgentMessage),
 ) !void {
-    _ = base_tools; // Kept for API compatibility, tool validation is now via registry
-    _ = messages_list; // Kept for API compatibility
 
     if (res_dynamic_agent.tool_calls) |tc| {
         // Check if any tools match registered tools or MCP tools
@@ -272,7 +272,7 @@ pub fn handle_tool(
         const current_agent_state = try get_current_agent_by_session_id(allocator, db, session_id);
         const current_agent_for_save = current_agent_state.agent;
 
-        _ = try llm_history.saveMessage(allocator, db, .{
+        _ = try llm_history.saveMessage(allocator, io, db, .{
             .session_id = session_id,
             .model = model,
             .cwd = cwd,
@@ -302,6 +302,7 @@ pub fn handle_tool(
         // Build context for dispatch
         const ctx = ToolContext{
             .allocator = allocator,
+            .io = io,
             .db = db,
             .logger = logger,
             .session_id = session_id,
@@ -325,6 +326,7 @@ pub fn handle_tool(
                 // Call MCP handler
                 tool_result = handle_mcp_tool.handle_mcp_tool_run(
                     allocator,
+                    io,
                     logger,
                     tool_call,
                     config,
@@ -333,10 +335,10 @@ pub fn handle_tool(
                         tool_call.function.name,
                         @errorName(err),
                     });
-                    try saveAndSendToolResult(allocator, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                    try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                     continue;
                 };
-                try saveAndSendToolResult(allocator, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                 continue;
             }
 
@@ -347,7 +349,7 @@ pub fn handle_tool(
                     tool_call.function.name,
                     @errorName(err),
                 });
-                try saveAndSendToolResult(allocator, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                 continue;
             };
 
@@ -371,7 +373,7 @@ pub fn handle_tool(
                 };
             }
 
-            try saveAndSendToolResult(allocator, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+            try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
         }
     }
 
@@ -380,6 +382,7 @@ pub fn handle_tool(
 
 fn saveAndSendToolResult(
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
     parent_session_id: []const u8,
@@ -396,7 +399,7 @@ fn saveAndSendToolResult(
     if (std.mem.eql(u8, tool_call.function.name, "update_activity")) {
         content = "";
     }
-    _ = try llm_history.saveMessage(allocator, db, .{
+    _ = try llm_history.saveMessage(allocator, io, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,

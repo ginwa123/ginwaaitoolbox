@@ -523,10 +523,10 @@ const initialMessages = try buildMessages(allocator, self.io, self.db, params.cw
                     _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
-                    try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, merged_tools, &messagesLists);
+                    try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config);
                 } else if (finish_reason == .assistant) {
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, merged_tools, &messagesLists);
+                        try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config);
                     } else {
                         // Treat as normal completion
                         _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
