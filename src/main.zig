@@ -18,7 +18,7 @@ const startup = nalar_mod.ai_workflow.startup;
 
 pub fn main(init: std.process.Init) !void {
     const arena_allocator = init.arena;
-    defer arena_allocator.deinit();
+    defer _ = arena_allocator.reset(.free_all);
     const parent_allocator = arena_allocator.allocator();
     const environment = init.environ_map;
     const io = init.io;

@@ -70,9 +70,7 @@ pub const App = struct {
         }
 
         const kb = try keybindings.loadKeybindings(allocator);
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer arena.deinit();
-        const http_client = std.http.Client{ .allocator = arena.allocator(), .io = io };
+        const http_client = std.http.Client{ .allocator = allocator, .io = io };
         return App{
             .http_client = http_client,
             .allocator = allocator,
@@ -113,12 +111,11 @@ fn runQueryMode(app: *App, query: []const u8) !void {
         return;
     };
     defer app.allocator.free(response);
-    // Response is already printed by readResponseAndStreamRunLLM
 }
 
 pub fn main(init: std.process.Init) !void {
     const arena_allocator = init.arena;
-    defer arena_allocator.deinit();
+    defer _ = arena_allocator.reset(.free_all);
     const allocator = arena_allocator.allocator();
     const io = init.io;
     const environment = init.environ_map;
@@ -176,6 +173,7 @@ pub fn main(init: std.process.Init) !void {
         opts.process,
         opts.json,
     );
+    defer app.deinit();
 
     // Handle session ID: -c alone = auto-detect latest, -c <id> = specific session, no flag = new session
     if (opts.continue_session_id) |session_id| {

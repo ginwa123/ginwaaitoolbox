@@ -44,11 +44,12 @@ pub fn executeCommand(app: *App, command: []const u8) !bool {
 /// Get the default config path (same logic as config module)
 /// Caller owns returned memory
 fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-    const config_home = std.posix.getenv("XDG_CONFIG_HOME");
+    const home_ptr = std.c.getenv(@as([*:0]const u8, "HOME")) orelse return error.HomeNotFound;
+    const home: []const u8 = std.mem.span(home_ptr);
+    const config_home_ptr = std.c.getenv(@as([*:0]const u8, "XDG_CONFIG_HOME"));
 
-    const base: []const u8 = if (config_home) |xch| xch else try std.fmt.allocPrint(allocator, "{s}/.config", .{home});
-    defer if (config_home == null) allocator.free(base);
+    const base: []const u8 = if (config_home_ptr) |xch| std.mem.span(xch) else try std.fmt.allocPrint(allocator, "{s}/.config", .{home});
+    defer if (config_home_ptr == null) allocator.free(base);
 
     return try std.fmt.allocPrint(allocator, "{s}/nalar/config.json", .{base});
 }
@@ -97,17 +98,25 @@ fn commandModel(app: *App) !bool {
     const config_path = try getConfigPath(app.allocator);
     defer app.allocator.free(config_path);
 
-    const content = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
+    const file = std.Io.Dir.openFileAbsolute(app.io, config_path, .{}) catch |err| {
         std.debug.print("{s}Error opening config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
-    defer content.close();
+    defer file.close(app.io);
 
-    const json_str = content.readToEndAlloc(app.allocator, 4096) catch |err| {
-        std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
-        return false;
-    };
-    defer app.allocator.free(json_str);
+    var content_buf = try std.ArrayList(u8).initCapacity(app.allocator, 4096);
+    defer content_buf.deinit(app.allocator);
+    var file_reader_buf: [4096]u8 = undefined;
+    var reader = std.Io.File.reader(file, app.io, &file_reader_buf);
+    while (true) {
+        const n = reader.interface.readSliceShort(&file_reader_buf) catch |err| {
+            std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
+            return false;
+        };
+        if (n == 0) break;
+        content_buf.appendSlice(app.allocator, file_reader_buf[0..n]) catch break;
+    }
+    const json_str = try content_buf.toOwnedSlice(app.allocator);
 
     // Parse JSON to find model
     const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, json_str, .{}) catch |err| {
@@ -134,17 +143,25 @@ fn commandConfig(app: *App) !bool {
     const config_path = try getConfigPath(app.allocator);
     defer app.allocator.free(config_path);
 
-    const content = std.fs.openFileAbsolute(config_path, .{}) catch |err| {
+    const file = std.Io.Dir.openFileAbsolute(app.io, config_path, .{}) catch |err| {
         std.debug.print("{s}Error opening config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
         return false;
     };
-    defer content.close();
+    defer file.close(app.io);
 
-    const json_str = content.readToEndAlloc(app.allocator, 4096) catch |err| {
-        std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
-        return false;
-    };
-    defer app.allocator.free(json_str);
+    var content_buf = try std.ArrayList(u8).initCapacity(app.allocator, 4096);
+    defer content_buf.deinit(app.allocator);
+    var file_reader_buf: [4096]u8 = undefined;
+    var reader = std.Io.File.reader(file, app.io, &file_reader_buf);
+    while (true) {
+        const n = reader.interface.readSliceShort(&file_reader_buf) catch |err| {
+            std.debug.print("{s}Error reading config: {s}{s}\r\n", .{ globals.yellow, @errorName(err), globals.reset });
+            return false;
+        };
+        if (n == 0) break;
+        content_buf.appendSlice(app.allocator, file_reader_buf[0..n]) catch break;
+    }
+    const json_str = try content_buf.toOwnedSlice(app.allocator);
 
     // Parse JSON to extract config values
     const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, json_str, .{}) catch |err| {
@@ -195,7 +212,8 @@ fn commandSession(app: *App) !bool {
     std.debug.print("  {s}Session ID:{s} {s}{s}{s}\r\n", .{ globals.dim, globals.reset, globals.green, app.session_id, globals.reset });
 
     var cwd_buf: [4096]u8 = undefined;
-    const cwd = std.posix.getcwd(&cwd_buf) catch "unknown";
+    const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len);
+    const cwd: []const u8 = if (cwd_ptr) |p| std.mem.sliceTo(p, 0) else "unknown";
     std.debug.print("  {s}Working Dir:{s} {s}{s}{s}\r\n", .{ globals.dim, globals.reset, globals.green, cwd, globals.reset });
 
     return false;

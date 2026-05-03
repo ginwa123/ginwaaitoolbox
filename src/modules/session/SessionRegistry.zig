@@ -226,6 +226,8 @@ pub const SessionRegistry = struct {
     }
 
     pub fn isRegistered(self: *Self, session_id: []const u8) bool {
+        self.register_mutex.lockUncancelable(std.Options.debug_io);
+        defer self.register_mutex.unlock(std.Options.debug_io);
         return self.activity.contains(session_id);
     }
 

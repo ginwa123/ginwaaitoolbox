@@ -27,24 +27,27 @@ pub fn sendMessage(app: *App, message: []const u8) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const cwd = std.process.getCwdAlloc(allocator) catch "";
+    const cwd = std.process.currentPathAlloc(app.io, allocator) catch "";
     const escaped_msg = escapeJsonString(allocator, message);
     const escaped_cwd = escapeJsonString(allocator, cwd);
-    // Use new /api/session endpoint directly
-    // ///   - name: session name (string, defaults to "New Session")
-    //   - session_id: custom session ID (string, optional, auto-generated if not provided)
-    //   - queue_message: initial message to add to session queue (string, optional)
-    //   - cwd_session: working directory (string, optional)
+    allocator.free(cwd);
 
     const json_payload = try std.fmt.allocPrint(allocator,
         \\{{"session_id":"{s}","queue_message":"{s}","cwd_session":"{s}","allowed_tools":"all"}}
     , .{ app.session_id, escaped_msg, escaped_cwd });
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+
+    // Use high-level std.Io.net API to connect
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", app.http_port);
+    const stream = try std.Io.net.IpAddress.connect(&address, app.io, .{ .mode = .stream });
+    defer stream.close(app.io);
+
     const request = try std.fmt.allocPrint(allocator, "POST /api/session HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ globals.HTTP_HOST, app.http_port, json_payload.len, json_payload });
-    _ = try std.posix.write(sock, request);
+
+    var write_buf: [4096]u8 = undefined;
+    var writer = stream.writer(app.io, &write_buf);
+    try std.Io.Writer.writeAll(&writer.interface, request);
+    // Access flush via the writer interface vtable
+    try writer.interface.flush();
 }
 
 /// Send a double_escape command to cancel the session
@@ -53,13 +56,17 @@ pub fn sendDoubleEscapeCommand(app: *App) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Use new /api/session/:session_id/cancel endpoint directly (no body needed)
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    const sock = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    if (sock < 0) return error.SocketCreationFailed;
+    defer _ = std.c.close(sock);
+    var addr = std.os.linux.sockaddr.in{
+        .family = std.os.linux.AF.INET,
+        .port = @intCast(app.http_port),
+        .addr = @bitCast([4]u8{ 127, 0, 0, 1 }),
+    };
+    if (std.c.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) < 0) return error.ConnectionFailed;
     const request = try std.fmt.allocPrint(allocator, "POST /api/session/{s}/cancel HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(sock, request);
+    _ = std.c.write(sock, request.ptr, request.len);
 }
 
 /// Send a get_sessions command to list active sessions
@@ -68,13 +75,17 @@ pub fn sendSessionsCommand(app: *App) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Use existing /api/session endpoint (GET list)
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    const sock = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    if (sock < 0) return error.SocketCreationFailed;
+    defer _ = std.c.close(sock);
+    var addr = std.os.linux.sockaddr.in{
+        .family = std.os.linux.AF.INET,
+        .port = @intCast(app.http_port),
+        .addr = @bitCast([4]u8{ 127, 0, 0, 1 }),
+    };
+    if (std.c.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) < 0) return error.ConnectionFailed;
     const request = try std.fmt.allocPrint(allocator, "GET /api/session HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n", .{ globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(sock, request);
+    _ = std.c.write(sock, request.ptr, request.len);
 }
 
 /// Send a ping request to the server to check if the session is still connected
@@ -86,23 +97,25 @@ pub fn send_ping_command(app: *App) !bool {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    const sock = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    if (sock < 0) return error.SocketCreationFailed;
+    defer _ = std.c.close(sock);
+    var addr = std.os.linux.sockaddr.in{
+        .family = std.os.linux.AF.INET,
+        .port = @intCast(app.http_port),
+        .addr = @bitCast([4]u8{ 127, 0, 0, 1 }),
+    };
+    if (std.c.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) < 0) return error.ConnectionFailed;
 
-    // Use the new synchronous ping endpoint
     const request = try std.fmt.allocPrint(allocator, "GET /api/ping/{s} HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(sock, request);
+    _ = std.c.write(sock, request.ptr, request.len);
 
-    // Read response to check if reconnect is needed
     var buf: [1024]u8 = undefined;
-    const n = std.posix.read(sock, &buf) catch return false;
-    if (n > 0) {
-        const response = buf[0..n];
-        if (std.mem.indexOf(u8, response, "\"reconnect\":true") != null) {
-            return true;
-        }
+    const n = std.c.read(sock, &buf, buf.len);
+    if (n <= 0) return false;
+    const response = buf[0..@intCast(n)];
+    if (std.mem.indexOf(u8, response, "\"reconnect\":true") != null) {
+        return true;
     }
     return false;
 }
@@ -125,13 +138,11 @@ pub fn check_session_exists(app: *App) !bool {
     var writer = stream.writer(app.io, &write_buffer);
     try std.Io.Writer.writeAll(&writer.interface, request);
 
-    // Read response to check if session exists
     var read_buffer: [1024]u8 = undefined;
     var reader = stream.reader(app.io, &read_buffer);
     const n = std.Io.Reader.readSliceShort(&reader.interface, &read_buffer) catch return false;
     if (n > 0) {
         const response = read_buffer[0..n];
-        // Parse JSON response: {"session_id":"...","exists":true/false}
         if (std.mem.indexOf(u8, response, "\"exists\":true") != null) {
             return true;
         }
@@ -150,26 +161,20 @@ pub fn get_latest_session_by_dir(allocator: std.mem.Allocator, io: std.Io, http_
     var stream = try addr.connect(io, .{ .mode = .stream });
     defer stream.close(io);
 
-    // URL encode the cwd for the query parameter
-    // For simplicity, we'll assume the cwd doesn't contain special URL chars that need encoding
     const request = try std.fmt.allocPrint(alloc, "GET /api/session/latest?cwd={s} HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ cwd, globals.HTTP_HOST, http_port });
     var write_buf: [1024]u8 = undefined;
     var stream_writer = std.Io.net.Stream.Writer.init(stream, io, &write_buf);
     try stream_writer.interface.writeAll(request);
 
-    // Read response
     var read_buf: [2048]u8 = undefined;
     var stream_reader = std.Io.net.Stream.Reader.init(stream, io, &read_buf);
     var slices: [1][]u8 = .{read_buf[0..]};
     const n = try stream_reader.interface.readVec(&slices);
     if (n > 0) {
         const response = read_buf[0..n];
-        // Parse JSON response: {"session_id":"...","found":true} or {"found":false}
         if (std.mem.indexOf(u8, response, "\"found\":true") != null) {
-            // Extract session_id from the response
-            // Format: {"session_id":"abc123","session_dir":"/path","created_at":"...","found":true}
             if (std.mem.indexOf(u8, response, "\"session_id\":\"")) |idx| {
-                const start = idx + 14; // length of "\"session_id\":\""
+                const start = idx + 14;
                 var end = start;
                 while (end < response.len and response[end] != '"') : (end += 1) {}
                 return try allocator.dupe(u8, response[start..end]);
@@ -185,13 +190,17 @@ pub fn sendHistoryCommand(app: App) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Use existing /api/session/:session_id/messages endpoint
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    const sock = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    if (sock < 0) return error.SocketCreationFailed;
+    defer _ = std.c.close(sock);
+    var addr = std.os.linux.sockaddr.in{
+        .family = std.os.linux.AF.INET,
+        .port = @intCast(app.http_port),
+        .addr = @bitCast([4]u8{ 127, 0, 0, 1 }),
+    };
+    if (std.c.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) < 0) return error.ConnectionFailed;
     const request = try std.fmt.allocPrint(allocator, "GET /api/session/{s}/messages HTTP/1.1\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(sock, request);
+    _ = std.c.write(sock, request.ptr, request.len);
 }
 
 /// Send a compact command to manually trigger conversation history compaction
@@ -200,13 +209,17 @@ pub fn sendCompactCommand(app: *App) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Use new /api/session/:session_id/compact endpoint directly (no body needed)
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    const sock = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    if (sock < 0) return error.SocketCreationFailed;
+    defer _ = std.c.close(sock);
+    var addr = std.os.linux.sockaddr.in{
+        .family = std.os.linux.AF.INET,
+        .port = @intCast(app.http_port),
+        .addr = @bitCast([4]u8{ 127, 0, 0, 1 }),
+    };
+    if (std.c.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) < 0) return error.ConnectionFailed;
     const request = try std.fmt.allocPrint(allocator, "POST /api/session/{s}/compact HTTP/1.1\r\nHost: {s}:{d}\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(sock, request);
+    _ = std.c.write(sock, request.ptr, request.len);
 }
 
 /// Get the latest message with finish_reason="stop" for a session
@@ -217,19 +230,25 @@ pub fn get_latest_message_by_created_at(app: *App) !bool {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    // Use high-level std.Io.net API
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", app.http_port);
+    const stream = try std.Io.net.IpAddress.connect(&address, app.io, .{ .mode = .stream });
+    defer stream.close(app.io);
 
     const request = try std.fmt.allocPrint(allocator, "GET /api/session/{s}/messages?sort_by=created_at&direction=desc&limit=1 HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(sock, request);
+
+    var write_buf: [4096]u8 = undefined;
+    var writer = stream.writer(app.io, &write_buf);
+    try std.Io.Writer.writeAll(&writer.interface, request);
+    try writer.interface.flush();
 
     var response_buf = std.ArrayList(u8).empty;
     defer response_buf.deinit(allocator);
     var read_buf: [4096]u8 = undefined;
+    var reader = stream.reader(app.io, &read_buf);
+
     while (true) {
-        const n = std.posix.read(sock, &read_buf) catch break;
+        const n = std.Io.Reader.readSliceShort(&reader.interface, &read_buf) catch break;
         if (n == 0) break;
         try response_buf.appendSlice(allocator, read_buf[0..n]);
     }
@@ -260,20 +279,25 @@ pub fn fetch_latest_message_body(app: *App) !?[]const u8 {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    defer std.posix.close(sock);
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    try std.posix.connect(sock, &addr.any, @sizeOf(std.net.Address));
+    // Use high-level std.Io.net API
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", app.http_port);
+    const stream = try std.Io.net.IpAddress.connect(&address, app.io, .{ .mode = .stream });
+    defer stream.close(app.io);
 
     const request = try std.fmt.allocPrint(alloc, "GET /api/session/{s}/messages?sort_by=created_at&direction=desc&limit=1 HTTP/1.0\r\nHost: {s}:{d}\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(sock, request);
 
-    // Read full response into a dynamic buffer
+    var write_buf: [4096]u8 = undefined;
+    var writer = stream.writer(app.io, &write_buf);
+    try std.Io.Writer.writeAll(&writer.interface, request);
+    try writer.interface.flush();
+
     var response_buf = std.ArrayList(u8).empty;
     defer response_buf.deinit(alloc);
     var read_buf: [4096]u8 = undefined;
+    var reader = stream.reader(app.io, &read_buf);
+
     while (true) {
-        const n = std.posix.read(sock, &read_buf) catch break;
+        const n = std.Io.Reader.readSliceShort(&reader.interface, &read_buf) catch break;
         if (n == 0) break;
         try response_buf.appendSlice(alloc, read_buf[0..n]);
     }
@@ -281,7 +305,6 @@ pub fn fetch_latest_message_body(app: *App) !?[]const u8 {
     const full_response = response_buf.items;
     if (full_response.len == 0) return null;
 
-    // Find the HTTP body (after the blank line separating headers from body)
     const header_sep = "\r\n\r\n";
     const body_offset = std.mem.indexOf(u8, full_response, header_sep) orelse return null;
     const body = full_response[body_offset + header_sep.len ..];

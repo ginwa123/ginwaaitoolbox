@@ -65,10 +65,14 @@ fn sessionSseStreamHandler(ctx: SessionStreamCtx, stream: std.Io.net.Stream) voi
     };
     defer ctx.server.allocator.free(connected_data);
 
-    stream.writeAll(connected_data) catch |err| {
-        ctx.log.errFmt("Session SSE: Failed to write connected event: {s}", .{@errorName(err)}) catch {};
-        return;
-    };
+    {
+        var buf: [4096]u8 = undefined;
+        var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
+        w.interface.writeAll(connected_data) catch |err| {
+            ctx.log.errFmt("Session SSE: Failed to write connected event: {s}", .{@errorName(err)}) catch {};
+            return;
+        };
+    }
 
     // Main loop: process events from queue and keepalive
     while (ctx.server.sse_manager.hasSession(session_key)) {
@@ -87,13 +91,17 @@ fn sessionSseStreamHandler(ctx: SessionStreamCtx, stream: std.Io.net.Stream) voi
             };
             defer ctx.server.allocator.free(formatted);
 
-            stream.writeAll(formatted) catch |err| {
-                ctx.log.warnFmt("Session SSE write failed: {s}", .{@errorName(err)}) catch {};
-                ctx.server.allocator.free(queue_item.data);
-                if (queue_item.event_type) |et| ctx.server.allocator.free(et);
-                ctx.server.allocator.destroy(queue_item);
-                break;
-            };
+            {
+                var buf: [4096]u8 = undefined;
+                var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
+                w.interface.writeAll(formatted) catch |err| {
+                    ctx.log.warnFmt("Session SSE write failed: {s}", .{@errorName(err)}) catch {};
+                    ctx.server.allocator.free(queue_item.data);
+                    if (queue_item.event_type) |et| ctx.server.allocator.free(et);
+                    ctx.server.allocator.destroy(queue_item);
+                    break;
+                };
+            }
 
             // Free queue item memory after successful send
             ctx.server.allocator.free(queue_item.data);
@@ -101,10 +109,14 @@ fn sessionSseStreamHandler(ctx: SessionStreamCtx, stream: std.Io.net.Stream) voi
             ctx.server.allocator.destroy(queue_item);
         } else {
             // Timeout - send keepalive
-            stream.writeAll(": keepalive\n\n") catch |err| {
-                ctx.log.warnFmt("Session SSE keepalive failed: {s}", .{@errorName(err)}) catch {};
-                break;
-            };
+            {
+                var buf: [4096]u8 = undefined;
+                var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
+                w.interface.writeAll(": keepalive\n\n") catch |err| {
+                    ctx.log.warnFmt("Session SSE keepalive failed: {s}", .{@errorName(err)}) catch {};
+                    break;
+                };
+            }
         }
     }
 

@@ -25,7 +25,9 @@ const colors = struct {
 pub fn log(level: DebugLevel, comptime fmt: []const u8, args: anytype) void {
     if (@intFromEnum(level) > @intFromEnum(global_debug_level)) return;
 
-    const timestamp = @as(i64, @intCast(std.time.timestamp()));
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const timestamp = @as(i64, ts.sec);
 
     switch (level) {
         .off => {
@@ -66,7 +68,8 @@ pub fn dumpHex(label: []const u8, data: []const u8, max_len: usize) void {
     logVerbose("{s} ({d}/{d} bytes):", .{label, show_len, data.len});
 
     var i: usize = 0;
-    var line = std.ArrayList(u8).empty;
+    var line = std.ArrayList(u8).init(std.heap.page_allocator);
+    defer line.deinit();
     while (i < show_len) : (i += 1) {
         _ = line.writer().print("{x:0>2} ", .{data[i]}) catch break;
         if (i % 16 == 15 or i == show_len - 1) {

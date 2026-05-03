@@ -12,6 +12,12 @@ const App = @import("../main.zig").App;
 // Re-export ToolResult from tool_results for convenience
 pub const ToolResult = tool_results.ToolResult;
 
+fn getTimeMillis() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
+
 /// Check if the SSE stream is done by querying the server.
 /// Returns true if the stream has completed.
 fn checkStreamDone(app: *App) !bool {
@@ -20,14 +26,56 @@ fn checkStreamDone(app: *App) !bool {
 
 /// Print the final message body to stdout (used by both modes at end).
 fn printFinalMessage(app: *App) void {
-    const body = messaging.fetch_latest_message_body(app) catch null;
+    const body = messaging.fetch_latest_message_body(app) catch |err| {
+        std.debug.print("[DEBUG] fetch_latest_message_body error: {s}\n", .{@errorName(err)});
+        return;
+    };
     if (body) |b| {
         defer app.allocator.free(b);
-        if (app.json) {
-            print_pretty_json(app.allocator, b);
-        } else {
-            printMessageContent(app.allocator, b);
+        // Parse and find the assistant message content
+        const parsed = std.json.parseFromSlice(std.json.Value, app.allocator, b, .{}) catch {
+            std.debug.print("{s}\n", .{b});
+            return;
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) {
+            std.debug.print("{s}\n", .{b});
+            return;
         }
+        const messages_val = root.object.get("messages") orelse {
+            std.debug.print("{s}\n", .{b});
+            return;
+        };
+        if (messages_val != .array or messages_val.array.items.len == 0) {
+            std.debug.print("{s}\n", .{b});
+            return;
+        }
+        // Find the first non-tool message (the actual assistant response)
+        for (messages_val.array.items) |msg| {
+            if (msg != .object) continue;
+            const role = msg.object.get("role") orelse continue;
+            if (role != .string) continue;
+            if (std.mem.eql(u8, role.string, "assistant")) {
+                const content = msg.object.get("content") orelse continue;
+                if (content == .string) {
+                    std.debug.print("{s}\n", .{content.string});
+                    return;
+                }
+            }
+        }
+        // Fallback: just print first message content
+        const first_msg = messages_val.array.items[0];
+        if (first_msg == .object) {
+            if (first_msg.object.get("content")) |content_val| {
+                if (content_val == .string) {
+                    std.debug.print("{s}\n", .{content_val.string});
+                    return;
+                }
+            }
+        }
+        std.debug.print("{s}\n", .{b});
     }
 }
 
@@ -75,77 +123,114 @@ fn parseSSEEventData(allocator: std.mem.Allocator, json_str: []const u8) !SSEEve
 /// Read response and stream LLM output
 /// Simplified: collects raw buffer, displays content at the end
 pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
+    std.debug.print("[DEBUG] START - session_id: {s}, message: {s}\n", .{ app.session_id, message });
+    std.debug.print("[DEBUG] About to init raw_buffer\n", .{});
     var raw_buffer: std.ArrayListUnmanaged(u8) = .empty;
+    std.debug.print("[DEBUG] raw_buffer init done\n", .{});
     errdefer raw_buffer.deinit(app.allocator);
+    std.debug.print("[DEBUG] About to init arena\n", .{});
 
     var arena = std.heap.ArenaAllocator.init(app.allocator);
-    defer arena.deinit();
+    std.debug.print("[DEBUG] arena init done\n", .{});
+    defer _ = arena.reset(.free_all);
+    std.debug.print("[DEBUG] About to create socket\n", .{});
     const alloc = arena.allocator();
 
     const PING_INTERVAL_MS: i64 = 1000;
     var last_ping_ms: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(app.io, .real).nanoseconds, 1_000_000));
 
-    var stream_socket = std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0) catch return try raw_buffer.toOwnedSlice(app.allocator);
-    defer std.posix.close(stream_socket);
+    std.debug.print("[DEBUG] About to connect using high-level API...\n", .{});
 
-    var enable: u32 = 1;
-    std.posix.setsockopt(stream_socket, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE, std.mem.asBytes(&enable)) catch {};
+    // Use high-level std.Io.net API - this handles socket creation and connection
+    const address = std.Io.net.IpAddress.parse("127.0.0.1", app.http_port) catch {
+        std.debug.print("[DEBUG] IpAddress.parse failed\n", .{});
+        return try raw_buffer.toOwnedSlice(app.allocator);
+    };
+    std.debug.print("[DEBUG] Address parsed successfully\n", .{});
 
-    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, app.http_port);
-    std.posix.connect(stream_socket, &addr.any, @sizeOf(std.net.Address)) catch return try raw_buffer.toOwnedSlice(app.allocator);
+    const stream = std.Io.net.IpAddress.connect(&address, app.io, .{ .mode = .stream }) catch |err| {
+        std.debug.print("[DEBUG] IpAddress.connect failed: {s}\n", .{@errorName(err)});
+        return try raw_buffer.toOwnedSlice(app.allocator);
+    };
+    std.debug.print("[DEBUG] Connected via high-level API!\n", .{});
+
+    // Get the socket fd for polling
+    var stream_socket: i32 = @intCast(stream.socket.handle);
+    std.debug.print("[DEBUG] stream_socket fd: {d}\n", .{stream_socket});
 
     const stream_request = try std.fmt.allocPrint(alloc, "GET /api/stream/{s} HTTP/1.1\r\nHost: {s}:{d}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n", .{ app.session_id, globals.HTTP_HOST, app.http_port });
-    _ = try std.posix.write(stream_socket, stream_request);
+    std.debug.print("[DEBUG] stream_request created, len={d}\n", .{stream_request.len});
 
-    if (!connection.waitForSseConnected(stream_socket, 5000)) {
-        std.debug.print("{s}Warning: SSE connection timeout{s}\n", .{ globals.yellow, globals.reset });
-    }
-    try messaging.sendMessage(app, message);
+    // Use stream writer instead of raw write
+    var write_buf: [4096]u8 = undefined;
+    var writer = stream.writer(app.io, &write_buf);
+    try std.Io.Writer.writeAll(&writer.interface, stream_request);
+    std.debug.print("[DEBUG] write done via stream writer\n", .{});
+
+    std.debug.print("[DEBUG] SSE connected, sending message: {s}\n", .{message});
+    messaging.sendMessage(app, message) catch |err| {
+        std.debug.print("[DEBUG] sendMessage error: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    std.debug.print("[DEBUG] Message sent, starting poll loop\n", .{});
 
     const READ_SIZE: usize = 1024 * 64;
+    const MAX_POLL_ITERATIONS: usize = 300; // 30 seconds max
+
+    var poll_iterations: usize = 0;
 
     while (true) {
-        defer {
-            raw_buffer.clearAndFree(app.allocator);
-        }
-        const now = std.time.milliTimestamp();
+        const now = getTimeMillis();
 
         if (app.is_noninteractive) {
+            poll_iterations += 1;
+            if (poll_iterations > MAX_POLL_ITERATIONS) {
+                std.debug.print("[DEBUG] max poll iterations reached, breaking\n", .{});
+                break;
+            }
             // Non-interactive: poll only the socket
-            var poll_fd = [1]std.posix.pollfd{
-                .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
+            var poll_fd = [1]std.c.pollfd{
+                .{ .fd = stream_socket, .events = std.c.POLL.IN, .revents = 0 },
             };
-            const ready = std.posix.poll(&poll_fd, 100) catch 0;
+            const ready = std.c.poll(&poll_fd, poll_fd.len, 100);
 
             if (ready > 0) {
-                if (poll_fd[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+                if (poll_fd[0].revents & (std.c.POLL.HUP | std.c.POLL.ERR) != 0) {
+                    std.debug.print("[DEBUG] poll HUP/ERR\n", .{});
                     break;
                 }
-                if (poll_fd[0].revents & std.posix.POLL.IN != 0) {
+                if (poll_fd[0].revents & std.c.POLL.IN != 0) {
                     try raw_buffer.ensureUnusedCapacity(app.allocator, READ_SIZE);
                     const slice = raw_buffer.unusedCapacitySlice();
-                    const n = std.posix.read(stream_socket, slice[0..@min(slice.len, READ_SIZE)]) catch break;
-                    if (n == 0) break;
-                    raw_buffer.items.len += n;
+                    const n = std.c.read(stream_socket, slice[0..@min(slice.len, READ_SIZE)].ptr, @min(slice.len, READ_SIZE));
+                    if (n <= 0) break;
+                    raw_buffer.items.len += @intCast(n);
                 }
             }
 
             // Check if stream is done (keepalive or any data)
-            if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null or raw_buffer.items.len > 0) {
-                if (try checkStreamDone(app)) break;
+            if (raw_buffer.items.len > 0) {
+                if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
+                    std.debug.print("[DEBUG] keepalive detected, checking stream done\n", .{});
+                    if (try checkStreamDone(app)) {
+                        std.debug.print("[DEBUG] stream done, breaking\n", .{});
+                        break;
+                    }
+                }
             }
             continue;
         }
 
         // Interactive: poll socket + stdin, parse & print in real-time
-        var poll_fds = [2]std.posix.pollfd{
-            .{ .fd = stream_socket, .events = std.posix.POLL.IN, .revents = 0 },
-            .{ .fd = std.posix.STDIN_FILENO, .events = std.posix.POLL.IN, .revents = 0 },
+        raw_buffer.clearAndFree(app.allocator);
+        var poll_fds = [2]std.c.pollfd{
+            .{ .fd = stream_socket, .events = std.c.POLL.IN, .revents = 0 },
+            .{ .fd = std.c.STDIN_FILENO, .events = std.c.POLL.IN, .revents = 0 },
         };
-        const ready = std.posix.poll(&poll_fds, 100) catch 0;
+        const ready = std.c.poll(&poll_fds, poll_fds.len, 100);
 
         if (ready > 0) {
-            if (poll_fds[1].revents & std.posix.POLL.IN != 0) {
+            if (poll_fds[1].revents & std.c.POLL.IN != 0) {
                 if (checkStdinForDoubleEscape(app)) {
                     messaging.sendDoubleEscapeCommand(app) catch {};
                     break;
@@ -153,16 +238,16 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 poll_fds[1].revents = 0;
             }
 
-            if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
+            if (poll_fds[0].revents & std.c.POLL.IN != 0) {
                 try raw_buffer.ensureUnusedCapacity(app.allocator, READ_SIZE);
                 const slice = raw_buffer.unusedCapacitySlice();
-                const n = std.posix.read(stream_socket, slice[0..@min(slice.len, READ_SIZE)]) catch break;
-                if (n == 0) break;
-                raw_buffer.items.len += n;
+                const n = std.c.read(stream_socket, slice[0..@min(slice.len, READ_SIZE)].ptr, @min(slice.len, READ_SIZE));
+                if (n <= 0) break;
+                raw_buffer.items.len += @intCast(n);
                 poll_fds[0].revents = 0;
             }
 
-            if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) break;
+            if (poll_fds[0].revents & (std.c.POLL.HUP | std.c.POLL.ERR) != 0) break;
         } else {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
                 const is_need_reconnect = messaging.send_ping_command(app) catch false;
@@ -210,7 +295,9 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     }
 
     // Print final message body in both modes
+    std.debug.print("[DEBUG] About to print final message\n", .{});
     printFinalMessage(app);
+    std.debug.print("[DEBUG] Finished printing final message\n", .{});
 
     raw_buffer.clearRetainingCapacity();
     return try raw_buffer.toOwnedSlice(app.allocator);
@@ -308,7 +395,7 @@ fn checkStdinForDoubleEscape(app: *App) bool {
     const bytes_available = raw_mode.stdinBytesAvailable();
     if (bytes_available == 0) return false;
     var buf: [16]u8 = undefined;
-    const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return false;
+    const n = std.c.read(std.posix.STDIN_FILENO, &buf, buf.len);
     if (n == 0) return false;
     const first_byte = buf[0];
     if (first_byte == 0x1b) {
@@ -320,7 +407,7 @@ fn checkStdinForDoubleEscape(app: *App) bool {
             app.last_esc_time = null;
             return false;
         }
-        const now = std.time.milliTimestamp();
+        const now = getTimeMillis();
         if (app.last_esc_time) |last| {
             if (now - last < globals.DOUBLE_ESC_WINDOW_MS) {
                 app.last_esc_time = null;

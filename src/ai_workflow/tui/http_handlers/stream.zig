@@ -35,7 +35,7 @@ fn formatQueueItem(allocator: std.mem.Allocator, item: *http_server.SseQueueItem
 
 /// SSE stream handler - this thread OWNS the stream and reads events from its own queue
 /// Each client gets its own queue, so multiple clients can connect to the same session
-fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
+fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
     const log = logger.getGlobal();
     log.?.infoFmt("SSE stream handler started: session_id={s}", .{ctx.session_id}) catch {};
 
@@ -71,10 +71,14 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
     };
     defer ctx.server.allocator.free(connected_data);
 
-    stream.writeAll(connected_data) catch |err| {
-        log.?.errFmt("SSE: Failed to write connected event: {s}", .{@errorName(err)}) catch {};
-        return;
-    };
+    {
+        var buf: [4096]u8 = undefined;
+        var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
+        w.interface.writeAll(connected_data) catch |err| {
+            log.?.errFmt("SSE: Failed to write connected event: {s}", .{@errorName(err)}) catch {};
+            return;
+        };
+    }
 
     // Get client count for logging
     const client_count = ctx.server.sse_manager.getClientCount(ctx.session_id);
@@ -83,7 +87,10 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
     }) catch {};
 
     // Main loop: process events from queue and keepalive
-    while (ctx.server.sse_manager.hasSession(ctx.session_id)) {
+    // Note: We don't check hasSession() here because for new sessions,
+    // hasSession returns false until the workflow enqueues its first event.
+    // The session is properly cleaned up via removeClient when the client disconnects.
+    while (!queue.closed) {
         // Wait for an event from the queue with 5 second timeout
         const item = queue.dequeueWithTimeout(5_000_000_000);
 
@@ -105,14 +112,18 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
             // Log formatted SSE data before sending
             log.?.debugFmt("SSE: sending formatted: {s}", .{formatted}) catch {};
 
-            stream.writeAll(formatted) catch |err| {
-                log.?.warnFmt("SSE write failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};
-                // Free queue item memory before exiting
-                ctx.server.allocator.free(queue_item.data);
-                if (queue_item.event_type) |et| ctx.server.allocator.free(et);
-                ctx.server.allocator.destroy(queue_item);
-                break;
-            };
+            {
+                var buf: [4096]u8 = undefined;
+                var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
+                w.interface.writeAll(formatted) catch |err| {
+                    log.?.warnFmt("SSE write failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};
+                    // Free queue item memory before exiting
+                    ctx.server.allocator.free(queue_item.data);
+                    if (queue_item.event_type) |et| ctx.server.allocator.free(et);
+                    ctx.server.allocator.destroy(queue_item);
+                    break;
+                };
+            }
 
             // Free queue item memory after successful send
             ctx.server.allocator.free(queue_item.data);
@@ -120,10 +131,14 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.net.Stream) void {
             ctx.server.allocator.destroy(queue_item);
         } else {
             // Timeout - send keepalive
-            stream.writeAll(": keepalive\n\n") catch |err| {
-                log.?.warnFmt("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};
-                break;
-            };
+            {
+                var buf: [4096]u8 = undefined;
+                var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
+                w.interface.writeAll(": keepalive\n\n") catch |err| {
+                    log.?.warnFmt("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};
+                    break;
+                };
+            }
         }
     }
 
