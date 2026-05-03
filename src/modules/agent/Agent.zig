@@ -619,6 +619,20 @@ pub const Agent = struct {
         defer arena.deinit();
         const arena_alloc = arena.allocator();
 
+        // Log input sizes and message content sizes
+        var total_content_size: usize = 0;
+        for (params.messages) |msg| {
+            if (msg.content) |c| total_content_size += c.len;
+            if (msg.reasoning_content) |rc| total_content_size += rc.len;
+        }
+        var total_props: usize = 0;
+        for (params.tools) |tool| {
+            total_props += tool.function.parameters.properties.len;
+        }
+        self.log_fmt(.debug, "TOOL_STATS: tools={d}, props={d}, content={d}", .{
+            params.tools.len, total_props, total_content_size,
+        });
+
         // Convert messages
         const json_messages = try arena_alloc.alloc(JsonMessage, params.messages.len);
         for (params.messages, 0..) |msg, i| {
@@ -892,6 +906,14 @@ pub const Agent = struct {
         // Build request
         const json_body = self.build_json_request(params, true) catch |err| {
             self.log_error("buildJsonRequest", err, null);
+            // Log more detail for memory errors
+            const err_name = @errorName(err);
+            if (std.mem.eql(u8, err_name, "OutOfMemory")) {
+                self.log_fmt(.err, "OUT_OF_MEMORY: messages={d}, tools={d}", .{
+                    params.messages.len,
+                    params.tools.len,
+                });
+            }
             return error.BuildRequestFailed;
         };
         defer self.allocator.free(json_body);
@@ -900,10 +922,10 @@ pub const Agent = struct {
         const estimated_tokens = @divFloor(json_body.len + 3, 4);
         self.log_fmt(.info, "[TOKEN ESTIMATE] sending ~{} tokens ({} bytes)", .{ estimated_tokens, json_body.len });
 
-        self.log_fmt(.debug, "[STREAM REQUEST] JSON body {s}", .{json_body});
-        // const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
-        // const json_ellipsis = if (json_body.len > 500) "..." else "";
-        // self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
+        // Log request (truncated for safety)
+        const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
+        const json_ellipsis = if (json_body.len > 500) "..." else "";
+        self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
         const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
             self.log_error("concat URI", err, null);

@@ -438,8 +438,12 @@ fn sendSSEForLatestMessage(
     is_input: bool,
     is_output: bool,
 ) !void {
-    const latestMessage = getLatestMessage(allocator, db, session_id) catch return;
+    const latestMessage = getLatestMessage(allocator, db, session_id) catch |err| {
+        std.debug.print("SSE_DEBUG: getLatestMessage failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
+        return;
+    };
     if (latestMessage) |msg| {
+        std.debug.print("SSE_DEBUG: sending SSE for session {s}, content='{s}'\n", .{ session_id, if (msg.response_content.len > 50) msg.response_content[0..50] else msg.response_content });
         on_event_send_new(allocator, .{
             .session_id = msg.session_id,
             .model = msg.model,
@@ -459,6 +463,10 @@ fn sendSSEForLatestMessage(
             .is_output = is_output,
             .parent_session_id = parent_session_id,
             .parent_id = session_id,
-        }) catch {};
+        }) catch |err| {
+            std.debug.print("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
+        };
+    } else {
+        std.debug.print("SSE_DEBUG: no latest message found for session {s}\n", .{session_id});
     }
 }

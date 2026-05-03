@@ -219,6 +219,9 @@ pub const TUIWorkflow = struct {
         // Filter and merge tools
         const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools, params.is_sub_agent);
 
+        // Debug: check merged_tools
+        std.debug.print("DEBUG_MERGE: merged_tools count={d}\n", .{merged_tools.len});
+
         // Get messages from database
         const db_messages = try getMessages(allocator, self.db, params.session_id);
         defer {
@@ -353,6 +356,9 @@ pub const TUIWorkflow = struct {
 
         // Filter and merge tools based on allowed_tools setting
         const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools, params.is_sub_agent);
+
+        // Debug: check merged_tools
+        std.debug.print("DEBUG_MERGE: merged_tools count={d}\n", .{merged_tools.len});
 
         // Handle body message - add as initial user message if provided
         if (params.body.len > 0) {
@@ -523,6 +529,7 @@ const initialMessages = try buildMessages(allocator, self.io, self.db, params.cw
                     _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
+                    std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
                     try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config);
                 } else if (finish_reason == .assistant) {
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {

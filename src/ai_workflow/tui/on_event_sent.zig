@@ -99,9 +99,11 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
     const session_id = input.session_id;
 
     const sse_manager = http_server.getGlobalSseManager() orelse {
+        std.debug.print("SSE_ERROR: no SSE manager available for session {s}\n", .{session_id});
         log.?.warnFmt("on_event_send_new[{s}]: no SSE manager available", .{session_id}) catch {};
         return;
     };
+    std.debug.print("SSE_DEBUG: on_event_send_new called for session {s}, manager={*}\n", .{ session_id, sse_manager });
 
     // Trace: log what content we're receiving
     if (input.content) |c| {
@@ -175,13 +177,17 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
         .data = buf.items,
     };
 
+    std.debug.print("SSE_DEBUG: calling enqueueEvent for session {s}, data_len={d}\n", .{ session_id, buf.items.len });
     log.?.debugFmt("on_event_send_new[{s}]: event created, data_ptr=0x{x}, data_len={d}", .{
         session_id,
         @intFromPtr(event.data.ptr),
         event.data.len,
     }) catch {};
 
-    try sse_manager.enqueueEvent(input.session_id, event);
+    sse_manager.enqueueEvent(input.session_id, event) catch |err| {
+        std.debug.print("SSE_ERROR: enqueueEvent failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
+        return;
+    };
 
     log.?.infoFmt("on_event_send_new[{s}]: event enqueued successfully", .{session_id}) catch {};
 }

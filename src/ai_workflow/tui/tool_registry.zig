@@ -948,29 +948,24 @@ pub const MAIN_AGENT_TOOL_REGISTRY: []const ToolInfo = UNIFIED_TOOL_REGISTRY;
 /// All tool definitions for the main agent
 /// This is the canonical list of tool definitions for the main agent
 pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool {
-    const tools = allocator.alloc(tool_models.AgentTool, 16) catch return &.{};
-    tools[0] = set_agent_properties_mod.set_agent_properties_tool;
-    tools[1] = spawn_sub_agent_tool.spawn_sub_agent_tool;
-    tools[2] = update_activity_mod.update_activity_tool;
-    tools[3] = list_skills_mod.list_skills_tool;
-    tools[4] = get_skill_mod.get_skill_tool;
-    tools[5] = remove_skill_mod.remove_skill_tool;
-    tools[6] = add_skill_mod.add_skill_tool;
-    tools[7] = edit_skill_mod.edit_skill_tool;
-    tools[8] = bash_tool_mod.bash_tool;
-    tools[9] = read_file_mod.read_file_tool;
-    tools[10] = write_file_mod.write_file_tool;
-    tools[11] = text_replace_mod.text_replace_tool;
-    tools[12] = remove_file_mod.remove_file_tool;
-    // tools[13] = lsp_definition_mod.lsp_definition_tool,
-    // tools[14] = lsp_references_mod.lsp_references_tool,
-    // tools[15] = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool,
-    // tools[16] = lsp_document_symbol_mod.lsp_document_symbol_tool,
-    // tools[17] = lsp_hover_mod.lsp_hover_tool,
-
-    tools[13] = glob_tool_mod.glob_tool;
-    tools[14] = search_tool_mod.search_tool;
-    return tools;
+    const tools_list = comptime &[_]tool_models.AgentTool{
+        set_agent_properties_mod.set_agent_properties_tool,
+        spawn_sub_agent_tool.spawn_sub_agent_tool,
+        update_activity_mod.update_activity_tool,
+        list_skills_mod.list_skills_tool,
+        get_skill_mod.get_skill_tool,
+        remove_skill_mod.remove_skill_tool,
+        add_skill_mod.add_skill_tool,
+        edit_skill_mod.edit_skill_tool,
+        bash_tool_mod.bash_tool,
+        read_file_mod.read_file_tool,
+        write_file_mod.write_file_tool,
+        text_replace_mod.text_replace_tool,
+        remove_file_mod.remove_file_tool,
+        glob_tool_mod.glob_tool,
+        search_tool_mod.search_tool,
+    };
+    return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
 }
 
 /// Get tool metadata by name from registry

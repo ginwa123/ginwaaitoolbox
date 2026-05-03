@@ -52,6 +52,8 @@ pub fn buildMessages(
         .content = systemContent,
     };
 
+    std.debug.print("DEBUG_BUILD: systemContent size={d} bytes\n", .{systemContent.len});
+
     var allMessages: std.ArrayList(agent.AgentMessage) = .empty;
 
     try allMessages.append(allocator, systemMessage);
