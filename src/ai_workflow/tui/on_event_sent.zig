@@ -40,6 +40,7 @@ pub const Response = struct {
 /// Input parameters for sending SSE events
 /// Used by TUI workflow to broadcast messages to connected clients
 pub const OnEventInput = struct {
+    index: usize = 0,
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -62,10 +63,12 @@ pub const OnEventInput = struct {
 
 /// JSON event payload structure for SSE
 pub const SseEventPayload = struct {
+    index: ?usize = null,
+    content: []const u8,
+    @"type": []const u8 = "full",
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
-    content: ?[]const u8 = null,
     reasoning_content: ?[]const u8 = null,
     role: []const u8 = "assistant",
     finish_reason: ?[]const u8 = null,
@@ -139,10 +142,11 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
     }
 
     const payload = SseEventPayload{
+        .index = input.index,
+        .content = input.content orelse "",
         .session_id = input.session_id,
         .model = input.model,
         .cwd = input.cwd,
-        .content = input.content,
         .reasoning_content = input.reasoning_content,
         .role = input.role orelse "assistant",
         .finish_reason = input.finish_reason,
@@ -164,7 +168,7 @@ pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !voi
 
     // Use std.json.fmt with format writer
     try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
-        .whitespace = .indent_tab,
+        .whitespace = .indent_4,
     })});
 
     log.?.debugFmt("on_event_send_new[{s}]: buf prepared, size={d}, body={s}", .{
@@ -242,7 +246,7 @@ const ContentChunkJson = struct {
 const ReasoningChunkJson = struct {
     index: usize,
     reasoning_content: []const u8,
-    @"type": []const u8 = "reasoning_chunk",
+    @"type": []const u8 = "chunk",
 };
 
 /// JSON structure for final chunk with usage
@@ -270,8 +274,8 @@ pub fn serializeContentChunk(allocator: std.mem.Allocator, chunk: ContentChunk) 
         .content = chunk.content,
     };
 
-    try buf.writer(allocator).print("{f}", .{std.json.fmt(json_chunk, .{
-        .whitespace = .indent_tab,
+    try buf.print(allocator, "{f}", .{std.json.fmt(json_chunk, .{
+        .whitespace = .indent_4,
     })});
 
     return try buf.toOwnedSlice(allocator);
@@ -288,8 +292,8 @@ pub fn serializeReasoningChunk(allocator: std.mem.Allocator, chunk: ReasoningChu
         .reasoning_content = chunk.reasoning,
     };
 
-    try buf.writer(allocator).print("{f}", .{std.json.fmt(json_chunk, .{
-        .whitespace = .indent_tab,
+    try buf.print(allocator, "{f}", .{std.json.fmt(json_chunk, .{
+        .whitespace = .indent_4,
     })});
 
     return try buf.toOwnedSlice(allocator);
@@ -307,7 +311,7 @@ pub fn serializeFinalChunk(allocator: std.mem.Allocator, chunk: FinalChunk) ![]u
     };
 
     try buf.writer(allocator).print("{}", .{std.json.fmt(json_chunk, .{
-        .whitespace = .indent_tab,
+        .whitespace = .indent_4,
     })});
 
     return try buf.toOwnedSlice(allocator);
@@ -323,8 +327,8 @@ pub fn serializeToolCallDeltas(allocator: std.mem.Allocator, chunk: ToolCallDelt
         .deltas = chunk.deltas,
     };
 
-    try buf.writer(allocator).print("{f}", .{std.json.fmt(json_chunk, .{
-        .whitespace = .indent_tab,
+    try buf.print(allocator, "{f}", .{std.json.fmt(json_chunk, .{
+        .whitespace = .indent_4,
     })});
 
     return try buf.toOwnedSlice(allocator);
@@ -342,6 +346,7 @@ pub fn sendStreamChunkContent(
     chunk: ContentChunk,
 ) void {
     const sse_manager = http_server.getGlobalSseManager() orelse return;
+
     const data = serializeContentChunk(allocator, chunk) catch return;
     defer allocator.free(data);
 

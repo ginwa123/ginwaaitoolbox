@@ -1,5 +1,6 @@
 const std = @import("std");
 const json = std.json;
+const Reader = std.Io.Reader;
 const bashTool = @import("tools/bash.zig").bash_tool;
 const bashMod = @import("tools/bash.zig");
 const schemas = @import("tools/schemas.zig");
@@ -1049,8 +1050,6 @@ pub const Agent = struct {
         };
         defer self.allocator.free(transfer_buffer);
 
-        var reader = response.request.reader.bodyReader(transfer_buffer[0..], response.head.transfer_encoding, response.head.content_length);
-
         // Debug: log reader state and response details
         self.log_fmt(.info, "[STREAM] bodyReader called: transfer_encoding={s}, content_length={?}, reader_state={s}", .{
             if (response.head.transfer_encoding == .chunked) "chunked" else "none",
@@ -1068,37 +1067,6 @@ pub const Agent = struct {
             },
         });
 
-        // Safety check: verify the reader state is correct before proceeding
-        // This is a workaround for a potential Zig std lib issue where the state
-        // might not be properly set by bodyReader
-        const state_is_valid = switch (response.request.reader.state) {
-            .body_remaining_content_length => response.head.transfer_encoding == .none and response.head.content_length != null,
-            .body_remaining_chunk_len => response.head.transfer_encoding == .chunked,
-            .body_none => response.head.transfer_encoding == .none and response.head.content_length == null,
-            else => false,
-        };
-
-        if (!state_is_valid) {
-            self.log_fmt(.err, "[STREAM] Reader state mismatch! State={s} but transfer_encoding={s}, content_length={?}. Treating as empty response.", .{
-                switch (response.request.reader.state) {
-                    .ready => "ready",
-                    .received_head => "received_head",
-                    .body_none => "body_none",
-                    .body_remaining_content_length => "body_remaining_content_length",
-                    .body_remaining_chunk_len => "body_remaining_chunk_len",
-                    .closing => "closing",
-                },
-                if (response.head.transfer_encoding == .chunked) "chunked" else "none",
-                response.head.content_length,
-            });
-            return CallResponse{
-                .allocator = self.allocator,
-                .content = "",
-                .tool_calls = null,
-                .finish_reason = null,
-            };
-        }
-
         var line_buffer: std.ArrayList(u8) = .empty;
         defer line_buffer.deinit(self.allocator);
 
@@ -1110,70 +1078,112 @@ pub const Agent = struct {
         var stream_ended_cleanly = false;
         var total_bytes_read: usize = 0;
 
-        // Use a fixed-size read buffer
-        var read_buf: [8192]u8 = undefined;
+        // Get a reader from bodyReader - this properly handles chunked transfer encoding
+        const reader = response.request.reader.bodyReader(transfer_buffer, response.head.transfer_encoding, response.head.content_length);
+        self.log_fmt(.info, "[STREAM] bodyReader returned reader, state={s}", .{
+            switch (response.request.reader.state) {
+                .ready => "ready",
+                .received_head => "received_head",
+                .body_none => "body_none",
+                .body_remaining_content_length => "body_remaining_content_length",
+                .body_remaining_chunk_len => "body_remaining_chunk_len",
+                .closing => "closing",
+            },
+        });
+
+        // Allocate a buffer for reading
+        const read_buffer = self.allocator.alloc(u8, 8192) catch {
+            self.log_msg(.err, "[STREAM] failed to alloc read_buffer");
+            return error.OutOfMemory;
+        };
+        defer self.allocator.free(read_buffer);
 
         while (true) {
+            self.log_msg(.info, "[STREAM] top of loop");
 
-            // Check reader state before attempting to read
-            // The state can transition to 'ready' when content-length bytes are exhausted
+            // Check reader state
             const current_state = response.request.reader.state;
             if (current_state == .ready) {
-                // Stream has ended - all content-length bytes consumed
                 stream_ended_cleanly = true;
+                self.log_msg(.info, "[STREAM] Reader state is ready, stream ended");
                 break;
             }
 
-            // Use stream() directly instead of readSliceShort() to avoid the bug where
-            // readVec suppresses EndOfStream and then retries, causing a panic
-            var writer: std.Io.Writer = .{
-                .buffer = &read_buf,
-                .end = 0,
-                .vtable = &.{ .drain = std.Io.Writer.fixedDrain },
-            };
+            self.log_fmt(.info, "[STREAM] about to readSliceShort, state={s}", .{
+                switch (current_state) {
+                    .ready => "ready",
+                    .received_head => "received_head",
+                    .body_none => "body_none",
+                    .body_remaining_content_length => "body_remaining_content_length",
+                    .body_remaining_chunk_len => "body_remaining_chunk_len",
+                    .closing => "closing",
+                },
+            });
 
-            const bytes_read = reader.stream(&writer, .limited(read_buf.len)) catch |err| {
-                if (err == error.EndOfStream) {
-                    self.log_msg(.info, "[STREAM] EndOfStream received");
+            // Read using bodyReader's readSliceShort
+            const n = reader.readSliceShort(read_buffer[0..]) catch |err| {
+                self.log_fmt(.err, "[STREAM] readSliceShort error: {s}", .{@errorName(err)});
+                break;
+            };
+            self.log_fmt(.info, "[STREAM] readSliceShort returned n={}", .{n});
+
+            if (n == 0) {
+                // Connection closed or no data available
+                self.log_msg(.info, "[STREAM] readSliceShort returned 0, checking for more...");
+                // If state is closing, stream ended
+                if (response.request.reader.state == .closing) {
+                    stream_ended_cleanly = true;
+                    self.log_msg(.info, "[STREAM] State is closing, stream ended");
+                    break;
+                }
+                // Small sleep and retry
+                std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = 50_000 }, .real) catch {};
+                const retry_n = reader.readSliceShort(read_buffer[0..]) catch |err| {
+                    self.log_fmt(.err, "[STREAM] readSliceShort retry error: {s}", .{@errorName(err)});
+                    break;
+                };
+                if (retry_n == 0) {
+                    self.log_msg(.info, "[STREAM] No more data after retry, ending stream");
                     stream_ended_cleanly = true;
                     break;
                 }
-                // Log the error and break instead of continuing to avoid panic
-                self.log_fmt(.err, "[STREAM] Read error: {s}", .{@errorName(err)});
-                stream_ended_cleanly = false;
-                break;
-            };
-
-            if (bytes_read == 0) {
-                // No more data available - this can happen when the stream is exhausted
-                // but EndOfStream hasn't been signaled yet (common with some HTTP servers)
-                self.log_msg(.info, "[STREAM] Zero bytes read, ending stream");
-                stream_ended_cleanly = true;
-                break;
+                self.log_fmt(.info, "[STREAM] Retry successful, got {} bytes", .{retry_n});
+                continue;
             }
 
-            // self.log_fmt(.debug, "[STREAM] Read {} bytes", .{bytes_read});
+            const bytes_read: usize = @intCast(n);
+            total_bytes_read += bytes_read;
+            self.log_fmt(.info, "[STREAM] read {} bytes (total={})", .{bytes_read, total_bytes_read});
 
             // Add small yield to prevent tight CPU spinning during streaming
-            // This ensures we don't monopolize CPU when reading small chunks rapidly
             if (bytes_read < 64) {
                 std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = 100_000 }, .real) catch {};
             }
 
-            total_bytes_read += bytes_read;
-
-            for (read_buf[0..bytes_read]) |byte| {
+            for (read_buffer[0..bytes_read]) |byte| {
                 if (byte == '\n') {
                     if (line_buffer.items.len > 0) {
                         const line = line_buffer.items;
+                        self.log_fmt(.info, "[STREAM] line buffer: \"{s}\"", .{line});
                         if (self.parse_sse_line(line)) |data| {
+                            self.log_fmt(.info, "[STREAM] SSE data: \"{s}\"", .{data});
                             // _ = chunk_arena.reset(.retain_capacity);
 
                             if (self.parse_stream_chunk(data, chunk_arena.allocator())) |chunk| {
                                 chunk_count += 1;
+                                self.log_fmt(.info, "[STREAM] parsed chunk #{}: content_len={}, reasoning_len={}, tool_calls={}", .{
+                                    chunk_count,
+                                    if (chunk.content) |c| c.len else 0,
+                                    if (chunk.reasoning_content) |r| r.len else 0,
+                                    if (chunk.tool_calls_delta) |t| t.len else 0,
+                                });
                                 callback(ctx, chunk);
                                 aggregator.process_chunk(chunk) catch {};
+                            } else {
+                                self.log_fmt(.err, "[STREAM] parse_stream_chunk returned null for data: {s}", .{data});
                             }
+                        } else {
+                            self.log_fmt(.info, "[STREAM] parse_sse_line returned null for line: {s}", .{line});
                         }
                         line_buffer.clearRetainingCapacity();
                     }
@@ -1195,6 +1205,7 @@ pub const Agent = struct {
         }
 
         callback(ctx, .{ .done = true });
+        self.log_fmt(.info, "[STREAM] Sent done marker, chunk_count={}", .{chunk_count});
 
         const fr_str = if (aggregator.finish_reason) |fr| fr.to_str() else "incomplete";
         const content_preview = if (aggregator.content.items.len > 0)

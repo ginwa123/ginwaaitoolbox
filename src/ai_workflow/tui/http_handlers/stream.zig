@@ -66,19 +66,29 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
 
     // Send connected event
     const connected_data = std.fmt.allocPrint(ctx.server.allocator, "event: connected\n{{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id}) catch {
-        log.?.errFmt("SSE: Failed to format connected event", .{}) catch {};
+        std.debug.print("[SSE_ERROR] Failed to format connected event\n", .{});
         return;
     };
     defer ctx.server.allocator.free(connected_data);
 
-    {
-        var buf: [4096]u8 = undefined;
-        var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
-        w.interface.writeAll(connected_data) catch |err| {
-            log.?.errFmt("SSE: Failed to write connected event: {s}", .{@errorName(err)}) catch {};
+    std.debug.print("[SSE_DEBUG] About to write connected event, len={d}\n", .{connected_data.len});
+
+    // Use raw posix.write instead of Stream writer to avoid any buffering issues
+    const socket_fd = stream.socket.handle;
+    var bytes_written: usize = 0;
+    while (bytes_written < connected_data.len) {
+        const n = std.c.write(@intCast(socket_fd), connected_data[bytes_written..].ptr, connected_data[bytes_written..].len);
+        if (n < 0) {
+            std.debug.print("[SSE_ERROR] write failed\n", .{});
             return;
-        };
+        }
+        if (n == 0) {
+            std.debug.print("[SSE_ERROR] write returned 0\n", .{});
+            return;
+        }
+        bytes_written += @intCast(n);
     }
+    std.debug.print("[SSE_DEBUG] Wrote {d} bytes via raw c.write\n", .{bytes_written});
 
     // Get client count for logging
     const client_count = ctx.server.sse_manager.getClientCount(ctx.session_id);
@@ -95,12 +105,13 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
         const item = queue.dequeueWithTimeout(5_000_000_000);
 
         if (item) |queue_item| {
+            std.debug.print("[SSE_DEBUG] dequeueWithTimeout returned item, data_len={d}\n", .{queue_item.data.len});
             // Log body before sending
             log.?.debugFmt("SSE: sending body: {s}", .{queue_item.data}) catch {};
 
             // Format and send the event using heap allocation
             const formatted = formatQueueItem(ctx.server.allocator, queue_item) catch |err| {
-                log.?.warnFmt("SSE: failed to format event: {}", .{err}) catch {};
+                std.debug.print("[SSE_ERROR] formatQueueItem failed: {}\n", .{err});
                 // Free queue item memory
                 ctx.server.allocator.free(queue_item.data);
                 if (queue_item.event_type) |et| ctx.server.allocator.free(et);
@@ -109,21 +120,22 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
             };
             defer ctx.server.allocator.free(formatted);
 
-            // Log formatted SSE data before sending
-            log.?.debugFmt("SSE: sending formatted: {s}", .{formatted}) catch {};
-
-            {
-                var buf: [4096]u8 = undefined;
-                var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
-                w.interface.writeAll(formatted) catch |err| {
-                    log.?.warnFmt("SSE write failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};
-                    // Free queue item memory before exiting
+            std.debug.print("[SSE_DEBUG] formatted len={d}, sending...\n", .{formatted.len});
+            // Use raw c.write for SSE data as well
+            const sfd = stream.socket.handle;
+            var bytes_sent: usize = 0;
+            while (bytes_sent < formatted.len) {
+                const n = std.c.write(@intCast(sfd), formatted[bytes_sent..].ptr, formatted[bytes_sent..].len);
+                if (n < 0) {
+                    std.debug.print("[SSE_ERROR] SSE write failed\n", .{});
                     ctx.server.allocator.free(queue_item.data);
                     if (queue_item.event_type) |et| ctx.server.allocator.free(et);
                     ctx.server.allocator.destroy(queue_item);
                     break;
-                };
+                }
+                bytes_sent += @intCast(n);
             }
+            std.debug.print("[SSE_DEBUG] SSE write completed, {d} bytes\n", .{bytes_sent});
 
             // Free queue item memory after successful send
             ctx.server.allocator.free(queue_item.data);
@@ -131,14 +143,9 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
             ctx.server.allocator.destroy(queue_item);
         } else {
             // Timeout - send keepalive
-            {
-                var buf: [4096]u8 = undefined;
-                var w = std.Io.net.Stream.writer(stream, ctx.server.io, &buf);
-                w.interface.writeAll(": keepalive\n\n") catch |err| {
-                    log.?.warnFmt("SSE keepalive failed for session {s}: {s}", .{ ctx.session_id, @errorName(err) }) catch {};
-                    break;
-                };
-            }
+            const keepalive_text = ": keepalive\n\n";
+            const kfd = stream.socket.handle;
+            _ = std.c.write(@intCast(kfd), keepalive_text.ptr, keepalive_text.len);
         }
     }
 

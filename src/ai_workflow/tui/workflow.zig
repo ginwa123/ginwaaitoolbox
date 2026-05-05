@@ -40,9 +40,11 @@ const on_event_send_new = on_event_sent.on_event_send_new;
 const sendStreamChunkContent = on_event_sent.sendStreamChunkContent;
 const sendStreamChunkReasoning = on_event_sent.sendStreamChunkReasoning;
 const sendStreamChunkFinal = on_event_sent.sendStreamChunkFinal;
+const sendStreamToolCallDelta = on_event_sent.sendStreamToolCallDelta;
 const ContentChunk = on_event_sent.ContentChunk;
 const ReasoningChunk = on_event_sent.ReasoningChunk;
 const FinalChunk = on_event_sent.FinalChunk;
+const ToolCallDeltaChunk = on_event_sent.ToolCallDeltaChunk;
 const ResponseType = on_event_sent.ResponseType;
 const Response = on_event_sent.Response;
 
@@ -76,11 +78,54 @@ pub const StreamingContext = struct {
     chunk_index: usize = 0,
 };
 
-/// Callback for streaming chunks - sends each chunk to the client
+/// Callback for streaming chunks - sends each chunk to the client via SSE
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
-    _ = ctx;
-    _ = chunk;
-    // Streaming is disabled for now - content is sent via on_event_send_new after completion
+    if (ctx == null) return;
+
+    const stream_ctx = @as(*StreamingContext, @ptrCast(@alignCast(ctx.?)));
+    const allocator = stream_ctx.allocator;
+    const session_id = stream_ctx.session_id;
+
+    // Handle done marker - no data to send
+    if (chunk.done) {
+        stream_ctx.chunk_index = 0;
+        return;
+    }
+
+    // Send content chunk if present
+    if (chunk.content) |content| {
+        if (content.len > 0) {
+            const content_chunk = ContentChunk{
+                .index = stream_ctx.chunk_index,
+                .content = content,
+            };
+            sendStreamChunkContent(allocator, session_id, content_chunk);
+        }
+    }
+
+    // Send reasoning chunk if present
+    if (chunk.reasoning_content) |reasoning| {
+        if (reasoning.len > 0) {
+            const reasoning_chunk = ReasoningChunk{
+                .index = stream_ctx.chunk_index,
+                .reasoning = reasoning,
+            };
+            sendStreamChunkReasoning(allocator, session_id, reasoning_chunk);
+        }
+    }
+
+    // Send tool call delta chunk if present
+    if (chunk.tool_calls_delta) |deltas| {
+        if (deltas.len > 0) {
+            const delta_chunk = ToolCallDeltaChunk{
+                .index = stream_ctx.chunk_index,
+                .deltas = deltas,
+            };
+            sendStreamToolCallDelta(allocator, session_id, delta_chunk);
+        }
+    }
+
+    stream_ctx.chunk_index += 1;
 }
 
 /// Filter and merge tools based on allowed_tools setting

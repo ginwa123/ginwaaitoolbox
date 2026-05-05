@@ -236,7 +236,11 @@ pub const SseConnectionManager = struct {
     /// Create a new queue for a session
     pub fn createQueue(self: *Self) !*Queue {
         const queue = try self.allocator.create(Queue);
-        queue.* = .{ .io = self.io };
+        queue.* = .{
+            .io = self.io,
+            .cond = std.Io.Condition.init,
+            .mutex = std.Io.Mutex.init,
+        };
         return queue;
     }
 
@@ -244,14 +248,66 @@ pub const SseConnectionManager = struct {
     pub fn enqueueEvent(self: *Self, session_id: []const u8, event: SseEvent) !void {
         // Get client list pointer while holding mutex
         self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        // Debug: list all sessions and clients in the hash map
+        var sess_iter = self.clients.iterator();
+        var session_count: usize = 0;
+        while (sess_iter.next()) |entry| : (session_count += 1) {
+            std.debug.print("[SSE_DEBUG] enqueueEvent: session '{s}' has {d} clients", .{
+                entry.key_ptr.*, entry.value_ptr.*.items.len});
+            for (entry.value_ptr.*.items) |ci| {
+                std.debug.print(", queue={*}", .{ci.queue});
+            }
+            std.debug.print("\n", .{});
+        }
+        std.debug.print("[SSE_DEBUG] enqueueEvent: total sessions in map: {d}, looking for session '{s}'\n", .{
+            session_count, session_id});
+
         const client_list_ptr = self.clients.getPtr(session_id);
         if (client_list_ptr == null) {
-            self.mutex.unlock(self.io);
-            return error.SessionNotFound;
+            std.debug.print("[SSE_DEBUG] enqueueEvent: session '{s}' NOT FOUND, auto-creating queue\n", .{session_id});
+            // Auto-create a queue for this session if it doesn't exist
+            // This handles the race condition where the workflow runs before
+            // the SSE handler has registered the client
+            const key = self.allocator.dupe(u8, session_id) catch {
+                std.debug.print("[SSE_DEBUG] enqueueEvent: failed to dupe session_id\n", .{});
+                return error.SessionNotFound;
+            };
+            var client_list = std.ArrayList(ClientInfo).empty;
+            errdefer client_list.deinit(self.allocator);
+            const queue = try self.createQueue();
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            try client_list.append(self.allocator, ClientInfo{
+                .queue = queue,
+                .connected_at = ts.sec,
+            });
+            try self.clients.put(key, client_list);
+            std.debug.print("[SSE_DEBUG] enqueueEvent: auto-created queue for session '{s}'\n", .{session_id});
+            // Now get the pointer again
+            const new_client_list_ptr = self.clients.getPtr(session_id) orelse {
+                std.debug.print("[SSE_DEBUG] enqueueEvent: still not found after creation\n", .{});
+                return error.SessionNotFound;
+            };
+            // Fan-out to the newly created client
+            const item = self.allocator.create(SseQueueItem) catch return error.SessionNotFound;
+            item.* = .{
+                .data = self.allocator.dupe(u8, event.data) catch {
+                    self.allocator.destroy(item);
+                    return error.SessionNotFound;
+                },
+                .event_type = if (event.event_type) |et|
+                    self.allocator.dupe(u8, et) catch null
+                else
+                    null,
+            };
+            new_client_list_ptr.items[0].queue.enqueue(item);
+            return;
         }
         const client_list = client_list_ptr.?;
         const client_count = client_list.items.len;
-        self.mutex.unlock(self.io);
+        // Mutex will be unlocked by defer below after fan-out loop
 
         // Fan-out the event to ALL clients
         var failed_clients: usize = 0;
