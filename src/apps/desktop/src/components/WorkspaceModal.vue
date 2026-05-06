@@ -1,0 +1,163 @@
+<script setup lang="ts">
+import { ref, watch, nextTick } from 'vue'
+
+const props = defineProps<{
+  show: boolean
+}>()
+
+const emit = defineEmits<{
+  close: []
+  create: [name: string, icon: string]
+}>()
+
+const name = ref('')
+const icon = ref('📂')
+const nameInput = ref<HTMLInputElement | null>(null)
+
+const icons = ['📂', '📁', '📋', '💼', '🎯', '🚀', '⚡', '🔧', '🎨', '📦', '🌟', '🎪']
+
+// Focus input when modal opens
+watch(() => props.show, async (show) => {
+  if (show) {
+    name.value = ''
+    icon.value = '📂'
+    await nextTick()
+    nameInput.value?.focus()
+  }
+})
+
+const handleClose = () => {
+  emit('close')
+}
+
+const handleCreate = () => {
+  if (name.value.trim()) {
+    emit('create', name.value.trim(), icon.value)
+    handleClose()
+  }
+}
+
+const handleKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Enter' && name.value.trim()) {
+    handleCreate()
+  } else if (event.key === 'Escape') {
+    handleClose()
+  }
+}
+</script>
+
+<template>
+  <Teleport to="body">
+    <Transition name="modal">
+      <div
+        v-if="show"
+        class="fixed inset-0 z-50 flex items-center justify-center"
+        @click.self="handleClose"
+        @keydown="handleKeydown"
+      >
+        <!-- Backdrop -->
+        <div
+          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          @click="handleClose"
+        />
+
+        <!-- Modal Content -->
+        <div
+          class="relative w-full max-w-sm mx-4 p-6 rounded-xl shadow-2xl"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+        >
+          <!-- Header -->
+          <h3
+            class="text-lg font-semibold mb-4"
+            style="color: var(--semantic-text);"
+          >
+            Create Workspace
+          </h3>
+
+          <!-- Icon Selector -->
+          <div class="mb-4">
+            <label
+              class="block text-xs font-medium mb-2"
+              style="color: var(--semantic-text-dim);"
+            >
+              Choose Icon
+            </label>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="i in icons"
+                :key="i"
+                @click="icon = i"
+                class="w-10 h-10 rounded-lg flex items-center justify-center text-xl transition-all duration-200"
+                :style="{
+                  backgroundColor: icon === i ? 'var(--semantic-active-bg)' : 'transparent',
+                  border: `1px solid ${icon === i ? 'var(--color-aqua)' : 'var(--color-border)'}`,
+                }"
+              >
+                {{ i }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Name Input -->
+          <div class="mb-6">
+            <label
+              class="block text-xs font-medium mb-2"
+              style="color: var(--semantic-text-dim);"
+            >
+              Workspace Name
+            </label>
+            <input
+              ref="nameInput"
+              v-model="name"
+              type="text"
+              placeholder="My Workspace"
+              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200"
+              style="
+                background-color: var(--semantic-sidebar-bg);
+                border: 1px solid var(--color-border);
+                color: var(--semantic-text);
+              "
+            />
+          </div>
+
+          <!-- Actions -->
+          <div class="flex justify-end gap-3">
+            <button
+              @click="handleClose"
+              class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
+              style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
+            >
+              Cancel
+            </button>
+            <button
+              @click="handleCreate"
+              :disabled="!name.trim()"
+              class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+            >
+              Create
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+</template>
+
+<style scoped>
+/* Modal transitions */
+.modal-enter-active,
+.modal-leave-active {
+  transition: all 0.25s ease-out;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+
+.modal-enter-from > div:last-child,
+.modal-leave-to > div:last-child {
+  transform: scale(0.95) translateY(10px);
+}
+</style>

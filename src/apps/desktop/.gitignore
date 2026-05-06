@@ -1,0 +1,76 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Bun
+bun.lockb
+*.bun.lock
+
+# Build outputs
+dist
+dist-ssr
+*.local
+build/
+.zig-cache/
+zig-out/
+
+# Testing
+coverage
+__screenshots__/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.code-workspace
+
+# TypeScript
+*.tsbuildinfo
+*.tsbuildinfo.bak
+
+# Linting
+.eslintcache
+.oxlintcache
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cypress
+/cypress/videos/
+/cypress/screenshots/
+
+# Vite
+*.timestamp-*-*.mjs
+
+# Nalar agent files
+.nalar/sessions/
+.nalar/cache/
+
+# Misc
+*.bak
+*.tmp
+*.temp
+
+.vscode
+/
