@@ -297,6 +297,7 @@ const handleScroll = async () => {
 // ─── SSE ─────────────────────────────────────────────────────────────────────
 
 const connectSse = () => {
+  console.log('[connectSse] Connecting SSE for session:', sessionId.value)
   if (!sessionId.value) return
 
   disconnectSse()
@@ -307,14 +308,28 @@ const connectSse = () => {
   eventSource.value = api.createSseConnection(
     sessionId.value,
     (event: api.SseEvent) => {
+      console.log('[SSE ChatView] Received event:', event)
+
       // connected event
       if (event.type === 'connected' && event.session_id) {
         console.log('SSE connected, session:', event.session_id)
         return
       }
 
+      // skip non-message events
+      if (event.type !== 'chunk' && event.type !== 'full') {
+        return
+      }
+
+      // streaming chunk - update UI with incremental content
+      if (event.type === 'chunk' && event.content) {
+        streamingContent.value = event.content
+        updateStreamingMessage()
+        return
+      }
+
       // final message
-      if (event.finish_reason && event.content) {
+      if (event.type === 'full' && event.finish_reason && event.content) {
         if (event.is_thinking === true && !event.is_output) {
           console.log('Skipping thinking message')
           return
@@ -324,7 +339,7 @@ const connectSse = () => {
 
         // Parse role from event - use 'tool' for tool results, 'assistant' for regular responses
         const role = event.role as 'user' | 'assistant' | 'system' | 'tool' ||
-                     (event.tool_call_id ? 'tool' : 'assistant')
+          (event.tool_call_id ? 'tool' : 'assistant')
 
         // Create message using same format as loadChatHistory
         messages.value.push({
@@ -337,13 +352,6 @@ const connectSse = () => {
         streamingContent.value = ''
         isStreaming.value = false
         nextTick(() => scrollToBottom(true))
-        return
-      }
-
-      // streaming chunk
-      if (event.content && !event.finish_reason) {
-        streamingContent.value = event.content
-        updateStreamingMessage()
         return
       }
 
@@ -375,6 +383,7 @@ const disconnectSse = () => {
 }
 
 const updateStreamingMessage = () => {
+  console.log('[updateStreamingMessage] streamingContent:', streamingContent.value)
   const existingMsg = messages.value.find(
     (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
   )
@@ -482,6 +491,10 @@ const formatTime = (date: Date) => {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+const handleShiftEnter = () => {
+  // Allow Shift+Enter to insert newline - default textarea behavior
+}
+
 </script>
 
 <template>
@@ -555,7 +568,8 @@ const formatTime = (date: Date) => {
               </template>
               <template v-else>
                 <!-- eslint-disable-next-line vue/no-v-html -->
-                <span v-html="renderResponse(group.messages[0]!.content, group.role, group.messages[0]!.tool_name)"></span>
+                <span
+                  v-html="renderResponse(group.messages[0]!.content, group.role, group.messages[0]!.tool_name)"></span>
               </template>
             </div>
             <div class="text-xs mt-1 px-1" :class="group.role === 'user' ? 'text-right' : 'text-left'"

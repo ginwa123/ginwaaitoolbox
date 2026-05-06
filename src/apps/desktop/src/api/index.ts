@@ -291,7 +291,7 @@ export interface SseEvent {
   parent_id?: string
   created_at?: number
   // Legacy type field for compatibility (not used by backend)
-  type?: 'chunk' | 'reasoning_chunk' | 'chunk_final' | 'tool_call_delta' | 'connected'
+  type?: 'chunk' | 'reasoning_chunk' | 'chunk_final' | 'tool_call_delta' | 'connected' | 'full'
   index?: number
 }
 
@@ -326,7 +326,11 @@ export function createSseConnection(
   onError?: (error: Event) => void,
   onConnected?: () => void
 ): EventSource {
+  console.log('[createSseConnection] Creating SSE connection for session:', sessionId)
   const eventSource = new EventSource(`${API_BASE}/llm/stream/${sessionId}`)
+
+  // Buffer to accumulate multi-line JSON
+  let jsonBuffer = ''
 
   // Handle named event: "connected"
   eventSource.addEventListener('connected', (e: MessageEvent) => {
@@ -341,45 +345,52 @@ export function createSseConnection(
 
   // Handle default events (data: lines without event: prefix)
   eventSource.onmessage = (event) => {
+    console.log('[SSE API] onmessage raw:', JSON.stringify(event.data))
     try {
       const raw = event.data
       if (!raw) return
 
-      // Trim whitespace/newlines from data before parsing
       const trimmed = raw.trim()
-
-      // Ignore empty/whitespace-only messages (common in SSE streams)
       if (!trimmed) return
 
-      // Check for HTTP response (happens when backend proxy isn't properly handling SSE)
-      // HTTP/1.1 200 or similar indicates malformed response
+      // Check for HTTP response
       if (trimmed.startsWith('HTTP/')) {
         console.warn('SSE received HTTP response instead of SSE data, skipping')
         return
       }
 
-      // If data doesn't look like JSON (doesn't start with { or [), skip it
-      // Also skip if length is less than 2 (can't be valid JSON object)
-      if (trimmed.length < 2) {
-        return
-      }
+      // Accumulate JSON until we have complete object
+      jsonBuffer += trimmed + '\n'
 
-      const firstChar = trimmed[0]
-      if (firstChar !== '{' && firstChar !== '[') {
-        return
-      }
+      // Try to find complete JSON object (starts with { and ends with })
+      const jsonStart = jsonBuffer.indexOf('{')
+      const jsonEnd = jsonBuffer.lastIndexOf('}')
 
-      const data = JSON.parse(trimmed)
-      // Pass raw content to UI - let the display layer handle stripping
-      onMessage(data)
+      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+        const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
+        try {
+          const data = JSON.parse(jsonStr)
+          console.log('[SSE API] Received data:', data)
+          onMessage(data)
+          // Keep anything after the JSON for next event
+          jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
+        } catch (e) {
+          // Not complete yet, keep buffering
+          console.log('[SSE API] Buffering, not complete JSON yet, buffer length:', jsonBuffer.length)
+        }
+      }
     } catch (e) {
-      console.error('Failed to parse SSE message:', e, 'Data:', event.data?.substring?.(0, 200) ?? 'undefined')
+      console.error('SSE onmessage error:', e)
     }
   }
 
   eventSource.onerror = (error) => {
-    console.error('SSE error:', error)
+    console.error('[SSE API] EventSource onerror:', error)
     onError?.(error)
+  }
+
+  eventSource.onopen = () => {
+    console.log('[SSE API] EventSource connected')
   }
 
   return eventSource
