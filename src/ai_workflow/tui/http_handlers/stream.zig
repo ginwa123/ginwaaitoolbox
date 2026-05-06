@@ -18,13 +18,17 @@ fn formatQueueItem(allocator: std.mem.Allocator, item: *http_server.SseQueueItem
         try buf.append(allocator, '\n');
     }
 
-    // Write data line
+    // Write data lines - handle multi-line data properly
     if (item.data.len == 0) {
         try buf.appendSlice(allocator, "data: \n");
     } else {
-        try buf.appendSlice(allocator, "data: ");
-        try buf.appendSlice(allocator, item.data);
-        try buf.append(allocator, '\n');
+        // Split by newline and prefix each line with "data: "
+        var iter = std.mem.splitScalar(u8, item.data, '\n');
+        while (iter.next()) |line| {
+            try buf.appendSlice(allocator, "data: ");
+            try buf.appendSlice(allocator, line);
+            try buf.append(allocator, '\n');
+        }
     }
 
     // Final newline to end the event
@@ -106,6 +110,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
 
         if (item) |queue_item| {
             std.debug.print("[SSE_DEBUG] dequeueWithTimeout returned item, data_len={d}\n", .{queue_item.data.len});
+            std.debug.print("[SSE_DEBUG] queue_item.data contents: {s}\n", .{queue_item.data});
             // Log body before sending
             log.?.debugFmt("SSE: sending body: {s}", .{queue_item.data}) catch {};
 
