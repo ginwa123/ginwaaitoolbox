@@ -389,12 +389,56 @@ pub const Migration024CreateWorkspaces = struct {
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         try db.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS workspaces (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL
+            \\    id TEXT PRIMARY KEY
             \\)
         , &[_][]const u8{});
+    }
+};
 
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspaces_session ON workspaces(session_id)", &[_][]const u8{});
+pub const Migration025AddWorkspaceIdToSessions = struct {
+    pub const version: u32 = 25;
+    pub const name = "add_workspace_id_to_sessions";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Add workspace_id column to sessions table
+        try db.exec(allocator,
+            "ALTER TABLE sessions ADD COLUMN workspace_id TEXT",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id)",
+            &[_][]const u8{});
+    }
+};
+
+pub const Migration026DropSessionIdFromWorkspaces = struct {
+    pub const version: u32 = 26;
+    pub const name = "drop_session_id_from_workspaces";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // SQLite doesn't support DROP COLUMN directly, recreate table
+        // Step 1: Create new table without session_id
+        try db.exec(allocator,
+            "CREATE TABLE IF NOT EXISTS workspaces_new (id TEXT PRIMARY KEY)",
+            &[_][]const u8{});
+        // Step 2: Copy data from old table
+        try db.exec(allocator,
+            "INSERT INTO workspaces_new SELECT id FROM workspaces",
+            &[_][]const u8{});
+        // Step 3: Drop old table
+        try db.exec(allocator, "DROP TABLE workspaces", &[_][]const u8{});
+        // Step 4: Rename new table
+        try db.exec(allocator, "ALTER TABLE workspaces_new RENAME TO workspaces", &[_][]const u8{});
+    }
+};
+
+pub const Migration027AddNameToWorkspaces = struct {
+    pub const version: u32 = 27;
+    pub const name = "add_name_to_workspaces";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            "ALTER TABLE workspaces ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+            &[_][]const u8{});
     }
 };
 
@@ -474,6 +518,9 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration022AddCwdToSessions.version, .name = Migration022AddCwdToSessions.name, .up = Migration022AddCwdToSessions.up },
     .{ .version = Migration023DropSessionDirFromLlmHistory.version, .name = Migration023DropSessionDirFromLlmHistory.name, .up = Migration023DropSessionDirFromLlmHistory.up },
     .{ .version = Migration024CreateWorkspaces.version, .name = Migration024CreateWorkspaces.name, .up = Migration024CreateWorkspaces.up },
+    .{ .version = Migration025AddWorkspaceIdToSessions.version, .name = Migration025AddWorkspaceIdToSessions.name, .up = Migration025AddWorkspaceIdToSessions.up },
+    .{ .version = Migration026DropSessionIdFromWorkspaces.version, .name = Migration026DropSessionIdFromWorkspaces.name, .up = Migration026DropSessionIdFromWorkspaces.up },
+    .{ .version = Migration027AddNameToWorkspaces.version, .name = Migration027AddNameToWorkspaces.name, .up = Migration027AddNameToWorkspaces.up },
 };
 
 /// Register all migrations with a MigrationManager

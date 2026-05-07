@@ -473,6 +473,33 @@ pub fn get_session_messages_sorted(
     };
 }
 
+/// Escape JSON special characters for safe string output
+fn jsonEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    for (s) |c| {
+        switch (c) {
+            '"' => try result.appendSlice(allocator, "\\\""),
+            '\\' => try result.appendSlice(allocator, "\\\\"),
+            '\n' => try result.appendSlice(allocator, "\\n"),
+            '\r' => try result.appendSlice(allocator, "\\r"),
+            '\t' => try result.appendSlice(allocator, "\\t"),
+            '\x08' => try result.appendSlice(allocator, "\\b"),  // backspace
+            '\x0C' => try result.appendSlice(allocator, "\\f"),  // form feed
+            // Escape other control characters (0x00-0x1F except those above) as \u00XX
+            0x00...0x07, 0x0E...0x1F => {
+                var buf: [6]u8 = undefined;
+                const hex_str = std.fmt.bufPrint(&buf, "\\u00{X}", .{c}) catch unreachable;
+                try result.appendSlice(allocator, hex_str);
+            },
+            else => try result.append(allocator, c),
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
 /// Build JSON response for session messages with pagination info
 pub fn buildSessionMessagesJson(
     allocator: std.mem.Allocator,
@@ -484,26 +511,29 @@ pub fn buildSessionMessagesJson(
     try json_messages.appendSlice(allocator, "[");
     for (response.messages, 0..) |msg, i| {
         if (i > 0) try json_messages.append(allocator, ',');
-        // Escape content for JSON
-        var escaped_content = std.ArrayList(u8).empty;
-        errdefer escaped_content.deinit(allocator);
-        for (msg.content) |c| {
-            switch (c) {
-                '"' => try escaped_content.appendSlice(allocator, "\\\""),
-                '\\' => try escaped_content.appendSlice(allocator, "\\\\"),
-                '\n' => try escaped_content.appendSlice(allocator, "\\n"),
-                '\r' => try escaped_content.appendSlice(allocator, "\\r"),
-                '\t' => try escaped_content.appendSlice(allocator, "\\t"),
-                else => try escaped_content.append(allocator, c),
-            }
-        }
+
+        // Escape all string fields for JSON safety
+        const escaped_id = try jsonEscape(allocator, msg.id);
+        defer allocator.free(escaped_id);
+        const escaped_session_id = try jsonEscape(allocator, msg.session_id);
+        defer allocator.free(escaped_session_id);
+        const escaped_role = try jsonEscape(allocator, msg.role);
+        defer allocator.free(escaped_role);
+        const escaped_content = try jsonEscape(allocator, msg.content);
+        defer allocator.free(escaped_content);
+        const escaped_timestamp = try jsonEscape(allocator, msg.timestamp);
+        defer allocator.free(escaped_timestamp);
+        const escaped_tool_name = try jsonEscape(allocator, msg.tool_name);
+        defer allocator.free(escaped_tool_name);
+        const escaped_finish_reason = try jsonEscape(allocator, msg.finish_reason);
+        defer allocator.free(escaped_finish_reason);
+
         const msg_json = try std.fmt.allocPrint(allocator,
             \\{{"id":"{s}","session_id":"{s}","role":"{s}","content":"{s}","timestamp":"{s}",
             \\"is_input":"{s}","is_output":"{s}","tool_name":"{s}","finish_reason":"{s}"}}
-        , .{ msg.id, msg.session_id, msg.role, escaped_content.items, msg.timestamp, msg.is_input, msg.is_output, msg.tool_name, msg.finish_reason });
+        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason });
         defer allocator.free(msg_json);
         try json_messages.appendSlice(allocator, msg_json);
-        escaped_content.deinit(allocator);
     }
     try json_messages.append(allocator, ']');
 

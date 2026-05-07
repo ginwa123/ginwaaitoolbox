@@ -211,6 +211,8 @@ src/
 
 ## Bug Fixes (Development Notes)
 - [glob.zig:346] Fixed index out of bounds: when slicing a substring pattern, use `remaining_pat.len` instead of `pat.len` for the "no slash found" fallback
+- [llm_history.zig:477] Fixed JSON parsing error in frontend: added `jsonEscape()` helper function and used it for all string fields (id, session_id, role, content, timestamp, tool_name, finish_reason) in `buildSessionMessagesJson()`. Previously only `content` was escaped.
+- [llm_history.zig:491] Added control character escaping (\x08, \x0C, and 0x00-0x07, 0x0E-0x1F as \u00XX) in `jsonEscape()` to prevent "Bad control character in string literal" JSON parse errors.
 
 ## Key Tool Conventions
 

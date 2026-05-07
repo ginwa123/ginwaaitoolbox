@@ -165,6 +165,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         .stdin = if (input.stdin_data != null) .pipe else .close,
         .stdout = .pipe,
         .stderr = .pipe,
+        .pgid = 0
     });
 
     if (input.stdin_data) |data| {

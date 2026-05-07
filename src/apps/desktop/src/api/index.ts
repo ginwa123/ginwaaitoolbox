@@ -81,12 +81,12 @@ export async function getWorkspaces(): Promise<{ workspaces: Workspace[] }> {
 
 export async function createWorkspace(
   name: string,
-  items: WorkspaceItem[] = [],
+  icon: string = "📁",
 ): Promise<Workspace> {
   const response = await fetch(`${API_BASE}/workspaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, items }),
+    body: JSON.stringify({ name }),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
@@ -284,6 +284,7 @@ export async function getChatHistory(
     };
   } catch (error) {
     // Return empty messages when LLM backend unavailable
+    console.log(error);
     return { messages: [], has_more: false, next_cursor: null, cwd: undefined };
   }
 }

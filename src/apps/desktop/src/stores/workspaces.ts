@@ -181,7 +181,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
   async function addWorkspace(name: string, icon: string = '📂') {
     try {
-      const newWorkspace = await api.createWorkspace(name, [])
+      const newWorkspace = await api.createWorkspace(name, icon)
       workspaces.value.push({
         ...newWorkspace,
         expanded: false,

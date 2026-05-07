@@ -121,6 +121,7 @@ pub const session_helpers = @import("ai_workflow/tui/llm_history.zig");
 pub const session_db = @import("ai_workflow/tui/llm_history.zig");
 pub const llm_history = @import("ai_workflow/tui/llm_history.zig");
 pub const session_table = @import("ai_workflow/tui/session_table.zig");
+pub const http_response = @import("ai_workflow/tui/http_handlers/http_response.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
 

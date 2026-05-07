@@ -3,6 +3,7 @@ const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
+const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
 
@@ -22,39 +23,36 @@ pub fn workspacesCreateHandler(self: *http_server.HttpServer.ServerHandler, req:
     res.content_type = .JSON;
 
     const body = req.body() orelse "";
-
-    // Parse JSON body for session_id
     if (body.len == 0) {
         res.status = 400;
-        res.body = "{\"error\":\"session_id required\"}";
+        res.body = try http_response.makeErrorResponse(alloc, "name required");
         return;
     }
 
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
         res.status = 400;
-        res.body = "{\"error\":\"Invalid JSON\"}";
+        res.body = try http_response.makeErrorResponse(alloc, "Invalid JSON");
         return;
     };
     defer parsed.deinit();
 
     const root = parsed.value.object;
-
-    const session_id = root.get("session_id") orelse {
+    const name = root.get("name") orelse {
         res.status = 400;
-        res.body = "{\"error\":\"session_id required\"}";
+        res.body = try http_response.makeErrorResponse(alloc, "name required");
         return;
     };
-    if (session_id != .string) {
+    if (name != .string) {
         res.status = 400;
-        res.body = "{\"error\":\"session_id must be a string\"}";
+        res.body = try http_response.makeErrorResponse(alloc, "name must be a string");
         return;
     }
 
     // Generate workspace ID
-    const ts = std.Io.Clock.now(.real, self.io);
-    const ts_sec: i64 = ts.toSeconds();
+    const ts = std.Io.Timestamp.now(self.io, .real);
+    const ts_nanos: i64 = @intCast(@divTrunc(ts.nanoseconds, 1_000_000));
     const pid = getCurrentProcessId();
-    const entropy: u64 = @intFromPtr(self) ^ (@as(u64, @intCast(pid)) << 32) ^ @as(u64, @intCast(ts_sec));
+    const entropy: u64 = @intFromPtr(self) ^ (@as(u64, @intCast(pid)) << 32) ^ @as(u64, @intCast(ts_nanos));
     var random_bytes: [8]u8 = undefined;
     @as(*u64, @ptrCast(@alignCast(&random_bytes))).* = entropy;
     var hex_buf: [16]u8 = undefined;
@@ -62,25 +60,24 @@ pub fn workspacesCreateHandler(self: *http_server.HttpServer.ServerHandler, req:
         hex_buf[i * 2] = "0123456789abcdef"[b >> 4];
         hex_buf[i * 2 + 1] = "0123456789abcdef"[b & 0xF];
     }
-    const workspace_id = try std.fmt.allocPrint(alloc, "ws_{d}_{s}", .{ ts_sec, hex_buf });
+    const workspace_id = try std.fmt.allocPrint(alloc, "ws_{d}_{s}", .{ ts_nanos, hex_buf });
 
     if (http_server.global_server) |server| {
         if (server.ctx) |ctx| {
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            // Insert into workspaces table
-            sqlite_db.exec(alloc, "INSERT INTO workspaces (id, session_id) VALUES (?, ?)", &.{ workspace_id, session_id.string }) catch {
+            sqlite_db.exec(alloc, "INSERT INTO workspaces (id, name) VALUES (?, ?)", &.{ workspace_id, name.string }) catch {
                 res.status = 500;
-                res.body = "{\"error\":\"Failed to create workspace\"}";
+                res.body = try http_response.makeErrorResponse(alloc, "Failed to create workspace");
                 return;
             };
 
             res.status = 201;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"session_id\":\"{s}\"}}", .{ workspace_id, session_id.string });
+            res.body = try http_response.makeWorkspaceResponse(alloc, workspace_id, name.string);
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = try http_response.makeErrorResponse(alloc, "Server not initialized");
 }

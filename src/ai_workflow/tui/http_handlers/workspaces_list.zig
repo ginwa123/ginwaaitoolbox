@@ -16,7 +16,7 @@ pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            var rows = sqlite_db.query(alloc, "SELECT id, session_id FROM workspaces ORDER BY rowid DESC", &[_][]const u8{}) catch {
+            var rows = sqlite_db.query(alloc, "SELECT id, name FROM workspaces ORDER BY rowid DESC", &[_][]const u8{}) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Database query failed\"}";
                 return;
@@ -37,8 +37,8 @@ pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                 if (!first) try json_buf.appendSlice(alloc, ",");
                 first = false;
                 const id = row.values[0];
-                const session_id = row.values[1];
-                try json_buf.appendSlice(alloc, try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"session_id\":\"{s}\"}}", .{ id, session_id }));
+                const name = row.values[1];
+                try json_buf.appendSlice(alloc, try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"icon\":\"📁\",\"items\":[],\"expanded\":false}}", .{ id, name }));
             }
             try json_buf.appendSlice(alloc, "]}");
             res.status = 200;
