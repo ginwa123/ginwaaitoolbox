@@ -12,11 +12,11 @@ const generateSessionId = @import("mod.zig").generateSessionId;
 const broadcastSessionCreated = @import("mod.zig").broadcastSessionCreated;
 
 /// Helper to get nalar data directory (~/local/share/nalar/data/apps)
-fn getDataAppsDir(allocator: std.mem.Allocator) ![]u8 {
-    const home_ptr = std.c.getenv("HOME") orelse {
+fn getDataAppsDir(allocator: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map) ![]u8 {
+    _ = io;
+    const home = environment.get("HOME") orelse {
         return error.HomeNotFound;
     };
-    const home = std.mem.sliceTo(home_ptr, 0);
     return std.fs.path.join(allocator, &[_][]const u8{
         home,
         ".local",
@@ -28,8 +28,9 @@ fn getDataAppsDir(allocator: std.mem.Allocator) ![]u8 {
 }
 
 /// Create a sandbox directory in data/apps and return the path
-fn createSandbox(allocator: std.mem.Allocator, io: std.Io, session_id: []const u8) ![]u8 {
-    const data_apps_dir = try getDataAppsDir(allocator);
+fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, session_id: []const u8) ![]u8 {
+    const env = environment orelse return error.HomeNotFound;
+    const data_apps_dir = try getDataAppsDir(allocator, io, env);
     defer allocator.free(data_apps_dir);
 
     // Create the data/apps directory and all parent directories if they don't exist
@@ -65,6 +66,7 @@ const SessionCreateThreadArgs = struct {
     cwd_session: []u8,
     body_message: []u8,
     allowed_tools: []u8,
+    environment: *const std.process.Environ.Map,
 };
 
 /// Create a new session
@@ -74,7 +76,7 @@ const SessionCreateThreadArgs = struct {
 ///   - queue_message: initial message to add to session queue (string, optional)
 ///   - cwd_session: working directory (string, optional)
 /// Returns JSON with created session info
-pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
 
@@ -87,6 +89,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
     var body_message: []const u8 = ""; // initial message from body field
 
     const body = req.body() orelse "";
+    std.debug.print("BODY: {s}\n", .{body});
 
     if (body.len > 0) {
         // Parse JSON body for optional parameters
@@ -110,7 +113,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
             }
         } else {
             // Generate unique session ID
-            session_id = try generateSessionId(alloc);
+            session_id = try generateSessionId(self, alloc);
         }
 
         // Extract name if provided
@@ -149,7 +152,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
         }
     } else {
         // No body provided, generate session ID
-        session_id = try generateSessionId(alloc);
+        session_id = try generateSessionId(self, alloc);
     }
 
     if (http_server.global_server) |server| {
@@ -183,6 +186,7 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                 .cwd_session = cwd_session_alloc,
                 .body_message = body_message_alloc,
                 .allowed_tools = allowed_tools_alloc,
+                .environment = server.environment,
             };
 
             const thread = try std.Thread.spawn(.{}, struct {
@@ -200,10 +204,9 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                         effective_cwd = args.cwd_session;
                     } else {
                         // Create sandbox in data/apps with session_id as folder name
-                        effective_cwd = createSandbox(thread_alloc, args.ctxTui.io, args.session_id) catch blk: {
+                        effective_cwd = createSandbox(thread_alloc, args.ctxTui.io, args.environment, args.session_id) catch blk: {
                             // Fallback: use tmp directory if sandbox creation fails
-                            const tmp_dir_ptr = std.c.getenv("TMPDIR");
-                            const tmp_dir: []const u8 = if (tmp_dir_ptr) |p| std.mem.sliceTo(p, 0) else "/tmp";
+                            const tmp_dir = args.environment.get("TMPDIR") orelse "/tmp";
                             break :blk (thread_alloc.dupe(u8, tmp_dir) catch return);
                         };
                     }
@@ -242,9 +245,10 @@ pub fn session_create_handler(_: *http_server.HttpServer.ServerHandler, req: *ht
                         .cwd = effective_cwd,
                         .body = args.body_message,
                         .allowed_tools = args.allowed_tools,
+                        .environment = args.environment,
                     };
 
-                    var workflow = ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger);
+                    var workflow = ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger, workflow_args.environment);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = thread_alloc,
                         .parent_session_id = workflow_args.session_id,

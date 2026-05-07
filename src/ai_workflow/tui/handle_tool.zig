@@ -38,6 +38,7 @@ const ToolContext = struct {
     config: *const config_mod.LlmConfig,
     agent_temperature: *f32,
     is_thinking: *bool,
+    environment: ?*const std.process.Environ.Map,
 };
 
 /// Result of executing a tool
@@ -108,6 +109,7 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAg
         .config = ctx.config,
         .agent_temperature = ctx.agent_temperature,
         .is_thinking = ctx.is_thinking,
+        .environment = ctx.environment,
     };
     const exec_result = try exec(ctx_local, tool_call);
 
@@ -178,6 +180,7 @@ fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !Tool
     const tool_registry_mod = @import("tool_registry.zig");
     const ctx_exec = tool_registry_mod.ToolExecContext{
         .allocator = ctx.allocator,
+        .io = ctx.io,
         .db = ctx.db,
         .logger = ctx.logger,
         .session_id = ctx.session_id,
@@ -188,6 +191,7 @@ fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !Tool
         .config = ctx.config,
         .agent_temperature = ctx.agent_temperature,
         .is_thinking = ctx.is_thinking,
+        .environment = ctx.environment,
     };
     const result = try tool_registry_mod.execSetAgentProperties(ctx_exec, tool_call);
 
@@ -247,6 +251,7 @@ pub fn handle_tool(
     api_key: []const u8,
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
+    environment: ?*const std.process.Environ.Map,
 ) !void {
 
     if (res_dynamic_agent.tool_calls) |tc| {
@@ -313,6 +318,7 @@ pub fn handle_tool(
             .config = config,
             .agent_temperature = agent_temperature,
             .is_thinking = isThinking,
+            .environment = environment,
         };
 
         // Execute each tool call using dispatch

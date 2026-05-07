@@ -1115,3 +1115,8 @@ pub fn removeWorker(
     const sql = "DELETE FROM worker WHERE id = ?";
     try db.exec(allocator, sql, &.{worker_id});
 }
+
+pub fn deleteAllWorkers(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !void {
+    const sql = "DELETE FROM worker";
+    try db.exec(allocator, sql, &.{});
+}

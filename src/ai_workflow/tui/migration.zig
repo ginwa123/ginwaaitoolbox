@@ -382,6 +382,22 @@ pub const Migration023DropSessionDirFromLlmHistory = struct {
     }
 };
 
+pub const Migration024CreateWorkspaces = struct {
+    pub const version: u32 = 24;
+    pub const name = "create_workspaces";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS workspaces (
+            \\    id TEXT PRIMARY KEY,
+            \\    session_id TEXT NOT NULL
+            \\)
+        , &[_][]const u8{});
+
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspaces_session ON workspaces(session_id)", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -457,6 +473,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration021RemoveSessionNameFromLlmHistory.version, .name = Migration021RemoveSessionNameFromLlmHistory.name, .up = Migration021RemoveSessionNameFromLlmHistory.up },
     .{ .version = Migration022AddCwdToSessions.version, .name = Migration022AddCwdToSessions.name, .up = Migration022AddCwdToSessions.up },
     .{ .version = Migration023DropSessionDirFromLlmHistory.version, .name = Migration023DropSessionDirFromLlmHistory.name, .up = Migration023DropSessionDirFromLlmHistory.up },
+    .{ .version = Migration024CreateWorkspaces.version, .name = Migration024CreateWorkspaces.name, .up = Migration024CreateWorkspaces.up },
 };
 
 /// Register all migrations with a MigrationManager

@@ -8,6 +8,7 @@ pub const ContextIPCTui = struct {
     db: *sqlite.SqliteBackend,
     llm_config: *const config.LlmConfig,
     logger: *logger.Logger,
+    environment: ?*const std.process.Environ.Map,
 };
 
 pub const TUIHistory = struct {

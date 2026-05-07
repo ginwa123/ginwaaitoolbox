@@ -3,23 +3,22 @@ const globals = @import("../globals.zig");
 const raw_mode = @import("../terminal/raw_mode.zig");
 const App = @import("../main.zig").App;
 
-fn getTimeMillis() i64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+fn getTimeMillis(io: std.Io) i64 {
+    const ts = std.Io.Clock.now(.real, io);
+    return @as(i64, @intFromFloat(ts.toMilliseconds()));
 }
 
 /// Wait for SSE "connected" event from server
 /// Returns true if connected event received, false on timeout/error
-pub fn waitForSseConnected(socket: std.c.fd_t, timeout_ms: u64) bool {
+pub fn waitForSseConnected(socket: std.c.fd_t, timeout_ms: u64, io: std.Io) bool {
     var buf: [4096]u8 = undefined;
-    const start = getTimeMillis();
+    const start = getTimeMillis(io);
 
     var enable: u32 = 1;
     _ = std.c.setsockopt(socket, std.c.SOL.SOCKET, std.c.SO.KEEPALIVE, @ptrCast(&enable), @sizeOf(u32));
 
     while (true) {
-        if (getTimeMillis() - start > timeout_ms) return false;
+        if (getTimeMillis(io) - start > timeout_ms) return false;
 
         var poll_fd = [1]std.c.pollfd{
             .{ .fd = socket, .events = std.c.POLL.IN, .revents = 0 },
@@ -46,5 +45,7 @@ pub fn reconnectSseStream(app: *App, _: std.mem.Allocator, current_socket: std.c
     const stream = std.Io.net.IpAddress.connect(&address, app.io, .{ .mode = .stream }) catch return -1;
 
     // Return the socket fd
-    return @intCast(stream.socket.handle);
+    const new_fd = stream.socket.handle;
+    stream.close(app.io);
+    return new_fd;
 }

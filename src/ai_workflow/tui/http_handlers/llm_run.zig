@@ -75,6 +75,7 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
                 .session_id = try server.allocator.dupe(u8, session_id.string),
                 .message = try server.allocator.dupe(u8, message.string),
                 .cwd = try server.allocator.dupe(u8, cwd_session),
+                .environment = server.environment,
             };
 
             const thread = try std.Thread.spawn(.{}, struct {
@@ -87,7 +88,7 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
                     }
                     var arena = std.heap.ArenaAllocator.init(args.allocator);
                     defer arena.deinit();
-                    var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger);
+                    var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger, args.environment);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = arena.allocator(),
                         .parent_session_id = args.session_id,

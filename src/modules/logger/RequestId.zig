@@ -24,9 +24,10 @@ pub const RequestId = struct {
         const minutes = day_seconds.getMinutesIntoHour();
         const seconds = day_seconds.getSecondsIntoMinute();
         
-        // Generate random 4-character hex suffix
+        // Generate random 4-character hex suffix using entropy
+        const entropy = std.time.nanoTimestamp() ^ @as(u64, @intFromPtr(&self));
         var random_bytes: [2]u8 = undefined;
-        std.crypto.random.bytes(&random_bytes);
+        @as(*u16, @ptrCast(@alignCast(&random_bytes))).* = @as(u16, @truncate(entropy));
         
         // Format: REQ-YYYYMMDD-HHMMSS-XXXX
         // Note: bufPrint returns the written slice, we ignore it

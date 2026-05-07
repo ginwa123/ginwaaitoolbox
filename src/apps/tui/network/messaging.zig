@@ -46,7 +46,6 @@ pub fn sendMessage(app: *App, message: []const u8) !void {
     var write_buf: [4096]u8 = undefined;
     var writer = stream.writer(app.io, &write_buf);
     try std.Io.Writer.writeAll(&writer.interface, request);
-    // Access flush via the writer interface vtable
     try writer.interface.flush();
 }
 

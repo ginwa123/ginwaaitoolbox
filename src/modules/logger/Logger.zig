@@ -142,6 +142,7 @@ pub const Logger = struct {
         // Get current file size (to append at end)
         const file_size = std.Io.File.length(file, self.io) catch 0;
         self.current_file_size = file_size;
+        self.log_file = file;
     }
 
     /// Rotate log file when it exceeds max size (delete and recreate)

@@ -20,7 +20,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',  // Point to Zig backend
+        target: 'http://localhost:8081',  // Point to Zig backend
         changeOrigin: true,
         // SSE requires streaming, disable buffering
         configure: (proxy) => {

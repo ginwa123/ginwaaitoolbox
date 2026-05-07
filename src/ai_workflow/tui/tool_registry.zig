@@ -56,6 +56,7 @@ pub const ToolExecContext = struct {
     config: *const config_mod.LlmConfig,
     agent_temperature: *f32,
     is_thinking: *bool,
+    environment: ?*const std.process.Environ.Map,
 };
 
 /// Tool execution result with optional agent state changes
@@ -150,9 +151,8 @@ pub fn runWithContext(
                         const log_path = stdout[log_path_start..];
 
                         // Save to database
-                        var ts: std.c.timespec = undefined;
-                        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-                        const started_at: i64 = ts.sec;
+                        const ts = std.Io.Clock.now(.real, io);
+                        const started_at: i64 = ts.toSeconds();
                         background_process.save(db_ptr, allocator, sess_id, pid, parsed.value.command, log_path, started_at) catch {
                             // Log error but don't fail the tool execution
                         };
@@ -445,7 +445,7 @@ pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
 pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
 
-    const output = list_agents_mod.executeListAgents(ctx.allocator, ctx.io) catch {
+    const output = list_agents_mod.executeListAgents(ctx.allocator, ctx.io, ctx.environment) catch {
         const out = list_agents_mod.jsonError("Failed to list agents");
         return ToolExecResult{ .output = out };
     };
@@ -464,7 +464,7 @@ pub fn execChangeAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    const output = change_agent_mod.execute_change_agent_to_string(ctx.allocator, parsed.value) catch {
+    const output = change_agent_mod.execute_change_agent_to_string(ctx.allocator, ctx.io, ctx.environment, parsed.value) catch {
         const out = change_agent_mod.xmlError(ctx.allocator, "Failed to get agent");
         return ToolExecResult{ .output = out };
     };
@@ -483,7 +483,7 @@ pub fn execLspDefinition(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit();
 
-    const result = lsp_definition_mod.execute_lsp_definition(ctx.allocator, ctx.io, parsed.value) catch |err| {
+    const result = lsp_definition_mod.execute_lsp_definition(ctx.allocator, ctx.io, ctx.environment, parsed.value) catch |err| {
         const output = lsp_definition_mod.xmlError(ctx.allocator, std.fmt.allocPrint(ctx.allocator, "Failed to get definition: {s}", .{@errorName(err)}) catch "Unknown error");
         return ToolExecResult{ .output = output };
     };
@@ -591,6 +591,7 @@ const SubAgentThreadArgs = struct {
     is_sub_agent: bool,
     thread_idx: usize,
     shared_results: *SharedResults,
+    environment: ?*const std.process.Environ.Map,
 };
 
 // Shared result storage for thread synchronization
@@ -669,6 +670,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .is_sub_agent = true,
             .thread_idx = idx,
             .shared_results = shared_results,
+            .environment = ctx.environment,
         };
 
         ctx.logger.debugFmt("About to spawn thread for '{s}'", .{ sub_agent.name }) catch {};
@@ -700,7 +702,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 defer llm_history.removeWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch {};
 
                 args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name }) catch {};
-                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.io, args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger);
+                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.io, args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger, args_ptr.environment);
                 // Derive is_sub_agent from session_id - no need to pass it explicitly
                 const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
                 args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{ args_ptr.agent_name }) catch {};

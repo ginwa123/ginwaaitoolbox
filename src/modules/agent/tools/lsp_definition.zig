@@ -71,10 +71,10 @@ fn read_message(allocator: std.mem.Allocator, io: std.Io, stdout: std.Io.File) !
 }
 
 /// Find the zls binary in PATH or return BinaryNotFound error
-fn find_zls(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+fn find_zls(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) ![]u8 {
     // First check if zls exists in PATH
-    const c_path = std.c.getenv("PATH");
-    const path_env = if (c_path) |ptr| try allocator.dupe(u8, std.mem.sliceTo(ptr, 0)) else return LspError.BinaryNotFound;
+    const env = environment orelse return LspError.BinaryNotFound;
+    const path_env = if (env.get("PATH")) |p| try allocator.dupe(u8, p) else return LspError.BinaryNotFound;
     defer allocator.free(path_env);
 
     var path_iter = std.mem.splitScalar(u8, path_env, ':');
@@ -257,7 +257,7 @@ fn parse_definition_result(allocator: std.mem.Allocator, result: json.Value) !Ls
     };
 }
 
-pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: LspDefinitionInput) !LspDefinitionOutput {
+pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, input: LspDefinitionInput) !LspDefinitionOutput {
     // Verify file exists
     std.Io.Dir.accessAbsolute(io, input.file_path, .{}) catch return LspError.FileNotFound;
 
@@ -268,7 +268,7 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, input: L
     defer allocator.free(content);
 
     // Find zls binary
-    const zls_path = try find_zls(allocator, io);
+    const zls_path = try find_zls(allocator, io, environment);
     defer allocator.free(zls_path);
 
     // Spawn zls

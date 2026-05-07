@@ -31,6 +31,7 @@ pub const App = struct {
     http_client: std.http.Client,
     allocator: std.mem.Allocator,
     io: std.Io,
+    environment: ?*const std.process.Environ.Map,
     original_termios: ?std.posix.termios,
     session_id: []u8,
     input: std.ArrayList(u8),
@@ -45,7 +46,7 @@ pub const App = struct {
     http_port: u16 = 8080,
     process_name: []const u8 = "nalar",
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, verbose: bool, is_noninteractive: bool, http_port: u16, process_name: []const u8, json: bool) !App {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, verbose: bool, is_noninteractive: bool, http_port: u16, process_name: []const u8, json: bool) !App {
         // Spawn the backend if it's not already running
         backend.spawnBackend(allocator, io, verbose, http_port, process_name) catch |err| {
             std.debug.print("{s}Error: Failed to spawn {s} backend: {s}{s}\n", .{ globals.red, process_name, @errorName(err), globals.reset });
@@ -75,6 +76,7 @@ pub const App = struct {
             .http_client = http_client,
             .allocator = allocator,
             .io = io,
+            .environment = environment,
             .original_termios = original_termios,
             .session_id = "",
             .input = std.ArrayList(u8).empty,
@@ -167,6 +169,7 @@ pub fn main(init: std.process.Init) !void {
     var app = try App.init(
         allocator,
         io,
+        environment,
         opts.verbose,
         is_noninteractive,
         opts.port,

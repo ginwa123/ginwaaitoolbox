@@ -48,14 +48,16 @@ pub const HttpServer = struct {
     session_handler: ?SessionHandler = null,
     ctx: ?*anyopaque = null, // Contains ContextIPCTui which has .db inside
     sse_manager: SseConnectionManager,
+    environment: *const std.process.Environ.Map,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, ctx: ?*anyopaque, port: u16) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, ctx: ?*anyopaque, port: u16, environment: *const std.process.Environ.Map) Self {
         return .{
             .allocator = allocator,
             .io = io,
             .port = if (port == 0) 8080 else port,
             .ctx = ctx,
             .sse_manager = SseConnectionManager.init(allocator, io),
+            .environment = environment,
         };
     }
 
@@ -80,6 +82,7 @@ pub const HttpServer = struct {
         // Use a handler struct to enable middleware support
         var handler = ServerHandler{
             .server = self,
+            .io = self.io,
         };
         var server = try httpz.Server(*ServerHandler).init(self.io, self.allocator, .{
             .address = .localhost(self.port),
@@ -97,6 +100,7 @@ pub const HttpServer = struct {
     /// Handler struct for httpz server - enables middleware support
     pub const ServerHandler = struct {
         server: *Self,
+        io: std.Io,
 
         /// Custom dispatch to add CORS headers to every response
         pub fn dispatch(self: *ServerHandler, action: httpz.Action(*ServerHandler), req: *httpz.Request, res: *httpz.Response) !void {

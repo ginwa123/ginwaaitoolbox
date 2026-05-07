@@ -99,14 +99,12 @@ pub const SseConnectionManager = struct {
             defer self.mutex.unlock(self.io);
 
             // Wait for an item or timeout
-            var ts: std.c.timespec = undefined;
-            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-            const now_ns = @as(i64, ts.sec) * 1_000_000_000 + @as(i64, ts.nsec);
+            const ts = std.Io.Clock.now(.real, self.io);
+            const now_ns = ts.toNanoseconds();
             const deadline = now_ns + @as(i64, @intCast(timeout_ns));
             while (self.head == null and !self.closed) {
-                var ts2: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts2);
-                const now_ns2 = @as(i64, ts2.sec) * 1_000_000_000 + @as(i64, ts2.nsec);
+                const ts2 = std.Io.Clock.now(.real, self.io);
+                const now_ns2 = ts2.toNanoseconds();
                 const remaining = @as(u64, @intCast(deadline - now_ns2));
                 if (remaining == 0) break;
                 self.cond.wait(self.io, &self.mutex) catch {};
@@ -167,11 +165,10 @@ pub const SseConnectionManager = struct {
         // Get or create the client list for this session
         if (self.clients.getPtr(key)) |client_list| {
             // Session exists, append new client
-            var ts: std.c.timespec = undefined;
-            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            const ts = std.Io.Clock.now(.real, self.io);
             try client_list.append(self.allocator, ClientInfo{
                 .queue = queue,
-                .connected_at = ts.sec,
+                .connected_at = ts.toSeconds(),
             });
             std.log.info("SSE: Client connected to existing session: {s}, total clients: {d}", .{
                 session_id, client_list.items.len,
@@ -180,11 +177,11 @@ pub const SseConnectionManager = struct {
             // New session, create client list
             var client_list = std.ArrayList(ClientInfo).empty;
             errdefer client_list.deinit(self.allocator);
-            var ts: std.c.timespec = undefined;
-            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            const new_queue = try self.createQueue();
+            const ts = std.Io.Clock.now(.real, self.io);
             try client_list.append(self.allocator, ClientInfo{
-                .queue = queue,
-                .connected_at = ts.sec,
+                .queue = new_queue,
+                .connected_at = ts.toSeconds(),
             });
             try self.clients.put(key, client_list);
             std.log.info("SSE: First client connected to new session: {s}", .{session_id});
@@ -276,12 +273,11 @@ pub const SseConnectionManager = struct {
             };
             var client_list = std.ArrayList(ClientInfo).empty;
             errdefer client_list.deinit(self.allocator);
-            const queue = try self.createQueue();
-            var ts: std.c.timespec = undefined;
-            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            const new_queue = try self.createQueue();
+            const ts = std.Io.Clock.now(.real, self.io);
             try client_list.append(self.allocator, ClientInfo{
-                .queue = queue,
-                .connected_at = ts.sec,
+                .queue = new_queue,
+                .connected_at = ts.toSeconds(),
             });
             try self.clients.put(key, client_list);
             std.debug.print("[SSE_DEBUG] enqueueEvent: auto-created queue for session '{s}'\n", .{session_id});

@@ -473,6 +473,7 @@ const sendMessage = async () => {
   }
 
   try {
+
     await api.sendChatMessage(currentSessionId, userMessage, cwd.value)
     connectSse()
   } catch (err) {

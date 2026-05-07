@@ -19,12 +19,13 @@ pub const WorkflowArgs = struct {
     message: []u8,
     cwd: []u8,
     is_sub_agent: bool,
+    environment: ?*const std.process.Environ.Map,
 };
 
 /// Startup handler - queries worker table and starts a thread for each worker
 /// Called once during app initialization to bootstrap workers from database
 pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !void {
-    const global_logger_ptr = logger_mod.getGlobal().?;
+    const logger = logger_mod.getGlobal().?;
 
     // Get session registry
     const registry = activity_registry.get_global_registry() orelse {
@@ -37,9 +38,15 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
         const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
         const sqlite_db = ctxTui.db;
 
+        // delete all workers this is temporrary
+        llm_history.deleteAllWorkers(allocator, sqlite_db) catch |err| {
+            logger.errFmt("Failed to delete all workers: {s}", .{@errorName(err)}) catch {};
+            return err;
+        };
+
         // Query all workers from the database
         const workers = llm_history.getActiveWorker(allocator, sqlite_db) catch |err| {
-            global_logger_ptr.errFmt("Failed to query workers: {s}", .{@errorName(err)}) catch {};
+            logger.errFmt("Failed to query workers: {s}", .{@errorName(err)}) catch {};
             return err;
         };
         defer {
@@ -48,17 +55,17 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
         }
 
         if (workers.len == 0) {
-            global_logger_ptr.info("No workers found in database, skipping startup") catch {};
+            logger.info("No workers found in database, skipping startup") catch {};
             return;
         }
 
-        global_logger_ptr.infoFmt("Found {d} workers in database, starting workflows...", .{workers.len}) catch {};
+        logger.infoFmt("Found {d} workers in database, starting workflows...", .{workers.len}) catch {};
 
         // Spawn a workflow thread for each worker
         for (workers) |worker| {
             // Register session in session registry
             registry.register(worker.session_id) catch |err| {
-                global_logger_ptr.warnFmt("Failed to register worker {s}: {s}", .{ worker.session_id, @errorName(err) }) catch {};
+                logger.warnFmt("Failed to register worker {s}: {s}", .{ worker.session_id, @errorName(err) }) catch {};
                 continue;
             };
 
@@ -77,6 +84,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                 .message = try allocator.dupe(u8, ""),
                 .cwd = try allocator.dupe(u8, worker.working_directory),
                 .is_sub_agent = worker.isSubAgent(),
+                .environment = server.environment,
             };
 
             // Spawn thread to run workflow
@@ -94,7 +102,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                     }
                     var arena = std.heap.ArenaAllocator.init(args.allocator);
                     defer arena.deinit();
-                    var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger);
+                    var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger, args.environment);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = arena.allocator(),
                         .parent_session_id = args.session_id,
@@ -111,7 +119,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
             }.run, .{workflow_args});
             thread.detach();
 
-            global_logger_ptr.infoFmt("Startup worker started: {s} (cwd: {s})", .{ worker.session_id, worker.working_directory }) catch {};
+            logger.infoFmt("Startup worker started: {s} (cwd: {s})", .{ worker.session_id, worker.working_directory }) catch {};
         }
 
         return;

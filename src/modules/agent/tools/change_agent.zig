@@ -17,7 +17,7 @@ const agents = struct {
     /// Parse a specific agent by name from the agents directory
     /// Returns allocated string with agent content, or null if not found
     /// Caller owns the returned memory and must free it with allocator.free()
-    pub fn parseAgent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
+    pub fn parseAgent(allocator: std.mem.Allocator, io: std.Io, _: ?*const std.process.Environ.Map, agent_name: []const u8) ?[]const u8 {
         // Placeholder implementation - will be replaced when agents.zig is available
         // Try to find agent in .nalar/agents/<agent_name>/NALAR.md
         const LOCAL_AGENTS_DIR = ".nalar/agents";
@@ -25,7 +25,8 @@ const agents = struct {
 
         // Get current working directory
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.getcwd(&cwd_buf) catch return null;
+        const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch return null;
+        const cwd = cwd_buf[0..cwd_len];
 
         // Build path: cwd/.nalar/agents/<agent_name>/NALAR.md
         const agent_path = std.fs.path.join(allocator, &[_][]const u8{
@@ -37,23 +38,25 @@ const agents = struct {
         defer allocator.free(agent_path);
 
         // Try to open and read the file
-        const file = std.fs.cwd().openFile(agent_path, .{}) catch return null;
-        defer file.close();
+        const file = std.Io.Dir.cwd().openFile(io, agent_path, .{}) catch return null;
+        defer std.Io.File.close(file, io);
 
-        const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch return null;
+        const content = std.Io.Dir.cwd().readFileAlloc(io, agent_path, allocator, std.Io.Limit.limited(100 * 1024)) catch return null;
         return content;
     }
 
     /// List all available agents from the agents directory
     /// Returns allocated array of AgentInfo structs
     /// Caller owns the returned memory and must free it with freeAgentsList()
-    pub fn listAgents(allocator: std.mem.Allocator) []AgentInfo {
+    pub fn listAgents(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) []AgentInfo {
+        _ = environment;
         // Placeholder implementation - will be replaced when agents.zig is available
         const LOCAL_AGENTS_DIR = ".nalar/agents";
 
         // Get current working directory
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.getcwd(&cwd_buf) catch return &[_]AgentInfo{};
+        const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch return &[_]AgentInfo{};
+        const cwd = cwd_buf[0..cwd_len];
 
         // Build path: cwd/.nalar/agents
         const agents_path = std.fs.path.join(allocator, &[_][]const u8{
@@ -63,14 +66,14 @@ const agents = struct {
         defer allocator.free(agents_path);
 
         // Try to open the directory
-        var dir = std.fs.cwd().openDir(agents_path, .{ .iterate = true }) catch return &[_]AgentInfo{};
-        defer dir.close();
+        var dir = std.Io.Dir.cwd().openDir(io, agents_path, .{ .iterate = true }) catch return &[_]AgentInfo{};
+        defer std.Io.Dir.close(dir, io);
 
         var agents_list: std.ArrayList(AgentInfo) = .empty;
         defer agents_list.deinit(allocator);
 
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(io) catch null) |entry| {
             if (entry.kind != .directory) continue;
 
             // Try to read NALAR.md to get name and description
@@ -79,10 +82,10 @@ const agents = struct {
             }) catch continue;
             defer allocator.free(agent_file_path);
 
-            const file = std.fs.cwd().openFile(agent_file_path, .{}) catch continue;
-            defer file.close();
+            const file = std.Io.Dir.cwd().openFile(io, agent_file_path, .{}) catch continue;
+            defer std.Io.File.close(file, io);
 
-            const content = file.readToEndAlloc(allocator, 100 * 1024) catch continue;
+            const content = std.Io.Dir.cwd().readFileAlloc(io, agent_file_path, allocator, std.Io.Limit.limited(100 * 1024)) catch continue;
             defer allocator.free(content);
 
             // Parse frontmatter to get name and description
@@ -228,7 +231,7 @@ pub fn parse_change_agent_input(allocator: std.mem.Allocator, json_str: []const 
 /// Execute the change_agent tool
 /// Returns an XML string with the agent content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, input: ChangeAgentInput) ![]const u8 {
+pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, input: ChangeAgentInput) ![]const u8 {
     // Check if path is provided - load from file
     if (input.path) |path| {
         return loadAgentFromPath(allocator, path);
@@ -236,7 +239,7 @@ pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, input: Chang
 
     // Otherwise try to parse by agent name
     if (input.agent_name) |agent_name| {
-        return loadAgentByName(allocator, agent_name);
+        return loadAgentByName(allocator, io, environment, agent_name);
     }
 
     // No agent_name or path provided
@@ -311,9 +314,9 @@ fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
 }
 
 /// Load agent by name from built-in agents
-fn loadAgentByName(allocator: std.mem.Allocator, agent_name: []const u8) ![]const u8 {
+fn loadAgentByName(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, agent_name: []const u8) ![]const u8 {
     // Try to parse the agent
-    if (agents.parseAgent(allocator, agent_name)) |content| {
+    if (agents.parseAgent(allocator, io, environment, agent_name)) |content| {
         defer allocator.free(content);
         // Success - return the agent content
         const result = try std.fmt.allocPrint(allocator,
@@ -326,7 +329,7 @@ fn loadAgentByName(allocator: std.mem.Allocator, agent_name: []const u8) ![]cons
         return result;
     } else {
         // Agent not found - list available agents
-        const agents_list = agents.listAgents(allocator);
+        const agents_list = agents.listAgents(allocator, io, environment);
         defer agents.freeAgentsList(allocator, agents_list);
 
         // Build XML string for available agents

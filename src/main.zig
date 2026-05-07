@@ -74,6 +74,7 @@ pub fn main(init: std.process.Init) !void {
         .db = &dbSqlite,
         .llm_config = &llm_config,
         .logger = global_logger_ptr,
+        .environment = environment,
     };
 
     activity_registry.init_global_registry(parent_allocator);
@@ -85,15 +86,15 @@ pub fn main(init: std.process.Init) !void {
     };
     defer monitor.stop();
 
-    const cronjob_config = cronjob.CronjobConfig{
-        .check_interval_ms = 30_000,
-        .db_path = db_path,
-    };
-    var cron = cronjob.cronjob.Cronjob.spawn(parent_allocator, cronjob_config) catch |err| {
-        std.log.err("Failed to spawn cronjob: {s}", .{@errorName(err)});
-        return err;
-    };
-    defer cron.stop();
+    // const cronjob_config = cronjob.CronjobConfig{
+    //     .check_interval_ms = 30_000,
+    //     .db_path = db_path,
+    // };
+    // var cron = cronjob.cronjob.Cronjob.spawn(parent_allocator, cronjob_config) catch |err| {
+    //     std.log.err("Failed to spawn cronjob: {s}", .{@errorName(err)});
+    //     return err;
+    // };
+    // defer cron.stop();
 
     var port: u16 = 0;
 
@@ -116,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var server = http_server.HttpServer.init(parent_allocator, io, ctxParent, port);
+    var server = http_server.HttpServer.init(parent_allocator, io, ctxParent, port, environment);
 
     startup(parent_allocator, &server) catch |err| {
         std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});
@@ -140,6 +141,29 @@ pub fn main(init: std.process.Init) !void {
             router.get("/api/session/:session_id/queue/messages", http_handlers.sessionQueueGetHandler, .{});
             router.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, .{});
             router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
+
+            // LLM API aliases (desktop app uses /api/llm/*)
+            router.post("/api/llm/session", http_handlers.sessionCreateHandler, .{});
+            router.get("/api/llm/session", http_handlers.sessionListHandler, .{});
+            router.get("/api/llm/session/:session_id/messages", http_handlers.session_message_handler, .{});
+            router.get("/api/llm/stream/:session_id", http_handlers.streamHandler, .{});
+            router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
+
+            // Desktop app routes (system, health, workspaces)
+            router.get("/health", http_handlers.healthHandler, .{});
+            router.get("/api/health", http_handlers.healthHandler, .{});
+            router.get("/api/system/folder", http_handlers.systemFolderHandler, .{});
+            router.get("/api/workspaces", http_handlers.workspacesListHandler, .{});
+            router.post("/api/workspaces", http_handlers.workspacesCreateHandler, .{});
+            router.get("/api/workspaces/:id", http_handlers.workspaceGetHandler, .{});
+            router.put("/api/workspaces/:id", http_handlers.workspaceUpdateHandler, .{});
+            router.delete("/api/workspaces/:id", http_handlers.workspaceDeleteHandler, .{});
+            router.post("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemCreateHandler, .{});
+            router.delete("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemDeleteHandler, .{});
+            router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksListHandler, .{});
+            router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksCreateHandler, .{});
+            router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksUpdateHandler, .{});
+            router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksDeleteHandler, .{});
         }
     };
     try server.runWithConfig(HttpRoutes.setup);

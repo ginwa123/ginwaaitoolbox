@@ -52,6 +52,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
         queue.close();
         ctx.server.allocator.destroy(queue);
     }
+    defer stream.close(ctx.server.io);
 
     // Register this client with its own queue (supports multiple clients per session)
     ctx.server.sse_manager.registerClient(ctx.session_id, queue) catch |err| {

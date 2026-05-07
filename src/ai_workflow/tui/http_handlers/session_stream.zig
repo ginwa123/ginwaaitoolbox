@@ -47,6 +47,7 @@ fn sessionSseStreamHandler(ctx: SessionStreamCtx, stream: std.Io.net.Stream) voi
         queue.close();
         ctx.server.allocator.destroy(queue);
     }
+    defer stream.close(ctx.server.io);
 
     // Register this client with a special session ID for session events
     const session_key = "_session_events_";

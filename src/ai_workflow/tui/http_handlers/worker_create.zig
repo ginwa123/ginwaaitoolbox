@@ -110,6 +110,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                     .session_id = try server.allocator.dupe(u8, session_id.?),
                     .message = try server.allocator.dupe(u8, initial_message orelse ""),
                     .cwd = try server.allocator.dupe(u8, cwd orelse ""),
+                    .environment = server.environment,
                 };
 
                 const thread = try std.Thread.spawn(.{}, struct {
@@ -126,7 +127,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
                         }
                         var arena = std.heap.ArenaAllocator.init(args.allocator);
                         defer arena.deinit();
-                        var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger);
+                        var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger, args.environment);
                         workflow.runAgenticMultiStep(.{
                             .parent_allocator = arena.allocator(),
                             .parent_session_id = args.session_id,

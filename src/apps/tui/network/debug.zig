@@ -25,9 +25,9 @@ const colors = struct {
 pub fn log(level: DebugLevel, comptime fmt: []const u8, args: anytype) void {
     if (@intFromEnum(level) > @intFromEnum(global_debug_level)) return;
 
-    var ts: std.os.linux.timespec = undefined;
+    var ts: std.posix.timespec = undefined;
     _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    const timestamp = @as(i64, ts.sec);
+    const timestamp: i64 = ts.sec;
 
     switch (level) {
         .off => {

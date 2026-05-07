@@ -68,8 +68,9 @@ pub const SystemFolder = struct {
     }
     
     /// Get home directory from environment
-    pub fn getHomeDirectory(allocator: std.mem.Allocator) SystemFolderError![]u8 {
-        const home = std.posix.getenv("HOME") orelse {
+    pub fn getHomeDirectory(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) SystemFolderError![]u8 {
+        const env = environment orelse return SystemFolderError.HomeNotFound;
+        const home = env.get("HOME") orelse {
             return SystemFolderError.HomeNotFound;
         };
         return allocator.dupe(u8, home);
@@ -81,19 +82,19 @@ pub const SystemFolder = struct {
     }
     
     /// Get relative path from home for current working directory
-    pub fn getCwdRelativeToHome(allocator: std.mem.Allocator) SystemFolderError![]u8 {
-        const home = try getHomeDirectory(allocator);
+    pub fn getCwdRelativeToHome(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) SystemFolderError![]u8 {
+        const home = try getHomeDirectory(allocator, environment);
         defer allocator.free(home);
-        
+
         const cwd = try getCurrentWorkingDirectory(allocator);
         defer allocator.free(cwd);
-        
+
         return getRelativePathFromHome(allocator, cwd, home);
     }
 
     /// Resolve a relative path to absolute path (relative to home)
-    pub fn resolvePath(allocator: std.mem.Allocator, relative_path: []const u8) SystemFolderError![]u8 {
-        const home = try getHomeDirectory(allocator);
+    pub fn resolvePath(allocator: std.mem.Allocator, relative_path: []const u8, environment: ?*const std.process.Environ.Map) SystemFolderError![]u8 {
+        const home = try getHomeDirectory(allocator, environment);
         defer allocator.free(home);
 
         // Check if path already starts with home directory (absolute path)
@@ -115,32 +116,33 @@ pub const SystemFolder = struct {
     }
 
     /// List directory contents (first level only)
-    pub fn listDirectory(allocator: std.mem.Allocator, dir_path: []const u8) SystemFolderError![]FolderEntry {
-        var dir = std.fs.openDirAbsolute(dir_path, .{
-            .iterate = true,
-        }) catch |err| {
-            switch (err) {
-                error.FileNotFound => return SystemFolderError.InvalidPath,
-                error.AccessDenied => return SystemFolderError.AccessDenied,
-                else => return SystemFolderError.OutOfMemory,
-            }
-        };
-        defer dir.close();
-
+    pub fn listDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) SystemFolderError![]FolderEntry {
         var entries = std.ArrayList(FolderEntry).empty;
+        errdefer entries.deinit(allocator);
 
-        var iterator = dir.iterate();
-        while (true) {
-            const entry_opt = iterator.next() catch break;
-            const entry = entry_opt orelse break;
-            if (entry.kind == .directory or entry.kind == .file) {
-                const name = try allocator.dupe(u8, entry.name);
-                const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
-                const is_dir = entry.kind == .directory;
-                const is_link = entry.kind == .sym_link;
+        var dir = std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch {
+            return SystemFolderError.InvalidPath;
+        };
+        defer std.Io.Dir.close(dir, io);
+
+        var iter = dir.iterate();
+        while (iter.next(io) catch null) |entry| {
+            const name = entry.name;
+            if (name.len == 0) break;
+
+            const is_dir = entry.kind == .directory;
+            const is_link = entry.kind == .sym_link;
+            const is_file = entry.kind == .file;
+
+            if (is_dir or is_file) {
+                const entry_name = allocator.dupe(u8, name) catch continue;
+                const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch {
+                    allocator.free(entry_name);
+                    continue;
+                };
 
                 entries.append(allocator, FolderEntry{
-                    .name = name,
+                    .name = entry_name,
                     .path = full_path,
                     .is_directory = is_dir,
                     .is_symlink = is_link,
@@ -162,8 +164,8 @@ pub const SystemFolder = struct {
     }
 
     /// Get parent directory path
-    pub fn getParentPath(allocator: std.mem.Allocator, dir_path: []const u8) SystemFolderError!?[]u8 {
-        const home = try getHomeDirectory(allocator);
+    pub fn getParentPath(allocator: std.mem.Allocator, dir_path: []const u8, environment: ?*const std.process.Environ.Map) SystemFolderError!?[]u8 {
+        const home = try getHomeDirectory(allocator, environment);
         defer allocator.free(home);
 
         // Don't go above home

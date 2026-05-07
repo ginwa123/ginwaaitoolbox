@@ -12,10 +12,58 @@ const App = @import("../main.zig").App;
 // Re-export ToolResult from tool_results for convenience
 pub const ToolResult = tool_results.ToolResult;
 
-fn getTimeMillis() i64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+fn getTimeMillis(io: std.Io) i64 {
+    const ts = std.Io.Clock.now(.real, io);
+    return ts.toMilliseconds();
+}
+
+/// Wait for SSE handler to register and send the "connected" event
+/// This ensures the client's queue is properly registered before we send the message
+/// Returns true if connected event received, false on timeout/error
+fn waitForSseHandlerRegistered(socket: std.c.fd_t, timeout_ms: u64, io: std.Io) bool {
+    var buf: [4096]u8 = undefined;
+    const start = getTimeMillis(io);
+
+    while (true) {
+        const elapsed = @as(u64, @intCast(getTimeMillis(io) - start));
+        if (elapsed > timeout_ms) {
+            std.debug.print("[DEBUG_REG] waitForSseHandlerRegistered timeout after {}ms\n", .{elapsed});
+            return false;
+        }
+
+        // Use poll with remaining time
+        const remaining = timeout_ms - elapsed;
+        var poll_fd = [1]std.c.pollfd{
+            .{ .fd = socket, .events = std.c.POLL.IN, .revents = 0 },
+        };
+        const ready = std.c.poll(&poll_fd, poll_fd.len, @intCast(remaining));
+        if (ready <= 0) continue;
+
+        if (poll_fd[0].revents & (std.c.POLL.HUP | std.c.POLL.ERR) != 0) {
+            std.debug.print("[DEBUG_REG] waitForSseHandlerRegistered HUP/ERR\n", .{});
+            return false;
+        }
+
+        if (poll_fd[0].revents & std.c.POLL.IN != 0) {
+            const n = std.c.recv(socket, &buf, buf.len, 0);
+            if (n <= 0) {
+                std.debug.print("[DEBUG_REG] recv returned {}\n", .{n});
+                return false;
+            }
+            std.debug.print("[DEBUG_REG] recv {} bytes\n", .{n});
+            // Check if we have the "event: connected" SSE marker
+            if (std.mem.indexOf(u8, buf[0..@intCast(n)], "event: connected") != null) {
+                // Also need to consume the JSON payload that follows
+                // The format is: "event: connected\n{...}\n\n"
+                if (std.mem.indexOf(u8, buf[0..@intCast(n)], "}\n\n") != null) {
+                    return true;
+                }
+                // If we have "event: connected" but not the full JSON, continue reading
+                // For simplicity, just return true if we see the connected marker
+                return true;
+            }
+        }
+    }
 }
 
 /// Check if the SSE stream is done by querying the server.
@@ -81,10 +129,12 @@ fn printFinalMessage(app: *App) void {
 
 /// SSE event data parsed from JSON (matches SseEventPayload from on_event_sent.zig)
 pub const SSEEventData = struct {
+    index: usize = 0,
+    content: []const u8 = "",
+    @"type": []const u8 = "full",
     session_id: []const u8 = "",
     model: []const u8 = "",
     cwd: []const u8 = "",
-    content: ?[]const u8 = null,
     reasoning_content: ?[]const u8 = null,
     role: []const u8 = "assistant",
     finish_reason: ?[]const u8 = null,
@@ -167,6 +217,17 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     try std.Io.Writer.writeAll(&writer.interface, stream_request);
     std.debug.print("[DEBUG] write done via stream writer\n", .{});
 
+    // Wait for SSE handler to register before sending message
+    // This ensures the queue is registered before we trigger the workflow
+    const SSE_REGISTER_TIMEOUT_MS: u64 = 10000;
+    std.debug.print("[DEBUG] Waiting for SSE handler to register...\n", .{});
+    const registered = waitForSseHandlerRegistered(stream_socket, SSE_REGISTER_TIMEOUT_MS, app.io);
+    if (!registered) {
+        std.debug.print("[DEBUG] SSE handler registration timeout, continuing anyway...\n", .{});
+    } else {
+        std.debug.print("[DEBUG] SSE handler registered, connected event received\n", .{});
+    }
+
     std.debug.print("[DEBUG] SSE connected, sending message: {s}\n", .{message});
     messaging.sendMessage(app, message) catch |err| {
         std.debug.print("[DEBUG] sendMessage error: {s}\n", .{@errorName(err)});
@@ -180,7 +241,7 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
     var poll_iterations: usize = 0;
 
     while (true) {
-        const now = getTimeMillis();
+        const now = getTimeMillis(app.io);
 
         if (app.is_noninteractive) {
             poll_iterations += 1;
@@ -188,46 +249,59 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 std.debug.print("[DEBUG] max poll iterations reached, breaking\n", .{});
                 break;
             }
-            // Non-interactive: poll only the socket
+            // Non-interactive: use blocking read with timeout via poll
             var poll_fd = [1]std.c.pollfd{
                 .{ .fd = stream_socket, .events = std.c.POLL.IN, .revents = 0 },
             };
             const ready = std.c.poll(&poll_fd, poll_fd.len, 100);
 
-            if (ready > 0) {
-                if (poll_fd[0].revents & (std.c.POLL.HUP | std.c.POLL.ERR) != 0) {
-                    std.debug.print("[DEBUG] poll HUP/ERR\n", .{});
-                    break;
-                }
-                if (poll_fd[0].revents & std.c.POLL.IN != 0) {
-                    try raw_buffer.ensureUnusedCapacity(app.allocator, READ_SIZE);
-                    const slice = raw_buffer.unusedCapacitySlice();
-                    const n = std.c.read(stream_socket, slice[0..@min(slice.len, READ_SIZE)].ptr, @min(slice.len, READ_SIZE));
-                    if (n <= 0) break;
-                    raw_buffer.items.len += @intCast(n);
-                }
+            if (ready > 0 and (poll_fd[0].revents & (std.c.POLL.IN | std.c.POLL.HUP | std.c.POLL.ERR)) != 0) {
+                try raw_buffer.ensureUnusedCapacity(app.allocator, READ_SIZE);
+                const slice = raw_buffer.unusedCapacitySlice();
+                const n = std.c.read(stream_socket, slice[0..@min(slice.len, READ_SIZE)].ptr, @min(slice.len, READ_SIZE));
+                if (n <= 0) break;
+                raw_buffer.items.len += @intCast(n);
             }
 
             // Check if stream is done (keepalive or any data)
             if (raw_buffer.items.len > 0) {
                 if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
-                    std.debug.print("[DEBUG] keepalive detected, checking stream done\n", .{});
-                    if (try checkStreamDone(app)) {
-                        std.debug.print("[DEBUG] stream done, breaking\n", .{});
-                        break;
+                    if (try checkStreamDone(app)) break;
+                } else {
+                    // Parse and print SSE data in non-interactive mode
+                    const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch continue;
+                    defer app.allocator.free(decoded);
+                    const json_str = sse.extract_sse_data(app.allocator, decoded) catch continue;
+                    defer app.allocator.free(json_str);
+                    if (json_str.len > 0) {
+                        const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
+                        if (trimmed.len > 0 and trimmed[0] == '{') {
+                            if (parseSSEEventData(app.allocator, trimmed)) |sse_event| {
+                                printSSEEventContent(sse_event);
+                                if (sse_event.finish_reason) |fr| {
+                                    if (std.mem.eql(u8, fr, "stop")) break;
+                                }
+                            } else |_| {}
+                        }
                     }
+                    raw_buffer.clearRetainingCapacity();
                 }
             }
             continue;
         }
 
         // Interactive: poll socket + stdin, parse & print in real-time
-        raw_buffer.clearAndFree(app.allocator);
         var poll_fds = [2]std.c.pollfd{
             .{ .fd = stream_socket, .events = std.c.POLL.IN, .revents = 0 },
             .{ .fd = std.c.STDIN_FILENO, .events = std.c.POLL.IN, .revents = 0 },
         };
         const ready = std.c.poll(&poll_fds, poll_fds.len, 100);
+        if (ready < 0) {
+            std.debug.print("[DEBUG_POLL] poll error: {d}\n", .{ready});
+            break;
+        }
+        std.debug.print("[DEBUG_POLL] ready={d}, socket_revents={d}, stdin_revents={d}\n", .{
+            ready, poll_fds[0].revents, poll_fds[1].revents});
 
         if (ready > 0) {
             if (poll_fds[1].revents & std.c.POLL.IN != 0) {
@@ -247,7 +321,10 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
                 poll_fds[0].revents = 0;
             }
 
-            if (poll_fds[0].revents & (std.c.POLL.HUP | std.c.POLL.ERR) != 0) break;
+            if (poll_fds[0].revents & (std.c.POLL.HUP | std.c.POLL.ERR) != 0) {
+                std.debug.print("[DEBUG] poll HUP/ERR, breaking\n", .{});
+                break;
+            }
         } else {
             if (now - last_ping_ms > PING_INTERVAL_MS) {
                 const is_need_reconnect = messaging.send_ping_command(app) catch false;
@@ -261,17 +338,16 @@ pub fn readResponseAndStreamRunLLM(app: *App, message: []const u8) ![]u8 {
             }
         }
 
-        // Parse and print SSE events in real-time
+        // Parse and print SSE events in real-time (only if buffer has data)
+        if (raw_buffer.items.len == 0) continue;
         if (std.mem.indexOf(u8, raw_buffer.items, ": keepalive") != null) {
+            raw_buffer.clearRetainingCapacity();
             if (try checkStreamDone(app)) break;
+            continue;
         } else {
-            const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch {
-                continue;
-            };
+            const decoded = sse.decode_chuncked(app.allocator, raw_buffer.items) catch continue;
             defer app.allocator.free(decoded);
-            const json_str = sse.extract_sse_data(app.allocator, decoded) catch {
-                continue;
-            };
+            const json_str = sse.extract_sse_data(app.allocator, decoded) catch continue;
             defer app.allocator.free(json_str);
             if (json_str.len > 0) {
                 const trimmed = std.mem.trim(u8, json_str, &std.ascii.whitespace);
@@ -369,7 +445,7 @@ pub fn print_pretty_json(allocator: std.mem.Allocator, body: []const u8) void {
 
 /// Print SSE event content using custom struct data
 pub fn printSSEEventContent(event: SSEEventData) void {
-    const content_str = event.content orelse "";
+    const content_str = event.content;
     if (content_str.len == 0) return;
 
     const tool_name_str = event.tool_name orelse "";
@@ -407,7 +483,7 @@ fn checkStdinForDoubleEscape(app: *App) bool {
             app.last_esc_time = null;
             return false;
         }
-        const now = getTimeMillis();
+        const now = getTimeMillis(app.io);
         if (app.last_esc_time) |last| {
             if (now - last < globals.DOUBLE_ESC_WINDOW_MS) {
                 app.last_esc_time = null;

@@ -129,45 +129,52 @@ pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 
 /// macOS: ~/Library/Application Support/nalar/agents/
 /// Windows: %APPDATA%/nalar/agents/
 /// Returns allocated string that caller must free, or null if home/env not found
-pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
+pub fn getGlobalAgentsPath(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) ?[]const u8 {
     var config_dir: ?[]const u8 = null;
     var needs_free: bool = false;
 
     switch (builtin.os.tag) {
         .windows => {
-            const c_appdata = std.c.getenv("APPDATA");
-            const appdata = if (c_appdata) |ptr| std.mem.sliceTo(ptr, 0) else {
-                std.log.debug("APPDATA environment variable not set", .{});
-                return null;
-            };
-            config_dir = std.fs.path.join(allocator, &[_][]const u8{ appdata, APP_NAME }) catch null;
-            if (config_dir != null) needs_free = true;
-        },
-        .macos => {
-            const c_home = std.c.getenv("HOME");
-            const home = if (c_home) |ptr| std.mem.sliceTo(ptr, 0) else {
-                std.log.debug("HOME environment variable not set", .{});
-                return null;
-            };
-            config_dir = std.fs.path.join(allocator, &[_][]const u8{
-                home, "Library", "Application Support", APP_NAME,
-            }) catch null;
-            if (config_dir != null) needs_free = true;
-        },
-        else => { // Linux, FreeBSD, etc.
-            // XDG_CONFIG_HOME or default to ~/.config
-            if (std.c.getenv("XDG_CONFIG_HOME")) |ptr| {
-                const xdg_config = std.mem.sliceTo(ptr, 0);
-                config_dir = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME }) catch null;
+            if (environment) |env| {
+                const appdata = env.get("APPDATA") orelse {
+                    std.log.debug("APPDATA environment variable not set", .{});
+                    return null;
+                };
+                config_dir = std.fs.path.join(allocator, &[_][]const u8{ appdata, APP_NAME }) catch null;
                 if (config_dir != null) needs_free = true;
             } else {
-                const c_home = std.c.getenv("HOME");
-                const home = if (c_home) |ptr| std.mem.sliceTo(ptr, 0) else {
+                std.log.debug("No environment provided", .{});
+                return null;
+            }
+        },
+        .macos => {
+            if (environment) |env| {
+                const home = env.get("HOME") orelse {
                     std.log.debug("HOME environment variable not set", .{});
                     return null;
                 };
-                config_dir = std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME }) catch null;
+                config_dir = std.fs.path.join(allocator, &[_][]const u8{
+                    home, "Library", "Application Support", APP_NAME,
+                }) catch null;
                 if (config_dir != null) needs_free = true;
+            } else {
+                std.log.debug("No environment provided", .{});
+                return null;
+            }
+        },
+        else => { // Linux, FreeBSD, etc.
+            if (environment) |env| {
+                // XDG_CONFIG_HOME or default to ~/.config
+                if (env.get("XDG_CONFIG_HOME")) |xdg_config| {
+                    config_dir = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME }) catch null;
+                    if (config_dir != null) needs_free = true;
+                } else if (env.get("HOME")) |home| {
+                    config_dir = std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME }) catch null;
+                    if (config_dir != null) needs_free = true;
+                }
+            } else {
+                std.log.debug("No environment provided", .{});
+                return null;
             }
         },
     }
@@ -189,7 +196,7 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator) ?[]const u8 {
 
 /// Resolve the agents directory path by checking local first, then global
 /// Returns allocated string that caller must free, or null if neither exists
-pub fn resolveAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
+pub fn resolveAgentsPath(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) ?[]const u8 {
     // Try local path first
     if (getLocalAgentsPath(allocator, io)) |local_path| {
         // Check if directory exists
@@ -206,7 +213,7 @@ pub fn resolveAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
     }
 
     // Try global path
-    if (getGlobalAgentsPath(allocator)) |global_path| {
+    if (getGlobalAgentsPath(allocator, environment)) |global_path| {
         // Check if directory exists
         const exists = blk: {
             std.Io.Dir.cwd().access(io, global_path, .{}) catch {
@@ -231,8 +238,8 @@ pub fn freeAgentsPath(allocator: std.mem.Allocator, path: []const u8) void {
 /// List all agent files in the agents directory
 /// Returns allocated array of file paths to NALAR.md files inside agent folders
 /// Empty files are excluded from the list
-pub fn listAgentFiles(allocator: std.mem.Allocator, io: std.Io) ?[][]const u8 {
-    const dir_path = resolveAgentsPath(allocator, io) orelse return null;
+pub fn listAgentFiles(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) ?[][]const u8 {
+    const dir_path = resolveAgentsPath(allocator, io, environment) orelse return null;
     defer allocator.free(dir_path);
 
     // Open the agents directory
@@ -335,15 +342,15 @@ pub fn loadAgentFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const
 /// Parse a specific agent from the agents directory by name
 /// Returns allocated string with agent content, or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parseAgent(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
-    return parseAgentFromDir(allocator, agent_name);
+pub fn parseAgent(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, agent_name: []const u8) ?[]const u8 {
+    return parseAgentFromDir(allocator, io, environment, agent_name);
 }
 
 /// Parse a specific agent from the agents directory by name
 /// Returns allocated string with agent content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parseAgentFromDir(allocator: std.mem.Allocator, agent_name: []const u8) ?[]const u8 {
-    const files = listAgentFiles(allocator) orelse return null;
+pub fn parseAgentFromDir(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, agent_name: []const u8) ?[]const u8 {
+    const files = listAgentFiles(allocator, io, environment) orelse return null;
     defer freeAgentFiles(allocator, files);
 
     for (files) |file_path| {
@@ -370,14 +377,14 @@ pub fn parseAgentFromDir(allocator: std.mem.Allocator, agent_name: []const u8) ?
 /// Returns allocated array of AgentInfo structs
 /// Caller owns the returned memory and must free it with freeAgentsList()
 pub fn listAgents(allocator: std.mem.Allocator, io: std.Io) []AgentInfo {
-    return listAgentsFromDir(allocator, io);
+    return listAgentsFromDir(allocator, io, null);
 }
 
 /// List all available agents from the agents directory
 /// Returns allocated array of AgentInfo structs
 /// Caller owns the returned memory and must free it with freeAgentsList()
-pub fn listAgentsFromDir(allocator: std.mem.Allocator, io: std.Io) []AgentInfo {
-    const files = listAgentFiles(allocator, io) orelse return &.{};
+pub fn listAgentsFromDir(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) []AgentInfo {
+    const files = listAgentFiles(allocator, io, environment) orelse return &.{};
     defer freeAgentFiles(allocator, files);
 
     if (files.len == 0) return &.{};

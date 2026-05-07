@@ -43,13 +43,13 @@ pub fn executeCommand(app: *App, command: []const u8) !bool {
 
 /// Get the default config path (same logic as config module)
 /// Caller owns returned memory
-fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
-    const home_ptr = std.c.getenv(@as([*:0]const u8, "HOME")) orelse return error.HomeNotFound;
-    const home: []const u8 = std.mem.span(home_ptr);
-    const config_home_ptr = std.c.getenv(@as([*:0]const u8, "XDG_CONFIG_HOME"));
+fn getConfigPath(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) ![]u8 {
+    const env = environment orelse return error.HomeNotFound;
+    const home = env.get("HOME") orelse return error.HomeNotFound;
+    const config_home = env.get("XDG_CONFIG_HOME");
 
-    const base: []const u8 = if (config_home_ptr) |xch| std.mem.span(xch) else try std.fmt.allocPrint(allocator, "{s}/.config", .{home});
-    defer if (config_home_ptr == null) allocator.free(base);
+    const base: []const u8 = if (config_home) |xch| xch else try std.fmt.allocPrint(allocator, "{s}/.config", .{home});
+    defer if (config_home == null) allocator.free(base);
 
     return try std.fmt.allocPrint(allocator, "{s}/nalar/config.json", .{base});
 }
@@ -95,7 +95,7 @@ fn commandModel(app: *App) !bool {
     std.debug.print("\r\n{s}Current AI Model:{s}\r\n", .{ globals.bold, globals.reset });
 
     // Read config file directly
-    const config_path = try getConfigPath(app.allocator);
+    const config_path = try getConfigPath(app.allocator, app.environment);
     defer app.allocator.free(config_path);
 
     const file = std.Io.Dir.openFileAbsolute(app.io, config_path, .{}) catch |err| {
@@ -140,7 +140,7 @@ fn commandConfig(app: *App) !bool {
     std.debug.print("\r\n{s}Configuration:{s}\r\n", .{ globals.bold, globals.reset });
 
     // Read config file directly
-    const config_path = try getConfigPath(app.allocator);
+    const config_path = try getConfigPath(app.allocator, app.environment);
     defer app.allocator.free(config_path);
 
     const file = std.Io.Dir.openFileAbsolute(app.io, config_path, .{}) catch |err| {

@@ -40,6 +40,21 @@ pub const sessionCancelHandler = @import("session_cancel.zig").sessionCancelHand
 pub const sessionCompactHandler = @import("session_compact.zig").sessionCompactHandler;
 pub const sessionQueueDeleteHandler = @import("session_queue_delete.zig").sessionQueueDeleteHandler;
 pub const sessionQueueGetHandler = @import("session_queue_get.zig").sessionQueueGetHandler;
+pub const systemFolderHandler = @import("system_folder.zig").system_folder_handler;
+pub const healthHandler = @import("health.zig").healthHandler;
+
+// Workspace handlers (stub implementations for desktop app compatibility)
+pub const workspacesListHandler = @import("workspaces_list.zig").workspacesListHandler;
+pub const workspacesCreateHandler = @import("workspaces_create.zig").workspacesCreateHandler;
+pub const workspaceGetHandler = @import("workspace_get.zig").workspaceGetHandler;
+pub const workspaceUpdateHandler = @import("workspace_update.zig").workspaceUpdateHandler;
+pub const workspaceDeleteHandler = @import("workspace_delete.zig").workspaceDeleteHandler;
+pub const workspaceItemCreateHandler = @import("workspace_item_create.zig").workspaceItemCreateHandler;
+pub const workspaceItemDeleteHandler = @import("workspace_item_delete.zig").workspaceItemDeleteHandler;
+pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
+pub const tasksCreateHandler = @import("tasks_create.zig").tasksCreateHandler;
+pub const tasksUpdateHandler = @import("tasks_update.zig").tasksUpdateHandler;
+pub const tasksDeleteHandler = @import("tasks_delete.zig").tasksDeleteHandler;
 
 // Worker API handlers
 pub const worker_create_handler = @import("worker_create.zig").worker_create_handler;
@@ -70,6 +85,7 @@ pub const WorkflowArgs = struct {
     cwd: []u8,
     body: []const u8 = "",
     allowed_tools: []const u8 = "", // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
+    environment: ?*const std.process.Environ.Map,
 };
 
 /// Handler arguments for async message handling
@@ -83,13 +99,27 @@ pub const HandlerArgs = struct {
 /// Hex digits for session ID generation
 const hexDigits = "0123456789abcdef";
 
+/// Cross-platform process ID getter
+/// Returns the current process ID in a cross-platform compatible way
+fn getCurrentProcessId() std.c.pid_t {
+    if (@hasDecl(std.c, "getpid")) {
+        return std.c.getpid();
+    } else if (@hasDecl(std.os.windows, "GetCurrentProcessId")) {
+        return @intCast(std.os.windows.GetCurrentProcessId());
+    }
+    // Fallback: should never reach here
+    @compileError("getpid not available on this platform");
+}
+
 /// Generate a unique session ID using timestamp and random suffix
-pub fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    const timestamp = ts.sec;
+pub fn generateSessionId(self: *http_server.HttpServer.ServerHandler, allocator: std.mem.Allocator) ![]u8 {
+    const ts = std.Io.Clock.now(.real, self.io);
+    const timestamp: i64 = ts.toSeconds();
+    const pid = getCurrentProcessId();
+    // Use timestamp + PID + pointer for pseudo-random entropy
+    const entropy: u64 = @intFromPtr(self) ^ (@as(u64, @intCast(pid)) << 32) ^ @as(u64, @intCast(timestamp));
     var random_bytes: [8]u8 = undefined;
-    std.c.arc4random_buf(&random_bytes, random_bytes.len);
+    @as(*u64, @ptrCast(@alignCast(&random_bytes))).* = entropy;
 
     // Convert random bytes to hex string
     var hex_chars: [16]u8 = undefined;

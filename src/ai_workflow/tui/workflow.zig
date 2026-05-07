@@ -201,13 +201,15 @@ pub const TUIWorkflow = struct {
     db: *sqlite.SqliteBackend,
     config: *const config_mod.LlmConfig,
     logger: *logger_mod.Logger,
+    environment: ?*const std.process.Environ.Map,
 
-    pub fn init(io: std.Io, db: *sqlite.SqliteBackend, config: *const config_mod.LlmConfig, logger: *logger_mod.Logger) TUIWorkflow {
+    pub fn init(io: std.Io, db: *sqlite.SqliteBackend, config: *const config_mod.LlmConfig, logger: *logger_mod.Logger, environment: ?*const std.process.Environ.Map) TUIWorkflow {
         return .{
             .io = io,
             .db = db,
             .config = config,
             .logger = logger,
+            .environment = environment,
         };
     }
 
@@ -575,10 +577,10 @@ const initialMessages = try buildMessages(allocator, self.io, self.db, params.cw
                     continue;
                 } else if (finish_reason == .tool_calls) {
                     std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
-                    try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config);
+                    try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, self.environment);
                 } else if (finish_reason == .assistant) {
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config);
+                        try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, self.environment);
                     } else {
                         // Treat as normal completion
                         _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
