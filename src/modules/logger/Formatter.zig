@@ -45,9 +45,9 @@ pub const LogEntry = struct {
     line: ?u32 = null,
 
     /// Format timestamp as ISO string (caller owns memory)
-    pub fn formatTimestampIso(self: *const LogEntry, allocator: std.mem.Allocator) ![]const u8 {
+    pub fn formatTimestampIso(self: *const LogEntry, allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
         _ = self;
-        return timing.timestampIso(allocator);
+        return timing.timestampIso(allocator, io);
     }
 };
 
@@ -85,9 +85,15 @@ pub const TextFormatter = struct {
     include_timestamp: bool = true,
     include_request_id: bool = true,
     include_location: bool = false,
+    io: std.Io,
 
-    pub fn init() TextFormatter {
-        return .{};
+    pub fn init(io: std.Io) TextFormatter {
+        return .{
+            .include_timestamp = true,
+            .include_request_id = true,
+            .include_location = false,
+            .io = io,
+        };
     }
 
     pub fn formatter(self: *TextFormatter) Formatter {
@@ -105,7 +111,7 @@ pub const TextFormatter = struct {
 
         // Timestamp
         if (self.include_timestamp) {
-            const iso = try timing.timestampIso(allocator);
+            const iso = try timing.timestampIso(allocator, self.io);
             defer allocator.free(iso);
             try list.print(allocator, "[{s}] ", .{iso});
         }
@@ -185,9 +191,16 @@ pub const ColorFormatter = struct {
     include_request_id: bool = true,
     color_by_level: bool = true,
     include_location: bool = false,
+    io: std.Io,
 
-    pub fn init() ColorFormatter {
-        return .{};
+    pub fn init(io: std.Io) ColorFormatter {
+        return .{
+            .include_timestamp = true,
+            .include_request_id = true,
+            .color_by_level = true,
+            .include_location = false,
+            .io = io,
+        };
     }
 
     pub fn formatter(self: *ColorFormatter) Formatter {
@@ -218,7 +231,7 @@ pub const ColorFormatter = struct {
 
         // Timestamp (dimmed)
         if (self.include_timestamp) {
-            const iso = try timing.timestampIso(allocator);
+            const iso = try timing.timestampIso(allocator, self.io);
             defer allocator.free(iso);
             try list.print(allocator, "{s}{s}{s} ", .{ AnsiColors.dim, iso, AnsiColors.reset });
         }

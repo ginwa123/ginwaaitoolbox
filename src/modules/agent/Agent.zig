@@ -16,13 +16,13 @@ const LogLevel = enum { err, warn, info, debug };
 // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
 
 /// Get current timestamp in milliseconds since epoch
-fn timestampMs() i64 {
-    return @intCast(@divTrunc(std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds, 1_000_000));
+fn timestampMs(io: std.Io) i64 {
+    return @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000));
 }
 
 /// Calculate elapsed time in milliseconds
-fn elapsedMs(start: i64) i64 {
-    return timestampMs() - start;
+fn elapsedMs(io: std.Io, start: i64) i64 {
+    return timestampMs(io) - start;
 }
 
 /// Format duration for human-readable output
@@ -555,16 +555,17 @@ pub const Agent = struct {
     allocator: std.mem.Allocator,
     httpOptions: HttpOptions = .{},
 
-    pub fn init(allocator: std.mem.Allocator) !Agent {
-        return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator, .io = std.Options.debug_io } };
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !Agent {
+        return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator, .io = io } };
     }
 
     /// Initialize agent with custom HTTP options
-    pub fn init_with_options(allocator: std.mem.Allocator, options: HttpOptions) !Agent {
+    pub fn init_with_options(allocator: std.mem.Allocator, io: std.Io, options: HttpOptions) !Agent {
         return Agent{
             .allocator = allocator,
             .httpClient = std.http.Client{
                 .allocator = allocator,
+                .io = io,
                 .read_buffer_size = options.header_buffer_size,
             },
             .httpOptions = options,
@@ -963,14 +964,14 @@ pub const Agent = struct {
             return error.SendBodyFailed;
         };
 
-        const stream_start = timestampMs();
+        const stream_start = timestampMs(self.httpClient.io);
         var redirect_buffer: [8192]u8 = undefined;
         var response = req.receiveHead(&redirect_buffer) catch |err| {
-            self.log_fmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(stream_start), @errorName(err) });
+            self.log_fmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{ elapsedMs(self.httpClient.io, stream_start), @errorName(err) });
             return error.ReceiveFailed;
         };
 
-        const stream_duration = elapsedMs(stream_start);
+        const stream_duration = elapsedMs(self.httpClient.io, stream_start);
         const stream_duration_fmt = formatDuration(stream_duration);
         self.log_fmt(.info, "[STREAM] Connected in {}{s} (HTTP {d})", .{ stream_duration_fmt.value, stream_duration_fmt.unit, @intFromEnum(response.head.status) });
 
@@ -1137,7 +1138,7 @@ pub const Agent = struct {
                     break;
                 }
                 // Small sleep and retry
-                std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = 50_000 }, .real) catch {};
+                std.Io.sleep(self.httpClient.io, .{ .nanoseconds = 50_000 }, .real) catch {};
                 const retry_n = reader.readSliceShort(read_buffer[0..]) catch |err| {
                     self.log_fmt(.err, "[STREAM] readSliceShort retry error: {s}", .{@errorName(err)});
                     break;
@@ -1157,7 +1158,7 @@ pub const Agent = struct {
 
             // Add small yield to prevent tight CPU spinning during streaming
             if (bytes_read < 64) {
-                std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = 100_000 }, .real) catch {};
+                std.Io.sleep(self.httpClient.io, .{ .nanoseconds = 100_000 }, .real) catch {};
             }
 
             for (read_buffer[0..bytes_read]) |byte| {

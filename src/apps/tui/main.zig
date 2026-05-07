@@ -70,7 +70,7 @@ pub const App = struct {
             }
         }
 
-        const kb = try keybindings.loadKeybindings(allocator);
+        const kb = try keybindings.loadKeybindings(allocator, io);
         const http_client = std.http.Client{ .allocator = allocator, .io = io };
         return App{
             .http_client = http_client,
@@ -196,7 +196,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (opts.continue_session) {
         // -c alone = auto-detect latest session
         var cwd_buf: [4096]u8 = undefined;
-        const cwd_len = std.Io.Dir.cwd().realPath(std.Options.debug_io, &cwd_buf) catch |err| {
+        const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch |err| {
             std.debug.print("{s}Error: Failed to get current directory: {s}{s}\n", .{ globals.red, @errorName(err), globals.reset });
             return err;
         };
@@ -215,7 +215,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Always ensure we have a session_id (either from -c, auto-detected, or new)
     if (std.mem.eql(u8, app.session_id, "")) {
-        app.session_id = try std.fmt.allocPrint(app.allocator, "session_{}", .{@divTrunc(std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds, 1_000_000_000)});
+        app.session_id = try std.fmt.allocPrint(app.allocator, "session_{}", .{@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000_000)});
     }
 
     // Query mode: send single query and exit

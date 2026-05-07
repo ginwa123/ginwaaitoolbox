@@ -1,13 +1,13 @@
 const std = @import("std");
 
 /// Get current timestamp in milliseconds since epoch
-pub fn timestampMs() i64 {
-    return @divTrunc(@as(i64, @intCast(std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds)), std.time.ns_per_ms);
+pub fn timestampMs(io: std.Io) i64 {
+    return @divTrunc(@as(i64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds)), std.time.ns_per_ms);
 }
 
 /// Calculate elapsed time in milliseconds
 pub fn elapsedMs(start: i64) i64 {
-    return timestampMs() - start;
+    return timestampMs(std.io) - start;
 }
 
 /// Duration unit for human-readable output
@@ -26,8 +26,8 @@ pub fn formatDuration(ms: i64) Duration {
 
 /// Get current timestamp as ISO 8601 string (caller owns memory)
 /// Format: YYYY-MM-DDTHH:MM:SS.mmmZ
-pub fn timestampIso(allocator: std.mem.Allocator) ![]const u8 {
-    const ts_ns = std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds;
+pub fn timestampIso(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const ts_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
     const ts = @divTrunc(ts_ns, std.time.ns_per_s);
     const epoch_seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(ts) };
     const epoch_day = epoch_seconds.getEpochDay();

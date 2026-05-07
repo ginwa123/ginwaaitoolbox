@@ -77,10 +77,10 @@ pub fn main(init: std.process.Init) !void {
         .environment = environment,
     };
 
-    activity_registry.init_global_registry(parent_allocator);
+    activity_registry.init_global_registry(parent_allocator, io);
     defer activity_registry.deinit_global_registry();
 
-    var monitor = session_monitor.SessionMonitor.spawn() catch |err| {
+    var monitor = session_monitor.SessionMonitor.spawn(io) catch |err| {
         std.log.err("Failed to spawn session monitor: {s}", .{@errorName(err)});
         return err;
     };

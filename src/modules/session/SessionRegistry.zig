@@ -37,6 +37,7 @@ pub const SessionRegistry = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
+    io: std.Io,
     /// Activity count per session (0 = idle/not registered)
     activity: std.StringHashMap(*std.atomic.Value(usize)),
     /// Cancellation flag per session
@@ -48,9 +49,10 @@ pub const SessionRegistry = struct {
     /// Mutex for thread-safe registration
     register_mutex: std.Io.Mutex = std.Io.Mutex.init,
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Self {
         return .{
             .allocator = allocator,
+            .io = io,
             .activity = std.StringHashMap(*std.atomic.Value(usize)).init(allocator),
             .cancelled = std.StringHashMap(*std.atomic.Value(bool)).init(allocator),
             .message_queues = std.StringHashMap(*std.ArrayList([]const u8)).init(allocator),
@@ -98,8 +100,8 @@ pub const SessionRegistry = struct {
     }
 
     pub fn register(self: *Self, session_id: []const u8) !void {
-        self.register_mutex.lockUncancelable(std.Options.debug_io);
-        defer self.register_mutex.unlock(std.Options.debug_io);
+        self.register_mutex.lockUncancelable(self.io);
+        defer self.register_mutex.unlock(self.io);
 
         // Always clean up any orphaned entries first (entry might exist in some maps but not all)
         _ = self.cancelled.remove(session_id);
@@ -192,8 +194,8 @@ pub const SessionRegistry = struct {
     }
 
     pub fn unregister(self: *Self, session_id: []const u8) void {
-        self.register_mutex.lockUncancelable(std.Options.debug_io);
-        defer self.register_mutex.unlock(std.Options.debug_io);
+        self.register_mutex.lockUncancelable(self.io);
+        defer self.register_mutex.unlock(self.io);
 
         // Clean up message queue
         if (self.message_queues.fetchRemove(session_id)) |entry| {
@@ -226,8 +228,8 @@ pub const SessionRegistry = struct {
     }
 
     pub fn isRegistered(self: *Self, session_id: []const u8) bool {
-        self.register_mutex.lockUncancelable(std.Options.debug_io);
-        defer self.register_mutex.unlock(std.Options.debug_io);
+        self.register_mutex.lockUncancelable(self.io);
+        defer self.register_mutex.unlock(self.io);
         return self.activity.contains(session_id);
     }
 
@@ -246,8 +248,8 @@ pub const SessionRegistry = struct {
     }
 
     pub fn markStopped(self: *Self, session_id: []const u8) void {
-        self.register_mutex.lockUncancelable(std.Options.debug_io);
-        defer self.register_mutex.unlock(std.Options.debug_io);
+        self.register_mutex.lockUncancelable(self.io);
+        defer self.register_mutex.unlock(self.io);
 
         // Reset activity count to 0
         if (self.activity.get(session_id)) |atomic| {
@@ -337,8 +339,8 @@ pub const SessionRegistry = struct {
     // ========== Message Queues ==========
 
     pub fn queueMessage(self: *Self, session_id: []const u8, message: []const u8) void {
-        self.register_mutex.lockUncancelable(std.Options.debug_io);
-        defer self.register_mutex.unlock(std.Options.debug_io);
+        self.register_mutex.lockUncancelable(self.io);
+        defer self.register_mutex.unlock(self.io);
 
         if (self.message_queues.get(session_id)) |queue| {
             const msg_copy = self.allocator.dupe(u8, message) catch return;
@@ -369,8 +371,8 @@ pub const SessionRegistry = struct {
 
     /// Delete a specific message from the queue (removes first occurrence)
     pub fn deleteQueueMessages(self: *Self, session_id: []const u8, message: []const u8) void {
-        self.register_mutex.lockUncancelable(std.Options.debug_io);
-        defer self.register_mutex.unlock(std.Options.debug_io);
+        self.register_mutex.lockUncancelable(self.io);
+        defer self.register_mutex.unlock(self.io);
 
         if (self.message_queues.get(session_id)) |queue| {
             for (queue.items, 0..) |msg, i| {
@@ -388,16 +390,14 @@ pub const SessionRegistry = struct {
 
 var g_registry: ?*SessionRegistry = null;
 var g_mutex: std.Io.Mutex = std.Io.Mutex.init;
-var g_allocator: ?std.mem.Allocator = null;
 
 /// Initialize the global registry (call once at startup)
-pub fn init_global_registry(allocator: std.mem.Allocator) void {
+pub fn init_global_registry(allocator: std.mem.Allocator, io: std.Io) void {
     g_mutex.lockUncancelable(std.Options.debug_io);
     defer g_mutex.unlock(std.Options.debug_io);
     if (g_registry == null) {
-        g_allocator = allocator;
         const registry = allocator.create(SessionRegistry) catch unreachable;
-        registry.* = SessionRegistry.init(allocator);
+        registry.* = SessionRegistry.init(allocator, io);
         g_registry = registry;
     }
 }
@@ -414,11 +414,7 @@ pub fn deinit_global_registry() void {
     g_mutex.lockUncancelable(std.Options.debug_io);
     defer g_mutex.unlock(std.Options.debug_io);
     if (g_registry) |registry| {
-        if (g_allocator) |allocator| {
-            registry.deinit();
-            allocator.destroy(registry);
-        }
+        registry.deinit();
         g_registry = null;
-        g_allocator = null;
     }
 }

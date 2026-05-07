@@ -82,6 +82,7 @@ pub const Logger = struct {
                 .include_timestamp = config.include_timestamp,
                 .include_request_id = config.include_request_id,
                 .include_location = config.include_location,
+                .io = io,
             } },
             .request_id = null,
             .io = io,
@@ -96,6 +97,7 @@ pub const Logger = struct {
             .mutex = std.Io.Mutex.init,
             .formatter_ctx = .{ .json = JsonFormatter{ .pretty = false } },
             .request_id = null,
+            .io = std.io,
         };
     }
 
@@ -110,6 +112,7 @@ pub const Logger = struct {
                 .include_request_id = config.include_request_id,
                 .color_by_level = true,
                 .include_location = config.include_location,
+                .io = io,
             } },
             .request_id = null,
             .io = io,
@@ -201,7 +204,7 @@ pub const Logger = struct {
 
         const entry = LogEntry{
             .level = level,
-            .timestamp = timestampMs(),
+            .timestamp = timestampMs(self.io),
             .request_id = self.getRequestIdString(),
             .message = message,
             .file = null,
@@ -220,7 +223,7 @@ pub const Logger = struct {
 
         const entry = LogEntry{
             .level = level,
-            .timestamp = timestampMs(),
+            .timestamp = timestampMs(self.io),
             .request_id = self.getRequestIdString(),
             .message = message,
             .context = context,
@@ -359,8 +362,8 @@ pub fn initGlobal(allocator: std.mem.Allocator, io: std.Io, config: LoggerConfig
 
 /// Initialize the global logger with color formatter
 pub fn initGlobalColor(allocator: std.mem.Allocator, io: std.Io, config: LoggerConfig) void {
-    global_mutex.lockUncancelable(std.Options.debug_io);
-    defer global_mutex.unlock(std.Options.debug_io);
+    global_mutex.lockUncancelable(io);
+    defer global_mutex.unlock(io);
 
     if (global_logger) |*logger| {
         logger.deinit();
@@ -381,8 +384,8 @@ pub fn deinitGlobal(io: std.Io) void {
 
 /// Get the global logger (returns null if not initialized)
 pub fn getGlobal() ?*Logger {
-    // global_mutex.lockUncancelable(std.Options.debug_io);
-    // defer global_mutex.unlock(std.Options.debug_io);
+    // global_mutex.lockUncancelable(io);
+    // defer global_mutex.unlock(io);
 
     if (global_logger) |*logger| {
         return logger;

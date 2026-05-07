@@ -28,16 +28,18 @@ pub const Cronjob = struct {
     running: std.atomic.Value(bool),
     config: CronjobConfig,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     /// Initialize and spawn the cronjob
-    pub fn spawn(allocator: std.mem.Allocator, config: CronjobConfig) !Self {
+    pub fn spawn(allocator: std.mem.Allocator, io: std.Io, config: CronjobConfig) !Self {
         var self = Self{
             .thread = undefined,
             .running = std.atomic.Value(bool).init(true),
             .config = config,
             .allocator = allocator,
+            .io = io,
         };
-        self.thread = try std.Thread.spawn(.{}, cronjobLoop, .{ &self.running, allocator, config });
+        self.thread = try std.Thread.spawn(.{}, cronjobLoop, .{ &self.running, allocator, io, config });
         return self;
     }
 
@@ -48,18 +50,18 @@ pub const Cronjob = struct {
     }
 
     /// Main cronjob loop that periodically checks process status
-    fn cronjobLoop(running: *std.atomic.Value(bool), allocator: std.mem.Allocator, config: CronjobConfig) void {
+    fn cronjobLoop(running: *std.atomic.Value(bool), allocator: std.mem.Allocator, io: std.Io, config: CronjobConfig) void {
         std.log.info("Cronjob: Started with interval {d}ms", .{config.check_interval_ms});
 
         while (running.load(.seq_cst)) {
             // Sleep for the configured interval
-            std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = config.check_interval_ms * std.time.ns_per_ms }, .real) catch {};
+            std.Io.sleep(io, .{ .nanoseconds = config.check_interval_ms * std.time.ns_per_ms }, .real) catch {};
 
             // Check if we should still be running
             if (!running.load(.seq_cst)) break;
 
             // Check and update process statuses
-            checkAndUpdateProcesses(allocator, config.db_path) catch |err| {
+            checkAndUpdateProcesses(allocator, io, config.db_path) catch |err| {
                 std.log.err("Cronjob: Error checking processes: {s}", .{@errorName(err)});
             };
         }
@@ -69,7 +71,7 @@ pub const Cronjob = struct {
 };
 
 /// Check all running background processes and update their status in the database
-fn checkAndUpdateProcesses(allocator: std.mem.Allocator, db_path: []const u8) !void {
+fn checkAndUpdateProcesses(allocator: std.mem.Allocator, io: std.Io, db_path: []const u8) !void {
     // Open database connection
     var db: sqlite.SqliteBackend = .{};
     
@@ -77,7 +79,7 @@ fn checkAndUpdateProcesses(allocator: std.mem.Allocator, db_path: []const u8) !v
     const db_path_z = try allocator.dupeZ(u8, db_path);
     defer allocator.free(db_path_z);
     
-    try db.init(std.Options.debug_io, db_path_z);
+    try db.init(io, db_path_z);
     defer db.deinit();
 
     // Query all processes with 'running' status
@@ -139,13 +141,13 @@ fn checkAndUpdateProcesses(allocator: std.mem.Allocator, db_path: []const u8) !v
 }
 
 /// Get the status of a specific background process
-pub fn getProcessStatus(allocator: std.mem.Allocator, db_path: []const u8, session_id: []const u8, pid: i32) !?[]const u8 {
+pub fn getProcessStatus(allocator: std.mem.Allocator, io: std.Io, db_path: []const u8, session_id: []const u8, pid: i32) !?[]const u8 {
     var db: sqlite.SqliteBackend = .{};
     
     const db_path_z = try allocator.dupeZ(u8, db_path);
     defer allocator.free(db_path_z);
     
-    try db.init(std.Options.debug_io, db_path_z);
+    try db.init(io, db_path_z);
     defer db.deinit();
 
     const query_sql = "SELECT status FROM session_background_process WHERE session_id = ? AND pid = ?";
@@ -163,13 +165,13 @@ pub fn getProcessStatus(allocator: std.mem.Allocator, db_path: []const u8, sessi
 }
 
 /// Get all background processes for a session
-pub fn getSessionProcesses(allocator: std.mem.Allocator, db_path: []const u8, session_id: []const u8) !std.ArrayList(ProcessRecord) {
+pub fn getSessionProcesses(allocator: std.mem.Allocator, io: std.Io, db_path: []const u8, session_id: []const u8) !std.ArrayList(ProcessRecord) {
     var db: sqlite.SqliteBackend = .{};
     
     const db_path_z = try allocator.dupeZ(u8, db_path);
     defer allocator.free(db_path_z);
     
-    try db.init(std.Options.debug_io, db_path_z);
+    try db.init(io, db_path_z);
     defer db.deinit();
 
     const query_sql = "SELECT pid, command, log_path, started_at, status FROM session_background_process WHERE session_id = ?";
@@ -223,13 +225,13 @@ pub const ProcessRecord = struct {
 };
 
 /// Clean up completed/stopped processes older than a certain time
-pub fn cleanupOldProcesses(allocator: std.mem.Allocator, db_path: []const u8, older_than_seconds: i64) !usize {
+pub fn cleanupOldProcesses(allocator: std.mem.Allocator, io: std.Io, db_path: []const u8, older_than_seconds: i64) !usize {
     var db: sqlite.SqliteBackend = .{};
     
     const db_path_z = try allocator.dupeZ(u8, db_path);
     defer allocator.free(db_path_z);
     
-    try db.init(std.Options.debug_io, db_path_z);
+    try db.init(io, db_path_z);
     defer db.deinit();
 
     const cutoff_time = std.time.timestamp() - older_than_seconds;

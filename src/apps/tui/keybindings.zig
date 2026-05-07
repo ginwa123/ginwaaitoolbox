@@ -158,14 +158,14 @@ fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
 
 /// Load keybindings from config file, falling back to defaults if missing or invalid.
 /// Caller owns the returned Keybindings and must call deinit().
-pub fn loadKeybindings(allocator: std.mem.Allocator) !Keybindings {
+pub fn loadKeybindings(allocator: std.mem.Allocator, io: std.Io) !Keybindings {
     const config_path = getConfigPath(allocator) catch {
         return getDefaultKeybindings(allocator);
     };
     defer allocator.free(config_path);
 
     // Try to read config file
-    const file_content = std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, config_path, allocator, .limited(4096)) catch {
+    const file_content = std.Io.Dir.cwd().readFileAlloc(io, config_path, allocator, .limited(4096)) catch {
         return getDefaultKeybindings(allocator);
     };
     defer allocator.free(file_content);
@@ -295,7 +295,7 @@ test "parseEscapeSequence" {
 
 test "loadKeybindings - defaults when no config" {
     const allocator = std.testing.allocator;
-    var kb = try loadKeybindings(allocator);
+    var kb = try loadKeybindings(allocator, std.testing.io);
     defer kb.deinit();
 
     try std.testing.expectEqual(@as(u8, 3), kb.exit);

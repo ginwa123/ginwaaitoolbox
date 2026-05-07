@@ -6,15 +6,17 @@ pub const SessionMonitor = struct {
 
     thread: std.Thread,
     running: std.atomic.Value(bool),
+    io: std.Io,
 
     pub const CHECK_INTERVAL_MS = 30_000; // 30 seconds
 
-    pub fn spawn() !Self {
+    pub fn spawn(io: std.Io) !Self {
         var self = Self{
             .thread = undefined,
             .running = std.atomic.Value(bool).init(true),
+            .io = io,
         };
-        self.thread = try std.Thread.spawn(.{}, monitorLoop, .{&self.running});
+        self.thread = try std.Thread.spawn(.{}, monitorLoop, .{ &self.running, io });
         return self;
     }
 
@@ -23,10 +25,10 @@ pub const SessionMonitor = struct {
         self.thread.join();
     }
 
-    fn monitorLoop(running: *std.atomic.Value(bool)) void {
+    fn monitorLoop(running: *std.atomic.Value(bool), io: std.Io) void {
         while (running.load(.seq_cst)) {
             // Sleep for 30 seconds
-            std.Io.sleep(std.Options.debug_io, .{ .nanoseconds = CHECK_INTERVAL_MS * std.time.ns_per_ms }, .real) catch {};
+            std.Io.sleep(io, .{ .nanoseconds = CHECK_INTERVAL_MS * std.time.ns_per_ms }, .real) catch {};
 
             // Check if we should still be running
             if (!running.load(.seq_cst)) break;
