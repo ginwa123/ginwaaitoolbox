@@ -4,6 +4,7 @@ const http_server = root_mod.http_server;
 const nalarcore = root_mod;
 const sqlite = nalarcore.sqlite;
 const ai_workflow = nalarcore.ai_workflow;
+const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
 const WorkflowArgs = @import("mod.zig").WorkflowArgs;
@@ -21,14 +22,14 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
     const body = req.body() orelse "";
     if (body.len == 0) {
         res.status = 400;
-        res.body = "{\"error\":\"Missing request body\"}";
+        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Missing request body" });
         return;
     }
 
     // Parse JSON body
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
         res.status = 400;
-        res.body = "{\"error\":\"Invalid JSON\"}";
+        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON" });
         return;
     };
     defer parsed.deinit();
@@ -37,23 +38,23 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
 
     const session_id = root.get("session_id") orelse {
         res.status = 400;
-        res.body = "{\"error\":\"Missing session_id\"}";
+        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Missing session_id" });
         return;
     };
     if (session_id != .string) {
         res.status = 400;
-        res.body = "{\"error\":\"session_id must be a string\"}";
+        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "session_id must be a string" });
         return;
     }
 
     const message = root.get("message") orelse {
         res.status = 400;
-        res.body = "{\"error\":\"Missing message\"}";
+        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Missing message" });
         return;
     };
     if (message != .string) {
         res.status = 400;
-        res.body = "{\"error\":\"message must be a string\"}";
+        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "message must be a string" });
         return;
     }
 
@@ -105,10 +106,10 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
             thread.detach();
 
             res.status = 202;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"status\":\"processing\",\"session_id\":\"{s}\"}}", .{session_id.string});
+            res.body = try http_response.makeLlmRunResponse(alloc, .{ .status = "processing", .session_id = session_id.string });
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

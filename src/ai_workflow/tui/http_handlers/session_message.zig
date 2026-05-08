@@ -6,8 +6,8 @@ const ai_workflow = nalarcore.ai_workflow;
 
 const httpz = http_server.httpz;
 const llm_history = nalarcore.llm_history;
+const http_response = nalarcore.http_response;
 const getResponseFormat = @import("mod.zig").getResponseFormat;
-const buildErrorResponse = @import("mod.zig").buildErrorResponse;
 
 /// Get messages for a session
 pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
@@ -15,7 +15,7 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
 
     const session_id = req.param("session_id") orelse {
         res.status = 400;
-        res.body = "{\"error\":\"Missing session_id\"}";
+        res.body = try http_response.makeErrorResponse(req.arena, .{ .@"error" = "Missing session_id" });
         return;
     };
 
@@ -67,7 +67,7 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
 
             const msg_response = llm_history.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
                 res.status = 500;
-                res.body = try buildErrorResponse(alloc, format, "Database query failed");
+                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" });
                 return;
             };
             defer {
@@ -86,5 +86,5 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
         }
     }
     res.status = 500;
-    res.body = try buildErrorResponse(alloc, format, "Server not initialized");
+    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

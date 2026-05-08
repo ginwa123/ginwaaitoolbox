@@ -3,6 +3,7 @@ const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
+const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
 
@@ -18,7 +19,7 @@ pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
 
             var rows = sqlite_db.query(alloc, "SELECT id, name FROM workspaces ORDER BY rowid DESC", &[_][]const u8{}) catch {
                 res.status = 500;
-                res.body = "{\"error\":\"Database query failed\"}";
+                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" });
                 return;
             };
             defer rows.deinit();
@@ -29,7 +30,7 @@ pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
             while (true) {
                 const row_opt = rows.next() catch {
                     res.status = 500;
-                    res.body = "{\"error\":\"Failed to iterate rows\"}";
+                    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to iterate rows" });
                     return;
                 };
                 const row = row_opt orelse break;
@@ -47,5 +48,5 @@ pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

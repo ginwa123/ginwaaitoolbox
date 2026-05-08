@@ -108,7 +108,15 @@ const nalarcore = @import("nalarcore");  // Main module
 const agent = nalarcore.agent;
 const sqlite = nalarcore.sqlite;
 const logger = nalarcore.logger;
+const helpers = nalarcore.helpers;
 // etc.
+```
+
+**Helpers module exports:**
+```zig
+const xml = helpers.xml;           // XML parsing utilities
+const db_path = helpers.db_path;   // Database path helper
+const process = helpers.process;    // Process utilities (getCurrentProcessId, hex_digits)
 ```
 
 ## Project Structure

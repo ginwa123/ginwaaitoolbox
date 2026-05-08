@@ -5,6 +5,7 @@ const nalarcore = root_mod;
 const sqlite = nalarcore.sqlite;
 const ai_workflow = nalarcore.ai_workflow;
 const logger = nalarcore.logger;
+const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
 const WorkflowArgs = @import("mod.zig").WorkflowArgs;
@@ -95,7 +96,7 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
         // Parse JSON body for optional parameters
         const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
             res.status = 400;
-            res.body = "{\"error\":\"Invalid JSON body\"}";
+            res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON body" });
             return;
         };
         defer parsed.deinit();
@@ -108,7 +109,7 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
                 session_id = try alloc.dupe(u8, val.string);
             } else {
                 res.status = 400;
-                res.body = "{\"error\":\"session_id must be a string\"}";
+                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "session_id must be a string" });
                 return;
             }
         } else {
@@ -275,10 +276,10 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
             thread.detach();
 
             res.status = 201;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\"}}", .{ session_id, session_name, "send" });
+            res.body = try http_response.makeSessionCreateResponse(alloc, .{ .id = session_id, .name = session_name, .status = "send" });
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

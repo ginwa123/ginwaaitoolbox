@@ -12,10 +12,11 @@ const ai_workflow = nalarcore.ai_workflow;
 const logger = nalarcore.logger;
 
 const config = nalarcore.config;
-const session_helpers = nalarcore.session_helpers;
+const http_response = nalarcore.http_response;
 
 
 const httpz = http_server.httpz;
+const process = nalarcore.helpers.process;
 
 // =============================================================================
 // Re-exports
@@ -102,19 +103,12 @@ pub const HandlerArgs = struct {
 };
 
 /// Hex digits for session ID generation
-const hexDigits = "0123456789abcdef";
+const hexDigits = process.hex_digits;
 
 /// Cross-platform process ID getter
 /// Returns the current process ID in a cross-platform compatible way
-fn getCurrentProcessId() std.c.pid_t {
-    if (@hasDecl(std.c, "getpid")) {
-        return std.c.getpid();
-    } else if (@hasDecl(std.os.windows, "GetCurrentProcessId")) {
-        return @intCast(std.os.windows.GetCurrentProcessId());
-    }
-    // Fallback: should never reach here
-    @compileError("getpid not available on this platform");
-}
+/// Uses helper from process.zig for cross-platform support
+const getCurrentProcessId = process.getCurrentProcessId;
 
 /// Generate a unique session ID using timestamp and random suffix
 pub fn generateSessionId(self: *http_server.HttpServer.ServerHandler, allocator: std.mem.Allocator) ![]u8 {
@@ -165,7 +159,7 @@ pub fn buildErrorResponse(allocator: std.mem.Allocator, format: ResponseFormat, 
     if (format == .xml) {
         return std.fmt.allocPrint(allocator, "<error>{s}</error>", .{error_msg});
     } else {
-        return std.fmt.allocPrint(allocator, "{{\"error\":\"{s}\"}}", .{error_msg});
+        return http_response.makeErrorResponse(allocator, .{ .@"error" = error_msg });
     }
 }
 

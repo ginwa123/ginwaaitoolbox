@@ -6,6 +6,7 @@ const ai_workflow = nalarcore.ai_workflow;
 const logger = nalarcore.logger;
 const config = nalarcore.config;
 const session_registry = nalarcore.session.session_registry;
+const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
 const WorkflowArgs = @import("mod.zig").WorkflowArgs;
@@ -33,7 +34,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
     if (body.len > 0) {
         const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
             res.status = 400;
-            res.body = "{\"error\":\"Invalid JSON body\"}";
+            res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON body" });
             return;
         };
         defer parsed.deinit();
@@ -79,7 +80,7 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
         if (session_registry.get_global_registry()) |registry| {
             registry.register(session_id.?) catch {
                 res.status = 500;
-                res.body = "{\"error\":\"Failed to register worker\"}";
+                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to register worker" });
                 return;
             };
         }
@@ -145,15 +146,15 @@ pub fn worker_create_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
             }
 
             res.status = 201;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"status\":\"running\"}}", .{session_id.?});
+            res.body = try http_response.makeWorkerResponse(alloc, .{ .id = session_id.?, .status = "running" });
         } else {
             // Worker created but not started
             res.status = 201;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"status\":\"idle\"}}", .{session_id.?});
+            res.body = try http_response.makeWorkerResponse(alloc, .{ .id = session_id.?, .status = "idle" });
         }
         return;
     }
 
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

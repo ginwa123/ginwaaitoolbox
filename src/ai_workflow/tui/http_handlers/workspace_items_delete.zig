@@ -4,6 +4,7 @@ const http_server = root_mod.http_server;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const workspace_items = nalarcore.workspace_items;
+const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
 
@@ -19,7 +20,7 @@ pub fn workspaceItemsDeleteHandler(
     const item_id = req.param("item_id") orelse "";
     if (item_id.len == 0) {
         res.status = 400;
-        res.body = "{\"error\":\"item_id required\"}";
+        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "item_id required" });
         return;
     }
 
@@ -31,13 +32,13 @@ pub fn workspaceItemsDeleteHandler(
             // Check if item exists first
             const existing = workspace_items.getWorkspaceItem(alloc, sqlite_db, item_id) catch {
                 res.status = 500;
-                res.body = "{\"error\":\"Failed to fetch workspace item\"}";
+                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to fetch workspace item" });
                 return;
             };
 
             if (existing == null) {
                 res.status = 404;
-                res.body = "{\"error\":\"Workspace item not found\"}";
+                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Workspace item not found" });
                 return;
             }
             defer existing.?.deinit(alloc);
@@ -45,15 +46,15 @@ pub fn workspaceItemsDeleteHandler(
             // Delete the item
             workspace_items.deleteWorkspaceItem(alloc, sqlite_db, item_id) catch {
                 res.status = 500;
-                res.body = "{\"error\":\"Failed to delete workspace item\"}";
+                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to delete workspace item" });
                 return;
             };
 
             res.status = 200;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"success\":true,\"id\":\"{s}\"}}", .{item_id});
+            res.body = try http_response.makeWorkspaceItemResponse(alloc, .{ .id = item_id });
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

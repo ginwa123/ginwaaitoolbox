@@ -1,6 +1,7 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
+const http_response = root_mod.http_response;
 
 const httpz = http_server.httpz;
 const SystemFolder = root_mod.system_folder.SystemFolder;
@@ -40,20 +41,20 @@ pub fn system_folder_handler(handler: *http_server.HttpServer.ServerHandler, req
 
     const home = SystemFolder.getHomeDirectory(allocator, handler.server.environment) catch |err| {
         res.status = 500;
-        res.body = try std.fmt.allocPrint(allocator, "{{\"error\":\"Failed to get home directory: {s}\"}}", .{@errorName(err)});
+        res.body = try http_response.makeSystemFolderErrorResponse(allocator, "Failed to get home directory", err);
         return;
     };
 
     const target_path: []u8 = if (path_param) |p|
         SystemFolder.resolvePath(allocator, p, handler.server.environment) catch |err| {
             res.status = 400;
-            res.body = try std.fmt.allocPrint(allocator, "{{\"error\":\"Invalid path: {s}\"}}", .{@errorName(err)});
+            res.body = try http_response.makeSystemFolderErrorResponse(allocator, "Invalid path", err);
             return;
         }
     else blk: {
         const dup = allocator.dupe(u8, home) catch {
             res.status = 500;
-            res.body = try std.fmt.allocPrint(allocator, "{{\"error\":\"Out of memory\"}}", .{});
+            res.body = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" });
             return;
         };
         break :blk dup;
@@ -61,7 +62,7 @@ pub fn system_folder_handler(handler: *http_server.HttpServer.ServerHandler, req
 
     const relative = SystemFolder.getRelativePathFromHome(allocator, target_path, home) catch |err| {
         res.status = 500;
-        res.body = try std.fmt.allocPrint(allocator, "{{\"error\":\"Failed to compute relative path: {s}\"}}", .{@errorName(err)});
+        res.body = try http_response.makeSystemFolderErrorResponse(allocator, "Failed to compute relative path", err);
         return;
     };
 
@@ -80,7 +81,7 @@ pub fn system_folder_handler(handler: *http_server.HttpServer.ServerHandler, req
                 else => @errorName(err),
             };
             res.status = 403;
-            res.body = try std.fmt.allocPrint(allocator, "{{\"error\":\"{s}\"}}", .{err_msg});
+            res.body = try http_response.makeErrorResponse(allocator, .{ .@"error" = err_msg });
             return;
         };
         defer {
