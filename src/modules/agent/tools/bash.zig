@@ -230,8 +230,10 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         const elapsed = std.Io.Timestamp.now(io, .real).nanoseconds - start_time;
         if (elapsed > timeout_ns) {
             timeout_hit = true;
-            child.kill(io);
-            child_term = child.wait(io) catch .{ .unknown = 1 };
+            _ = child.kill(io);
+            // Process terminated by kill() - don't call wait() as it will panic
+            // when child.id is null after kill()
+            child_term = .{ .signal = .KILL };
             break;
         }
 

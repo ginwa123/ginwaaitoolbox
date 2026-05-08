@@ -1,54 +1,61 @@
 const std = @import("std");
 
-/// XML type enum for identifying source of extracted content
+/// Represents the type of XML tag that content was extracted from
 pub const XmlType = enum {
-    response,
-    tool_result,
-    content,
+    content,     // <content> tag inside <response> or <tool_result>
+    response,    // <response> tag directly
+    tool_result, // <tool_result> tag directly
 };
 
-/// Content result structure - represents extracted content from XML
-pub const ContentResult = struct {
-    content: []const u8,
-    xml_type: XmlType,
-};
-
-/// Result structure containing extracted content and finish reason
+/// Result from extracting content from XML
 pub const ExtractResult = struct {
     content_results: std.ArrayListUnmanaged(ContentResult),
     finish_reason: ?[]const u8,
     tool_calls: ?[]ToolCallInfo,
+
+    pub fn deinit(self: *ExtractResult, allocator: std.mem.Allocator) void {
+        for (self.content_results.items) |*cr| {
+            cr.deinit(allocator);
+        }
+        self.content_results.deinit(allocator);
+        if (self.finish_reason) |fr| {
+            allocator.free(fr);
+        }
+        if (self.tool_calls) |tc| {
+            for (tc) |*call| {
+                call.deinit(allocator);
+            }
+            allocator.free(tc);
+        }
+    }
 };
 
-/// Strip <think>...</think> block (if any) and trim surrounding whitespace.
-/// Only strips ONE leading think block — the model always emits it first.
-fn stripThinkBlocks(text: []const u8) []const u8 {
-    const think_open = "<think>";
-    const think_close = "</think>";
+/// Result from extracting a single content item
+pub const ContentResult = struct {
+    content: []const u8,
+    xml_type: XmlType,
 
-    const trimmed = std.mem.trimLeft(u8, text, " \t\n\r");
-
-    if (std.mem.startsWith(u8, trimmed, think_open)) {
-        const close_pos = std.mem.indexOf(u8, trimmed, think_close) orelse
-            return std.mem.trim(u8, text, " \t\n\r");
-        const after = trimmed[close_pos + think_close.len ..];
-        return std.mem.trim(u8, after, " \t\n\r");
+    pub fn deinit(self: *ContentResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
     }
+};
 
-    return std.mem.trim(u8, text, " \t\n\r");
-}
-
-/// ToolCallInfo holds the name and arguments of a tool call
+/// Tool call information extracted from XML
 pub const ToolCallInfo = struct {
     name: []const u8,
     arguments: []const u8,
+
+    pub fn deinit(self: *ToolCallInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.arguments);
+    }
 };
 
 /// Extract content from XML - handles both <response> and <tool_result> tags.
 /// Strips <think> blocks from extracted content.
 /// Returns null if no matching tags found.
 pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?ExtractResult {
-    var results = std.ArrayListUnmanaged(ContentResult){};
+    var results: std.ArrayListUnmanaged(ContentResult) = .empty;
     errdefer results.deinit(allocator);
 
     try extractTagContent(allocator, &results, xml, "<response>", "</response>", .response);
@@ -65,90 +72,110 @@ pub fn extract_content_result(allocator: std.mem.Allocator, xml: []const u8) !?E
     }
 
     // Extract tool calls if present
-    var tool_calls: std.ArrayListUnmanaged(ToolCallInfo) = .{};
+    var tool_calls: std.ArrayListUnmanaged(ToolCallInfo) = .empty;
     errdefer tool_calls.deinit(allocator);
     var tc_pos: usize = 0;
     while (tc_pos < xml.len) {
         const tc_start = std.mem.indexOfPos(u8, xml, tc_pos, "<tool_call>") orelse break;
         const tc_end = std.mem.indexOfPos(u8, xml, tc_start, "</tool_call>") orelse break;
         const tc_block = xml[tc_start..tc_end];
-        tc_pos = tc_end + "</tool_call>".len;
 
-        // Extract name from tool_call block
-        var tool_name: []const u8 = "";
-        var tool_args: []const u8 = "";
-        if (std.mem.indexOf(u8, tc_block, "<name>")) |name_start| {
-            const name_start_tag = name_start + "<name>".len;
-            if (std.mem.indexOfPos(u8, tc_block, name_start_tag, "</name>")) |name_end| {
-                tool_name = tc_block[name_start_tag..name_end];
-            }
-        }
-        // Extract arguments from tool_call block
-        if (std.mem.indexOf(u8, tc_block, "<arguments>")) |args_start| {
-            const args_start_tag = args_start + "<arguments>".len;
-            if (std.mem.indexOfPos(u8, tc_block, args_start_tag, "</arguments>")) |args_end| {
-                tool_args = tc_block[args_start_tag..args_end];
-            }
-        }
-        if (tool_name.len > 0) {
-            try tool_calls.append(allocator, .{ .name = tool_name, .arguments = tool_args });
-        }
+        const name_start = std.mem.indexOf(u8, tc_block, "<name>") orelse continue;
+        const name_end = std.mem.indexOf(u8, tc_block[name_start..], "</name>") orelse continue;
+        const name = tc_block[name_start + "<name>".len .. name_end + "</name>".len];
+
+        const args_start = std.mem.indexOf(u8, tc_block, "<arguments>") orelse continue;
+        const args_end = std.mem.indexOf(u8, tc_block[args_start..], "</arguments>") orelse continue;
+        const arguments = tc_block[args_start + "<arguments>".len .. args_start + args_end + "</arguments>".len];
+
+        try tool_calls.append(allocator, .{
+            .name = try allocator.dupe(u8, name),
+            .arguments = try allocator.dupe(u8, arguments),
+        });
+
+        tc_pos = tc_end + "</tool_call>".len;
     }
 
-    // Return null only if there are no content_results, finish_reason, AND tool_calls
-    if (results.items.len == 0 and finish_reason == null and tool_calls.items.len == 0) {
+    // If no content found, return null
+    if (results.items.len == 0 and tool_calls.items.len == 0) {
         return null;
     }
+
+    const tool_calls_slice = if (tool_calls.items.len > 0) try tool_calls.toOwnedSlice(allocator) else null;
 
     return ExtractResult{
         .content_results = results,
         .finish_reason = finish_reason,
-        .tool_calls = if (tool_calls.items.len > 0) try tool_calls.toOwnedSlice(allocator) else null,
+        .tool_calls = tool_calls_slice,
     };
 }
 
-fn extractTagContent(
-    allocator: std.mem.Allocator,
-    results: *std.ArrayListUnmanaged(ContentResult),
-    xml: []const u8,
-    open_tag: []const u8,
-    close_tag: []const u8,
-    outer_type: XmlType,
-) !void {
+/// Helper function to extract content from a specific tag
+fn extractTagContent(allocator: std.mem.Allocator, results: *std.ArrayListUnmanaged(ContentResult), xml: []const u8, open_tag: []const u8, close_tag: []const u8, xml_type: XmlType) !void {
     var pos: usize = 0;
     while (pos < xml.len) {
         const start = std.mem.indexOfPos(u8, xml, pos, open_tag) orelse break;
-        const end = std.mem.indexOfPos(u8, xml, start + open_tag.len, close_tag) orelse break;
-        const inner = xml[start + open_tag.len .. end];
+        const content_start = start + open_tag.len;
+        const end = std.mem.indexOfPos(u8, xml, content_start, close_tag) orelse break;
+
+        // Extract content between tags
+        const inner = xml[content_start..end];
+
+        // Check for <content> tag inside
+        const content_tag_start = std.mem.indexOf(u8, inner, "<content>");
+        const content_tag_end = std.mem.indexOf(u8, inner, "</content>");
+
+        var extracted_content: []const u8 = undefined;
+        var extracted_type: XmlType = undefined;
+
+        if (content_tag_start != null and content_tag_end != null) {
+            const content_inner_start = content_tag_start.? + "<content>".len;
+            extracted_content = inner[content_inner_start..content_tag_end.?];
+            extracted_type = .content;
+        } else if (inner.len > 0) {
+            // Use raw content as fallback
+            extracted_content = inner;
+            extracted_type = xml_type;
+        } else {
+            // Empty content - use raw tag as content
+            extracted_content = try std.fmt.allocPrint(allocator, "{s}{s}", .{ open_tag, close_tag });
+            extracted_type = xml_type;
+        }
+
+        // Strip <think> blocks from content
+        const stripped = try stripThinkBlocks(allocator, extracted_content);
+
+        try results.append(allocator, .{
+            .content = stripped,
+            .xml_type = extracted_type,
+        });
+
         pos = end + close_tag.len;
-
-        var inner_pos: usize = 0;
-        var extracted_any = false;
-        while (inner_pos < inner.len) {
-            const c_start = std.mem.indexOfPos(u8, inner, inner_pos, "<content>") orelse break;
-            const c_end = std.mem.indexOfPos(u8, inner, c_start + "<content>".len, "</content>") orelse break;
-            const c_text = inner[c_start + "<content>".len .. c_end];
-            inner_pos = c_end + "</content>".len;
-
-            if (c_text.len > 0) {
-                const cleaned = stripThinkBlocks(c_text);
-                if (cleaned.len > 0) {
-                    try results.append(allocator, .{ .content = cleaned, .xml_type = .content });
-                    extracted_any = true;
-                }
-            } else {
-                // Empty <content></content>: fall back to raw inner XML as outer type
-                try results.append(allocator, .{ .content = inner, .xml_type = outer_type });
-                // extracted_any = true;
-                extracted_any = true;
-            }
-        }
-
-        if (!extracted_any and inner.len > 0) {
-            const cleaned = stripThinkBlocks(inner);
-            if (cleaned.len > 0) {
-                try results.append(allocator, .{ .content = cleaned, .xml_type = outer_type });
-            }
-        }
     }
+}
+
+/// Strip <think> blocks from content
+fn stripThinkBlocks(allocator: std.mem.Allocator, content: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    var pos: usize = 0;
+    while (pos < content.len) {
+        const think_start = std.mem.indexOfPos(u8, content, pos, "<think>");
+        if (think_start == null) {
+            try result.appendSlice(allocator, content[pos..]);
+            break;
+        }
+
+        try result.appendSlice(allocator, content[pos..think_start.?]);
+
+        const think_end = std.mem.indexOfPos(u8, content, think_start.?, "");
+        if (think_end == null) {
+            break;
+        }
+
+        pos = think_end.? + "".len;
+    }
+
+    return result.toOwnedSlice(allocator);
 }

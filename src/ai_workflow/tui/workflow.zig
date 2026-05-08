@@ -36,7 +36,7 @@ const WriteFileTool = nalar_mod.write_file;
 const TextReplaceTool = nalar_mod.text_replace_tool;
 
 const on_event_sent = @import("on_event_sent.zig");
-const on_event_send_new = on_event_sent.on_event_send_new;
+const onEventSend = on_event_sent.onEventSend;
 const sendStreamChunkContent = on_event_sent.sendStreamChunkContent;
 const sendStreamChunkReasoning = on_event_sent.sendStreamChunkReasoning;
 const sendStreamChunkFinal = on_event_sent.sendStreamChunkFinal;
@@ -322,7 +322,7 @@ pub const TUIWorkflow = struct {
         });
 
         // Send SSE event with the response
-        _ = try on_event_send_new(allocator, .{
+        _ = try onEventSend(allocator, .{
             .session_id = params.session_id,
             .model = self.config.model,
             .cwd = params.cwd,
@@ -488,7 +488,7 @@ pub const TUIWorkflow = struct {
                 }
                 break :blk max_token;
             };
-const initialMessages = try buildMessages(allocator, self.io, self.db, params.cwd, params.session_id, db_messages, merged_tools);
+            const initialMessages = try buildMessages(allocator, self.io, self.db, params.cwd, params.session_id, db_messages, merged_tools);
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
@@ -537,7 +537,7 @@ const initialMessages = try buildMessages(allocator, self.io, self.db, params.cw
 
                     // Send SSE event directly with the agent's response content
                     // Don't use getLatestMessage as it might return wrong message if timestamps collide
-                    _ = try on_event_send_new(allocator, .{
+                    _ = try onEventSend(allocator, .{
                         .session_id = params.session_id,
                         .model = self.config.model,
                         .cwd = params.cwd,
@@ -606,7 +606,7 @@ const initialMessages = try buildMessages(allocator, self.io, self.db, params.cw
 
                         // Send SSE event directly with the agent's response content
                         // Don't use getLatestMessage as it might return wrong message if timestamps collide
-                        _ = try on_event_send_new(allocator, .{
+                        _ = try onEventSend(allocator, .{
                             .session_id = params.session_id,
                             .model = self.config.model,
                             .cwd = params.cwd,
@@ -631,7 +631,7 @@ const initialMessages = try buildMessages(allocator, self.io, self.db, params.cw
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                    on_event_send_new(allocator, .{
+                    onEventSend(allocator, .{
                         .session_id = params.session_id,
                         .model = self.config.model,
                         .cwd = params.cwd,
@@ -854,19 +854,12 @@ const initialMessages = try buildMessages(allocator, self.io, self.db, params.cw
         defer response.deinit();
 
         if (response.content) |content| {
-            // Trim and limit to 50 chars
-            var trimmed = std.mem.trim(u8, content, " \n\t");
-            if (trimmed.len > 50) {
-                trimmed = trimmed[0..50];
-            }
-            if (trimmed.len > 0) {
-                // Update session name in database
-                session_table.updateSessionName(allocator, self.db, session_id, trimmed) catch {
-                    self.logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{trimmed}) catch {};
-                    return;
-                };
-                self.logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{trimmed}) catch {};
-            }
+            // Update session name in database
+            session_table.updateSessionName(allocator, self.db, session_id, content) catch {
+                self.logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{content}) catch {};
+                return;
+            };
+            self.logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{content}) catch {};
         }
     }
 
@@ -968,7 +961,7 @@ const initialMessages = try buildMessages(allocator, self.io, self.db, params.cw
                 if (std.mem.endsWith(u8, entry.name, ext)) {
                     const rel_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name });
                     defer arena.free(rel_path);
-                    const writer: *std.Io.Writer = @alignCast(@ptrCast(w));
+                    const writer: *std.Io.Writer = @ptrCast(@alignCast(w));
                     try writer.print("  {s}\n", .{rel_path});
                 }
             }

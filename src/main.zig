@@ -158,8 +158,11 @@ pub fn main(init: std.process.Init) !void {
             router.get("/api/workspaces/:id", http_handlers.workspaceGetHandler, .{});
             router.put("/api/workspaces/:id", http_handlers.workspaceUpdateHandler, .{});
             router.delete("/api/workspaces/:id", http_handlers.workspaceDeleteHandler, .{});
-            router.post("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemCreateHandler, .{});
-            router.delete("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemDeleteHandler, .{});
+            router.post("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsCreateHandler, .{});
+            router.get("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsListHandler, .{});
+            router.get("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsGetHandler, .{});
+            router.put("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsUpdateHandler, .{});
+            router.delete("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsDeleteHandler, .{});
             router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksListHandler, .{});
             router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksCreateHandler, .{});
             router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksUpdateHandler, .{});

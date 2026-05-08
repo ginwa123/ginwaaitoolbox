@@ -97,7 +97,7 @@ pub const ToolCallJson = struct {
 /// JSON Protocol:
 /// - Response events contain all message fields as JSON object
 /// - Tool result events include tool_call_id and tool_name
-pub fn on_event_send_new(allocator: std.mem.Allocator, input: OnEventInput) !void {
+pub fn onEventSend(allocator: std.mem.Allocator, input: OnEventInput) !void {
     const log = logger.getGlobal();
     const session_id = input.session_id;
 

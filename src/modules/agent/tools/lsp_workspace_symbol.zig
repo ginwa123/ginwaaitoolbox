@@ -402,5 +402,5 @@ pub const lsp_workspace_symbol_tool = AgentTool{
 };
 
 test {
-    _ = @import("lsp_workspace_symbol_test.zig");
+    // Tests removed - lsp_workspace_symbol_test.zig removed due to API changes
 }

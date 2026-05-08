@@ -157,11 +157,32 @@ const chatsLoading = ref(false)
 // Chats list
 const navItems = ref<NavItem[]>([])
 
+// LocalStorage key for persistent sort preference
+const SORT_DIRECTION_KEY = 'nalar_chats_sort_direction'
+
+// Sort state for chats (loaded from localStorage for persistence)
+const chatsSortBy = ref<'created_at' | 'session_name' | 'agent'>('created_at')
+const chatsSortDirection = ref<'asc' | 'desc'>(loadSortDirection())
+
+// Load sort direction from localStorage
+function loadSortDirection(): 'asc' | 'desc' {
+  const stored = localStorage.getItem(SORT_DIRECTION_KEY)
+  if (stored === 'asc' || stored === 'desc') {
+    return stored
+  }
+  return 'desc' // Default to newest
+}
+
 // Load chats from API on mount
 onMounted(async () => {
+  await loadChats()
+})
+
+// Load chats with current sort settings
+const loadChats = async () => {
   chatsLoading.value = true
   try {
-    const data = await api.getChats()
+    const data = await api.getChats(chatsSortBy.value, chatsSortDirection.value)
     navItems.value = (data.sessions || []).map((session) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
@@ -174,7 +195,13 @@ onMounted(async () => {
   } finally {
     chatsLoading.value = false
   }
-})
+}
+
+// Handle sort change (also saves to localStorage for persistence)
+const handleSortChange = async () => {
+  localStorage.setItem(SORT_DIRECTION_KEY, chatsSortDirection.value)
+  await loadChats()
+}
 
 // Dialog states
 const showAddWorkspaceModal = ref(false)
@@ -485,6 +512,18 @@ const handleSelectTask = (taskId: string) => {
           style="color: var(--semantic-text-dim);"
         >Chats</span>
         <div class="flex items-center gap-2">
+          <!-- Sort Dropdown -->
+          <select
+            v-model="chatsSortDirection"
+            @change="handleSortChange"
+            @click.stop
+            class="text-xs px-1 py-0.5 rounded border-none cursor-pointer transition-colors"
+            style="background-color: var(--semantic-card-bg); color: var(--semantic-text-dim);"
+            title="Sort direction"
+          >
+            <option value="desc">↓ Newest</option>
+            <option value="asc">↑ Oldest</option>
+          </select>
           <button
             @click.stop="createChat"
             class="w-5 h-5 rounded flex items-center justify-center transition-colors duration-200 hover:opacity-80"

@@ -461,9 +461,16 @@ export function createSseConnection(
 }
 
 // List all chat sessions
-export async function getChats(): Promise<{ sessions: Chat[] }> {
+export async function getChats(
+  sortBy: 'created_at' | 'session_name' | 'agent' = 'created_at',
+  direction: 'asc' | 'desc' = 'desc'
+): Promise<{ sessions: Chat[] }> {
   try {
-    const response = await fetch(`${API_BASE}/llm/session`);
+    const params = new URLSearchParams({
+      sort_by: sortBy,
+      direction: direction,
+    });
+    const response = await fetch(`${API_BASE}/llm/session?${params}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const data = await response.json();

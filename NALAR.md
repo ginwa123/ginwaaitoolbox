@@ -213,6 +213,7 @@ src/
 - [glob.zig:346] Fixed index out of bounds: when slicing a substring pattern, use `remaining_pat.len` instead of `pat.len` for the "no slash found" fallback
 - [llm_history.zig:477] Fixed JSON parsing error in frontend: added `jsonEscape()` helper function and used it for all string fields (id, session_id, role, content, timestamp, tool_name, finish_reason) in `buildSessionMessagesJson()`. Previously only `content` was escaped.
 - [llm_history.zig:491] Added control character escaping (\x08, \x0C, and 0x00-0x07, 0x0E-0x1F as \u00XX) in `jsonEscape()` to prevent "Bad control character in string literal" JSON parse errors.
+- [llm_history.zig:114] Added `SessionSortField` and `SessionSortDirection` enums, updated `getSessionListWithCursor()` with `sort_field` and `sort_direction` parameters to support sorting by `created_at`, `session_name`, or `agent` fields with `asc`/`desc` directions.
 
 ## Key Tool Conventions
 
@@ -257,7 +258,7 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | POST | `/api/command` | Generic command handler |
 | GET | `/api/stream/:session_id` | SSE real-time events |
 | POST | `/api/session` | Create session |
-| GET | `/api/session` | List sessions (cursor pagination) |
+| GET | `/api/session` | List sessions (cursor pagination, sort support) |
 | GET | `/api/session/stream` | SSE session events (session_created notifications) |
 | GET | `/api/session/:session_id` | Get session |
 | GET | `/api/session/:session_id/messages` | Get messages |
@@ -273,6 +274,25 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | GET | `/api/workers` | List all active workers |
 | GET | `/api/worker/:session_id/status` | Get worker status |
 | POST | `/api/worker/:session_id/cancel` | Cancel a worker |
+| POST | `/api/workspaces/:workspace_id/items` | Create workspace item |
+| GET | `/api/workspaces/:workspace_id/items` | List workspace items |
+| GET | `/api/workspaces/:workspace_id/items/:item_id` | Get workspace item |
+| PUT | `/api/workspaces/:workspace_id/items/:item_id` | Update workspace item |
+| DELETE | `/api/workspaces/:workspace_id/items/:item_id` | Delete workspace item |
+
+### Session List Sorting
+
+The `GET /api/session` endpoint supports sorting with query parameters:
+
+| Parameter | Values | Default | Description |
+|-----------|--------|---------|-------------|
+| `sort_by` | `created_at`, `session_name`, `agent` | `created_at` | Field to sort by |
+| `direction` | `asc`, `desc` | `desc` | Sort direction |
+
+**Example:**
+```
+GET /api/session?sort_by=session_name&direction=asc
+```
 
 ## Worker System
 
@@ -310,6 +330,7 @@ const is_sub_agent = std.mem.indexOf(u8, session_id, "subagent") != null;
 |-------|------------|---------|
 | `sessions` | `id` (PK), `name`, `cwd` | Session metadata (cwd = working directory) |
 | `llm_history` | `session_id` (FK) | References `sessions.id` |
+| `workspace_items` | `id` (PK), `workspace_id`, `item_type` | Workspace items table |
 
 **Schema Change (Migration023):**
 - Removed `session_dir` column from `llm_history`

@@ -109,6 +109,10 @@ pub fn getSessionList(
     };
 }
 
+/// Sort specification for session list
+pub const SessionSortField = enum { created_at, session_name, agent };
+pub const SessionSortDirection = enum { asc, desc };
+
 /// Get a list of sessions with cursor-based pagination
 /// Optionally filtered by cwd (from sessions table)
 pub fn getSessionListWithCursor(
@@ -119,6 +123,8 @@ pub fn getSessionListWithCursor(
     cwd: ?[]const u8,
     limit: u32,
     cursor: ?[]const u8,
+    sort_field: SessionSortField,
+    sort_direction: SessionSortDirection,
 ) !struct { sessions: []SessionInfo, total: u32 } {
     _ = status;
     _ = agent_type;
@@ -137,19 +143,35 @@ pub fn getSessionListWithCursor(
     }
 
     if (cursor) |c| {
-        try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "h.created_at < '{s}'", .{c}));
+        const direction_cmp = switch (sort_direction) {
+            .asc => ">",
+            .desc => "<",
+        };
+        try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "MAX(h.created_at) {s} '{s}'", .{ direction_cmp, c }));
     }
 
     const where_clause = try std.mem.join(allocator, " AND ", where_parts.items);
     defer allocator.free(where_clause);
+
+    // Build ORDER BY clause based on sort field and direction
+    const sort_order = switch (sort_direction) {
+        .asc => "ASC",
+        .desc => "DESC",
+    };
+    const order_by = switch (sort_field) {
+        .created_at => try std.fmt.allocPrint(allocator, "MAX(h.created_at) {s}", .{sort_order}),
+        .session_name => try std.fmt.allocPrint(allocator, "COALESCE(s.name, '') {s}", .{sort_order}),
+        .agent => try std.fmt.allocPrint(allocator, "COALESCE(h.agent, 'Agent') {s}", .{sort_order}),
+    };
+    defer allocator.free(order_by);
 
     const sql_final = try std.fmt.allocPrint(allocator,
         \\SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE {s}
-        \\GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT {d}
-    , .{ where_clause, limit });
+        \\GROUP BY h.session_id ORDER BY {s} LIMIT {d}
+    , .{ where_clause, order_by, limit });
     defer allocator.free(sql_final);
 
     var rows = try db.query(allocator, sql_final, &.{});

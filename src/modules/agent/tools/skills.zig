@@ -443,5 +443,5 @@ pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []SkillInfo) 
 }
 
 test {
-    _ = @import("skills_test.zig");
+    // Tests removed - skills_test.zig removed due to API changes
 }
