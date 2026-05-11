@@ -143,11 +143,8 @@ pub fn getSessionListWithCursor(
     }
 
     if (cursor) |c| {
-        const direction_cmp = switch (sort_direction) {
-            .asc => ">",
-            .desc => "<",
-        };
-        try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "MAX(h.created_at) {s} '{s}'", .{ direction_cmp, c }));
+        _ = c;
+        // Cursor filtering is done via subquery below
     }
 
     const where_clause = try std.mem.join(allocator, " AND ", where_parts.items);
@@ -165,13 +162,31 @@ pub fn getSessionListWithCursor(
     };
     defer allocator.free(order_by);
 
+    // Build cursor filter - use a subquery to filter by MAX(created_at)
+    // This is more reliable than HAVING with aggregate functions
+    const cursor_subquery = if (cursor) |c|
+        try std.fmt.allocPrint(allocator, 
+            \\ AND h.session_id IN (
+            \\   SELECT session_id FROM llm_history 
+            \\   GROUP BY session_id 
+            \\   HAVING MAX(created_at) {s} '{s}'
+            \\ )
+        , .{ if (sort_direction == .asc) ">" else "<", c })
+    else
+        try allocator.dupe(u8, "");
+    defer allocator.free(cursor_subquery);
+
+    // Append cursor filter to where_clause
+    const where_with_cursor = try std.fmt.allocPrint(allocator, "{s}{s}", .{ where_clause, cursor_subquery });
+    defer allocator.free(where_with_cursor);
+
     const sql_final = try std.fmt.allocPrint(allocator,
         \\SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE {s}
         \\GROUP BY h.session_id ORDER BY {s} LIMIT {d}
-    , .{ where_clause, order_by, limit });
+    , .{ where_with_cursor, order_by, limit });
     defer allocator.free(sql_final);
 
     var rows = try db.query(allocator, sql_final, &.{});
@@ -343,6 +358,7 @@ pub const SessionMessage = struct {
     is_output: []const u8,
     tool_name: []const u8,
     finish_reason: []const u8,
+    reasoning_content: []const u8,
 
     pub fn deinit(self: *const SessionMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -354,6 +370,7 @@ pub const SessionMessage = struct {
         allocator.free(self.is_output);
         allocator.free(self.tool_name);
         allocator.free(self.finish_reason);
+        allocator.free(self.reasoning_content);
     }
 };
 
@@ -413,7 +430,7 @@ pub fn get_session_messages_sorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, '')
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
         , .{ cursor_cmp, order_part });
@@ -430,7 +447,7 @@ pub fn get_session_messages_sorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, '')
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
         , .{order_part});
@@ -451,7 +468,7 @@ pub fn get_session_messages_sorted(
     var cwd: ?[]u8 = null;
 
     while (try rows.next()) |row| {
-        // Extract cwd from last column of first row
+        // Extract cwd from last column of first row (index 9, reasoning_content is at 10)
         if (cwd == null) {
             const cwd_val = row.values[9];
             if (cwd_val.len > 0) {
@@ -469,6 +486,7 @@ pub fn get_session_messages_sorted(
             .is_output = try allocator.dupe(u8, row.values[6]),
             .tool_name = try allocator.dupe(u8, row.values[7]),
             .finish_reason = try allocator.dupe(u8, row.values[8]),
+            .reasoning_content = try allocator.dupe(u8, row.values[10]),
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);
@@ -549,11 +567,13 @@ pub fn buildSessionMessagesJson(
         defer allocator.free(escaped_tool_name);
         const escaped_finish_reason = try jsonEscape(allocator, msg.finish_reason);
         defer allocator.free(escaped_finish_reason);
+        const escaped_reasoning_content = try jsonEscape(allocator, msg.reasoning_content);
+        defer allocator.free(escaped_reasoning_content);
 
         const msg_json = try std.fmt.allocPrint(allocator,
             \\{{"id":"{s}","session_id":"{s}","role":"{s}","content":"{s}","timestamp":"{s}",
-            \\"is_input":"{s}","is_output":"{s}","tool_name":"{s}","finish_reason":"{s}"}}
-        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason });
+            \\"is_input":"{s}","is_output":"{s}","tool_name":"{s}","finish_reason":"{s}","reasoning_content":"{s}"}}
+        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason, escaped_reasoning_content });
         defer allocator.free(msg_json);
         try json_messages.appendSlice(allocator, msg_json);
     }
@@ -622,6 +642,8 @@ pub fn buildSessionMessagesXml(
         defer allocator.free(escaped_tool_name);
         const escaped_finish_reason = try xmlEscape(allocator, msg.finish_reason);
         defer allocator.free(escaped_finish_reason);
+        const escaped_reasoning_content = try xmlEscape(allocator, msg.reasoning_content);
+        defer allocator.free(escaped_reasoning_content);
 
         const msg_xml = try std.fmt.allocPrint(allocator,
             \\<message id="{s}">
@@ -633,8 +655,9 @@ pub fn buildSessionMessagesXml(
             \\<is_output>{s}</is_output>
             \\<tool_name>{s}</tool_name>
             \\<finish_reason>{s}</finish_reason>
+            \\<reasoning_content>{s}</reasoning_content>
             \\</message>
-        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason });
+        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason, escaped_reasoning_content });
         defer allocator.free(msg_xml);
         try xml_messages.appendSlice(allocator, msg_xml);
     }

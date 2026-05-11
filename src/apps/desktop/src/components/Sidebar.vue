@@ -98,6 +98,8 @@ const chatsResizeStartY = ref(0)
 const chatsResizeStartHeight = ref(0)
 
 // Chats resize handlers
+const chatsContainerRef = ref<HTMLElement | null>(null)
+
 const startChatsResize = (e: MouseEvent | TouchEvent) => {
   isChatsResizing.value = true
   const clientY = 'touches' in e && e.touches[0] ? e.touches[0].clientY : (e as MouseEvent).clientY
@@ -126,6 +128,17 @@ const handleChatsResize = (e: MouseEvent | TouchEvent) => {
   const newHeight = chatsResizeStartHeight.value + deltaPercent
 
   sidebarStore.setChatsHeight(newHeight)
+}
+
+// Handle scroll for infinite scroll pagination
+const handleChatsScroll = (e: Event) => {
+  const target = e.target as HTMLElement
+  const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight
+  // Load more when user scrolls to within 100px of bottom
+  if (scrollBottom < 100 && chatsHasMore.value && !chatsLoading.value) {
+    console.log('[Sidebar] Scroll triggered loadMoreChats')
+    loadMoreChats()
+  }
 }
 
 const stopChatsResize = () => {
@@ -157,6 +170,10 @@ const chatsLoading = ref(false)
 // Chats list
 const navItems = ref<NavItem[]>([])
 
+// Pagination state
+const chatsHasMore = ref(false)
+const chatsNextCursor = ref<string | null>(null)
+
 // LocalStorage key for persistent sort preference
 const SORT_DIRECTION_KEY = 'nalar_chats_sort_direction'
 
@@ -178,20 +195,58 @@ onMounted(async () => {
   await loadChats()
 })
 
-// Load chats with current sort settings
+// Load chats with current sort settings (initial load or refresh)
 const loadChats = async () => {
   chatsLoading.value = true
+  chatsNextCursor.value = null
   try {
-    const data = await api.getChats(chatsSortBy.value, chatsSortDirection.value)
+    console.log('[Sidebar] loadChats - calling getChats with limit 10')
+    const data = await api.getChats(chatsSortBy.value, chatsSortDirection.value, 10)
+    console.log('[Sidebar] loadChats - received data:', { count: data.sessions?.length, hasMore: data.has_more, nextCursor: data.next_cursor })
     navItems.value = (data.sessions || []).map((session) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
       icon: '💬',
       active: false,
     }))
+    chatsHasMore.value = data.has_more
+    chatsNextCursor.value = data.next_cursor
+    console.log('[Sidebar] loadChats - state after load:', { totalItems: navItems.value.length, hasMore: chatsHasMore.value, cursor: chatsNextCursor.value })
   } catch (err) {
     console.error('Failed to load chats:', err)
     navItems.value = []
+    chatsHasMore.value = false
+    chatsNextCursor.value = null
+  } finally {
+    chatsLoading.value = false
+  }
+}
+
+// Load more chats (pagination)
+const loadMoreChats = async () => {
+  console.log('[Sidebar] loadMoreChats called:', { hasMore: chatsHasMore.value, loading: chatsLoading.value, cursor: chatsNextCursor.value })
+  if (!chatsHasMore.value || chatsLoading.value || !chatsNextCursor.value) {
+    console.log('[Sidebar] loadMoreChats blocked by condition')
+    return
+  }
+  
+  chatsLoading.value = true
+  try {
+    console.log('[Sidebar] Fetching with cursor:', chatsNextCursor.value)
+    const data = await api.getChats(chatsSortBy.value, chatsSortDirection.value, 10, chatsNextCursor.value)
+    console.log('[Sidebar] Received data:', { count: data.sessions?.length, hasMore: data.has_more, nextCursor: data.next_cursor })
+    const newItems = (data.sessions || []).map((session) => ({
+      id: session.session_id,
+      name: session.session_name || 'New Chat',
+      icon: '💬',
+      active: false,
+    }))
+    navItems.value.push(...newItems)
+    chatsHasMore.value = data.has_more
+    chatsNextCursor.value = data.next_cursor
+    console.log('[Sidebar] Updated state:', { totalItems: navItems.value.length, hasMore: chatsHasMore.value, cursor: chatsNextCursor.value })
+  } catch (err) {
+    console.error('Failed to load more chats:', err)
   } finally {
     chatsLoading.value = false
   }
@@ -559,7 +614,11 @@ const handleSelectTask = (taskId: string) => {
         :style="{ height: sidebarStore.chatsHeight + '%' }"
       >
         <!-- Main Nav Items -->
-        <ul class="flex-1 overflow-y-auto space-y-1 min-h-0">
+        <ul 
+          ref="chatsContainerRef"
+          @scroll="handleChatsScroll"
+          class="flex-1 overflow-y-auto space-y-1 min-h-0"
+        >
           <li v-for="item in navItems" :key="item.id" class="group/chat">
             <button
               @click="setActive(item.id)"
@@ -593,6 +652,21 @@ const handleSelectTask = (taskId: string) => {
             </button>
           </li>
         </ul>
+
+        <!-- Loading/Load More Indicator -->
+        <div v-if="chatsLoading && navItems.length > 0" class="py-2 text-center">
+          <span class="text-xs" style="color: var(--semantic-text-dim);">Loading more...</span>
+        </div>
+        
+        <!-- Load More Button (fallback for when scroll doesn't trigger) -->
+        <button 
+          v-else-if="chatsHasMore && navItems.length > 0"
+          @click="loadMoreChats"
+          class="py-2 text-xs hover:opacity-80 transition-opacity"
+          style="color: var(--color-violet);"
+        >
+          Load more chats
+        </button>
 
         <!-- Drag Resize Handle (between chats and workspaces) -->
         <div

@@ -218,7 +218,7 @@ src/
 - [zig@0.15] `std.posix.sigemptyset()` returns `sigset_t` for signal mask initialization
 
 ## Bug Fixes (Development Notes)
-- [glob.zig:346] Fixed index out of bounds: when slicing a substring pattern, use `remaining_pat.len` instead of `pat.len` for the "no slash found" fallback
+- [workflow.zig:737] Fixed "write failed" error: `msg.tool_call_id orelse "unknown"` can't be used directly in `print` format — wrapped in `if (msg.tool_call_id) |id| id else "unknown"` because Zig requires the same type for both branches of the ternary-like pattern.
 - [llm_history.zig:477] Fixed JSON parsing error in frontend: added `jsonEscape()` helper function and used it for all string fields (id, session_id, role, content, timestamp, tool_name, finish_reason) in `buildSessionMessagesJson()`. Previously only `content` was escaped.
 - [llm_history.zig:491] Added control character escaping (\x08, \x0C, and 0x00-0x07, 0x0E-0x1F as \u00XX) in `jsonEscape()` to prevent "Bad control character in string literal" JSON parse errors.
 - [llm_history.zig:114] Added `SessionSortField` and `SessionSortDirection` enums, updated `getSessionListWithCursor()` with `sort_field` and `sort_direction` parameters to support sorting by `created_at`, `session_name`, or `agent` fields with `asc`/`desc` directions.

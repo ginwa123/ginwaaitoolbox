@@ -105,9 +105,11 @@ watch(() => props.show, async (show) => {
     currentPath.value = ''
     breadcrumbs.value = []
     folderList.value = []
+    loading.value = false
+    error.value = null
     await nextTick()
     nameInput.value?.focus()
-    fetchFolders()
+    await fetchFolders()
   }
 })
 

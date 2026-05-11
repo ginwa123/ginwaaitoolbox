@@ -495,7 +495,7 @@ pub const TUIWorkflow = struct {
             self.logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len }) catch {};
             if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(self.config.model))) {
                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
-                if (try self.callCompactAgent(messagesLists.items, allocator, self.config.api_key, self.config.model, self.config.base_url, params.cwd)) |compacted_xml| {
+                if (self.callCompactAgent(messagesLists.items, allocator, self.config.api_key, self.config.model, self.config.base_url, params.cwd)) |compacted_xml| {
                     try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, self.config.model, params.cwd);
                 }
             }
@@ -511,6 +511,18 @@ pub const TUIWorkflow = struct {
             };
 
             retryCount = 0;
+
+            const session_info = session_table.getSession(allocator, self.db, params.session_id) catch |err| {
+                self.logger.errFmt("Error getting session: {s}", .{@errorName(err)}) catch {};
+                break;
+            };
+
+            // Generate session name from first user message if this is the first response
+            if (session_info) |session| {
+                if (loopCounter == 0 and std.mem.eql(u8, session.name, "New Session")) {
+                    self.generateSessionName(db_messages, allocator, self.config.api_key, self.config.model, self.config.base_url, params.session_id);
+                }
+            }
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
                 if (finish_reason == .stop) {
@@ -543,7 +555,7 @@ pub const TUIWorkflow = struct {
                         .cwd = params.cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
-                        .role = "assistant",
+                        .role = agent.Role.assistant.to_str(),
                         .finish_reason = res_dynamic_agent.finish_reason.?.to_str(),
                         .tool_calls = null,
                         .tool_call_id = null,
@@ -557,18 +569,6 @@ pub const TUIWorkflow = struct {
                         .parent_session_id = params.parent_session_id,
                         .parent_id = params.parent_session_id,
                     });
-
-                    const session_info = session_table.getSession(allocator, self.db, params.session_id) catch |err| {
-                        self.logger.errFmt("Error getting session: {s}", .{@errorName(err)}) catch {};
-                        break;
-                    };
-
-                    // Generate session name from first user message if this is the first response
-                    if (session_info) |session| {
-                        if (loopCounter == 1 and std.mem.eql(u8, session.name, "New Session")) {
-                            self.generateSessionName(db_messages, allocator, self.config.api_key, self.config.model, self.config.base_url, params.session_id);
-                        }
-                    }
 
                     break;
                 } else if (finish_reason == .length) {
@@ -696,8 +696,9 @@ pub const TUIWorkflow = struct {
         return res_dynamic_agent;
     }
 
-    /// Call CompactionAgent to compress conversation history
-    fn callCompactAgent(
+    /// Call CompactionAgent to compress conversation history.
+    /// Returns compacted context or null on failure.
+    pub fn callCompactAgent(
         self: *TUIWorkflow,
         messages: []agent.AgentMessage,
         arena: std.mem.Allocator,
@@ -705,106 +706,115 @@ pub const TUIWorkflow = struct {
         model: []const u8,
         base_url: []const u8,
         cwd: []const u8,
-    ) !?[]const u8 {
-        // Serialize messages as-is for CompactionAgent to reason over
-        var history_buf: std.ArrayList(u8) = .empty;
-        defer history_buf.deinit(arena);
-        var w = std.Io.Writer.fromArrayList(&history_buf);
-
-        // Include system prompt so CompactionAgent knows what tools/constraints exist
-        if (messages.len > 0) {
-            if (messages[0].content) |system_content| {
-                try w.writeAll("=== SYSTEM PROMPT (for context) ===\n");
-                // Truncate system prompt to avoid token explosion
-                const max_len = 8000;
-                if (system_content.len > max_len) {
-                    try w.writeAll("System prompt (truncated): ");
-                    try w.writeAll(system_content[0..max_len]);
-                    try w.writeAll("\n... [truncated]\n");
-                } else {
-                    try w.writeAll(system_content);
-                }
-                try w.writeAll("\n=== END SYSTEM PROMPT ===\n\n");
-            }
+    ) ?[]const u8 {
+        if (messages.len < 2) {
+            self.logger.debugFmt("[COMPACTION] Skipped: only {} message(s)", .{messages.len}) catch {};
+            return null;
         }
 
-        try w.writeAll("Conversation history to compact:\n\n");
+        // Serialize messages for CompactionAgent
+        var history = std.ArrayList(u8).empty;
+        defer history.deinit(arena);
+        var w = std.Io.Writer.fromArrayList(&history);
 
-        for (messages, 0..) |msg, i| {
-            if (i == 0) continue; // System prompt already included above
+        // Include system prompt (truncated if too long)
+        if (messages[0].content) |sys| {
+            w.writeAll("=== SYSTEM PROMPT (for context) ===\n") catch return null;
+            if (sys.len > 8000) {
+                w.writeAll("System prompt (truncated): ") catch return null;
+                w.writeAll(sys[0..8000]) catch return null;
+                w.writeAll("\n... [truncated]\n") catch return null;
+            } else {
+                w.writeAll(sys) catch return null;
+            }
+            w.writeAll("\n=== END SYSTEM PROMPT ===\n\n") catch return null;
+        }
+
+        w.writeAll("Conversation history to compact:\n\n") catch return null;
+
+        // Track stats for logging
+        var tool_count: usize = 0;
+        var reasoning_count: usize = 0;
+        var tool_call_count: usize = 0;
+
+        // Serialize messages, skipping index 0 (system prompt already handled)
+        for (messages[1..], 1..) |msg, i| {
+            const role_str = msg.role.to_str();
 
             if (msg.role == .tool) {
-                try w.print("--- Message {} (tool_result id:{s}) ---\n", .{ i, msg.tool_call_id orelse "unknown" });
-                if (msg.content) |c| try w.writeAll(c);
+                tool_count += 1;
+                const id = if (msg.tool_call_id) |tid| tid else "unknown";
+                w.print("--- Message {} (tool_result id:{s}) ---\n", .{ i, id }) catch return null;
+                if (msg.content) |c| w.writeAll(c) catch return null;
             } else if (msg.reasoning_content) |rc| {
-                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.to_str() });
-                try w.writeAll("[REASONING]\n");
-                try w.writeAll(rc);
+                reasoning_count += 1;
+                w.print("--- Message {} ({s}) ---\n", .{ i, role_str }) catch return null;
+                w.writeAll("[REASONING]\n") catch return null;
+                w.writeAll(rc) catch return null;
                 if (msg.content) |c| {
-                    try w.writeAll("\n[RESPONSE]\n");
-                    try w.writeAll(c);
+                    w.writeAll("\n[RESPONSE]\n") catch return null;
+                    w.writeAll(c) catch return null;
                 }
             } else if (msg.tool_calls) |tcs| {
-                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.to_str() });
-                try w.writeAll("[TOOL CALLS]\n");
+                tool_call_count += 1;
+                w.print("--- Message {} ({s}) ---\n", .{ i, role_str }) catch return null;
+                w.writeAll("[TOOL CALLS]\n") catch return null;
                 for (tcs) |tc| {
-                    try w.print("  - {s}({s})\n", .{ tc.function.name, tc.function.arguments });
+                    w.print("  - {s}({s})\n", .{ tc.function.name, tc.function.arguments }) catch return null;
                 }
             } else if (msg.content) |c| {
-                try w.print("--- Message {} ({s}) ---\n", .{ i, msg.role.to_str() });
-                try w.writeAll(c);
+                w.print("--- Message {} ({s}) ---\n", .{ i, role_str }) catch return null;
+                w.writeAll(c) catch return null;
             }
-
-            try w.writeAll("\n");
+            w.writeAll("\n") catch return null;
         }
 
-        // Add file listing to give CompactionAgent project awareness
-        try w.writeAll("\n=== PROJECT FILE LISTING ===\n");
-        try self.addFileListing(&w, cwd, arena);
+        // Add file listing for project context
+        w.writeAll("\n=== PROJECT FILE LISTING ===\n") catch return null;
+        self.addFileListing(&w, cwd, arena) catch return null;
 
-        const compaction_messages = try arena.alloc(agent.AgentMessage, 2);
-        compaction_messages[0] = .{ .role = .system, .content = prompt.CompactionAgent };
-        compaction_messages[1] = .{ .role = .user, .content = try history_buf.toOwnedSlice(arena) };
+        // Build compaction agent messages
+        const msgs = arena.alloc(agent.AgentMessage, 2) catch return null;
+        msgs[0] = .{ .role = .system, .content = prompt.CompactionAgent };
+        msgs[1] = .{ .role = .user, .content = history.toOwnedSlice(arena) catch return null };
 
-        var compaction_agent = try agent.Agent.init(arena, self.io);
+        // Initialize compaction agent
+        var compaction_agent = agent.Agent.init(arena, self.io) catch return null;
         defer compaction_agent.deinit();
         compaction_agent.apiKey = api_key;
         compaction_agent.model = model;
         compaction_agent.baseUrl = base_url;
 
-        const params = agent.AgentCall{
-            .tools = &.{},
-            .messages = compaction_messages,
-            .temperature = 0.0,
-            .max_tokens = 8000,
-        };
-
-        self.logger.debugFmt("[COMPACTION] Calling CompactionAgent ({} messages)", .{
+        self.logger.debugFmt("[COMPACTION] Calling CompactionAgent ({} msgs: {} tools, {} reasoning, {} tool_calls)", .{
             messages.len,
+            tool_count,
+            reasoning_count,
+            tool_call_count,
         }) catch {};
 
-        // Use callStreaming for compaction agent - no-op callback since we don't need to stream to client
-        const response = compaction_agent.callStreaming(params, null, noopStreamCallback) catch |err| {
+        const response = compaction_agent.callStreaming(.{
+            .tools = &.{},
+            .messages = msgs,
+            .temperature = 0.0,
+            .max_tokens = 8000,
+        }, null, noopStreamCallback) catch |err| {
             self.logger.errFmt("[COMPACTION] Failed: {s}", .{@errorName(err)}) catch {};
             return null;
         };
         defer response.deinit();
 
-        if (response.content) |content| {
-            self.logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{
-                messages.len,
-                content.len,
-            }) catch {};
-            return try arena.dupe(u8, content);
+        const content = response.content orelse return null;
+        if (content.len == 0) {
+            self.logger.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{}) catch {};
+            return null;
         }
-        return null;
+
+        self.logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{ messages.len, content.len }) catch {};
+        return arena.dupe(u8, content) catch null;
     }
 
-    /// No-op callback for streaming - used when we don't need to stream chunks to client
-    fn noopStreamCallback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
-        _ = ctx;
-        _ = chunk;
-    }
+    /// No-op callback for streaming - used when we don't need to stream chunks to client.
+    fn noopStreamCallback(_: ?*anyopaque, _: agent.StreamChunk) void {}
 
     /// Generate session name from the first user message using LLM
     fn generateSessionName(
@@ -865,7 +875,7 @@ pub const TUIWorkflow = struct {
 
     /// Compact messages in memory based on CompactionAgent output
     /// Also persists to database: marks old messages as not for LLM, saves new compacted message
-    fn compactMessageInMemory(
+    pub fn compactMessageInMemory(
         self: *TUIWorkflow,
         allocator: std.mem.Allocator,
         messages: *std.ArrayList(agent.AgentMessage),

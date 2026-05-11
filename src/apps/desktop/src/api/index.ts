@@ -59,14 +59,14 @@ export async function healthCheck(): Promise<{
 
 // System Folder API
 export async function getSystemFolder(): Promise<FolderInfo> {
-  const response = await fetch(`${API_BASE}/system/folder`);
+  const response = await fetch(`${API_BASE}/system/folder?action=list`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
 export async function listFolder(path: string): Promise<FolderInfo> {
   const response = await fetch(
-    `${API_BASE}/system/folder/list?path=${encodeURIComponent(path)}`,
+    `${API_BASE}/system/folder?path=${encodeURIComponent(path)}&action=list`,
   );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
@@ -460,16 +460,22 @@ export function createSseConnection(
   return eventSource;
 }
 
-// List all chat sessions
+// List all chat sessions with pagination
 export async function getChats(
   sortBy: 'created_at' | 'session_name' | 'agent' = 'created_at',
-  direction: 'asc' | 'desc' = 'desc'
-): Promise<{ sessions: Chat[] }> {
+  direction: 'asc' | 'desc' = 'desc',
+  limit: number = 10,
+  cursor?: string
+): Promise<{ sessions: Chat[]; has_more: boolean; next_cursor: string | null }> {
   try {
     const params = new URLSearchParams({
       sort_by: sortBy,
       direction: direction,
+      limit: limit.toString(),
     });
+    if (cursor) {
+      params.set("cursor", cursor);
+    }
     const response = await fetch(`${API_BASE}/llm/session?${params}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
@@ -500,10 +506,14 @@ export async function getChats(
       });
     }
 
-    return data;
+    return {
+      sessions: data.sessions || [],
+      has_more: data.has_more || false,
+      next_cursor: data.next_cursor || null,
+    };
   } catch (error) {
     // Return empty sessions when LLM backend unavailable
-    return { sessions: [] };
+    return { sessions: [], has_more: false, next_cursor: null };
   }
 }
 

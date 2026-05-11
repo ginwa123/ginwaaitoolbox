@@ -401,15 +401,11 @@ fn saveAndSendToolResult(
     is_thinking: bool,
     agent_name: []const u8,
 ) !void {
-    var content = result;
-    if (std.mem.eql(u8, tool_call.function.name, "update_activity")) {
-        content = "";
-    }
     _ = try llm_history.saveMessage(allocator, io, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
-        .content = content,
+        .content = result,
         .reasoning_content = null,
         .role = agent.Role.tool.to_str(),
         .finish_reason = agent.FinishReason.tool.to_str(),
