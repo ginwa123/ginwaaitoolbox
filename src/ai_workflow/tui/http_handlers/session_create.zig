@@ -215,14 +215,14 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
                     // effective_cwd is now set - use it for session and workflow
 
                     if (effective_cwd.len > 0) {
-                        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd) VALUES (?, ?, 'active', ?)";
+                        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at) VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
                         const copy_session_name = thread_alloc.dupe(u8, args.session_name) catch return;
                         const copy_cwd = thread_alloc.dupe(u8, effective_cwd) catch return;
                         sqlite_db.exec(thread_alloc, session_sql, &.{ args.session_id, copy_session_name, copy_cwd }) catch {
                             // Non-fatal error, continue anyway
                         };
                     } else {
-                        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status) VALUES (?, ?, 'active')";
+                        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
                         const copy_session_name = thread_alloc.dupe(u8, args.session_name) catch return;
                         sqlite_db.exec(thread_alloc, session_sql, &.{ args.session_id, copy_session_name }) catch {
                             // Non-fatal error, continue anyway

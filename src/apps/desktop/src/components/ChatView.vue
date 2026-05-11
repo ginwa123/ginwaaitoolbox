@@ -141,7 +141,7 @@ const sessionId = ref('')
 
 // Pagination state
 const messageCursor = ref<string | null>(null)
-const PAGE_SIZE = 50
+const PAGE_SIZE = 40
 
 // SSE connection
 const eventSource = ref<EventSource | null>(null)
@@ -237,7 +237,13 @@ const loadChatHistory = async (loadMore = false) => {
     }))
 
     if (loadMore) {
+      const oldHeight = messagesContainer.value?.scrollHeight ?? 0
       messages.value = [...newMessages.slice().reverse(), ...messages.value]
+      await nextTick()
+      // Restore scroll position after prepending messages
+      if (messagesContainer.value && oldHeight > 0) {
+        messagesContainer.value.scrollTop += messagesContainer.value.scrollHeight - oldHeight
+      }
     } else {
       messages.value = newMessages.slice().reverse()
     }
@@ -547,6 +553,20 @@ const handleShiftEnter = () => {
 
       <!-- Message List -->
       <div v-else class="max-w-4xl mx-auto px-4 py-6 space-y-4">
+        <!-- Load More Button (when content doesn't overflow) -->
+        <div v-if="hasMoreMessages" class="flex justify-center pb-2">
+          <button 
+            @click="loadChatHistory(true)" 
+            :disabled="isLoadingMore"
+            class="flex items-center gap-2 px-4 py-2 rounded-full text-sm transition-all duration-200 hover:scale-105"
+            :class="isLoadingMore ? 'opacity-50 cursor-not-allowed' : ''"
+            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);">
+            <div v-if="isLoadingMore" class="w-4 h-4 border-2 rounded-full animate-spin" style="border-color: var(--color-violet); border-top-color: transparent;"></div>
+            <span v-else>↑</span>
+            <span>{{ isLoadingMore ? 'Loading...' : 'Load more messages' }}</span>
+          </button>
+        </div>
+
         <div v-for="(group, groupIndex) in messageGroups" :key="groupIndex" class="flex gap-3"
           :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'">
           <!-- Bubble -->

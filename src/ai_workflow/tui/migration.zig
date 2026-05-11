@@ -240,9 +240,7 @@ pub const Migration017CreateSessionsTable = struct {
             \\    status TEXT NOT NULL DEFAULT 'active'
             \\)
         , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
-            &[_][]const u8{});
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)", &[_][]const u8{});
     }
 };
 
@@ -260,10 +258,7 @@ pub const Migration018CreateSessionQueueMessages = struct {
             \\)
         , &[_][]const u8{});
 
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session ON session_queue_messages(session_id)",
-            &[_][]const u8{}
-        );
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session ON session_queue_messages(session_id)", &[_][]const u8{});
     }
 };
 
@@ -283,10 +278,7 @@ pub const Migration019CreateWorkerTable = struct {
             \\)
         , &[_][]const u8{});
 
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_worker_session ON worker(session_id)",
-            &[_][]const u8{}
-        );
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_worker_session ON worker(session_id)", &[_][]const u8{});
     }
 };
 
@@ -401,12 +393,8 @@ pub const Migration025AddWorkspaceIdToSessions = struct {
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         // Add workspace_id column to sessions table
-        try db.exec(allocator,
-            "ALTER TABLE sessions ADD COLUMN workspace_id TEXT",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id)",
-            &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN workspace_id TEXT", &[_][]const u8{});
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id)", &[_][]const u8{});
     }
 };
 
@@ -417,13 +405,9 @@ pub const Migration026DropSessionIdFromWorkspaces = struct {
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         // SQLite doesn't support DROP COLUMN directly, recreate table
         // Step 1: Create new table without session_id
-        try db.exec(allocator,
-            "CREATE TABLE IF NOT EXISTS workspaces_new (id TEXT PRIMARY KEY)",
-            &[_][]const u8{});
+        try db.exec(allocator, "CREATE TABLE IF NOT EXISTS workspaces_new (id TEXT PRIMARY KEY)", &[_][]const u8{});
         // Step 2: Copy data from old table
-        try db.exec(allocator,
-            "INSERT INTO workspaces_new SELECT id FROM workspaces",
-            &[_][]const u8{});
+        try db.exec(allocator, "INSERT INTO workspaces_new SELECT id FROM workspaces", &[_][]const u8{});
         // Step 3: Drop old table
         try db.exec(allocator, "DROP TABLE workspaces", &[_][]const u8{});
         // Step 4: Rename new table
@@ -436,9 +420,7 @@ pub const Migration027AddNameToWorkspaces = struct {
     pub const name = "add_name_to_workspaces";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            "ALTER TABLE workspaces ADD COLUMN name TEXT NOT NULL DEFAULT ''",
-            &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE workspaces ADD COLUMN name TEXT NOT NULL DEFAULT ''", &[_][]const u8{});
     }
 };
 
@@ -454,9 +436,21 @@ pub const Migration028CreateWorkspaceItems = struct {
             \\    item_type TEXT NOT NULL
             \\)
         , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_workspace_items_workspace ON workspace_items(workspace_id)",
-            &[_][]const u8{});
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_items_workspace ON workspace_items(workspace_id)", &[_][]const u8{});
+    }
+};
+
+pub const Migration029AddTimestampsToSessions = struct {
+    pub const version: u32 = 29;
+    pub const name = "add_timestamps_to_sessions";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Use NULL default — CURRENT_TIMESTAMP is non-constant in older SQLite
+        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN created_at DATETIME DEFAULT NULL", &[_][]const u8{});
+        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN updated_at DATETIME DEFAULT NULL", &[_][]const u8{});
+
+        // Backfill existing rows with the current time
+        try db.exec(allocator, "UPDATE sessions SET created_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE created_at IS NULL", &[_][]const u8{});
     }
 };
 
@@ -540,6 +534,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration026DropSessionIdFromWorkspaces.version, .name = Migration026DropSessionIdFromWorkspaces.name, .up = Migration026DropSessionIdFromWorkspaces.up },
     .{ .version = Migration027AddNameToWorkspaces.version, .name = Migration027AddNameToWorkspaces.name, .up = Migration027AddNameToWorkspaces.up },
     .{ .version = Migration028CreateWorkspaceItems.version, .name = Migration028CreateWorkspaceItems.name, .up = Migration028CreateWorkspaceItems.up },
+    .{ .version = Migration029AddTimestampsToSessions.version, .name = Migration029AddTimestampsToSessions.name, .up = Migration029AddTimestampsToSessions.up },
 };
 
 /// Register all migrations with a MigrationManager

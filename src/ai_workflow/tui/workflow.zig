@@ -20,6 +20,7 @@ const GetSkillTool = nalar_mod.get_skill_tool;
 const RemoveSkillTool = nalar_mod.remove_skill_tool;
 const skills = nalar_mod.skills;
 const bash_helper = nalar_mod.helperTool;
+const helpers = nalar_mod.helpers;
 const logger_mod = nalar_mod.logger;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
@@ -393,6 +394,7 @@ pub const TUIWorkflow = struct {
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
         var loopCounter: u32 = 0;
+        var is_first_iteration: bool = true;
 
         // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
         const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.io, self.config.mcpServers orelse .null) catch |err| blk: {
@@ -519,9 +521,14 @@ pub const TUIWorkflow = struct {
 
             // Generate session name from first user message if this is the first response
             if (session_info) |session| {
-                if (loopCounter == 0 and std.mem.eql(u8, session.name, "New Session")) {
+                if (is_first_iteration and std.mem.eql(u8, session.name, "New Session")) {
                     self.generateSessionName(db_messages, allocator, self.config.api_key, self.config.model, self.config.base_url, params.session_id);
                 }
+            }
+
+            // Mark first iteration as complete after generating session name
+            if (is_first_iteration) {
+                is_first_iteration = false;
             }
 
             if (res_dynamic_agent.finish_reason) |finish_reason| {
@@ -864,12 +871,24 @@ pub const TUIWorkflow = struct {
         defer response.deinit();
 
         if (response.content) |content| {
+            // Strip thinking tags if present, fallback to original content on error
+            var stripped_content: []const u8 = content;
+            var needs_free = false;
+            if (helpers.xml.stripThinkingTags(content, allocator)) |stripped| {
+                stripped_content = stripped;
+                needs_free = true;
+            } else |err| {
+                self.logger.warnFmt("[SESSION NAME] Failed to strip thinking tags: {s}, using original content", .{@errorName(err)}) catch {};
+            }
+
             // Update session name in database
-            session_table.updateSessionName(allocator, self.db, session_id, content) catch {
-                self.logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{content}) catch {};
+            session_table.updateSessionName(allocator, self.db, session_id, stripped_content) catch {
+                self.logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{stripped_content}) catch {};
+                if (needs_free) allocator.free(stripped_content);
                 return;
             };
-            self.logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{content}) catch {};
+            self.logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{stripped_content}) catch {};
+            if (needs_free) allocator.free(stripped_content);
         }
     }
 

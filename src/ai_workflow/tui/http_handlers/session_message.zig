@@ -65,7 +65,7 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            const msg_response = llm_history.get_session_messages_sorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
+            const msg_response = llm_history.getSessionMessagesSorted(alloc, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
                 res.status = 500;
                 res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" });
                 return;

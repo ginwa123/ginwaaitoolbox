@@ -222,6 +222,8 @@ src/
 - [llm_history.zig:477] Fixed JSON parsing error in frontend: added `jsonEscape()` helper function and used it for all string fields (id, session_id, role, content, timestamp, tool_name, finish_reason) in `buildSessionMessagesJson()`. Previously only `content` was escaped.
 - [llm_history.zig:491] Added control character escaping (\x08, \x0C, and 0x00-0x07, 0x0E-0x1F as \u00XX) in `jsonEscape()` to prevent "Bad control character in string literal" JSON parse errors.
 - [llm_history.zig:114] Added `SessionSortField` and `SessionSortDirection` enums, updated `getSessionListWithCursor()` with `sort_field` and `sort_direction` parameters to support sorting by `created_at`, `session_name`, or `agent` fields with `asc`/`desc` directions.
+- [llm_history.zig:416] Fixed cursor pagination for DESC order: reversed cursor comparison operator from `h.created_at < ?` (asc) / `h.created_at > ?` (desc) to `h.created_at > ?` (asc) / `h.created_at < ?` (desc) so loading more goes correctly to older messages.
+- [ChatView.vue] Added "Load more messages" button at top for when message list doesn't overflow (overscroll not visible). Also fixed scroll position preservation when prepending messages during loadMore.
 
 ## Key Tool Conventions
 
@@ -332,11 +334,11 @@ const is_sub_agent = std.mem.indexOf(u8, session_id, "subagent") != null;
 
 ## Database Schema Notes
 
-**Latest Migration:** `Migration023DropSessionDirFromLlmHistory` — dropped `session_dir` column from `llm_history`, uses `cwd` from `sessions` table
+**Latest Migration:** `Migration029AddTimestampsToSessions` — added `created_at` and `updated_at` columns to `sessions` table
 
 | Table | Key Column | Purpose |
 |-------|------------|---------|
-| `sessions` | `id` (PK), `name`, `cwd` | Session metadata (cwd = working directory) |
+| `sessions` | `id` (PK), `name`, `cwd`, `created_at`, `updated_at` | Session metadata (cwd = working directory) |
 | `llm_history` | `session_id` (FK) | References `sessions.id` |
 | `workspace_items` | `id` (PK), `workspace_id`, `item_type` | Workspace items table |
 

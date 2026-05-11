@@ -16,19 +16,27 @@ pub fn mark_message_not_for_llm_run(
 /// Session info for list view
 pub const SessionInfo = struct {
     session_id: []const u8,
+    session_name: []const u8,
+    status: []const u8,
     cwd: []const u8,
     created_at: []const u8,
+    updated_at: []const u8,
     agent: []const u8,
-    session_name: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
+        allocator.free(self.session_name);
+        allocator.free(self.status);
         allocator.free(self.cwd);
         allocator.free(self.created_at);
+        allocator.free(self.updated_at);
         allocator.free(self.agent);
-        allocator.free(self.session_name);
     }
 };
+
+/// Sort specification for session list
+pub const SessionSortField = enum { created_at, session_name, agent };
+pub const SessionSortDirection = enum { asc, desc };
 
 /// Detailed session info
 pub const SessionDetail = struct {
@@ -62,7 +70,7 @@ pub fn getSessionList(
     _ = status;
     _ = agent_type;
 
-    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE 1=1 GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT ? OFFSET ?";
+    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT ? OFFSET ?";
 
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{offset});
@@ -109,12 +117,8 @@ pub fn getSessionList(
     };
 }
 
-/// Sort specification for session list
-pub const SessionSortField = enum { created_at, session_name, agent };
-pub const SessionSortDirection = enum { asc, desc };
-
 /// Get a list of sessions with cursor-based pagination
-/// Optionally filtered by cwd (from sessions table)
+/// Queries from sessions table with LEFT JOIN to llm_history
 pub fn getSessionListWithCursor(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -129,14 +133,11 @@ pub fn getSessionListWithCursor(
     _ = status;
     _ = agent_type;
 
-    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
-    defer allocator.free(limit_str);
-
     // Build dynamic WHERE clause from optional filters
     var where_parts = std.ArrayList([]const u8).empty;
     defer where_parts.deinit(allocator);
 
-    try where_parts.append(allocator, "h.session_id NOT LIKE '%subagent%'");
+    try where_parts.append(allocator, "s.id NOT LIKE '%subagent%'");
 
     if (cwd) |dir| {
         try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "s.cwd = '{s}'", .{dir}));
@@ -156,36 +157,28 @@ pub fn getSessionListWithCursor(
         .desc => "DESC",
     };
     const order_by = switch (sort_field) {
-        .created_at => try std.fmt.allocPrint(allocator, "MAX(h.created_at) {s}", .{sort_order}),
+        .created_at => try std.fmt.allocPrint(allocator, "s.created_at {s}", .{sort_order}),
         .session_name => try std.fmt.allocPrint(allocator, "COALESCE(s.name, '') {s}", .{sort_order}),
         .agent => try std.fmt.allocPrint(allocator, "COALESCE(h.agent, 'Agent') {s}", .{sort_order}),
     };
     defer allocator.free(order_by);
 
-    // Build cursor filter - use a subquery to filter by MAX(created_at)
-    // This is more reliable than HAVING with aggregate functions
-    const cursor_subquery = if (cursor) |c|
-        try std.fmt.allocPrint(allocator, 
-            \\ AND h.session_id IN (
-            \\   SELECT session_id FROM llm_history 
-            \\   GROUP BY session_id 
-            \\   HAVING MAX(created_at) {s} '{s}'
-            \\ )
-        , .{ if (sort_direction == .asc) ">" else "<", c })
+    // Build cursor filter
+    const cursor_filter = if (cursor) |c|
+        try std.fmt.allocPrint(allocator, " AND s.created_at {s} '{s}'", .{ if (sort_direction == .asc) ">" else "<", c })
     else
         try allocator.dupe(u8, "");
-    defer allocator.free(cursor_subquery);
+    defer allocator.free(cursor_filter);
 
-    // Append cursor filter to where_clause
-    const where_with_cursor = try std.fmt.allocPrint(allocator, "{s}{s}", .{ where_clause, cursor_subquery });
+    const where_with_cursor = try std.fmt.allocPrint(allocator, "{s}{s}", .{ where_clause, cursor_filter });
     defer allocator.free(where_with_cursor);
 
     const sql_final = try std.fmt.allocPrint(allocator,
-        \\SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '')
-        \\FROM llm_history h
-        \\LEFT JOIN sessions s ON h.session_id = s.id
+        \\SELECT s.id, s.name, s.status, s.cwd, COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent')
+        \\FROM sessions s
+        \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
-        \\GROUP BY h.session_id ORDER BY {s} LIMIT {d}
+        \\GROUP BY s.id ORDER BY {s} LIMIT {d}
     , .{ where_with_cursor, order_by, limit });
     defer allocator.free(sql_final);
 
@@ -201,10 +194,12 @@ pub fn getSessionListWithCursor(
     while (try rows.next()) |row| {
         const session = SessionInfo{
             .session_id = try allocator.dupe(u8, row.values[0]),
-            .cwd = try allocator.dupe(u8, row.values[1]),
-            .created_at = try allocator.dupe(u8, row.values[2]),
-            .agent = try allocator.dupe(u8, row.values[3]),
-            .session_name = try allocator.dupe(u8, row.values[4]),
+            .session_name = try allocator.dupe(u8, row.values[1]),
+            .status = try allocator.dupe(u8, row.values[2]),
+            .cwd = try allocator.dupe(u8, row.values[3]),
+            .created_at = try allocator.dupe(u8, row.values[4]),
+            .updated_at = try allocator.dupe(u8, row.values[5]),
+            .agent = try allocator.dupe(u8, row.values[6]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -212,9 +207,9 @@ pub fn getSessionListWithCursor(
 
     // Build count query with cwd filter
     const count_sql: []u8 = if (cwd) |dir|
-        try std.fmt.allocPrint(allocator, "SELECT COUNT(DISTINCT session_id) FROM llm_history WHERE session_id IN (SELECT session_id FROM sessions WHERE cwd = '{s}')", .{dir})
+        try std.fmt.allocPrint(allocator, "SELECT COUNT(*) FROM sessions WHERE id NOT LIKE '%subagent%' AND cwd = '{s}'", .{dir})
     else
-        try allocator.dupe(u8, "SELECT COUNT(DISTINCT session_id) FROM llm_history");
+        try allocator.dupe(u8, "SELECT COUNT(*) FROM sessions WHERE id NOT LIKE '%subagent%'");
     defer allocator.free(count_sql);
 
     var count_rows = try db.query(allocator, count_sql, &.{});
@@ -396,7 +391,7 @@ pub const SortSpec = union(enum) {
 };
 
 /// Get messages for a session with cursor-based pagination and sorting
-pub fn get_session_messages_sorted(
+pub fn getSessionMessagesSorted(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
@@ -417,15 +412,16 @@ pub fn get_session_messages_sorted(
             .created_at_asc, .role_asc, .id_asc => true,
             else => false,
         };
-        const cursor_cmp = if (is_asc) " AND created_at > ?" else " AND created_at < ?";
+        // Use h.created_at (message time) for cursor, not s.created_at (session time)
+        const cursor_cmp = if (is_asc) " AND h.created_at > ?" else " AND h.created_at < ?";
 
         const order_part = switch (sort_spec) {
-            .created_at_asc => " ORDER BY created_at ASC, h.id ASC",
-            .created_at_desc => " ORDER BY created_at DESC, h.id DESC",
-            .id_asc => " ORDER BY created_at ASC, h.id ASC",
-            .id_desc => " ORDER BY created_at DESC, h.id DESC",
-            .role_asc => " ORDER BY role ASC, created_at ASC, h.id ASC",
-            .role_desc => " ORDER BY role DESC, created_at DESC, h.id DESC",
+            .created_at_asc => " ORDER BY h.created_at ASC, h.id ASC",
+            .created_at_desc => " ORDER BY h.created_at DESC, h.id DESC",
+            .id_asc => " ORDER BY h.created_at ASC, h.id ASC",
+            .id_desc => " ORDER BY h.created_at DESC, h.id DESC",
+            .role_asc => " ORDER BY h.role ASC, h.created_at ASC, h.id ASC",
+            .role_desc => " ORDER BY h.role DESC, h.created_at DESC, h.id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
@@ -437,12 +433,12 @@ pub fn get_session_messages_sorted(
         argv = &.{ session_id, c, limit_str };
     } else {
         const order_part = switch (sort_spec) {
-            .created_at_asc => " ORDER BY created_at ASC, h.id ASC",
-            .created_at_desc => " ORDER BY created_at DESC, h.id DESC",
-            .id_asc => " ORDER BY id ASC",
-            .id_desc => " ORDER BY id DESC",
-            .role_asc => " ORDER BY role ASC, created_at ASC, h.id ASC",
-            .role_desc => " ORDER BY role DESC, created_at DESC, h.id DESC",
+            .created_at_asc => " ORDER BY s.created_at ASC, h.id ASC",
+            .created_at_desc => " ORDER BY s.created_at DESC, h.id DESC",
+            .id_asc => " ORDER BY h.id ASC",
+            .id_desc => " ORDER BY h.id DESC",
+            .role_asc => " ORDER BY h.role ASC, s.created_at ASC, h.id ASC",
+            .role_desc => " ORDER BY h.role DESC, s.created_at DESC, h.id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
@@ -1032,17 +1028,19 @@ pub fn getLatestSessionByDir(
     db: *sqlite.SqliteBackend,
     cwd: []const u8,
 ) !?SessionInfo {
-    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE s.cwd = ? GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT 1";
+    const sql = "SELECT s.id, s.name, s.status, s.cwd, COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, '') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id WHERE s.cwd = ? GROUP BY s.id ORDER BY s.created_at DESC LIMIT 1";
     var rows = try db.query(allocator, sql, &[_][]const u8{cwd});
     defer rows.deinit();
 
     if (try rows.next()) |row| {
         const session = SessionInfo{
             .session_id = try allocator.dupe(u8, row.values[0]),
-            .cwd = try allocator.dupe(u8, row.values[1]),
-            .created_at = try allocator.dupe(u8, row.values[2]),
-            .agent = try allocator.dupe(u8, ""),
-            .session_name = try allocator.dupe(u8, ""),
+            .session_name = try allocator.dupe(u8, row.values[1]),
+            .status = try allocator.dupe(u8, row.values[2]),
+            .cwd = try allocator.dupe(u8, row.values[3]),
+            .created_at = try allocator.dupe(u8, row.values[4]),
+            .updated_at = try allocator.dupe(u8, row.values[5]),
+            .agent = try allocator.dupe(u8, row.values[6]),
         };
         row.deinit(allocator);
         return session;
@@ -1156,7 +1154,7 @@ pub fn upsertWorker(
 
     // Also ensure session exists in sessions table (for JOIN queries)
     // Use INSERT OR IGNORE to handle cases where session might already exist
-    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status) VALUES (?, ?, 'active')";
+    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
     try db.exec(allocator, session_sql, &.{ session_id, session_id });
 }
 
