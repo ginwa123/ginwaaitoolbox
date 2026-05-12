@@ -135,16 +135,9 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
       @resize="handleSidebarResize"
     />
     <main class="flex-1 flex flex-col overflow-hidden">
+      <!-- Task view takes priority -->
       <ChatView
-        v-if="activeChatId.startsWith('chat-')"
-        :key="activeChatId"
-        :chat-id="activeChatId"
-        :chat-name="activeChatName"
-        @update-chat-id="handleUpdateChatId"
-      />
-      <Chats v-else-if="activeView === 'chat'" />
-      <ChatView
-        v-else-if="activeView === 'task' && workspacesStore.activeTask"
+        v-if="activeView === 'task' && workspacesStore.activeTask"
         :key="'task-' + workspacesStore.activeTask.id"
         :chat-id="workspacesStore.activeTask.id"
         :chat-name="workspacesStore.activeTask.name"
@@ -154,6 +147,14 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
         :task-name="workspacesStore.activeTask.name"
         :project-name="workspacesStore.activeWorkspaceItem?.name || ''"
       />
+      <ChatView
+        v-else-if="activeChatId.startsWith('chat-')"
+        :key="activeChatId"
+        :chat-id="activeChatId"
+        :chat-name="activeChatName"
+        @update-chat-id="handleUpdateChatId"
+      />
+      <Chats v-else-if="activeView === 'chat'" />
       <div v-else-if="activeView === 'workspace'" class="flex-1 flex flex-col items-center justify-center p-8">
         <!-- Workspace Item Selected -->
         <div
