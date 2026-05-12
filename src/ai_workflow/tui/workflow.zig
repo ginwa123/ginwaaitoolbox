@@ -714,115 +714,87 @@ pub const TUIWorkflow = struct {
         base_url: []const u8,
         cwd: []const u8,
     ) ?[]const u8 {
-        if (messages.len < 2) {
-            self.logger.debugFmt("[COMPACTION] Skipped: only {} message(s)", .{messages.len}) catch {};
-            return null;
-        }
+        _ = cwd;
+        self.logger.info("[COMPACTION] Starting callCompactAgent") catch {};
 
         // Serialize messages for CompactionAgent
-        var history = std.ArrayList(u8).empty;
-        defer history.deinit(arena);
-        var w = std.Io.Writer.fromArrayList(&history);
+        var history: std.ArrayList(u8) = .empty;
+        var aw = std.Io.Writer.Allocating.fromArrayList(arena, &history);
+        const w = &aw.writer; // *std.Io.Writer — use this for all writes
 
-        // Include system prompt (truncated if too long)
-        if (messages[0].content) |sys| {
-            w.writeAll("=== SYSTEM PROMPT (for context) ===\n") catch return null;
-            if (sys.len > 8000) {
-                w.writeAll("System prompt (truncated): ") catch return null;
-                w.writeAll(sys[0..8000]) catch return null;
-                w.writeAll("\n... [truncated]\n") catch return null;
-            } else {
-                w.writeAll(sys) catch return null;
-            }
-            w.writeAll("\n=== END SYSTEM PROMPT ===\n\n") catch return null;
-        }
+        w.writeAll("Conversation history to compact:\n\n") catch |err| {
+            self.logger.errFmt("[COMPACTION] Failed to write history header: {s}", .{@errorName(err)}) catch {};
+            return null;
+        };
 
-        w.writeAll("Conversation history to compact:\n\n") catch return null;
-
-        // Track stats for logging
-        var tool_count: usize = 0;
-        var reasoning_count: usize = 0;
-        var tool_call_count: usize = 0;
-
-        // Serialize messages, skipping index 0 (system prompt already handled)
         for (messages[1..], 1..) |msg, i| {
-            const role_str = msg.role.to_str();
-
-            if (msg.role == .tool) {
-                tool_count += 1;
-                const id = if (msg.tool_call_id) |tid| tid else "unknown";
-                w.print("--- Message {} (tool_result id:{s}) ---\n", .{ i, id }) catch return null;
-                if (msg.content) |c| w.writeAll(c) catch return null;
-            } else if (msg.reasoning_content) |rc| {
-                reasoning_count += 1;
-                w.print("--- Message {} ({s}) ---\n", .{ i, role_str }) catch return null;
-                w.writeAll("[REASONING]\n") catch return null;
-                w.writeAll(rc) catch return null;
-                if (msg.content) |c| {
-                    w.writeAll("\n[RESPONSE]\n") catch return null;
-                    w.writeAll(c) catch return null;
-                }
-            } else if (msg.tool_calls) |tcs| {
-                tool_call_count += 1;
-                w.print("--- Message {} ({s}) ---\n", .{ i, role_str }) catch return null;
-                w.writeAll("[TOOL CALLS]\n") catch return null;
-                for (tcs) |tc| {
-                    w.print("  - {s}({s})\n", .{ tc.function.name, tc.function.arguments }) catch return null;
-                }
-            } else if (msg.content) |c| {
-                w.print("--- Message {} ({s}) ---\n", .{ i, role_str }) catch return null;
-                w.writeAll(c) catch return null;
-            }
-            w.writeAll("\n") catch return null;
+            _ = i;
+            if (msg.content) |c| w.writeAll(c) catch |err| {
+                self.logger.errFmt("[COMPACTION] Failed to write tool msg content: {s}", .{@errorName(err)}) catch {};
+                return null;
+            };
         }
 
-        // Add file listing for project context
-        w.writeAll("\n=== PROJECT FILE LISTING ===\n") catch return null;
-        self.addFileListing(&w, cwd, arena) catch return null;
+        // Transfer ownership back from the Allocating writer to the ArrayList
+        history = aw.toArrayList();
+        defer history.deinit(arena);
 
-        // Build compaction agent messages
-        const msgs = arena.alloc(agent.AgentMessage, 2) catch return null;
+        self.logger.info("[COMPACTION] Building compaction messages...") catch {};
+        const msgs = arena.alloc(agent.AgentMessage, 2) catch |err| {
+            self.logger.errFmt("[COMPACTION] Failed to alloc msgs: {s}", .{@errorName(err)}) catch {};
+            return null;
+        };
         msgs[0] = .{ .role = .system, .content = prompt.CompactionAgent };
-        msgs[1] = .{ .role = .user, .content = history.toOwnedSlice(arena) catch return null };
 
-        // Initialize compaction agent
-        var compaction_agent = agent.Agent.init(arena, self.io) catch return null;
+        // Slice is arena-owned, safe to use directly
+        const history_content = history.items;
+        msgs[1] = .{ .role = .user, .content = history_content };
+        self.logger.infoFmt("[COMPACTION] History content: {} bytes", .{history_content.len}) catch {};
+
+        self.logger.info("[COMPACTION] Initializing compaction agent...") catch {};
+        var compaction_agent = agent.Agent.init(arena, self.io) catch |err| {
+            self.logger.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)}) catch {};
+            return null;
+        };
         defer compaction_agent.deinit();
         compaction_agent.apiKey = api_key;
         compaction_agent.model = model;
         compaction_agent.baseUrl = base_url;
 
-        self.logger.debugFmt("[COMPACTION] Calling CompactionAgent ({} msgs: {} tools, {} reasoning, {} tool_calls)", .{
-            messages.len,
-            tool_count,
-            reasoning_count,
-            tool_call_count,
-        }) catch {};
-
+        self.logger.info("[COMPACTION] Calling callStreaming...") catch {};
         const response = compaction_agent.callStreaming(.{
             .tools = &.{},
             .messages = msgs,
             .temperature = 0.0,
             .max_tokens = 8000,
         }, null, noopStreamCallback) catch |err| {
-            self.logger.errFmt("[COMPACTION] Failed: {s}", .{@errorName(err)}) catch {};
+            self.logger.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)}) catch {};
             return null;
         };
+        self.logger.info("[COMPACTION] callStreaming succeeded") catch {};
         defer response.deinit();
 
-        const content = response.content orelse return null;
+        self.logger.infoFmt("[COMPACTION] Response content null? {}", .{response.content == null}) catch {};
+        const content = response.content orelse {
+            self.logger.err("[COMPACTION] Response content is null") catch {};
+            return null;
+        };
+
         if (content.len == 0) {
             self.logger.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{}) catch {};
             return null;
         }
 
+        self.logger.infoFmt("[COMPACTION] Got response: {} bytes", .{content.len}) catch {};
         self.logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{ messages.len, content.len }) catch {};
-        return arena.dupe(u8, content) catch |err| {
+
+        const duplicated = arena.dupe(u8, content) catch |err| {
             self.logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)}) catch {};
             return null;
         };
+        self.logger.info("[COMPACTION] callCompactAgent returning success") catch {};
+        return duplicated;
     }
-
     /// No-op callback for streaming - used when we don't need to stream chunks to client.
     fn noopStreamCallback(_: ?*anyopaque, _: agent.StreamChunk) void {}
 
@@ -968,17 +940,21 @@ pub const TUIWorkflow = struct {
     }
 
     /// Add a file listing to the writer for project context
-    fn addFileListing(self: *TUIWorkflow, w: *anyopaque, cwd: []const u8, arena: std.mem.Allocator) !void {
+    fn addFileListing(self: *TUIWorkflow, w: *anyopaque, cwd: []const u8, arena: std.mem.Allocator) void {
+        // Fallback: skip file listing if directory can't be opened
+        // The compaction can still proceed without this context
         inline for (.{ ".zig", ".c", ".h", ".cpp", ".js", ".ts", ".json", ".md", ".txt", ".toml", ".yaml", ".yml" }) |ext| {
-            try self.findFilesWithExtension(w, cwd, ext, arena, 0, 3);
+            self.findFilesWithExtension(w, cwd, ext, arena, 0, 3);
         }
     }
 
     /// Recursively find files with specific extension
-    fn findFilesWithExtension(self: *TUIWorkflow, w: *anyopaque, dir_path: []const u8, ext: []const u8, arena: std.mem.Allocator, depth: usize, max_depth: usize) !void {
+    fn findFilesWithExtension(self: *TUIWorkflow, w: *anyopaque, dir_path: []const u8, ext: []const u8, arena: std.mem.Allocator, depth: usize, max_depth: usize) void {
         if (depth > max_depth) return;
 
-        var dir = std.Io.Dir.cwd().openDir(self.io, dir_path, .{}) catch return;
+        // Use std.Io.Dir.openDirAbsolute to open directory directly (doesn't depend on process cwd)
+        // NOTE: .iterate = true is required for iterate() to work properly
+        var dir = std.Io.Dir.openDirAbsolute(self.io, dir_path, .{ .iterate = true }) catch return;
         defer std.Io.Dir.close(dir, self.io);
 
         var iterator = dir.iterate();
@@ -991,15 +967,15 @@ pub const TUIWorkflow = struct {
             if (entry.name[0] == '.') continue;
 
             if (entry.kind == .directory) {
-                const subdir = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name });
+                const subdir = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch return;
                 defer arena.free(subdir);
-                try self.findFilesWithExtension(w, subdir, ext, arena, depth + 1, max_depth);
+                self.findFilesWithExtension(w, subdir, ext, arena, depth + 1, max_depth);
             } else if (entry.kind == .file) {
                 if (std.mem.endsWith(u8, entry.name, ext)) {
-                    const rel_path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name });
+                    const rel_path = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch return;
                     defer arena.free(rel_path);
                     const writer: *std.Io.Writer = @ptrCast(@alignCast(w));
-                    try writer.print("  {s}\n", .{rel_path});
+                    writer.print("  {s}\n", .{rel_path}) catch {};
                 }
             }
         }

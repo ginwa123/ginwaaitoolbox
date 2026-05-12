@@ -12,6 +12,7 @@ const getResponseFormat = @import("mod.zig").getResponseFormat;
 /// Get messages for a session
 pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
+    res.content_type = .JSON;
 
     const session_id = req.param("session_id") orelse {
         res.status = 400;
@@ -25,16 +26,6 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
     const sort_by_str = query.get("sort_by") orelse "created_at";
     const direction_str = query.get("direction") orelse "asc";
     const limit_val = std.fmt.parseInt(u32, limit_str, 10) catch 100;
-
-    // Determine response format from Accept header or query param
-    const format = getResponseFormat(req);
-
-    // Set content type based on format
-    if (format == .xml) {
-        res.content_type = .XML;
-    } else {
-        res.content_type = .JSON;
-    }
 
     // Determine sort direction (default: asc)
     const is_desc = std.mem.eql(u8, direction_str, "desc");
@@ -76,10 +67,7 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
                 if (msg_response.next_cursor) |c| alloc.free(c);
             }
 
-            const response_body = if (format == .xml)
-                try llm_history.buildSessionMessagesXml(alloc, &msg_response)
-            else
-                try llm_history.buildSessionMessagesJson(alloc, &msg_response);
+            const response_body = try llm_history.buildSessionMessagesJson(alloc, &msg_response);
             res.status = 200;
             res.body = response_body;
             return;

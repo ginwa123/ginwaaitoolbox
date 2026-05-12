@@ -271,7 +271,7 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | GET | `/api/session` | List sessions (cursor pagination, sort support) |
 | GET | `/api/session/stream` | SSE session events (session_created notifications) |
 | GET | `/api/session/:session_id` | Get session |
-| GET | `/api/session/:session_id/messages` | Get messages |
+| GET | `/api/session/:session_id/messages` | Get messages (includes `max_total_tokens`) |
 | GET | `/api/session/exists/:session_id` | Check exists |
 | GET | `/api/session/latest` | Get latest by directory |
 | POST | `/api/session/:session_id/cancel` | Cancel session |
@@ -289,6 +289,24 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | GET | `/api/workspaces/:workspace_id/items/:item_id` | Get workspace item |
 | PUT | `/api/workspaces/:workspace_id/items/:item_id` | Update workspace item |
 | DELETE | `/api/workspaces/:workspace_id/items/:item_id` | Delete workspace item |
+
+### Session Messages Response
+
+The `GET /api/session/:session_id/messages` endpoint returns:
+```json
+{
+  "messages": [...],
+  "has_more": false,
+  "next_cursor": null,
+  "cwd": "/path/to/cwd",
+  "max_total_tokens": 12345,
+  "max_capacity_total_tokens": 200000
+}
+```
+
+Where:
+- `max_total_tokens`: Maximum total_tokens from LLM responses where `is_feed_to_llm = 1`
+- `max_capacity_total_tokens`: Model's token capacity (e.g., 200000 for MiniMax-M2.7)
 
 ### Session List Sorting
 

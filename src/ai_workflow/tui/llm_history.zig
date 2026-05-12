@@ -3,6 +3,7 @@ const tree1 = @import("nalarcore");
 const sqlite = tree1.sqlite;
 const agent = tree1.agent;
 const TUIHistory = @import("models.zig").TUIHistory;
+const llm_models = @import("nalarcore").llm_models;
 
 pub fn mark_message_not_for_llm_run(
     allocator: std.mem.Allocator,
@@ -375,6 +376,8 @@ pub const SessionMessageResponse = struct {
     has_more: bool,
     next_cursor: ?[]const u8,
     cwd: ?[]const u8 = null,
+    max_total_tokens: u32 = 0,
+    max_capacity_total_tokens: u32 = 0,
 };
 
 /// Sort direction
@@ -506,7 +509,56 @@ pub fn getSessionMessagesSorted(
         .has_more = has_more,
         .next_cursor = next_cursor,
         .cwd = cwd,
+        .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
+        .max_capacity_total_tokens = getMaxCapacityTotalTokensForSession(allocator, db, session_id),
     };
+}
+
+/// Get the maximum total_tokens for a session (from messages with is_feed_to_llm = 1)
+fn getMaxTotalTokensForSession(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !u32 {
+    const sql =
+        \\SELECT COALESCE(MAX(total_tokens), 0)
+        \\FROM llm_history
+        \\WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL)
+    ;
+
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const max_tokens = std.fmt.parseInt(u32, row.values[0], 10) catch 0;
+        row.deinit(allocator);
+        return max_tokens;
+    }
+    return 0;
+}
+
+/// Get the max capacity total_tokens based on the session's model
+fn getMaxCapacityTotalTokensForSession(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) u32 {
+    const sql =
+        \\SELECT COALESCE(model, 'MiniMax-M2.7')
+        \\FROM llm_history
+        \\WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL)
+        \\ORDER BY created_at DESC LIMIT 1
+    ;
+
+    var rows = db.query(allocator, sql, &.{session_id}) catch return 200000;
+    defer rows.deinit();
+
+    if (rows.next() catch return 200000) |row| {
+        const model_name = row.values[0];
+        row.deinit(allocator);
+        return llm_models.get_model_token_count(model_name);
+    }
+    return 200000;
 }
 
 /// Escape JSON special characters for safe string output
@@ -590,7 +642,15 @@ pub fn buildSessionMessagesJson(
         try std.fmt.allocPrint(allocator, "null", .{});
     defer allocator.free(cwd_str);
 
-    const result = try std.fmt.allocPrint(allocator, "{{\"messages\":{s},\"has_more\":{s},\"next_cursor\":{s},\"cwd\":{s}}}", .{ json_messages.items, has_more_str, next_cursor_str, cwd_str });
+    // Build max_total_tokens field
+    const max_total_tokens_str = try std.fmt.allocPrint(allocator, "{d}", .{response.max_total_tokens});
+    defer allocator.free(max_total_tokens_str);
+
+    // Build max_capacity_total_tokens field
+    const max_capacity_total_tokens_str = try std.fmt.allocPrint(allocator, "{d}", .{response.max_capacity_total_tokens});
+    defer allocator.free(max_capacity_total_tokens_str);
+
+    const result = try std.fmt.allocPrint(allocator, "{{\"messages\":{s},\"has_more\":{s},\"next_cursor\":{s},\"cwd\":{s},\"max_total_tokens\":{s},\"max_capacity_total_tokens\":{s}}}", .{ json_messages.items, has_more_str, next_cursor_str, cwd_str, max_total_tokens_str, max_capacity_total_tokens_str });
     json_messages.deinit(allocator);
     return result;
 }
@@ -673,6 +733,16 @@ pub fn buildSessionMessagesXml(
         try xml_messages.appendSlice(allocator, c);
     }
     try xml_messages.appendSlice(allocator, "</cwd>");
+    try xml_messages.appendSlice(allocator, "<max_total_tokens>");
+    const max_tokens_str = try std.fmt.allocPrint(allocator, "{d}", .{response.max_total_tokens});
+    defer allocator.free(max_tokens_str);
+    try xml_messages.appendSlice(allocator, max_tokens_str);
+    try xml_messages.appendSlice(allocator, "</max_total_tokens>");
+    try xml_messages.appendSlice(allocator, "<max_capacity_total_tokens>");
+    const max_cap_tokens_str = try std.fmt.allocPrint(allocator, "{d}", .{response.max_capacity_total_tokens});
+    defer allocator.free(max_cap_tokens_str);
+    try xml_messages.appendSlice(allocator, max_cap_tokens_str);
+    try xml_messages.appendSlice(allocator, "</max_capacity_total_tokens>");
     try xml_messages.appendSlice(allocator, "</messages>");
 
     return try xml_messages.toOwnedSlice(allocator);

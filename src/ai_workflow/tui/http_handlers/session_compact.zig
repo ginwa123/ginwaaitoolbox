@@ -10,18 +10,19 @@ const config = nalarcore.config;
 const agent = nalarcore.agent;
 const llm_models = nalarcore.llm_models;
 const tool_models = nalarcore.tool_models;
+const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
 
-/// Trigger session compaction directly
+/// Trigger session compaction directly (synchronous - blocks until done)
 /// Path param: session_id
-/// Returns JSON with processing status
+/// Returns JSON with result
 pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
     const session_id = req.param("session_id") orelse {
         res.status = 400;
-        res.body = "{\"error\":\"Missing session_id\"}";
+        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Missing session_id" });
         return;
     };
 
@@ -42,106 +43,86 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
 
             std.debug.print("[COMPACTION] Manual compaction triggered for session {s}\n", .{session_id});
 
-            // Run compaction in a separate thread to not block the HTTP response
-            const thread = try std.Thread.spawn(.{}, struct {
-                fn run(sqliteDb: *sqlite.SqliteBackend, sessId: []const u8, api_key: []const u8, model: []const u8, base_url: []const u8, compaction_kb: usize, threadAlloc: std.mem.Allocator, loggerPtr: *logger.Logger, io: std.Io) void {
-                    var arena = std.heap.ArenaAllocator.init(threadAlloc);
-                    defer arena.deinit();
-                    const threadAlloc2 = arena.allocator();
+            // Use req.arena directly as allocator
+            const threadAlloc = alloc;
 
-                    // Get cwd from session
-                    var cwd_buf: [4096]u8 = undefined;
-                    const cwd = blk: {
-                        const cwd_rows = llm_history.get_session(threadAlloc2, sqliteDb, sessId) catch null;
-                        if (cwd_rows) |session| {
-                            defer session.deinit(threadAlloc2);
-                            if (session.cwd.len > 0) {
-                                break :blk std.fmt.bufPrint(&cwd_buf, "{s}", .{session.cwd}) catch ".";
-                            }
-                        }
-                        break :blk std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";
-                    };
-
-                    // Create LlmConfig for the workflow
-                    var llm_cfg = config.LlmConfig{
-                        .allocator = threadAlloc2,
-                        .api_key = api_key,
-                        .model = model,
-                        .base_url = base_url,
-                        .model_compaction_size_kb = compaction_kb,
-                        .mcpServers = null,
-                    };
-
-                    var workflow = ai_workflow.TUIWorkflow.init(io, sqliteDb, &llm_cfg, loggerPtr, null);
-
-                    // Get session messages directly for compaction
-                    const db_messages = llm_history.getMessages(threadAlloc2, sqliteDb, sessId) catch |err| {
-                        loggerPtr.errFmt("getMessages failed: {}", .{err}) catch {};
-                        return;
-                    };
-                    defer {
-                        for (db_messages) |*msg| msg.deinit(threadAlloc2);
-                        threadAlloc2.free(db_messages);
+            // Get cwd from session
+            var cwd_buf: [4096]u8 = undefined;
+            const cwd = blk: {
+                const cwd_rows = llm_history.get_session(threadAlloc, sqlite_db, session_id) catch null;
+                if (cwd_rows) |session| {
+                    defer session.deinit(threadAlloc);
+                    if (session.cwd.len > 0) {
+                        break :blk std.fmt.bufPrint(&cwd_buf, "{s}", .{session.cwd}) catch ".";
                     }
-
-                    if (db_messages.len < 2) {
-                        loggerPtr.debugFmt("[COMPACTION] Skipped: only {} message(s)", .{db_messages.len}) catch {};
-                        return;
-                    }
-
-                    // Build initial messages from DB
-                    const buildMessages = @import("../build_messages_for_agent_prompt.zig").buildMessages;
-                    var messagesLists = std.ArrayList(agent.AgentMessage).empty;
-                    defer messagesLists.deinit(threadAlloc2);
-
-                    // Get all tool definitions (empty for manual compaction)
-                    const merged_tools: []tool_models.AgentTool = &.{};
-
-                    const initialMessages = buildMessages(threadAlloc2, io, sqliteDb, cwd, sessId, db_messages, merged_tools) catch |err| {
-                        loggerPtr.errFmt("buildMessages failed: {}", .{err}) catch {};
-                        return;
-                    };
-                    defer for (initialMessages) |*msg| msg.deinit(threadAlloc2);
-
-                    messagesLists.appendSlice(threadAlloc2, initialMessages) catch |err| {
-                        loggerPtr.errFmt("appendSlice failed: {}", .{err}) catch {};
-                        return;
-                    };
-
-                    // Check if compaction is needed
-                    var total_tokens: u32 = 0;
-                    for (db_messages) |msg| {
-                        if (msg.total_tokens > total_tokens) {
-                            total_tokens = msg.total_tokens;
-                        }
-                    }
-
-                    loggerPtr.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len }) catch {};
-
-                    if (!llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(model))) {
-                        loggerPtr.debugFmt("[COMPACTION] Threshold not exceeded, skipping", .{}) catch {};
-                        return;
-                    }
-
-                    loggerPtr.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
-
-                    // Call CompactionAgent
-                    if (workflow.callCompactAgent(messagesLists.items, threadAlloc2, api_key, model, base_url, cwd)) |compacted_xml| {
-                        workflow.compactMessageInMemory(threadAlloc2, &messagesLists, compacted_xml, sessId, model, cwd) catch {
-                            loggerPtr.errFmt("compactMessageInMemory failed", .{}) catch {};
-                        };
-                    }
-
-                    loggerPtr.infoFmt("[COMPACTION] Manual compaction completed for session {s}", .{sessId}) catch {};
                 }
-            }.run, .{ sqlite_db, session_id, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, ctxTui.llm_config.model_compaction_size_kb, server.allocator, ctxTui.logger, ctxTui.io });
-            thread.detach();
+                break :blk std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";
+            };
 
-            res.status = 202;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"status\":\"processing\",\"session_id\":\"{s}\"}}", .{session_id});
+            // Create LlmConfig for the workflow
+            var llm_cfg = config.LlmConfig{
+                .allocator = threadAlloc,
+                .api_key = ctxTui.llm_config.api_key,
+                .model = ctxTui.llm_config.model,
+                .base_url = ctxTui.llm_config.base_url,
+                .model_compaction_size_kb = ctxTui.llm_config.model_compaction_size_kb,
+                .mcpServers = null,
+            };
+
+            var workflow = ai_workflow.TUIWorkflow.init(ctxTui.io, sqlite_db, &llm_cfg, ctxTui.logger, null);
+
+            // Get session messages directly for compaction
+            const db_messages = llm_history.getMessages(threadAlloc, sqlite_db, session_id) catch |err| {
+                std.debug.print("[COMPACTION] getMessages failed: {}\n", .{err});
+                res.status = 500;
+                res.body = try std.fmt.allocPrint(alloc, "{{\"success\":false,\"error\":\"getMessages failed\"}}", .{});
+                return;
+            };
+
+            // Build initial messages from DB
+            const buildMessages = @import("../build_messages_for_agent_prompt.zig").buildMessages;
+            var messagesLists = std.ArrayList(agent.AgentMessage).empty;
+            defer messagesLists.deinit(threadAlloc);
+
+            // Get all tool definitions (empty for manual compaction)
+            const merged_tools: []tool_models.AgentTool = &.{};
+
+            const initialMessages = buildMessages(threadAlloc, ctxTui.io, sqlite_db, cwd, session_id, db_messages, merged_tools) catch |err| {
+                std.debug.print("[COMPACTION] buildMessages failed: {}\n", .{err});
+                res.status = 500;
+                res.body = try std.fmt.allocPrint(alloc, "{{\"success\":false,\"error\":\"buildMessages failed\"}}", .{});
+                return;
+            };
+
+            messagesLists.appendSlice(threadAlloc, initialMessages) catch |err| {
+                std.debug.print("[COMPACTION] appendSlice failed: {}\n", .{err});
+                res.status = 500;
+                res.body = try std.fmt.allocPrint(alloc, "{{\"success\":false,\"error\":\"appendSlice failed\"}}", .{});
+                return;
+            };
+
+            // Call CompactionAgent
+            const compacted_xml = workflow.callCompactAgent(messagesLists.items, threadAlloc, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, cwd);
+            if (compacted_xml) |xml| {
+                workflow.compactMessageInMemory(threadAlloc, &messagesLists, xml, session_id, ctxTui.llm_config.model, cwd) catch {
+                    std.debug.print("[COMPACTION] compactMessageInMemory failed\n", .{});
+                    res.status = 500;
+                    res.body = try std.fmt.allocPrint(alloc, "{{\"success\":false,\"error\":\"compactMessageInMemory failed\"}}", .{});
+                    return;
+                };
+            } else {
+                std.debug.print("[COMPACTION] callCompactAgent returned null\n", .{});
+                res.status = 500;
+                res.body = try std.fmt.allocPrint(alloc, "{{\"success\":false,\"error\":\"CompactionAgent failed\"}}", .{});
+                return;
+            }
+
+            std.debug.print("[COMPACTION] Manual compaction completed for session {s}\n", .{session_id});
+            res.status = 200;
+            res.body = try std.fmt.allocPrint(alloc, "{{\"success\":true,\"message\":\"Compaction completed\"}}", .{});
             return;
         }
     }
     res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

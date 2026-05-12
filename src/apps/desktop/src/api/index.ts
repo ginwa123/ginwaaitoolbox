@@ -248,6 +248,8 @@ export async function getChatHistory(
   has_more: boolean;
   next_cursor: string | null;
   cwd?: string;
+  max_total_tokens?: number;
+  max_capacity_total_tokens?: number;
 }> {
   try {
     const params = new URLSearchParams({
@@ -281,11 +283,13 @@ export async function getChatHistory(
       has_more: data.has_more,
       next_cursor: data.next_cursor,
       cwd: data.cwd,
+      max_total_tokens: data.max_total_tokens,
+      max_capacity_total_tokens: data.max_capacity_total_tokens,
     };
   } catch (error) {
     // Return empty messages when LLM backend unavailable
     console.log(error);
-    return { messages: [], has_more: false, next_cursor: null, cwd: undefined };
+    return { messages: [], has_more: false, next_cursor: null, cwd: undefined, max_total_tokens: undefined, max_capacity_total_tokens: undefined };
   }
 }
 
@@ -548,6 +552,21 @@ export async function deleteChat(id: string): Promise<{ success: boolean }> {
   const response = await fetch(`${API_BASE}/chats/${id}`, { method: "DELETE" });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
+}
+
+// Compact chat session history
+export async function compactSession(sessionId: string): Promise<{ success: boolean; message?: string }> {
+  try {
+    const response = await fetch(`${API_BASE}/session/${sessionId}/compact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  } catch (error) {
+    console.error("Failed to compact session:", error);
+    return { success: false, message: "Failed to compact session" };
+  }
 }
 
 // Workspace Item API

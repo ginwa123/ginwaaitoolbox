@@ -160,6 +160,8 @@ const error = ref<string | null>(null)
 const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
 const cwd = ref('')
+const maxTotalTokens = ref(0)
+const maxCapacityTotalTokens = ref(200000)
 
 // Filter out empty messages for display (check stripped content)
 const filteredMessages = computed(() =>
@@ -226,6 +228,16 @@ const loadChatHistory = async (loadMore = false) => {
     // Update cwd from response (only on first load)
     if (!loadMore && data.cwd) {
       cwd.value = data.cwd
+    }
+
+    // Update token info from response (only on first load)
+    if (!loadMore) {
+      if (data.max_total_tokens !== undefined) {
+        maxTotalTokens.value = data.max_total_tokens
+      }
+      if (data.max_capacity_total_tokens !== undefined) {
+        maxCapacityTotalTokens.value = data.max_capacity_total_tokens
+      }
     }
 
     const newMessages = (data.messages || []).map((msg) => ({
@@ -502,6 +514,33 @@ const handleShiftEnter = () => {
   // Allow Shift+Enter to insert newline - default textarea behavior
 }
 
+// ─── Compact ──────────────────────────────────────────────────────────────────
+
+const isCompacting = ref(false)
+const compactError = ref<string | null>(null)
+
+const compactSession = async () => {
+  if (!sessionId.value || isCompacting.value) return
+
+  isCompacting.value = true
+  compactError.value = null
+
+  try {
+    const result = await api.compactSession(sessionId.value)
+    if (result.success) {
+      // Reload chat history after compaction
+      await loadChatHistory()
+    } else {
+      compactError.value = result.message || "Failed to compact"
+    }
+  } catch (err) {
+    console.error("Failed to compact session:", err)
+    compactError.value = "Failed to compact session"
+  } finally {
+    isCompacting.value = false
+  }
+}
+
 </script>
 
 <template>
@@ -521,8 +560,37 @@ const handleShiftEnter = () => {
           <span v-if="isLoading">Loading...</span>
           <span v-else-if="error" style="color: var(--color-red);">{{ error }}</span>
           <span v-else-if="isStreaming" style="color: var(--color-violet);">Receiving...</span>
+          <span v-else-if="compactError" style="color: var(--color-red);">Compact failed</span>
           <span v-else>{{ messages.length }} message{{ messages.length !== 1 ? 's' : '' }}</span>
         </p>
+      </div>
+      <!-- Compact button in header right -->
+      <div class="ml-auto flex items-center gap-2">
+        <button
+          @click="compactSession"
+          :disabled="isCompacting || isLoading || !sessionId"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
+          :class="isCompacting || isLoading || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
+          :title="isCompacting ? 'Compacting...' : 'Compact conversation history'"
+        >
+          <span v-if="isCompacting" class="w-3.5 h-3.5 border-2 rounded-full animate-spin" style="border-color: var(--color-violet); border-top-color: transparent;"></span>
+          <span v-else>🗜️</span>
+          <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
+        </button>
+        <!-- Token usage display -->
+        <div v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0" class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
+          <span style="color: var(--semantic-text-dim);">Tokens:</span>
+          <span style="color: var(--semantic-text);">{{ maxTotalTokens.toLocaleString() }}</span>
+          <span v-if="maxCapacityTotalTokens > 0" style="color: var(--semantic-text-dim);">/ {{ maxCapacityTotalTokens.toLocaleString() }}</span>
+          <div v-if="maxCapacityTotalTokens > 0" class="w-16 h-2 rounded-full overflow-hidden" style="background-color: var(--color-border);">
+            <div class="h-full rounded-full transition-all duration-300"
+              :style="{
+                width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
+                backgroundColor: (maxTotalTokens / maxCapacityTotalTokens) > 0.8 ? 'var(--color-red)' : (maxTotalTokens / maxCapacityTotalTokens) > 0.6 ? 'var(--color-orange)' : 'var(--color-violet)'
+              }"></div>
+          </div>
+        </div>
       </div>
     </div>
 
