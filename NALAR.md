@@ -360,11 +360,15 @@ const is_sub_agent = std.mem.indexOf(u8, session_id, "subagent") != null;
 - Both use `DATETIME DEFAULT (datetime('now'))` for automatic timestamp on insert
 - Updates automatically set `updated_at = datetime('now')` via `workspace_update.zig` and `workspace_items_table.zig`
 
+**New Table (Migration034):**
+- `Migration034CreateWorkspaceItemTasks` (v34) — created `workspace_item_tasks` table with columns: `id` (PK), `name`, `workspace_item_id`, `session_id`, `created_at`, `updated_at`
+
 | Table | Key Column | Purpose |
 |-------|------------|---------|
 | `sessions` | `id` (PK), `name`, `cwd`, `created_at`, `updated_at` | Session metadata (cwd = working directory) |
 | `llm_history` | `session_id` (FK) | References `sessions.id` |
 | `workspace_items` | `id` (PK), `workspace_id`, `item_type`, `created_at`, `updated_at` | Workspace items table |
+| `workspace_item_tasks` | `id` (PK), `workspace_item_id`, `session_id` | Tasks linked to workspace items |
 | `workspaces` | `id` (PK), `name`, `created_at`, `updated_at` | Workspaces table |
 
 **Schema Change (Migration023):**

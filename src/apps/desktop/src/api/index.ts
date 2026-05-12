@@ -156,6 +156,23 @@ export async function updateTask(
   return response.json();
 }
 
+// Task API - Simple version (just task_id + optional fields)
+export async function updateTaskSimple(
+  taskId: string,
+  data: { name?: string; session_id?: string },
+): Promise<{ success: boolean }> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/tasks/${taskId}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    },
+  );
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 export async function deleteTask(
   workspaceId: string,
   itemId: string,
@@ -186,52 +203,6 @@ export interface Message {
 
 // All chat endpoints go through Zig backend at /api/llm/*
 // Zig backend internally calls LLM backend
-
-// Create a new chat session
-export async function createSession(name?: string, cwd_session?: string): Promise<Chat> {
-  try {
-    const response = await fetch(`${API_BASE}/llm/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: name || "New Session",
-        cwd_session: cwd_session
-      }),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const data = await response.json();
-
-    // Fix: handle "undefined" string from backend or missing session_id
-    const sessionId = data.session_id || data.id;
-    if (!sessionId || sessionId === "undefined" || sessionId === "null") {
-      // Generate proper session ID
-      const timestamp = new Date()
-        .toISOString()
-        .replace(/[:-]/g, "")
-        .replace("T", "_")
-        .replace(/\.\d{3}Z$/, "");
-      return {
-        session_id: `session_${timestamp}`,
-        session_name: data.session_name || data.name || name || "New Chat",
-        status: data.status || "send",
-      };
-    }
-
-    return {
-      session_id: sessionId,
-      session_name: data.session_name || data.name || name || "New Chat",
-      status: data.status || "send",
-    };
-  } catch (error) {
-    // Return offline mock session when LLM backend unavailable
-    return {
-      session_id: `local-${Date.now()}`,
-      session_name: name || "New Chat",
-      status: "offline",
-    };
-  }
-}
 
 // Parse timestamp - backend sends nanoseconds as string, convert to seconds
 function parseTimestamp(ts: number | string): number {
@@ -299,6 +270,7 @@ export async function sendChatMessage(
   message: string,
   cwdSession: string,
 ): Promise<{ status: string }> {
+  // cwdSession = '/home/ginwa/agentic_coding_zig/ginwaaitoolbox'
   try {
     const response = await fetch(`${API_BASE}/llm/session`, {
       method: "POST",

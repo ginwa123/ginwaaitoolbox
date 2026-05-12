@@ -495,6 +495,25 @@ pub const Migration033AddCancelledToWorker = struct {
     }
 };
 
+pub const Migration034CreateWorkspaceItemTasks = struct {
+    pub const version: u32 = 34;
+    pub const name = "create_workspace_item_tasks";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS workspace_item_tasks (
+            \\    id TEXT PRIMARY KEY,
+            \\    name TEXT NOT NULL,
+            \\    workspace_item_id TEXT NOT NULL,
+            \\    session_id TEXT,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_item_tasks_item ON workspace_item_tasks(workspace_item_id)", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -580,6 +599,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration031AddTimestampsToWorkspaceItems.version, .name = Migration031AddTimestampsToWorkspaceItems.name, .up = Migration031AddTimestampsToWorkspaceItems.up },
     .{ .version = Migration032AddNamePathToWorkspaceItems.version, .name = Migration032AddNamePathToWorkspaceItems.name, .up = Migration032AddNamePathToWorkspaceItems.up },
     .{ .version = Migration033AddCancelledToWorker.version, .name = Migration033AddCancelledToWorker.name, .up = Migration033AddCancelledToWorker.up },
+    .{ .version = Migration034CreateWorkspaceItemTasks.version, .name = Migration034CreateWorkspaceItemTasks.name, .up = Migration034CreateWorkspaceItemTasks.up },
 };
 
 /// Register all migrations with a MigrationManager

@@ -27,7 +27,7 @@ const activeAddMenu = ref<string | null>(null)
 // Close dropdown when clicking outside
 const handleClickOutside = (event: MouseEvent) => {
   const target = event.target as HTMLElement
-  if (!target.closest('.group/workspace')) {
+  if (!target.closest('[data-workspace-menu]')) {
     activeAddMenu.value = null
   }
 }
@@ -119,7 +119,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
       <div v-show="workspacesExpanded" class="space-y-0.5">
         <template v-for="workspace in workspaces" :key="workspace.id">
           <!-- Workspace Header -->
-          <div class="flex items-center group/workspace">
+          <div class="flex items-center group/workspace" data-workspace-menu>
         <button
           @click="handleWorkspaceClick(workspace.id)"
           class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200"
@@ -179,7 +179,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
             @delete-task="handleDeleteTask"
           />
           <!-- Add Item Button -->
-          <li class="group/workspace relative">
+          <li class="group/workspace relative" data-workspace-menu>
             <button
               @click.stop="toggleAddMenu(workspace.id)"
               class="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-all duration-200"

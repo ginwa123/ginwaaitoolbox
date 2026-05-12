@@ -472,7 +472,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 
 const handleSelectTask = (taskId: string) => {
   workspacesStore.setActiveTask(taskId)
-  emit('navigate', 'task')
+  emit('navigate', 'task', undefined, taskId)
 }
 </script>
 

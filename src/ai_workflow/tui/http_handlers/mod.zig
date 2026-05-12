@@ -60,6 +60,7 @@ pub const workspaceItemsDeleteHandler = @import("workspace_items_delete.zig").wo
 pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
 pub const tasksCreateHandler = @import("tasks_create.zig").tasksCreateHandler;
 pub const tasksUpdateHandler = @import("tasks_update.zig").tasksUpdateHandler;
+pub const tasksUpdateByIdHandler = @import("tasks_update.zig").tasksUpdateByIdHandler;
 pub const tasksDeleteHandler = @import("tasks_delete.zig").tasksDeleteHandler;
 
 // Worker API handlers

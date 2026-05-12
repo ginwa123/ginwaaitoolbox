@@ -7,7 +7,18 @@ const http_response = nalarcore.http_response;
 const sqlite = nalarcore.sqlite;
 const httpz = http_server.httpz;
 
-pub const WorkspaceWithItemsResponse = struct { id: []const u8, name: []const u8, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null, icon: []const u8 = "📁", items: []const http_response.WorkspaceItemFullResponse, expanded: bool = false };
+pub const WorkspaceWithItemsResponse = struct { id: []const u8, name: []const u8, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null, icon: []const u8 = "📁", items: []const WorkspaceItemWithTasksResponse, expanded: bool = false };
+
+pub const WorkspaceItemWithTasksResponse = struct {
+    id: []const u8,
+    workspace_id: []const u8,
+    item_type: []const u8,
+    name: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null,
+    tasks: []const http_response.WorkspaceItemTaskResponse = &[_]http_response.WorkspaceItemTaskResponse{},
+};
 
 pub const WorkspacesListResponse = struct { workspaces: []WorkspaceWithItemsResponse };
 
@@ -40,33 +51,24 @@ pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
 fn useCase(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend) !WorkspacesListResponse {
     // Fetch all workspaces first
     var rows = try db.query(alloc, "SELECT id, name, created_at, updated_at FROM workspaces ORDER BY created_at DESC", &[_][]const u8{});
-    defer rows.deinit();
 
-    // Collect workspace data first (id, name, timestamps)
-    const WorkspaceData = struct {
+    var workspace_ids = std.ArrayList([]const u8).empty;
+
+    var workspaces_data = std.ArrayList(struct {
         id: []const u8,
         name: []const u8,
         created_at: ?[]const u8,
         updated_at: ?[]const u8,
-    };
-    var workspace_data = std.ArrayList(WorkspaceData).empty;
-    errdefer {
-        for (workspace_data.items) |ws| {
-            alloc.free(ws.id);
-            alloc.free(ws.name);
-            if (ws.created_at) |ca| alloc.free(ca);
-            if (ws.updated_at) |ua| alloc.free(ua);
-        }
-        workspace_data.deinit(alloc);
-    }
+    }).empty;
 
     while (true) {
         const row_opt = try rows.next();
         const row = row_opt orelse break;
-        defer row.deinit(alloc);
 
-        try workspace_data.append(alloc, .{
-            .id = try alloc.dupe(u8, row.values[0]),
+        const id = try alloc.dupe(u8, row.values[0]);
+        try workspace_ids.append(alloc, id);
+        try workspaces_data.append(alloc, .{
+            .id = id,
             .name = try alloc.dupe(u8, row.values[1]),
             .created_at = if (row.values[2].len > 0) try alloc.dupe(u8, row.values[2]) else null,
             .updated_at = if (row.values[3].len > 0) try alloc.dupe(u8, row.values[3]) else null,
@@ -74,81 +76,113 @@ fn useCase(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend) !WorkspacesListR
     }
 
     // No workspaces? Return empty
-    if (workspace_data.items.len == 0) {
-        const response = WorkspacesListResponse{ .workspaces = &[_]WorkspaceWithItemsResponse{} };
-        return response;
-    }
-
-    // Collect workspace IDs for query first
-    var workspace_ids = std.ArrayList([]const u8).empty;
-    for (workspace_data.items) |ws| {
-        try workspace_ids.append(alloc, ws.id);
-    }
-    errdefer {
-        for (workspace_ids.items) |id| alloc.free(id);
-        workspace_ids.deinit(alloc);
+    if (workspaces_data.items.len == 0) {
+        return WorkspacesListResponse{ .workspaces = &[_]WorkspaceWithItemsResponse{} };
     }
 
     // Build IN clause for items query
     var in_clause = std.ArrayList(u8).empty;
     try in_clause.appendSlice(alloc, "(");
-    var idx: usize = 0;
-    while (idx < workspace_ids.items.len) : (idx += 1) {
-        if (idx > 0) try in_clause.appendSlice(alloc, ",");
+    for (workspace_ids.items, 0..) |_, i| {
+        if (i > 0) try in_clause.appendSlice(alloc, ",");
         try in_clause.appendSlice(alloc, "?");
     }
     try in_clause.appendSlice(alloc, ")");
 
-    std.debug.print("DEBUG: workspace_ids count={}, in_clause={s}\n", .{ workspace_ids.items.len, in_clause.items });
+    // Fetch all items for these workspaces
+    const items_sql = try std.fmt.allocPrint(alloc, "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id IN {s} ORDER BY created_at DESC", .{in_clause.items});
+    var items_rows = try db.query(alloc, items_sql, workspace_ids.items);
 
-    // Fetch ALL items for these workspaces in ONE query
-    const query_sql = try std.fmt.allocPrint(alloc, "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id IN {s} ORDER BY created_at DESC", .{in_clause.items});
+    // Collect items and their IDs
+    var items_list = std.ArrayList(struct {
+        id: []const u8,
+        workspace_id: []const u8,
+        item_type: []const u8,
+        name: ?[]const u8,
+        path: ?[]const u8,
+        created_at: ?[]const u8,
+        updated_at: ?[]const u8,
+    }).empty;
 
-    var all_items = try db.query(alloc, query_sql, workspace_ids.items);
-    defer all_items.deinit();
+    var item_ids = std.ArrayList([]const u8).empty;
 
-    std.debug.print("DEBUG: query executed, iterating rows\n", .{});
-
-    // Group items by workspace_id
-    var items_by_workspace = std.StringHashMap(std.ArrayList(http_response.WorkspaceItemFullResponse)).init(alloc);
-    defer {
-        var it = items_by_workspace.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.*.deinit(alloc);
-        }
-        items_by_workspace.deinit();
-    }
-
-    var item_count: usize = 0;
     while (true) {
-        const row_opt = try all_items.next();
+        const row_opt = try items_rows.next();
         const row = row_opt orelse break;
-        defer row.deinit(alloc);
 
-        item_count += 1;
-
-        // Duplicate the workspace_id key since row memory will be freed
-        const ws_key = try alloc.dupe(u8, row.values[1]);
-        const gop = items_by_workspace.getOrPutValue(ws_key, std.ArrayList(http_response.WorkspaceItemFullResponse).empty) catch continue;
-        gop.value_ptr.append(alloc, .{
-            .id = try alloc.dupe(u8, row.values[0]),
+        const id = try alloc.dupe(u8, row.values[0]);
+        try item_ids.append(alloc, id);
+        try items_list.append(alloc, .{
+            .id = id,
             .workspace_id = try alloc.dupe(u8, row.values[1]),
             .item_type = try alloc.dupe(u8, row.values[2]),
             .name = if (row.values[3].len > 0) try alloc.dupe(u8, row.values[3]) else null,
             .path = if (row.values[4].len > 0) try alloc.dupe(u8, row.values[4]) else null,
             .created_at = if (row.values[5].len > 0) try alloc.dupe(u8, row.values[5]) else null,
             .updated_at = if (row.values[6].len > 0) try alloc.dupe(u8, row.values[6]) else null,
-        }) catch {};
+        });
     }
 
-    // Build final workspaces list with items attached
-    var workspaces_list = std.ArrayList(WorkspaceWithItemsResponse).empty;
-    errdefer workspaces_list.deinit(alloc);
+    // Fetch all tasks for these items
+    var tasks_by_item = std.StringHashMap(std.ArrayList(http_response.WorkspaceItemTaskResponse)).init(alloc);
 
-    for (workspace_data.items) |ws| {
-        var items_slice: []const http_response.WorkspaceItemFullResponse = &[_]http_response.WorkspaceItemFullResponse{};
-        if (items_by_workspace.getEntry(ws.id)) |entry| {
-            items_slice = try entry.value_ptr.*.toOwnedSlice(alloc);
+    if (item_ids.items.len > 0) {
+        // Build IN clause for tasks query
+        var task_in_clause = std.ArrayList(u8).empty;
+        try task_in_clause.appendSlice(alloc, "(");
+        for (item_ids.items, 0..) |_, i| {
+            if (i > 0) try task_in_clause.appendSlice(alloc, ",");
+            try task_in_clause.appendSlice(alloc, "?");
+        }
+        try task_in_clause.appendSlice(alloc, ")");
+
+        const tasks_sql = try std.fmt.allocPrint(alloc, "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id IN {s} ORDER BY created_at DESC", .{task_in_clause.items});
+        var tasks_rows = try db.query(alloc, tasks_sql, item_ids.items);
+
+        while (true) {
+            const row_opt = try tasks_rows.next();
+            const row = row_opt orelse break;
+
+
+            const item_id = try alloc.dupe(u8, row.values[2]);
+            const gop = try tasks_by_item.getOrPutValue(item_id, std.ArrayList(http_response.WorkspaceItemTaskResponse).empty);
+            try gop.value_ptr.*.append(alloc, http_response.WorkspaceItemTaskResponse{
+                .id = try alloc.dupe(u8, row.values[0]),
+                .name = try alloc.dupe(u8, row.values[1]),
+                .workspace_item_id = item_id,
+                .session_id = if (row.values[3].len > 0) try alloc.dupe(u8, row.values[3]) else null,
+                .created_at = if (row.values[4].len > 0) try alloc.dupe(u8, row.values[4]) else null,
+                .updated_at = if (row.values[5].len > 0) try alloc.dupe(u8, row.values[5]) else null,
+            });
+        }
+    }
+
+    // Build final response
+    var workspaces_list = std.ArrayList(WorkspaceWithItemsResponse).empty;
+
+    for (workspaces_data.items) |ws| {
+        // Find items for this workspace
+        var workspace_items = std.ArrayList(WorkspaceItemWithTasksResponse).empty;
+
+        for (items_list.items) |item| {
+            if (std.mem.eql(u8, item.workspace_id, ws.id)) {
+                // Get tasks for this item
+                var tasks_slice: []const http_response.WorkspaceItemTaskResponse = &[_]http_response.WorkspaceItemTaskResponse{};
+                if (tasks_by_item.getEntry(item.id)) |entry| {
+                    tasks_slice = try entry.value_ptr.*.toOwnedSlice(alloc);
+                }
+
+                try workspace_items.append(alloc, .{
+                    .id = item.id,
+                    .workspace_id = item.workspace_id,
+                    .item_type = item.item_type,
+                    .name = item.name,
+                    .path = item.path,
+                    .created_at = item.created_at,
+                    .updated_at = item.updated_at,
+                    .tasks = tasks_slice,
+                });
+            }
         }
 
         try workspaces_list.append(alloc, .{
@@ -157,14 +191,12 @@ fn useCase(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend) !WorkspacesListR
             .created_at = ws.created_at,
             .updated_at = ws.updated_at,
             .icon = "📁",
-            .items = items_slice,
+            .items = try workspace_items.toOwnedSlice(alloc),
             .expanded = false,
         });
     }
 
-    const response = WorkspacesListResponse{
+    return WorkspacesListResponse{
         .workspaces = try workspaces_list.toOwnedSlice(alloc),
     };
-
-    return response;
 }

@@ -4,7 +4,6 @@ import Sidebar from './components/Sidebar.vue'
 import FolderExplorer from './components/FolderExplorer.vue'
 import Chats from './components/Chats.vue'
 import ChatView from './components/ChatView.vue'
-import TaskDetail from './components/TaskDetail.vue'
 import { useWorkspacesStore } from './stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -41,6 +40,7 @@ onMounted(() => {
   const savedView = localStorage.getItem('active-view')
   const savedChatId = localStorage.getItem('active-chat-id')
   const savedChatName = localStorage.getItem('active-chat-name')
+  const savedTaskId = localStorage.getItem('active-task-id')
   
   if (savedView) {
     activeView.value = savedView
@@ -50,6 +50,10 @@ onMounted(() => {
   }
   if (savedChatName) {
     activeChatName.value = savedChatName
+  }
+  if (savedTaskId && savedView === 'task') {
+    // Restore the active task when loading the app in task view
+    workspacesStore.setActiveTask(savedTaskId)
   }
   
   // Initialize workspaces
@@ -76,7 +80,7 @@ const handleSidebarResize = (newWidth: number) => {
 
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
 
-const handleNavigate = (view: string, chatName?: string) => {
+const handleNavigate = (view: string, chatName?: string, taskId?: string) => {
   activeView.value = view
   if (view.startsWith('chat-')) {
     activeChatId.value = view
@@ -91,6 +95,8 @@ const handleNavigate = (view: string, chatName?: string) => {
     localStorage.removeItem('active-chat-id')
     localStorage.removeItem('active-chat-name')
   } else if (view === 'workspace') {
+    activeChatId.value = ''
+    activeView.value = 'workspace'
     localStorage.setItem('active-view', 'workspace')
     localStorage.removeItem('active-chat-id')
     localStorage.removeItem('active-chat-name')
@@ -98,6 +104,10 @@ const handleNavigate = (view: string, chatName?: string) => {
     localStorage.setItem('active-view', 'task')
     localStorage.removeItem('active-chat-id')
     localStorage.removeItem('active-chat-name')
+    // Store the task ID for persistence
+    if (taskId) {
+      localStorage.setItem('active-task-id', taskId)
+    }
   }
 }
 
@@ -133,10 +143,16 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
         @update-chat-id="handleUpdateChatId"
       />
       <Chats v-else-if="activeView === 'chat'" />
-      <TaskDetail
-        v-else-if="activeView === 'task' && workspacesStore.activeTask && workspacesStore.activeWorkspaceItem"
-        :task="workspacesStore.activeTask"
-        :project-name="workspacesStore.activeWorkspaceItem.name"
+      <ChatView
+        v-else-if="activeView === 'task' && workspacesStore.activeTask"
+        :key="'task-' + workspacesStore.activeTask.id"
+        :chat-id="workspacesStore.activeTask.id"
+        :chat-name="workspacesStore.activeTask.name"
+        :type="'task'"
+        :cwd="workspacesStore.activeWorkspaceItem?.path || ''"
+        :task-id="workspacesStore.activeTask.id"
+        :task-name="workspacesStore.activeTask.name"
+        :project-name="workspacesStore.activeWorkspaceItem?.name || ''"
       />
       <div v-else-if="activeView === 'workspace'" class="flex-1 flex flex-col items-center justify-center p-8">
         <!-- Workspace Item Selected -->

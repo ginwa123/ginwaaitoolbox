@@ -77,6 +77,17 @@ pub const TaskCreateResponse = struct {
     completed: bool
 };
 
+// Request types
+pub const TaskCreateRequest = struct {
+    name: []const u8,
+    session_id: ?[]const u8 = null,
+};
+
+pub const TaskUpdateRequest = struct {
+    name: ?[]const u8 = null,
+    session_id: ?[]const u8 = null,
+};
+
 pub const WorkerInfo = struct {
     id: []const u8,
     session_id: []const u8,
@@ -209,4 +220,31 @@ pub fn makeWorkspaceItemListResponse(allocator: std.mem.Allocator, items: anytyp
     }
     try list.appendSlice(allocator, "]");
     return try list.toOwnedSlice(allocator);
+}
+
+// Workspace Item Task types
+pub const WorkspaceItemTaskResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    workspace_item_id: []const u8,
+    session_id: ?[]const u8 = null,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null
+};
+
+pub const WorkspaceItemTaskListResponse = struct {
+    tasks: []const WorkspaceItemTaskResponse,
+    count: u32
+};
+
+pub fn makeWorkspaceItemTaskResponse(allocator: std.mem.Allocator, response: WorkspaceItemTaskResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+pub fn makeWorkspaceItemTaskListResponse(allocator: std.mem.Allocator, tasks: []const WorkspaceItemTaskResponse) ![]u8 {
+    const response = WorkspaceItemTaskListResponse{
+        .tasks = tasks,
+        .count = @intCast(tasks.len),
+    };
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
 }

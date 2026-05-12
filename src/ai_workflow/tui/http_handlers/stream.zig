@@ -85,11 +85,13 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
     while (bytes_written < connected_data.len) {
         const n = std.c.write(@intCast(socket_fd), connected_data[bytes_written..].ptr, connected_data[bytes_written..].len);
         if (n < 0) {
-            std.debug.print("[SSE_ERROR] write failed\n", .{});
+            std.debug.print("[SSE_ERROR] write failed - client likely disconnected\n", .{});
+            queue.close();
             return;
         }
         if (n == 0) {
-            std.debug.print("[SSE_ERROR] write returned 0\n", .{});
+            std.debug.print("[SSE_ERROR] write returned 0 - client disconnected\n", .{});
+            queue.close();
             return;
         }
         bytes_written += @intCast(n);
@@ -134,10 +136,12 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
             while (bytes_sent < formatted.len) {
                 const n = std.c.write(@intCast(sfd), formatted[bytes_sent..].ptr, formatted[bytes_sent..].len);
                 if (n < 0) {
-                    std.debug.print("[SSE_ERROR] SSE write failed\n", .{});
+                    std.debug.print("[SSE_ERROR] SSE write failed - client likely disconnected\n", .{});
+                    // Clean up queue item and close queue to exit loop
                     ctx.server.allocator.free(queue_item.data);
                     if (queue_item.event_type) |et| ctx.server.allocator.free(et);
                     ctx.server.allocator.destroy(queue_item);
+                    queue.close();
                     break;
                 }
                 bytes_sent += @intCast(n);
@@ -145,9 +149,12 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
             std.debug.print("[SSE_DEBUG] SSE write completed, {d} bytes\n", .{bytes_sent});
 
             // Free queue item memory after successful send
-            ctx.server.allocator.free(queue_item.data);
-            if (queue_item.event_type) |et| ctx.server.allocator.free(et);
-            ctx.server.allocator.destroy(queue_item);
+            // (only if we sent all bytes - otherwise we already freed in error handler above)
+            if (bytes_sent >= formatted.len) {
+                ctx.server.allocator.free(queue_item.data);
+                if (queue_item.event_type) |et| ctx.server.allocator.free(et);
+                ctx.server.allocator.destroy(queue_item);
+            }
         } else {
             // Timeout - send keepalive
             const keepalive_text = ": keepalive\n\n";

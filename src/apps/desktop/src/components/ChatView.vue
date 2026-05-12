@@ -7,11 +7,23 @@ import { stripThinkingTags } from '@/helpers';
 const props = defineProps<{
   chatId: string
   chatName: string
+  type?: 'chat' | 'task'
+  cwd?: string
 }>()
 
 const emit = defineEmits<{
   'update-chat-id': [oldId: string, newId: string]
 }>()
+
+// Default type is 'chat' for backward compatibility
+const viewType = computed(() => props.type ?? 'chat')
+
+// Task info (used when type === 'task')
+const taskInfo = computed(() => ({
+  taskId: (props as any).taskId ?? '',
+  taskName: (props as any).taskName ?? props.chatName ?? '',
+  projectName: (props as any).projectName ?? ''
+}))
 
 // Check if session is pending (needs creation on first message)
 const isPendingSession = computed(() => props.chatId.startsWith('pending-'))
@@ -474,6 +486,11 @@ const updateStreamingMessage = () => {
 onMounted(async () => {
   sessionId.value = props.chatId.replace(/^chat-/, '')
 
+  // Initialize cwd from props if provided (for task view)
+  if (props.cwd) {
+    cwd.value = props.cwd
+  }
+
   if (sessionId.value) {
     await loadChatHistory()
     connectSse()
@@ -509,7 +526,6 @@ const sendMessage = async () => {
   let currentSessionId = sessionId.value
 
   try {
-
     await api.sendChatMessage(currentSessionId, userMessage, cwd.value)
     connectSse()
   } catch (err) {
@@ -568,14 +584,16 @@ const compactSession = async () => {
       style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
       <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg"
         style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
-        💬
+        <span v-if="viewType === 'task'">✓</span>
+        <span v-else>💬</span>
       </div>
       <div>
         <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
-          {{ chatName }}
+          {{ viewType === 'task' ? taskInfo.taskName : chatName }}
         </h2>
         <p class="text-xs" style="color: var(--semantic-text-dim);">
-          <span v-if="isLoading">Loading...</span>
+          <span v-if="viewType === 'task'">{{ taskInfo.projectName }}</span>
+          <span v-else-if="isLoading">Loading...</span>
           <span v-else-if="error" style="color: var(--color-red);">{{ error }}</span>
           <span v-else-if="isStreaming" style="color: var(--color-violet);">Receiving...</span>
           <span v-else-if="isLLMProcessing" style="color: var(--color-orange);">⚡ Processing</span>
