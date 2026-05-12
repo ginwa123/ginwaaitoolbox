@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useWorkspacesStore } from '../stores/workspaces'
+import { useSidebarStore } from '../stores/sidebar'
 import type { Workspace, WorkspaceItem } from '../stores/workspaces'
 import WorkspaceItemComponent from './WorkspaceItem.vue'
 
@@ -20,8 +22,7 @@ const emit = defineEmits<{
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
 }>()
 
-// Workspaces section collapsible state
-const workspacesExpanded = ref(true)
+const sidebarStore = useSidebarStore()
 const activeAddMenu = ref<string | null>(null)
 
 // Close dropdown when clicking outside
@@ -41,7 +42,7 @@ onUnmounted(() => {
 })
 
 const toggleWorkspacesSection = () => {
-  workspacesExpanded.value = !workspacesExpanded.value
+  sidebarStore.toggleWorkspacesExpanded()
 }
 
 const toggleAddMenu = (workspaceId: string) => {
@@ -108,7 +109,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
         </button>
         <span 
           class="text-xs transition-transform duration-200" 
-          :style="{ transform: workspacesExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
+          :style="{ transform: sidebarStore.workspacesExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
           style="color: var(--semantic-text-dim);"
         >▶</span>
       </div>
@@ -116,7 +117,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 
     <!-- Workspace Groups -->
     <Transition name="collapse">
-      <div v-show="workspacesExpanded" class="space-y-0.5">
+      <div v-show="sidebarStore.workspacesExpanded" class="space-y-0.5">
         <template v-for="workspace in workspaces" :key="workspace.id">
           <!-- Workspace Header -->
           <div class="flex items-center group/workspace" data-workspace-menu>

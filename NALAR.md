@@ -190,7 +190,42 @@ src/
     ├── network/connection.zig, debug.zig, messaging.zig
     │   ├── sse.zig, sse_test.zig, streaming.zig, streaming_test.zig
     └── terminal/backend.zig, raw_mode.zig
+└── apps/desktop/                      # Desktop Vue app (Bun + Vue 3)
+    ├── src/
+    │   ├── main.ts                    # Entry point
+    │   ├── App.vue                    # Main app with navigation state
+    │   ├── api.ts                     # API client
+    │   ├── stores/
+    │   │   ├── workspaces.ts          # Workspaces state + localStorage persistence
+    │   │   └── sidebar.ts             # Sidebar state + localStorage persistence
+    │   └── components/
+    │       ├── Sidebar.vue           # Sidebar with chats + workspaces
+    │       ├── WorkspaceList.vue     # Workspaces section
+    │       ├── WorkspaceItem.vue     # Individual workspace item
+    │       ├── Chats.vue              # Chat list view
+    │       └── ChatView.vue           # Chat conversation view
 ```
+
+## Desktop App (Vue) State Persistence
+
+**localStorage keys for navigation state:**
+| Key | Value | Purpose |
+|-----|-------|---------|
+| `sidebar-collapsed` | `'true'` / `'false'` | Sidebar collapsed state |
+| `sidebar-width` | Pixel number | Sidebar width (72-480px) |
+| `active-view` | `'chat'`, `'workspace'`, `'task'` | Current view |
+| `active-chat-id` | Session ID | Active chat session |
+| `active-chat-name` | Display name | Active chat name |
+| `active-task-id` | Task ID | Active task for persistence |
+| `nalar_chats_sort_direction` | `'asc'` / `'desc'` | Sort direction for chats list |
+| `nalar-sidebar-chats-height` | Percentage number | Chats section height in sidebar |
+| `nalar-sidebar-nav-expanded` | `'true'` / `'false'` | Chats section expanded state |
+| `nalar-sidebar-workspaces-expanded` | `'true'` / `'false'` | Workspaces section expanded state |
+| `nalar-workspace-expanded` | JSON array of IDs | Expanded workspace IDs |
+| `nalar-workspace-item-expanded` | JSON array of IDs | Expanded workspace item IDs (nested folders) |
+| `nalar-workspace-item-tasks-expanded` | JSON array of IDs | Expanded workspace item IDs (tasks list - allows multiple) |
+
+**Note:** Workspace and workspace item expand states are persisted in `workspaces.ts` store. Nav section and workspaces section expand states are persisted in `sidebar.ts` store.
 
 ## Language & Environment Facts
 

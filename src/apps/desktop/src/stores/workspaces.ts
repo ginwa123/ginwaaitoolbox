@@ -46,6 +46,11 @@ export interface Task {
   createdAt?: Date
 }
 
+// localStorage keys for state persistence
+const STORAGE_KEY_WORKSPACE_EXPANDED = 'nalar-workspace-expanded'
+const STORAGE_KEY_WORKSPACE_ITEM_EXPANDED = 'nalar-workspace-item-expanded'
+const STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED = 'nalar-workspace-item-tasks-expanded'
+
 import * as api from '../api'
 
 export const useWorkspacesStore = defineStore('workspaces', () => {
@@ -53,8 +58,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   const isLoading = ref(false)
   const loadingError = ref<string | null>(null)
 
-  // Current active workspace item
+  // Current active workspace item (for main content/FolderExplorer)
   const activeWorkspaceItemId = ref<string | null>(null)
+
+  // Set of expanded workspace item IDs (for showing tasks list - allows multiple)
+  const expandedItemIds = ref<Set<string>>(new Set())
 
   // Active task within the selected workspace item
   const activeTaskId = ref<string | null>(null)
@@ -67,6 +75,69 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Workspaces with their items
   const workspaces = ref<Workspace[]>([])
 
+  // Load expanded workspace IDs from localStorage
+  function loadExpandedWorkspaces(): Set<string> {
+    const saved = localStorage.getItem(STORAGE_KEY_WORKSPACE_EXPANDED)
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed)) {
+          return new Set(parsed)
+        }
+      } catch (e) {
+        console.error('Failed to parse expanded workspaces:', e)
+      }
+    }
+    return new Set()
+  }
+
+  // Load expanded workspace item IDs from localStorage (for nested folder expansion)
+  function loadExpandedItems(): Set<string> {
+    const saved = localStorage.getItem(STORAGE_KEY_WORKSPACE_ITEM_EXPANDED)
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed)) {
+          return new Set(parsed)
+        }
+      } catch (e) {
+        console.error('Failed to parse expanded items:', e)
+      }
+    }
+    return new Set()
+  }
+
+  // Load expanded workspace item IDs for tasks list from localStorage
+  function loadExpandedItemIds(): Set<string> {
+    const saved = localStorage.getItem(STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED)
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed)) {
+          return new Set(parsed)
+        }
+      } catch (e) {
+        console.error('Failed to parse expanded item IDs:', e)
+      }
+    }
+    return new Set()
+  }
+
+  // Save expanded workspace IDs to localStorage
+  function saveExpandedWorkspaces(expandedIds: Set<string>) {
+    localStorage.setItem(STORAGE_KEY_WORKSPACE_EXPANDED, JSON.stringify(Array.from(expandedIds)))
+  }
+
+  // Save expanded workspace item IDs to localStorage (for nested folder expansion)
+  function saveExpandedItems(expandedIds: Set<string>) {
+    localStorage.setItem(STORAGE_KEY_WORKSPACE_ITEM_EXPANDED, JSON.stringify(Array.from(expandedIds)))
+  }
+
+  // Save expanded workspace item IDs for tasks list to localStorage
+  function saveExpandedItemIds(expandedIds: Set<string>) {
+    localStorage.setItem(STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED, JSON.stringify(Array.from(expandedIds)))
+  }
+
   // Initialize store by loading data from API
   async function init() {
     isLoading.value = true
@@ -74,7 +145,21 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     try {
       const data = await api.getWorkspaces()
-      workspaces.value = data.workspaces || []
+      const expandedWorkspaces = loadExpandedWorkspaces()
+      const expandedItems = loadExpandedItems()
+      const expandedIds = loadExpandedItemIds()
+      // Load expanded item IDs for tasks list from localStorage
+      expandedItemIds.value = expandedIds
+      workspaces.value = (data.workspaces || []).map((ws: Workspace) => ({
+        ...ws,
+        // Restore expanded state from localStorage
+        expanded: expandedWorkspaces.has(ws.id),
+        items: (ws.items || []).map((item: WorkspaceItem) => ({
+          ...item,
+          // Restore expanded state from localStorage
+          expanded: expandedItems.has(item.id),
+        })),
+      }))
     } catch (err) {
       loadingError.value = err instanceof Error ? err.message : 'Failed to load workspaces'
       console.error('Failed to load workspaces:', err)
@@ -171,30 +256,76 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (workspace) {
       workspace.expanded = !workspace.expanded
+      // Persist to localStorage
+      const expandedWorkspaces = loadExpandedWorkspaces()
+      if (workspace.expanded) {
+        expandedWorkspaces.add(workspaceId)
+      } else {
+        expandedWorkspaces.delete(workspaceId)
+      }
+      saveExpandedWorkspaces(expandedWorkspaces)
     }
+  }
+
+  // Toggle workspace item expansion (for nested folder contents)
+  function toggleWorkspaceItem(workspaceId: string, itemId: string) {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item) return
+
+    item.expanded = !item.expanded
+    // Persist to localStorage
+    const expandedItems = loadExpandedItems()
+    if (item.expanded) {
+      expandedItems.add(itemId)
+    } else {
+      expandedItems.delete(itemId)
+    }
+    saveExpandedItems(expandedItems)
   }
 
   function setActiveWorkspaceItem(itemId: string | null) {
     activeWorkspaceItemId.value = itemId
-    // Don't auto-expand - preserve user's expanded states
+    // Also add to expanded items so tasks list is visible
+    if (itemId) {
+      if (!expandedItemIds.value.has(itemId)) {
+        expandedItemIds.value.add(itemId)
+        saveExpandedItemIds(expandedItemIds.value)
+      }
+    }
+  }
+
+  // Toggle expanded state for workspace item (show/hide tasks list)
+  function toggleExpandedItem(itemId: string) {
+    if (expandedItemIds.value.has(itemId)) {
+      expandedItemIds.value.delete(itemId)
+    } else {
+      expandedItemIds.value.add(itemId)
+    }
+    saveExpandedItemIds(expandedItemIds.value)
   }
 
   async function addWorkspace(name: string, icon: string = '📂') {
     try {
       const newWorkspace = await api.createWorkspace(name, icon)
+      const expandedWorkspaces = loadExpandedWorkspaces()
       workspaces.value.push({
         ...newWorkspace,
-        expanded: false,
+        expanded: expandedWorkspaces.has(newWorkspace.id),
         items: newWorkspace.items || [],
       })
     } catch (err) {
       console.error('Failed to create workspace:', err)
       // Fallback to local creation if API fails
+      const id = `workspace-${Date.now()}`
+      const expandedWorkspaces = loadExpandedWorkspaces()
       workspaces.value.push({
-        id: `workspace-${Date.now()}`,
+        id,
         name,
         icon,
-        expanded: false,
+        expanded: expandedWorkspaces.has(id),
         items: [],
       })
     }
@@ -206,21 +337,38 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     try {
       const newItem = await api.createWorkspaceItem(workspaceId, name, path, itemType)
-      workspace.items.push(newItem)
-      // Auto-expand workspace to show new item
-      workspace.expanded = true
+      const expandedItems = loadExpandedItems()
+      workspace.items.push({
+        ...newItem,
+        expanded: expandedItems.has(newItem.id),
+      })
+      // Auto-expand workspace to show new item and persist
+      if (!workspace.expanded) {
+        workspace.expanded = true
+        const expandedWorkspaces = loadExpandedWorkspaces()
+        expandedWorkspaces.add(workspace.id)
+        saveExpandedWorkspaces(expandedWorkspaces)
+      }
       return newItem.id
     } catch (err) {
       console.error('Failed to create workspace item:', err)
       // Fallback to local creation if API fails
       const itemId = `item-${Date.now()}`
+      const expandedItems = loadExpandedItems()
       workspace.items.push({
         id: itemId,
         name,
         item_type: itemType,
         path,
+        expanded: expandedItems.has(itemId),
       })
-      workspace.expanded = true
+      // Auto-expand workspace to show new item and persist
+      if (!workspace.expanded) {
+        workspace.expanded = true
+        const expandedWorkspaces = loadExpandedWorkspaces()
+        expandedWorkspaces.add(workspace.id)
+        saveExpandedWorkspaces(expandedWorkspaces)
+      }
       return itemId
     }
   }
@@ -318,9 +466,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       for (const workspace of workspaces.value) {
         for (const item of workspace.items) {
           if (item.tasks?.some((t) => t.id === taskId)) {
-            // Found the parent - set active item and expand workspace
+            // Found the parent - set active item
             activeWorkspaceItemId.value = item.id
-            workspace.expanded = true
+            // Expand workspace and persist if not already expanded
+            if (!workspace.expanded) {
+              workspace.expanded = true
+              const expandedWorkspaces = loadExpandedWorkspaces()
+              expandedWorkspaces.add(workspace.id)
+              saveExpandedWorkspaces(expandedWorkspaces)
+            }
             return
           }
         }
@@ -341,6 +495,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     if (activeWorkspaceItemId.value === itemId) {
       activeWorkspaceItemId.value = null
+    }
+
+    // Remove from expandedItemIds if present
+    if (expandedItemIds.value.has(itemId)) {
+      expandedItemIds.value.delete(itemId)
+      saveExpandedItemIds(expandedItemIds.value)
     }
 
     // Sync with API
@@ -407,6 +567,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // State
     workspaces,
     activeWorkspaceItemId,
+    expandedItemIds,
     activeTaskId,
     systemFolderInfo,
     systemFolderLoading,
@@ -421,6 +582,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // Actions
     init,
     toggleWorkspace,
+    toggleWorkspaceItem,
+    toggleExpandedItem,
     setActiveWorkspaceItem,
     setActiveTask,
     addWorkspace,

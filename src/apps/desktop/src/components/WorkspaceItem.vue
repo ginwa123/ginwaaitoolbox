@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem } from '../stores/workspaces'
 
@@ -17,6 +18,9 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
 }>()
+
+// Computed: check if item is expanded (tasks visible)
+const isExpanded = computed(() => workspacesStore.expandedItemIds.has(props.item.id))
 
 const handleClick = () => {
   emit('click', props.item)
@@ -68,7 +72,7 @@ const handleDeleteTask = (event: Event, taskId: string) => {
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
             </svg>
           </span>
-          <!-- Active Indicator -->
+          <!-- Active Indicator (for FolderExplorer selection) -->
           <span
             v-if="isActive && !item.isLoading"
             class="ml-auto w-1.5 h-1.5 rounded-full"
@@ -99,8 +103,8 @@ const handleDeleteTask = (event: Event, taskId: string) => {
         </button>
       </div>
 
-      <!-- Tasks List (shown when active) -->
-      <div v-if="isActive && item.tasks && item.tasks.length > 0" class="ml-8 mt-1 space-y-0.5">
+      <!-- Tasks List (shown when expanded - allows multiple) -->
+      <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1 space-y-0.5">
         <div
           v-for="task in item.tasks"
           :key="task.id"

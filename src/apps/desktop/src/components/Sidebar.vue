@@ -22,7 +22,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  navigate: [id: string, chatName?: string]
+  navigate: [id: string, chatName?: string, taskId?: string]
   'toggle-collapse': []
   resize: [width: number]
 }>()
@@ -160,8 +160,11 @@ const toggleCollapse = () => {
   emit('toggle-collapse')
 }
 
-// Nav section collapsible state
-const navExpanded = ref(true)
+// Nav section collapsible state - use store for persistence
+const navExpanded = computed({
+  get: () => sidebarStore.navExpanded,
+  set: (val) => { sidebarStore.navExpanded = val }
+})
 
 // Loading state
 const chatsLoading = ref(false)
@@ -287,7 +290,7 @@ const createChat = () => {
 }
 
 const toggleNavSection = () => {
-  navExpanded.value = !navExpanded.value
+  sidebarStore.toggleNavExpanded()
 }
 
 const confirmDeleteChat = (chatId: string) => {
