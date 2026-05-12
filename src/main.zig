@@ -142,6 +142,9 @@ pub fn main(init: std.process.Init) !void {
             router.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, .{});
             router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
 
+            // Worker API
+            router.get("/api/workers", http_handlers.worker_list_handler, .{});
+
             // LLM API aliases (desktop app uses /api/llm/*)
             router.post("/api/llm/session", http_handlers.sessionCreateHandler, .{});
             router.get("/api/llm/session", http_handlers.sessionListHandler, .{});

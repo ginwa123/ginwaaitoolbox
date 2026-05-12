@@ -73,6 +73,23 @@ pub const TaskCreateResponse = struct {
     completed: bool
 };
 
+pub const WorkerInfo = struct {
+    id: []const u8,
+    session_id: []const u8,
+    working_directory: ?[]const u8,
+    last_activity: ?[]const u8,
+    last_activity_description: ?[]const u8,
+    created_at: ?[]const u8,
+    status: []const u8,
+    is_running: bool,
+    queue_count: u32
+};
+
+pub const WorkerListResponse = struct {
+    workers: []const WorkerInfo,
+    count: u32
+};
+
 pub fn makeSystemFolderErrorResponse(allocator: std.mem.Allocator, message: []const u8, err: anytype) ![]u8 {
     const response = SystemFolderErrorResponse{
         .@"error" = message,
@@ -98,6 +115,14 @@ pub fn makeTaskDeleteResponse(allocator: std.mem.Allocator, response: TaskDelete
 }
 
 pub fn makeTaskCreateResponse(allocator: std.mem.Allocator, response: TaskCreateResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+pub fn makeWorkerListResponse(allocator: std.mem.Allocator, workers: []const WorkerInfo, count: u32) ![]u8 {
+    const response = WorkerListResponse{
+        .workers = workers,
+        .count = count,
+    };
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 

@@ -544,6 +544,28 @@ export async function compactSession(sessionId: string): Promise<{ success: bool
   }
 }
 
+// Worker API
+export interface Worker {
+  id: string;
+  session_id: string;
+  working_directory: string | null;
+  last_activity: string | null;
+  last_activity_description: string | null;
+  created_at: string | null;
+  status: string;
+  is_running: boolean;
+  queue_count: number;
+}
+
+export async function getWorkers(status?: string, limit = 50, sessionId?: string): Promise<{ workers: Worker[]; count: number }> {
+  const params = new URLSearchParams({ limit: limit.toString() });
+  if (status) params.set("status", status);
+  if (sessionId) params.set("session_id", sessionId);
+  const response = await fetch(`${API_BASE}/workers?${params}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 // Workspace Item API
 export async function createWorkspaceItem(
   workspaceId: string,

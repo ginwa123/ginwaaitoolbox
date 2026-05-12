@@ -163,6 +163,40 @@ const isAtBottom = ref(true)
 const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
+const isLLMProcessing = ref(false)
+
+// Poll for LLM processing status
+let processingPollInterval: ReturnType<typeof setInterval> | null = null
+
+const checkLLMProcessing = async () => {
+  if (!sessionId.value || isPendingSession.value) {
+    isLLMProcessing.value = false
+    return
+  }
+
+  try {
+    const { workers } = await api.getWorkers(undefined, 50, sessionId.value)
+    isLLMProcessing.value = workers.length > 0
+  } catch (err) {
+    console.error('Failed to check LLM processing:', err)
+    isLLMProcessing.value = false
+  }
+}
+
+const startProcessingPoll = () => {
+  // Check immediately
+  checkLLMProcessing()
+  // Then poll every 2 seconds
+  if (processingPollInterval) clearInterval(processingPollInterval)
+  processingPollInterval = setInterval(checkLLMProcessing, 2000)
+}
+
+const stopProcessingPoll = () => {
+  if (processingPollInterval) {
+    clearInterval(processingPollInterval)
+    processingPollInterval = null
+  }
+}
 
 // Filter out empty messages for display (check stripped content)
 const filteredMessages = computed(() =>
@@ -373,6 +407,10 @@ const connectSse = () => {
           maxTotalTokens.value = event.total_tokens;
         }
 
+        if (event.finish_reason == 'stop') {
+
+        }
+
         return
       }
 
@@ -439,11 +477,13 @@ onMounted(async () => {
   if (sessionId.value) {
     await loadChatHistory()
     connectSse()
+    startProcessingPoll()
   }
 })
 
 onUnmounted(() => {
   disconnectSse()
+  stopProcessingPoll()
 })
 
 watch(
@@ -561,15 +601,16 @@ const compactSession = async () => {
           <span v-if="isLoading">Loading...</span>
           <span v-else-if="error" style="color: var(--color-red);">{{ error }}</span>
           <span v-else-if="isStreaming" style="color: var(--color-violet);">Receiving...</span>
+          <span v-else-if="isLLMProcessing" style="color: var(--color-orange);">⚡ Processing</span>
           <span v-else-if="compactError" style="color: var(--color-red);">Compact failed</span>
           <span v-else>{{ messages.length }} message{{ messages.length !== 1 ? 's' : '' }}</span>
         </p>
       </div>
       <!-- Compact button in header right -->
       <div class="ml-auto flex items-center gap-2">
-        <button @click="compactSession" :disabled="isCompacting || isLoading || !sessionId"
+        <button @click="compactSession" :disabled="isCompacting || isLoading || isLLMProcessing || !sessionId"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
-          :class="isCompacting || isLoading || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
+          :class="isCompacting || isLoading || isLLMProcessing || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
           :title="isCompacting ? 'Compacting...' : 'Compact conversation history'">
           <span v-if="isCompacting" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"

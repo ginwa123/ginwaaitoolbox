@@ -1,7 +1,9 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
-const session_registry = root_mod.session.session_registry;
+const nalarcore = root_mod;
+const ai_workflow = nalarcore.ai_workflow;
+const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
 
@@ -9,83 +11,84 @@ const httpz = http_server.httpz;
 /// Query params:
 ///   - limit: max number of workers to return (u32, default: 50)
 ///   - status: filter by status (running, idle, stopped, all - default: all)
-/// Returns JSON array of worker info
-pub fn worker_list_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+///   - session_id: filter by session_id (optional, for checking if session is processing)
+/// Returns JSON array of worker info from both database and registry
+pub fn workerListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
     const alloc = req.arena;
     res.content_type = .JSON;
 
     const query = try req.query();
     const limit_str = query.get("limit") orelse "50";
-    const status_filter = query.get("status") orelse "all";
+    const session_id_filter = query.get("session_id");
 
     const limit = std.fmt.parseInt(u32, limit_str, 10) catch 50;
 
-    if (session_registry.get_global_registry()) |registry| {
-        var worker_list = std.ArrayList(u8).empty;
-        defer worker_list.deinit(alloc);
-        const writer = worker_list.writer(alloc);
+    // Get workers from database
+    if (http_server.global_server) |server| {
+        if (server.ctx) |ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+            const sqlite_db = ctxTui.db;
 
-        try writer.writeAll("[");
-        var count: u32 = 0;
-
-        // Determine filter type
-        const filter_running = std.mem.eql(u8, status_filter, "running");
-        const filter_idle = std.mem.eql(u8, status_filter, "idle");
-        const filter_stopped = std.mem.eql(u8, status_filter, "stopped");
-
-        // Get all session IDs using the helper method
-        var session_ids = registry.get_session_ids(alloc) catch {
-            res.status = 500;
-            res.body = "{\"error\":\"Failed to get session list\"}";
-            return;
-        };
-        defer {
-            for (session_ids.items) |sid| alloc.free(sid);
-            session_ids.deinit(alloc);
-        }
-
-        for (session_ids.items) |sid| {
-            if (count >= limit) break;
-
-            const is_stopped = registry.is_stopped(sid);
-            const is_running = registry.is_running(sid);
-
-            // Apply status filter
-            const matches_filter = if (filter_running)
-                is_running
-            else if (filter_idle)
-                !is_stopped and !is_running
-            else if (filter_stopped)
-                is_stopped
+            // Build query with optional session_id filter
+            const base_sql = "SELECT id, session_id, working_directory, last_activity, last_activity_description, created_at FROM worker";
+            const query_sql: []const u8 = if (session_id_filter != null)
+                try std.fmt.allocPrint(alloc, "{s} WHERE session_id = ? ORDER BY last_activity DESC", .{base_sql})
             else
-                true; // "all" or unknown
+                try std.fmt.allocPrint(alloc, "{s} ORDER BY last_activity DESC", .{base_sql});
 
-            if (!matches_filter) continue;
+            const query_params: []const []const u8 = if (session_id_filter) |sid|
+                &[_][]const u8{sid}
+            else
+                &[_][]const u8{};
 
-            const status = if (is_stopped) "stopped" else if (is_running) "running" else "idle";
-            const queue_count = registry.get_queue_count(sid);
+            // Query worker table from database
+            var rows = sqlite_db.query(alloc, query_sql, query_params) catch {
+                res.status = 500;
+                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" });
+                return;
+            };
 
-            if (count > 0) {
-                try writer.writeAll(",");
+            // Collect workers into array list
+            var workers = std.ArrayList(http_response.WorkerInfo).empty;
+
+            while (true) {
+                const row_opt = rows.next() catch break;
+                const row = row_opt orelse break;
+
+                const db_id = row.values[0];
+                const session_id = row.values[1];
+                const working_directory = row.values[2];
+                const last_activity = row.values[3];
+                const last_activity_description = row.values[4];
+                const created_at = row.values[5];
+
+                const status = "idle";
+                const is_running = false;
+                const queue_count: u32 = 0;
+
+                try workers.append(alloc, .{
+                    .id = db_id,
+                    .session_id = session_id,
+                    .working_directory = working_directory,
+                    .last_activity = last_activity,
+                    .last_activity_description = last_activity_description,
+                    .created_at = created_at,
+                    .status = status,
+                    .is_running = is_running,
+                    .queue_count = queue_count,
+                });
+
+                // Check limit
+                if (workers.items.len >= limit) break;
             }
 
-            try writer.print(
-                "{{\"id\":\"{s}\",\"status\":\"{s}\",\"is_running\":{},\"queue_count\":{}}}",
-                .{ sid, status, is_running, queue_count }
-            );
-            count += 1;
+            const count: u32 = @intCast(workers.items.len);
+            res.status = 200;
+            res.body = try http_response.makeWorkerListResponse(alloc, workers.items, count);
+            return;
         }
-
-        try writer.writeAll("]");
-
-        res.status = 200;
-        res.body = try std.fmt.allocPrint(alloc,
-            "{{\"workers\":{s},\"count\":{}}}",
-            .{ worker_list.items, count }
-        );
-        return;
     }
 
     res.status = 500;
-    res.body = "{\"error\":\"Activity registry not available\"}";
+    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

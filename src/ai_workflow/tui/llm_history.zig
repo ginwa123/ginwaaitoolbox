@@ -1263,3 +1263,28 @@ pub fn deleteAllWorkers(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend)
     const sql = "DELETE FROM worker";
     try db.exec(allocator, sql, &.{});
 }
+
+/// Get a worker by session_id
+pub fn getWorkerBySessionId(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !?WorkerInfo {
+    const sql = "SELECT session_id, COALESCE(working_directory, ''), last_activity, COALESCE(last_activity_description, '') FROM worker WHERE session_id = ?";
+
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const last_activity = std.fmt.parseInt(i64, row.values[2], 10) catch 0;
+        const worker = WorkerInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .working_directory = try allocator.dupe(u8, row.values[1]),
+            .last_activity = last_activity,
+            .last_activity_description = try allocator.dupe(u8, row.values[3]),
+        };
+        row.deinit(allocator);
+        return worker;
+    }
+    return null;
+}
