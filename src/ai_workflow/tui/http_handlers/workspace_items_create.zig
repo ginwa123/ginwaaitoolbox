@@ -3,7 +3,6 @@ const root_mod = @import("nalarcore");
 const http_server = root_mod.http_server;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
-const workspace_items = nalarcore.workspace_items;
 
 const httpz = http_server.httpz;
 
@@ -64,18 +63,18 @@ pub fn workspaceItemsCreateHandler(
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            const result = workspace_items.createWorkspaceItem(alloc, sqlite_db, item_id, workspace_id, item_type) catch {
+            // Insert with timestamps
+            sqlite_db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))", &.{ item_id, workspace_id, item_type }) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Failed to create workspace item\"}";
                 return;
             };
-            defer result.deinit(alloc);
 
             res.status = 201;
             res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"workspace_id\":\"{s}\",\"item_type\":\"{s}\"}}", .{
-                result.id,
-                result.workspace_id,
-                result.item_type,
+                item_id,
+                workspace_id,
+                item_type,
             });
             return;
         }

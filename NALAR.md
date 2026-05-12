@@ -336,11 +336,18 @@ const is_sub_agent = std.mem.indexOf(u8, session_id, "subagent") != null;
 
 **Latest Migration:** `Migration029AddTimestampsToSessions` — added `created_at` and `updated_at` columns to `sessions` table
 
+**Timestamp Columns (Migration030 & Migration031):**
+- `Migration030AddTimestampsToWorkspaces` (v30) — added `created_at` and `updated_at` to `workspaces` table
+- `Migration031AddTimestampsToWorkspaceItems` (v31) — added `created_at` and `updated_at` to `workspace_items` table
+- Both use `DATETIME DEFAULT (datetime('now'))` for automatic timestamp on insert
+- Updates automatically set `updated_at = datetime('now')` via `workspace_update.zig` and `workspace_items_table.zig`
+
 | Table | Key Column | Purpose |
 |-------|------------|---------|
 | `sessions` | `id` (PK), `name`, `cwd`, `created_at`, `updated_at` | Session metadata (cwd = working directory) |
 | `llm_history` | `session_id` (FK) | References `sessions.id` |
-| `workspace_items` | `id` (PK), `workspace_id`, `item_type` | Workspace items table |
+| `workspace_items` | `id` (PK), `workspace_id`, `item_type`, `created_at`, `updated_at` | Workspace items table |
+| `workspaces` | `id` (PK), `name`, `created_at`, `updated_at` | Workspaces table |
 
 **Schema Change (Migration023):**
 - Removed `session_dir` column from `llm_history`

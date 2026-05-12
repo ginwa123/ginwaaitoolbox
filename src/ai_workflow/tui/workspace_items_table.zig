@@ -6,11 +6,15 @@ pub const WorkspaceItemInfo = struct {
     id: []u8,
     workspace_id: []u8,
     item_type: []u8,
+    created_at: ?[]u8 = null,
+    updated_at: ?[]u8 = null,
 
     pub fn deinit(self: WorkspaceItemInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.workspace_id);
         allocator.free(self.item_type);
+        if (self.created_at) |ca| allocator.free(ca);
+        if (self.updated_at) |ua| allocator.free(ua);
     }
 };
 
@@ -38,7 +42,7 @@ pub fn getWorkspaceItem(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?WorkspaceItemInfo {
-    const sql = "SELECT id, workspace_id, item_type FROM workspace_items WHERE id = ?";
+    const sql = "SELECT id, workspace_id, item_type, created_at, updated_at FROM workspace_items WHERE id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -48,6 +52,8 @@ pub fn getWorkspaceItem(
             .id = try allocator.dupe(u8, row.values[0]),
             .workspace_id = try allocator.dupe(u8, row.values[1]),
             .item_type = try allocator.dupe(u8, row.values[2]),
+            .created_at = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .updated_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
         };
         row.deinit(allocator);
         return item;
@@ -64,7 +70,7 @@ pub fn updateWorkspaceItem(
     workspace_id: []const u8,
     item_type: []const u8,
 ) !void {
-    const sql = "UPDATE workspace_items SET workspace_id = ?, item_type = ? WHERE id = ?";
+    const sql = "UPDATE workspace_items SET workspace_id = ?, item_type = ?, updated_at = datetime('now') WHERE id = ?";
     try db.exec(allocator, sql, &.{ workspace_id, item_type, id });
 }
 
@@ -84,7 +90,7 @@ pub fn listWorkspaceItems(
     db: *sqlite.SqliteBackend,
     workspace_id: []const u8,
 ) ![]WorkspaceItemInfo {
-    const sql = "SELECT id, workspace_id, item_type FROM workspace_items WHERE workspace_id = ? ORDER BY id";
+    const sql = "SELECT id, workspace_id, item_type, created_at, updated_at FROM workspace_items WHERE workspace_id = ? ORDER BY created_at DESC";
 
     var rows = try db.query(allocator, sql, &.{workspace_id});
     defer rows.deinit();
@@ -100,6 +106,8 @@ pub fn listWorkspaceItems(
             .id = try allocator.dupe(u8, row.values[0]),
             .workspace_id = try allocator.dupe(u8, row.values[1]),
             .item_type = try allocator.dupe(u8, row.values[2]),
+            .created_at = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .updated_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
         };
         try items.append(allocator, item);
         row.deinit(allocator);

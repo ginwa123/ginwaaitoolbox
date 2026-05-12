@@ -61,14 +61,19 @@ pub fn workspacesCreateHandler(self: *http_server.HttpServer.ServerHandler, req:
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            sqlite_db.exec(alloc, "INSERT INTO workspaces (id, name) VALUES (?, ?)", &.{ workspace_id, name.string }) catch {
+            sqlite_db.exec(alloc, "INSERT INTO workspaces (id, name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))", &.{ workspace_id, name.string }) catch {
                 res.status = 500;
                 res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to create workspace" });
                 return;
             };
 
             res.status = 201;
-            res.body = try http_response.makeWorkspaceResponse(alloc, .{ .id = workspace_id, .name = name.string });
+            res.body = try http_response.makeWorkspaceResponse(alloc, .{
+                .id = workspace_id,
+                .name = name.string,
+                .created_at = null,
+                .updated_at = null,
+            });
             return;
         }
     }

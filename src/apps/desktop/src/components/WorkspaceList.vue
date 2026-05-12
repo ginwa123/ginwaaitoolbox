@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import type { Workspace, WorkspaceItem } from '../stores/workspaces'
 import WorkspaceItemComponent from './WorkspaceItem.vue'
 
@@ -13,7 +13,7 @@ const emit = defineEmits<{
   selectItem: [workspaceId: string, itemId: string]
   deleteWorkspace: [workspaceId: string]
   deleteItem: [workspaceId: string, itemId: string]
-  requestAddItem: [workspaceId: string]
+  requestAddItem: [workspaceId: string, itemType: string]
   addWorkspace: []
   addTask: [workspaceId: string, item: WorkspaceItem]
   selectTask: [taskId: string]
@@ -22,9 +22,34 @@ const emit = defineEmits<{
 
 // Workspaces section collapsible state
 const workspacesExpanded = ref(true)
+const activeAddMenu = ref<string | null>(null)
+
+// Close dropdown when clicking outside
+const handleClickOutside = (event: MouseEvent) => {
+  const target = event.target as HTMLElement
+  if (!target.closest('.group/workspace')) {
+    activeAddMenu.value = null
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+})
 
 const toggleWorkspacesSection = () => {
   workspacesExpanded.value = !workspacesExpanded.value
+}
+
+const toggleAddMenu = (workspaceId: string) => {
+  if (activeAddMenu.value === workspaceId) {
+    activeAddMenu.value = null
+  } else {
+    activeAddMenu.value = workspaceId
+  }
 }
 
 const handleWorkspaceClick = (workspaceId: string) => {
@@ -43,8 +68,9 @@ const handleDeleteItem = (workspaceId: string, itemId: string) => {
   emit('deleteItem', workspaceId, itemId)
 }
 
-const handleAddItem = (workspaceId: string) => {
-  emit('requestAddItem', workspaceId)
+const handleAddItem = (workspaceId: string, itemType: string) => {
+  activeAddMenu.value = null
+  emit('requestAddItem', workspaceId, itemType)
 }
 
 const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
@@ -153,15 +179,43 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
             @delete-task="handleDeleteTask"
           />
           <!-- Add Item Button -->
-          <li class="group/workspace">
+          <li class="group/workspace relative">
             <button
-              @click="handleAddItem(workspace.id)"
+              @click.stop="toggleAddMenu(workspace.id)"
               class="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-all duration-200"
               style="color: var(--semantic-text-dim);"
             >
               <span class="opacity-50 group-hover/workspace:opacity-100 transition-opacity duration-200">+</span>
-              <span class="opacity-50 group-hover/workspace:opacity-100 transition-opacity duration-200 truncate">Add Project</span>
+              <span class="opacity-50 group-hover/workspace:opacity-100 transition-opacity duration-200 truncate">Add Item</span>
             </button>
+            <!-- Dropdown Menu -->
+            <ul
+              v-if="activeAddMenu === workspace.id"
+              class="absolute left-0 top-full mt-1 py-1 rounded-md shadow-lg z-50 min-w-[140px]"
+              style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+            >
+              <li>
+                <button
+                  @click="handleAddItem(workspace.id, 'folder')"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity flex items-center gap-2"
+                  style="color: var(--semantic-text);"
+                >
+                  <span>📁</span>
+                  <span>Add Project</span>
+                </button>
+              </li>
+              <li class="opacity-50 pointer-events-none" title="Coming soon">
+                <button
+                  class="w-full px-3 py-2 text-left text-sm flex items-center gap-2 cursor-not-allowed"
+                  style="color: var(--semantic-text-dim);"
+                  disabled
+                >
+                  <span>📝</span>
+                  <span>Add Markdown</span>
+                  <span class="text-xs">(Dev)</span>
+                </button>
+              </li>
+            </ul>
           </li>
         </ul>
         </Transition>

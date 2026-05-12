@@ -184,7 +184,7 @@ const handleKeydown = (event: KeyboardEvent) => {
               Add Project
             </h3>
             <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
-              Select a folder from the system
+              Select a folder to add as a project
             </p>
           </div>
 

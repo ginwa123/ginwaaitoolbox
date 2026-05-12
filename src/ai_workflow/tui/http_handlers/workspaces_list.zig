@@ -17,7 +17,7 @@ pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            var rows = sqlite_db.query(alloc, "SELECT id, name FROM workspaces ORDER BY rowid DESC", &[_][]const u8{}) catch {
+            var rows = sqlite_db.query(alloc, "SELECT id, name, created_at, updated_at FROM workspaces ORDER BY created_at DESC", &[_][]const u8{}) catch {
                 res.status = 500;
                 res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" });
                 return;
@@ -39,7 +39,9 @@ pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                 first = false;
                 const id = row.values[0];
                 const name = row.values[1];
-                try json_buf.appendSlice(alloc, try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"icon\":\"📁\",\"items\":[],\"expanded\":false}}", .{ id, name }));
+                const created_at = row.values[2];
+                const updated_at = row.values[3];
+                try json_buf.appendSlice(alloc, try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"created_at\":\"{s}\",\"updated_at\":\"{s}\",\"icon\":\"📁\",\"items\":[],\"expanded\":false}}", .{ id, name, created_at, updated_at }));
             }
             try json_buf.appendSlice(alloc, "]}");
             res.status = 200;

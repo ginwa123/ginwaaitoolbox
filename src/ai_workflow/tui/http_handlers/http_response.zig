@@ -2,12 +2,22 @@ const std = @import("std");
 
 pub const WorkspaceResponse = struct {
     id: []const u8,
-    name: []const u8
+    name: []const u8,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null
 };
 
 pub const WorkspaceItemResponse = struct {
     id: []const u8,
     success: bool = true
+};
+
+pub const WorkspaceItemFullResponse = struct {
+    id: []const u8,
+    workspace_id: []const u8,
+    item_type: []const u8,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null
 };
 
 pub const LlmRunResponse = struct {
@@ -25,7 +35,9 @@ pub const WorkspaceItemUpdateResponse = struct {
 pub const WorkspaceItemGetResponse = struct {
     id: []const u8,
     workspace_id: []const u8,
-    item_type: []const u8
+    item_type: []const u8,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null
 };
 
 pub const SystemFolderErrorResponse = struct {
@@ -117,6 +129,10 @@ pub fn makeWorkspaceItemGetResponse(allocator: std.mem.Allocator, response: Work
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+pub fn makeWorkspaceItemFullResponse(allocator: std.mem.Allocator, response: WorkspaceItemFullResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 pub fn makeWorkspaceItemListResponse(allocator: std.mem.Allocator, items: anytype) ![]u8 {
     var list = std.ArrayList(u8).empty;
     defer list.deinit(allocator);
@@ -124,10 +140,12 @@ pub fn makeWorkspaceItemListResponse(allocator: std.mem.Allocator, items: anytyp
     try list.appendSlice(allocator, "[");
     for (items, 0..) |item, i| {
         if (i > 0) try list.appendSlice(allocator, ",");
-        const json_str = try std.json.Stringify.valueAlloc(allocator, WorkspaceItemGetResponse{
+        const json_str = try std.json.Stringify.valueAlloc(allocator, WorkspaceItemFullResponse{
             .id = item.id,
             .workspace_id = item.workspace_id,
             .item_type = item.item_type,
+            .created_at = item.created_at,
+            .updated_at = item.updated_at,
         }, .{});
         defer allocator.free(json_str);
         try list.appendSlice(allocator, json_str);

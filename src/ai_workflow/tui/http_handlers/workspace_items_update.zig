@@ -82,10 +82,12 @@ pub fn workspaceItemsUpdateHandler(
             };
 
             res.status = 200;
-            res.body = try http_response.makeWorkspaceItemUpdateResponse(alloc, .{
+            res.body = try http_response.makeWorkspaceItemGetResponse(alloc, .{
                 .id = item_id,
                 .workspace_id = current_workspace_id,
                 .item_type = item_type_val.string,
+                .created_at = null,
+                .updated_at = null,
             });
             return;
         }

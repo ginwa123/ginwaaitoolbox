@@ -425,9 +425,12 @@ const handleDeleteItem = (workspaceId: string, itemId: string) => {
   })
 }
 
-const handleAddItem = (workspaceId: string) => {
+const handleAddItem = (workspaceId: string, itemType: string) => {
   addItemTargetWorkspaceId.value = workspaceId
-  showAddItemDialog.value = true
+  if (itemType === 'folder') {
+    showAddItemDialog.value = true
+  }
+  // Future: for 'markdown' type, show markdown dialog
 }
 
 const handleCreateItem = async (name: string, path: string) => {

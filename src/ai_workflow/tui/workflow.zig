@@ -817,7 +817,10 @@ pub const TUIWorkflow = struct {
         }
 
         self.logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{ messages.len, content.len }) catch {};
-        return arena.dupe(u8, content) catch null;
+        return arena.dupe(u8, content) catch |err| {
+            self.logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)}) catch {};
+            return null;
+        };
     }
 
     /// No-op callback for streaming - used when we don't need to stream chunks to client.
@@ -879,6 +882,11 @@ pub const TUIWorkflow = struct {
                 needs_free = true;
             } else |err| {
                 self.logger.warnFmt("[SESSION NAME] Failed to strip thinking tags: {s}, using original content", .{@errorName(err)}) catch {};
+            }
+
+            // limit to 50 chars
+            if (stripped_content.len > 50) {
+                stripped_content = stripped_content[0..50];
             }
 
             // Update session name in database
