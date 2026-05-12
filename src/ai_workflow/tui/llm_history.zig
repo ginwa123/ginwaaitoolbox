@@ -573,8 +573,8 @@ fn jsonEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
             '\n' => try result.appendSlice(allocator, "\\n"),
             '\r' => try result.appendSlice(allocator, "\\r"),
             '\t' => try result.appendSlice(allocator, "\\t"),
-            '\x08' => try result.appendSlice(allocator, "\\b"),  // backspace
-            '\x0C' => try result.appendSlice(allocator, "\\f"),  // form feed
+            '\x08' => try result.appendSlice(allocator, "\\b"), // backspace
+            '\x0C' => try result.appendSlice(allocator, "\\f"), // form feed
             // Escape other control characters (0x00-0x1F except those above) as \u00XX
             0x00...0x07, 0x0E...0x1F => {
                 var buf: [6]u8 = undefined;
@@ -1264,6 +1264,11 @@ pub fn deleteAllWorkers(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend)
     try db.exec(allocator, sql, &.{});
 }
 
+pub fn deleteAllQueuedMessages(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !void {
+    const sql = "DELETE FROM session_queue_messages";
+    try db.exec(allocator, sql, &.{});
+}
+
 /// Get a worker by session_id
 pub fn getWorkerBySessionId(
     allocator: std.mem.Allocator,
@@ -1287,4 +1292,121 @@ pub fn getWorkerBySessionId(
         return worker;
     }
     return null;
+}
+
+/// Check if a session is currently running (exists in worker table)
+pub fn isSessionRunning(
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) bool {
+    const sql = "SELECT 1 FROM worker WHERE id = ? LIMIT 1";
+    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
+    defer rows.deinit();
+    return (rows.next() catch return false) != null;
+}
+
+/// Cancel a session (set cancelled flag)
+pub fn cancelSession(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !void {
+    const sql = "UPDATE worker SET cancelled = 1 WHERE id = ?";
+    try db.exec(allocator, sql, &.{session_id});
+}
+
+/// Check if a session is cancelled
+pub fn isSessionCancelled(
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) bool {
+    const sql = "SELECT cancelled FROM worker WHERE id = ?";
+    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
+    defer rows.deinit();
+    if (rows.next() catch return false) |row| {
+        const cancelled = std.fmt.parseInt(i32, row.values[0], 10) catch 0;
+        return cancelled == 1;
+    }
+    return false;
+}
+
+/// Mark session as idle (remove from worker table)
+pub fn markSessionIdle(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !void {
+    const sql = "DELETE FROM worker WHERE id = ?";
+    try db.exec(allocator, sql, &.{session_id});
+}
+
+/// Queue a message for a session
+pub fn queueMessage(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    message: []const u8,
+) !void {
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds});
+    defer allocator.free(id);
+    const sql = "INSERT INTO session_queue_messages (id, session_id, message) VALUES (?, ?, ?)";
+    try db.exec(allocator, sql, &.{ id, session_id, message });
+}
+
+/// Returns null if no messages queued
+/// Caller must free the returned slice
+pub fn getQueueMessages(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !?std.ArrayList([]const u8) {
+    const select_sql = "SELECT message FROM session_queue_messages WHERE session_id = ? ORDER BY created_at ASC";
+    var rows = try db.query(allocator, select_sql, &.{session_id});
+    defer rows.deinit();
+
+    var messages = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (messages.items) |msg| allocator.free(msg);
+        messages.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const msg = try allocator.dupe(u8, row.values[0]);
+        try messages.append(allocator, msg);
+    }
+
+    if (messages.items.len == 0) {
+        messages.deinit(allocator);
+        return null;
+    }
+
+    return messages;
+}
+
+/// Delete a specific queued message
+pub fn deleteQueuedMessage(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    message: []const u8,
+) !void {
+    const sql = "DELETE FROM session_queue_messages WHERE session_id = ? AND message = ? ";
+    try db.exec(allocator, sql, &.{ session_id, message });
+}
+
+/// Check if session has queued messages
+pub fn hasQueuedMessages(
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) bool {
+    const sql = "SELECT 1 FROM session_queue_messages WHERE session_id = ? LIMIT 1";
+    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
+    defer rows.deinit();
+
+    if (rows.next() catch return false) |row| {
+        const queued = std.fmt.parseInt(i32, row.values[0], 10) catch 0;
+        return queued == 1;
+    }
+
+    return false;
 }

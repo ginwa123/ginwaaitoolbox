@@ -44,6 +44,11 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
             return err;
         };
 
+        llm_history.deleteAllQueuedMessages(allocator, sqlite_db) catch |err| {
+            logger.errFmt("Failed to delete all queued messages: {s}", .{@errorName(err)}) catch {};
+            return err;
+        };
+
         // Query all workers from the database
         const workers = llm_history.getActiveWorker(allocator, sqlite_db) catch |err| {
             logger.errFmt("Failed to query workers: {s}", .{@errorName(err)}) catch {};

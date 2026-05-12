@@ -134,6 +134,8 @@ pub const FileEditingRules =
     \\- ❌ `cp src dst` — use `read_file` + `write_file` instead
     \\- ❌ `rm file.txt` — use `text_replace` to remove content
     \\- ❌ `mkdir -p dir` — use `write_file` with `create_with_dir: true`
+    \\- ❌ `sed 's/old/new/' file` — use `text_replace` tool instead
+    \\- ❌ `awk '{print}' file` — use `read_file` tool instead
     \\- ❌ `chmod`, `chown`, `ln`, `unlink` — use specialized tools
     \\- ❌ **ANY file read/write operation via bash is FORBIDDEN**
     \\

@@ -213,162 +213,13 @@ pub const TUIWorkflow = struct {
         };
     }
 
-    pub fn runAgenticSimpleStep(self: *TUIWorkflow, params: RunParams) !void {
-        // Single-step mode: only answer the question, no tool execution
-        // Register this session for activity/cancellation tracking
-        if (session_registry.get_global_registry()) |registry| {
-            if (registry.isRegistered(params.session_id) == false) {
-                try registry.register(params.session_id);
-            }
-        }
-
-        // Also register in worker table for enrichment info
-        llm_history.upsertWorker(params.parent_allocator, self.db, params.session_id, params.session_id, params.cwd) catch {
-            self.logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id}) catch {};
-        };
-
-        // Cleanup on exit - unregister session
-        defer {
-            if (session_registry.get_global_registry()) |registry| {
-                registry.markIdle(params.session_id);
-                registry.markStopped(params.session_id);
-                registry.unregister(params.session_id);
-            }
-            // Also remove from worker table
-            llm_history.removeWorker(params.parent_allocator, self.db, params.session_id) catch {};
-        }
-
-        // Get current agent state
-        const agent_state = try get_current_agent_by_session_id(
-            params.parent_allocator,
-            self.db,
-            params.session_id,
-        );
-        const current_agent = agent_state.agent;
-        const agent_temperature = agent_state.temperature;
-        const isThinking = agent_state.is_thinking;
-
-        var arenaAllocator = std.heap.ArenaAllocator.init(params.parent_allocator);
-        defer arenaAllocator.deinit();
-        const allocator = arenaAllocator.allocator();
-
-        // Mark session as running
-        if (session_registry.get_global_registry()) |registry| {
-            registry.mark_running(params.session_id);
-        }
-
-        // Fetch MCP tools
-        const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.io, self.config.mcpServers orelse .null) catch |err| blk: {
-            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
-            break :blk null;
-        }) orelse &[_]tool_models.AgentTool{};
-
-        // Filter and merge tools
-        const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools, params.is_sub_agent);
-
-        // Debug: check merged_tools
-        std.debug.print("DEBUG_MERGE: merged_tools count={d}\n", .{merged_tools.len});
-
-        // Get messages from database
-        const db_messages = try getMessages(allocator, self.db, params.session_id);
-        defer {
-            for (db_messages) |*msg| msg.deinit(allocator);
-            allocator.free(db_messages);
-        }
-
-        // Build messages for LLM
-        var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
-        defer messagesLists.deinit(allocator);
-        const initialMessages = try buildMessages(allocator, self.io, self.db, params.cwd, params.session_id, db_messages, merged_tools);
-        try messagesLists.appendSlice(allocator, initialMessages);
-
-        // Call the dynamic agent (single call only)
-        const res = self.callDynamicAgent(
-            allocator,
-            &messagesLists,
-            agent_temperature,
-            8000,
-            isThinking,
-            self.config.api_key,
-            self.config.model,
-            self.config.base_url,
-            params.session_id,
-            merged_tools,
-        ) catch |err| {
-            self.logger.errFmt("runAgenticSimpleStep: Error calling dynamic agent: {s}", .{@errorName(err)}) catch {};
-            return err;
-        };
-
-        // Save assistant response to database
-        _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
-            .session_id = params.session_id,
-            .model = self.config.model,
-            .cwd = params.cwd,
-            .content = res.content,
-            .reasoning_content = res.reasoning_content,
-            .role = agent.Role.assistant.to_str(),
-            .finish_reason = if (res.finish_reason) |fr| fr.to_str() else null,
-            .tool_calls = null,
-            .tool_call_id = null,
-            .agent_name = current_agent,
-            .loop_index = 0,
-            .temperature = agent_temperature,
-            .is_thinking = isThinking,
-            .prompt_tokens = res.usage.prompt_tokens,
-            .completion_tokens = res.usage.completion_tokens,
-            .total_tokens = res.usage.total_tokens,
-            .parent_id = params.parent_session_id,
-            .parent_session_id = params.parent_session_id,
-        });
-
-        // Send SSE event with the response
-        _ = try onEventSendLLMHistory(allocator, .{
-            .session_id = params.session_id,
-            .model = self.config.model,
-            .cwd = params.cwd,
-            .content = res.content,
-            .reasoning_content = res.reasoning_content,
-            .role = agent.Role.assistant.to_str(),
-            .finish_reason = if (res.finish_reason) |fr| fr.to_str() else "stop",
-            .tool_calls = null,
-            .tool_call_id = null,
-            .tool_name = null,
-            .agent_name = current_agent,
-            .loop_index = 0,
-            .temperature = agent_temperature,
-            .is_thinking = isThinking,
-            .is_input = false,
-            .is_output = true,
-            .parent_session_id = params.parent_session_id,
-            .parent_id = params.parent_session_id,
-            .total_tokens = res.usage.total_tokens,
-        });
-    }
-
     pub fn runAgenticMultiStep(self: *TUIWorkflow, params: RunParams) !void {
         var is_have_queue_message = false;
-        // Register this session for activity/cancellation tracking
-        if (session_registry.get_global_registry()) |registry| {
-            if (registry.isRegistered(params.session_id) == false) {
-                try registry.register(params.session_id);
-            }
-        }
 
-        // Also register in worker table for enrichment info
-        llm_history.upsertWorker(params.parent_allocator, self.db, params.session_id, params.session_id, params.cwd) catch {
-            self.logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id}) catch {};
-        };
-
-        // Ensure cleanup happens even on error - balances mark_running() and unregisters session
+        // Ensure cleanup happens even on error - remove from worker table
         defer {
             if (is_have_queue_message == false) {
-                if (session_registry.get_global_registry()) |registry| {
-                    registry.markIdle(params.session_id);
-                    registry.markStopped(params.session_id);
-                    registry.unregister(params.session_id);
-                }
-                // Also remove from worker table
-                llm_history.removeWorker(params.parent_allocator, self.db, params.session_id) catch {};
+                llm_history.markSessionIdle(params.parent_allocator, self.db, params.session_id) catch {};
             }
         }
 
@@ -379,17 +230,26 @@ pub const TUIWorkflow = struct {
         );
         const initial_agent = initial_agent_state.agent;
 
-        if (session_registry.get_global_registry()) |registry| {
-            const is_running = registry.is_running(params.session_id);
-            if (is_running) {
-                _ = registry.queueMessage(params.session_id, params.message);
-                self.logger.debugFmt("WORKFLOW: queued message for session {s}", .{params.session_id}) catch {};
-                is_have_queue_message = true;
-                return;
-            }
-
-            _ = registry.queueMessage(params.session_id, params.message);
+        // Check if session is already running (exists in worker table)
+        if (llm_history.isSessionRunning(self.db, params.session_id)) {
+            // Session is already running, queue the message
+            llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.message) catch {
+                self.logger.warnFmt("Failed to queue message for session {s}", .{params.session_id}) catch {};
+            };
+            self.logger.debugFmt("WORKFLOW: queued message for session {s}", .{params.session_id}) catch {};
+            is_have_queue_message = true;
+            return;
         }
+
+        // Register in worker table (upsertWorker already does this)
+        llm_history.upsertWorker(params.parent_allocator, self.db, params.session_id, params.session_id, params.cwd) catch {
+            self.logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id}) catch {};
+        };
+
+        // Queue the initial message
+        llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.message) catch {
+            self.logger.warnFmt("Failed to queue initial message for session {s}", .{params.session_id}) catch {};
+        };
 
         var retryCount: usize = 0;
         var current_max_tokens: usize = 8000;
@@ -411,9 +271,9 @@ pub const TUIWorkflow = struct {
 
         // Handle body message - add as initial user message if provided
         if (params.body.len > 0) {
-            if (session_registry.get_global_registry()) |registry| {
-                _ = registry.queueMessage(params.session_id, params.body);
-            }
+            llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.body) catch {
+                self.logger.warnFmt("Failed to queue body message for session {s}", .{params.session_id}) catch {};
+            };
         }
 
         while (true) {
@@ -421,61 +281,61 @@ pub const TUIWorkflow = struct {
             defer arenaAllocatorWhileLoop.deinit();
             const allocator = arenaAllocatorWhileLoop.allocator();
 
-            if (session_registry.get_global_registry()) |registry| {
-                if (registry.isCancelled(params.session_id)) {
-                    _ = try self.logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
-                    break;
-                }
+            // Check cancellation using DB
+            if (llm_history.isSessionCancelled(self.db, params.session_id)) {
+                _ = try self.logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
+                break;
+            }
 
-                const queued_messages = registry.getQueueMessages(params.session_id);
-                if (queued_messages) |messages| {
-                    for (messages.items) |msg| {
-                        _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
-                            .session_id = params.session_id,
-                            .model = self.config.model,
-                            .cwd = params.cwd,
-                            .content = msg,
-                            .reasoning_content = null,
-                            .role = agent.Role.user.to_str(),
-                            .finish_reason = "null",
-                            .tool_calls = null,
-                            .tool_call_id = null,
-                            .agent_name = initial_agent,
-                            .loop_index = 0,
-                            .temperature = initial_agent_state.temperature,
-                            .is_thinking = initial_agent_state.is_thinking,
-                            .prompt_tokens = 0,
-                            .completion_tokens = 0,
-                            .total_tokens = 0,
-                            .parent_id = params.parent_session_id,
-                            .parent_session_id = params.parent_session_id,
-                            .is_input = true,
-                            .is_output = false,
-                        });
-                        _ = registry.deleteQueueMessages(params.session_id, msg);
+            // Get queued messages from DB
+            var queued_messages = try llm_history.getQueueMessages(allocator, self.db, params.session_id);
+            if (queued_messages) |*messages| {
+                for (messages.items) |msg| {
+                    _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
+                        .session_id = params.session_id,
+                        .model = self.config.model,
+                        .cwd = params.cwd,
+                        .content = msg,
+                        .reasoning_content = null,
+                        .role = agent.Role.user.to_str(),
+                        .finish_reason = "null",
+                        .tool_calls = null,
+                        .tool_call_id = null,
+                        .agent_name = initial_agent,
+                        .loop_index = 0,
+                        .temperature = initial_agent_state.temperature,
+                        .is_thinking = initial_agent_state.is_thinking,
+                        .prompt_tokens = 0,
+                        .completion_tokens = 0,
+                        .total_tokens = 0,
+                        .parent_id = params.parent_session_id,
+                        .parent_session_id = params.parent_session_id,
+                        .is_input = true,
+                        .is_output = false,
+                    });
 
-                        onEventSendLLMHistory(allocator, .{
-                            .session_id = params.session_id,
-                            .model = self.config.model,
-                            .cwd = params.cwd,
-                            .content = msg,
-                            .reasoning_content = null,
-                            .role = agent.Role.user.to_str(),
-                            .finish_reason = "null",
-                            .tool_calls = null,
-                            .tool_call_id = null,
-                            .agent_name = initial_agent,
-                            .loop_index = 0,
-                            .temperature = initial_agent_state.temperature,
-                            .is_thinking = initial_agent_state.is_thinking,
-                            .parent_id = params.parent_session_id,
-                            .parent_session_id = params.parent_session_id,
-                            .is_input = true,
-                            .is_output = false,
-                        }) catch {};
-                    }
+                    onEventSendLLMHistory(allocator, .{
+                        .session_id = params.session_id,
+                        .model = self.config.model,
+                        .cwd = params.cwd,
+                        .content = msg,
+                        .reasoning_content = null,
+                        .role = agent.Role.user.to_str(),
+                        .finish_reason = "null",
+                        .tool_calls = null,
+                        .tool_call_id = null,
+                        .agent_name = initial_agent,
+                        .loop_index = 0,
+                        .temperature = initial_agent_state.temperature,
+                        .is_thinking = initial_agent_state.is_thinking,
+                        .parent_id = params.parent_session_id,
+                        .parent_session_id = params.parent_session_id,
+                        .is_input = true,
+                        .is_output = false,
+                    }) catch {};
+
+                    _ = try llm_history.deleteQueuedMessage(allocator, self.db, params.session_id, msg);
                 }
-                registry.mark_running(params.session_id);
             }
 
             // Update worker activity in DB to show we're actively processing
@@ -598,6 +458,11 @@ pub const TUIWorkflow = struct {
                         .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
                     });
 
+                    const isHaveQueueMessage = llm_history.hasQueuedMessages(self.db, params.session_id);
+                    if (isHaveQueueMessage) {
+                        continue;
+                    }
+
                     break;
                 } else if (finish_reason == .length) {
                     current_max_tokens += 4096;
@@ -655,6 +520,12 @@ pub const TUIWorkflow = struct {
                             .parent_id = params.parent_session_id,
                             .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
                         });
+
+                        const isHaveQueueMessage = llm_history.hasQueuedMessages(self.db, params.session_id);
+                        if (isHaveQueueMessage) {
+                            continue;
+                        }
+
                         break;
                     }
                 } else {
@@ -788,7 +659,6 @@ pub const TUIWorkflow = struct {
             .tools = &.{},
             .messages = msgs,
             .temperature = 0.0,
-            .max_tokens = 8000,
         }, null, noopStreamCallback) catch |err| {
             self.logger.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)}) catch {};
             return null;
