@@ -5,7 +5,6 @@ import { useSidebarStore } from '../stores/sidebar'
 import WorkspaceList from './WorkspaceList.vue'
 import WorkspaceModal from './WorkspaceModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
-import AddTaskDialog from './AddTaskDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
 import * as api from '../api'
@@ -262,10 +261,6 @@ const handleSortChange = async () => {
 const showAddWorkspaceModal = ref(false)
 const showAddItemDialog = ref(false)
 const addItemTargetWorkspaceId = ref<string | null>(null)
-const showAddTaskDialog = ref(false)
-const addTaskTargetWorkspaceId = ref<string | null>(null)
-const addTaskTargetItemId = ref<string | null>(null)
-
 // Chat management - direct creation without dialog
 // Session is created lazily when user sends first message
 const createChat = () => {
@@ -290,14 +285,6 @@ const createChat = () => {
   workspacesStore.setActiveTask(null)
   emit('navigate', `chat-${newChatId}`, name)
 }
-
-// Computed project name for task dialog
-const addTaskProjectName = computed(() => {
-  if (!addTaskTargetWorkspaceId.value || !addTaskTargetItemId.value) return ''
-  const workspace = workspacesStore.workspaces.find((ws) => ws.id === addTaskTargetWorkspaceId.value)
-  const item = workspace?.items.find((i) => i.id === addTaskTargetItemId.value)
-  return item?.name || ''
-})
 
 const toggleNavSection = () => {
   navExpanded.value = !navExpanded.value
@@ -460,23 +447,19 @@ const handleCloseModal = () => {
   showAddWorkspaceModal.value = false
 }
 
-// Task handlers
-const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
-  addTaskTargetWorkspaceId.value = workspaceId
-  addTaskTargetItemId.value = item.id
-  showAddTaskDialog.value = true
-}
+// Task handlers - Add Task creates a task item and opens TaskDetail view
+const handleAddTask = async (workspaceId: string, item: WorkspaceItem) => {
+  // Create a new task using the store API
+  const name = `New Task ${new Date().toLocaleTimeString()}`
+  const taskId = await workspacesStore.addTask(workspaceId, item.id, name)
 
-const handleCreateTask = (name: string, description?: string) => {
-  if (addTaskTargetWorkspaceId.value && addTaskTargetItemId.value) {
-    workspacesStore.addTask(addTaskTargetWorkspaceId.value, addTaskTargetItemId.value, name, description)
+  if (taskId) {
+    // Set active task (setActiveTask auto-sets parent workspace item and expands)
+    workspacesStore.setActiveTask(taskId)
+
+    // Navigate to task view (shows TaskDetail with ChatView-like interface)
+    emit('navigate', 'task')
   }
-}
-
-const handleCloseAddTaskDialog = () => {
-  showAddTaskDialog.value = false
-  addTaskTargetWorkspaceId.value = null
-  addTaskTargetItemId.value = null
 }
 
 const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
@@ -765,14 +748,6 @@ const handleSelectTask = (taskId: string) => {
       :show="showAddItemDialog"
       @close="handleCloseAddItemDialog"
       @create="handleCreateItem"
-    />
-
-    <!-- Add Task Dialog -->
-    <AddTaskDialog
-      :show="showAddTaskDialog"
-      :project-name="addTaskProjectName"
-      @close="handleCloseAddTaskDialog"
-      @create="handleCreateTask"
     />
 
     <!-- Delete Chat Confirmation Dialog -->

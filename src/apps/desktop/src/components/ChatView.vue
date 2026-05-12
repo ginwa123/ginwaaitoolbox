@@ -507,29 +507,6 @@ const sendMessage = async () => {
 
   // Handle pending session - create real session first
   let currentSessionId = sessionId.value
-  if (!currentSessionId || isPendingSession.value) {
-    try {
-      const newSession = await api.createSession(props.chatName || 'New Chat')
-      currentSessionId = newSession.session_id
-
-      // Update chat ID in sidebar (remove 'chat-' prefix)
-      const oldId = props.chatId.replace(/^chat-/, '')
-      const newId = newSession.session_id
-      emit('update-chat-id', oldId, newId)
-
-      // Update sessionId for this view
-      sessionId.value = currentSessionId
-    } catch (err) {
-      console.error('Failed to create session:', err)
-      messages.value.push({
-        id: `error-${Date.now()}`,
-        role: 'assistant',
-        content: 'Sorry, I encountered an error. Please try again.',
-        timestamp: new Date(),
-      })
-      return
-    }
-  }
 
   try {
 

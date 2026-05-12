@@ -1,9 +1,9 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-const nalarcore = root_mod;
+const nalarcore = @import("nalarcore");
+const http_server = nalarcore.http_server;
 const ai_workflow = nalarcore.ai_workflow;
 const http_response = nalarcore.http_response;
+const sqlite = nalarcore.sqlite;
 
 const httpz = http_server.httpz;
 const process = nalarcore.helpers.process;
@@ -60,7 +60,7 @@ pub fn workspacesCreateHandler(self: *http_server.HttpServer.ServerHandler, req:
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            sqlite_db.exec(alloc, "INSERT INTO workspaces (id, name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))", &.{ workspace_id, name.string }) catch {
+            useCase(alloc, sqlite_db, workspace_id, name.string) catch {
                 res.status = 500;
                 res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to create workspace" });
                 return;
@@ -78,4 +78,8 @@ pub fn workspacesCreateHandler(self: *http_server.HttpServer.ServerHandler, req:
     }
     res.status = 500;
     res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+}
+
+fn useCase(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, workspace_id: []const u8, name: []const u8) !void {
+    _ = try db.exec(allocator, "INSERT INTO workspaces (id, name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))", &.{ workspace_id, name });
 }

@@ -188,14 +188,14 @@ export interface Message {
 // Zig backend internally calls LLM backend
 
 // Create a new chat session
-export async function createSession(name?: string): Promise<Chat> {
+export async function createSession(name?: string, cwd_session?: string): Promise<Chat> {
   try {
     const response = await fetch(`${API_BASE}/llm/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: name || "New Chat",
-        cwd_session: "/home/ginwa/agentic_coding_zig/ginwaaitoolbox",
+        name: name || "New Session",
+        cwd_session: cwd_session
       }),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -300,8 +300,6 @@ export async function sendChatMessage(
   cwdSession: string,
 ): Promise<{ status: string }> {
   try {
-    // todo hardcode cwd\
-    cwdSession = "/home/ginwa/agentic_coding_zig/ginwaaitoolbox";
     const response = await fetch(`${API_BASE}/llm/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
