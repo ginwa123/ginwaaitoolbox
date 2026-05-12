@@ -342,6 +342,7 @@ pub const TUIWorkflow = struct {
             .is_output = true,
             .parent_session_id = params.parent_session_id,
             .parent_id = params.parent_session_id,
+            .total_tokens = res.usage.total_tokens,
         });
     }
 
@@ -575,6 +576,7 @@ pub const TUIWorkflow = struct {
                         .is_output = true,
                         .parent_session_id = params.parent_session_id,
                         .parent_id = params.parent_session_id,
+                        .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
                     });
 
                     break;
@@ -606,7 +608,7 @@ pub const TUIWorkflow = struct {
                             .is_thinking = isThinking,
                             .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
                             .completion_tokens = res_dynamic_agent.usage.completion_tokens,
-                            .total_tokens = res_dynamic_agent.usage.total_tokens,
+                            .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
                             .parent_id = params.parent_session_id,
                             .parent_session_id = params.parent_session_id,
                         });
@@ -632,6 +634,7 @@ pub const TUIWorkflow = struct {
                             .is_output = true,
                             .parent_session_id = params.parent_session_id,
                             .parent_id = params.parent_session_id,
+                            .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
                         });
                         break;
                     }

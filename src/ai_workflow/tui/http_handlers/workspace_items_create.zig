@@ -32,7 +32,7 @@ pub fn workspaceItemsCreateHandler(
     const body = req.body() orelse "";
     if (body.len == 0) {
         res.status = 400;
-        res.body = "{\"error\":\"item_type required\"}";
+        res.body = "{\"error\":\"request body required\"}";
         return;
     }
 
@@ -44,18 +44,41 @@ pub fn workspaceItemsCreateHandler(
     defer parsed.deinit();
 
     const root = parsed.value.object;
-    const item_type_val = root.get("item_type") orelse {
+
+    // Extract name (required)
+    const name_val = root.get("name") orelse {
         res.status = 400;
-        res.body = "{\"error\":\"item_type required\"}";
+        res.body = "{\"error\":\"name required\"}";
         return;
     };
-    if (item_type_val != .string) {
+    if (name_val != .string) {
         res.status = 400;
-        res.body = "{\"error\":\"item_type must be a string\"}";
+        res.body = "{\"error\":\"name must be a string\"}";
         return;
     }
+    const name = name_val.string;
 
-    const item_type = item_type_val.string;
+    // Extract path (required)
+    const path_val = root.get("path") orelse {
+        res.status = 400;
+        res.body = "{\"error\":\"path required\"}";
+        return;
+    };
+    if (path_val != .string) {
+        res.status = 400;
+        res.body = "{\"error\":\"path must be a string\"}";
+        return;
+    }
+    const path = path_val.string;
+
+    // Extract item_type (optional, default to "folder")
+    var item_type: []const u8 = "folder";
+    if (root.get("item_type")) |type_val| {
+        if (type_val == .string) {
+            item_type = type_val.string;
+        }
+    }
+
     const item_id = try generateItemId(alloc, handler.io);
 
     if (http_server.global_server) |server| {
@@ -63,18 +86,21 @@ pub fn workspaceItemsCreateHandler(
             const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
             const sqlite_db = ctxTui.db;
 
-            // Insert with timestamps
-            sqlite_db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))", &.{ item_id, workspace_id, item_type }) catch {
+            // Insert with timestamps and item_type, name, path columns
+            sqlite_db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))", &.{ item_id, workspace_id, item_type, name, path }) catch {
                 res.status = 500;
                 res.body = "{\"error\":\"Failed to create workspace item\"}";
                 return;
             };
 
             res.status = 201;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"workspace_id\":\"{s}\",\"item_type\":\"{s}\"}}", .{
+            // Return proper response with id, name, path so frontend can update
+            res.body = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\",\"workspace_id\":\"{s}\",\"item_type\":\"{s}\",\"name\":\"{s}\",\"path\":\"{s}\"}}", .{
                 item_id,
                 workspace_id,
                 item_type,
+                name,
+                path,
             });
             return;
         }

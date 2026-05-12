@@ -30,7 +30,7 @@ export interface Workspace {
 export interface WorkspaceItem {
   id: string;
   name: string;
-  icon: string;
+  item_type: string;
   path?: string;
   entries?: FolderEntry[];
   isLoaded?: boolean;
@@ -351,32 +351,7 @@ export interface SseEvent {
     | "connected"
     | "full";
   index?: number;
-}
-
-// Strip thinking tags and extract content from special wrappers
-// This should be used at the display layer (Vue), NOT in API responses
-export function stripThinkingTags(content: string | undefined): string {
-  if (!content) return "";
-  let result = content.trim();
-
-  // Remove <think>... blocks
-  result = result.replace(/<think>[\s\S]*?<\/think>/gi, "");
-
-  // Remove <plain>...</plain> tags and extract inner content
-  result = result.replace(/<plain>\s*/g, "").replace(/\s*<\/plain>/g, "");
-
-  // Remove <markdown>...</markdown> wrapper but KEEP the inner content
-  result = result
-    .replace(/<markdown>\s*/gi, "")
-    .replace(/\s*<\/markdown>/gi, "");
-
-  return result.trim();
-}
-
-// Check if content is wrapped in markdown tags (for rendering decision)
-export function hasMarkdownWrapper(content: string | undefined): boolean {
-  if (!content) return false;
-  return /<markdown>[\s\S]*<\/markdown>/gi.test(content);
+  total_tokens?: number
 }
 
 // Create SSE connection for real-time updates
@@ -574,12 +549,12 @@ export async function createWorkspaceItem(
   workspaceId: string,
   name: string,
   path: string,
-  icon: string = "📁",
+  itemType: string = "folder",
 ): Promise<WorkspaceItem> {
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/items`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, path, icon }),
+    body: JSON.stringify({ name, path, item_type: itemType }),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();

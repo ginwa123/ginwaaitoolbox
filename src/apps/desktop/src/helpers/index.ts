@@ -1,0 +1,1 @@
+export { stripThinkingTags } from "./stripTags";

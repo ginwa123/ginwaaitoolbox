@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { marked } from 'marked'
 import * as api from '../api'
+import { stripThinkingTags } from '@/helpers';
 
 const props = defineProps<{
   chatId: string
@@ -40,12 +41,12 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
     // Strip thinking tags before rendering
 
     if (role === 'assistant') {
-      const cleanContent = api.stripThinkingTags(content)
+      const cleanContent = stripThinkingTags(content)
       return marked.parse(cleanContent, { async: false }) as string
     }
 
     if (role === 'tool_calls') {
-      const cleanContent = api.stripThinkingTags(content)
+      const cleanContent = stripThinkingTags(content)
       return marked.parse(cleanContent, { async: false }) as string
     }
 
@@ -166,7 +167,7 @@ const maxCapacityTotalTokens = ref(200000)
 // Filter out empty messages for display (check stripped content)
 const filteredMessages = computed(() =>
   messages.value.filter((m) => {
-    const stripped = api.stripThinkingTags(m.content)
+    const stripped = stripThinkingTags(m.content)
     return stripped && stripped.trim() !== ''
   })
 )
@@ -370,6 +371,11 @@ const connectSse = () => {
         streamingContent.value = ''
         isStreaming.value = false
         nextTick(() => scrollToBottom(true))
+
+        if (event.total_tokens) {
+          maxTotalTokens.value = event.total_tokens;
+        }
+
         return
       }
 
@@ -377,6 +383,11 @@ const connectSse = () => {
       if (event.reasoning_content && !event.content) {
         console.log('Reasoning:', event.reasoning_content)
       }
+
+
+
+
+
     },
     (err) => {
       console.error('SSE error:', err)
@@ -416,7 +427,7 @@ const updateStreamingMessage = () => {
     })
   }
   // Skip scroll if content is just thinking tags
-  const stripped = api.stripThinkingTags(streamingContent.value)
+  const stripped = stripThinkingTags(streamingContent.value)
   if (stripped && stripped.trim() !== '') {
     nextTick(() => scrollToBottom(true))
   }
@@ -566,29 +577,30 @@ const compactSession = async () => {
       </div>
       <!-- Compact button in header right -->
       <div class="ml-auto flex items-center gap-2">
-        <button
-          @click="compactSession"
-          :disabled="isCompacting || isLoading || !sessionId"
+        <button @click="compactSession" :disabled="isCompacting || isLoading || !sessionId"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
           :class="isCompacting || isLoading || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
-          :title="isCompacting ? 'Compacting...' : 'Compact conversation history'"
-        >
-          <span v-if="isCompacting" class="w-3.5 h-3.5 border-2 rounded-full animate-spin" style="border-color: var(--color-violet); border-top-color: transparent;"></span>
+          :title="isCompacting ? 'Compacting...' : 'Compact conversation history'">
+          <span v-if="isCompacting" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+            style="border-color: var(--color-violet); border-top-color: transparent;"></span>
           <span v-else>🗜️</span>
           <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
         </button>
         <!-- Token usage display -->
-        <div v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0" class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
+        <div v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0"
+          class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
           <span style="color: var(--semantic-text-dim);">Tokens:</span>
           <span style="color: var(--semantic-text);">{{ maxTotalTokens.toLocaleString() }}</span>
-          <span v-if="maxCapacityTotalTokens > 0" style="color: var(--semantic-text-dim);">/ {{ maxCapacityTotalTokens.toLocaleString() }}</span>
-          <div v-if="maxCapacityTotalTokens > 0" class="w-16 h-2 rounded-full overflow-hidden" style="background-color: var(--color-border);">
-            <div class="h-full rounded-full transition-all duration-300"
-              :style="{
-                width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
-                backgroundColor: (maxTotalTokens / maxCapacityTotalTokens) > 0.8 ? 'var(--color-red)' : (maxTotalTokens / maxCapacityTotalTokens) > 0.6 ? 'var(--color-orange)' : 'var(--color-violet)'
-              }"></div>
+          <span v-if="maxCapacityTotalTokens > 0" style="color: var(--semantic-text-dim);">/ {{
+            maxCapacityTotalTokens.toLocaleString() }}</span>
+          <div v-if="maxCapacityTotalTokens > 0" class="w-16 h-2 rounded-full overflow-hidden"
+            style="background-color: var(--color-border);">
+            <div class="h-full rounded-full transition-all duration-300" :style="{
+              width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
+              backgroundColor: (maxTotalTokens / maxCapacityTotalTokens) > 0.8 ? 'var(--color-red)' : (maxTotalTokens / maxCapacityTotalTokens) > 0.6 ? 'var(--color-orange)' : 'var(--color-violet)'
+            }"></div>
           </div>
         </div>
       </div>
@@ -623,13 +635,12 @@ const compactSession = async () => {
       <div v-else class="max-w-4xl mx-auto px-4 py-6 space-y-4">
         <!-- Load More Button (when content doesn't overflow) -->
         <div v-if="hasMoreMessages" class="flex justify-center pb-2">
-          <button 
-            @click="loadChatHistory(true)" 
-            :disabled="isLoadingMore"
+          <button @click="loadChatHistory(true)" :disabled="isLoadingMore"
             class="flex items-center gap-2 px-4 py-2 rounded-full text-sm transition-all duration-200 hover:scale-105"
             :class="isLoadingMore ? 'opacity-50 cursor-not-allowed' : ''"
             style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);">
-            <div v-if="isLoadingMore" class="w-4 h-4 border-2 rounded-full animate-spin" style="border-color: var(--color-violet); border-top-color: transparent;"></div>
+            <div v-if="isLoadingMore" class="w-4 h-4 border-2 rounded-full animate-spin"
+              style="border-color: var(--color-violet); border-top-color: transparent;"></div>
             <span v-else>↑</span>
             <span>{{ isLoadingMore ? 'Loading...' : 'Load more messages' }}</span>
           </button>

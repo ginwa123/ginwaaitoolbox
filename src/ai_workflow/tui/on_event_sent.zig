@@ -59,6 +59,7 @@ pub const OnEventInput = struct {
     is_output: bool = false,
     parent_session_id: ?[]const u8 = null,
     parent_id: ?[]const u8 = null,
+    total_tokens: ?u32 = null,
 };
 
 /// JSON event payload structure for SSE
@@ -83,6 +84,7 @@ pub const SseEventPayload = struct {
     is_output: bool,
     parent_session_id: ?[]const u8 = null,
     parent_id: ?[]const u8 = null,
+    total_tokens: ?u32 = null,
 };
 
 /// JSON representation of a tool call
@@ -161,6 +163,7 @@ pub fn onEventSend(allocator: std.mem.Allocator, input: OnEventInput) !void {
         .is_output = input.is_output,
         .parent_session_id = input.parent_session_id,
         .parent_id = input.parent_id,
+        .total_tokens = input.total_tokens,
     };
 
     var buf: std.ArrayList(u8) = .empty;
@@ -404,8 +407,3 @@ pub fn sendStreamToolCallDelta(
     sse_manager.enqueueEvent(session_id, event) catch {};
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
-test {}

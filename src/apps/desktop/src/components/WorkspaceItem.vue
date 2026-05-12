@@ -58,7 +58,7 @@ const handleDeleteTask = (event: Event, taskId: string) => {
           <span
             class="transition-colors duration-200"
             :style="isActive ? 'opacity: 1;' : 'opacity: 0.5;'"
-          >{{ item.icon }}</span>
+          >{{ item.item_type === 'folder' ? '📁' : '📄' }}</span>
           <!-- Item Name -->
           <span class="truncate">{{ item.name }}</span>
           <!-- Loading spinner -->

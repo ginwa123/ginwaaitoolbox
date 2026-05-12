@@ -149,7 +149,7 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
             class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center text-3xl"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));"
           >
-            {{ activeWorkspaceItem.icon }}
+            {{ activeWorkspaceItem.item_type === 'folder' ? '📁' : '📄' }}
           </div>
           <h2
             class="text-2xl font-bold mb-2"

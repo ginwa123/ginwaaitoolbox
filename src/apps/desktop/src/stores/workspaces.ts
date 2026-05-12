@@ -4,7 +4,7 @@ import { ref, computed } from 'vue'
 export interface WorkspaceItem {
   id: string
   name: string
-  icon: string
+  item_type: string
   path?: string
   lastAccessed?: Date
   entries?: FolderEntry[]  // Nested folder contents
@@ -200,12 +200,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  async function addWorkspaceItem(workspaceId: string, name: string, path: string, icon: string = '📁'): Promise<string | undefined> {
+  async function addWorkspaceItem(workspaceId: string, name: string, path: string, itemType: string = 'folder'): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return undefined
 
     try {
-      const newItem = await api.createWorkspaceItem(workspaceId, name, path, icon)
+      const newItem = await api.createWorkspaceItem(workspaceId, name, path, itemType)
       workspace.items.push(newItem)
       // Auto-expand workspace to show new item
       workspace.expanded = true
@@ -217,7 +217,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       workspace.items.push({
         id: itemId,
         name,
-        icon,
+        item_type: itemType,
         path,
       })
       workspace.expanded = true

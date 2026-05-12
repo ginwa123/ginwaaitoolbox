@@ -150,6 +150,7 @@ pub const SSEEventData = struct {
     is_output: bool = false,
     parent_session_id: ?[]const u8 = null,
     parent_id: ?[]const u8 = null,
+    total_tokens: ?u32 = null,
 };
 
 /// JSON representation of a tool call (matches ToolCallJson from on_event_sent.zig)
