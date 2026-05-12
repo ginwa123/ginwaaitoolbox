@@ -28,7 +28,6 @@ pub fn workspacesCreateHandler(self: *http_server.HttpServer.ServerHandler, req:
         res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON" });
         return;
     };
-    defer parsed.deinit();
 
     const root = parsed.value.object;
     const name = root.get("name") orelse {

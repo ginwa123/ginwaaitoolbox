@@ -61,15 +61,35 @@ pub fn session_message_handler(_: *http_server.HttpServer.ServerHandler, req: *h
                 res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" });
                 return;
             };
-            defer {
-                for (msg_response.messages) |m| m.deinit(alloc);
-                alloc.free(msg_response.messages);
-                if (msg_response.next_cursor) |c| alloc.free(c);
+
+            // Convert llm_history.SessionMessageResponse to http_response.SessionMessagesResponse
+            var messages: []http_response.SessionMessage = try alloc.alloc(http_response.SessionMessage, msg_response.messages.len);
+            for (msg_response.messages, 0..) |msg, idx| {
+                messages[idx] = http_response.SessionMessage{
+                    .id = msg.id,
+                    .session_id = msg.session_id,
+                    .role = msg.role,
+                    .content = msg.content,
+                    .timestamp = msg.timestamp,
+                    .is_input = msg.is_input,
+                    .is_output = msg.is_output,
+                    .tool_name = msg.tool_name,
+                    .finish_reason = msg.finish_reason,
+                    .reasoning_content = msg.reasoning_content,
+                };
             }
 
-            const response_body = try llm_history.buildSessionMessagesJson(alloc, &msg_response);
+            const http_resp = http_response.SessionMessagesResponse{
+                .messages = messages,
+                .has_more = msg_response.has_more,
+                .next_cursor = msg_response.next_cursor,
+                .cwd = msg_response.cwd,
+                .max_total_tokens = msg_response.max_total_tokens,
+                .max_capacity_total_tokens = msg_response.max_capacity_total_tokens,
+            };
+
             res.status = 200;
-            res.body = response_body;
+            res.body = try http_response.makeSessionMessagesResponse(alloc, http_resp);
             return;
         }
     }

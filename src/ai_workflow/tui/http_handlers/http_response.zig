@@ -16,6 +16,8 @@ pub const WorkspaceItemFullResponse = struct {
     id: []const u8,
     workspace_id: []const u8,
     item_type: []const u8,
+    name: ?[]const u8 = null,
+    path: ?[]const u8 = null,
     created_at: ?[]const u8 = null,
     updated_at: ?[]const u8 = null
 };
@@ -36,6 +38,8 @@ pub const WorkspaceItemGetResponse = struct {
     id: []const u8,
     workspace_id: []const u8,
     item_type: []const u8,
+    name: ?[]const u8 = null,
+    path: ?[]const u8 = null,
     created_at: ?[]const u8 = null,
     updated_at: ?[]const u8 = null
 };
@@ -89,6 +93,32 @@ pub const WorkerListResponse = struct {
     workers: []const WorkerInfo,
     count: u32
 };
+
+pub const SessionMessage = struct {
+    id: []const u8,
+    session_id: []const u8,
+    role: []const u8,
+    content: []const u8,
+    timestamp: []const u8,
+    is_input: []const u8,
+    is_output: []const u8,
+    tool_name: []const u8,
+    finish_reason: []const u8,
+    reasoning_content: []const u8,
+};
+
+pub const SessionMessagesResponse = struct {
+    messages: []const SessionMessage,
+    has_more: bool,
+    next_cursor: ?[]const u8,
+    cwd: ?[]const u8 = null,
+    max_total_tokens: u32 = 0,
+    max_capacity_total_tokens: u32 = 0,
+};
+
+pub fn makeSessionMessagesResponse(allocator: std.mem.Allocator, response: SessionMessagesResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
 
 pub fn makeSystemFolderErrorResponse(allocator: std.mem.Allocator, message: []const u8, err: anytype) ![]u8 {
     const response = SystemFolderErrorResponse{
@@ -169,6 +199,8 @@ pub fn makeWorkspaceItemListResponse(allocator: std.mem.Allocator, items: anytyp
             .id = item.id,
             .workspace_id = item.workspace_id,
             .item_type = item.item_type,
+            .name = item.name,
+            .path = item.path,
             .created_at = item.created_at,
             .updated_at = item.updated_at,
         }, .{});

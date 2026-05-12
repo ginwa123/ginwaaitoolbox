@@ -842,7 +842,7 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     defer parsed.deinit();
 
     var glob_result = try glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value);
-    const res_glob = try glob_tool_mod.toXmlSuccess(ctx.allocator, glob_result);
+    const res_glob = try glob_tool_mod.toXmlSuccess(ctx.allocator, glob_result, parsed.value.pattern);
     glob_result.deinit(ctx.allocator);
 
     return ToolExecResult{ .output = res_glob };

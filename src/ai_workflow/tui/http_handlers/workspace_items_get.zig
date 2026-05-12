@@ -82,6 +82,8 @@ pub fn workspaceItemsGetHandler(
                     .id = i.id,
                     .workspace_id = i.workspace_id,
                     .item_type = i.item_type,
+                    .name = i.name,
+                    .path = i.path,
                     .created_at = i.created_at,
                     .updated_at = i.updated_at,
                 });

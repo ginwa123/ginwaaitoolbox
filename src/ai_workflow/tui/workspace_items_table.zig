@@ -6,6 +6,8 @@ pub const WorkspaceItemInfo = struct {
     id: []u8,
     workspace_id: []u8,
     item_type: []u8,
+    name: ?[]u8 = null,
+    path: ?[]u8 = null,
     created_at: ?[]u8 = null,
     updated_at: ?[]u8 = null,
 
@@ -13,6 +15,8 @@ pub const WorkspaceItemInfo = struct {
         allocator.free(self.id);
         allocator.free(self.workspace_id);
         allocator.free(self.item_type);
+        if (self.name) |n| allocator.free(n);
+        if (self.path) |p| allocator.free(p);
         if (self.created_at) |ca| allocator.free(ca);
         if (self.updated_at) |ua| allocator.free(ua);
     }
@@ -42,7 +46,7 @@ pub fn getWorkspaceItem(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?WorkspaceItemInfo {
-    const sql = "SELECT id, workspace_id, item_type, created_at, updated_at FROM workspace_items WHERE id = ?";
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -52,8 +56,10 @@ pub fn getWorkspaceItem(
             .id = try allocator.dupe(u8, row.values[0]),
             .workspace_id = try allocator.dupe(u8, row.values[1]),
             .item_type = try allocator.dupe(u8, row.values[2]),
-            .created_at = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
-            .updated_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .name = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .path = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .created_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .updated_at = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else null,
         };
         row.deinit(allocator);
         return item;
@@ -90,7 +96,7 @@ pub fn listWorkspaceItems(
     db: *sqlite.SqliteBackend,
     workspace_id: []const u8,
 ) ![]WorkspaceItemInfo {
-    const sql = "SELECT id, workspace_id, item_type, created_at, updated_at FROM workspace_items WHERE workspace_id = ? ORDER BY created_at DESC";
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id = ? ORDER BY created_at DESC";
 
     var rows = try db.query(allocator, sql, &.{workspace_id});
     defer rows.deinit();
@@ -106,8 +112,43 @@ pub fn listWorkspaceItems(
             .id = try allocator.dupe(u8, row.values[0]),
             .workspace_id = try allocator.dupe(u8, row.values[1]),
             .item_type = try allocator.dupe(u8, row.values[2]),
-            .created_at = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
-            .updated_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .name = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .path = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .created_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .updated_at = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else null,
+        };
+        try items.append(allocator, item);
+        row.deinit(allocator);
+    }
+
+    return try items.toOwnedSlice(allocator);
+}
+
+/// List ALL workspace items (for N+1 fix)
+pub fn listAllWorkspaceItems(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+) ![]WorkspaceItemInfo {
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items ORDER BY created_at DESC";
+
+    var rows = try db.query(allocator, sql, &.{});
+    defer rows.deinit();
+
+    var items = std.ArrayList(WorkspaceItemInfo).empty;
+    errdefer {
+        for (items.items) |item| item.deinit(allocator);
+        items.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const item = WorkspaceItemInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .workspace_id = try allocator.dupe(u8, row.values[1]),
+            .item_type = try allocator.dupe(u8, row.values[2]),
+            .name = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .path = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .created_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .updated_at = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else null,
         };
         try items.append(allocator, item);
         row.deinit(allocator);

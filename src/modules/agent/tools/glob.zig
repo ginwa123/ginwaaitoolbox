@@ -475,7 +475,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
 // Output Formatting
 // ============================================================================
 
-pub fn toXmlSuccess(allocator: std.mem.Allocator, result: GlobResult) ![]const u8 {
+pub fn toXmlSuccess(allocator: std.mem.Allocator, result: GlobResult, pattern: []const u8) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
@@ -500,8 +500,8 @@ pub fn toXmlSuccess(allocator: std.mem.Allocator, result: GlobResult) ![]const u
 
     const total_truncated = result.truncated_count + (result.matches.items.len - returned);
     const summary = try std.fmt.allocPrint(allocator,
-        "<glob_summary total=\"{d}\" returned=\"{d}\" offset=\"{d}\" truncated=\"{d}\">\n",
-        .{ result.total_found, returned, result.offset_applied, total_truncated }
+        "<glob_summary pattern=\"{s}\" total=\"{d}\" returned=\"{d}\" offset=\"{d}\" truncated=\"{d}\">\n",
+        .{ pattern, result.total_found, returned, result.offset_applied, total_truncated }
     );
     errdefer allocator.free(summary);
 
