@@ -349,10 +349,7 @@ const connectSse = () => {
 
       // final message
       if (event.type === 'full' && event.finish_reason && event.content) {
-        if (event.is_thinking === true && !event.is_output) {
-          console.log('Skipping thinking message')
-          return
-        }
+
         // replace any streaming placeholder with final message
         messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
@@ -459,13 +456,6 @@ watch(
 
 const sendMessage = async () => {
   if (!inputText.value.trim()) return
-
-  messages.value.push({
-    id: `user-${Date.now()}`,
-    role: 'user',
-    content: inputText.value,
-    timestamp: new Date(),
-  })
 
   const userMessage = inputText.value
   inputText.value = ''

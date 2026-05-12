@@ -8,7 +8,7 @@ const tool_registry = @import("tool_registry.zig");
 const SubAgentToolExec = tool_registry.SubAgentToolExec;
 const llm_history = @import("llm_history.zig");
 const on_event_sent = @import("on_event_sent.zig");
-const onEventSend = on_event_sent.onEventSend;
+const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 const SaveSkill = @import("session_skills.zig").SaveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
 const session_helpers = llm_history;
@@ -446,7 +446,7 @@ fn sendSSEForLatestMessage(
     };
     if (latestMessage) |msg| {
         std.debug.print("SSE_DEBUG: sending SSE for session {s}, content='{s}'\n", .{ session_id, if (msg.response_content.len > 50) msg.response_content[0..50] else msg.response_content });
-        onEventSend(allocator, .{
+        onEventSendLLMHistory(allocator, .{
             .session_id = msg.session_id,
             .model = msg.model,
             .cwd = cwd,

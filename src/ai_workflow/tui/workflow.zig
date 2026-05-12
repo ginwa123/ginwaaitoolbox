@@ -37,7 +37,7 @@ const WriteFileTool = nalar_mod.write_file;
 const TextReplaceTool = nalar_mod.text_replace_tool;
 
 const on_event_sent = @import("on_event_sent.zig");
-const onEventSend = on_event_sent.onEventSend;
+const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 const sendStreamChunkContent = on_event_sent.sendStreamChunkContent;
 const sendStreamChunkReasoning = on_event_sent.sendStreamChunkReasoning;
 const sendStreamChunkFinal = on_event_sent.sendStreamChunkFinal;
@@ -47,7 +47,6 @@ const ReasoningChunk = on_event_sent.ReasoningChunk;
 const FinalChunk = on_event_sent.FinalChunk;
 const ToolCallDeltaChunk = on_event_sent.ToolCallDeltaChunk;
 const ResponseType = on_event_sent.ResponseType;
-const Response = on_event_sent.Response;
 
 const BuildSkillContent = @import("build_messages_for_agent_prompt.zig").BuildSkillContent;
 const BuildDynamicAgentContent = @import("build_messages_for_agent_prompt.zig").BuildDynamicAgentContent;
@@ -323,13 +322,13 @@ pub const TUIWorkflow = struct {
         });
 
         // Send SSE event with the response
-        _ = try onEventSend(allocator, .{
+        _ = try onEventSendLLMHistory(allocator, .{
             .session_id = params.session_id,
             .model = self.config.model,
             .cwd = params.cwd,
             .content = res.content,
             .reasoning_content = res.reasoning_content,
-            .role = "assistant",
+            .role = agent.Role.assistant.to_str(),
             .finish_reason = if (res.finish_reason) |fr| fr.to_str() else "stop",
             .tool_calls = null,
             .tool_call_id = null,
@@ -454,6 +453,26 @@ pub const TUIWorkflow = struct {
                             .is_output = false,
                         });
                         _ = registry.deleteQueueMessages(params.session_id, msg);
+
+                        onEventSendLLMHistory(allocator, .{
+                            .session_id = params.session_id,
+                            .model = self.config.model,
+                            .cwd = params.cwd,
+                            .content = msg,
+                            .reasoning_content = null,
+                            .role = agent.Role.user.to_str(),
+                            .finish_reason = "null",
+                            .tool_calls = null,
+                            .tool_call_id = null,
+                            .agent_name = initial_agent,
+                            .loop_index = 0,
+                            .temperature = initial_agent_state.temperature,
+                            .is_thinking = initial_agent_state.is_thinking,
+                            .parent_id = params.parent_session_id,
+                            .parent_session_id = params.parent_session_id,
+                            .is_input = true,
+                            .is_output = false,
+                        }) catch {};
                     }
                 }
                 registry.mark_running(params.session_id);
@@ -557,7 +576,7 @@ pub const TUIWorkflow = struct {
 
                     // Send SSE event directly with the agent's response content
                     // Don't use getLatestMessage as it might return wrong message if timestamps collide
-                    _ = try onEventSend(allocator, .{
+                    _ = try onEventSendLLMHistory(allocator, .{
                         .session_id = params.session_id,
                         .model = self.config.model,
                         .cwd = params.cwd,
@@ -615,7 +634,7 @@ pub const TUIWorkflow = struct {
 
                         // Send SSE event directly with the agent's response content
                         // Don't use getLatestMessage as it might return wrong message if timestamps collide
-                        _ = try onEventSend(allocator, .{
+                        _ = try onEventSendLLMHistory(allocator, .{
                             .session_id = params.session_id,
                             .model = self.config.model,
                             .cwd = params.cwd,
@@ -641,7 +660,7 @@ pub const TUIWorkflow = struct {
                 } else {
                     retryCount += 1;
                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
-                    onEventSend(allocator, .{
+                    onEventSendLLMHistory(allocator, .{
                         .session_id = params.session_id,
                         .model = self.config.model,
                         .cwd = params.cwd,

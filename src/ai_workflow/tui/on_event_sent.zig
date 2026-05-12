@@ -15,31 +15,9 @@ const logger = @import("nalarcore").logger;
 // Unified Response Types
 // ============================================================================
 
-/// Response type discriminator
-pub const ResponseType = enum {
-    assistant_response,
-    err,
-    tool_result,
-    user_choice,
-};
-
-/// Unified response structure holding all optional fields
-pub const Response = struct {
-    content: ?[]const u8 = null,
-    finish_reason: ?agent.FinishReason = null,
-    override_finish_reason: ?[]const u8 = null,
-    reasoning_content: ?[]const u8 = null,
-    usage: agent.Usage = .{ .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0 },
-    err_msg: ?[]const u8 = null,
-    tool_call_id: ?[]const u8 = null,
-    tool_name: ?[]const u8 = null,
-    tool_result: ?[]const u8 = null,
-    command: ?[]const u8 = null,
-};
-
 /// Input parameters for sending SSE events
 /// Used by TUI workflow to broadcast messages to connected clients
-pub const OnEventInput = struct {
+pub const OnEventInputLLMHistory = struct {
     index: usize = 0,
     session_id: []const u8,
     model: []const u8,
@@ -63,7 +41,7 @@ pub const OnEventInput = struct {
 };
 
 /// JSON event payload structure for SSE
-pub const SseEventPayload = struct {
+pub const SseEventLLMHistory = struct {
     index: ?usize = null,
     content: []const u8,
     @"type": []const u8 = "full",
@@ -99,7 +77,7 @@ pub const ToolCallJson = struct {
 /// JSON Protocol:
 /// - Response events contain all message fields as JSON object
 /// - Tool result events include tool_call_id and tool_name
-pub fn onEventSend(allocator: std.mem.Allocator, input: OnEventInput) !void {
+pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLLMHistory) !void {
     const log = logger.getGlobal();
     const session_id = input.session_id;
 
@@ -143,7 +121,7 @@ pub fn onEventSend(allocator: std.mem.Allocator, input: OnEventInput) !void {
         tool_calls_json = try tool_calls_owned.toOwnedSlice(allocator);
     }
 
-    const payload = SseEventPayload{
+    const payload = SseEventLLMHistory{
         .index = input.index,
         .content = input.content orelse "",
         .session_id = input.session_id,

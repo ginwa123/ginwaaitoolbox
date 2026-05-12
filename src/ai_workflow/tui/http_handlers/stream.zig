@@ -1,7 +1,8 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-const logger = root_mod.logger;
+const nalar_core = @import("nalarcore");
+const http_server = nalar_core.http_server;
+const http_response = nalar_core.http_response;
+const logger = nalar_core.logger;
 
 const httpz = http_server.httpz;
 const SseStreamCtx = @import("mod.zig").SseStreamCtx;
@@ -161,9 +162,10 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
 
 /// SSE stream endpoint - establishes persistent connection for real-time events
 pub fn streamHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+    const allocator = res.arena;
     const session_id = req.param("session_id") orelse {
         res.status = 400;
-        res.body = "Missing session_id";
+        res.body = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" });
         return;
     };
 
@@ -183,6 +185,6 @@ pub fn streamHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
         try res.startEventStream(ctx, sseStreamHandler);
     } else {
         res.status = 500;
-        res.body = "Server not available";
+        res.body = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not available" });
     }
 }
