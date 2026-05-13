@@ -244,35 +244,35 @@ pub const Logger = struct {
     /// Log formatted at TRACE level
     pub fn traceFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
         self.logFmt(.trace, fmt, args) catch {
-            std.debug.print("Error in traceFmt: \n", .{});
+            std.debug.print("[LOGGER] Error in traceFmt: \n", .{});
         };
     }
 
     /// Log formatted at DEBUG level
     pub fn debugFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
         self.logFmt(.debug, fmt, args) catch {
-            std.debug.print("Error in debugFmt: \n", .{});
+            std.debug.print("[LOGGER] Error in debugFmt: \n", .{});
         };
     }
 
     /// Log formatted at INFO level
     pub fn infoFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
         self.logFmt(.info, fmt, args) catch {
-            std.debug.print("Error in infoFmt: \n", .{});
+            std.debug.print("[LOGGER] Error in infoFmt: \n", .{});
         };
     }
 
     /// Log formatted at WARN level
     pub fn warnFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
         self.logFmt(.warn, fmt, args) catch {
-            std.debug.print("Error in warnFmt: \n", .{});
+            std.debug.print("[LOGGER] Error in warnFmt: \n", .{});
         };
     }
 
     /// Log formatted at ERROR level
     pub fn errFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
         self.logFmt(.err, fmt, args) catch {
-            std.debug.print("Error in errFmt: \n", .{});
+            std.debug.print("[LOGGER] Error in errFmt: \n", .{});
         };
     }
 

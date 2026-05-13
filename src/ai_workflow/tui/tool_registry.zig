@@ -605,7 +605,8 @@ const SharedResults = struct {
 const ThreadResult = struct {
     success: bool,
     name: []const u8,
-    response: ?[]u8 = null,
+    response: ?[]const u8 = null,
+    error_message: ?[]const u8 = null,
 };
 
 // spawn_sub_agent implementation - uses workflow.zig logic
@@ -622,7 +623,9 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     // Build results array for sub-agent outputs
     var results = std.ArrayList(u8).empty;
     defer results.deinit(ctx.allocator);
-    var w = std.Io.Writer.fromArrayList(&results);
+    // Use Writer.Allocating instead of Writer.fromArrayList to properly handle buffer growth
+    var aw = std.Io.Writer.Allocating.fromArrayList(ctx.allocator, &results);
+    const w = &aw.writer; // *std.Io.Writer — use this for all writes
 
     // Run each sub-agent in its own thread
     var threads = std.ArrayList(std.Thread).empty;
@@ -643,7 +646,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     // Initialize all results to failed by default with agent names
     for (shared_results.results, 0..) |*r, i| {
-        r.* = .{ .success = false, .name = parsed.sub_agents[i].name, .response = null };
+        r.* = .{ .success = false, .name = parsed.sub_agents[i].name, .response = null, .error_message = null };
     }
     defer {
         ctx.allocator.free(shared_results.results);
@@ -679,9 +682,9 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 args_ptr.logger.debugFmt("Thread started for '{s}'", .{ args_ptr.agent_name });
                 // Create a dedicated arena allocator for this sub-agent to avoid memory contention
                 // when multiple sub-agents run concurrently (e.g., 5 parallel agents all fetching MCP tools)
-                var arena = std.heap.ArenaAllocator.init(args_ptr.allocator);
-                defer arena.deinit();
-                const sub_agent_allocator = arena.allocator();
+                var thread_arena_alloc = std.heap.ArenaAllocator.init(args_ptr.allocator);
+                defer thread_arena_alloc.deinit();
+                const sub_agent_allocator = thread_arena_alloc.allocator();
 
                 defer {
                     // Clean up the heap-allocated args (allocated from parent's heap, not arena)
@@ -691,15 +694,13 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 // Mark this slot as in-progress (result defaults to failed)
                 // Generate unique session ID for this sub-agent
                 const sess_id = std.fmt.allocPrint(sub_agent_allocator, "subagent_{}_{s}", .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, args_ptr.agent_name }) catch {
+                    const err_msg = args_ptr.allocator.dupe(u8, "Failed to create session_id") catch "Failed to allocate";
+                    args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
                     args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{ args_ptr.agent_name });
                     return;
                 };
                 defer sub_agent_allocator.free(sess_id);
                 args_ptr.logger.debugFmt("Session ID created: '{s}'", .{ sess_id });
-
-                // Register sub-agent as worker
-                llm_history.upsertWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id, sess_id, args_ptr.cwd) catch {};
-                defer llm_history.removeWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch {};
 
                 args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name });
                 var workflow = ai_workflow.TUIWorkflow.init(args_ptr.io, args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger, args_ptr.environment);
@@ -723,14 +724,19 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                     } else "",
                     .is_sub_agent = is_sub_agent,
                 }) catch |err| {
+                    const err_msg = args_ptr.allocator.dupe(u8, "Workflow error") catch "Failed to allocate";
+                    args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
                     args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) });
+                    return;
                 };
 
                 args_ptr.logger.debugFmt("workflow.runAgenticMultiStep completed for '{s}', fetching message", .{ args_ptr.agent_name });
                 // Get the agent's response from the database
                 // Use c_allocator to avoid arena aliasing issues
                 const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
-                    args_ptr.logger.errFmt("getLatestMessage error for '{s}': {}", .{ sess_id, err });
+                    const err_msg = args_ptr.allocator.dupe(u8, "getLatestMessage error") catch return;
+                    args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+                    args_ptr.logger.errFmt("getLatestMessage error for '{s}': {s}", .{ sess_id, @errorName(err) });
                     return;
                 };
 
@@ -740,14 +746,21 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                     // Check response BEFORE deinit - deinit frees all allocated strings!
                     if (mutable_msg.response_content.len > 0) {
                         const response_copy = args_ptr.allocator.dupe(u8, mutable_msg.response_content) catch {
+                            const err_msg = args_ptr.allocator.dupe(u8, "Failed to copy response") catch "allocation failed";
+                            args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
                             mutable_msg.deinit(args_ptr.allocator);
                             return;
                         };
                         args_ptr.shared_results.results[args_ptr.thread_idx].response = response_copy;
                         // Only mark success if we actually got a response
                         args_ptr.shared_results.results[args_ptr.thread_idx].success = true;
+                    } else {
+                        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = "Empty response content";
                     }
                     mutable_msg.deinit(args_ptr.allocator);
+                } else {
+                    // No message found - workflow may have failed or not saved any messages
+                    args_ptr.shared_results.results[args_ptr.thread_idx].error_message = "No message found in database";
                 }
 
                 _ = args_ptr.shared_results.completed_count.fetchAdd(1, .monotonic);
@@ -770,17 +783,29 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         if (result.success) success_count += 1;
     }
 
-    // Format results based on thread results - per-agent summary with response
-    try w.print("Results Summary:\n", .{});
+    // Format results based on thread results - per-agent summary with XML response
+    try w.print("<results>\n", .{});
     for (shared_results.results) |result| {
-        const status = if (result.success) "✓" else "✗";
-        try w.print("  {s} {s}\n", .{ status, result.name });
-        if (result.response) |resp| {
-            try w.print("    Response: {s}\n", .{resp});
+        const success = if (result.success) "true" else "false";
+        try w.print("<agent name=\"{s}\" success=\"{s}\">\n", .{ result.name, success });
+        if (result.success) {
+            if (result.response) |resp| {
+                try w.print("<response>{s}</response>\n", .{resp});
+            } else {
+                try w.print("<response></response>\n", .{});
+            }
+        } else if (result.error_message) |err| {
+            try w.print("<error>{s}</error>\n", .{err});
+        } else {
+            try w.print("<error>unknown error</error>\n", .{});
         }
+        try w.print("</agent>\n", .{});
     }
-    try w.print("\nTotal: {} succeeded, {} failed\n", .{ success_count, sub_agent_count - success_count });
+    try w.print("<summary succeeded=\"{}\" failed=\"{}\" />\n", .{ success_count, sub_agent_count - success_count });
+    try w.print("</results>\n", .{});
 
+    // Transfer ownership from Allocating writer to results ArrayList before toOwnedSlice
+    results = aw.toArrayList();
     return ToolExecResult{ .output = try results.toOwnedSlice(ctx.allocator) };
 }
 
