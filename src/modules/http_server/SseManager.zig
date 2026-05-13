@@ -53,14 +53,20 @@ pub const SseConnectionManager = struct {
             defer self.mutex.unlock(self.io);
 
             const ts = std.Io.Clock.now(.real, self.io);
-            const now_ns = ts.toNanoseconds();
+            const now_ns: i64 = @intCast(ts.toNanoseconds());
             const deadline = now_ns + @as(i64, @intCast(timeout_ns));
+
             while (self.head == null and !self.closed) {
                 const ts2 = std.Io.Clock.now(.real, self.io);
                 const now_ns2 = ts2.toNanoseconds();
-                const remaining = @as(u64, @intCast(deadline - now_ns2));
-                if (remaining == 0) break;
-                self.cond.wait(self.io, &self.mutex) catch {};
+
+                // Only wait if there's still time remaining. If deadline passed,
+                // break immediately so we don't block forever on cond.wait().
+                if (deadline <= now_ns2) break;
+
+                // Note: cond.wait() waits indefinitely until signaled.
+                // The timeout is enforced by our loop checking the deadline.
+                self.cond.wait(self.io, &self.mutex) catch break;
             }
 
             if (self.head) |item| {
@@ -167,14 +173,12 @@ pub const SseConnectionManager = struct {
             if (found_idx) |idx| {
                 _ = session.queues.orderedRemove(idx);
                 queue.close();
+                self.allocator.destroy(queue);
 
                 if (session.queues.items.len == 0) {
                     // Last client — clean up session.
-                    // Save the owned key pointer before removing from the map.
                     const owned_key = entry.key_ptr.*;
                     session.queues.deinit(self.allocator);
-                    // Remove by the *original* session_id slice (caller's copy),
-                    // then free the map-owned key copy.
                     _ = self.sessions.remove(session_id);
                     self.allocator.free(owned_key);
                     std.log.info("SSE: Last client disconnected from session: {s}", .{session_id});

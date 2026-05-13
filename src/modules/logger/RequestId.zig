@@ -66,10 +66,12 @@ pub const SessionId = struct {
     pub fn init() SessionId {
         var self: SessionId = undefined;
         
-        // Generate random 8-character hex using timestamp-seeded RNG
+        // Generate random 8-character hex using high-res timestamp-seeded RNG
         var random_bytes: [4]u8 = undefined;
         const ts = std.Io.Timestamp.now(std.testing.io, .real);
-        var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(ts.nanoseconds)));
+        // Use nanoseconds + pointer as seed for uniqueness
+        const seed = @as(u64, @intCast(ts.nanoseconds)) ^ @as(u64, @intFromPtr(&self));
+        var rng = std.Random.DefaultPrng.init(seed);
         rng.fill(&random_bytes);
         
         _ = std.fmt.bufPrint(&self.value, "SES-{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{

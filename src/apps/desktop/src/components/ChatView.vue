@@ -2,7 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { marked } from 'marked'
 import * as api from '../api'
-import { stripThinkingTags } from '@/helpers';
+import { getThinkingTags, isThinkingTags, stripThinkingTags } from '@/helpers';
 
 const props = defineProps<{
   chatId: string
@@ -43,6 +43,43 @@ const escapeHtml = (text: string): string => {
   return div.innerHTML
 }
 
+// Copy code content to clipboard
+const copyCodeContent = async (codeContent: string) => {
+  try {
+    await navigator.clipboard.writeText(codeContent)
+  } catch (err) {
+    console.error('Failed to copy code:', err)
+  }
+}
+
+// Setup copy buttons on code blocks after render
+const setupCodeBlockCopyButtons = () => {
+  nextTick(() => {
+    const container = messagesContainer.value
+    if (!container) return
+    const codeBlocks = container.querySelectorAll('.markdown-content pre')
+    codeBlocks.forEach((block) => {
+      if (block.querySelector('.code-copy-btn')) return // Already has copy button
+      const code = block.querySelector('code')
+      if (!code) return
+      const content = code.textContent || ''
+      const btn = document.createElement('button')
+      btn.className = 'code-copy-btn'
+      btn.innerHTML = '📋'
+      btn.title = 'Copy code'
+      btn.style.cssText = 'position: absolute; top: 8px; right: 8px; padding: 4px 8px; font-size: 12px; cursor: pointer; border: none; background: rgba(255,255,255,0.1); border-radius: 4px; opacity: 0.7; transition: opacity 0.2s;'
+      btn.onmouseover = () => btn.style.opacity = '1'
+      btn.onmouseout = () => btn.style.opacity = '0.7'
+      btn.onclick = (e) => {
+        e.stopPropagation()
+        copyCodeContent(content)
+      }
+        ; (block as HTMLElement).style.position = 'relative'
+      block.appendChild(btn)
+    })
+  })
+}
+
 // Format tool output for display (handles <stdout>, <stderr>, <success>, <error> tags)
 
 // Render markdown content to HTML
@@ -53,13 +90,21 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
     // Strip thinking tags before rendering
 
     if (role === 'assistant') {
-      //      const cleanContent = stripThinkingTags(content)
-      return marked.parse(content, { async: false }) as string
+      if (isThinkingTags(content)) {
+        return getThinkingTags(content)
+      }
+
+      const cleanContent = stripThinkingTags(content)
+      return marked.parse(cleanContent, { async: false }) as string
     }
 
     if (role === 'tool_calls') {
-      //const cleanContent = stripThinkingTags(content)
-      return marked.parse(content, { async: false }) as string
+      if (isThinkingTags(content)) {
+        return getThinkingTags(content)
+      }
+
+      const cleanContent = stripThinkingTags(content)
+      return marked.parse(cleanContent, { async: false }) as string
     }
 
 
@@ -390,6 +435,7 @@ const loadChatHistory = async (loadMore = false) => {
     if (!loadMore) {
       await nextTick()
       scrollToBottom(true)
+      setupCodeBlockCopyButtons()
     }
   } catch (err) {
     console.error('Failed to load chat history:', err)
@@ -491,6 +537,7 @@ const connectSse = () => {
         streamingContent.value = ''
         isStreaming.value = false
         nextTick(() => scrollToBottom(false))
+        setupCodeBlockCopyButtons()
 
         if (event.total_tokens) {
           maxTotalTokens.value = event.total_tokens;
@@ -555,6 +602,8 @@ const updateStreamingMessage = () => {
   if (stripped && stripped.trim() !== '') {
     nextTick(() => scrollToBottom(false))
   }
+  // Setup copy buttons for any code blocks
+  nextTick(() => setupCodeBlockCopyButtons())
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
@@ -795,7 +844,11 @@ const compactSession = async () => {
                       ]">
                         <span v-html="renderResponse(msg.content, msg.role, msg.tool_name)"></span>
                       </button>
-                      <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content"><pre class="tool-content-pre" style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto; box-sizing: border-box; width: 100%;">{{ msg.content.trim() }}</pre></div>
+                      <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content">
+                        <pre class="tool-content-pre"
+                          style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto; box-sizing: border-box; width: 100%;">
+                          {{ msg.content.trim() }}</pre>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -980,5 +1033,14 @@ const compactSession = async () => {
   font-size: 0.8rem;
   color: var(--semantic-text-dim);
   font-family: monospace;
+}
+
+/* Code block copy button */
+:deep(.markdown-content pre) {
+  overflow-x: auto;
+}
+
+:deep(.markdown-content pre:hover .code-copy-btn) {
+  opacity: 1;
 }
 </style>

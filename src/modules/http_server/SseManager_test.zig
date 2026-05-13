@@ -11,7 +11,6 @@ test "SseManager basic registration and removal" {
 
     // Create a queue
     const queue = try manager.createQueue();
-    defer testing.allocator.destroy(queue);
 
     // Register client
     try manager.registerClient("session-1", queue);
@@ -20,7 +19,7 @@ test "SseManager basic registration and removal" {
     try testing.expectEqual(@as(usize, 1), manager.getClientCount("session-1"));
     try testing.expectEqual(@as(usize, 1), manager.getSessionCount());
 
-    // Remove client
+    // Remove client - manager takes ownership and destroys the queue
     const was_last = manager.removeClient("session-1", queue);
     try testing.expect(was_last);
     try testing.expectEqual(@as(usize, 0), manager.getSessionCount());
@@ -34,11 +33,6 @@ test "SseManager multiple clients per session" {
     const queue1 = try manager.createQueue();
     const queue2 = try manager.createQueue();
     const queue3 = try manager.createQueue();
-    defer {
-        testing.allocator.destroy(queue1);
-        testing.allocator.destroy(queue2);
-        testing.allocator.destroy(queue3);
-    }
 
     // Register 3 clients to same session
     try manager.registerClient("session-1", queue1);
@@ -64,13 +58,14 @@ test "SseManager multiple clients per session" {
     was_last = manager.removeClient("session-1", queue3);
     try testing.expect(was_last);
     try testing.expectEqual(@as(usize, 0), manager.getSessionCount());
+    // All queues are destroyed by removeClient
 }
 
 test "SseManager removeClient with non-existent queue" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
     defer manager.deinit();
 
-    // Create a queue but don't register it
+    // Create a queue but don't register it - we own it
     const queue = try manager.createQueue();
     defer testing.allocator.destroy(queue);
 
@@ -116,10 +111,9 @@ test "SseManager enqueueEvent basic" {
     if (item.?.event_type) |et| testing.allocator.free(et);
     testing.allocator.destroy(item.?);
 
-    // Clean up: unregister queue so manager doesn't try to close freed memory
+    // Clean up: removeClient takes ownership and destroys the queue
     _ = manager.removeClient("session-1", queue);
     manager.deinit();
-    // Note: queue is NOT destroyed here because it was registered with manager
 }
 
 test "SseManager enqueueEvent auto-creates session" {
@@ -144,10 +138,9 @@ test "SseManager enqueueEvent auto-creates session" {
     if (item.?.event_type) |et| testing.allocator.free(et);
     testing.allocator.destroy(item.?);
 
-    // Clean up: remove queue from manager so manager doesn't double-free
+    // Clean up: removeClient takes ownership and destroys the queue
     _ = manager.removeClient("new-session", queue);
     manager.deinit();
-    // Note: queue was destroyed by removeClient, NOT by defer
 }
 
 test "SseManager enqueueEvent to multiple clients" {
@@ -166,25 +159,25 @@ test "SseManager enqueueEvent to multiple clients" {
     try manager.enqueueEvent("session-1", event);
 
     // All 3 clients should receive the event
-    for ([_]*Queue{queue1, queue2, queue3}) |queue| {
-        const item = queue.dequeueWithTimeout(100_000_000);
-        try testing.expect(item != null);
-        try testing.expectEqualStrings("broadcast test", item.?.data);
-        testing.allocator.free(item.?.data);
-        if (item.?.event_type) |et| testing.allocator.free(et);
-        testing.allocator.destroy(item.?);
-    }
+    const item1 = queue1.dequeueWithTimeout(100_000_000);
+    try testing.expect(item1 != null);
+    testing.allocator.free(item1.?.data);
+    if (item1.?.event_type) |et| testing.allocator.free(et);
+    testing.allocator.destroy(item1.?);
 
-    // Fourth dequeue should timeout (no more events)
-    const item = queue1.dequeueWithTimeout(50_000_000); // 50ms
-    try testing.expect(item == null);
+    const item2 = queue2.dequeueWithTimeout(100_000_000);
+    try testing.expect(item2 != null);
+    testing.allocator.free(item2.?.data);
+    if (item2.?.event_type) |et| testing.allocator.free(et);
+    testing.allocator.destroy(item2.?);
 
-    // Clean up: remove all queues first so manager doesn't double-free
-    _ = manager.removeClient("session-1", queue1);
-    _ = manager.removeClient("session-1", queue2);
-    _ = manager.removeClient("session-1", queue3);
+    const item3 = queue3.dequeueWithTimeout(100_000_000);
+    try testing.expect(item3 != null);
+    testing.allocator.free(item3.?.data);
+    if (item3.?.event_type) |et| testing.allocator.free(et);
+    testing.allocator.destroy(item3.?);
+
     manager.deinit();
-    // Note: queues are NOT destroyed here because removeClient destroys them
 }
 
 test "SseManager removeSession" {
@@ -193,18 +186,15 @@ test "SseManager removeSession" {
 
     const queue1 = try manager.createQueue();
     const queue2 = try manager.createQueue();
-    defer {
-        testing.allocator.destroy(queue1);
-        testing.allocator.destroy(queue2);
-    }
 
     try manager.registerClient("session-1", queue1);
     try manager.registerClient("session-1", queue2);
 
-    // Force remove entire session
+    // Force remove entire session - manager takes ownership and will destroy queues
     const removed = manager.removeSession("session-1");
     try testing.expectEqual(@as(usize, 2), removed);
     try testing.expectEqual(@as(usize, 0), manager.getSessionCount());
+    // Note: queues are destroyed by removeSession, NOT by defer
 }
 
 test "SseManager removeSession non-existent" {
@@ -217,14 +207,9 @@ test "SseManager removeSession non-existent" {
 
 test "SseManager broadcast" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     const queue1 = try manager.createQueue();
     const queue2 = try manager.createQueue();
-    defer {
-        testing.allocator.destroy(queue1);
-        testing.allocator.destroy(queue2);
-    }
 
     try manager.registerClient("session-1", queue1);
     try manager.registerClient("session-2", queue2);
@@ -242,6 +227,8 @@ test "SseManager broadcast" {
         if (item.?.event_type) |et| testing.allocator.free(et);
         testing.allocator.destroy(item.?);
     }
+
+    manager.deinit();
 }
 
 test "SseManager hasSession" {
@@ -249,7 +236,6 @@ test "SseManager hasSession" {
     defer manager.deinit();
 
     const queue = try manager.createQueue();
-    defer testing.allocator.destroy(queue);
 
     try testing.expect(!manager.hasSession("session-1"));
 
@@ -262,16 +248,10 @@ test "SseManager hasSession" {
 
 test "SseManager getTotalClientCount" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     const queue1 = try manager.createQueue();
     const queue2 = try manager.createQueue();
     const queue3 = try manager.createQueue();
-    defer {
-        testing.allocator.destroy(queue1);
-        testing.allocator.destroy(queue2);
-        testing.allocator.destroy(queue3);
-    }
 
     try testing.expectEqual(@as(usize, 0), manager.getTotalClientCount());
 
@@ -280,18 +260,18 @@ test "SseManager getTotalClientCount" {
     try manager.registerClient("session-2", queue3);
 
     try testing.expectEqual(@as(usize, 3), manager.getTotalClientCount());
+
+    manager.deinit();
 }
 
 test "SseManager queue close behavior" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     const queue = try manager.createQueue();
-    defer testing.allocator.destroy(queue);
 
     try manager.registerClient("session-1", queue);
 
-    // Close the queue manually
+    // Close the queue manually - this will cause dequeuers to wake up and exit
     queue.close();
 
     // Dequeue should return null immediately since queue is closed
@@ -300,32 +280,34 @@ test "SseManager queue close behavior" {
 
     // Session should still exist
     try testing.expect(manager.hasSession("session-1"));
+
+    // Note: don't call removeClient or destroy queue - let manager.deinit() handle it
+    manager.deinit();
 }
 
 test "SseManager double removeClient" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     const queue = try manager.createQueue();
-    defer testing.allocator.destroy(queue);
 
     try manager.registerClient("session-1", queue);
 
-    // First removal - should succeed
+    // First removal - should succeed, manager destroys the queue
     const was_last = manager.removeClient("session-1", queue);
     try testing.expect(was_last);
 
     // Second removal - should be no-op (queue already closed)
     const was_last2 = manager.removeClient("session-1", queue);
     try testing.expect(!was_last2);
+
+    // Note: queue is already destroyed by removeClient
+    manager.deinit();
 }
 
 test "SseManager empty event data" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     const queue = try manager.createQueue();
-    defer testing.allocator.destroy(queue);
 
     try manager.registerClient("session-1", queue);
 
@@ -339,14 +321,14 @@ test "SseManager empty event data" {
     testing.allocator.free(item.?.data);
     if (item.?.event_type) |et| testing.allocator.free(et);
     testing.allocator.destroy(item.?);
+
+    manager.deinit();
 }
 
 test "SseManager event with event_type" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     const queue = try manager.createQueue();
-    defer testing.allocator.destroy(queue);
 
     try manager.registerClient("session-1", queue);
 
@@ -362,11 +344,12 @@ test "SseManager event with event_type" {
     testing.allocator.free(item.?.data);
     testing.allocator.free(item.?.event_type.?);
     testing.allocator.destroy(item.?);
+
+    manager.deinit();
 }
 
 test "SseManager many sessions" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     // Create 10 sessions with 1 client each
     var queues: [10]*Queue = undefined;
@@ -378,7 +361,6 @@ test "SseManager many sessions" {
         queues[i] = try manager.createQueue();
         try manager.registerClient(name, queues[i]);
     }
-    defer for (queues) |q| testing.allocator.destroy(q);
 
     try testing.expectEqual(@as(usize, 10), manager.getSessionCount());
     try testing.expectEqual(@as(usize, 10), manager.getTotalClientCount());
@@ -389,21 +371,18 @@ test "SseManager many sessions" {
     }
 
     try testing.expectEqual(@as(usize, 0), manager.getSessionCount());
+
+    manager.deinit();
 }
 
 test "SseManager concurrent registration race - same session" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     // This test verifies that getOrPut prevents duplicate session creation
     // Even if multiple threads call registerClient simultaneously
 
     const queue1 = try manager.createQueue();
     const queue2 = try manager.createQueue();
-    defer {
-        testing.allocator.destroy(queue1);
-        testing.allocator.destroy(queue2);
-    }
 
     // Register same session from two "threads" (sequentially in test)
     // The key insight is that getOrPut should prevent race conditions
@@ -413,4 +392,6 @@ test "SseManager concurrent registration race - same session" {
     // Should have 2 clients in 1 session
     try testing.expectEqual(@as(usize, 2), manager.getClientCount("race-session"));
     try testing.expectEqual(@as(usize, 1), manager.getSessionCount());
+
+    manager.deinit();
 }

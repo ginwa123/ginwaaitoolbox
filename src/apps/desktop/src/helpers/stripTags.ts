@@ -19,3 +19,33 @@ export function stripThinkingTags(content: string | undefined): string {
 
   return result.trim();
 }
+
+export function getThinkingTags(content: string): string {
+  if (!content) return "";
+
+  // Extract content from <think>... blocks
+  const matches = content.match(/<think>([\s\S]*?)<\/think>/gi);
+  if (!matches) return "";
+
+  // Extract inner content and join
+  return matches
+    .map(match => {
+      // Strip the tags, keep inner content
+      return match.replace(/<\/?think(ing)?>/gi, "").trim();
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function isThinkingTags(content: string): boolean {
+  if (!content) return false;
+  const trimmed = content.trim();
+
+  // Check if content is ONLY <think>... blocks with no other content
+  const withoutThinking = trimmed.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+  // If removing thinking blocks leaves nothing meaningful, it's thinking-only
+  // Whitespace or empty string after stripping means content was only thinking tags
+  return withoutThinking === "";
+}
+

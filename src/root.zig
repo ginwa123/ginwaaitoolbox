@@ -133,5 +133,5 @@ test {
     _ = @import("modules/http/test_runner.zig");
     _ = @import("modules/session/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
-    // _ = @import("modules/http_server/test_runner.zig"); // temporary
+    _ = @import("modules/http_server/test_runner.zig"); // temporary
 }

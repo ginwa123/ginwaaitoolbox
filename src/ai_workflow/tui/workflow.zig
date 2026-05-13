@@ -60,17 +60,44 @@ const SpawnSubAgentTool = nalar_mod.agents;
 const tool_registry = @import("tool_registry.zig");
 const session_table = @import("session_table.zig");
 
-pub const SessionInfo = struct {
-    session_id: []const u8,
-    cwd: []const u8,
-    created_at: []const u8,
+// Thread-safe set of active session loop IDs
+pub const ActiveLoops = struct {
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
+    set: std.StringHashMap(void),
 
-    pub fn deinit(self: *SessionInfo, allocator: std.mem.Allocator) void {
-        allocator.free(self.session_id);
-        allocator.free(self.cwd);
-        allocator.free(self.created_at);
+    pub fn init(allocator: std.mem.Allocator) ActiveLoops {
+        return .{
+            .set = std.StringHashMap(void).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *ActiveLoops) void {
+        self.set.deinit();
+    }
+
+    // Returns true if inserted (caller owns the loop), false if already running
+    pub fn tryInsert(self: *ActiveLoops, io: std.Io, session_id: []const u8) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const result = self.set.getOrPut(session_id) catch return false;
+        if (result.found_existing) return false;
+        return true;
+    }
+
+    pub fn remove(self: *ActiveLoops, io: std.Io, session_id: []const u8) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        _ = self.set.remove(session_id);
+    }
+
+    pub fn contains(self: *ActiveLoops, io: std.Io, session_id: []const u8) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return self.set.contains(session_id);
     }
 };
+
+var active_loops: ActiveLoops = ActiveLoops.init(std.heap.page_allocator);
 
 pub const StreamingContext = struct {
     allocator: std.mem.Allocator,
@@ -234,7 +261,7 @@ pub const TUIWorkflow = struct {
         const initial_agent = initial_agent_state.agent;
 
         // Check if session is already running (exists in worker table)
-        if (llm_history.isSessionRunning(self.db, params.session_id)) {
+        if (llm_history.isSessionRunning(self.db, params.session_id) and active_loops.contains(self.io, params.session_id)) {
             // Session is already running, queue the message
             llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.message) catch {
                 self.logger.warnFmt("Failed to queue message for session {s}", .{params.session_id});
@@ -243,6 +270,7 @@ pub const TUIWorkflow = struct {
             is_have_queue_message = true;
             return;
         }
+        defer active_loops.remove(self.io, params.session_id);
 
         // Register in worker table (upsertWorker already does this)
         llm_history.upsertWorker(params.parent_allocator, self.db, params.session_id, params.session_id, params.cwd) catch {
@@ -280,6 +308,7 @@ pub const TUIWorkflow = struct {
         }
 
         while (true) {
+            _ = active_loops.tryInsert(self.io, params.session_id);
             var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(params.parent_allocator);
             defer arenaAllocatorWhileLoop.deinit();
             const allocator = arenaAllocatorWhileLoop.allocator();

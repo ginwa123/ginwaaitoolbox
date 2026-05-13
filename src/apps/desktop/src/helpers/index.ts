@@ -1,1 +1,2 @@
-export { stripThinkingTags } from "./stripTags";
+export { stripThinkingTags, getThinkingTags, isThinkingTags } from "./stripTags";
+
