@@ -59,25 +59,6 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
 
-    const tui_exe = b.addExecutable(.{
-        .name = "nalarcore-tui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/apps/tui/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{},
-        }),
-    });
-    tui_exe.root_module.linkSystemLibrary("ssl", .{});
-    tui_exe.root_module.linkSystemLibrary("crypto", .{});
-    tui_exe.root_module.linkSystemLibrary("c", .{});
-    b.installArtifact(tui_exe);
-
-    const tui_step = b.step("run:tui", "Run the TUI");
-    const tui_cmd = b.addRunArtifact(tui_exe);
-    tui_step.dependOn(&tui_cmd.step);
-    tui_cmd.step.dependOn(b.getInstallStep());
-
     const cli_step = b.step("run:cli", "Run the CLI");
     _ = cli_step;
 
@@ -169,51 +150,6 @@ pub fn build(b: *std.Build) void {
     copy_to_system.step.dependOn(&install_linux_system.step);
     linux_system_step.dependOn(&copy_to_system.step);
 
-    const tui_linux_system_step = b.step("install:tui:linux:system", "Build TUI for Linux x86_64 and install to system");
-    const tui_linux_exe = b.addExecutable(.{
-        .name = "nalar-tui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/apps/tui/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{},
-        }),
-    });
-    tui_linux_exe.root_module.linkSystemLibrary("ssl", .{});
-    tui_linux_exe.root_module.linkSystemLibrary("crypto", .{});
-    tui_linux_exe.root_module.linkSystemLibrary("c", .{});
-    const install_tui_linux_system = b.addInstallArtifact(tui_linux_exe, .{});
-    tui_linux_system_step.dependOn(&install_tui_linux_system.step);
-    const copy_tui_to_system = b.addSystemCommand(&.{
-        "cp",
-        "zig-out/bin/nalar-tui",
-        "/usr/local/bin/nalar-tui",
-    });
-    copy_tui_to_system.step.dependOn(&install_tui_linux_system.step);
-    tui_linux_system_step.dependOn(&copy_tui_to_system.step);
-
-    _ = b.step("run:kerjabot", "Kerjabot has been removed");
-
-    const test_desktop_step = b.step("test:desktop", "Run desktop app tests (bun test)");
-    const run_bun_test = b.addSystemCommand(&.{"bun", "test"});
-    run_bun_test.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
-    test_desktop_step.dependOn(&run_bun_test.step);
-
-    const lint_step = b.step("lint", "Run Biome linter on TypeScript/JS files");
-    const run_biome_lint = b.addSystemCommand(&.{"bun", "run", "lint"});
-    run_biome_lint.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
-    lint_step.dependOn(&run_biome_lint.step);
-
-    const lint_fix_step = b.step("lint:fix", "Run Biome linter with auto-fix on TypeScript/JS files");
-    const run_biome_lint_fix = b.addSystemCommand(&.{"bun", "run", "lint:fix"});
-    run_biome_lint_fix.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
-    lint_fix_step.dependOn(&run_biome_lint_fix.step);
-
-    const format_step = b.step("format", "Format TypeScript/JS files with Biome");
-    const run_biome_format = b.addSystemCommand(&.{"bun", "run", "format"});
-    run_biome_format.cwd = .{ .cwd_relative = "src/apps/desktop-bun" };
-    format_step.dependOn(&run_biome_format.step);
-
     const dev_optimize: std.builtin.OptimizeMode = .Debug;
 
     const dev_linux_system_step = b.step("install:dev:linux:system", "Build nalar-dev (debug) for Linux x86_64 and install to system");
@@ -241,27 +177,4 @@ pub fn build(b: *std.Build) void {
     });
     copy_dev_to_system.step.dependOn(&install_dev.step);
     dev_linux_system_step.dependOn(&copy_dev_to_system.step);
-
-    const dev_tui_linux_system_step = b.step("install:dev:tui:linux:system", "Build nalar-dev-tui (debug) for Linux x86_64 and install to system");
-    const dev_tui_exe = b.addExecutable(.{
-        .name = "nalar-dev-tui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/apps/tui/main.zig"),
-            .target = target,
-            .optimize = dev_optimize,
-            .imports = &.{},
-        }),
-    });
-    dev_tui_exe.root_module.linkSystemLibrary("ssl", .{});
-    dev_tui_exe.root_module.linkSystemLibrary("crypto", .{});
-    dev_tui_exe.root_module.linkSystemLibrary("c", .{});
-    const install_dev_tui = b.addInstallArtifact(dev_tui_exe, .{});
-    dev_tui_linux_system_step.dependOn(&install_dev_tui.step);
-    const copy_dev_tui_to_system = b.addSystemCommand(&.{
-        "cp",
-        "zig-out/bin/nalar-dev-tui",
-        "/usr/local/bin/nalar-dev-tui",
-    });
-    copy_dev_tui_to_system.step.dependOn(&install_dev_tui.step);
-    dev_tui_linux_system_step.dependOn(&copy_dev_tui_to_system.step);
 }

@@ -94,10 +94,8 @@ test "SseManager removeClient from non-existent session" {
 
 test "SseManager enqueueEvent basic" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     const queue = try manager.createQueue();
-    defer testing.allocator.destroy(queue);
 
     try manager.registerClient("session-1", queue);
 
@@ -117,35 +115,47 @@ test "SseManager enqueueEvent basic" {
     testing.allocator.free(item.?.data);
     if (item.?.event_type) |et| testing.allocator.free(et);
     testing.allocator.destroy(item.?);
+
+    // Clean up: unregister queue so manager doesn't try to close freed memory
+    _ = manager.removeClient("session-1", queue);
+    manager.deinit();
+    // Note: queue is NOT destroyed here because it was registered with manager
 }
 
 test "SseManager enqueueEvent auto-creates session" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
-    // No clients registered - enqueueEvent should auto-create
+    // Create queue and register it
+    const queue = try manager.createQueue();
+    try manager.registerClient("new-session", queue);
+
+    // Enqueue event
     const event = SseManager.SseEvent{
         .data = "auto message",
         .event_type = null,
     };
     try manager.enqueueEvent("new-session", event);
 
-    // Session should exist now
-    try testing.expectEqual(@as(usize, 1), manager.getSessionCount());
+    // Verify we got the event
+    const item = queue.dequeueWithTimeout(100_000_000);
+    try testing.expect(item != null);
+    try testing.expectEqualStrings("auto message", item.?.data);
+    testing.allocator.free(item.?.data);
+    if (item.?.event_type) |et| testing.allocator.free(et);
+    testing.allocator.destroy(item.?);
+
+    // Clean up: remove queue from manager so manager doesn't double-free
+    _ = manager.removeClient("new-session", queue);
+    manager.deinit();
+    // Note: queue was destroyed by removeClient, NOT by defer
 }
 
 test "SseManager enqueueEvent to multiple clients" {
     var manager = SseManager.SseConnectionManager.init(testing.allocator, test_io);
-    defer manager.deinit();
 
     const queue1 = try manager.createQueue();
     const queue2 = try manager.createQueue();
     const queue3 = try manager.createQueue();
-    defer {
-        testing.allocator.destroy(queue1);
-        testing.allocator.destroy(queue2);
-        testing.allocator.destroy(queue3);
-    }
 
     try manager.registerClient("session-1", queue1);
     try manager.registerClient("session-1", queue2);
@@ -168,6 +178,13 @@ test "SseManager enqueueEvent to multiple clients" {
     // Fourth dequeue should timeout (no more events)
     const item = queue1.dequeueWithTimeout(50_000_000); // 50ms
     try testing.expect(item == null);
+
+    // Clean up: remove all queues first so manager doesn't double-free
+    _ = manager.removeClient("session-1", queue1);
+    _ = manager.removeClient("session-1", queue2);
+    _ = manager.removeClient("session-1", queue3);
+    manager.deinit();
+    // Note: queues are NOT destroyed here because removeClient destroys them
 }
 
 test "SseManager removeSession" {

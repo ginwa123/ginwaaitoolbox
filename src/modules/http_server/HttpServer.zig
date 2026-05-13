@@ -123,6 +123,3 @@ pub const HttpServer = struct {
     };
 };
 
-test {
-    _ = @import("SseManager.zig");
-}

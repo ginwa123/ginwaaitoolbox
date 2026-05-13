@@ -702,7 +702,7 @@ const compactSession = async () => {
     </div>
 
     <!-- Messages -->
-    <div ref="messagesContainer" class="flex-1 overflow-y-auto" @scroll="handleScroll">
+    <div ref="messagesContainer" tabindex="0"  class="flex-1 overflow-y-auto" @scroll="handleScroll">
       <!-- Loading More -->
       <div v-if="isLoadingMore" class="flex justify-center py-4">
         <div class="flex items-center gap-2 px-4 py-2 rounded-full" style="background-color: var(--semantic-card-bg);">
@@ -799,7 +799,9 @@ const compactSession = async () => {
             border: 1px solid var(--color-border);
             min-height: 60px;
             max-height: 200px;
-          " @keydown.enter.exact.prevent="sendMessage" @keydown.shift.enter="handleShiftEnter"></textarea>
+          " @keydown.enter.exact.prevent="sendMessage" @keydown.shift.enter="handleShiftEnter"
+          @keydown.esc="messagesContainer?.focus()"
+          ></textarea>
         <button type="button" @click="sendMessage"
           class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200"
           style="background-color: var(--color-violet); color: var(--color-bg);"

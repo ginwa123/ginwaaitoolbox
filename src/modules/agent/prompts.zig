@@ -231,64 +231,64 @@ pub fn build_agent_prompt(
     try appendSection(allocator, &result, ProceduralMemory);
 
     // 12. Skills list (dynamic from file system)
-    try result.appendSlice(allocator, "\n\n<available_skills>\n");
-    {
-        const skills_json = try list_skills.execute_list_skills(allocator, io, null, null);
-        defer allocator.free(skills_json);
-
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{}) catch {
-            try result.appendSlice(allocator, "Error: Could not parse skills list.\n");
-            try result.appendSlice(allocator, "</available_skills>");
-            return result.toOwnedSlice(allocator);
-        };
-        defer parsed.deinit();
-
-        const skills_value = parsed.value.object.get("global_skills") orelse {
-            try result.appendSlice(allocator, "No skills available.\n");
-            try result.appendSlice(allocator, "</available_skills>");
-            return result.toOwnedSlice(allocator);
-        };
-
-        if (skills_value != .array) {
-            try result.appendSlice(allocator, "Error: Invalid skills format.\n");
-            try result.appendSlice(allocator, "</available_skills>");
-            return result.toOwnedSlice(allocator);
-        }
-
-        const skills_array = skills_value.array;
-        if (skills_array.items.len == 0) {
-            try result.appendSlice(allocator, "No skills available.\n");
-        } else {
-            for (skills_array.items) |skill| {
-                const name = skill.object.get("name") orelse continue;
-                const description = skill.object.get("description") orelse continue;
-                if (name == .string and description == .string) {
-                    try result.appendSlice(allocator, "- **");
-                    try result.appendSlice(allocator, name.string);
-                    try result.appendSlice(allocator, "**: ");
-                    try result.appendSlice(allocator, description.string);
-                    try result.appendSlice(allocator, "\n");
-                }
-            }
-        }
-
-        // Add local skills
-        const local_skills_value = parsed.value.object.get("local_skills") orelse null;
-        if (local_skills_value != null and local_skills_value.? == .array and local_skills_value.?.array.items.len > 0) {
-            try result.appendSlice(allocator, "\n--- Local Skills ---\n");
-            for (local_skills_value.?.array.items) |skill| {
-                const name = skill.object.get("name") orelse continue;
-                const description = skill.object.get("description") orelse continue;
-                if (name == .string and description == .string) {
-                    try result.appendSlice(allocator, "- **");
-                    try result.appendSlice(allocator, name.string);
-                    try result.appendSlice(allocator, "**: ");
-                    try result.appendSlice(allocator, description.string);
-                    try result.appendSlice(allocator, "\n");
-                }
-            }
-        }
-    }
+    // try result.appendSlice(allocator, "\n\n<available_skills>\n");
+    // {
+    //     const skills_json = try list_skills.execute_list_skills(allocator, io, null, null);
+    //     defer allocator.free(skills_json);
+    //
+    //     const parsed = std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{}) catch {
+    //         try result.appendSlice(allocator, "Error: Could not parse skills list.\n");
+    //         try result.appendSlice(allocator, "</available_skills>");
+    //         return result.toOwnedSlice(allocator);
+    //     };
+    //     defer parsed.deinit();
+    //
+    //     const skills_value = parsed.value.object.get("global_skills") orelse {
+    //         try result.appendSlice(allocator, "No skills available.\n");
+    //         try result.appendSlice(allocator, "</available_skills>");
+    //         return result.toOwnedSlice(allocator);
+    //     };
+    //
+    //     if (skills_value != .array) {
+    //         try result.appendSlice(allocator, "Error: Invalid skills format.\n");
+    //         try result.appendSlice(allocator, "</available_skills>");
+    //         return result.toOwnedSlice(allocator);
+    //     }
+    //
+    //     const skills_array = skills_value.array;
+    //     if (skills_array.items.len == 0) {
+    //         try result.appendSlice(allocator, "No skills available.\n");
+    //     } else {
+    //         for (skills_array.items) |skill| {
+    //             const name = skill.object.get("name") orelse continue;
+    //             const description = skill.object.get("description") orelse continue;
+    //             if (name == .string and description == .string) {
+    //                 try result.appendSlice(allocator, "- **");
+    //                 try result.appendSlice(allocator, name.string);
+    //                 try result.appendSlice(allocator, "**: ");
+    //                 try result.appendSlice(allocator, description.string);
+    //                 try result.appendSlice(allocator, "\n");
+    //             }
+    //         }
+    //     }
+    //
+    //     // Add local skills
+    //     const local_skills_value = parsed.value.object.get("local_skills") orelse null;
+    //     if (local_skills_value != null and local_skills_value.? == .array and local_skills_value.?.array.items.len > 0) {
+    //         try result.appendSlice(allocator, "\n--- Local Skills ---\n");
+    //         for (local_skills_value.?.array.items) |skill| {
+    //             const name = skill.object.get("name") orelse continue;
+    //             const description = skill.object.get("description") orelse continue;
+    //             if (name == .string and description == .string) {
+    //                 try result.appendSlice(allocator, "- **");
+    //                 try result.appendSlice(allocator, name.string);
+    //                 try result.appendSlice(allocator, "**: ");
+    //                 try result.appendSlice(allocator, description.string);
+    //                 try result.appendSlice(allocator, "\n");
+    //             }
+    //         }
+    //     }
+    // }
     try result.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
 
     // 13. Custom skills content + Memory markdown
