@@ -38,30 +38,30 @@ pub fn handle_mcp_tool_run(
     const allocator = parent_allocator;
 
     // Debug: log the tool call ID we received
-    _ = try logger.infoFmt("[MCP] Tool call START - name: '{s}', id: '{s}'", .{ tool_call.function.name, tool_call.id });
+    logger.infoFmt("[MCP] Tool call START - name: '{s}', id: '{s}'", .{ tool_call.function.name, tool_call.id });
 
     // Parse tool name: format is "mcp_serverName_toolName"
     // First, verify it starts with "mcp_"
     if (!std.mem.startsWith(u8, tool_call.function.name, "mcp_")) {
-        _ = try logger.warnFmt("[MCP] Tool name does not start with 'mcp_': {s}", .{tool_call.function.name});
+        logger.warnFmt("[MCP] Tool name does not start with 'mcp_': {s}", .{tool_call.function.name});
         return error.InvalidMCPToolName;
     }
 
     // Find the second underscore (after "mcp_")
     const after_mcp = tool_call.function.name["mcp_".len..];
     const underscore_idx = std.mem.indexOf(u8, after_mcp, "_") orelse {
-        _ = try logger.warnFmt("[MCP] No underscore after server name in tool: {s}", .{tool_call.function.name});
+        logger.warnFmt("[MCP] No underscore after server name in tool: {s}", .{tool_call.function.name});
         return error.InvalidMCPToolName;
     };
 
     const server_name = after_mcp[0..underscore_idx];
     const actual_tool_name = after_mcp[underscore_idx + 1 ..];
 
-    _ = try logger.infoFmt("[MCP] Parsed - server: '{s}', tool: '{s}'", .{ server_name, actual_tool_name });
+    logger.infoFmt("[MCP] Parsed - server: '{s}', tool: '{s}'", .{ server_name, actual_tool_name });
 
     // Get MCP server config
     if (config.mcpServers == null) {
-        _ = try logger.warnFmt("[MCP] No MCP servers configured", .{});
+        logger.warnFmt("[MCP] No MCP servers configured", .{});
         return error.NoMCPServers;
     }
 
@@ -96,7 +96,7 @@ pub fn handle_mcp_tool_run(
         .{ actual_tool_name, tool_call.function.arguments },
     );
 
-    _ = try logger.debugFmt("MCP request: {s}", .{request_body});
+    logger.debugFmt("MCP request: {s}", .{request_body});
 
     // Build headers
     var headers = std.StringHashMap([]const u8).init(allocator);
@@ -128,16 +128,16 @@ pub fn handle_mcp_tool_run(
     defer client.deinit();
 
     const result = client.post(url, request_body, headers) catch |err| {
-        _ = try logger.errFmt("MCP HTTP error: {s}", .{@errorName(err)});
+        logger.errFmt("MCP HTTP error: {s}", .{@errorName(err)});
         allocator.free(request_body);
         return error.FailedToCallMCPServer;
     };
 
-    _ = try logger.debugFmt("MCP response status: {d}", .{result.status_code});
+    logger.debugFmt("MCP response status: {d}", .{result.status_code});
 
     if (result.status_code != 200) {
         // Log status without raw body to prevent crashes from non-null-terminated data
-        _ = try logger.errFmt("MCP server returned status {d}, body length: {d}", .{ result.status_code, result.body.len });
+        logger.errFmt("MCP server returned status {d}, body length: {d}", .{ result.status_code, result.body.len });
         return error.MCPServerReturnedError;
     }
 
@@ -155,7 +155,7 @@ pub fn handle_mcp_tool_run(
 
     const parsed = std.json.parseFromSlice(std.json.Value, parse_alloc, clean_body, .{}) catch |err| {
         // Log error without raw body to prevent crashes from non-null-terminated data
-        _ = try logger.errFmt("MCP JSON parse error: {s}, body length: {d}", .{ @errorName(err), clean_body.len });
+        logger.errFmt("MCP JSON parse error: {s}, body length: {d}", .{ @errorName(err), clean_body.len });
         if (is_copy) allocator.free(clean_body);
         allocator.free(result.body);
         allocator.free(request_body);

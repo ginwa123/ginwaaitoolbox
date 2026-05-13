@@ -241,54 +241,39 @@ pub const Logger = struct {
         try self.log(level, message);
     }
 
-    /// Log at TRACE level
-    pub fn trace(self: *Logger, message: []const u8) !void {
-        try self.log(.trace, message);
-    }
-
-    /// Log at DEBUG level
-    pub fn debug(self: *Logger, message: []const u8) !void {
-        try self.log(.debug, message);
-    }
-
-    /// Log at INFO level
-    pub fn info(self: *Logger, message: []const u8) !void {
-        try self.log(.info, message);
-    }
-
-    /// Log at WARN level
-    pub fn warn(self: *Logger, message: []const u8) !void {
-        try self.log(.warn, message);
-    }
-
-    /// Log at ERROR level
-    pub fn err(self: *Logger, message: []const u8) !void {
-        try self.log(.err, message);
-    }
-
     /// Log formatted at TRACE level
-    pub fn traceFmt(self: *Logger, comptime fmt: []const u8, args: anytype) !void {
-        try self.logFmt(.trace, fmt, args);
+    pub fn traceFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
+        self.logFmt(.trace, fmt, args) catch {
+            std.debug.print("Error in traceFmt: \n", .{});
+        };
     }
 
     /// Log formatted at DEBUG level
-    pub fn debugFmt(self: *Logger, comptime fmt: []const u8, args: anytype) !void {
-        try self.logFmt(.debug, fmt, args);
+    pub fn debugFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
+        self.logFmt(.debug, fmt, args) catch {
+            std.debug.print("Error in debugFmt: \n", .{});
+        };
     }
 
     /// Log formatted at INFO level
-    pub fn infoFmt(self: *Logger, comptime fmt: []const u8, args: anytype) !void {
-        try self.logFmt(.info, fmt, args);
+    pub fn infoFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
+        self.logFmt(.info, fmt, args) catch {
+            std.debug.print("Error in infoFmt: \n", .{});
+        };
     }
 
     /// Log formatted at WARN level
-    pub fn warnFmt(self: *Logger, comptime fmt: []const u8, args: anytype) !void {
-        try self.logFmt(.warn, fmt, args);
+    pub fn warnFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
+        self.logFmt(.warn, fmt, args) catch {
+            std.debug.print("Error in warnFmt: \n", .{});
+        };
     }
 
     /// Log formatted at ERROR level
-    pub fn errFmt(self: *Logger, comptime fmt: []const u8, args: anytype) !void {
-        try self.logFmt(.err, fmt, args);
+    pub fn errFmt(self: *Logger, comptime fmt: []const u8, args: anytype) void {
+        self.logFmt(.err, fmt, args) catch {
+            std.debug.print("Error in errFmt: \n", .{});
+        };
     }
 
     /// Write a log entry using the configured formatter
@@ -392,4 +377,3 @@ pub fn getGlobal() ?*Logger {
     }
     return null;
 }
-

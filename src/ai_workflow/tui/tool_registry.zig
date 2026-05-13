@@ -545,7 +545,7 @@ fn handleSetAgentProperties(
 
 // update_activity implementation - records thought as worker activity
 pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    ctx.logger.debugFmt("[update_activity] Starting for session {s}", .{ctx.session_id}) catch {};
+    ctx.logger.debugFmt("[update_activity] Starting for session {s}", .{ctx.session_id});
 
     const parsed = std.json.parseFromSlice(
         update_activity_mod.UpdateActivityInput,
@@ -553,7 +553,7 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch {
-        ctx.logger.errFmt("[update_activity] Failed to parse arguments for session {s}", .{ctx.session_id}) catch {};
+        ctx.logger.errFmt("[update_activity] Failed to parse arguments for session {s}", .{ctx.session_id});
         const output = update_activity_mod.xmlError(ctx.allocator, "Failed to parse update_activity arguments");
         return ToolExecResult{ .output = output };
     };
@@ -565,11 +565,11 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
 
     // Update worker activity with the thought
     if (llm_history.updateWorkerActivityWithDescription(ctx.allocator, ctx.db, worker_id, parsed.value.thought)) |_| {
-        ctx.logger.infoFmt("[update_activity] Updated activity for {s}: {s}", .{ worker_id, parsed.value.thought }) catch {};
+        ctx.logger.infoFmt("[update_activity] Updated activity for {s}: {s}", .{ worker_id, parsed.value.thought });
         const output = update_activity_mod.xmlSuccess(ctx.allocator, parsed.value.thought);
         return ToolExecResult{ .output = output };
     } else |err| {
-        ctx.logger.errFmt("[update_activity] Failed to update worker activity for {s}: {}", .{ worker_id, err }) catch {};
+        ctx.logger.errFmt("[update_activity] Failed to update worker activity for {s}: {}", .{ worker_id, err });
         const output = update_activity_mod.xmlError(ctx.allocator, "Failed to update worker activity");
         return ToolExecResult{ .output = output };
     }
@@ -610,11 +610,11 @@ const ThreadResult = struct {
 
 // spawn_sub_agent implementation - uses workflow.zig logic
 pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    ctx.logger.debugFmt("execSpawnSubAgent called, arguments len={}", .{tc.function.arguments.len}) catch {};
-    ctx.logger.debugFmt("arguments: '{s}'", .{tc.function.arguments[0..@min(tc.function.arguments.len, 200)]}) catch {};
+    ctx.logger.debugFmt("execSpawnSubAgent called, arguments len={}", .{tc.function.arguments.len});
+    ctx.logger.debugFmt("arguments: '{s}'", .{tc.function.arguments[0..@min(tc.function.arguments.len, 200)]});
     // Parse sub-agents from tool call arguments
     const parsed = spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20) catch |err| {
-        ctx.logger.errFmt("parse_sub_agents failed: {}", .{err}) catch {};
+        ctx.logger.errFmt("parse_sub_agents failed: {}", .{err});
         return error.InvalidArguments;
     };
     defer parsed.deinit(ctx.allocator);
@@ -629,9 +629,9 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     defer threads.deinit(ctx.allocator);
 
     const sub_agent_count = parsed.sub_agents.len;
-    ctx.logger.debugFmt("Parsed {} sub-agents", .{sub_agent_count}) catch {};
+    ctx.logger.debugFmt("Parsed {} sub-agents", .{sub_agent_count});
     for (parsed.sub_agents, 0..) |sa, i| {
-        ctx.logger.debugFmt("Sub-agent {}: name='{s}', instruction_len={}", .{ i, sa.name, sa.instruction.len }) catch {};
+        ctx.logger.debugFmt("Sub-agent {}: name='{s}', instruction_len={}", .{ i, sa.name, sa.instruction.len });
     }
 
     // Shared result storage with atomics for thread synchronization
@@ -652,7 +652,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
 
     for (parsed.sub_agents, 0..) |sub_agent, idx| {
         std.Io.sleep(ctx.io, .{ .nanoseconds = 500_000_000 }, .real) catch {};
-        ctx.logger.debugFmt("Spawning thread for agent '{s}' (index {})", .{ sub_agent.name, idx }) catch {};
+        ctx.logger.debugFmt("Spawning thread for agent '{s}' (index {})", .{ sub_agent.name, idx });
         // Allocate thread args on the heap to avoid pointer stability issues
         // This ensures the data remains valid even if stack frames are deallocated
         const args = try ctx.allocator.create(SubAgentThreadArgs);
@@ -673,10 +673,10 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .environment = ctx.environment,
         };
 
-        ctx.logger.debugFmt("About to spawn thread for '{s}'", .{ sub_agent.name }) catch {};
+        ctx.logger.debugFmt("About to spawn thread for '{s}'", .{ sub_agent.name });
         const thread = try std.Thread.spawn(.{}, struct {
             fn run(args_ptr: *SubAgentThreadArgs) void {
-                args_ptr.logger.debugFmt("Thread started for '{s}'", .{ args_ptr.agent_name }) catch {};
+                args_ptr.logger.debugFmt("Thread started for '{s}'", .{ args_ptr.agent_name });
                 // Create a dedicated arena allocator for this sub-agent to avoid memory contention
                 // when multiple sub-agents run concurrently (e.g., 5 parallel agents all fetching MCP tools)
                 var arena = std.heap.ArenaAllocator.init(args_ptr.allocator);
@@ -691,21 +691,21 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 // Mark this slot as in-progress (result defaults to failed)
                 // Generate unique session ID for this sub-agent
                 const sess_id = std.fmt.allocPrint(sub_agent_allocator, "subagent_{}_{s}", .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, args_ptr.agent_name }) catch {
-                    args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{ args_ptr.agent_name }) catch {};
+                    args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{ args_ptr.agent_name });
                     return;
                 };
                 defer sub_agent_allocator.free(sess_id);
-                args_ptr.logger.debugFmt("Session ID created: '{s}'", .{ sess_id }) catch {};
+                args_ptr.logger.debugFmt("Session ID created: '{s}'", .{ sess_id });
 
                 // Register sub-agent as worker
                 llm_history.upsertWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id, sess_id, args_ptr.cwd) catch {};
                 defer llm_history.removeWorker(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch {};
 
-                args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name }) catch {};
+                args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name });
                 var workflow = ai_workflow.TUIWorkflow.init(args_ptr.io, args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger, args_ptr.environment);
                 // Derive is_sub_agent from session_id - no need to pass it explicitly
                 const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
-                args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{ args_ptr.agent_name }) catch {};
+                args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{ args_ptr.agent_name });
                 workflow.runAgenticMultiStep(.{
                     .parent_allocator = sub_agent_allocator,
                     .parent_session_id = args_ptr.parent_sess_id,
@@ -723,18 +723,18 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                     } else "",
                     .is_sub_agent = is_sub_agent,
                 }) catch |err| {
-                    args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) }) catch {};
+                    args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) });
                 };
 
-                args_ptr.logger.debugFmt("workflow.runAgenticMultiStep completed for '{s}', fetching message", .{ args_ptr.agent_name }) catch {};
+                args_ptr.logger.debugFmt("workflow.runAgenticMultiStep completed for '{s}', fetching message", .{ args_ptr.agent_name });
                 // Get the agent's response from the database
                 // Use c_allocator to avoid arena aliasing issues
                 const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
-                    args_ptr.logger.errFmt("getLatestMessage error for '{s}': {}", .{ sess_id, err }) catch {};
+                    args_ptr.logger.errFmt("getLatestMessage error for '{s}': {}", .{ sess_id, err });
                     return;
                 };
 
-                args_ptr.logger.debugFmt("Latest message result: {any}", .{latest_msg_result}) catch {};
+                args_ptr.logger.debugFmt("Latest message result: {any}", .{latest_msg_result});
                 if (latest_msg_result) |msg| {
                     var mutable_msg = msg;
                     // Check response BEFORE deinit - deinit frees all allocated strings!
@@ -758,11 +758,11 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     }
 
     // Wait for all threads to complete
-    ctx.logger.debugFmt("Waiting for {} threads to complete...", .{threads.items.len}) catch {};
+    ctx.logger.debugFmt("Waiting for {} threads to complete...", .{threads.items.len});
     for (threads.items) |thread| {
         thread.join();
     }
-    ctx.logger.debugFmt("All threads completed", .{}) catch {};
+    ctx.logger.debugFmt("All threads completed", .{});
 
     // Collect results from shared storage
     var success_count: usize = 0;

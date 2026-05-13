@@ -99,7 +99,7 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
                         .body = "",
                         .allowed_tools = "",
                     }) catch |err| {
-                        args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)}) catch {};
+                        args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)});
                     };
                 }
             }.run, .{workflow_args});

@@ -40,18 +40,18 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
 
         // delete all workers this is temporrary
         llm_history.deleteAllWorkers(allocator, sqlite_db) catch |err| {
-            logger.errFmt("Failed to delete all workers: {s}", .{@errorName(err)}) catch {};
+            logger.errFmt("Failed to delete all workers: {s}", .{@errorName(err)});
             return err;
         };
 
         llm_history.deleteAllQueuedMessages(allocator, sqlite_db) catch |err| {
-            logger.errFmt("Failed to delete all queued messages: {s}", .{@errorName(err)}) catch {};
+            logger.errFmt("Failed to delete all queued messages: {s}", .{@errorName(err)});
             return err;
         };
 
         // Query all workers from the database
         const workers = llm_history.getActiveWorker(allocator, sqlite_db) catch |err| {
-            logger.errFmt("Failed to query workers: {s}", .{@errorName(err)}) catch {};
+            logger.errFmt("Failed to query workers: {s}", .{@errorName(err)});
             return err;
         };
         defer {
@@ -60,17 +60,17 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
         }
 
         if (workers.len == 0) {
-            logger.info("No workers found in database, skipping startup") catch {};
+            logger.infoFmt("No workers found in database, skipping startup", .{});
             return;
         }
 
-        logger.infoFmt("Found {d} workers in database, starting workflows...", .{workers.len}) catch {};
+        logger.infoFmt("Found {d} workers in database, starting workflows...", .{workers.len});
 
         // Spawn a workflow thread for each worker
         for (workers) |worker| {
             // Register session in session registry
             registry.register(worker.session_id) catch |err| {
-                logger.warnFmt("Failed to register worker {s}: {s}", .{ worker.session_id, @errorName(err) }) catch {};
+                logger.warnFmt("Failed to register worker {s}: {s}", .{ worker.session_id, @errorName(err) });
                 continue;
             };
 
@@ -118,13 +118,13 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                         .allowed_tools = "",
                         .is_sub_agent = args.is_sub_agent,
                     }) catch |err| {
-                        args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)}) catch {};
+                        args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)});
                     };
                 }
             }.run, .{workflow_args});
             thread.detach();
 
-            logger.infoFmt("Startup worker started: {s} (cwd: {s})", .{ worker.session_id, worker.working_directory }) catch {};
+            logger.infoFmt("Startup worker started: {s} (cwd: {s})", .{ worker.session_id, worker.working_directory });
         }
 
         return;

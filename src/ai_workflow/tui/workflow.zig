@@ -235,21 +235,21 @@ pub const TUIWorkflow = struct {
         if (llm_history.isSessionRunning(self.db, params.session_id)) {
             // Session is already running, queue the message
             llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.message) catch {
-                self.logger.warnFmt("Failed to queue message for session {s}", .{params.session_id}) catch {};
+                self.logger.warnFmt("Failed to queue message for session {s}", .{params.session_id});
             };
-            self.logger.debugFmt("WORKFLOW: queued message for session {s}", .{params.session_id}) catch {};
+            self.logger.debugFmt("WORKFLOW: queued message for session {s}", .{params.session_id});
             is_have_queue_message = true;
             return;
         }
 
         // Register in worker table (upsertWorker already does this)
         llm_history.upsertWorker(params.parent_allocator, self.db, params.session_id, params.session_id, params.cwd) catch {
-            self.logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id}) catch {};
+            self.logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id});
         };
 
         // Queue the initial message
         llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.message) catch {
-            self.logger.warnFmt("Failed to queue initial message for session {s}", .{params.session_id}) catch {};
+            self.logger.warnFmt("Failed to queue initial message for session {s}", .{params.session_id});
         };
 
         var retryCount: usize = 0;
@@ -259,7 +259,7 @@ pub const TUIWorkflow = struct {
 
         // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
         const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.io, self.config.mcpServers orelse .null) catch |err| blk: {
-            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)}) catch {};
+            self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
             break :blk null;
         }) orelse &[_]tool_models.AgentTool{};
         // Note: mcp_tools_fetched memory is managed by allocator
@@ -273,7 +273,7 @@ pub const TUIWorkflow = struct {
         // Handle body message - add as initial user message if provided
         if (params.body.len > 0) {
             llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.body) catch {
-                self.logger.warnFmt("Failed to queue body message for session {s}", .{params.session_id}) catch {};
+                self.logger.warnFmt("Failed to queue body message for session {s}", .{params.session_id});
             };
         }
 
@@ -284,7 +284,7 @@ pub const TUIWorkflow = struct {
 
             // Check cancellation using DB
             if (llm_history.isSessionCancelled(self.db, params.session_id)) {
-                _ = try self.logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
+                self.logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
                 break;
             }
 
@@ -375,9 +375,9 @@ pub const TUIWorkflow = struct {
 
             try messagesLists.appendSlice(allocator, initialMessages);
 
-            self.logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len }) catch {};
+            self.logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
             if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(self.config.model))) {
-                self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{}) catch {};
+                self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{});
                 if (self.callCompactAgent(messagesLists.items, allocator, self.config.api_key, self.config.model, self.config.base_url, params.cwd)) |compacted_xml| {
                     try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, self.config.model, params.cwd);
                 }
@@ -385,18 +385,18 @@ pub const TUIWorkflow = struct {
 
             const res_dynamic_agent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, self.config.api_key, self.config.model, self.config.base_url, params.session_id, merged_tools) catch |err| {
                 if (err == error.Cancelled) {
-                    self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{params.session_id}) catch {};
+                    self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{params.session_id});
                     break;
                 }
                 retryCount += 1;
-                self.logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)}) catch {};
+                self.logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)});
                 continue;
             };
 
             retryCount = 0;
 
             const session_info = session_table.getSession(allocator, self.db, params.session_id) catch |err| {
-                self.logger.errFmt("Error getting session: {s}", .{@errorName(err)}) catch {};
+                self.logger.errFmt("Error getting session: {s}", .{@errorName(err)});
                 break;
             };
 
@@ -467,7 +467,7 @@ pub const TUIWorkflow = struct {
                     break;
                 } else if (finish_reason == .length) {
                     current_max_tokens += 4096;
-                    _ = try self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
+                    self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                     continue;
                 } else if (finish_reason == .tool_calls) {
                     std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
@@ -531,7 +531,7 @@ pub const TUIWorkflow = struct {
                     }
                 } else {
                     retryCount += 1;
-                    self.logger.errFmt("Error calling agent: maybe streaming failed", .{}) catch {};
+                    self.logger.errFmt("Error calling agent: maybe streaming failed", .{});
                     onEventSendLLMHistory(allocator, .{
                         .session_id = params.session_id,
                         .model = self.config.model,
@@ -560,11 +560,11 @@ pub const TUIWorkflow = struct {
 
             // Log if finish_reason is null
             if (res_dynamic_agent.finish_reason == null) {
-                self.logger.warnFmt("WORKFLOW: finish_reason is NULL!", .{}) catch {};
+                self.logger.warnFmt("WORKFLOW: finish_reason is NULL!", .{});
             }
         }
 
-        _ = try self.logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{params.session_id});
+        self.logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{params.session_id});
     }
     fn callDynamicAgent(
         self: *TUIWorkflow,
@@ -609,7 +609,7 @@ pub const TUIWorkflow = struct {
         cwd: []const u8,
     ) ?[]const u8 {
         _ = cwd;
-        self.logger.info("[COMPACTION] Starting callCompactAgent") catch {};
+        self.logger.infoFmt("[COMPACTION] Starting callCompactAgent", .{});
 
         // Serialize messages for CompactionAgent
         var history: std.ArrayList(u8) = .empty;
@@ -617,14 +617,14 @@ pub const TUIWorkflow = struct {
         const w = &aw.writer; // *std.Io.Writer — use this for all writes
 
         w.writeAll("Conversation history to compact:\n\n") catch |err| {
-            self.logger.errFmt("[COMPACTION] Failed to write history header: {s}", .{@errorName(err)}) catch {};
+            self.logger.errFmt("[COMPACTION] Failed to write history header: {s}", .{@errorName(err)});
             return null;
         };
 
         for (messages[1..], 1..) |msg, i| {
             _ = i;
             if (msg.content) |c| w.writeAll(c) catch |err| {
-                self.logger.errFmt("[COMPACTION] Failed to write tool msg content: {s}", .{@errorName(err)}) catch {};
+                self.logger.errFmt("[COMPACTION] Failed to write tool msg content: {s}", .{@errorName(err)});
                 return null;
             };
         }
@@ -633,9 +633,9 @@ pub const TUIWorkflow = struct {
         history = aw.toArrayList();
         defer history.deinit(arena);
 
-        self.logger.info("[COMPACTION] Building compaction messages...") catch {};
+        self.logger.infoFmt("[COMPACTION] Building compaction messages...", .{});
         const msgs = arena.alloc(agent.AgentMessage, 2) catch |err| {
-            self.logger.errFmt("[COMPACTION] Failed to alloc msgs: {s}", .{@errorName(err)}) catch {};
+            self.logger.errFmt("[COMPACTION] Failed to alloc msgs: {s}", .{@errorName(err)});
             return null;
         };
         msgs[0] = .{ .role = .system, .content = prompt.CompactionAgent };
@@ -643,11 +643,11 @@ pub const TUIWorkflow = struct {
         // Slice is arena-owned, safe to use directly
         const history_content = history.items;
         msgs[1] = .{ .role = .user, .content = history_content };
-        self.logger.infoFmt("[COMPACTION] History content: {} bytes", .{history_content.len}) catch {};
+        self.logger.infoFmt("[COMPACTION] History content: {} bytes", .{history_content.len});
 
-        self.logger.info("[COMPACTION] Initializing compaction agent...") catch {};
+        self.logger.infoFmt("[COMPACTION] Initializing compaction agent...", .{});
         var compaction_agent = agent.Agent.init(arena, self.io) catch |err| {
-            self.logger.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)}) catch {};
+            self.logger.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)});
             return null;
         };
         defer compaction_agent.deinit();
@@ -655,37 +655,37 @@ pub const TUIWorkflow = struct {
         compaction_agent.model = model;
         compaction_agent.baseUrl = base_url;
 
-        self.logger.info("[COMPACTION] Calling callStreaming...") catch {};
+        self.logger.infoFmt("[COMPACTION] Calling callStreaming...", .{});
         const response = compaction_agent.callStreaming(.{
             .tools = &.{},
             .messages = msgs,
             .temperature = 0.0,
         }, null, noopStreamCallback) catch |err| {
-            self.logger.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)}) catch {};
+            self.logger.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)});
             return null;
         };
-        self.logger.info("[COMPACTION] callStreaming succeeded") catch {};
+        self.logger.infoFmt("[COMPACTION] callStreaming succeeded", .{});
         defer response.deinit();
 
-        self.logger.infoFmt("[COMPACTION] Response content null? {}", .{response.content == null}) catch {};
+        self.logger.infoFmt("[COMPACTION] Response content null? {}", .{response.content == null});
         const content = response.content orelse {
-            self.logger.err("[COMPACTION] Response content is null") catch {};
+            self.logger.errFmt("[COMPACTION] Response content is null", .{});
             return null;
         };
 
         if (content.len == 0) {
-            self.logger.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{}) catch {};
+            self.logger.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{});
             return null;
         }
 
-        self.logger.infoFmt("[COMPACTION] Got response: {} bytes", .{content.len}) catch {};
-        self.logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{ messages.len, content.len }) catch {};
+        self.logger.infoFmt("[COMPACTION] Got response: {} bytes", .{content.len});
+        self.logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{ messages.len, content.len });
 
         const duplicated = arena.dupe(u8, content) catch |err| {
-            self.logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)}) catch {};
+            self.logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
             return null;
         };
-        self.logger.info("[COMPACTION] callCompactAgent returning success") catch {};
+        self.logger.infoFmt("[COMPACTION] callCompactAgent returning success", .{});
         return duplicated;
     }
     /// No-op callback for streaming - used when we don't need to stream chunks to client.
@@ -712,7 +712,7 @@ pub const TUIWorkflow = struct {
         }
 
         if (first_user_message == null) {
-            self.logger.debugFmt("No user message found in db_messages", .{}) catch {};
+            self.logger.debugFmt("No user message found in db_messages", .{});
             return;
         }
 
@@ -733,7 +733,7 @@ pub const TUIWorkflow = struct {
         };
 
         const response = name_agent.callStreaming(params, null, noopStreamCallback) catch {
-            self.logger.errFmt("[SESSION NAME] Failed to call LLM for session name", .{}) catch {};
+            self.logger.errFmt("[SESSION NAME] Failed to call LLM for session name", .{});
             return;
         };
         defer response.deinit();
@@ -746,7 +746,7 @@ pub const TUIWorkflow = struct {
                 stripped_content = stripped;
                 needs_free = true;
             } else |err| {
-                self.logger.warnFmt("[SESSION NAME] Failed to strip thinking tags: {s}, using original content", .{@errorName(err)}) catch {};
+                self.logger.warnFmt("[SESSION NAME] Failed to strip thinking tags: {s}, using original content", .{@errorName(err)});
             }
 
             // limit to 50 chars
@@ -756,11 +756,11 @@ pub const TUIWorkflow = struct {
 
             // Update session name in database
             session_table.updateSessionName(allocator, self.db, session_id, stripped_content) catch {
-                self.logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{stripped_content}) catch {};
+                self.logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{stripped_content});
                 if (needs_free) allocator.free(stripped_content);
                 return;
             };
-            self.logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{stripped_content}) catch {};
+            self.logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{stripped_content});
             if (needs_free) allocator.free(stripped_content);
         }
     }
@@ -829,7 +829,7 @@ pub const TUIWorkflow = struct {
         messages.deinit(allocator);
         messages.* = new_messages;
 
-        self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len }) catch {};
+        self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len });
     }
 
     /// Add a file listing to the writer for project context

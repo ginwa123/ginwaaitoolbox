@@ -42,11 +42,11 @@ fn formatQueueItem(allocator: std.mem.Allocator, item: *http_server.SseQueueItem
 /// Each client gets its own queue, so multiple clients can connect to the same session
 fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
     const log = logger.getGlobal();
-    log.?.infoFmt("SSE stream handler started: session_id={s}", .{ctx.session_id}) catch {};
+    log.?.infoFmt("SSE stream handler started: session_id={s}", .{ctx.session_id});
 
     // Create a queue for this specific client
     const queue = ctx.server.sse_manager.createQueue() catch {
-        log.?.errFmt("SSE: Failed to create queue for session: {s}", .{ctx.session_id}) catch {};
+        log.?.errFmt("SSE: Failed to create queue for session: {s}", .{ctx.session_id});
         return;
     };
     defer {
@@ -59,14 +59,14 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
     ctx.server.sse_manager.registerClient(ctx.session_id, queue) catch |err| {
         log.?.errFmt("SSE: Failed to register client for session: {s}, error: {s}", .{
             ctx.session_id, @errorName(err),
-        }) catch {};
+        });
         return;
     };
     defer {
         // Remove only this specific client, not the whole session
         const was_last = ctx.server.sse_manager.removeClient(ctx.session_id, queue);
         if (was_last) {
-            log.?.infoFmt("SSE: Last client removed, session cleaned up: {s}", .{ctx.session_id}) catch {};
+            log.?.infoFmt("SSE: Last client removed, session cleaned up: {s}", .{ctx.session_id});
         }
     }
 
@@ -102,7 +102,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
     const client_count = ctx.server.sse_manager.getClientCount(ctx.session_id);
     log.?.infoFmt("SSE: Connected event sent for session: {s}, total clients: {d}", .{
         ctx.session_id, client_count,
-    }) catch {};
+    });
 
     // Main loop: process events from queue and keepalive
     // Note: We don't check hasSession() here because for new sessions,
@@ -116,7 +116,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
             std.debug.print("[SSE_DEBUG] dequeueWithTimeout returned item, data_len={d}\n", .{queue_item.data.len});
             std.debug.print("[SSE_DEBUG] queue_item.data contents: {s}\n", .{queue_item.data});
             // Log body before sending
-            log.?.debugFmt("SSE: sending body: {s}", .{queue_item.data}) catch {};
+            log.?.debugFmt("SSE: sending body: {s}", .{queue_item.data});
 
             // Format and send the event using heap allocation
             const formatted = formatQueueItem(ctx.server.allocator, queue_item) catch |err| {
@@ -163,7 +163,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
         }
     }
 
-    log.?.infoFmt("SSE stream handler ending: session_id={s}", .{ctx.session_id}) catch {};
+    log.?.infoFmt("SSE stream handler ending: session_id={s}", .{ctx.session_id});
     ctx.server.allocator.free(ctx.session_id);
 }
 
@@ -179,7 +179,7 @@ pub fn streamHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
     const log = logger.getGlobal();
 
     if (http_server.global_server) |server| {
-        log.?.infoFmt("SSE STREAM CONNECTED: session_id={s}", .{session_id}) catch {};
+        log.?.infoFmt("SSE STREAM CONNECTED: session_id={s}", .{session_id});
 
         const session_id_copy = try server.allocator.dupe(u8, session_id);
         errdefer server.allocator.free(session_id_copy);

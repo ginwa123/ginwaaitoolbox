@@ -36,7 +36,7 @@ pub fn SaveAgent(
 
     const sql = "INSERT OR REPLACE INTO session_agents (session_id, agent_name, updated_at) VALUES (?, ?, strftime('%s', 'now'))";
     try db.exec(allocator, sql, &.{ session_id, agent_name });
-    logger.debugFmt("Agent '{s}' saved to database for session {s}", .{ agent_name, session_id }) catch {};
+    logger.debugFmt("Agent '{s}' saved to database for session {s}", .{ agent_name, session_id });
 }
 
 

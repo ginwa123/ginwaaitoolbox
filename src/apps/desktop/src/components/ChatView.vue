@@ -482,7 +482,7 @@ const connectSse = () => {
         })
         streamingContent.value = ''
         isStreaming.value = false
-        nextTick(() => scrollToBottom(true))
+        nextTick(() => scrollToBottom(false))
 
         if (event.total_tokens) {
           maxTotalTokens.value = event.total_tokens;
@@ -545,7 +545,7 @@ const updateStreamingMessage = () => {
   // Skip scroll if content is just thinking tags
   const stripped = stripThinkingTags(streamingContent.value)
   if (stripped && stripped.trim() !== '') {
-    nextTick(() => scrollToBottom(true))
+    nextTick(() => scrollToBottom(false))
   }
 }
 

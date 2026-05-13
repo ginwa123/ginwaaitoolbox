@@ -258,7 +258,7 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
                         .body = workflow_args.body,
                         .allowed_tools = workflow_args.allowed_tools,
                     }) catch |err| {
-                        workflow_args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)}) catch {};
+                        workflow_args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)});
                     };
 
                     // Clean up thread_args allocations (allocated before thread started)

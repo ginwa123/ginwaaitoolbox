@@ -264,7 +264,7 @@ pub fn handle_tool(
             }
         }
         if (!has_known_tools) {
-            logger.infoFmt("[HANDLE_TOOL] Skipping saving assistant message, no tools matched", .{}) catch {};
+            logger.infoFmt("[HANDLE_TOOL] Skipping saving assistant message, no tools matched", .{});
         }
 
         // Build tool names list and save assistant message
@@ -368,14 +368,14 @@ pub fn handle_tool(
             // Auto-save skill if loaded
             if (exec_result.skill_saved) |skill_info| {
                 SaveSkill(allocator, db, logger, session_id, skill_info.name, skill_info.content) catch |err| {
-                    logger.errFmt("Failed to save skill '{s}': {s}", .{ skill_info.name, @errorName(err) }) catch {};
+                    logger.errFmt("Failed to save skill '{s}': {s}", .{ skill_info.name, @errorName(err) });
                 };
             }
 
             // Auto-save agent if loaded
             if (exec_result.agent_saved) |agent_info| {
                 SaveAgent(allocator, db, logger, session_id, agent_info.name) catch |err| {
-                    logger.errFmt("Failed to save agent '{s}': {s}", .{ agent_info.name, @errorName(err) }) catch {};
+                    logger.errFmt("Failed to save agent '{s}': {s}", .{ agent_info.name, @errorName(err) });
                 };
             }
 
@@ -383,7 +383,7 @@ pub fn handle_tool(
         }
     }
 
-    logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{}) catch {};
+    logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{});
 }
 
 fn saveAndSendToolResult(

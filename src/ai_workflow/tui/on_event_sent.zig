@@ -83,7 +83,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
 
     const sse_manager = http_server.getGlobalSseManager() orelse {
         std.debug.print("SSE_ERROR: no SSE manager available for session {s}\n", .{session_id});
-        log.?.warnFmt("on_event_send_new[{s}]: no SSE manager available", .{session_id}) catch {};
+        log.?.warnFmt("on_event_send_new[{s}]: no SSE manager available", .{session_id});
         return;
     };
     std.debug.print("SSE_DEBUG: on_event_send_new called for session {s}, manager={*}\n", .{ session_id, sse_manager });
@@ -100,9 +100,9 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
             c.len,
             input.is_thinking,
             input.role orelse "assistant",
-        }) catch {};
+        });
     } else {
-        log.?.warnFmt("on_event_send_new[{s}]: NO CONTENT!", .{session_id}) catch {};
+        log.?.warnFmt("on_event_send_new[{s}]: NO CONTENT!", .{session_id});
     }
 
     // Build tool_calls JSON array if present
@@ -156,7 +156,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         session_id,
         buf.items.len,
         buf.items,
-    }) catch {};
+    });
 
     const event = http_server.SseEvent{
         .data = buf.items,
@@ -167,14 +167,14 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         session_id,
         @intFromPtr(event.data.ptr),
         event.data.len,
-    }) catch {};
+    });
 
     sse_manager.enqueueEvent(input.session_id, event) catch |err| {
         std.debug.print("SSE_ERROR: enqueueEvent failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         return;
     };
 
-    log.?.infoFmt("on_event_send_new[{s}]: event enqueued successfully", .{session_id}) catch {};
+    log.?.infoFmt("on_event_send_new[{s}]: event enqueued successfully", .{session_id});
 }
 
 // ============================================================================
