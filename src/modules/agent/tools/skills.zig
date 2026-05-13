@@ -219,58 +219,13 @@ pub fn get_local_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
 /// macOS: ~/Library/Application Support/nalar/skills/
 /// Windows: %APPDATA%/nalar/skills/
 /// Returns allocated string that caller must free, or null if home/env not found
-pub fn get_global_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
-    var config_dir: ?[]const u8 = null;
-    var needs_free: bool = false;
-
-    switch (builtin.os.tag) {
-        .windows => {
-            const appdata = std.posix.getenv("APPDATA") orelse {
-                std.log.debug("APPDATA environment variable not set", .{});
-                return null;
-            };
-            config_dir = std.fs.path.join(allocator, &[_][]const u8{ appdata, APP_NAME }) catch null;
-            if (config_dir != null) needs_free = true;
-        },
-        .macos => {
-            const home = std.posix.getenv("HOME") orelse {
-                std.log.debug("HOME environment variable not set", .{});
-                return null;
-            };
-            config_dir = std.fs.path.join(allocator, &[_][]const u8{
-                home, "Library", "Application Support", APP_NAME,
-            }) catch null;
-            if (config_dir != null) needs_free = true;
-        },
-        else => { // Linux, FreeBSD, etc.
-            // XDG_CONFIG_HOME or default to ~/.config
-            if (std.posix.getenv("XDG_CONFIG_HOME")) |xdg_config| {
-                config_dir = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME }) catch null;
-                if (config_dir != null) needs_free = true;
-            } else {
-                const home = std.posix.getenv("HOME") orelse {
-                    std.log.debug("HOME environment variable not set", .{});
-                    return null;
-                };
-                config_dir = std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME }) catch null;
-                if (config_dir != null) needs_free = true;
-            }
-        },
+pub fn get_global_skills_path(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) ?[]const u8 {
+    // Use environment map if provided
+    if (environment) |env| {
+        return get_global_skills_path_from_env(allocator, env);
     }
-
-    const dir = config_dir orelse return null;
-    defer if (needs_free) allocator.free(dir);
-
-    // Build full path: config_dir/skills/
-    const path = std.fs.path.join(allocator, &[_][]const u8{
-        dir,
-        "skills",
-    }) catch {
-        std.log.debug("Could not build global skills path", .{});
-        return null;
-    };
-
-    return path;
+    // No fallback - environment is required in this codebase
+    return null;
 }
 
 /// Resolve the skills directory path by checking local first, then global
@@ -292,7 +247,7 @@ pub fn resolve_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
     }
 
     // Try global path
-    if (get_global_skills_path(allocator)) |global_path| {
+    if (get_global_skills_path(allocator, null)) |global_path| {
         // Check if directory exists
         const exists = blk: {
             std.fs.cwd().access(global_path, .{}) catch {
@@ -440,6 +395,136 @@ pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []SkillInfo) 
         allocator.free(skill.description);
     }
     allocator.free(skills_list);
+}
+
+/// Get global skills path using environment map (not std.posix.getenv)
+/// Linux: ~/.config/nalar/skills/ or $XDG_CONFIG_HOME/nalar/skills/
+/// macOS: ~/Library/Application Support/nalar/skills/
+/// Windows: %APPDATA%/nalar/skills/
+/// Returns allocated string that caller must free, or null if home/env not found
+pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment: *const std.process.Environ.Map) ?[]const u8 {
+    // Try XDG_CONFIG_HOME first
+    if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
+        const path = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME, "skills" }) catch return null;
+        return path;
+    }
+
+    // Fall back to platform-specific defaults
+    if (environment.get("HOME")) |home| {
+        return std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME, "skills" }) catch null;
+    }
+
+    return null;
+}
+
+/// Get local skills path (.nalar/skills/) using io
+/// Returns allocated string that caller must free, or null if cwd unavailable
+pub fn get_local_skills_path_from_io(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
+        std.log.debug("Could not get current working directory", .{});
+        return null;
+    };
+    const cwd = cwd_buf[0..cwd_len];
+
+    return std.fs.path.join(allocator, &[_][]const u8{
+        cwd,
+        LOCAL_SKILLS_DIR,
+    }) catch null;
+}
+
+/// Get local skills path for a specific directory
+/// Returns allocated string that caller must free, or null if path unavailable
+pub fn get_local_skills_path_for_dir(allocator: std.mem.Allocator, dir_path: []const u8) ?[]const u8 {
+    return std.fs.path.join(allocator, &[_][]const u8{
+        dir_path,
+        LOCAL_SKILLS_DIR,
+    }) catch null;
+}
+
+/// List all skill file paths in a specific directory
+/// Returns allocated array of file paths to SKILL.MD files inside skill folders
+/// Empty files are excluded from the list
+pub fn list_skill_files_in_dir(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) ?[][]const u8 {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
+        std.log.debug("Could not open skills directory at {s}: {s}", .{ dir_path, @errorName(err) });
+        return null;
+    };
+    defer std.Io.Dir.close(dir, io);
+
+    var files: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (files.items) |f| allocator.free(f);
+        files.deinit(allocator);
+    }
+
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+
+        const skill_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name, SKILL_FILE_NAME }) catch continue;
+
+        // Check if SKILL.MD exists and is non-empty
+        const file = std.Io.Dir.cwd().openFile(io, skill_file_path, .{}) catch {
+            allocator.free(skill_file_path);
+            continue;
+        };
+        defer std.Io.File.close(file, io);
+
+        const stat = std.Io.File.stat(file, io) catch {
+            allocator.free(skill_file_path);
+            continue;
+        };
+
+        if (stat.size == 0) {
+            allocator.free(skill_file_path);
+            continue;
+        }
+
+        files.append(allocator, skill_file_path) catch {
+            allocator.free(skill_file_path);
+            continue;
+        };
+    }
+
+    return files.toOwnedSlice(allocator) catch null;
+}
+
+/// List all skills from a specific directory path
+/// Returns allocated array of SkillInfo structs
+/// Caller owns the returned memory and must free it with free_skills_list()
+pub fn list_skills_from_dir_path(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) []SkillInfo {
+    const files = list_skill_files_in_dir(allocator, io, dir_path) orelse return &[_]SkillInfo{};
+    defer free_skill_files(allocator, files);
+
+    if (files.len == 0) return &[_]SkillInfo{};
+
+    var skills_list: std.ArrayList(SkillInfo) = .empty;
+    defer skills_list.deinit(allocator);
+
+    for (files) |file_path| {
+        const content = load_skills_from_path(allocator, io, file_path);
+        if (content.len == 0) {
+            allocator.free(content);
+            continue;
+        }
+
+        if (parseYamlFrontmatter(allocator, content)) |parsed| {
+            skills_list.append(allocator, .{
+                .name = parsed.name,
+                .description = parsed.description,
+            }) catch {
+                freeParsedFrontmatter(allocator, parsed);
+                allocator.free(content);
+                continue;
+            };
+            allocator.free(content);
+        } else {
+            allocator.free(content);
+        }
+    }
+
+    return skills_list.toOwnedSlice(allocator) catch &[_]SkillInfo{};
 }
 
 test {

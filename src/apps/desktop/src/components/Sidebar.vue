@@ -231,7 +231,7 @@ const loadMoreChats = async () => {
     console.log('[Sidebar] loadMoreChats blocked by condition')
     return
   }
-  
+
   chatsLoading.value = true
   try {
     console.log('[Sidebar] Fetching with cursor:', chatsNextCursor.value)
@@ -551,10 +551,10 @@ const handleSelectTask = (taskId: string) => {
         class="py-2 flex items-center justify-between cursor-pointer hover:opacity-80 transition-opacity mb-1 shrink-0"
         @click="toggleNavSection"
       >
-        <span
+        <button
           class="text-xs font-semibold uppercase tracking-wider"
           style="color: var(--semantic-text-dim);"
-        >Chats</span>
+        >Chats</button>
         <div class="flex items-center gap-2">
           <!-- Sort Dropdown -->
           <select
@@ -603,7 +603,7 @@ const handleSelectTask = (taskId: string) => {
         :style="{ height: sidebarStore.chatsHeight + '%' }"
       >
         <!-- Main Nav Items -->
-        <ul 
+        <ul
           ref="chatsContainerRef"
           @scroll="handleChatsScroll"
           class="flex-1 overflow-y-auto space-y-1 min-h-0"
@@ -646,9 +646,9 @@ const handleSelectTask = (taskId: string) => {
         <div v-if="chatsLoading && navItems.length > 0" class="py-2 text-center">
           <span class="text-xs" style="color: var(--semantic-text-dim);">Loading more...</span>
         </div>
-        
+
         <!-- Load More Button (fallback for when scroll doesn't trigger) -->
-        <button 
+        <button
           v-else-if="chatsHasMore && navItems.length > 0"
           @click="loadMoreChats"
           class="py-2 text-xs hover:opacity-80 transition-opacity"

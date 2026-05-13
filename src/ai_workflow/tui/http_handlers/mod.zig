@@ -62,6 +62,7 @@ pub const tasksCreateHandler = @import("tasks_create.zig").tasksCreateHandler;
 pub const tasksUpdateHandler = @import("tasks_update.zig").tasksUpdateHandler;
 pub const tasksUpdateByIdHandler = @import("tasks_update.zig").tasksUpdateByIdHandler;
 pub const tasksDeleteHandler = @import("tasks_delete.zig").tasksDeleteHandler;
+pub const taskDeleteByIdHandler = @import("task_delete_by_id.zig").taskDeleteByIdHandler;
 
 // Worker API handlers
 pub const worker_create_handler = @import("worker_create.zig").worker_create_handler;
@@ -69,6 +70,12 @@ pub const worker_get_handler = @import("worker_get.zig").worker_get_handler;
 pub const workerListHandler = @import("worker_list.zig").workerListHandler;
 pub const worker_list_handler = @import("worker_list.zig").workerListHandler;
 pub const worker_cancel_handler = @import("worker_cancel.zig").worker_cancel_handler;
+
+// Skills API handlers
+pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
+
+// Git API handlers
+pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
 
 // Session stream handler
 pub const sessionStreamHandler = @import("session_stream.zig").sessionStreamHandler;

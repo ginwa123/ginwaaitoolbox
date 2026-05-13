@@ -248,3 +248,27 @@ pub fn makeWorkspaceItemTaskListResponse(allocator: std.mem.Allocator, tasks: []
     };
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
+
+// Git status types
+pub const GitStatusResponse = struct {
+    is_git_repo: bool,
+    branch: ?[]const u8 = null,
+    has_changes: bool = false,
+    is_clean: bool = true,
+    status: ?[]const u8 = null
+};
+
+pub const GitStatusErrorResponse = struct {
+    @"error": []const u8
+};
+
+pub fn makeGitStatusResponse(allocator: std.mem.Allocator, response: GitStatusResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+pub fn makeGitStatusErrorResponse(allocator: std.mem.Allocator, message: []const u8) ![]u8 {
+    const response = GitStatusErrorResponse{
+        .@"error" = message,
+    };
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}

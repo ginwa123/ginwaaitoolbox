@@ -218,6 +218,7 @@ pub const TUIWorkflow = struct {
 
         // Ensure cleanup happens even on error - remove from worker table
         defer {
+            is_have_queue_message = llm_history.hasQueuedMessages(self.db, params.session_id);
             if (is_have_queue_message == false) {
                 llm_history.markSessionIdle(params.parent_allocator, self.db, params.session_id) catch {};
             }

@@ -105,7 +105,7 @@ const handleDeleteTask = (event: Event, taskId: string) => {
 
       <!-- Tasks List (shown when expanded - allows multiple) -->
       <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1 space-y-0.5">
-        <div
+        <button
           v-for="task in item.tasks"
           :key="task.id"
           class="flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
@@ -129,7 +129,7 @@ const handleDeleteTask = (event: Event, taskId: string) => {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
-        </div>
+        </button>
       </div>
     </div>
   </li>

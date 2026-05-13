@@ -555,7 +555,7 @@ export async function createWorkspaceItem(
 export async function deleteWorkspaceItem(
   workspaceId: string,
   itemId: string,
-): Promise<{ success: boolean }> {
+): Promise<{success: boolean}> {
   const response = await fetch(
     `${API_BASE}/workspaces/${workspaceId}/items/${itemId}`,
     {
@@ -564,4 +564,34 @@ export async function deleteWorkspaceItem(
   );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
+}
+
+// Git Status API
+export interface GitStatus {
+  is_git_repo: boolean;
+  branch: string;
+  has_changes: boolean;
+  is_clean: boolean;
+  current: string;
+  status: string;
+}
+
+export async function getGitStatus(cwd: string): Promise<GitStatus> {
+  try {
+    const response = await fetch(
+      `${API_BASE}/git/status?path=${encodeURIComponent(cwd)}`,
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  } catch (error) {
+    // Return non-repo status on error
+    return {
+      is_git_repo: false,
+      branch: "",
+      has_changes: false,
+      is_clean: true,
+      current: "",
+      status: "error"
+    };
+  }
 }

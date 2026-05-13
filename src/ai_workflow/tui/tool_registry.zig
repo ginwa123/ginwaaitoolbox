@@ -271,7 +271,7 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
 
-    const output = list_skills_mod.execute_list_skills(ctx.allocator, ctx.io) catch blk: {
+    const output = list_skills_mod.execute_list_skills(ctx.allocator, ctx.io, null, ctx.environment) catch blk: {
         break :blk try std.fmt.allocPrint(ctx.allocator, "{{\"error\": \"Failed to list skills\"}}", .{});
     };
     return ToolExecResult{ .output = output, .output_allocated = true };

@@ -210,6 +210,40 @@ const stopProcessingPoll = () => {
   }
 }
 
+// Git status state
+const gitStatus = ref<api.GitStatus | null>(null)
+let gitStatusPollInterval: ReturnType<typeof setInterval> | null = null
+
+const checkGitStatus = async () => {
+  if (!cwd.value) {
+    gitStatus.value = null
+    return
+  }
+
+  try {
+    const status = await api.getGitStatus(cwd.value)
+    gitStatus.value = status
+  } catch (err) {
+    console.error('Failed to check git status:', err)
+    gitStatus.value = null
+  }
+}
+
+const startGitStatusPoll = () => {
+  // Check immediately
+  checkGitStatus()
+  // Then poll every 30 seconds
+  if (gitStatusPollInterval) clearInterval(gitStatusPollInterval)
+  gitStatusPollInterval = setInterval(checkGitStatus, 30000)
+}
+
+const stopGitStatusPoll = () => {
+  if (gitStatusPollInterval) {
+    clearInterval(gitStatusPollInterval)
+    gitStatusPollInterval = null
+  }
+}
+
 // Filter out empty messages for display (check stripped content)
 const filteredMessages = computed(() =>
   messages.value.filter((m) => {
@@ -495,17 +529,31 @@ onMounted(async () => {
     await loadChatHistory()
     connectSse()
     startProcessingPoll()
+    startGitStatusPoll()
   }
 })
 
 onUnmounted(() => {
   disconnectSse()
   stopProcessingPoll()
+  stopGitStatusPoll()
 })
 
 watch(
   () => messages.value.length,
   () => nextTick(() => scrollToBottom())
+)
+
+// Watch for cwd changes to refresh git status
+watch(
+  () => cwd.value,
+  (newCwd) => {
+    if (newCwd) {
+      checkGitStatus()
+    } else {
+      gitStatus.value = null
+    }
+  }
 )
 
 
@@ -628,6 +676,16 @@ const compactSession = async () => {
               backgroundColor: (maxTotalTokens / maxCapacityTotalTokens) > 0.8 ? 'var(--color-red)' : (maxTotalTokens / maxCapacityTotalTokens) > 0.6 ? 'var(--color-orange)' : 'var(--color-violet)'
             }"></div>
           </div>
+        </div>
+        <!-- Git status display -->
+        <div v-if="gitStatus && gitStatus.is_git_repo"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+          :title="gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'">
+          <span>🌿</span>
+          <span style="color: var(--semantic-text);">{{ gitStatus.branch || 'main' }}</span>
+          <span v-if="!gitStatus.is_clean" style="color: var(--color-orange);">●</span>
+          <span v-else style="color: var(--color-green);">✓</span>
         </div>
       </div>
     </div>

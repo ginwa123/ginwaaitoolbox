@@ -260,6 +260,9 @@ src/
 - [llm_history.zig:416] Fixed cursor pagination for DESC order: reversed cursor comparison operator from `h.created_at < ?` (asc) / `h.created_at > ?` (desc) to `h.created_at > ?` (asc) / `h.created_at < ?` (desc) so loading more goes correctly to older messages.
 - [ChatView.vue] Added "Load more messages" button at top for when message list doesn't overflow (overscroll not visible). Also fixed scroll position preservation when prepending messages during loadMore.
 
+## Lessons Learned
+- **Never build JSON manually** — Use `std.json.Stringify.valueAlloc(allocator, response_struct, .{})` instead of manual string concatenation with manual escaping. Zig's standard library handles JSON escaping properly and the code is cleaner. Example: see `http_response.zig` for response structure definitions and `skills_list.zig` for usage pattern.
+
 ## Key Tool Conventions
 
 ### text_replace Tool
@@ -324,6 +327,8 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | GET | `/api/workspaces/:workspace_id/items/:item_id` | Get workspace item |
 | PUT | `/api/workspaces/:workspace_id/items/:item_id` | Update workspace item |
 | DELETE | `/api/workspaces/:workspace_id/items/:item_id` | Delete workspace item |
+| GET | `/api/skills` | List skills (global + local with optional `cwd` param) |
+| GET | `/api/skills?cwd=/path` | List skills from specific working directory (local skills only) |
 
 ### Session Messages Response
 
