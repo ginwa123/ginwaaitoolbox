@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import SkillList from './SkillList.vue'
 
 const router = useRouter()
 
@@ -54,7 +55,7 @@ const emit = defineEmits<{
 }>()
 
 const goBack = () => {
-  emit('close')
+  router.back()
 }
 
 const setSettingsTab = (tab: string) => {
@@ -280,9 +281,10 @@ const setSettingsTab = (tab: string) => {
               class="text-base font-semibold mb-4"
               style="color: var(--semantic-text);"
             >Skills</h2>
-            <p style="color: var(--semantic-text-muted);">
-              Configure AI skills and capabilities here.
+            <p class="text-sm mb-4" style="color: var(--semantic-text-muted);">
+              Available AI capabilities and workflows.
             </p>
+            <SkillList />
           </div>
         </div>
       </div>

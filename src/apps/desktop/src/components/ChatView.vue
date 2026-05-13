@@ -108,7 +108,11 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
           const matchCount = fileMatch[3];
           return `<span class="tool-inline">search → "${query || 'unknown'}"</span><br><span class="tool-inline-result">  ${filePath} (${matchCount})</span>`;
         }
-        const warningQuery = content.match(/<warning>(.*?)<\/warning>/);
+        let warningQueryArr = content.match(/<warning>(.*?)<\/warning>/);
+        let warningQuery = ""
+        if (warningQueryArr != null && warningQueryArr?.length > 0) {
+          warningQuery = warningQueryArr[0];
+        }
         return `<span class="tool-inline">search → "${warningQuery || 'unknown'}"</span>`;
       }
 

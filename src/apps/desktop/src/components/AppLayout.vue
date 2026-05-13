@@ -21,8 +21,7 @@ const sidebarWidth = ref(288)
 const minSidebarWidth = 72
 const maxSidebarWidth = 480
 
-// Settings overlay state
-const showSettings = ref(false)
+// Settings overlay state (now driven by route)
 
 onMounted(() => {
   const savedCollapsed = localStorage.getItem('sidebar-collapsed')
@@ -103,15 +102,17 @@ const handleNavigate = (view: string, chatName?: string, taskId?: string) => {
     localStorage.setItem('active-task-id', taskId || '')
     router.replace({ path: '/app', query: { view: 'task' } })
   } else if (view === 'settings') {
-    showSettings.value = true
+    router.push({ path: '/app/settings' })
   }
 }
 
 const closeSettings = () => {
-  showSettings.value = false
+  router.back()
 }
 
 const currentView = computed(() => {
+  const path = route.path
+  if (path === '/app/settings') return 'settings'
   return route.query.view as string || 'chat'
 })
 
@@ -218,7 +219,7 @@ const activeTask = computed(() => workspacesStore.activeTask)
     </main>
     <FolderExplorer v-if="activeWorkspaceItem" />
 
-    <!-- Settings Overlay -->
-    <SettingsView v-if="showSettings" @close="closeSettings" />
+    <!-- Settings page -->
+    <SettingsView v-if="currentView === 'settings'" />
   </div>
 </template>

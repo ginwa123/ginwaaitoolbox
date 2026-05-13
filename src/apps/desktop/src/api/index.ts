@@ -566,6 +566,19 @@ export async function deleteWorkspaceItem(
   return response.json();
 }
 
+// Skills API
+export interface Skill {
+  name: string;
+  description: string;
+  path?: string;
+}
+
+export async function getSkills(): Promise<{ global_skills: Skill[] }> {
+  const response = await fetch(`${API_BASE}/skills`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 // Git Status API
 export interface GitStatus {
   is_git_repo: boolean;

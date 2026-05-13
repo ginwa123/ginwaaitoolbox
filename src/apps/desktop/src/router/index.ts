@@ -13,6 +13,11 @@ const router = createRouter({
       name: 'app',
       component: AppLayout,
     },
+    {
+      path: '/app/settings',
+      name: 'settings',
+      component: AppLayout,
+    },
   ],
 })
 

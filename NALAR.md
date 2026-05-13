@@ -227,6 +227,13 @@ src/
 
 **Note:** Workspace and workspace item expand states are persisted in `workspaces.ts` store. Nav section and workspaces section expand states are persisted in `sidebar.ts` store.
 
+## Desktop Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| SkillList | `components/SkillList.vue` | Reusable skills list with loading/error/empty states. Fetches from `/api/skills` endpoint. |
+| SettingsView | `components/SettingsView.vue` | Settings page with tabs for Model, API, and Skills configuration |
+
 ## Language & Environment Facts
 
 <!-- Known API changes, syntax rules, and environment behaviors for this codebase. -->
