@@ -45,7 +45,6 @@ const escapeHtml = (text: string): string => {
 
 // Format tool output for display (handles <stdout>, <stderr>, <success>, <error> tags)
 
-// Tool icons (emoji)
 // Render markdown content to HTML
 const renderResponse = (content: string, role: string, tool_name: string | undefined): string => {
   if (!content) return ''
@@ -192,6 +191,21 @@ const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
 const isLLMProcessing = ref(false)
+
+// Track which tool items are expanded (by index)
+const expandedToolIds = ref<Set<string>>(new Set())
+
+// Toggle expanded state for a tool item
+const toggleToolExpanded = (groupIndex: number, msgIndex: number) => {
+  const key = `${groupIndex}-${msgIndex}`
+  const newSet = new Set(expandedToolIds.value)
+  if (newSet.has(key)) {
+    newSet.delete(key)
+  } else {
+    newSet.add(key)
+  }
+  expandedToolIds.value = newSet
+}
 
 // Poll for LLM processing status
 let processingPollInterval: ReturnType<typeof setInterval> | null = null
@@ -761,7 +775,17 @@ const compactSession = async () => {
                 <div class="tool-sequence">
                   <div v-for="(msg, idx) in group.messages" :key="idx" class="tool-item"
                     :class="idx < group.messages.length - 1 ? 'tool-item-border' : ''">
-                    <span v-html="renderResponse(msg.content, msg.role, msg.tool_name)"></span>
+                    <div class="tool-expandable">
+                      <button class="tool-summary" @click="toggleToolExpanded(groupIndex, idx)" :style="[
+                        'cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;',
+                        expandedToolIds.has(`${groupIndex}-${idx}`) ? 'border-bottom: 1px dashed var(--color-border);' : ''
+                      ]">
+                        <span v-html="renderResponse(msg.content, msg.role, msg.tool_name)"></span>
+                      </button>
+                      <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content">
+                        <pre class="tool-content-pre" style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto;">{{ msg.content }}</pre>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </template>
