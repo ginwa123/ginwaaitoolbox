@@ -69,7 +69,13 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
         const mathSuccess = content.match(/<success>([\s\S]*?)<\/success>/);
         const path = mathPath ? mathPath[1] : null;
         const isSuccess = mathSuccess ? mathSuccess[1] === 'true' : false;
-        return `<span class="tool-inline">${tool_name} → ${path}${isSuccess ? ' ✓' : ' ✗'}</span>`;
+        const error = content.match(/<error>(.*?)<\/error>/);
+
+        if (isSuccess) {
+          return `<span class="tool-inline">${tool_name} → ${path}${isSuccess ? ' ✓' : `${error} ✗`}</span>`;
+        }
+
+        return `<span class="tool-inline">${tool_name} → ${`${error} ✗`}</span>`;
       }
 
       if (tool_name === 'read_file') {
@@ -102,8 +108,8 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
           const matchCount = fileMatch[3];
           return `<span class="tool-inline">search → "${query || 'unknown'}"</span><br><span class="tool-inline-result">  ${filePath} (${matchCount})</span>`;
         }
-
-        return `<span class="tool-inline">search → "${query || 'unknown'}"</span>`;
+        const warningQuery = content.match(/<warning>(.*?)<\/warning>/);
+        return `<span class="tool-inline">search → "${warningQuery || 'unknown'}"</span>`;
       }
 
       if (tool_name === 'glob') {
@@ -135,6 +141,12 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
         const mathCount = content.match(/<count>(\d+)<\/count>/);
         const count = mathCount ? mathCount[1] : null;
         return `<span class="tool-inline">${tool_name} → ${count || '0'} agents spawned</span>`;
+      }
+
+      if (tool_name === 'update_activity') {
+        const thoughtQuery = content.match(/<thought>(.*?)<\/thought>/);
+
+        return `<span class="tool-inline">${tool_name || 'tool'} → ${thoughtQuery}</span>`;
       }
 
       /// Default tool badge for other tools
@@ -678,8 +690,7 @@ const compactSession = async () => {
           </div>
         </div>
         <!-- Git status display -->
-        <div v-if="gitStatus && gitStatus.is_git_repo"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+        <div v-if="gitStatus && gitStatus.is_git_repo" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
           :title="gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'">
           <span>🌿</span>
