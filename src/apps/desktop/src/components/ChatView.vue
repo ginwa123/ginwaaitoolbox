@@ -638,7 +638,7 @@ const compactSession = async () => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="flex flex-col h-full w-full">
     <!-- Header -->
     <div class="px-6 py-4 flex items-center gap-3"
       style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
@@ -905,7 +905,7 @@ const compactSession = async () => {
   background-color: rgba(0, 0, 0, 0.04);
   border-radius: 0.375rem;
   padding: 0.5rem 0;
-  overflow-x: auto;
+  overflow-x: hidden;
 }
 
 /* Tool sequence grouping */

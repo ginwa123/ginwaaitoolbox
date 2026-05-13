@@ -27,7 +27,7 @@ onMounted(() => {
   if (savedCollapsed !== null) {
     sidebarCollapsed.value = savedCollapsed === 'true'
   }
-  
+
   const savedWidth = localStorage.getItem('sidebar-width')
   if (savedWidth !== null) {
     const parsed = parseInt(savedWidth, 10)
@@ -35,13 +35,13 @@ onMounted(() => {
       sidebarWidth.value = Math.max(minSidebarWidth, Math.min(maxSidebarWidth, parsed))
     }
   }
-  
+
   // Active view state
   const savedView = localStorage.getItem('active-view')
   const savedChatId = localStorage.getItem('active-chat-id')
   const savedChatName = localStorage.getItem('active-chat-name')
   const savedTaskId = localStorage.getItem('active-task-id')
-  
+
   if (savedView) {
     activeView.value = savedView
   }
@@ -55,7 +55,7 @@ onMounted(() => {
     // Restore the active task when loading the app in task view
     workspacesStore.setActiveTask(savedTaskId)
   }
-  
+
   // Initialize workspaces
   workspacesStore.initializeFromSystemFolder()
 })
@@ -118,7 +118,7 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
     activeChatId.value = `chat-${newId}`
     localStorage.setItem('active-chat-id', `chat-${newId}`)
   }
-  
+
   // Update sidebar's navItems with the new session ID
   sidebarRef.value?.updateChatId(oldId, newId)
 }
@@ -126,7 +126,7 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
 
 <template>
   <div class="flex h-screen" style="background-color: var(--semantic-content-bg);">
-    <Sidebar 
+    <Sidebar
       ref="sidebarRef"
       @navigate="handleNavigate"
       :collapsed="sidebarCollapsed"
