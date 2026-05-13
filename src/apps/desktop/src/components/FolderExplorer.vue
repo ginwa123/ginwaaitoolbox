@@ -157,9 +157,6 @@ const handleClick = (entry: FolderEntry) => {
         >▶</span>
         <span v-else class="w-3"></span>
 
-        <!-- Icon -->
-        <span>{{ entry.is_directory ? '📁' : '📄' }}</span>
-
         <!-- Name -->
         <span class="truncate flex-1 text-left">{{ entry.name }}</span>
       </button>

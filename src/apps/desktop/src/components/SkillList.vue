@@ -117,7 +117,6 @@ defineExpose({
           @click="openSkillDetail(skill)"
         >
           <div class="flex items-start gap-3">
-            <span class="text-lg mt-0.5">📁</span>
             <div class="flex-1 min-w-0">
               <h3 class="text-sm font-medium truncate" style="color: var(--semantic-text);">
                 {{ skill.name }}

@@ -107,16 +107,22 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 <template>
   <div class="space-y-1 h-full flex flex-col">
     <!-- Section Header - Clickable to collapse/expand -->
-    <div 
-      class="px-3 py-2 flex items-center justify-between cursor-pointer hover:opacity-80 transition-opacity shrink-0"
+    <button
+      class="px-3 py-2 flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity shrink-0 w-full text-left"
       @click="toggleWorkspacesSection"
     >
+      <span
+        class="text-xs transition-transform duration-200"
+        :style="{ transform: sidebarStore.workspacesExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
+        style="color: var(--semantic-text-dim);"
+      >▶</span>
       <span
         class="text-xs font-semibold uppercase tracking-wider"
         style="color: var(--semantic-text-dim);"
       >Workspaces</span>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 ml-auto">
         <button
+          v-if="sidebarStore.workspacesExpanded"
           @click.stop="$emit('addWorkspace')"
           class="w-5 h-5 rounded flex items-center justify-center transition-colors duration-200 hover:opacity-80"
           style="color: var(--semantic-text-dim);"
@@ -124,13 +130,8 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
         >
           <span class="text-sm">+</span>
         </button>
-        <span 
-          class="text-xs transition-transform duration-200" 
-          :style="{ transform: sidebarStore.workspacesExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
-          style="color: var(--semantic-text-dim);"
-        >▶</span>
       </div>
-    </div>
+    </button>
 
     <!-- Scrollable Workspace Groups Container -->
     <div 
@@ -160,8 +161,6 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
             class="text-xs transition-transform duration-200 w-4 flex justify-center"
             :style="{ transform: workspace.expanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
           >▶</span>
-          <!-- Workspace Icon -->
-          <span class="text-base">{{ workspace.icon }}</span>
           <!-- Workspace Name -->
           <span class="flex-1 text-left font-medium truncate">{{ workspace.name }}</span>
           <!-- Item Count Badge -->
@@ -223,7 +222,6 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
                   class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity flex items-center gap-2"
                   style="color: var(--semantic-text);"
                 >
-                  <span>📁</span>
                   <span>Add Project</span>
                 </button>
               </li>
@@ -233,7 +231,6 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
                   style="color: var(--semantic-text-dim);"
                   disabled
                 >
-                  <span>📝</span>
                   <span>Add Markdown</span>
                   <span class="text-xs">(Dev)</span>
                 </button>

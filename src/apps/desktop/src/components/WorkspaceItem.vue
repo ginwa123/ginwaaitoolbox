@@ -73,11 +73,6 @@ const handleDeleteTask = (event: Event, taskId: string) => {
           >
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
           </svg>
-          <!-- Item Icon -->
-          <span
-            class="transition-colors duration-200"
-            :style="isActive ? 'opacity: 1;' : 'opacity: 0.5;'"
-          >{{ item.item_type === 'folder' ? '📁' : '📄' }}</span>
           <!-- Item Name -->
           <span class="truncate">{{ item.name }}</span>
           <!-- Loading spinner -->

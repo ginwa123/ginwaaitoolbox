@@ -9,13 +9,6 @@ import ConfirmDialog from './ConfirmDialog.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
 import * as api from '../api'
 
-interface NavItem {
-  id: string
-  name: string
-  icon: string
-  active?: boolean
-}
-
 const props = defineProps<{
   collapsed?: boolean
   width?: number
@@ -27,7 +20,7 @@ const emit = defineEmits<{
   resize: [width: number]
 }>()
 
-// Expose method to update chat ID (called from parent when session is created)
+// Expose method to update chat ID
 const updateChatId = (oldId: string, newId: string) => {
   const chatItem = navItems.value.find(item => item.id === oldId)
   if (chatItem) {
@@ -35,48 +28,99 @@ const updateChatId = (oldId: string, newId: string) => {
   }
 }
 
-// Expose navItems ref for parent access
-defineExpose({
-  updateChatId
-})
+defineExpose({ updateChatId })
 
 const workspacesStore = useWorkspacesStore()
 const sidebarStore = useSidebarStore()
 
-// Sidebar collapse state
+// State
 const isCollapsed = computed(() => props.collapsed ?? false)
-const sidebarWidth = computed(() => props.width ?? 288)
-const minWidth = 72 // Icon-only width
-const maxWidth = 480
+const sidebarWidth = computed(() => props.width ?? 280)
+const activeChatName = ref('')
+const chatsLoading = ref(false)
+const navItems = ref<{ id: string; name: string; icon: string; active?: boolean }[]>([])
+const chatsHasMore = ref(false)
+const chatsNextCursor = ref<string | null>(null)
+const chatsSortDirection = ref<'asc' | 'desc'>(loadSortDirection())
 
-// Resize handle state
+// Dialog states
+const showAddWorkspaceModal = ref(false)
+const showAddItemDialog = ref(false)
+const addItemTargetWorkspaceId = ref<string | null>(null)
+const showDeleteConfirm = ref(false)
+const deleteConfirmConfig = ref<{ title: string; message: string; onConfirm: () => void } | null>(null)
+
+// Resize handling
 const isResizing = ref(false)
 const resizeStartX = ref(0)
 const resizeStartWidth = ref(0)
+const chatsContainerRef = ref<HTMLElement | null>(null)
+
+// Chats resize handling
+const isChatsResizing = ref(false)
+const chatsResizeStartY = ref(0)
+const chatsResizeStartPx = ref(0)
+
+// Get computed chats height in pixels from percentage
+const getChatsHeightPx = (): number => {
+  const aside = document.querySelector('aside')
+  if (!aside) return 200
+  const navHeight = aside.clientHeight - 56 - 48 // header + footer
+  return (navHeight * sidebarStore.chatsHeight) / 100
+}
+
+const startChatsResize = (e: MouseEvent) => {
+  e.preventDefault()
+  e.stopPropagation()
+  console.log('[Sidebar] startChatsResize', e.clientY)
+  isChatsResizing.value = true
+  chatsResizeStartY.value = e.clientY
+  chatsResizeStartPx.value = getChatsHeightPx()
+  document.addEventListener('mousemove', handleChatsResize, { passive: false })
+  document.addEventListener('mouseup', stopChatsResize)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'row-resize'
+}
+
+const handleChatsResize = (e: MouseEvent) => {
+  e.preventDefault()
+  if (!isChatsResizing.value) return
+  console.log('[Sidebar] handleChatsResize', e.clientY, 'delta:', e.clientY - chatsResizeStartY.value)
+  const deltaY = e.clientY - chatsResizeStartY.value
+  const newHeightPx = Math.max(80, chatsResizeStartPx.value + deltaY)
+  // Convert back to percentage
+  const aside = document.querySelector('aside')
+  if (!aside) return
+  const navHeight = aside.clientHeight - 56 - 48
+  const newPercent = (newHeightPx / navHeight) * 100
+  console.log('[Sidebar] newPercent:', newPercent)
+  sidebarStore.setChatsHeight(newPercent)
+}
+
+const stopChatsResize = () => {
+  isChatsResizing.value = false
+  document.removeEventListener('mousemove', handleChatsResize)
+  document.removeEventListener('mouseup', stopChatsResize)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+}
 
 const startResize = (e: MouseEvent | TouchEvent) => {
   isResizing.value = true
   const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
   resizeStartX.value = clientX
   resizeStartWidth.value = sidebarWidth.value
-
   document.addEventListener('mousemove', handleResize)
   document.addEventListener('mouseup', stopResize)
-  document.addEventListener('touchmove', handleResize)
-  document.addEventListener('touchend', stopResize)
-
-  // Prevent text selection during resize
   document.body.style.userSelect = 'none'
   document.body.style.cursor = 'col-resize'
 }
 
 const handleResize = (e: MouseEvent | TouchEvent) => {
   if (!isResizing.value) return
-
   const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
   const deltaX = clientX - resizeStartX.value
-  const newWidth = Math.max(minWidth, Math.min(maxWidth, resizeStartWidth.value + deltaX))
-
+  const newWidth = Math.max(72, Math.min(480, resizeStartWidth.value + deltaX))
   emit('resize', newWidth)
 }
 
@@ -84,71 +128,16 @@ const stopResize = () => {
   isResizing.value = false
   document.removeEventListener('mousemove', handleResize)
   document.removeEventListener('mouseup', stopResize)
-  document.removeEventListener('touchmove', handleResize)
-  document.removeEventListener('touchend', stopResize)
-
   document.body.style.userSelect = ''
   document.body.style.cursor = ''
 }
 
-// Chats container height (for drag-to-resize) - managed by sidebar store
-const isChatsResizing = ref(false)
-const chatsResizeStartY = ref(0)
-const chatsResizeStartHeight = ref(0)
-
-// Chats resize handlers
-const chatsContainerRef = ref<HTMLElement | null>(null)
-
-const startChatsResize = (e: MouseEvent | TouchEvent) => {
-  isChatsResizing.value = true
-  const clientY = 'touches' in e && e.touches[0] ? e.touches[0].clientY : (e as MouseEvent).clientY
-  chatsResizeStartY.value = clientY
-  chatsResizeStartHeight.value = sidebarStore.chatsHeight
-
-  document.addEventListener('mousemove', handleChatsResize)
-  document.addEventListener('mouseup', stopChatsResize)
-  document.addEventListener('touchmove', handleChatsResize)
-  document.addEventListener('touchend', stopChatsResize)
-
-  document.body.style.userSelect = 'none'
-  document.body.style.cursor = 'row-resize'
-}
-
-const handleChatsResize = (e: MouseEvent | TouchEvent) => {
-  if (!isChatsResizing.value) return
-
-  const clientY = 'touches' in e && e.touches[0] ? e.touches[0].clientY : (e as MouseEvent).clientY
-  const sidebarEl = (window.event?.target as HTMLElement)?.closest('aside')
-  if (!sidebarEl) return
-
-  const sidebarHeight = sidebarEl.clientHeight - 64 - 48 // minus header and footer
-  const deltaY = clientY - chatsResizeStartY.value
-  const deltaPercent = (deltaY / sidebarHeight) * 100
-  const newHeight = chatsResizeStartHeight.value + deltaPercent
-
-  sidebarStore.setChatsHeight(newHeight)
-}
-
-// Handle scroll for infinite scroll pagination
 const handleChatsScroll = (e: Event) => {
   const target = e.target as HTMLElement
   const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight
-  // Load more when user scrolls to within 100px of bottom
   if (scrollBottom < 100 && chatsHasMore.value && !chatsLoading.value) {
-    console.log('[Sidebar] Scroll triggered loadMoreChats')
     loadMoreChats()
   }
-}
-
-const stopChatsResize = () => {
-  isChatsResizing.value = false
-  document.removeEventListener('mousemove', handleChatsResize)
-  document.removeEventListener('mouseup', stopChatsResize)
-  document.removeEventListener('touchmove', handleChatsResize)
-  document.removeEventListener('touchend', stopChatsResize)
-
-  document.body.style.userSelect = ''
-  document.body.style.cursor = ''
 }
 
 onUnmounted(() => {
@@ -156,56 +145,21 @@ onUnmounted(() => {
   stopChatsResize()
 })
 
-const toggleCollapse = () => {
-  emit('toggle-collapse')
-}
-
-// Nav section collapsible state - use store for persistence
-const navExpanded = computed({
-  get: () => sidebarStore.navExpanded,
-  set: (val) => { sidebarStore.navExpanded = val }
-})
-
-// Loading state
-const chatsLoading = ref(false)
-
-// Chats list
-const navItems = ref<NavItem[]>([])
-
-// Pagination state
-const chatsHasMore = ref(false)
-const chatsNextCursor = ref<string | null>(null)
-
-// LocalStorage key for persistent sort preference
-const SORT_DIRECTION_KEY = 'nalar_chats_sort_direction'
-
-// Sort state for chats (loaded from localStorage for persistence)
-const chatsSortBy = ref<'created_at' | 'session_name' | 'agent'>('created_at')
-const chatsSortDirection = ref<'asc' | 'desc'>(loadSortDirection())
-
-// Load sort direction from localStorage
 function loadSortDirection(): 'asc' | 'desc' {
-  const stored = localStorage.getItem(SORT_DIRECTION_KEY)
-  if (stored === 'asc' || stored === 'desc') {
-    return stored
-  }
-  return 'desc' // Default to newest
+  const stored = localStorage.getItem('nalar_chats_sort_direction')
+  return stored === 'asc' ? 'asc' : 'desc'
 }
 
-// Load chats from API on mount
 onMounted(async () => {
   await loadChats()
 })
 
-// Load chats with current sort settings (initial load or refresh)
 const loadChats = async () => {
   chatsLoading.value = true
   chatsNextCursor.value = null
   try {
-    console.log('[Sidebar] loadChats - calling getChats with limit 10')
-    const data = await api.getChats(chatsSortBy.value, chatsSortDirection.value, 10)
-    console.log('[Sidebar] loadChats - received data:', { count: data.sessions?.length, hasMore: data.has_more, nextCursor: data.next_cursor })
-    navItems.value = (data.sessions || []).map((session) => ({
+    const data = await api.getChats('created_at', chatsSortDirection.value, 20)
+    navItems.value = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
       icon: '💬',
@@ -213,31 +167,20 @@ const loadChats = async () => {
     }))
     chatsHasMore.value = data.has_more
     chatsNextCursor.value = data.next_cursor
-    console.log('[Sidebar] loadChats - state after load:', { totalItems: navItems.value.length, hasMore: chatsHasMore.value, cursor: chatsNextCursor.value })
   } catch (err) {
     console.error('Failed to load chats:', err)
     navItems.value = []
-    chatsHasMore.value = false
-    chatsNextCursor.value = null
   } finally {
     chatsLoading.value = false
   }
 }
 
-// Load more chats (pagination)
 const loadMoreChats = async () => {
-  console.log('[Sidebar] loadMoreChats called:', { hasMore: chatsHasMore.value, loading: chatsLoading.value, cursor: chatsNextCursor.value })
-  if (!chatsHasMore.value || chatsLoading.value || !chatsNextCursor.value) {
-    console.log('[Sidebar] loadMoreChats blocked by condition')
-    return
-  }
-
+  if (!chatsHasMore.value || chatsLoading.value || !chatsNextCursor.value) return
   chatsLoading.value = true
   try {
-    console.log('[Sidebar] Fetching with cursor:', chatsNextCursor.value)
-    const data = await api.getChats(chatsSortBy.value, chatsSortDirection.value, 10, chatsNextCursor.value)
-    console.log('[Sidebar] Received data:', { count: data.sessions?.length, hasMore: data.has_more, nextCursor: data.next_cursor })
-    const newItems = (data.sessions || []).map((session) => ({
+    const data = await api.getChats('created_at', chatsSortDirection.value, 20, chatsNextCursor.value)
+    const newItems = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
       icon: '💬',
@@ -246,7 +189,6 @@ const loadMoreChats = async () => {
     navItems.value.push(...newItems)
     chatsHasMore.value = data.has_more
     chatsNextCursor.value = data.next_cursor
-    console.log('[Sidebar] Updated state:', { totalItems: navItems.value.length, hasMore: chatsHasMore.value, cursor: chatsNextCursor.value })
   } catch (err) {
     console.error('Failed to load more chats:', err)
   } finally {
@@ -254,96 +196,54 @@ const loadMoreChats = async () => {
   }
 }
 
-// Handle sort change (also saves to localStorage for persistence)
-const handleSortChange = async () => {
-  localStorage.setItem(SORT_DIRECTION_KEY, chatsSortDirection.value)
-  await loadChats()
-}
+const toggleCollapse = () => emit('toggle-collapse')
+const toggleNavSection = () => sidebarStore.toggleNavExpanded()
+const goToSettings = () => emit('navigate', 'settings')
 
-// Dialog states
-const showAddWorkspaceModal = ref(false)
-const showAddItemDialog = ref(false)
-const addItemTargetWorkspaceId = ref<string | null>(null)
-// Chat management - direct creation without dialog
-// Session is created lazily when user sends first message
 const createChat = () => {
-  const name = `New Chat ${new Date().toLocaleTimeString()}`
-
-  // Generate local-only ID (session will be created on first message send)
+  const name = 'New Chat'
   const newChatId = `session-${Date.now()}`
-
-  // Deactivate all other chats
   navItems.value.forEach(item => item.active = false)
-
-  navItems.value.push({
-    id: newChatId,
-    name: name,
-    icon: '💬',
-    active: true,
-  })
-
-  // Navigate to the new chat
+  navItems.value.unshift({ id: newChatId, name, icon: '💬', active: true })
   activeChatName.value = name
   workspacesStore.setActiveWorkspaceItem(null)
   workspacesStore.setActiveTask(null)
   emit('navigate', `chat-${newChatId}`, name)
 }
 
-const toggleNavSection = () => {
-  sidebarStore.toggleNavExpanded()
+const setActive = (id: string) => {
+  const chat = navItems.value.find(item => item.id === id)
+  activeChatName.value = chat?.name || ''
+  navItems.value = navItems.value.map(item => ({ ...item, active: item.id === id }))
+  workspacesStore.setActiveWorkspaceItem(null)
+  workspacesStore.setActiveTask(null)
+  emit('navigate', `chat-${id}`, activeChatName.value)
 }
 
 const confirmDeleteChat = (chatId: string) => {
   openDeleteConfirm({
     title: 'Delete Chat',
-    message: 'Are you sure you want to delete this chat? This action cannot be undone.',
+    message: 'Delete this chat?',
     onConfirm: () => removeChat(chatId)
   })
 }
 
-const handleDeleteChatConfirm = () => {
-  if (chatToDelete.value) {
-    removeChat(chatToDelete.value)
-  }
-  chatToDelete.value = null
-}
-
 const removeChat = async (chatId: string) => {
-  const index = navItems.value.findIndex((item) => item.id === chatId)
+  const index = navItems.value.findIndex(item => item.id === chatId)
   if (index !== -1) {
     const wasActive = navItems.value[index]?.active ?? false
     navItems.value.splice(index, 1)
-
-    // Sync with API
     try {
       await api.deleteChat(chatId)
     } catch (err) {
       console.error('Failed to delete chat:', err)
-      // Note: We don't rollback on error since the item is already removed from UI
     }
-
-    // If it was active, activate the first chat
     if (wasActive && navItems.value.length > 0 && navItems.value[0]) {
       navItems.value[0].active = true
       emit('navigate', navItems.value[0].id)
     }
   }
 }
-
-// Active chat info for passing to ChatView
-const activeChatName = ref('')
-
-// Delete confirmation dialog
-const showDeleteChatDialog = ref(false)
-const chatToDelete = ref<string | null>(null)
-
-// Generic delete confirmation dialog
-const showDeleteConfirm = ref(false)
-const deleteConfirmConfig = ref<{
-  title: string
-  message: string
-  onConfirm: () => void
-} | null>(null)
 
 const openDeleteConfirm = (config: { title: string; message: string; onConfirm: () => void }) => {
   deleteConfirmConfig.value = config
@@ -358,43 +258,17 @@ const handleDeleteConfirm = () => {
   deleteConfirmConfig.value = null
 }
 
-const setActive = (id: string) => {
-  const chat = navItems.value.find((item) => item.id === id)
-  activeChatName.value = chat?.name || ''
-
-  navItems.value = navItems.value.map((item) => ({
-    ...item,
-    active: item.id === id,
-  }))
-  workspacesStore.setActiveWorkspaceItem(null)
-  workspacesStore.setActiveTask(null)
-  // Emit with 'chat-' prefix to match App.vue's expectation
-  emit('navigate', `chat-${id}`, activeChatName.value)
-}
-
 // Workspace handlers
-const handleToggleWorkspace = (workspaceId: string) => {
-  workspacesStore.toggleWorkspace(workspaceId)
-}
+const handleToggleWorkspace = (workspaceId: string) => workspacesStore.toggleWorkspace(workspaceId)
 
 const handleSelectItem = async (workspaceId: string, itemId: string) => {
-  // Clear active task when selecting a new item
   workspacesStore.setActiveTask(null)
-
-  const workspace = workspacesStore.workspaces.find((ws) => ws.id === workspaceId)
-  const item = workspace?.items.find((i) => i.id === itemId)
-
-  // If item has a path and hasn't been loaded, fetch contents
+  const workspace = workspacesStore.workspaces.find(ws => ws.id === workspaceId)
+  const item = workspace?.items.find(i => i.id === itemId)
   if (item?.path && !item.isLoaded && !item.isLoading) {
     await workspacesStore.fetchFolderContents(workspaceId, itemId)
   }
-
-  // Deactivate main nav items
-  navItems.value = navItems.value.map((navItem) => ({
-    ...navItem,
-    active: false,
-  }))
-  // Set active workspace item
+  navItems.value = navItems.value.map(navItem => ({ ...navItem, active: false }))
   workspacesStore.setActiveWorkspaceItem(itemId)
   emit('navigate', 'workspace')
 }
@@ -402,7 +276,7 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
 const handleDeleteWorkspace = (workspaceId: string) => {
   openDeleteConfirm({
     title: 'Delete Workspace',
-    message: 'Are you sure you want to delete this workspace and all its items?',
+    message: 'Delete workspace and all items?',
     onConfirm: () => workspacesStore.removeWorkspace(workspaceId)
   })
 }
@@ -410,57 +284,33 @@ const handleDeleteWorkspace = (workspaceId: string) => {
 const handleDeleteItem = (workspaceId: string, itemId: string) => {
   openDeleteConfirm({
     title: 'Delete Project',
-    message: 'Are you sure you want to delete this project?',
+    message: 'Delete this project?',
     onConfirm: () => workspacesStore.removeWorkspaceItem(workspaceId, itemId)
   })
 }
 
 const handleAddItem = (workspaceId: string, itemType: string) => {
   addItemTargetWorkspaceId.value = workspaceId
-  if (itemType === 'folder') {
-    showAddItemDialog.value = true
-  }
-  // Future: for 'markdown' type, show markdown dialog
+  if (itemType === 'folder') showAddItemDialog.value = true
 }
 
 const handleCreateItem = async (name: string, path: string) => {
   if (addItemTargetWorkspaceId.value) {
     const itemId = await workspacesStore.addWorkspaceItem(addItemTargetWorkspaceId.value, name, path)
-    // Fetch folder contents immediately after adding
-    if (itemId) {
-      await workspacesStore.fetchFolderContents(addItemTargetWorkspaceId.value, itemId)
-    }
+    if (itemId) await workspacesStore.fetchFolderContents(addItemTargetWorkspaceId.value, itemId)
   }
 }
 
-const handleCloseAddItemDialog = () => {
-  showAddItemDialog.value = false
-  addItemTargetWorkspaceId.value = null
-}
+const handleAddWorkspace = () => showAddWorkspaceModal.value = true
+const handleCreateWorkspace = (name: string, icon: string) => workspacesStore.addWorkspace(name, icon)
+const handleCloseModal = () => showAddWorkspaceModal.value = false
+const handleCloseAddItemDialog = () => { showAddItemDialog.value = false; addItemTargetWorkspaceId.value = null }
 
-const handleAddWorkspace = () => {
-  showAddWorkspaceModal.value = true
-}
-
-const handleCreateWorkspace = (name: string, icon: string) => {
-  workspacesStore.addWorkspace(name, icon)
-}
-
-const handleCloseModal = () => {
-  showAddWorkspaceModal.value = false
-}
-
-// Task handlers - Add Task creates a task item and opens TaskDetail view
 const handleAddTask = async (workspaceId: string, item: WorkspaceItem) => {
-  // Create a new task using the store API
-  const name = `New Task ${new Date().toLocaleTimeString()}`
+  const name = `Task ${new Date().toLocaleTimeString()}`
   const taskId = await workspacesStore.addTask(workspaceId, item.id, name)
-
   if (taskId) {
-    // Set active task (setActiveTask auto-sets parent workspace item and expands)
     workspacesStore.setActiveTask(taskId)
-
-    // Navigate to task view (shows TaskDetail with ChatView-like interface)
     emit('navigate', 'task')
   }
 }
@@ -468,7 +318,7 @@ const handleAddTask = async (workspaceId: string, item: WorkspaceItem) => {
 const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
   openDeleteConfirm({
     title: 'Delete Task',
-    message: 'Are you sure you want to delete this task?',
+    message: 'Delete this task?',
     onConfirm: () => workspacesStore.deleteTask(workspaceId, itemId, taskId)
   })
 }
@@ -477,82 +327,61 @@ const handleSelectTask = (taskId: string) => {
   workspacesStore.setActiveTask(taskId)
   emit('navigate', 'task', undefined, taskId)
 }
-
-// Navigate to Settings page
-const goToSettings = () => {
-  emit('navigate', 'settings')
-}
 </script>
 
 <template>
   <aside
-    class="h-screen flex flex-col relative transition-all duration-300 ease-out"
+    class="h-screen flex flex-col relative transition-all duration-200 ease-out select-none"
     :style="{
-      width: isCollapsed ? '72px' : sidebarWidth + 'px',
+      width: isCollapsed ? '64px' : sidebarWidth + 'px',
       backgroundColor: 'var(--semantic-sidebar-bg)',
-      borderRight: '1px solid var(--semantic-sidebar-border)'
+      borderRight: '1px solid var(--color-border)'
     }"
   >
-    <!-- Resize Handle (right edge) -->
+    <!-- Resize Handle -->
     <div
       v-if="!isCollapsed"
-      class="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-10 group/resize"
+      class="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-10 opacity-0 hover:opacity-100 transition-opacity"
+      style="background: var(--color-violet);"
       @mousedown="startResize"
-      @touchstart="startResize"
-    >
-      <div
-        class="w-full h-full transition-opacity duration-200 group-hover/resize:opacity-100 opacity-0"
-        style="background-color: var(--color-violet);"
-      />
-    </div>
+    />
 
-    <!-- Collapse Toggle Button -->
+    <!-- Collapse Button -->
     <button
       @click="toggleCollapse"
       class="absolute -right-3 top-20 z-20 w-6 h-6 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110"
-      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); box-shadow: 0 2px 8px rgba(0,0,0,0.2);"
-      :title="isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+      style="background: var(--semantic-card-bg); border: 1px solid var(--color-border); box-shadow: 0 2px 8px rgba(0,0,0,0.15);"
     >
-      <span
-        class="text-xs transition-transform duration-300"
+      <svg
+        class="w-3 h-3 transition-transform duration-200"
         :style="{ transform: isCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }"
         style="color: var(--semantic-text-muted);"
+        fill="none" viewBox="0 0 24 24" stroke="currentColor"
       >
-        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-        </svg>
-      </span>
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+      </svg>
     </button>
 
-    <!-- Logo Area -->
+    <!-- Header -->
     <div
-      class="h-16 flex items-center shrink-0 transition-all duration-300 justify-between"
-      :class="isCollapsed ? 'justify-center px-0' : 'px-5'"
+      class="h-14 flex items-center shrink-0"
+      :class="isCollapsed ? 'justify-center px-0' : 'px-4 justify-between'"
       style="border-bottom: 1px solid var(--color-border);"
     >
-      <div class="flex items-center gap-3" :class="isCollapsed ? 'flex-col' : ''">
-        <div
-          class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-          style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));"
-        >
-          <span
-            class="text-sm font-bold"
-            style="color: var(--color-bg);"
-          >N</span>
+      <div v-if="!isCollapsed" class="flex items-center gap-2">
+        <div class="w-7 h-7 rounded-lg flex items-center justify-center" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
+          <span class="text-xs font-bold" style="color: var(--color-bg);">N</span>
         </div>
-        <span
-          v-if="!isCollapsed"
-          class="text-lg font-semibold tracking-tight whitespace-nowrap"
-          style="color: var(--semantic-text);"
-        >Nalar</span>
+        <span class="text-base font-semibold" style="color: var(--semantic-text);">Nalar</span>
       </div>
-      <!-- Settings Icon -->
+      <div v-else class="w-8 h-8 rounded-lg flex items-center justify-center" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
+        <span class="text-sm font-bold" style="color: var(--color-bg);">N</span>
+      </div>
       <button
         v-if="!isCollapsed"
         @click="goToSettings"
-        class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-200 hover:opacity-80 shrink-0"
+        class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:opacity-70"
         style="color: var(--semantic-text-muted);"
-        title="Settings"
       >
         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -561,155 +390,107 @@ const goToSettings = () => {
       </button>
     </div>
 
-    <!-- Navigation -->
-    <nav class="flex-1 flex flex-col py-4 overflow-hidden transition-all duration-300" :class="isCollapsed ? 'px-2' : 'px-3'">
-      <!-- Nav Section Header - Clickable to collapse/expand (only when expanded) -->
-      <div
-        v-if="!isCollapsed"
-        class="py-2 flex items-center justify-between cursor-pointer hover:opacity-80 transition-opacity mb-1 shrink-0"
-        @click="toggleNavSection"
-      >
+    <!-- Content -->
+    <nav class="flex-1 flex flex-col overflow-hidden" :class="isCollapsed ? 'px-2 py-3' : 'p-3'">
+
+      <!-- Chats Section with Resizable Height -->
+      <div v-if="!isCollapsed" class="shrink-0 flex flex-col" :style="sidebarStore.navExpanded ? { height: sidebarStore.chatsHeight + '%', minHeight: '80px' } : { height: 'auto', minHeight: '0' }">
+
+        <!-- Header with expand/collapse toggle -->
         <button
-          class="text-xs font-semibold uppercase tracking-wider"
-          style="color: var(--semantic-text-dim);"
-        >Chats</button>
-        <div class="flex items-center gap-2">
-          <!-- Sort Dropdown -->
-          <select
-            v-model="chatsSortDirection"
-            @change="handleSortChange"
-            @click.stop
-            class="text-xs px-1 py-0.5 rounded border-none cursor-pointer transition-colors"
-            style="background-color: var(--semantic-card-bg); color: var(--semantic-text-dim);"
-            title="Sort direction"
-          >
-            <option value="desc">↓ Newest</option>
-            <option value="asc">↑ Oldest</option>
-          </select>
-          <button
-            @click.stop="createChat"
-            class="w-5 h-5 rounded flex items-center justify-center transition-colors duration-200 hover:opacity-80"
-            style="color: var(--semantic-text-dim);"
-            title="Add Chat"
-          >
-            <span class="text-sm">+</span>
-          </button>
+          class="px-3 py-2 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0"
+          @click="toggleNavSection"
+        >
           <span
             class="text-xs transition-transform duration-200"
-            :style="{ transform: navExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
+            :style="{ transform: sidebarStore.navExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
             style="color: var(--semantic-text-dim);"
           >▶</span>
-        </div>
-      </div>
-
-      <!-- Add Chat Button (visible when collapsed) -->
-      <div v-if="isCollapsed" class="mb-2 shrink-0">
-        <button
-          @click.stop="createChat"
-          class="w-full py-2 rounded-lg flex items-center justify-center transition-colors duration-200 hover:opacity-80"
-          style="color: var(--semantic-text-dim);"
-          title="Add Chat"
-        >
-          <span class="text-lg">+</span>
-        </button>
-      </div>
-
-      <!-- Chats List Container with Resizable Height -->
-      <div
-        v-if="!isCollapsed && navExpanded"
-        class="shrink-0 flex flex-col"
-        :style="{ height: sidebarStore.chatsHeight + '%' }"
-      >
-        <!-- Main Nav Items -->
-        <ul
-          ref="chatsContainerRef"
-          @scroll="handleChatsScroll"
-          class="flex-1 overflow-y-auto space-y-1 min-h-0"
-        >
-          <li v-for="item in navItems" :key="item.id" class="group/chat">
-            <button
-              @click="setActive(item.id)"
-              class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200"
-              :style="item.active
-                ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
-                : `color: var(--semantic-text-muted);`"
+          <span class="text-xs font-semibold uppercase tracking-wider" style="color: var(--semantic-text-dim);">Chats</span>
+          <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
+            <select
+              v-model="chatsSortDirection"
+              @change="loadChats"
+              @click.stop
+              class="text-xs px-1.5 py-0.5 rounded cursor-pointer"
+              style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: none;"
             >
-              <span
-                class="text-lg transition-transform duration-200"
-                :style="!item.active ? 'opacity: 0.7;' : ''"
-              >{{ item.icon }}</span>
-              <span class="flex-1 text-left truncate min-w-0">{{ item.name }}</span>
-              <span
-                v-if="item.active"
-                class="w-1.5 h-1.5 rounded-full"
-                style="background-color: var(--color-aqua);"
-              />
-              <!-- Delete Chat Button -->
-              <button
-                v-if="item.id !== 'chat'"
-                @click.stop="confirmDeleteChat(item.id)"
-                class="w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover/chat:opacity-100 transition-opacity duration-200 hover:text-red-400"
-                style="color: var(--semantic-text-dim);"
-                title="Delete Chat"
-              >
-                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+              <option value="desc">↓</option>
+              <option value="asc">↑</option>
+            </select>
+            <button
+              @click.stop="createChat"
+              class="w-5 h-5 rounded flex items-center justify-center transition-colors hover:opacity-70"
+              style="color: var(--semantic-text-dim);"
+              title="New Chat"
+            >
+              <span class="text-sm">+</span>
             </button>
-          </li>
-        </ul>
-
-        <!-- Loading/Load More Indicator -->
-        <div v-if="chatsLoading && navItems.length > 0" class="py-2 text-center">
-          <span class="text-xs" style="color: var(--semantic-text-dim);">Loading more...</span>
-        </div>
-
-        <!-- Load More Button (fallback for when scroll doesn't trigger) -->
-        <button
-          v-else-if="chatsHasMore && navItems.length > 0"
-          @click="loadMoreChats"
-          class="py-2 text-xs hover:opacity-80 transition-opacity"
-          style="color: var(--color-violet);"
-        >
-          Load more chats
+          </div>
         </button>
 
-        <!-- Drag Resize Handle (between chats and workspaces) -->
-        <div
-          class="h-2 cursor-row-resize flex items-center justify-center group/resize shrink-0"
-          @mousedown="startChatsResize"
-          @touchstart="startChatsResize"
-        >
+        <!-- Chat List -->
+        <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col">
+          <ul ref="chatsContainerRef" @scroll="handleChatsScroll" class="flex-1 overflow-y-auto space-y-0.5 min-h-0">
+            <li v-for="item in navItems" :key="item.id" class="group/chat">
+              <button
+                @click="setActive(item.id)"
+                class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150"
+                :style="item.active
+                  ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
+                  : 'color: var(--semantic-text-muted);'"
+              >
+
+                <span class="flex-1 text-left truncate">{{ item.name }}</span>
+                <button
+                  v-if="item.id !== 'chat'"
+                  @click.stop="confirmDeleteChat(item.id)"
+                  class="w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover/chat:opacity-100 transition-opacity hover:text-red-400 shrink-0"
+                  style="color: var(--semantic-text-dim);"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </button>
+            </li>
+            <li v-if="chatsLoading" class="py-2 text-center">
+              <span class="text-xs" style="color: var(--semantic-text-dim);">Loading...</span>
+            </li>
+            <li v-else-if="chatsHasMore">
+              <button @click="loadMoreChats" class="w-full py-2 text-xs hover:opacity-70" style="color: var(--color-violet);">
+                Load more
+              </button>
+            </li>
+          </ul>
+
+          <!-- Drag Resize Handle -->
           <div
-            class="w-full h-px transition-all duration-200 group-hover/resize:h-1"
-            style="background: linear-gradient(90deg, transparent, var(--color-border), transparent);"
-          />
+            class="h-3 cursor-row-resize flex items-center justify-center group/resize shrink-0 mt-1"
+            @mousedown="startChatsResize"
+          >
+            <div
+              class="w-full h-0.5 transition-all duration-200 group-hover/resize:h-1 rounded"
+              style="background: linear-gradient(90deg, transparent, var(--color-border), transparent);"
+            />
+          </div>
         </div>
       </div>
 
-      <!-- Collapsed Chat Items -->
-      <ul v-show="isCollapsed" class="space-y-1 shrink-0">
-        <li v-for="item in navItems" :key="item.id">
-          <button
-            @click="setActive(item.id)"
-            class="w-full py-2 rounded-lg flex items-center justify-center transition-all duration-200 relative"
-            :style="item.active
-              ? `background-color: var(--semantic-active-bg);`
-              : ''"
-            :title="item.name"
-          >
-            <span class="text-lg">{{ item.icon }}</span>
-            <span
-              v-if="item.active"
-              class="absolute bottom-1 w-1.5 h-1.5 rounded-full"
-              style="background-color: var(--color-aqua);"
-            />
-          </button>
-        </li>
-      </ul>
+      <!-- Collapsed Chats Button -->
+      <div v-else class="mb-3 shrink-0">
+        <button
+          @click="createChat"
+          class="w-full h-10 rounded-lg flex items-center justify-center transition-colors hover:opacity-80"
+          style="color: var(--semantic-text-muted);"
+        >
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+        </button>
+      </div>
 
-      <!-- Workspaces List Component - Takes remaining space -->
+      <!-- Workspaces -->
       <div class="flex-1 min-h-0 overflow-hidden">
         <WorkspaceList
           v-if="!isCollapsed"
@@ -725,53 +506,34 @@ const goToSettings = () => {
           @select-task="handleSelectTask"
           @delete-task="handleDeleteTask"
         />
-      </div>
-
-      <!-- Collapsed Workspace Icons -->
-      <div v-if="isCollapsed" class="space-y-1">
-        <button
-          v-for="workspace in workspacesStore.workspaces"
-          :key="workspace.id"
-          @click="handleToggleWorkspace(workspace.id)"
-          class="w-full py-2 rounded-lg flex items-center justify-center transition-all duration-200 relative"
-          :style="workspace.expanded ? 'background-color: var(--semantic-active-bg);' : ''"
-          :title="workspace.name"
-        >
-          <span class="text-lg">{{ workspace.icon }}</span>
-        </button>
-        <!-- Add Workspace Button -->
-        <button
-          @click="handleAddWorkspace"
-          class="w-full py-2 rounded-lg flex items-center justify-center transition-colors duration-200 hover:opacity-80"
-          style="color: var(--semantic-text-dim);"
-          title="Add Workspace"
-        >
-          <span class="text-lg">+</span>
-        </button>
+        <!-- Collapsed workspaces -->
+        <div v-else class="space-y-0.5">
+          <button
+            v-for="workspace in workspacesStore.workspaces"
+            :key="workspace.id"
+            @click="handleToggleWorkspace(workspace.id)"
+            class="w-full h-10 rounded-lg flex items-center justify-center transition-colors"
+            :style="workspace.expanded ? 'background: var(--semantic-active-bg);' : ''"
+            :title="workspace.name"
+          >
+            <span class="text-base">{{ workspace.icon }}</span>
+          </button>
+          <button
+            @click="handleAddWorkspace"
+            class="w-full h-10 rounded-lg flex items-center justify-center transition-colors hover:opacity-70"
+            style="color: var(--semantic-text-dim);"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        </div>
       </div>
     </nav>
 
-    <!-- Status / Footer -->
-    <div
-      class="shrink-0 transition-all duration-300"
-      >
-    </div>
-
-    <!-- Add Workspace Modal -->
-    <WorkspaceModal
-      :show="showAddWorkspaceModal"
-      @close="handleCloseModal"
-      @create="handleCreateWorkspace"
-    />
-
-    <!-- Add Item Dialog -->
-    <AddItemDialog
-      :show="showAddItemDialog"
-      @close="handleCloseAddItemDialog"
-      @create="handleCreateItem"
-    />
-
-    <!-- Delete Chat Confirmation Dialog -->
+    <!-- Modals -->
+    <WorkspaceModal :show="showAddWorkspaceModal" @close="handleCloseModal" @create="handleCreateWorkspace" />
+    <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
     <ConfirmDialog
       :show="showDeleteConfirm"
       :title="deleteConfirmConfig?.title || 'Confirm'"
@@ -784,22 +546,6 @@ const goToSettings = () => {
 </template>
 
 <style scoped>
-/* Collapse transition for nav section */
-.collapse-enter-active,
-.collapse-leave-active {
-  transition: all 0.2s ease-out;
-  overflow: hidden;
-}
-
-.collapse-enter-from,
-.collapse-leave-to {
-  opacity: 0;
-  max-height: 0;
-}
-
-.collapse-enter-to,
-.collapse-leave-from {
-  opacity: 1;
-  max-height: 200px;
-}
+/* Smooth transitions */
+aside { transition: width 0.2s ease-out; }
 </style>

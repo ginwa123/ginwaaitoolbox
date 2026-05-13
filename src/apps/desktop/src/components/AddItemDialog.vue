@@ -278,9 +278,6 @@ const handleKeydown = (event: KeyboardEvent) => {
                   color: selectedPath === folder.path ? 'var(--semantic-active-text)' : 'var(--semantic-text-muted)',
                 }"
               >
-                <!-- Icon -->
-                <span>{{ folder.is_directory ? '📁' : '📄' }}</span>
-
                 <!-- Name -->
                 <span class="flex-1 text-left truncate">{{ folder.name }}</span>
 

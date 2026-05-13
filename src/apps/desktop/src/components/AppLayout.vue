@@ -157,10 +157,12 @@ const activeTask = computed(() => workspacesStore.activeTask)
           style="background: linear-gradient(135deg, var(--semantic-card-bg), var(--semantic-sidebar-bg)); border: 1px solid var(--color-border);"
         >
           <div
-            class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center text-3xl"
+            class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));"
           >
-            {{ activeWorkspaceItem.item_type === 'folder' ? '📁' : '📄' }}
+            <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="color: var(--color-bg);">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
           </div>
           <h2
             class="text-2xl font-bold mb-2"
