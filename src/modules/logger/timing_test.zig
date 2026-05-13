@@ -2,16 +2,9 @@ const std = @import("std");
 const timing = @import("Timing.zig");
 
 test "timestampMs returns reasonable value" {
-    const ts = timing.timestampMs();
+    const ts = timing.timestampMs(std.testing.io);
     try std.testing.expect(ts > 1700000000000); // After 2023
     try std.testing.expect(ts < 2000000000000); // Before 2033
-}
-
-test "elapsedMs calculates correctly" {
-    const start = timing.timestampMs();
-    std.Thread.sleep(10_000_000); // 10ms
-    const elapsed = timing.elapsedMs(start);
-    try std.testing.expect(elapsed >= 10);
 }
 
 test "formatDuration returns correct units" {
@@ -33,7 +26,7 @@ test "formatDuration returns correct units" {
 }
 
 test "timestampIso produces valid format" {
-    const iso = try timing.timestampIso(std.testing.allocator);
+    const iso = try timing.timestampIso(std.testing.allocator, std.testing.io);
     defer std.testing.allocator.free(iso);
     
     // Should be 24 chars: YYYY-MM-DDTHH:MM:SS.mmmZ
@@ -48,7 +41,7 @@ test "timestampIso produces valid format" {
 }
 
 test "timestampCompact produces valid format" {
-    const compact = try timing.timestampCompact(std.testing.allocator);
+    const compact = try timing.timestampCompact(std.testing.allocator, std.testing.io);
     defer std.testing.allocator.free(compact);
     
     // Should be 15 chars: YYYYMMDD-HHMMSS

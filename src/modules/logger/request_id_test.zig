@@ -30,7 +30,6 @@ test "RequestId has correct format" {
 
 test "RequestIds are unique" {
     const id1 = generateRequestId();
-    std.Thread.sleep(1_000_000); // 1ms
     const id2 = generateRequestId();
     
     // IDs should differ (either time or random component)

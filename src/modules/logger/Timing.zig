@@ -7,7 +7,7 @@ pub fn timestampMs(io: std.Io) i64 {
 
 /// Calculate elapsed time in milliseconds
 pub fn elapsedMs(start: i64) i64 {
-    return timestampMs(std.io) - start;
+    return timestampMs(std.testing.io) - start;
 }
 
 /// Duration unit for human-readable output
@@ -59,8 +59,9 @@ pub fn timestampIso(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
 
 /// Get current timestamp as compact format for request IDs
 /// Format: YYYYMMDD-HHMMSS
-pub fn timestampCompact(allocator: std.mem.Allocator) ![]const u8 {
-    const ts = std.time.timestamp();
+pub fn timestampCompact(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const ts_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+    const ts = @divTrunc(ts_ns, std.time.ns_per_s);
     const epoch_seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(ts) };
     const epoch_day = epoch_seconds.getEpochDay();
     const day_seconds = epoch_seconds.getDaySeconds();

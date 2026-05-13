@@ -26,7 +26,7 @@ test "LogLevel fromString" {
 }
 
 test "TextFormatter produces correct output" {
-    var formatter_inst = TextFormatter.init();
+    var formatter_inst = TextFormatter.init(std.testing.io);
     const entry = LogEntry{
         .level = .info,
         .timestamp = 1234567890000,
@@ -63,7 +63,7 @@ test "JsonFormatter produces valid JSON" {
 }
 
 test "ColorFormatter includes ANSI codes" {
-    var formatter_inst = ColorFormatter.init();
+    var formatter_inst = ColorFormatter.init(std.testing.io);
     const entry = LogEntry{
         .level = .err,
         .timestamp = 1234567890000,
@@ -89,7 +89,7 @@ test "getAgentColor rotates through colors" {
 }
 
 test "LogEntry with context" {
-    var formatter_inst = TextFormatter{ .include_timestamp = false, .include_request_id = false };
+    var formatter_inst = TextFormatter.init(std.testing.io);
     const entry = LogEntry{
         .level = .info,
         .timestamp = 1234567890000,
@@ -106,11 +106,8 @@ test "LogEntry with context" {
 }
 
 test "TextFormatter with location" {
-    var formatter_inst = TextFormatter{
-        .include_timestamp = false,
-        .include_request_id = false,
-        .include_location = true,
-    };
+    var formatter_inst = TextFormatter.init(std.testing.io);
+    formatter_inst.include_location = true;
     const entry = LogEntry{
         .level = .info,
         .timestamp = 1234567890000,
@@ -129,12 +126,8 @@ test "TextFormatter with location" {
 }
 
 test "ColorFormatter with location" {
-    var formatter_inst = ColorFormatter{
-        .include_timestamp = false,
-        .include_request_id = false,
-        .color_by_level = false,
-        .include_location = true,
-    };
+    var formatter_inst = ColorFormatter.init(std.testing.io);
+    formatter_inst.include_location = true;
     const entry = LogEntry{
         .level = .err,
         .timestamp = 1234567890000,
@@ -176,11 +169,7 @@ test "JsonFormatter with location" {
 }
 
 test "TextFormatter without location when disabled" {
-    var formatter_inst = TextFormatter{
-        .include_timestamp = false,
-        .include_request_id = false,
-        .include_location = false,
-    };
+    var formatter_inst = TextFormatter.init(std.testing.io);
     const entry = LogEntry{
         .level = .info,
         .timestamp = 1234567890000,

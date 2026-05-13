@@ -47,18 +47,19 @@ const escapeHtml = (text: string): string => {
 
 // Render markdown content to HTML
 const renderResponse = (content: string, role: string, tool_name: string | undefined): string => {
+  content = content.trim()
   if (!content) return ''
   try {
     // Strip thinking tags before rendering
 
     if (role === 'assistant') {
-      const cleanContent = stripThinkingTags(content)
-      return marked.parse(cleanContent, { async: false }) as string
+      //      const cleanContent = stripThinkingTags(content)
+      return marked.parse(content, { async: false }) as string
     }
 
     if (role === 'tool_calls') {
-      const cleanContent = stripThinkingTags(content)
-      return marked.parse(cleanContent, { async: false }) as string
+      //const cleanContent = stripThinkingTags(content)
+      return marked.parse(content, { async: false }) as string
     }
 
 
@@ -68,12 +69,11 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
         const mathSuccess = content.match(/<success>([\s\S]*?)<\/success>/);
         const path = mathPath ? mathPath[1] : null;
         const isSuccess = mathSuccess ? mathSuccess[1] === 'true' : false;
-        const error = content.match(/<error>(.*?)<\/error>/);
-
+        const error = content.match(/<error>([\s\S]*?)<\/error>/);
         if (isSuccess) {
-          return `<span class="tool-inline">${tool_name} → ${path}${isSuccess ? ' ✓' : `${error} ✗`}</span>`;
+          return `<span class="tool-inline">${tool_name} → ${path} ' ✓' }</span>`;
         }
-
+        console.log('error text replace', error);
         return `<span class="tool-inline">${tool_name} → ${`${error} ✗`}</span>`;
       }
 
@@ -89,7 +89,7 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
       }
 
       if (tool_name === 'write_file') {
-        const mathPath = content.match(/<path>(.*?)<\/path>/);
+        const mathPath = content.match(/<file_write>(.*?)<\/file_write>/);
         const path = mathPath ? mathPath[1] : null;
         return `<span class="tool-inline">${tool_name} → ${path}</span>`;
       }
@@ -116,8 +116,15 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
         let warningQuery = ""
         if (warningQueryArr != null && warningQueryArr?.length > 0) {
           warningQuery = warningQueryArr[0];
+
+          return `<span class="tool-inline">search → "${warningQuery || 'unknown'}"</span>`;
+
         }
-        return `<span class="tool-inline">search → "${warningQuery || 'unknown'}"</span>`;
+
+        let errorQueryArr = content.match(/<error>(.*?)<\/error>/);
+        let errorQuery = errorQueryArr?.[0] ?? "unknown"
+        return `<span class="tool-inline">search → "${errorQuery || 'unknown'}"</span>`;
+
       }
 
       if (tool_name === 'glob') {
@@ -152,7 +159,8 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
       }
 
       if (tool_name === 'update_activity') {
-        const thoughtQuery = content.match(/<thought>(.*?)<\/thought>/);
+        const thoughtArray = content.match(/<thought>(.*?)<\/thought>/);
+        const thoughtQuery = thoughtArray?.[0];
 
         return `<span class="tool-inline">${tool_name || 'tool'} → ${thoughtQuery}</span>`;
       }
@@ -787,11 +795,7 @@ const compactSession = async () => {
                       ]">
                         <span v-html="renderResponse(msg.content, msg.role, msg.tool_name)"></span>
                       </button>
-                      <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content">
-                        <pre class="tool-content-pre"
-                          style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto;">
-                          {{ msg.content }}</pre>
-                      </div>
+                      <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content"><pre class="tool-content-pre" style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto; box-sizing: border-box; width: 100%;">{{ msg.content.trim() }}</pre></div>
                     </div>
                   </div>
                 </div>

@@ -12,9 +12,10 @@ pub const RequestId = struct {
     pub fn init() RequestId {
         var self: RequestId = undefined;
         
-        // Get current timestamp
-        const ts = std.time.timestamp();
-        const epoch_seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(ts) };
+        // Get current timestamp using Io.Timestamp
+        const ts = std.Io.Timestamp.now(std.testing.io, .real);
+        const ts_ns = ts.nanoseconds;
+        const epoch_seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(@divTrunc(ts_ns, std.time.ns_per_s)) };
         const epoch_day = epoch_seconds.getEpochDay();
         const day_seconds = epoch_seconds.getDaySeconds();
         const year_day = epoch_day.calculateYearDay();
@@ -25,12 +26,11 @@ pub const RequestId = struct {
         const seconds = day_seconds.getSecondsIntoMinute();
         
         // Generate random 4-character hex suffix using entropy
-        const entropy = std.time.nanoTimestamp() ^ @as(u64, @intFromPtr(&self));
+        const entropy = ts_ns ^ @as(u64, @intFromPtr(&self));
         var random_bytes: [2]u8 = undefined;
-        @as(*u16, @ptrCast(@alignCast(&random_bytes))).* = @as(u16, @truncate(entropy));
+        @as(*u16, @ptrCast(@alignCast(&random_bytes))).* = @as(u16, @truncate(@as(u64, @intCast(entropy))));
         
         // Format: REQ-YYYYMMDD-HHMMSS-XXXX
-        // Note: bufPrint returns the written slice, we ignore it
         _ = std.fmt.bufPrint(&self.value, "REQ-{d:0>4}{d:0>2}{d:0>2}-{d:0>2}{d:0>2}{d:0>2}-{x:0>2}{x:0>2}", .{
             year_day.year,
             month_day.month.numeric(),
@@ -66,9 +66,11 @@ pub const SessionId = struct {
     pub fn init() SessionId {
         var self: SessionId = undefined;
         
-        // Generate random 8-character hex
+        // Generate random 8-character hex using timestamp-seeded RNG
         var random_bytes: [4]u8 = undefined;
-        std.crypto.random.bytes(&random_bytes);
+        const ts = std.Io.Timestamp.now(std.testing.io, .real);
+        var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(ts.nanoseconds)));
+        rng.fill(&random_bytes);
         
         _ = std.fmt.bufPrint(&self.value, "SES-{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
             random_bytes[0],

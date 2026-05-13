@@ -90,15 +90,8 @@ pub const Logger = struct {
     }
 
     /// Initialize a new Logger with JSON formatter
-    pub fn initJson(allocator: std.mem.Allocator, config: LoggerConfig) Logger {
-        return .{
-            .allocator = allocator,
-            .config = config,
-            .mutex = std.Io.Mutex.init,
-            .formatter_ctx = .{ .json = JsonFormatter{ .pretty = false } },
-            .request_id = null,
-            .io = std.io,
-        };
+    pub fn initJson(allocator: std.mem.Allocator, io: std.Io, config: LoggerConfig) Logger {
+        return .{ .allocator = allocator, .config = config, .mutex = std.Io.Mutex.init, .formatter_ctx = .{ .json = JsonFormatter{ .pretty = false } }, .request_id = null, .io = io };
     }
 
     /// Initialize a new Logger with color formatter (for TUI)

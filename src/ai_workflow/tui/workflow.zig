@@ -220,7 +220,9 @@ pub const TUIWorkflow = struct {
         defer {
             is_have_queue_message = llm_history.hasQueuedMessages(self.db, params.session_id);
             if (is_have_queue_message == false) {
-                llm_history.markSessionIdle(params.parent_allocator, self.db, params.session_id) catch {};
+                llm_history.markSessionIdle(params.parent_allocator, self.db, params.session_id) catch |err| {
+                    self.logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
+                };
             }
         }
 
