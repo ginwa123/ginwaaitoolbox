@@ -4,6 +4,7 @@ import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import type { Workspace, WorkspaceItem } from '../stores/workspaces'
 import WorkspaceItemComponent from './WorkspaceItem.vue'
+import * as api from '../api'
 
 defineProps<{
   workspaces: Workspace[]
@@ -25,11 +26,27 @@ const emit = defineEmits<{
 const sidebarStore = useSidebarStore()
 const activeAddMenu = ref<string | null>(null)
 
+// Scroll container ref
+const workspacesScrollRef = ref<HTMLElement | null>(null)
+
+// Loading state
+const workspacesLoading = ref(false)
+
 // Close dropdown when clicking outside
 const handleClickOutside = (event: MouseEvent) => {
   const target = event.target as HTMLElement
   if (!target.closest('[data-workspace-menu]')) {
     activeAddMenu.value = null
+  }
+}
+
+// Handle scroll for infinite scroll pagination
+const handleWorkspacesScroll = (e: Event) => {
+  const target = e.target as HTMLElement
+  const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight
+  // Load more when user scrolls to within 100px of bottom
+  if (scrollBottom < 100) {
+    console.log('[WorkspaceList] Scroll triggered')
   }
 }
 
@@ -88,10 +105,10 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 </script>
 
 <template>
-  <div class="space-y-1">
+  <div class="space-y-1 h-full flex flex-col">
     <!-- Section Header - Clickable to collapse/expand -->
     <div 
-      class="px-3 py-2 flex items-center justify-between cursor-pointer hover:opacity-80 transition-opacity"
+      class="px-3 py-2 flex items-center justify-between cursor-pointer hover:opacity-80 transition-opacity shrink-0"
       @click="toggleWorkspacesSection"
     >
       <span
@@ -115,10 +132,15 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
       </div>
     </div>
 
-    <!-- Workspace Groups -->
-    <Transition name="collapse">
-      <div v-show="sidebarStore.workspacesExpanded" class="space-y-0.5">
-        <template v-for="workspace in workspaces" :key="workspace.id">
+    <!-- Scrollable Workspace Groups Container -->
+    <div 
+      ref="workspacesScrollRef"
+      @scroll="handleWorkspacesScroll"
+      class="flex-1 min-h-0 overflow-y-auto"
+    >
+      <Transition name="collapse">
+        <div v-show="sidebarStore.workspacesExpanded" class="space-y-0.5 pb-2">
+          <template v-for="workspace in workspaces" :key="workspace.id">
           <!-- Workspace Header -->
           <div class="flex items-center group/workspace" data-workspace-menu>
         <button
@@ -223,6 +245,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
         </template>
       </div>
     </Transition>
+    </div>
   </div>
 </template>
 
