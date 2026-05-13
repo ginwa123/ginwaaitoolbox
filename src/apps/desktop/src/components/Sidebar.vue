@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import WorkspaceList from './WorkspaceList.vue'
@@ -8,6 +10,9 @@ import AddItemDialog from './AddItemDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
 import * as api from '../api'
+
+const router = useRouter()
+const navigationStore = useNavigationStore()
 
 const props = defineProps<{
   collapsed?: boolean
@@ -36,12 +41,17 @@ const sidebarStore = useSidebarStore()
 // State
 const isCollapsed = computed(() => props.collapsed ?? false)
 const sidebarWidth = computed(() => props.width ?? 280)
-const activeChatName = ref('')
+const activeChatName = computed(() => navigationStore.activeChatName)
 const chatsLoading = ref(false)
 const navItems = ref<{ id: string; name: string; icon: string; active?: boolean }[]>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
-const chatsSortDirection = ref<'asc' | 'desc'>(loadSortDirection())
+const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
+
+// Watch for local changes and sync to store
+watch(chatsSortDirection, (newVal) => {
+  navigationStore.setChatsSortDirection(newVal)
+})
 
 // Dialog states
 const showAddWorkspaceModal = ref(false)
@@ -145,11 +155,6 @@ onUnmounted(() => {
   stopChatsResize()
 })
 
-function loadSortDirection(): 'asc' | 'desc' {
-  const stored = localStorage.getItem('nalar_chats_sort_direction')
-  return stored === 'asc' ? 'asc' : 'desc'
-}
-
 onMounted(async () => {
   await loadChats()
 })
@@ -159,14 +164,22 @@ const loadChats = async () => {
   chatsNextCursor.value = null
   try {
     const data = await api.getChats('created_at', chatsSortDirection.value, 20)
+    const savedSessionId = navigationStore.sessionId
     navItems.value = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
       icon: '💬',
-      active: false,
+      active: savedSessionId === session.session_id,
     }))
     chatsHasMore.value = data.has_more
     chatsNextCursor.value = data.next_cursor
+
+    // If we found and activated a saved chat, restore it in AppLayout
+    const activeItem = navItems.value.find(item => item.active)
+    if (activeItem) {
+      navigationStore.setActiveChatName(activeItem.name)
+      emit('navigate', `chat-${activeItem.id}`, activeItem.name)
+    }
   } catch (err) {
     console.error('Failed to load chats:', err)
     navItems.value = []
@@ -205,7 +218,8 @@ const createChat = () => {
   const newChatId = `session-${Date.now()}`
   navItems.value.forEach(item => item.active = false)
   navItems.value.unshift({ id: newChatId, name, icon: '💬', active: true })
-  activeChatName.value = name
+  // Update navigation store
+  navigationStore.setActiveChat(newChatId, name)
   workspacesStore.setActiveWorkspaceItem(null)
   workspacesStore.setActiveTask(null)
   emit('navigate', `chat-${newChatId}`, name)
@@ -213,11 +227,15 @@ const createChat = () => {
 
 const setActive = (id: string) => {
   const chat = navItems.value.find(item => item.id === id)
-  activeChatName.value = chat?.name || ''
+  const chatName = chat?.name || ''
+  navigationStore.setActiveChatName(chatName)
   navItems.value = navItems.value.map(item => ({ ...item, active: item.id === id }))
   workspacesStore.setActiveWorkspaceItem(null)
   workspacesStore.setActiveTask(null)
-  emit('navigate', `chat-${id}`, activeChatName.value)
+  // Update navigation store with the chat session ID (without chat- prefix)
+  navigationStore.setActiveChat(id, chatName)
+  // Update URL with session ID
+  router.replace({ path: '/app', query: { view: 'chat', session: id } })
 }
 
 const confirmDeleteChat = (chatId: string) => {
@@ -233,6 +251,10 @@ const removeChat = async (chatId: string) => {
   if (index !== -1) {
     const wasActive = navItems.value[index]?.active ?? false
     navItems.value.splice(index, 1)
+    // Clear from navigation store if this was the active chat
+    if (wasActive) {
+      navigationStore.clearActiveChat()
+    }
     try {
       await api.deleteChat(chatId)
     } catch (err) {
@@ -311,7 +333,7 @@ const handleAddTask = async (workspaceId: string, item: WorkspaceItem) => {
   const taskId = await workspacesStore.addTask(workspaceId, item.id, name)
   if (taskId) {
     workspacesStore.setActiveTask(taskId)
-    emit('navigate', 'task')
+    router.replace({ path: '/app', query: { view: 'task', task: taskId } })
   }
 }
 
@@ -325,7 +347,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 
 const handleSelectTask = (taskId: string) => {
   workspacesStore.setActiveTask(taskId)
-  emit('navigate', 'task', undefined, taskId)
+  router.replace({ path: '/app', query: { view: 'task', task: taskId } })
 }
 </script>
 

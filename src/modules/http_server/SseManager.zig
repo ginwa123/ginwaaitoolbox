@@ -24,6 +24,12 @@ pub const SseConnectionManager = struct {
     mutex: std.Io.Mutex = std.Io.Mutex.init,
     /// Idle session timeout in nanoseconds (default: 5 minutes)
     idle_timeout_ns: u64,
+    /// Cleanup interval in nanoseconds (default: 1 minute)
+    cleanup_interval_ns: u64,
+    /// Background thread for periodic cleanup
+    cleanup_thread: ?std.Thread = null,
+    /// Stop signal for cleanup thread
+    stop_cleanup: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     io: std.Io,
 
@@ -99,14 +105,32 @@ pub const SseConnectionManager = struct {
             .io = io,
             .sessions = std.StringHashMap(SessionData).init(allocator),
             .mutex = std.Io.Mutex.init,
-            .idle_timeout_ns = 5 * 60 * 1_000_000_000, // 5 minutes
+            .idle_timeout_ns = 15 * 1_000_000_000, // 15 seconds - kill if no activity
+            .cleanup_interval_ns = 5 * 1_000_000_000, // 5 seconds - check frequently
         };
     }
 
+    /// Start the background cleanup thread for removing stale sessions
+    pub fn startCleanupThread(self: *Self) !void {
+        self.cleanup_thread = try std.Thread.spawn(.{}, cleanupThreadFn, .{self});
+    }
+
+    /// Background cleanup thread function
+    fn cleanupThreadFn(self: *Self) void {
+        const interval_ns = self.cleanup_interval_ns;
+        while (!self.stop_cleanup.load(.unordered)) {
+            self.io.sleep(.{ .nanoseconds = interval_ns }, .real) catch {};
+            if (self.stop_cleanup.load(.unordered)) break;
+            const cleaned = self.cleanupIdleSessions();
+            if (cleaned > 0) std.log.info("SSE cleanup: removed {d} stale session(s)", .{cleaned});
+        }
+    }
+
     pub fn deinit(self: *Self) void {
+        self.stop_cleanup.store(true, .unordered);
+        if (self.cleanup_thread) |thread| thread.join();
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-
         var iter = self.sessions.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);

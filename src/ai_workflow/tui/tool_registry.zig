@@ -246,7 +246,7 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
 
     const output = text_replace_mod.toXmlSuccess(ctx.allocator, result, parsed.value.path);
-    return ToolExecResult{ .output = output };
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

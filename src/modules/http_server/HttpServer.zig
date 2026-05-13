@@ -61,6 +61,11 @@ pub const HttpServer = struct {
         };
     }
 
+    /// Start the SSE cleanup background thread
+    pub fn startSseCleanupThread(self: *Self) !void {
+        try self.sse_manager.startCleanupThread();
+    }
+
     pub fn deinit(self: *Self) void {
         self.sse_manager.deinit();
     }

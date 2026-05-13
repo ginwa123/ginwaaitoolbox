@@ -31,6 +31,17 @@ if (server.ctx) |ctx| {
 }
 ```
 
+## SSE Connection Manager (Stale Client Cleanup)
+
+**SseConnectionManager** (`src/modules/http_server/SseManager.zig`) manages SSE client connections with automatic stale client cleanup:
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `idle_timeout_ns` | 15 seconds | Kill session if no activity within this time |
+| `cleanup_interval_ns` | 5 seconds | How often cleanup thread checks |
+
+**Background cleanup thread:** Automatically started via `HttpServer.startSseCleanupThread()` in `main.zig`. Runs every 5s, removes sessions idle > 15s. Uses simple `io.sleep()` for memory efficiency. Clean shutdown on `deinit()`.
+
 ## Workflow Methods
 
 **TUIWorkflow** (`src/ai_workflow/tui/workflow.zig`) has two workflow modes:
@@ -213,8 +224,7 @@ src/
 |-----|-------|---------|
 | `sidebar-collapsed` | `'true'` / `'false'` | Sidebar collapsed state |
 | `sidebar-width` | Pixel number | Sidebar width (72-480px) |
-| `active-view` | `'chat'`, `'workspace'`, `'task'` | Current view |
-| `active-chat-id` | Session ID | Active chat session |
+| `active-chat-id` | Session ID | Active chat session (without `chat-` prefix) |
 | `active-chat-name` | Display name | Active chat name |
 | `active-task-id` | Task ID | Active task for persistence |
 | `nalar_chats_sort_direction` | `'asc'` / `'desc'` | Sort direction for chats list |
@@ -226,6 +236,19 @@ src/
 | `nalar-workspace-item-tasks-expanded` | JSON array of IDs | Expanded workspace item IDs (tasks list - allows multiple) |
 
 **Note:** Workspace and workspace item expand states are persisted in `workspaces.ts` store. Nav section and workspaces section expand states are persisted in `sidebar.ts` store.
+
+**URL routing for navigation state:**
+| URL | View | Parameters |
+|-----|------|------------|
+| `/app?view=chat&session=<id>` | Chat view | `session` = chat session ID |
+| `/app?view=task&task=<id>` | Task view | `task` = task ID |
+| `/app?view=workspace` | Workspace view | (no extra params) |
+| `/app/settings` | Settings view | - |
+
+**Routing priority:**
+1. URL query params (first priority - for shareable links)
+2. localStorage (fallback - for page refresh within app)
+3. Defaults to chat view if neither is present
 
 ## Desktop Components
 
@@ -275,6 +298,25 @@ src/
 
 ### text_replace Tool
 Just use it - read the file first to see its current content.
+
+**Diff View Response:** After successful text_replace, the response includes:
+
+```xml
+<success>true</success>
+<path>/path/to/file.zig</path>
+<diff_view>
+<before>
+original file content
+</before>
+<after>
+modified file content
+</after>
+</diff_view>
+```
+
+**Structure:**
+- `diff_view.before` — file content before the edit
+- `diff_view.after` — file content after the edit
 
 ### glob Tool
 - **Pure Zig implementation** (like node-glob/Minimatch) - no external dependencies

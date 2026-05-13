@@ -119,6 +119,12 @@ pub fn main(init: std.process.Init) !void {
 
     var server = http_server.HttpServer.init(parent_allocator, io, ctxParent, port, environment);
 
+    // Start the SSE cleanup background thread
+    server.startSseCleanupThread() catch |err| {
+        std.log.err("Failed to start SSE cleanup thread: {s}", .{@errorName(err)});
+        // Non-fatal - server can still run without cleanup
+    };
+
     startup(parent_allocator, &server) catch |err| {
         std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});
     };

@@ -1,106 +1,79 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
 import FolderExplorer from './FolderExplorer.vue'
 import ChatView from './ChatView.vue'
 import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
+import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const router = useRouter()
 const route = useRoute()
+const navigationStore = useNavigationStore()
 const workspacesStore = useWorkspacesStore()
 
 // Ref to Sidebar component
 const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null)
 
-// Sidebar state
-const sidebarCollapsed = ref(false)
-const sidebarWidth = ref(288)
-const minSidebarWidth = 72
-const maxSidebarWidth = 480
-
 // Settings overlay state (now driven by route)
 
 onMounted(() => {
-  const savedCollapsed = localStorage.getItem('sidebar-collapsed')
-  if (savedCollapsed !== null) {
-    sidebarCollapsed.value = savedCollapsed === 'true'
-  }
+  // Restore from URL params first (for browser history/shareable links)
+  const urlSessionId = route.query.session as string
+  const urlTaskId = route.query.task as string
+  const urlView = route.query.view as string
 
-  const savedWidth = localStorage.getItem('sidebar-width')
-  if (savedWidth !== null) {
-    const parsed = parseInt(savedWidth, 10)
-    if (!isNaN(parsed)) {
-      sidebarWidth.value = Math.max(minSidebarWidth, Math.min(maxSidebarWidth, parsed))
-    }
-  }
-
-  const savedTaskId = localStorage.getItem('active-task-id')
-  if (savedTaskId && route.query.view === 'task') {
-    workspacesStore.setActiveTask(savedTaskId)
+  if (urlSessionId && urlView === 'chat') {
+    navigationStore.setActiveChat(urlSessionId, navigationStore.activeChatName)
+  } else if (urlTaskId && urlView === 'task') {
+    workspacesStore.setActiveTask(urlTaskId)
+  } else {
+    // Fallback to store's initFromUrl
+    navigationStore.initFromUrl(urlSessionId || undefined, urlTaskId || undefined, urlView)
   }
 
   workspacesStore.initializeFromSystemFolder()
 })
 
 const toggleSidebar = () => {
-  if (sidebarCollapsed.value) {
-    sidebarCollapsed.value = false
-  } else {
-    sidebarCollapsed.value = true
-  }
-  localStorage.setItem('sidebar-collapsed', String(sidebarCollapsed.value))
+  navigationStore.toggleSidebar()
 }
 
 const handleSidebarResize = (newWidth: number) => {
-  sidebarWidth.value = Math.max(minSidebarWidth, Math.min(maxSidebarWidth, newWidth))
-  localStorage.setItem('sidebar-width', String(sidebarWidth.value))
+  navigationStore.setSidebarWidth(newWidth)
 }
 
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
 
-// Chat state
-const activeChatId = ref('')
-const activeChatName = ref('')
-
-onMounted(() => {
-  const savedChatId = localStorage.getItem('active-chat-id')
-  const savedChatName = localStorage.getItem('active-chat-name')
-  if (savedChatId) activeChatId.value = savedChatId
-  if (savedChatName) activeChatName.value = savedChatName
-})
+// Computed refs from store
+const activeChatId = computed(() => navigationStore.activeChatId)
+const activeChatName = computed(() => navigationStore.activeChatName)
+const sidebarCollapsed = computed(() => navigationStore.sidebarCollapsed)
+const sidebarWidth = computed(() => navigationStore.sidebarWidth)
 
 const handleUpdateChatId = (oldId: string, newId: string) => {
   if (activeChatId.value === `chat-${oldId}`) {
-    activeChatId.value = `chat-${newId}`
-    localStorage.setItem('active-chat-id', `chat-${newId}`)
+    navigationStore.setActiveChat(newId)
   }
   sidebarRef.value?.updateChatId(oldId, newId)
 }
 
 const handleNavigate = (view: string, chatName?: string, taskId?: string) => {
   if (view.startsWith('chat-')) {
-    activeChatId.value = view
-    activeChatName.value = chatName || ''
-    localStorage.setItem('active-chat-id', view)
-    localStorage.setItem('active-chat-name', chatName || '')
-    router.replace({ path: '/app', query: { view: 'chat' } })
+    const chatSessionId = view.replace(/^chat-/, '')
+    navigationStore.setActiveChat(chatSessionId, chatName)
+    router.replace({ path: '/app', query: { view: 'chat', session: chatSessionId } })
   } else if (view === 'chat') {
-    activeChatId.value = ''
-    activeChatName.value = ''
-    localStorage.removeItem('active-chat-id')
-    localStorage.removeItem('active-chat-name')
+    navigationStore.clearActiveChat()
     router.replace({ path: '/app', query: { view: 'chat' } })
   } else if (view === 'workspace') {
-    activeChatId.value = ''
-    localStorage.removeItem('active-chat-id')
-    localStorage.removeItem('active-chat-name')
+    navigationStore.clearAll()
     router.replace({ path: '/app', query: { view: 'workspace' } })
   } else if (view === 'task') {
-    localStorage.setItem('active-task-id', taskId || '')
-    router.replace({ path: '/app', query: { view: 'task' } })
+    navigationStore.setActiveTask(taskId || null)
+    router.replace({ path: '/app', query: { view: 'task', task: taskId } })
   } else if (view === 'settings') {
     router.push({ path: '/app/settings' })
   }
@@ -117,6 +90,24 @@ const currentView = computed(() => {
 })
 
 const activeTask = computed(() => workspacesStore.activeTask)
+
+// Watch route query changes to sync with app state
+watch(
+  () => route.query,
+  (query) => {
+    const sessionId = query.session as string
+    const taskId = query.task as string
+    const view = query.view as string
+
+    if (view === 'chat' && sessionId) {
+      if (activeChatId.value !== `chat-${sessionId}`) {
+        navigationStore.setActiveChat(sessionId, navigationStore.activeChatName)
+      }
+    } else if (view === 'task' && taskId) {
+      // Task is handled by workspacesStore.setActiveTask already called in onMounted
+    }
+  }
+)
 </script>
 
 <template>

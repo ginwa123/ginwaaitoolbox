@@ -15,6 +15,7 @@ pub const TextReplaceError = error{
     OldStrNotFound,
     OldStrNotUnique,
     PathNotFound,
+    WriteFailed,
 };
 
 // Diagnostic info returned alongside errors to help users fix issues
@@ -31,9 +32,24 @@ pub const TextReplaceDiagnostic = struct {
 // Batch Text Replace Types
 // =============================================================================
 
-/// Result of text replace operation
+/// Result of text replace operation with diff view
 pub const TextReplaceResult = struct {
     ok: void,
+    /// Diff view showing before/after changes
+    diff_view: ?DiffView = null,
+
+    pub fn deinit(self: *TextReplaceResult, allocator: std.mem.Allocator) void {
+        if (self.diff_view) |dv| {
+            allocator.free(dv.before);
+            allocator.free(dv.after);
+        }
+    }
+};
+
+/// Diff view showing before and after content
+pub const DiffView = struct {
+    before: []const u8,
+    after: []const u8,
 };
 
 /// Normalize CRLF (\r\n) to LF (\n), always returns a new allocation
@@ -179,6 +195,28 @@ pub fn executeTextReplace(
         return TextReplaceError.OldStrNotUnique;
     }
 
+    // Build before content for diff view: prefix + old_str + trailing content
+    const before_content = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
+        raw[0..first],
+        old_str,
+        raw[first + old_str.len ..],
+    });
+    errdefer allocator.free(before_content);
+
+    // Build after content for diff view: prefix + new_str + trailing content
+    const after_content = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
+        raw[0..first],
+        new_str,
+        raw[first + old_str.len ..],
+    });
+    errdefer allocator.free(after_content);
+
+    // Create diff view with before/after content showing only the changed region
+    const diff_view = DiffView{
+        .before = before_content,
+        .after = after_content,
+    };
+
     // Build new content: before + new_str + after
     var content = std.ArrayList(u8).empty;
     errdefer content.deinit(allocator);
@@ -239,7 +277,7 @@ pub fn executeTextReplace(
 
     content.deinit(allocator);
 
-    return TextReplaceResult{ .ok = {} };
+    return TextReplaceResult{ .ok = {}, .diff_view = diff_view };
 }
 
 /// Create a minimal XML error output (no success field, just error + original args)
@@ -253,9 +291,19 @@ pub fn xmlError(allocator: std.mem.Allocator, err_msg: []const u8, path: []const
     , .{ err_msg, path, old_str, new_str }) catch "<success>false</success><error>UnknownError</error>";
 }
 
-/// Serialize result to XML string
+/// Serialize result to XML string with diff view
 pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, path: []const u8) []const u8 {
-    _ = result;
+    if (result.diff_view) |dv| {
+        // Format: side-by-side diff view
+        return std.fmt.allocPrint(allocator,
+            \\<success>true</success>
+            \\<path>{s}</path>
+            \\<diff_view>
+            \\<before>{s}</before>
+            \\<after>{s}</after>
+            \\</diff_view>
+        , .{ path, dv.before, dv.after }) catch "<success>true</success><path>Unknown</path>";
+    }
     return std.fmt.allocPrint(allocator, "<success>true</success><path>{s}</path>", .{path}) catch "<success>true</success><path>Unknown</path>";
 }
 
@@ -264,6 +312,7 @@ pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const 
         error.OldStrNotFound => std.fmt.allocPrint(allocator, "Text '{s}' not found in file '{s}'. Make sure the text exists exactly once in the file.", .{ old_str, path }) catch return "<success>false</success><error>UnknownError</error>",
         error.OldStrNotUnique => std.fmt.allocPrint(allocator, "Text '{s}' appears multiple times in file '{s}'. Expand old_str to include more context to make it unique.", .{ old_str, path }) catch return "<success>false</success><error>UnknownError</error>",
         error.PathNotFound => std.fmt.allocPrint(allocator, "File '{s}' not found. Check if the path is correct.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
+        error.WriteFailed => std.fmt.allocPrint(allocator, "Failed to write to file '{s}'.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
         else => std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(result)}) catch return "<success>false</success><error>UnknownError</error>",
     };
     const output = std.fmt.allocPrint(allocator, "<success>false</success><error>{s}</error>", .{error_msg}) catch {
@@ -323,3 +372,5 @@ pub const text_replace_tool: AgentTool = .{
 pub fn text_replace(allocator: std.mem.Allocator, path: []const u8, old_str: []const u8, new_str: []const u8) !void {
     _ = try executeTextReplace(allocator, path, old_str, new_str);
 }
+
+

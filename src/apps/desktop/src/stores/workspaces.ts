@@ -563,6 +563,28 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     
     // Also fetch system folder info for navigation
     await fetchSystemFolder()
+
+    // Restore active task if it was set before workspaces were loaded
+    // This handles the case where setActiveTask was called before init() completed
+    if (activeTaskId.value) {
+      // Find and set the parent workspace item for the active task
+      for (const workspace of workspaces.value) {
+        for (const item of workspace.items) {
+          if (item.tasks?.some((t) => t.id === activeTaskId.value)) {
+            // Found the parent - ensure it's set correctly
+            activeWorkspaceItemId.value = item.id
+            // Expand workspace if not already expanded
+            if (!workspace.expanded) {
+              workspace.expanded = true
+              const expandedWorkspaces = loadExpandedWorkspaces()
+              expandedWorkspaces.add(workspace.id)
+              saveExpandedWorkspaces(expandedWorkspaces)
+            }
+            return
+          }
+        }
+      }
+    }
   }
 
   return {

@@ -18,6 +18,18 @@ const router = createRouter({
       name: 'settings',
       component: AppLayout,
     },
+    // Catch-all route for chat links with session ID
+    {
+      path: '/app/chat/:sessionId',
+      name: 'chat',
+      component: AppLayout,
+    },
+    // Catch-all route for task links with task ID
+    {
+      path: '/app/task/:taskId',
+      name: 'task',
+      component: AppLayout,
+    },
   ],
 })
 
