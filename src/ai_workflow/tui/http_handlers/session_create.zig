@@ -99,7 +99,6 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
             res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON body" });
             return;
         };
-        defer parsed.deinit();
 
         const root = parsed.value.object;
 

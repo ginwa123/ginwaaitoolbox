@@ -573,8 +573,44 @@ export interface Skill {
   path?: string;
 }
 
-export async function getSkills(): Promise<{ global_skills: Skill[] }> {
+export interface SkillDetail extends Skill {
+  content: string;
+  is_global: boolean;
+}
+
+export interface SkillDeleteResponse {
+  success: boolean;
+  skill_name: string;
+  deleted_from: string | null;
+  error_message: string | null;
+}
+
+export async function getSkills(): Promise<{ global_skills: Skill[]; local_skills: Skill[] }> {
   const response = await fetch(`${API_BASE}/skills`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function getSkillDetail(name: string): Promise<{ skill: SkillDetail | null; error_message: string | null }> {
+  const response = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function deleteSkill(
+  name: string,
+  options: { is_global?: boolean; cwd?: string }
+): Promise<SkillDeleteResponse> {
+  const params = new URLSearchParams({ name });
+  if (options.is_global !== undefined) {
+    params.set("is_global", options.is_global.toString());
+  }
+  if (options.cwd) {
+    params.set("cwd", options.cwd);
+  }
+  const response = await fetch(`${API_BASE}/skills?${params}`, {
+    method: "DELETE",
+  });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }

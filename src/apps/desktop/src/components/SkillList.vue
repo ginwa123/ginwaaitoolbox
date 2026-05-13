@@ -2,22 +2,36 @@
 import { ref, onMounted } from 'vue'
 import { getSkills, type Skill } from '../api'
 
-const skills = ref<Skill[]>([])
+const props = defineProps<{
+  selectedSkillName: string | null
+}>()
+
+const globalSkills = ref<Skill[]>([])
+const localSkills = ref<Skill[]>([])
 const isLoading = ref(true)
 const error = ref<string | null>(null)
+
+const emit = defineEmits<{
+  selectSkill: [skillName: string]
+}>()
 
 const loadSkills = async () => {
   isLoading.value = true
   error.value = null
   try {
     const result = await getSkills()
-    skills.value = result.global_skills || []
+    globalSkills.value = result.global_skills || []
+    localSkills.value = result.local_skills || []
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Failed to load skills'
     console.error('Failed to load skills:', err)
   } finally {
     isLoading.value = false
   }
+}
+
+const openSkillDetail = (skill: Skill) => {
+  emit('selectSkill', skill.name)
 }
 
 onMounted(() => {
@@ -52,30 +66,69 @@ defineExpose({
     </div>
 
     <!-- Empty State -->
-    <div v-else-if="skills.length === 0" class="text-center py-8">
+    <div v-else-if="globalSkills.length === 0 && localSkills.length === 0" class="text-center py-8">
       <p class="text-sm" style="color: var(--semantic-text-muted);">No skills available</p>
     </div>
 
     <!-- Skills List -->
     <div v-else class="space-y-2">
-      <div
-        v-for="skill in skills"
-        :key="skill.name"
-        class="p-4 rounded-lg transition-all duration-200 cursor-pointer hover:opacity-90"
-        style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
-      >
-        <div class="flex items-start gap-3">
-          <span class="text-lg mt-0.5">🛠️</span>
-          <div class="flex-1 min-w-0">
-            <h3 class="text-sm font-medium truncate" style="color: var(--semantic-text);">
-              {{ skill.name }}
-            </h3>
-            <p class="text-xs mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
-              {{ skill.description }}
-            </p>
-            <p v-if="skill.path" class="text-xs mt-2 truncate" style="color: var(--semantic-text-dim);">
-              {{ skill.path }}
-            </p>
+      <!-- Global Skills Section -->
+      <div v-if="globalSkills.length > 0">
+        <h4 class="text-xs font-medium mb-2 px-1" style="color: var(--semantic-text-muted);">
+          Global Skills
+        </h4>
+        <div
+          v-for="skill in globalSkills"
+          :key="'global-' + skill.name"
+          class="p-4 rounded-lg transition-all duration-200 cursor-pointer hover:opacity-90 mb-2"
+          :class="{ 'ring-2': props.selectedSkillName === skill.name }"
+          :style="props.selectedSkillName === skill.name 
+            ? 'background-color: var(--semantic-active-bg); border-color: var(--color-violet);' 
+            : 'background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);'"
+          @click="openSkillDetail(skill)"
+        >
+          <div class="flex items-start gap-3">
+            <span class="text-lg mt-0.5">🌐</span>
+            <div class="flex-1 min-w-0">
+              <h3 class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+                {{ skill.name }}
+              </h3>
+              <p class="text-xs mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
+                {{ skill.description }}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Local Skills Section -->
+      <div v-if="localSkills.length > 0">
+        <h4 class="text-xs font-medium mb-2 px-1 mt-4" style="color: var(--semantic-text-muted);">
+          Local Skills
+        </h4>
+        <div
+          v-for="skill in localSkills"
+          :key="'local-' + skill.name"
+          class="p-4 rounded-lg transition-all duration-200 cursor-pointer hover:opacity-90 mb-2"
+          :class="{ 'ring-2': props.selectedSkillName === skill.name }"
+          :style="props.selectedSkillName === skill.name 
+            ? 'background-color: var(--semantic-active-bg); border-color: var(--color-violet);' 
+            : 'background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);'"
+          @click="openSkillDetail(skill)"
+        >
+          <div class="flex items-start gap-3">
+            <span class="text-lg mt-0.5">📁</span>
+            <div class="flex-1 min-w-0">
+              <h3 class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+                {{ skill.name }}
+              </h3>
+              <p class="text-xs mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
+                {{ skill.description }}
+              </p>
+              <p v-if="skill.path" class="text-xs mt-2 truncate" style="color: var(--semantic-text-dim);">
+                {{ skill.path }}
+              </p>
+            </div>
           </div>
         </div>
       </div>

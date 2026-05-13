@@ -156,6 +156,8 @@ pub fn main(init: std.process.Init) !void {
             router.get("/health", http_handlers.healthHandler, .{});
             router.get("/api/health", http_handlers.healthHandler, .{});
             router.get("/api/skills", http_handlers.skillsListHandler, .{});
+            router.get("/api/skills/:name", http_handlers.skillDetailHandler, .{});
+            router.delete("/api/skills", http_handlers.skillDeleteHandler, .{});
             // router.get("/api/git/status", http_handlers.gitStatusHandler, .{});
             router.get("/api/system/folder", http_handlers.systemFolderHandler, .{});
             router.get("/api/workspaces", http_handlers.workspacesListHandler, .{});

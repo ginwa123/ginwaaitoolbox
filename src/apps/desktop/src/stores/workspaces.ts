@@ -62,7 +62,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   const activeWorkspaceItemId = ref<string | null>(null)
 
   // Set of expanded workspace item IDs (for showing tasks list - allows multiple)
-  const expandedItemIds = ref<Set<string>>(new Set())
+  const expandedItemIds = ref<Record<string, boolean>>({})
 
   // Active task within the selected workspace item
   const activeTaskId = ref<string | null>(null)
@@ -108,19 +108,23 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   }
 
   // Load expanded workspace item IDs for tasks list from localStorage
-  function loadExpandedItemIds(): Set<string> {
+  function loadExpandedItemIds(): Record<string, boolean> {
     const saved = localStorage.getItem(STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED)
     if (saved) {
       try {
         const parsed = JSON.parse(saved)
         if (Array.isArray(parsed)) {
-          return new Set(parsed)
+          const record: Record<string, boolean> = {}
+          for (const id of parsed) {
+            record[id] = true
+          }
+          return record
         }
       } catch (e) {
         console.error('Failed to parse expanded item IDs:', e)
       }
     }
-    return new Set()
+    return {}
   }
 
   // Save expanded workspace IDs to localStorage
@@ -134,8 +138,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   }
 
   // Save expanded workspace item IDs for tasks list to localStorage
-  function saveExpandedItemIds(expandedIds: Set<string>) {
-    localStorage.setItem(STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED, JSON.stringify(Array.from(expandedIds)))
+  function saveExpandedItemIds(expandedIds: Record<string, boolean>) {
+    localStorage.setItem(STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED, JSON.stringify(Object.keys(expandedIds)))
   }
 
   // Initialize store by loading data from API
@@ -288,22 +292,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
   function setActiveWorkspaceItem(itemId: string | null) {
     activeWorkspaceItemId.value = itemId
-    // Also add to expanded items so tasks list is visible
-    if (itemId) {
-      if (!expandedItemIds.value.has(itemId)) {
-        expandedItemIds.value.add(itemId)
-        saveExpandedItemIds(expandedItemIds.value)
-      }
-    }
   }
 
   // Toggle expanded state for workspace item (show/hide tasks list)
   function toggleExpandedItem(itemId: string) {
-    if (expandedItemIds.value.has(itemId)) {
-      expandedItemIds.value.delete(itemId)
+    console.log('[toggleExpandedItem] Before:', JSON.stringify(expandedItemIds.value), 'itemId:', itemId)
+    if (expandedItemIds.value[itemId]) {
+      delete expandedItemIds.value[itemId]
     } else {
-      expandedItemIds.value.add(itemId)
+      expandedItemIds.value[itemId] = true
     }
+    // Trigger reactivity
+    expandedItemIds.value = { ...expandedItemIds.value }
+    console.log('[toggleExpandedItem] After:', JSON.stringify(expandedItemIds.value))
     saveExpandedItemIds(expandedItemIds.value)
   }
 
@@ -498,8 +499,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
 
     // Remove from expandedItemIds if present
-    if (expandedItemIds.value.has(itemId)) {
-      expandedItemIds.value.delete(itemId)
+    if (expandedItemIds.value[itemId]) {
+      delete expandedItemIds.value[itemId]
+      expandedItemIds.value = { ...expandedItemIds.value }
       saveExpandedItemIds(expandedItemIds.value)
     }
 

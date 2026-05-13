@@ -20,9 +20,16 @@ const emit = defineEmits<{
 }>()
 
 // Computed: check if item is expanded (tasks visible)
-const isExpanded = computed(() => workspacesStore.expandedItemIds.has(props.item.id))
+const isExpanded = computed(() => {
+  const expanded = workspacesStore.expandedItemIds[props.item.id] === true
+  console.log('[WorkspaceItem] isExpanded recompute:', props.item.id, expanded, 'store:', JSON.stringify(workspacesStore.expandedItemIds))
+  return expanded
+})
 
 const handleClick = () => {
+  // Toggle expanded state for collapse/expand
+  workspacesStore.toggleExpandedItem(props.item.id)
+  // Also emit click for external handling (e.g., navigation)
   emit('click', props.item)
 }
 
@@ -58,6 +65,14 @@ const handleDeleteTask = (event: Event, taskId: string) => {
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
+          <!-- Chevron icon (expand/collapse) -->
+          <svg
+            class="w-4 h-4 shrink-0 transition-transform duration-200"
+            :class="{ '-rotate-90': !isExpanded }"
+            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
           <!-- Item Icon -->
           <span
             class="transition-colors duration-200"

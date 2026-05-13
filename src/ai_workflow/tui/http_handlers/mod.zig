@@ -73,6 +73,8 @@ pub const worker_cancel_handler = @import("worker_cancel.zig").worker_cancel_han
 
 // Skills API handlers
 pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
+pub const skillDetailHandler = @import("skill_detail.zig").skillDetailHandler;
+pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 
 // Git API handlers
 pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;

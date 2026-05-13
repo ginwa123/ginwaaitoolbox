@@ -2,11 +2,16 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import SkillList from './SkillList.vue'
+import SkillDetail from './SkillDetail.vue'
 
 const router = useRouter()
 
 // Settings sidebar state
 const activeSettingsTab = ref('model')
+
+// Skills tab state
+const selectedSkillName = ref<string | null>(null)
+const skillListRef = ref<InstanceType<typeof SkillList> | null>(null)
 
 // Settings state
 const apiEndpoint = ref('')
@@ -15,6 +20,9 @@ const model = ref('')
 const temperature = ref(0.7)
 const maxTokens = ref('')
 const systemPrompt = ref('')
+
+// Notification state
+const notification = ref<{ message: string; type: 'success' | 'error' } | null>(null)
 
 onMounted(() => {
   apiEndpoint.value = localStorage.getItem('settings-api-endpoint') || ''
@@ -25,6 +33,13 @@ onMounted(() => {
   systemPrompt.value = localStorage.getItem('settings-system-prompt') || ''
 })
 
+const showNotification = (message: string, type: 'success' | 'error') => {
+  notification.value = { message, type }
+  setTimeout(() => {
+    notification.value = null
+  }, 3000)
+}
+
 const saveSettings = () => {
   localStorage.setItem('settings-api-endpoint', apiEndpoint.value)
   localStorage.setItem('settings-api-key', apiKey.value)
@@ -32,7 +47,7 @@ const saveSettings = () => {
   localStorage.setItem('settings-temperature', temperature.value.toString())
   localStorage.setItem('settings-max-tokens', maxTokens.value)
   localStorage.setItem('settings-system-prompt', systemPrompt.value)
-  alert('Settings saved!')
+  showNotification('Settings saved!', 'success')
 }
 
 const resetSettings = () => {
@@ -48,6 +63,7 @@ const resetSettings = () => {
   localStorage.removeItem('settings-temperature')
   localStorage.removeItem('settings-max-tokens')
   localStorage.removeItem('settings-system-prompt')
+  showNotification('Settings reset to defaults', 'success')
 }
 
 const emit = defineEmits<{
@@ -60,6 +76,20 @@ const goBack = () => {
 
 const setSettingsTab = (tab: string) => {
   activeSettingsTab.value = tab
+}
+
+const handleSelectSkill = (skillName: string) => {
+  selectedSkillName.value = skillName
+}
+
+const handleSkillDeleted = (_skillName: string) => {
+  selectedSkillName.value = null
+  skillListRef.value?.refresh()
+  showNotification('Skill deleted successfully', 'success')
+}
+
+const handleSkillError = (message: string) => {
+  showNotification(message, 'error')
 }
 </script>
 
@@ -271,23 +301,61 @@ const setSettingsTab = (tab: string) => {
       </div>
 
       <!-- Skills Tab Content -->
-      <div v-else-if="activeSettingsTab === 'skills'" class="flex-1 overflow-y-auto p-6">
-        <div class="max-w-2xl mx-auto">
+      <div v-else-if="activeSettingsTab === 'skills'" class="flex-1 flex overflow-hidden p-6 gap-6">
+        <!-- Skill List Panel -->
+        <div class="w-80 shrink-0 flex flex-col overflow-hidden">
           <div
-            class="rounded-xl p-6"
+            class="rounded-xl p-6 flex-1 flex flex-col overflow-hidden"
             style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
           >
             <h2
-              class="text-base font-semibold mb-4"
+              class="text-base font-semibold mb-4 shrink-0"
               style="color: var(--semantic-text);"
             >Skills</h2>
-            <p class="text-sm mb-4" style="color: var(--semantic-text-muted);">
+            <p class="text-sm mb-4 shrink-0" style="color: var(--semantic-text-muted);">
               Available AI capabilities and workflows.
             </p>
-            <SkillList />
+            <div class="flex-1 overflow-y-auto min-h-0">
+              <SkillList 
+                ref="skillListRef"
+                :selected-skill-name="selectedSkillName"
+                @select-skill="handleSelectSkill"
+              />
+            </div>
+          </div>
+        </div>
+
+        <!-- Skill Detail Panel -->
+        <div class="flex-1 flex flex-col overflow-hidden">
+          <div
+            class="rounded-xl flex-1 flex flex-col overflow-hidden"
+            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+          >
+            <h2
+              class="text-base font-semibold p-4 shrink-0"
+              style="color: var(--semantic-text); border-bottom: 1px solid var(--color-border);"
+            >Skill Detail</h2>
+            <div class="flex-1 overflow-hidden">
+              <SkillDetail 
+                :skill-name="selectedSkillName"
+                @skill-deleted="handleSkillDeleted"
+                @error="handleSkillError"
+              />
+            </div>
           </div>
         </div>
       </div>
     </main>
+
+    <!-- Notification Toast -->
+    <div 
+      v-if="notification"
+      class="fixed bottom-6 right-6 px-4 py-3 rounded-lg shadow-lg z-50"
+      :style="notification.type === 'success' 
+        ? 'background-color: var(--color-green); color: white;' 
+        : 'background-color: var(--color-red); color: white;'"
+    >
+      {{ notification.message }}
+    </div>
   </div>
 </template>

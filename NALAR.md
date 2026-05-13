@@ -232,6 +232,7 @@ src/
 | Component | File | Purpose |
 |-----------|------|---------|
 | SkillList | `components/SkillList.vue` | Reusable skills list with loading/error/empty states. Fetches from `/api/skills` endpoint. |
+| response-path-api-skills | `.nalar/skills/response-path-api-skills/SKILL.MD` | Documents GET /api/skills endpoint response format and usage |
 | SettingsView | `components/SettingsView.vue` | Settings page with tabs for Model, API, and Skills configuration |
 
 ## Language & Environment Facts
@@ -336,6 +337,8 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | DELETE | `/api/workspaces/:workspace_id/items/:item_id` | Delete workspace item |
 | GET | `/api/skills` | List skills (global + local with optional `cwd` param) |
 | GET | `/api/skills?cwd=/path` | List skills from specific working directory (local skills only) |
+| DELETE | `/api/skills?name=X&is_global=true` | Delete global skill by name |
+| DELETE | `/api/skills?name=X&cwd=/path` | Delete local skill by name (requires `cwd` param) |
 
 ### Session Messages Response
 

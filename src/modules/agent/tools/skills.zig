@@ -17,6 +17,7 @@ const SKILL_FILE_NAME = "SKILL.MD";
 pub const SkillInfo = struct {
     name: []const u8,
     description: []const u8,
+    path: []const u8,
 };
 
 /// Parsed YAML frontmatter from a skill file
@@ -33,19 +34,9 @@ pub const ParsedFrontmatter = struct {
 /// ---
 /// # Skill content follows...
 ///
-/// Returns ParsedFrontmatter with allocated strings, or null if no valid frontmatter found.
-/// Caller owns the returned memory and must free name and description.
-/// Parse YAML frontmatter from skill file content
-/// Expected format:
-/// ---
-/// name: skill-name
-/// description: "Skill description text"
-/// ---
-/// # Skill content follows...
-///
 /// Returns allocated ParsedFrontmatter with owned name and description strings
 /// Caller owns the returned memory and must free name and description.
-fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
+pub fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
     // Find the first --- marker
     const first_newline = std.mem.indexOf(u8, content, "\n") orelse return null;
     const after_first_line = content[first_newline + 1 ..];
@@ -370,11 +361,18 @@ pub fn list_skills_from_dir(allocator: std.mem.Allocator, io: std.Io) []SkillInf
         }
 
         if (parseYamlFrontmatter(allocator, content)) |parsed| {
+            const path_copy = allocator.dupe(u8, file_path) catch {
+                freeParsedFrontmatter(allocator, parsed);
+                allocator.free(content);
+                continue;
+            };
             skills_list.append(allocator, .{
                 .name = parsed.name,
                 .description = parsed.description,
+                .path = path_copy,
             }) catch {
                 freeParsedFrontmatter(allocator, parsed);
+                allocator.free(path_copy);
                 allocator.free(content);
                 continue;
             };
@@ -393,6 +391,7 @@ pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []SkillInfo) 
     for (skills_list) |skill| {
         allocator.free(skill.name);
         allocator.free(skill.description);
+        allocator.free(skill.path);
     }
     allocator.free(skills_list);
 }
@@ -510,11 +509,18 @@ pub fn list_skills_from_dir_path(allocator: std.mem.Allocator, io: std.Io, dir_p
         }
 
         if (parseYamlFrontmatter(allocator, content)) |parsed| {
+            const path_copy = allocator.dupe(u8, file_path) catch {
+                freeParsedFrontmatter(allocator, parsed);
+                allocator.free(content);
+                continue;
+            };
             skills_list.append(allocator, .{
                 .name = parsed.name,
                 .description = parsed.description,
+                .path = path_copy,
             }) catch {
                 freeParsedFrontmatter(allocator, parsed);
+                allocator.free(path_copy);
                 allocator.free(content);
                 continue;
             };

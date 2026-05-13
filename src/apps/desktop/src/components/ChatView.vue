@@ -80,6 +80,11 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
       if (tool_name === 'read_file') {
         const mathPath = content.match(/<path>(.*?)<\/path>/);
         const path = mathPath ? mathPath[1] : null;
+        const errorArr = content.match(/<error>(.*?)<\/error>/);
+        if (errorArr) {
+          const errorQuery = errorArr[0]
+          return `<span class="tool-inline">${tool_name} → ${path} ${errorQuery}</span>`;
+        }
         return `<span class="tool-inline">${tool_name} → ${path}</span>`;
       }
 
@@ -720,7 +725,7 @@ const compactSession = async () => {
     </div>
 
     <!-- Messages -->
-    <div ref="messagesContainer" tabindex="0"  class="flex-1 overflow-y-auto" @scroll="handleScroll">
+    <div ref="messagesContainer" tabindex="0" class="flex-1 overflow-y-auto" @scroll="handleScroll">
       <!-- Loading More -->
       <div v-if="isLoadingMore" class="flex justify-center py-4">
         <div class="flex items-center gap-2 px-4 py-2 rounded-full" style="background-color: var(--semantic-card-bg);">
@@ -783,7 +788,9 @@ const compactSession = async () => {
                         <span v-html="renderResponse(msg.content, msg.role, msg.tool_name)"></span>
                       </button>
                       <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content">
-                        <pre class="tool-content-pre" style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto;">{{ msg.content }}</pre>
+                        <pre class="tool-content-pre"
+                          style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto;">
+                          {{ msg.content }}</pre>
                       </div>
                     </div>
                   </div>
@@ -828,8 +835,7 @@ const compactSession = async () => {
             min-height: 60px;
             max-height: 200px;
           " @keydown.enter.exact.prevent="sendMessage" @keydown.shift.enter="handleShiftEnter"
-          @keydown.esc="messagesContainer?.focus()"
-          ></textarea>
+          @keydown.esc="messagesContainer?.focus()"></textarea>
         <button type="button" @click="sendMessage"
           class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200"
           style="background-color: var(--color-violet); color: var(--color-bg);"

@@ -69,11 +69,11 @@ pub fn toXmlSuccess(allocator: std.mem.Allocator, result: WriteFileResult) []con
 
 pub fn toXmlError(allocator: std.mem.Allocator, err: anyerror, path: []const u8) []const u8 {
     const message: []const u8 = switch (err) {
-        error.PathNotFound => std.fmt.allocPrint(allocator, "Directory for path '{s}' not found. Check if the parent directory exists.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
-        error.InputOutput => std.fmt.allocPrint(allocator, "Failed to write file '{s}'. Check write permissions.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
-        else => std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(err)}) catch return "<success>false</success><error>UnknownError</error>",
+        error.PathNotFound => std.fmt.allocPrint(allocator, "Directory for path '{s}' not found. Check if the parent directory exists.", .{path}) catch return "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>",
+        error.InputOutput => std.fmt.allocPrint(allocator, "Failed to write file '{s}'. Check write permissions.", .{path}) catch return "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>",
+        else => std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(err)}) catch return "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>",
     };
-    return std.fmt.allocPrint(allocator, "<success>false</success><error>{s}</error>", .{message}) catch "<success>false</success><error>UnknownError</error>";
+    return std.fmt.allocPrint(allocator, "<success>false</success><file_write>{s}</file_write><error>{s}</error>", .{ path, message }) catch "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>";
 }
 
 pub const write_file_tool = AgentTool{
