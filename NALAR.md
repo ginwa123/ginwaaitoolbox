@@ -290,9 +290,12 @@ src/
 - [llm_history.zig:114] Added `SessionSortField` and `SessionSortDirection` enums, updated `getSessionListWithCursor()` with `sort_field` and `sort_direction` parameters to support sorting by `created_at`, `session_name`, or `agent` fields with `asc`/`desc` directions.
 - [llm_history.zig:416] Fixed cursor pagination for DESC order: reversed cursor comparison operator from `h.created_at < ?` (asc) / `h.created_at > ?` (desc) to `h.created_at > ?` (asc) / `h.created_at < ?` (desc) so loading more goes correctly to older messages.
 - [ChatView.vue] Added "Load more messages" button at top for when message list doesn't overflow (overscroll not visible). Also fixed scroll position preservation when prepending messages during loadMore.
+- [list_skills.zig] Refactored to shared module with `SkillsListData` struct used by both HTTP handler (`/api/skills`) and AI agent tool. Added `toJson()` and `toXml()` serialization functions.
 
 ## Lessons Learned
 - **Never build JSON manually** — Use `std.json.Stringify.valueAlloc(allocator, response_struct, .{})` instead of manual string concatenation with manual escaping. Zig's standard library handles JSON escaping properly and the code is cleaner. Example: see `http_response.zig` for response structure definitions and `skills_list.zig` for usage pattern.
+- **Unit tests belong in separate files** — Keep implementation (`.zig`) and tests (`_test.zig`) separate. This improves code organization, makes tests easier to find, and avoids cluttering the implementation with test code. Never inline tests in production code.
+- **Always register new tests in test_runner.zig** — When creating a new `_test.zig` file, immediately add `_ = @import("path/to/test.zig")` to the appropriate test_runner.zig. This ensures tests are included in the test suite and won't be forgotten.
 
 ## Key Tool Conventions
 

@@ -430,7 +430,7 @@ pub fn list_skills_from_dir(allocator: std.mem.Allocator, io: std.Io) []SkillInf
 }
 
 /// Free a skills array allocated by list_skills
-pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []SkillInfo) void {
+pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []const SkillInfo) void {
     for (skills_list) |skill| {
         allocator.free(skill.name);
         allocator.free(skill.description);
@@ -576,6 +576,3 @@ pub fn list_skills_from_dir_path(allocator: std.mem.Allocator, io: std.Io, dir_p
     return skills_list.toOwnedSlice(allocator) catch &[_]SkillInfo{};
 }
 
-test {
-    // Tests removed - skills_test.zig removed due to API changes
-}

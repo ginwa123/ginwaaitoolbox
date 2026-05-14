@@ -815,6 +815,8 @@ pub const SaveMessageInput = struct {
     prompt_tokens: usize = 0,
     completion_tokens: usize = 0,
     total_tokens: usize = 0,
+    diffview_before: ?[]const u8 = null,
+    diffview_after: ?[]const u8 = null,
 };
 
 /// Helper function to safely duplicate a string
@@ -853,7 +855,7 @@ pub fn saveMessage(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name, diffview_before, diffview_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     // Use safeDupe to avoid arena aliasing issues
     const copy_session_id = try safeDupe(allocator, input.session_id);
@@ -889,8 +891,12 @@ pub fn saveMessage(
     defer allocator.free(completion_tokens_str);
     const total_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.total_tokens});
     defer allocator.free(total_tokens_str);
+    const copy_diffview_before = try safeDupe(allocator, input.diffview_before orelse "");
+    defer std.heap.c_allocator.free(copy_diffview_before);
+    const copy_diffview_after = try safeDupe(allocator, input.diffview_after orelse "");
+    defer std.heap.c_allocator.free(copy_diffview_after);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -951,7 +957,9 @@ pub fn getMessages(
         \\    COALESCE(h.completion_tokens, 0),
         \\    COALESCE(h.total_tokens, 0),
         \\    COALESCE(h.is_input, 0),
-        \\    COALESCE(h.is_output, 0)
+        \\    COALESCE(h.is_output, 0),
+        \\    COALESCE(h.diffview_before, ''),
+        \\    COALESCE(h.diffview_after, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
@@ -964,6 +972,8 @@ pub fn getMessages(
 
     while (try rows.next()) |row| {
         const parent_session_id_str = row.values[13];
+        const diffview_before_str = row.values[21];
+        const diffview_after_str = row.values[22];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -986,6 +996,8 @@ pub fn getMessages(
             .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
             .is_input = std.mem.eql(u8, row.values[19], "1"),
             .is_output = std.mem.eql(u8, row.values[20], "1"),
+            .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
+            .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -1017,7 +1029,9 @@ pub fn getLatestMessage(
         \\    COALESCE(h.completion_tokens, 0),
         \\    COALESCE(h.total_tokens, 0),
         \\    COALESCE(h.is_input, 0),
-        \\    COALESCE(h.is_output, 0)
+        \\    COALESCE(h.is_output, 0),
+        \\    COALESCE(h.diffview_before, ''),
+        \\    COALESCE(h.diffview_after, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
@@ -1031,6 +1045,8 @@ pub fn getLatestMessage(
 
     if (try rows.next()) |row| {
         const parent_session_id_str = row.values[13];
+        const diffview_before_str = row.values[21];
+        const diffview_after_str = row.values[22];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1053,6 +1069,8 @@ pub fn getLatestMessage(
             .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
             .is_input = std.mem.eql(u8, row.values[19], "1"),
             .is_output = std.mem.eql(u8, row.values[20], "1"),
+            .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
+            .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
         };
         row.deinit(allocator);
         return history;

@@ -36,6 +36,8 @@ pub const TUIHistory = struct {
     total_tokens: u32 = 0,
     is_input: bool = false,
     is_output: bool = false,
+    diffview_before: ?[]const u8 = null,
+    diffview_after: ?[]const u8 = null,
 
     pub fn deinit(self: *TUIHistory, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -51,6 +53,8 @@ pub const TUIHistory = struct {
         allocator.free(self.session_name);
         allocator.free(self.tool_name);
         if (self.parent_session_id) |psi| allocator.free(psi);
+        if (self.diffview_before) |dw| allocator.free(dw);
+        if (self.diffview_after) |da| allocator.free(da);
     }
 };
 
