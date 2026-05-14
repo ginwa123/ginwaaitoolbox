@@ -1,4 +1,6 @@
 const std = @import("std");
+const linux = std.posix.system;
+
 
 /// HTTP Request structure parsed from raw HTTP data
 pub const HttpRequest = struct {
@@ -16,6 +18,14 @@ pub const HttpRequest = struct {
 
     allocator: std.mem.Allocator,
     io: std.Io,
+
+
+    _client_fd: i32,
+
+    pub fn write_sse_event(self: *HttpRequest, event: []const u8) void {
+        _ = linux.write(self._client_fd, event.ptr, event.len);
+    }
+
 };
 
 /// HTTP Response builder
@@ -85,7 +95,7 @@ pub const HttpResponse = struct {
 };
 
 /// Parse an HTTP request from raw bytes
-pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, io: std.Io) !HttpRequest {
+pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, io: std.Io, client_fd: i32) !HttpRequest {
     const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse {
         return error.IncompleteRequest;
     };
@@ -151,6 +161,7 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, io: std.Io) 
         .query = query,
         .allocator = allocator,
         .io = io,
+        ._client_fd = client_fd,
     };
 }
 
