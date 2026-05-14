@@ -57,6 +57,7 @@ pub const ToolExecContext = struct {
     agent_temperature: *f32,
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
+    active_loops: *ai_workflow.ActiveLoops,
 };
 
 /// Tool execution result with optional agent state changes
@@ -289,7 +290,7 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const output = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, parsed.value) catch {
+    const output = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch {
         return ToolExecResult{ .output = "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>" };
     };
 
@@ -592,6 +593,7 @@ const SubAgentThreadArgs = struct {
     thread_idx: usize,
     shared_results: *SharedResults,
     environment: ?*const std.process.Environ.Map,
+    active_loops: *ai_workflow.ActiveLoops,
 };
 
 // Shared result storage for thread synchronization
@@ -674,6 +676,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .thread_idx = idx,
             .shared_results = shared_results,
             .environment = ctx.environment,
+            .active_loops = ctx.active_loops,
         };
 
         ctx.logger.debugFmt("About to spawn thread for '{s}'", .{ sub_agent.name });
@@ -703,7 +706,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 args_ptr.logger.debugFmt("Session ID created: '{s}'", .{ sess_id });
 
                 args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name });
-                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.io, args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger, args_ptr.environment);
+                var workflow = ai_workflow.TUIWorkflow.init(args_ptr.io, args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger, args_ptr.environment, args_ptr.active_loops);
                 // Derive is_sub_agent from session_id - no need to pass it explicitly
                 const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
                 args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{ args_ptr.agent_name });

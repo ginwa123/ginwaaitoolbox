@@ -293,17 +293,26 @@ pub fn xmlError(allocator: std.mem.Allocator, err_msg: []const u8, path: []const
 
 /// Serialize result to XML string with diff view
 pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, path: []const u8) []const u8 {
+    // if (result.diff_view) |dv| {
+    //     // Format: side-by-side diff view
+    //     return std.fmt.allocPrint(allocator,
+    //         \\<success>true</success>
+    //         \\<path>{s}</path>
+    //         \\<diff_view>
+    //         \\<before>{s}</before>
+    //         \\<after>{s}</after>
+    //         \\</diff_view>
+    //     , .{ path, dv.before, dv.after }) catch "<success>true</success><path>Unknown</path>";
+    // }
     if (result.diff_view) |dv| {
+        _ = dv;
         // Format: side-by-side diff view
         return std.fmt.allocPrint(allocator,
             \\<success>true</success>
             \\<path>{s}</path>
-            \\<diff_view>
-            \\<before>{s}</before>
-            \\<after>{s}</after>
-            \\</diff_view>
-        , .{ path, dv.before, dv.after }) catch "<success>true</success><path>Unknown</path>";
+        , .{path}) catch "<success>true</success><path>Unknown</path>";
     }
+
     return std.fmt.allocPrint(allocator, "<success>true</success><path>{s}</path>", .{path}) catch "<success>true</success><path>Unknown</path>";
 }
 
@@ -372,5 +381,3 @@ pub const text_replace_tool: AgentTool = .{
 pub fn text_replace(allocator: std.mem.Allocator, path: []const u8, old_str: []const u8, new_str: []const u8) !void {
     _ = try executeTextReplace(allocator, path, old_str, new_str);
 }
-
-

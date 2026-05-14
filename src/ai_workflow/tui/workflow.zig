@@ -6,6 +6,7 @@ const llm_models = nalar_mod.llm_models;
 const prompt = nalar_mod.prompt;
 pub const context = @import("models.zig").ContextIPCTui;
 pub const ContextIPCTui = @import("models.zig").ContextIPCTui;
+pub const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 pub const kerjabot_get_session = @import("llm_history.zig");
 pub const kerjabot_create_session = @import("llm_history.zig");
 pub const kerjabot_get_list_session = @import("llm_history.zig");
@@ -61,44 +62,6 @@ const tool_registry = @import("tool_registry.zig");
 const session_table = @import("session_table.zig");
 
 // Thread-safe set of active session loop IDs
-pub const ActiveLoops = struct {
-    mutex: std.Io.Mutex = std.Io.Mutex.init,
-    set: std.StringHashMap(void),
-
-    pub fn init(allocator: std.mem.Allocator) ActiveLoops {
-        return .{
-            .set = std.StringHashMap(void).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *ActiveLoops) void {
-        self.set.deinit();
-    }
-
-    // Returns true if inserted (caller owns the loop), false if already running
-    pub fn tryInsert(self: *ActiveLoops, io: std.Io, session_id: []const u8) bool {
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        const result = self.set.getOrPut(session_id) catch return false;
-        if (result.found_existing) return false;
-        return true;
-    }
-
-    pub fn remove(self: *ActiveLoops, io: std.Io, session_id: []const u8) void {
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        _ = self.set.remove(session_id);
-    }
-
-    pub fn contains(self: *ActiveLoops, io: std.Io, session_id: []const u8) bool {
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        return self.set.contains(session_id);
-    }
-};
-
-var active_loops: ActiveLoops = ActiveLoops.init(std.heap.page_allocator);
-
 pub const StreamingContext = struct {
     allocator: std.mem.Allocator,
     session_id: []const u8 = "",
@@ -229,14 +192,16 @@ pub const TUIWorkflow = struct {
     config: *const config_mod.LlmConfig,
     logger: *logger_mod.Logger,
     environment: ?*const std.process.Environ.Map,
+    active_loops: *ActiveLoops,
 
-    pub fn init(io: std.Io, db: *sqlite.SqliteBackend, config: *const config_mod.LlmConfig, logger: *logger_mod.Logger, environment: ?*const std.process.Environ.Map) TUIWorkflow {
+    pub fn init(io: std.Io, db: *sqlite.SqliteBackend, config: *const config_mod.LlmConfig, logger: *logger_mod.Logger, environment: ?*const std.process.Environ.Map, active_loops: *ActiveLoops) TUIWorkflow {
         return .{
             .io = io,
             .db = db,
             .config = config,
             .logger = logger,
             .environment = environment,
+            .active_loops = active_loops,
         };
     }
 
@@ -261,7 +226,7 @@ pub const TUIWorkflow = struct {
         const initial_agent = initial_agent_state.agent;
 
         // Check if session is already running (exists in worker table)
-        if (llm_history.isSessionRunning(self.db, params.session_id) and active_loops.contains(self.io, params.session_id)) {
+        if (llm_history.isSessionRunning(self.db, params.session_id) and self.active_loops.contains(self.io, params.session_id)) {
             // Session is already running, queue the message
             llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.message) catch {
                 self.logger.warnFmt("Failed to queue message for session {s}", .{params.session_id});
@@ -270,7 +235,7 @@ pub const TUIWorkflow = struct {
             is_have_queue_message = true;
             return;
         }
-        defer active_loops.remove(self.io, params.session_id);
+        defer self.active_loops.remove(self.io, params.session_id);
 
         // Register in worker table (upsertWorker already does this)
         llm_history.upsertWorker(params.parent_allocator, self.db, params.session_id, params.session_id, params.cwd) catch {
@@ -308,7 +273,7 @@ pub const TUIWorkflow = struct {
         }
 
         while (true) {
-            _ = active_loops.tryInsert(self.io, params.session_id);
+            _ = self.active_loops.tryInsert(self.io, params.session_id);
             var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(params.parent_allocator);
             defer arenaAllocatorWhileLoop.deinit();
             const allocator = arenaAllocatorWhileLoop.allocator();
@@ -502,10 +467,10 @@ pub const TUIWorkflow = struct {
                     continue;
                 } else if (finish_reason == .tool_calls) {
                     std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
-                    try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, self.environment);
+                    try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, self.environment, self.active_loops);
                 } else if (finish_reason == .assistant) {
                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                        try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, self.environment);
+                        try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, self.environment, self.active_loops);
                     } else {
                         // Treat as normal completion
                         _ = try llm_history.saveMessage(allocator, self.io, self.db, .{

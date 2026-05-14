@@ -75,7 +75,12 @@ pub fn main(init: std.process.Init) !void {
         .llm_config = &llm_config,
         .logger = global_logger_ptr,
         .environment = environment,
+        .active_loops = undefined, // Will be set below after initialization
     };
+
+    var active_loops = ai_workflow_mod.ActiveLoops.init(parent_allocator);
+    defer active_loops.deinit(parent_allocator);
+    ctxParent.active_loops = &active_loops;
 
     activity_registry.init_global_registry(parent_allocator, io);
     defer activity_registry.deinit_global_registry();

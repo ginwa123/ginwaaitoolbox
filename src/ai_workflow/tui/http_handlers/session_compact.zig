@@ -69,7 +69,7 @@ pub fn sessionCompactHandler(_: *http_server.HttpServer.ServerHandler, req: *htt
                 .mcpServers = null,
             };
 
-            var workflow = ai_workflow.TUIWorkflow.init(ctxTui.io, sqlite_db, &llm_cfg, ctxTui.logger, null);
+            var workflow = ai_workflow.TUIWorkflow.init(ctxTui.io, sqlite_db, &llm_cfg, ctxTui.logger, null, ctxTui.active_loops);
 
             // Get session messages directly for compaction
             const db_messages = llm_history.getMessages(threadAlloc, sqlite_db, session_id) catch |err| {

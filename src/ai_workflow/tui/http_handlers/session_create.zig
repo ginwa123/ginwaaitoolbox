@@ -246,9 +246,10 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
                         .body = args.body_message,
                         .allowed_tools = args.allowed_tools,
                         .environment = args.environment,
+                        .active_loops = args.ctxTui.active_loops,
                     };
 
-                    var workflow = ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger, workflow_args.environment);
+                    var workflow = ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger, workflow_args.environment, workflow_args.active_loops);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = thread_alloc,
                         .parent_session_id = workflow_args.session_id,

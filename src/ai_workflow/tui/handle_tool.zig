@@ -39,6 +39,7 @@ const ToolContext = struct {
     agent_temperature: *f32,
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
+    active_loops: *nalar.ai_workflow.ActiveLoops,
 };
 
 /// Result of executing a tool
@@ -110,6 +111,7 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAg
         .agent_temperature = ctx.agent_temperature,
         .is_thinking = ctx.is_thinking,
         .environment = ctx.environment,
+        .active_loops = ctx.active_loops,
     };
     const exec_result = try exec(ctx_local, tool_call);
 
@@ -192,6 +194,7 @@ fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !Tool
         .agent_temperature = ctx.agent_temperature,
         .is_thinking = ctx.is_thinking,
         .environment = ctx.environment,
+        .active_loops = ctx.active_loops,
     };
     const result = try tool_registry_mod.execSetAgentProperties(ctx_exec, tool_call);
 
@@ -252,6 +255,7 @@ pub fn handle_tool(
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
     environment: ?*const std.process.Environ.Map,
+    active_loops: *nalar.ai_workflow.ActiveLoops,
 ) !void {
 
     if (res_dynamic_agent.tool_calls) |tc| {
@@ -319,6 +323,7 @@ pub fn handle_tool(
             .agent_temperature = agent_temperature,
             .is_thinking = isThinking,
             .environment = environment,
+            .active_loops = active_loops,
         };
 
         // Execute each tool call using dispatch

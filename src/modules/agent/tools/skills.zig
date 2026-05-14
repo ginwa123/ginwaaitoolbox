@@ -300,16 +300,59 @@ pub fn load_skills_from_path(allocator: std.mem.Allocator, io: std.Io, path: []c
 }
 
 /// Parse a specific skill from the skills directory by name
-/// Returns allocated string with skill content, or null if not found
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8) ?[]const u8 {
-    return parse_skill_from_dir(allocator, io, skill_name);
-}
-
-/// Parse a specific skill from the skills directory by name
+/// Searches BOTH local and global paths
 /// Returns allocated string with skill content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_skill_from_dir(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8) ?[]const u8 {
+pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, environment: ?*const std.process.Environ.Map) ?[]const u8 {
+    // Try local path first (.nalar/skills/)
+    if (parse_skill_from_path(allocator, io, skill_name)) |content| {
+        return content;
+    }
+
+    // Try global path (~/.config/nalar/skills/) if environment provided
+    if (environment) |env| {
+        if (get_global_skills_path_from_env(allocator, env)) |global_path| {
+            defer allocator.free(global_path);
+            if (parse_skill_from_path_at(allocator, io, skill_name, global_path)) |content| {
+                return content;
+            }
+        }
+    }
+
+    return null;
+}
+
+/// Parse a specific skill from a specific directory path
+/// Returns allocated string with skill content, or null if not found
+/// Caller owns the returned memory and must free it with allocator.free()
+fn parse_skill_from_path_at(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, dir_path: []const u8) ?[]const u8 {
+    const files = list_skill_files_in_dir(allocator, io, dir_path) orelse return null;
+    defer free_skill_files(allocator, files);
+
+    for (files) |file_path| {
+        const content = load_skills_from_path(allocator, io, file_path);
+        if (content.len == 0) {
+            allocator.free(content);
+            continue;
+        }
+
+        if (parseYamlFrontmatter(allocator, content)) |parsed| {
+            defer freeParsedFrontmatter(allocator, parsed);
+            if (std.mem.eql(u8, parsed.name, skill_name)) {
+                // Return the full content (including frontmatter)
+                return content;
+            }
+        }
+        allocator.free(content);
+    }
+
+    return null;
+}
+
+/// Parse a specific skill from the local skills directory (.nalar/skills/)
+/// Returns allocated string with skill content, or null if not found
+/// Caller owns the returned memory and must free it with allocator.free()
+fn parse_skill_from_path(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8) ?[]const u8 {
     const files = list_skill_files(allocator, io) orelse return null;
     defer free_skill_files(allocator, files);
 

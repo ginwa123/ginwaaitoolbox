@@ -103,6 +103,7 @@ pub const WorkflowArgs = struct {
     body: []const u8 = "",
     allowed_tools: []const u8 = "", // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
     environment: ?*const std.process.Environ.Map,
+    active_loops: *ai_workflow.ActiveLoops,
 };
 
 /// Handler arguments for async message handling

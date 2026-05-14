@@ -1,7 +1,9 @@
 const sqlite = @import("nalarcore").sqlite;
 const config = @import("nalarcore").config;
 const logger = @import("nalarcore").logger;
+const nalar_mod = @import("nalarcore");
 const std = @import("std");
+const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 
 pub const ContextIPCTui = struct {
     io: std.Io,
@@ -9,6 +11,7 @@ pub const ContextIPCTui = struct {
     llm_config: *const config.LlmConfig,
     logger: *logger.Logger,
     environment: ?*const std.process.Environ.Map,
+    active_loops: *nalar_mod.ai_workflow.ActiveLoops,
 };
 
 pub const TUIHistory = struct {

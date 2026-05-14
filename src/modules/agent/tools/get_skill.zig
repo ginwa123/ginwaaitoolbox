@@ -50,7 +50,7 @@ pub const get_skill_tool = AgentTool{
 /// Execute the get_skill tool
 /// Returns an XML string with the skill content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, io: std.Io, input: GetSkillInput) ![]const u8 {
+pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, io: std.Io, input: GetSkillInput, environment: ?*const std.process.Environ.Map) ![]const u8 {
     // Check if path is provided - load from file
     if (input.path) |path| {
         return loadSkillFromPath(allocator, io, path);
@@ -58,7 +58,7 @@ pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, io: std.Io, inp
 
     // Otherwise try to parse by skill name
     if (input.skill_name) |skill_name| {
-        return loadSkillByName(allocator, io, skill_name);
+        return loadSkillByName(allocator, io, skill_name, environment);
     }
 
     // No skill_name or path provided
@@ -103,9 +103,10 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
 }
 
 /// Load skill by name from built-in skills
-fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8) ![]const u8 {
-    // Try to parse the skill
-    if (skills.parse_skill(allocator, io, skill_name)) |content| {
+/// Searches both local (.nalar/skills/) and global (~/.config/nalar/skills/) paths
+fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, environment: ?*const std.process.Environ.Map) ![]const u8 {
+    // Try to parse the skill - now searches both local and global paths
+    if (skills.parse_skill(allocator, io, skill_name, environment)) |content| {
         defer allocator.free(content);
         // Success - return the skill content
         const result = try std.fmt.allocPrint(allocator,
@@ -115,17 +116,39 @@ fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
         , .{ skill_name, content });
         return result;
     } else {
-        // Skill not found - list available skills
-        const skills_list = skills.list_skills(allocator, io);
-        defer skills.free_skills_list(allocator, skills_list);
+        // Skill not found - list available skills from both paths
+        var all_skills: std.ArrayList([]const u8) = .empty;
+        defer all_skills.deinit(allocator);
+
+        // List global skills
+        if (environment) |env| {
+            if (skills.get_global_skills_path_from_env(allocator, env)) |global_path| {
+                defer allocator.free(global_path);
+                const global_list = skills.list_skills_from_dir_path(allocator, io, global_path);
+                defer skills.free_skills_list(allocator, global_list);
+                for (global_list) |skill| {
+                    all_skills.append(allocator, skill.name) catch break;
+                }
+            }
+        }
+
+        // List local skills
+        if (skills.get_local_skills_path_from_io(allocator, io)) |local_path| {
+            defer allocator.free(local_path);
+            const local_list = skills.list_skills_from_dir_path(allocator, io, local_path);
+            defer skills.free_skills_list(allocator, local_list);
+            for (local_list) |skill| {
+                all_skills.append(allocator, skill.name) catch break;
+            }
+        }
 
         // Build XML string for available skills
         var available_str: std.ArrayList(u8) = .empty;
         defer available_str.deinit(allocator);
 
-        for (skills_list) |skill| {
+        for (all_skills.items) |name| {
             try available_str.appendSlice(allocator, "<skill>");
-            try available_str.appendSlice(allocator, skill.name);
+            try available_str.appendSlice(allocator, name);
             try available_str.appendSlice(allocator, "</skill>");
         }
 

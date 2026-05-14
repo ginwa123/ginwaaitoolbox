@@ -20,6 +20,7 @@ pub const WorkflowArgs = struct {
     cwd: []u8,
     is_sub_agent: bool,
     environment: ?*const std.process.Environ.Map,
+    active_loops: *ai_workflow.ActiveLoops,
 };
 
 /// Startup handler - queries worker table and starts a thread for each worker
@@ -90,6 +91,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                 .cwd = try allocator.dupe(u8, worker.working_directory),
                 .is_sub_agent = worker.isSubAgent(),
                 .environment = server.environment,
+                .active_loops = ctxTui.active_loops,
             };
 
             // Spawn thread to run workflow
@@ -107,7 +109,7 @@ pub fn startup(allocator: std.mem.Allocator, server: *http_server.HttpServer) !v
                     }
                     var arena = std.heap.ArenaAllocator.init(args.allocator);
                     defer arena.deinit();
-                    var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger, args.environment);
+                    var workflow = ai_workflow.TUIWorkflow.init(args.io, args.sqlite_db, args.llm_config, args.logger, args.environment, args.active_loops);
                     workflow.runAgenticMultiStep(.{
                         .parent_allocator = arena.allocator(),
                         .parent_session_id = args.session_id,
