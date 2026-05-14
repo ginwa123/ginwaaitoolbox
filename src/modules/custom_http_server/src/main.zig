@@ -1,6 +1,7 @@
 const std = @import("std");
 const linux = std.posix.system;
 const http_parser = @import("http_parser.zig");
+const router_mod = @import("router.zig");
 
 pub fn main(init: std.process.Init) void {
     run(init) catch |err| {
@@ -71,6 +72,7 @@ pub const GinwaServer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     address: Address,
+    router: router_mod.Router,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
@@ -78,8 +80,13 @@ pub const GinwaServer = struct {
             .allocator = allocator,
             .io = io,
             .address = address,
+            .router = router_mod.Router.init(allocator),
         };
         return gs;
+    }
+
+    pub fn deinit(self: *GinwaServer) void {
+        _ = self;  // Router doesn't need deinit currently
     }
 
     pub fn listen(self: *GinwaServer) !void {
@@ -96,7 +103,6 @@ pub const GinwaServer = struct {
                         defer arena_allocator.deinit();
                         const allocator = arena_allocator.allocator();
 
-                        // Receive HTTP request data
                         var buffer: [4096]u8 = undefined;
                         const bytes_read = gs.recvFromClient(fd, &buffer) catch |err| {
                             std.debug.print("Recv error: {s}\n", .{@errorName(err)});
@@ -112,7 +118,6 @@ pub const GinwaServer = struct {
                         const raw_data = buffer[0..bytes_read];
                         std.debug.print("Received {d} bytes: {s}\n", .{ bytes_read, raw_data });
 
-                        // Parse HTTP request using http_parser
                         var req = http_parser.parseRequest(raw_data, allocator) catch {
                             std.debug.print("Failed to parse HTTP request\n", .{});
                             _ = linux.close(fd);
@@ -120,19 +125,9 @@ pub const GinwaServer = struct {
                         };
                         defer req.headers.deinit();
 
-                        // Build HTTP response using http_parser
-                        var res: http_parser.HttpResponse = undefined;
-                        if (std.mem.eql(u8, req.method, "GET") and std.mem.eql(u8, req.path, "/")) {
-                            res = http_parser.ok("Welcome to GinwaServer!", allocator);
-                        } else if (std.mem.eql(u8, req.method, "GET") and std.mem.eql(u8, req.path, "/health")) {
-                            res = http_parser.ok("OK", allocator);
-                        } else if (std.mem.eql(u8, req.method, "GET") and std.mem.eql(u8, req.path, "/hello")) {
-                            res = http_parser.ok("Hello, HTTP!", allocator);
-                        } else {
-                            res = http_parser.notFound(allocator);
-                        }
+                        // Handle route and get response
+                        var res = gs.router.handleRoute(req.method, req.path, req);
 
-                        // Send response to client
                         const res_bytes = res.toBytes() catch {
                             std.debug.print("Failed to build response\n", .{});
                             _ = linux.close(fd);
@@ -194,6 +189,22 @@ pub const GinwaServer = struct {
     }
 };
 
+// Handlers - receive request, context, return response
+fn indexHandler(req: http_parser.HttpRequest, _: *const anyopaque) http_parser.HttpResponse {
+    _ = req;
+    return http_parser.ok("Welcome to GinwaServer!", std.heap.page_allocator);
+}
+
+fn healthHandler(req: http_parser.HttpRequest, _: *const anyopaque) http_parser.HttpResponse {
+    _ = req;
+    return http_parser.ok("OK", std.heap.page_allocator);
+}
+
+fn helloHandler(req: http_parser.HttpRequest, _: *const anyopaque) http_parser.HttpResponse {
+    _ = req;
+    return http_parser.ok("Hello, HTTP!", std.heap.page_allocator);
+}
+
 pub fn run(init: std.process.Init) !void {
     const arena_allocator = init.arena;
     defer arena_allocator.deinit();
@@ -202,10 +213,19 @@ pub fn run(init: std.process.Init) !void {
 
     const address = try Address.init(29584);
     const gs = try GinwaServer.init(allocator, io, address);
+    defer gs.deinit();
 
     std.debug.print("HTTP Server listening on 127.0.0.1:29584...\n", .{});
     std.debug.print("Test with: curl http://127.0.0.1:29584/\n", .{});
     std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
+    try gs.router.get("/hello", helloHandler, .{});
+    try gs.router.get("/health", healthHandler, .{});
+    try gs.router.get("/", indexHandler, .{});
+
     try gs.listen();
 }
+
+// curl http://127.0.0.1:29584/       # → "Welcome to GinwaServer!"
+// curl http://127.0.0.1:29584/health # → "OK"
+// curl http://127.0.0.1:29584/hello   # → "Hello, HTTP!"
