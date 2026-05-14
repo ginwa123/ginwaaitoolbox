@@ -194,7 +194,7 @@ const custom = struct {
 };
 
 // Handlers - receive request, context, return response
-fn indexHandler(req: http_parser.HttpRequest, data: *anyopaque) http_parser.HttpResponse {
+fn indexHandler(req: *http_parser.HttpRequest, data: *anyopaque) http_parser.HttpResponse {
     const allocator = req.allocator;
     const ctx: *const custom = @ptrCast(@alignCast(data));
 
@@ -204,17 +204,17 @@ fn indexHandler(req: http_parser.HttpRequest, data: *anyopaque) http_parser.Http
     return http_parser.ok(text, allocator);
 }
 
-fn healthHandler(req: http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+fn healthHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
     _ = req;
     return http_parser.ok("OK", std.heap.page_allocator);
 }
 
-fn helloHandler(req: http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+fn helloHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
     _ = req;
     return http_parser.ok("Hello, HTTP!", std.heap.page_allocator);
 }
 
-fn helloNameHandler(req: http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+fn helloNameHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
     const allocator = req.allocator;
 
     const name = req.params.get("name") orelse "unknown";
@@ -225,6 +225,25 @@ fn helloNameHandler(req: http_parser.HttpRequest, _: *anyopaque) http_parser.Htt
         return http_parser.internalError("Failed to format", allocator);
     };
     return http_parser.ok(text, allocator);
+}
+
+const User = struct {
+    username: []const u8 = "",
+    email: []const u8 = "",
+};
+
+fn createUserHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+    const allocator = req.allocator;
+
+    // Parse JSON body directly into a struct
+    const user = std.json.parseFromSliceLeaky(User, allocator, req.body, .{}) catch {
+        return http_parser.badRequest("Invalid user JSON", allocator);
+    };
+
+    const text = std.fmt.allocPrint(allocator, "Created user: {s} ({s})", .{ user.username, user.email }) catch {
+        return http_parser.internalError("Failed to format", allocator);
+    };
+    return http_parser.created(text, allocator);
 }
 
 pub fn run(init: std.process.Init) !void {
@@ -246,6 +265,7 @@ pub fn run(init: std.process.Init) !void {
     try gs.router.get("/hello", helloHandler, custom_ctx);
     try gs.router.get("/health", healthHandler, .{});
     try gs.router.get("/hello/:name", helloNameHandler, .{});
+    try gs.router.post("/users", createUserHandler, .{});
     try gs.router.get("/", indexHandler, custom_ctx);
 
     try gs.listen();

@@ -3,7 +3,7 @@ const http_parser = @import("http_parser.zig");
 
 pub const Self = @This();
 
-pub const HandlerFn = *const fn (req: http_parser.HttpRequest, ctx: *anyopaque) http_parser.HttpResponse;
+pub const HandlerFn = *const fn (req: *http_parser.HttpRequest, ctx: *anyopaque) http_parser.HttpResponse;
 
 pub const Router = Self;
 
@@ -17,7 +17,7 @@ pub const Route = struct {
     context: *anyopaque = undefined,
 };
 
-pub fn defaultHandler(_: http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+pub fn defaultHandler(_: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
     return http_parser.ok("", std.heap.page_allocator);
 }
 
@@ -67,7 +67,7 @@ fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: 
 
     // Create a typed handler wrapper that passes context correctly
     const WrappedHandler = struct {
-        fn wrapped(req: http_parser.HttpRequest, ctx_ptr: *anyopaque) http_parser.HttpResponse {
+        fn wrapped(req: *http_parser.HttpRequest, ctx_ptr: *anyopaque) http_parser.HttpResponse {
             const typed_ctx: *ContextType = @ptrCast(@alignCast(ctx_ptr));
             // Call the original handler with request and typed context
             return @call(.auto, handler, .{ req, typed_ctx });
@@ -87,12 +87,12 @@ pub fn handleRoute(self: *Self, req_method: []const u8, req_path: []const u8, re
     for (self.routes.items) |route| {
         // Try exact match first
         if (std.mem.eql(u8, req_method, route.method) and std.mem.eql(u8, req_path, route.path)) {
-            return route.handler(req.*, route.context);
+            return route.handler(req, route.context);
         }
 
         // Try pattern matching with params (e.g., /hello/:name)
         if (std.mem.eql(u8, req_method, route.method) and matchPathWithParams(route.path, req_path, &req.params)) {
-            return route.handler(req.*, route.context);
+            return route.handler(req, route.context);
         }
     }
     return http_parser.notFound(std.heap.page_allocator);
@@ -132,7 +132,7 @@ test "basic route matching" {
     const test_allocator = arena.allocator();
 
     try router.get("/hello", struct {
-        fn handle(req: http_parser.HttpRequest, ctx: *const MyContext) http_parser.HttpResponse {
+        fn handle(req: *http_parser.HttpRequest, ctx: *const MyContext) http_parser.HttpResponse {
             _ = req;
             try std.testing.expectEqualStrings("world", ctx.message);
             return http_parser.ok("OK", test_allocator);
@@ -151,6 +151,7 @@ test "basic route matching" {
         .query = std.StringHashMap([]const u8).init(test_allocator),
         .allocator = test_allocator,
         .io = undefined,
+        .json_body = null,
     };
 
     const res = router.handleRoute("GET", "/hello", &mock_req);
