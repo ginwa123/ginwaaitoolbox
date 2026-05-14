@@ -177,4 +177,21 @@ pub fn build(b: *std.Build) void {
     });
     copy_dev_to_system.step.dependOn(&install_dev.step);
     dev_linux_system_step.dependOn(&copy_dev_to_system.step);
+
+    // ============================================================
+    // Custom HTTP Server (TCP) - build step
+    // ============================================================
+    const tcp_exe = b.addExecutable(.{
+        .name = "custom-http-server",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/modules/custom_http_server/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    tcp_exe.root_module.linkSystemLibrary("c", .{});
+
+    const run_tcp_step = b.step("run:custom_tcp", "Run the custom TCP echo server");
+    const run_tcp_cmd = b.addRunArtifact(tcp_exe);
+    run_tcp_step.dependOn(&run_tcp_cmd.step);
 }
