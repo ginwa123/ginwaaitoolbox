@@ -210,7 +210,6 @@ watch(
         </div>
       </div>
     </main>
-    <FolderExplorer v-if="activeWorkspaceItem" />
 
     <!-- Settings page -->
     <SettingsView v-if="currentView === 'settings'" />

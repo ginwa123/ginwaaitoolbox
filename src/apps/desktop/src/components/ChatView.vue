@@ -3,6 +3,11 @@ import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { marked } from 'marked'
 import * as api from '../api'
 import { getThinkingTags, isThinkingTags, stripThinkingTags } from '@/helpers';
+import FileInput from './FileInput.vue'
+import FolderExplorer from './FolderExplorer.vue'
+import { useWorkspacesStore } from '../stores/workspaces'
+
+const workspacesStore = useWorkspacesStore()
 
 const props = defineProps<{
   chatId: string
@@ -27,6 +32,12 @@ const taskInfo = computed(() => ({
 
 // Check if session is pending (needs creation on first message)
 const isPendingSession = computed(() => props.chatId.startsWith('pending-'))
+
+// Active workspace item for FolderExplorer (passed as prop for task view, from store otherwise)
+const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
+
+// FolderExplorer uses cwd directly - prefer prop cwd, fallback to activeWorkspaceItem.path
+const explorerCwd = computed(() => props.cwd || activeWorkspaceItem.value?.path || '')
 
 interface Message {
   id: string
@@ -651,12 +662,7 @@ watch(
 
 // ─── Send Message ─────────────────────────────────────────────────────────────
 
-const sendMessage = async () => {
-  if (!inputText.value.trim()) return
-
-  const userMessage = inputText.value
-  inputText.value = ''
-
+const handleFileInputSubmit = async (userMessage: string) => {
   await nextTick()
   scrollToBottom(true)
 
@@ -718,7 +724,9 @@ const compactSession = async () => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full w-full">
+  <div class="flex h-full w-full">
+    <!-- Main Chat Content -->
+    <div class="flex flex-col h-full flex-1 min-w-0">
     <!-- Header -->
     <div class="px-6 py-4 flex items-center gap-3"
       style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
@@ -883,24 +891,14 @@ const compactSession = async () => {
 
     <!-- Input -->
     <div class="p-4" style="border-top: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
-      <form @submit.prevent="sendMessage" class="max-w-4xl mx-auto flex gap-3 items-end">
-        <textarea v-model="inputText" placeholder="Type a message... (Shift+Enter for new line)" rows="3"
-          class="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all duration-200 resize-none" style="
-            background-color: var(--semantic-card-bg);
-            color: var(--semantic-text);
-            border: 1px solid var(--color-border);
-            min-height: 60px;
-            max-height: 200px;
-          " @keydown.enter.exact.prevent="sendMessage" @keydown.shift.enter="handleShiftEnter"
-          @keydown.esc="messagesContainer?.focus()"></textarea>
-        <button type="button" @click="sendMessage"
-          class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200"
-          style="background-color: var(--color-violet); color: var(--color-bg);"
-          onmouseover="this.style.opacity='0.85';" onmouseout="this.style.opacity='1';">
-          Send
-        </button>
-      </form>
+      <div class="max-w-4xl mx-auto">
+        <FileInput :cwd="cwd" @submit="handleFileInputSubmit" />
+      </div>
     </div>
+    </div>
+
+    <!-- Folder Explorer (sidebar on right side) -->
+    <FolderExplorer :cwd="explorerCwd" />
   </div>
 </template>
 

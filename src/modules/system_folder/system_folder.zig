@@ -102,13 +102,9 @@ pub const SystemFolder = struct {
             return allocator.dupe(u8, relative_path);
         }
 
-        // If path starts with /, it's relative to home
+        // If path starts with /, it's an absolute Unix path - return as-is
         if (std.mem.startsWith(u8, relative_path, "/")) {
-            const subpath = relative_path[1..];
-            if (subpath.len == 0) {
-                return allocator.dupe(u8, home);
-            }
-            return std.fs.path.join(allocator, &.{ home, subpath });
+            return allocator.dupe(u8, relative_path);
         }
 
         // Otherwise treat as absolute path
@@ -130,6 +126,9 @@ pub const SystemFolder = struct {
             const name = entry.name;
             if (name.len == 0) break;
 
+            // Skip hidden files/folders (starting with .)
+            if (name.len > 0 and name[0] == '.') continue;
+
             const is_dir = entry.kind == .directory;
             const is_link = entry.kind == .sym_link;
             const is_file = entry.kind == .file;
@@ -140,6 +139,17 @@ pub const SystemFolder = struct {
                     allocator.free(entry_name);
                     continue;
                 };
+
+                // Check if path is gitignored
+                const git_result = std.process.run(allocator, io, .{
+                    .argv = &.{ "git", "check-ignore", full_path },
+                }) catch continue;
+                if (git_result.term.exited == 0) {
+                    // Path is gitignored, skip it
+                    allocator.free(entry_name);
+                    allocator.free(full_path);
+                    continue;
+                }
 
                 entries.append(allocator, FolderEntry{
                     .name = entry_name,

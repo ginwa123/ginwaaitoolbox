@@ -305,12 +305,12 @@ pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, pat
     //     , .{ path, dv.before, dv.after }) catch "<success>true</success><path>Unknown</path>";
     // }
     if (result.diff_view) |dv| {
-        _ = dv;
+        _ = dv; // unused
         // Format: side-by-side diff view
         return std.fmt.allocPrint(allocator,
             \\<success>true</success>
             \\<path>{s}</path>
-        , .{path}) catch "<success>true</success><path>Unknown</path>";
+        , .{ path }) catch "<success>true</success><path>Unknown</path>";
     }
 
     return std.fmt.allocPrint(allocator, "<success>true</success><path>{s}</path>", .{path}) catch "<success>true</success><path>Unknown</path>";

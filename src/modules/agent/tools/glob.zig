@@ -3,6 +3,242 @@ const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 
 // ============================================================================
+// Gitignore Types
+// ============================================================================
+
+pub const GitignoreEntry = struct {
+    negated: bool,
+    directory_only: bool,
+    anchor_to_root: bool,
+    pattern: []const u8,
+};
+
+const Gitignore = struct {
+    entries: []GitignoreEntry,
+    cwd: []const u8,
+
+    fn deinit(self: *Gitignore, allocator: std.mem.Allocator) void {
+        for (self.entries) |e| allocator.free(e.pattern);
+        allocator.free(self.entries);
+        allocator.free(self.cwd);
+    }
+};
+
+/// Check if pattern starts with ! (gitignore negation)
+fn isGitignoreNegation(pattern: []const u8) bool {
+    return pattern.len > 0 and pattern[0] == '!';
+}
+
+/// Get content after gitignore negation prefix
+fn getGitignoreNegationContent(pattern: []const u8) []const u8 {
+    std.debug.assert(isGitignoreNegation(pattern));
+    return pattern[1..];
+}
+
+/// Parse a single .gitignore line into a GitignoreEntry
+pub fn parseGitignoreLine(line: []const u8) ?GitignoreEntry {
+    const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+    if (trimmed.len == 0 or trimmed[0] == '#') return null;
+
+    var negated = false;
+    var pattern = trimmed;
+
+    if (pattern[0] == '!') {
+        negated = true;
+        pattern = pattern[1..];
+    }
+
+    // Strip trailing / (directory-only marker)
+    var directory_only = false;
+    if (pattern.len > 0 and pattern[pattern.len - 1] == '/') {
+        directory_only = true;
+        pattern = pattern[0 .. pattern.len - 1];
+    }
+
+    // Trim again after stripping negation/trailing
+    pattern = std.mem.trim(u8, pattern, &std.ascii.whitespace);
+    if (pattern.len == 0) return null;
+
+    // Leading / means anchor to root of this .gitignore's directory
+    var anchor_to_root = false;
+    if (pattern[0] == '/') {
+        anchor_to_root = true;
+        pattern = pattern[1..];
+    }
+
+    return GitignoreEntry{
+        .negated = negated,
+        .directory_only = directory_only,
+        .anchor_to_root = anchor_to_root,
+        .pattern = pattern,
+    };
+}
+
+/// Load and parse a .gitignore file from a directory
+fn loadGitignore(allocator: std.mem.Allocator, dir_path: []const u8) !?Gitignore {
+    const gitignore_path = std.fs.path.join(allocator, &.{ dir_path, ".gitignore" }) catch return error.OutOfMemory;
+    defer allocator.free(gitignore_path);
+
+    var file = std.fs.openFileAbsolute(gitignore_path, .{}) catch return null;
+    defer std.fs.File.close(file);
+
+    const content = file.readToEndAllocOptions(allocator, 1024 * 64, null, @alignOf(u32), 0) catch return null;
+    defer allocator.free(content);
+
+    var entries = std.ArrayList(GitignoreEntry).empty;
+    errdefer entries.deinit(allocator);
+
+    var line_start: usize = 0;
+    while (line_start < content.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, content, line_start, '\n') orelse content.len;
+        const line = content[line_start..line_end];
+
+        if (parseGitignoreLine(line)) |entry| {
+            entries.append(allocator, entry) catch continue;
+        }
+
+        line_start = line_end + 1;
+    }
+
+    if (entries.items.len == 0) return null;
+
+    const cwd = try allocator.dupe(u8, dir_path);
+    return Gitignore{
+        .entries = try entries.toOwnedSlice(allocator),
+        .cwd = cwd,
+    };
+}
+
+/// Check if a path is ignored by gitignore rules
+fn isIgnoredByGitignore(gitignore: *const Gitignore, path: []const u8, is_dir: bool) bool {
+    // Get path relative to gitignore cwd
+    const rel_path = if (std.mem.startsWith(u8, path, gitignore.cwd)) {
+        const rest = path[gitignore.cwd.len..];
+        if (rest.len > 0 and rest[0] == '/') rest[1..] else rest;
+    } else path;
+
+    for (gitignore.entries) |entry| {
+        // Directory-only patterns don't match files
+        if (entry.directory_only and !is_dir) continue;
+
+        // Anchor to root: pattern only matches at root level
+        const effective_pattern = if (entry.anchor_to_root) entry.pattern else entry.pattern;
+
+        if (matchGitignorePattern(effective_pattern, rel_path, is_dir)) {
+            // Negated entries (whitelist) return false (not ignored)
+            // Regular entries return true (ignored)
+            return !entry.negated;
+        }
+    }
+
+    return false;
+}
+
+/// Match a single gitignore pattern against a relative path
+fn matchGitignorePattern(pattern: []const u8, rel_path: []const u8) bool {
+    // Get basename for patterns that don't contain /
+    const basename = std.fs.path.basename(rel_path);
+
+    // Check both full path and basename
+    return gitignoreGlobMatch(pattern, basename, false) or
+        gitignoreGlobMatch(pattern, rel_path, false);
+}
+
+/// Gitignore glob matching (supports *, **, ?, [abc])
+pub fn gitignoreGlobMatch(glob: []const u8, text: []const u8, nocase: bool) bool {
+    var gi: usize = 0;
+    var ti: usize = 0;
+
+    while (gi < glob.len) {
+        const g = glob[gi];
+
+        if (g == '*') {
+            gi += 1;
+            if (gi >= glob.len) return true;
+
+            if (gi < glob.len and glob[gi] == '*') {
+                gi += 1;
+                if (gi < glob.len and glob[gi] == '/') gi += 1;
+
+                var t = ti;
+                while (t <= text.len) {
+                    if (gitignoreGlobMatch(glob[gi..], text[t..], nocase)) return true;
+                    t += 1;
+                }
+                return false;
+            }
+
+            while (ti < text.len and text[ti] != '/') {
+                if (gitignoreGlobMatch(glob[gi..], text[ti..], nocase)) return true;
+                ti += 1;
+            }
+            if (gitignoreGlobMatch(glob[gi..], text[ti..], nocase)) return true;
+            return false;
+        }
+
+        if (g == '?') {
+            if (ti >= text.len or text[ti] == '/') return false;
+            gi += 1;
+            ti += 1;
+            continue;
+        }
+
+        if (g == '[') {
+            gi += 1;
+            if (ti >= text.len) return false;
+
+            var matched = false;
+            var negated = false;
+            if (gi < glob.len and (glob[gi] == '!' or glob[gi] == '^')) {
+                negated = true;
+                gi += 1;
+            }
+
+            while (gi < glob.len and glob[gi] != ']') {
+                if (gi + 2 < glob.len and glob[gi + 1] == '-') {
+                    const start = glob[gi];
+                    const end = glob[gi + 2];
+                    if (text[ti] >= start and text[ti] <= end) matched = true;
+                    gi += 3;
+                } else {
+                    const pc = glob[gi];
+                    const tc = text[ti];
+                    const match = if (nocase)
+                        std.ascii.toLower(pc) == std.ascii.toLower(tc)
+                    else
+                        pc == tc;
+                    if (match) matched = true;
+                    gi += 1;
+                }
+            }
+            if (gi < glob.len) gi += 1;
+
+            if (negated) matched = !matched;
+            if (matched) {
+                ti += 1;
+            } else {
+                return false;
+            }
+            continue;
+        }
+
+        if (ti >= text.len) return false;
+        const tc = text[ti];
+        if (g != '/') {
+            _ = if (nocase)
+                std.ascii.toLower(g) == std.ascii.toLower(tc)
+            else
+                g == tc;
+            if (g != tc) return false;
+        }
+        gi += 1;
+        ti += 1;
+    }
+
+    return ti == text.len;
+}
+
+// ============================================================================
 // Glob Constants
 // ============================================================================
 
@@ -255,6 +491,80 @@ var results: std.ArrayListUnmanaged([]const u8) = .empty;
 // Directory Walking
 // ============================================================================
 
+/// Gitignore context that tracks rules from all visited directories
+pub const GitignoreContext = struct {
+    entries: std.ArrayListUnmanaged(GitignoreEntry),
+    root_cwd: []const u8,
+
+    pub fn init(root_cwd: []const u8) @This() {
+        return .{
+            .entries = .empty,
+            .root_cwd = root_cwd,
+        };
+    }
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        for (self.entries.items) |e| allocator.free(e.pattern);
+        self.entries.deinit(allocator);
+    }
+
+    /// Load .gitignore from a directory and add its entries
+    pub fn loadGitignoreForDir(self: *@This(), allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) void {
+        const gitignore_path = std.fs.path.join(allocator, &.{ dir_path, ".gitignore" }) catch return;
+
+        const file = std.Io.Dir.openFileAbsolute(io, gitignore_path, .{}) catch {
+            allocator.free(gitignore_path);
+            return;
+        };
+        defer std.Io.File.close(file, io);
+        allocator.free(gitignore_path);
+
+        const content = std.Io.Dir.cwd().readFileAlloc(io, gitignore_path, allocator, std.Io.Limit.limited(1024 * 64)) catch return;
+
+        var line_start: usize = 0;
+        while (line_start < content.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, content, line_start, '\n') orelse content.len;
+            const line = content[line_start..line_end];
+
+            if (parseGitignoreLine(line)) |entry| {
+                var owned_entry = entry;
+                owned_entry.pattern = allocator.dupe(u8, entry.pattern) catch continue;
+                self.entries.append(allocator, owned_entry) catch continue;
+            }
+
+            line_start = line_end + 1;
+        }
+        allocator.free(content);
+    }
+
+    /// Check if a path is ignored
+    pub fn isIgnored(self: *const @This(), path: []const u8) bool {
+        // Get relative path from root
+        var rel_path: []const u8 = path;
+        if (std.mem.startsWith(u8, path, self.root_cwd)) {
+            var rest = path[self.root_cwd.len..];
+            if (rest.len > 0 and rest[0] == '/') {
+                rel_path = rest[1..];
+            } else {
+                rel_path = rest;
+            }
+        }
+
+        for (self.entries.items) |entry| {
+            if (entry.directory_only) continue;
+
+            // Check basename and full path
+            const basename = std.fs.path.basename(rel_path);
+            if (gitignoreGlobMatch(entry.pattern, basename, false) or
+                gitignoreGlobMatch(entry.pattern, rel_path, false)) {
+                return !entry.negated;
+            }
+        }
+
+        return false;
+    }
+};
+
 fn walkDir(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -263,6 +573,7 @@ fn walkDir(
     opts: GlobOptions,
     results: *std.ArrayListUnmanaged([]const u8),
     depth: usize,
+    gitignore_ctx: ?*GitignoreContext,
 ) void {
     if (opts.max_depth) |max| if (depth >= max) return;
 
@@ -270,6 +581,11 @@ fn walkDir(
         std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true, .follow_symlinks = opts.follow }) catch return
     else
         std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true, .follow_symlinks = opts.follow }) catch return;
+
+    // Load .gitignore for this directory if we have a gitignore context
+    if (gitignore_ctx) |ctx| {
+        ctx.loadGitignoreForDir(allocator, io, dir_path);
+    }
 
     // Separate regular patterns from negation patterns
     var negation_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -292,6 +608,15 @@ fn walkDir(
         if (!opts.dot and name.len > 0 and name[0] == '.') continue;
 
         const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch continue;
+
+        // Check gitignore first
+        const is_dir = entry.kind == .directory;
+        if (gitignore_ctx) |ctx| {
+            if (ctx.isIgnored(full_path)) {
+                allocator.free(full_path);
+                continue;
+            }
+        }
 
         // Check pattern match against name and full path
         var matches = false;
@@ -325,14 +650,13 @@ fn walkDir(
         }
 
         if (matches) {
-            const is_dir = entry.kind == .directory;
             const include = (!opts.nodir or !is_dir) and (!opts.onlydir or is_dir);
             if (include) {
                 results.append(allocator, allocator.dupe(u8, full_path) catch continue) catch continue;
             }
         }
 
-        if (entry.kind == .directory) {
+        if (is_dir) {
             // Handle patterns with leading directory paths like "src/**" or "src/**/*.zig"
             // We need to recurse into directories that could match the pattern prefix
             for (regular_patterns.items) |pat| {
@@ -349,8 +673,9 @@ fn walkDir(
                     // Check if the current directory entry name matches this prefix
                     if (globMatch(dir_part, name, opts.nocase)) {
                         // Check if there's more pattern after the directory
-                        if (slash_idx < pat.len) {
-                            const remaining_pattern = pat[pat_idx + slash_idx + 1 ..];
+                        const next_idx = pat_idx + slash_idx + 1;
+                        if (next_idx < pat.len) {
+                            const remaining_pattern = pat[next_idx..];
 
                             // Check if remaining pattern starts with ** (recursive)
                             if (remaining_pattern.len >= 2 and remaining_pattern[0] == '*' and remaining_pattern[1] == '*') {
@@ -365,21 +690,21 @@ fn walkDir(
                                 // Recurse with the inner pattern
                                 var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, inner_pattern) catch break;
-                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1);
+                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1, gitignore_ctx);
                                 new_patterns.deinit(allocator);
                             } else {
                                 // Non-recursive pattern with directory prefix
                                 // Match against the remaining pattern in this directory
                                 var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, remaining_pattern) catch break;
-                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1);
+                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1, gitignore_ctx);
                                 new_patterns.deinit(allocator);
                             }
                         } else {
                             // Pattern ends with directory name - this directory itself matches
                             // (already handled above, but we recurse to check children if pattern has *)
                             if (pat[pat_idx + slash_idx - 1] != '*') {
-                                walkDir(allocator, io, full_path, patterns, opts, results, depth + 1);
+                                walkDir(allocator, io, full_path, patterns, opts, results, depth + 1, gitignore_ctx);
                             }
                         }
                         break;
@@ -392,8 +717,9 @@ fn walkDir(
             }
 
             // Also do normal recursive descent
-            walkDir(allocator, io, full_path, patterns, opts, results, depth + 1);
+            walkDir(allocator, io, full_path, patterns, opts, results, depth + 1, gitignore_ctx);
         }
+        allocator.free(full_path);
     }
     std.Io.Dir.close(dir, io);
 }
@@ -439,7 +765,11 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
         results.deinit(allocator);
     }
 
-    walkDir(allocator, io, input.path, expanded, opts, &results, 0);
+    // Create gitignore context for the root search path
+    var gitignore_ctx = GitignoreContext.init(input.path);
+    defer gitignore_ctx.deinit(allocator);
+
+    walkDir(allocator, io, input.path, expanded, opts, &results, 0, &gitignore_ctx);
 
     // Apply offset and limit
     const total = results.items.len;
@@ -534,7 +864,13 @@ pub const glob_tool = AgentTool{
         .name = "glob",
         .description =
         \\Find files matching glob patterns (like node-glob).
+        \\Automatically respects .gitignore files - ignored files are excluded from results.
         \\Returns: <f>path</f> for each match wrapped in <glob_summary> with stats.
+        \\
+        \\Gitignore behavior:
+        \\  - Respects .gitignore rules from the search path and subdirectories
+        \\  - Files matching gitignore patterns are automatically excluded
+        \\  - Use hidden=true to include hidden files (still respects gitignore if file is not gitignored)
         \\
         \\Glob patterns supported:
         \\  * - Match any characters (except /)

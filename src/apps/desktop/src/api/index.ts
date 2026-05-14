@@ -1,7 +1,7 @@
 // API Service - Centralized API calls for desktop backend
 // All components should use this file instead of making direct fetch calls
 
-const API_BASE = "/api";
+export const API_BASE = "/api";
 
 // Types matching backend responses
 export interface FolderEntry {
@@ -642,5 +642,31 @@ export async function getGitStatus(cwd: string): Promise<GitStatus> {
       current: "",
       status: "error"
     };
+  }
+}
+
+// File listing for autocomplete
+export async function listFiles(cwd: string, dirPath?: string): Promise<string[]> {
+  try {
+    const targetPath = dirPath || cwd;
+    const response = await fetch(
+      `${API_BASE}/system/folder?path=${encodeURIComponent(targetPath)}&action=list`,
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    // Return names sorted, directories first
+    const entries = data.entries || [];
+    return entries
+      .map((e: FolderEntry) => e.name)
+      .sort((a: string, b: string) => {
+        const aIsDir = entries.find((e: FolderEntry) => e.name === a)?.is_directory;
+        const bIsDir = entries.find((e: FolderEntry) => e.name === b)?.is_directory;
+        if (aIsDir && !bIsDir) return -1;
+        if (!aIsDir && bIsDir) return 1;
+        return a.localeCompare(b);
+      });
+  } catch (error) {
+    console.error("Failed to list files:", error);
+    return [];
   }
 }

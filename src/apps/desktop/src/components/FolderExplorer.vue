@@ -1,24 +1,54 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useWorkspacesStore } from '../stores/workspaces'
 import { listFolder, type FolderEntry } from '../api'
 
-const workspacesStore = useWorkspacesStore()
+const props = defineProps<{
+  cwd?: string
+  name?: string
+}>()
 
-const activeItem = computed(() => workspacesStore.activeWorkspaceItem)
-const isLoading = computed(() => activeItem.value?.isLoading ?? false)
+// Compute header info from props or fall back to path
+const headerName = computed(() => props.name || (props.cwd ? props.cwd.split('/').pop() || props.cwd : null))
 
-// Nested folders state - using object instead of Map for reactivity
+// Check if we have valid input
+const hasInput = computed(() => !!props.cwd && props.cwd.trim() !== '')
+
+// Nested folders state
 const nestedEntriesCache = ref<Record<string, FolderEntry[]>>({})
+const rootEntries = ref<FolderEntry[]>([])
+const isLoading = ref(false)
+const loadError = ref<string | null>(null)
 
-// Get current entries to display
-const currentEntries = computed(() => {
-  if (!activeItem.value) return []
-  if (activeItem.value.entries) {
-    return activeItem.value.entries
+// Load root directory
+const loadRoot = async () => {
+  if (!props.cwd) {
+    rootEntries.value = []
+    return
   }
-  return []
-})
+
+  isLoading.value = true
+  loadError.value = null
+
+  try {
+    const data = await listFolder(props.cwd)
+    rootEntries.value = data.entries || []
+  } catch (err) {
+    console.error('Failed to load folder:', err)
+    loadError.value = 'Failed to load folder'
+    rootEntries.value = []
+  } finally {
+    isLoading.value = false
+  }
+}
+
+// Watch for cwd changes
+watch(() => props.cwd, (newCwd) => {
+  nestedEntriesCache.value = {}
+  rootEntries.value = []
+  if (newCwd) {
+    loadRoot()
+  }
+}, { immediate: true })
 
 // Toggle folder expansion
 const toggleFolder = async (entry: FolderEntry) => {
@@ -43,15 +73,7 @@ const toggleFolder = async (entry: FolderEntry) => {
   }
 }
 
-// Check if folder has nested entries loaded
-const hasNestedLoaded = (path: string) => !!nestedEntriesCache.value[path]
-
-// Get nested entries
-const getNestedEntries = (path: string): FolderEntry[] => {
-  return nestedEntriesCache.value[path] || []
-}
-
-// Check if folder is expanded (has loaded children visible)
+// Check if folder is expanded
 const isExpanded = (path: string) => !!nestedEntriesCache.value[path]
 
 // Flatten tree for display
@@ -63,26 +85,21 @@ interface FlatEntry {
 
 const flattenedEntries = computed(() => {
   const result: FlatEntry[] = []
-  
+
   const addEntries = (entries: FolderEntry[], depth: number) => {
     for (const entry of entries) {
       const entryPath = entry.path
       result.push({ entry, depth, path: entryPath })
-      
+
       if (entry.is_directory && nestedEntriesCache.value[entryPath]) {
         const nested = nestedEntriesCache.value[entryPath]
         addEntries(nested, depth + 1)
       }
     }
   }
-  
-  addEntries(currentEntries.value, 0)
-  return result
-})
 
-// Clear cache when active item changes
-watch(() => workspacesStore.activeWorkspaceItemId, () => {
-  nestedEntriesCache.value = {}
+  addEntries(rootEntries.value, 0)
+  return result
 })
 
 // Open folder on click (for files) or toggle (for folders)
@@ -96,17 +113,17 @@ const handleClick = (entry: FolderEntry) => {
 <template>
   <div
     class="flex flex-col h-full"
-    style="width: 260px; background-color: var(--semantic-sidebar-bg); border-right: 1px solid var(--color-border);"
+    style="width: 260px; background-color: var(--semantic-sidebar-bg); border-left: 1px solid var(--color-border);"
   >
     <!-- Header -->
     <div
       class="h-10 flex items-center px-3 shrink-0 text-sm font-medium"
       style="border-bottom: 1px solid var(--color-border); color: var(--semantic-text);"
     >
-      <span v-if="activeItem">{{ activeItem.name }}</span>
-      <span v-else style="color: var(--semantic-text-dim);">No project selected</span>
+      <span v-if="headerName">{{ headerName }}</span>
+      <span v-else style="color: var(--semantic-text-dim);">No folder</span>
     </div>
-  
+
     <!-- Loading -->
     <div v-if="isLoading" class="flex-1 flex items-center justify-center">
       <svg class="animate-spin w-5 h-5" style="color: var(--color-aqua);" viewBox="0 0 24 24" fill="none">
@@ -115,14 +132,25 @@ const handleClick = (entry: FolderEntry) => {
       </svg>
     </div>
 
-    <!-- Empty state -->
+    <!-- Error state -->
     <div
-      v-else-if="!activeItem"
+      v-else-if="loadError"
+      class="flex-1 flex flex-col items-center justify-center p-4 text-center"
+    >
+      <span class="text-2xl mb-2">⚠️</span>
+      <p class="text-xs" style="color: var(--semantic-text-dim);">
+        {{ loadError }}
+      </p>
+    </div>
+
+    <!-- Empty state (no cwd) -->
+    <div
+      v-else-if="!hasInput"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
       <span class="text-3xl mb-3">📂</span>
       <p class="text-xs" style="color: var(--semantic-text-dim);">
-        Select a project from the sidebar to browse files
+        Pass a cwd to browse files
       </p>
     </div>
 
@@ -136,7 +164,7 @@ const handleClick = (entry: FolderEntry) => {
         Empty folder
       </p>
     </div>
-  
+
     <!-- File/Folder List -->
     <div v-else class="flex-1 overflow-y-auto py-1">
       <button
@@ -164,12 +192,12 @@ const handleClick = (entry: FolderEntry) => {
 
     <!-- Footer with path -->
     <div
-      v-if="activeItem?.path"
+      v-if="cwd"
       class="h-8 flex items-center px-3 shrink-0 text-xs truncate"
       style="border-top: 1px solid var(--color-border); color: var(--semantic-text-dim);"
-      :title="activeItem.path"
+      :title="cwd"
     >
-      {{ activeItem.path }}
+      {{ cwd }}
     </div>
   </div>
 </template>

@@ -4,4 +4,5 @@ test {
     _ = @import("tools/diff_test.zig");
     _ = @import("tools/text_replace_test.zig");
     _ = @import("tools/list_skills_test.zig");
+    _ = @import("tools/glob_test.zig");
 }
