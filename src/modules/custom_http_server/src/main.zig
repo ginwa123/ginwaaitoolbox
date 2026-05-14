@@ -86,7 +86,7 @@ pub const GinwaServer = struct {
     }
 
     pub fn deinit(self: *GinwaServer) void {
-        _ = self;  // Router doesn't need deinit currently
+        _ = self; // Router doesn't need deinit currently
     }
 
     pub fn listen(self: *GinwaServer) !void {
@@ -189,18 +189,27 @@ pub const GinwaServer = struct {
     }
 };
 
+const custom = struct {
+    id: u64,
+};
+
 // Handlers - receive request, context, return response
-fn indexHandler(req: http_parser.HttpRequest, _: *const anyopaque) http_parser.HttpResponse {
+fn indexHandler(req: http_parser.HttpRequest, data: *anyopaque) http_parser.HttpResponse {
     _ = req;
-    return http_parser.ok("Welcome to GinwaServer!", std.heap.page_allocator);
+    const ctx: *const custom = @ptrCast(@alignCast(data));
+
+    const text = std.fmt.allocPrint(std.heap.page_allocator, "ID: {d}", .{ctx.id}) catch {
+        return http_parser.internalError("Failed to format", std.heap.page_allocator);
+    };
+    return http_parser.ok(text, std.heap.page_allocator);
 }
 
-fn healthHandler(req: http_parser.HttpRequest, _: *const anyopaque) http_parser.HttpResponse {
+fn healthHandler(req: http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
     _ = req;
     return http_parser.ok("OK", std.heap.page_allocator);
 }
 
-fn helloHandler(req: http_parser.HttpRequest, _: *const anyopaque) http_parser.HttpResponse {
+fn helloHandler(req: http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
     _ = req;
     return http_parser.ok("Hello, HTTP!", std.heap.page_allocator);
 }
@@ -219,9 +228,11 @@ pub fn run(init: std.process.Init) !void {
     std.debug.print("Test with: curl http://127.0.0.1:29584/\n", .{});
     std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
-    try gs.router.get("/hello", helloHandler, .{});
+    const custom_ctx = custom{ .id = 100 };
+
+    try gs.router.get("/hello", helloHandler, custom_ctx);
     try gs.router.get("/health", healthHandler, .{});
-    try gs.router.get("/", indexHandler, .{});
+    try gs.router.get("/", indexHandler, custom_ctx);
 
     try gs.listen();
 }

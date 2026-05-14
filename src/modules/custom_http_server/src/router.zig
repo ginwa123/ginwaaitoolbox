@@ -3,7 +3,7 @@ const http_parser = @import("http_parser.zig");
 
 pub const Self = @This();
 
-pub const HandlerFn = *const fn (req: http_parser.HttpRequest, ctx: *const anyopaque) http_parser.HttpResponse;
+pub const HandlerFn = *const fn (req: http_parser.HttpRequest, ctx: *anyopaque) http_parser.HttpResponse;
 
 pub const Router = Self;
 
@@ -17,7 +17,7 @@ pub const Route = struct {
     context: *anyopaque = undefined,
 };
 
-pub fn defaultHandler(_: http_parser.HttpRequest, _: *const anyopaque) http_parser.HttpResponse {
+pub fn defaultHandler(_: http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
     return http_parser.ok("", std.heap.page_allocator);
 }
 
@@ -67,8 +67,8 @@ fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: 
 
     // Create a typed handler wrapper that passes context correctly
     const WrappedHandler = struct {
-        fn wrapped(req: http_parser.HttpRequest, ctx_ptr: *const anyopaque) http_parser.HttpResponse {
-            const typed_ctx = @as(*ContextType, @ptrCast(@constCast(ctx_ptr)));
+        fn wrapped(req: http_parser.HttpRequest, ctx_ptr: *anyopaque) http_parser.HttpResponse {
+            const typed_ctx: *ContextType = @ptrCast(@alignCast(ctx_ptr));
             // Call the original handler with request and typed context
             return @call(.auto, handler, .{ req, typed_ctx });
         }
@@ -78,7 +78,7 @@ fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: 
         .method = method,
         .path = path,
         .handler = WrappedHandler.wrapped,
-        .context = @as(*anyopaque, boxed_ctx),
+        .context = @ptrCast(boxed_ctx),
     });
 }
 
