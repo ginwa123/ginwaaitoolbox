@@ -1,5 +1,6 @@
 const std = @import("std");
 const linux = std.posix.system;
+const http_parser = @import("http_parser.zig");
 
 pub fn main(init: std.process.Init) void {
     run(init) catch |err| {
@@ -70,7 +71,6 @@ pub const GinwaServer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     address: Address,
-    handler: ?*const fn (ClientArgs) void,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
@@ -78,15 +78,11 @@ pub const GinwaServer = struct {
             .allocator = allocator,
             .io = io,
             .address = address,
-            .handler = null,
         };
         return gs;
     }
 
-    pub fn listen(self: *GinwaServer, comptime handler: anytype) !void {
-        // Store the function pointer
-        self.handler = @ptrCast(&handler);
-
+    pub fn listen(self: *GinwaServer) !void {
         const rc = linux.listen(self.address.sock_fd, 128);
         if (rc < 0) return error.ListenFailed;
 
@@ -100,40 +96,56 @@ pub const GinwaServer = struct {
                         defer arena_allocator.deinit();
                         const allocator = arena_allocator.allocator();
 
-                        defer _ = linux.close(fd);
-                        var buffer: [1024]u8 = undefined;
+                        // Receive HTTP request data
+                        var buffer: [4096]u8 = undefined;
                         const bytes_read = gs.recvFromClient(fd, &buffer) catch |err| {
                             std.debug.print("Recv error: {s}\n", .{@errorName(err)});
+                            _ = linux.close(fd);
                             return;
                         };
 
-                        var clean: []const u8 = "";
-                        if (bytes_read > 0) {
-                            clean = gs.cleanText(buffer[0..bytes_read], allocator) catch {
-                                std.debug.print("cleanText alloc failed\n", .{});
-                                return;
-                            };
+                        if (bytes_read == 0) {
+                            _ = linux.close(fd);
+                            return;
                         }
 
-                        const req = Request{
-                            .method = null,
-                            .path = null,
-                            .headers = null,
-                            .body = clean,
+                        const raw_data = buffer[0..bytes_read];
+                        std.debug.print("Received {d} bytes: {s}\n", .{ bytes_read, raw_data });
+
+                        // Parse HTTP request using http_parser
+                        var req = http_parser.parseRequest(raw_data, allocator) catch {
+                            std.debug.print("Failed to parse HTTP request\n", .{});
+                            _ = linux.close(fd);
+                            return;
+                        };
+                        defer req.headers.deinit();
+
+                        // Build HTTP response using http_parser
+                        var res: http_parser.HttpResponse = undefined;
+                        if (std.mem.eql(u8, req.method, "GET") and std.mem.eql(u8, req.path, "/")) {
+                            res = http_parser.ok("Welcome to GinwaServer!", allocator);
+                        } else if (std.mem.eql(u8, req.method, "GET") and std.mem.eql(u8, req.path, "/health")) {
+                            res = http_parser.ok("OK", allocator);
+                        } else if (std.mem.eql(u8, req.method, "GET") and std.mem.eql(u8, req.path, "/hello")) {
+                            res = http_parser.ok("Hello, HTTP!", allocator);
+                        } else {
+                            res = http_parser.notFound(allocator);
+                        }
+
+                        // Send response to client
+                        const res_bytes = res.toBytes() catch {
+                            std.debug.print("Failed to build response\n", .{});
+                            _ = linux.close(fd);
+                            return;
+                        };
+                        defer res.allocator.free(res_bytes);
+
+                        _ = gs.sendToClient(fd, res_bytes) catch {
+                            std.debug.print("Failed to send response\n", .{});
                         };
 
-                        const res = Response{
-                            .status_code = null,
-                        };
-
-                        const args = ClientArgs{
-                            .request = req,
-                            .response = res,
-                            .allocator = allocator,
-                        };
-                        const h = gs.handler.?;
-                        h(args); // Call with struct (no error union)
-                        //
+                        std.debug.print("Response sent: {d} bytes\n", .{res_bytes.len});
+                        _ = linux.close(fd);
                     }
                 }.run,
                 .{ self, client_fd },
@@ -180,53 +192,7 @@ pub const GinwaServer = struct {
         if (rc < 0) return 0;
         return (@as(u16, addr[2]) << 8) | @as(u16, addr[3]);
     }
-
-    fn cleanText(_: *GinwaServer, data: []const u8, allocator: std.mem.Allocator) ![]const u8 {
-        var filtered = try allocator.alloc(u8, data.len);
-        var j: usize = 0;
-        for (data) |byte| {
-            if (byte >= 32 and byte <= 126) {
-                filtered[j] = byte;
-                j += 1;
-            }
-        }
-        return filtered[0..j];
-    }
 };
-
-const Response = struct {
-    status_code: ?u16 = null,
-};
-
-const Header = struct {
-    key: ?[]const u8 = null,
-    value: ?[]const u8 = null,
-};
-
-const Request = struct {
-    method: ?[]const u8 = null,
-    path: ?[]const u8 = null,
-    headers: ?[]Header = null,
-    body: ?[]const u8 = null,
-};
-
-// Client arguments passed to handler
-const ClientArgs = struct {
-    allocator: std.mem.Allocator,
-    request: Request,
-    response: Response,
-};
-
-// Handler function (called from async task)
-fn handleClientInner(args: ClientArgs) void {
-    const req = args.request;
-
-    if (req.body) |body| {
-        std.debug.print("Received: {s}\n", .{body});
-    }
-
-    std.debug.print("Client disconnected\n\n", .{});
-}
 
 pub fn run(init: std.process.Init) !void {
     const arena_allocator = init.arena;
@@ -234,11 +200,12 @@ pub fn run(init: std.process.Init) !void {
     const allocator = arena_allocator.allocator();
     const io = init.io;
 
-    const gs = try GinwaServer.init(allocator, io, try Address.init(29584));
+    const address = try Address.init(29584);
+    const gs = try GinwaServer.init(allocator, io, address);
 
-    std.debug.print("TCP Echo Server listening on 127.0.0.1:29584...\n", .{});
-    std.debug.print("Connect with: nc 127.0.0.1 29584\n", .{});
+    std.debug.print("HTTP Server listening on 127.0.0.1:29584...\n", .{});
+    std.debug.print("Test with: curl http://127.0.0.1:29584/\n", .{});
     std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
-    try gs.listen(handleClientInner);
+    try gs.listen();
 }
