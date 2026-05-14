@@ -15,6 +15,8 @@ pub const Address = struct {
     pub fn init(port: u16) !Address {
         const socket = try Address.callSocket();
         const sock_fd = Address.createSockFd(socket);
+        _ = try setReuseAddr(sock_fd);
+        _ = try bind(port, sock_fd);
 
         return .{
             .sock_fd = sock_fd,
@@ -27,9 +29,40 @@ pub const Address = struct {
     }
 
     fn callSocket() !i32 {
-        const rc = linux.socket(2, 1, 0);
+        const rc = linux.socket(2, 1, 0); // AF_INET, SOCK_STREAM
         if (rc < 0) return error.SocketCreationFailed;
         return @as(i32, @intCast(rc));
+    }
+
+    fn setReuseAddr(sock_fd: i32) !void {
+        const opt: u32 = 1;
+        const rc = linux.setsockopt(
+            sock_fd,
+            1, // SOL_SOCKET
+            2, // SO_REUSEADDR
+            @ptrFromInt(@intFromPtr(&opt)),
+            @sizeOf(u32),
+        );
+        if (rc < 0) return error.SetSockOptFailed;
+    }
+
+    fn bind(port: u16, sock_fd: i32) !void {
+        var addr: [16]u8 = undefined;
+        @memset(&addr, 0);
+        addr[0] = 2; // AF_INET
+        addr[2] = @as(u8, @truncate(port >> 8));
+        addr[3] = @as(u8, @truncate(port));
+        addr[4] = 127;
+        addr[5] = 0;
+        addr[6] = 0;
+        addr[7] = 1; // 127.0.0.1
+
+        const rc = linux.bind(
+            sock_fd,
+            @ptrCast(@alignCast(&addr)),
+            16,
+        );
+        if (rc < 0) return error.BindFailed;
     }
 };
 
@@ -37,6 +70,7 @@ pub const GinwaServer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     address: Address,
+    handler: ?*const fn (ClientArgs) void,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
@@ -44,49 +78,67 @@ pub const GinwaServer = struct {
             .allocator = allocator,
             .io = io,
             .address = address,
+            .handler = null,
         };
-
-        try gs.setReuseAddr();
-        try gs.bind();
-
         return gs;
     }
 
-    pub fn listen(self: *GinwaServer) !void {
+    pub fn listen(self: *GinwaServer, comptime handler: anytype) !void {
+        // Store the function pointer
+        self.handler = @ptrCast(&handler);
+
         const rc = linux.listen(self.address.sock_fd, 128);
         if (rc < 0) return error.ListenFailed;
-    }
 
-    fn setReuseAddr(self: *GinwaServer) !void {
-        const opt: u32 = 1;
-        const rc = linux.setsockopt(
-            self.address.sock_fd,
-            1,
-            2,
-            @ptrFromInt(@intFromPtr(&opt)),
-            @sizeOf(u32),
-        );
-        if (rc < 0) return error.SetSockOptFailed;
-    }
+        while (true) {
+            const client_fd = try self.acceptClient();
 
-    fn bind(self: *GinwaServer) !void {
-        var addr: [16]u8 = undefined;
-        @memset(&addr, 0);
+            _ = self.io.async(
+                struct {
+                    fn run(gs: *GinwaServer, fd: i32) void {
+                        var arena_allocator = std.heap.ArenaAllocator.init(gs.allocator);
+                        defer arena_allocator.deinit();
+                        const allocator = arena_allocator.allocator();
 
-        addr[0] = 2; // AF_INET
-        addr[2] = @as(u8, @truncate(self.address.port >> 8));
-        addr[3] = @as(u8, @truncate(self.address.port));
-        addr[4] = 127;
-        addr[5] = 0;
-        addr[6] = 0;
-        addr[7] = 1;
+                        defer _ = linux.close(fd);
+                        var buffer: [1024]u8 = undefined;
+                        const bytes_read = gs.recvFromClient(fd, &buffer) catch |err| {
+                            std.debug.print("Recv error: {s}\n", .{@errorName(err)});
+                            return;
+                        };
 
-        const rc = linux.bind(
-            self.address.sock_fd,
-            @ptrCast(@alignCast(&addr)),
-            16,
-        );
-        if (rc < 0) return error.BindFailed;
+                        var clean: []const u8 = "";
+                        if (bytes_read > 0) {
+                            clean = gs.cleanText(buffer[0..bytes_read], allocator) catch {
+                                std.debug.print("cleanText alloc failed\n", .{});
+                                return;
+                            };
+                        }
+
+                        const req = Request{
+                            .method = null,
+                            .path = null,
+                            .headers = null,
+                            .body = clean,
+                        };
+
+                        const res = Response{
+                            .status_code = null,
+                        };
+
+                        const args = ClientArgs{
+                            .request = req,
+                            .response = res,
+                            .allocator = allocator,
+                        };
+                        const h = gs.handler.?;
+                        h(args); // Call with struct (no error union)
+                        //
+                    }
+                }.run,
+                .{ self, client_fd },
+            );
+        }
     }
 
     fn acceptClient(self: *GinwaServer) !i32 {
@@ -126,20 +178,7 @@ pub const GinwaServer = struct {
             @ptrCast(@alignCast(&addr_len)),
         );
         if (rc < 0) return 0;
-
-        return @as(u16, addr[2]) << 8 | @as(u16, addr[3]);
-    }
-
-    fn formatBytes(_: *GinwaServer, bytes: usize, allocator: std.mem.Allocator) []const u8 {
-        if (bytes < 1024) {
-            return std.fmt.allocPrint(allocator, "{d}B", .{bytes}) catch return "0B";
-        } else if (bytes < 1024 * 1024) {
-            return std.fmt.allocPrint(allocator, "{d}KB", .{bytes / 1024}) catch return "0KB";
-        } else if (bytes < 1024 * 1024 * 1024) {
-            return std.fmt.allocPrint(allocator, "{d}MB", .{bytes / (1024 * 1024)}) catch return "0MB";
-        } else {
-            return std.fmt.allocPrint(allocator, "{d}GB", .{bytes / (1024 * 1024 * 1024)}) catch return "0GB";
-        }
+        return (@as(u16, addr[2]) << 8) | @as(u16, addr[3]);
     }
 
     fn cleanText(_: *GinwaServer, data: []const u8, allocator: std.mem.Allocator) ![]const u8 {
@@ -155,40 +194,35 @@ pub const GinwaServer = struct {
     }
 };
 
-// Args struct passed into the async task — avoids captures
-const ClientArgs = struct {
-    gs: *GinwaServer,
-    client_fd: i32,
-    allocator: std.mem.Allocator,
+const Response = struct {
+    status_code: ?u16 = null,
 };
 
-// Called by io.async — handles one connected client
-fn handleClient(args: ClientArgs) void {
-    defer _ = linux.close(args.client_fd);
+const Header = struct {
+    key: ?[]const u8 = null,
+    value: ?[]const u8 = null,
+};
 
-    const gs = args.gs;
-    const fd = args.client_fd;
+const Request = struct {
+    method: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    headers: ?[]Header = null,
+    body: ?[]const u8 = null,
+};
 
-    std.debug.print("Client connected from port {d}!\n", .{gs.getClientPort(fd)});
+// Client arguments passed to handler
+const ClientArgs = struct {
+    allocator: std.mem.Allocator,
+    request: Request,
+    response: Response,
+};
 
-    var buffer: [1024]u8 = undefined;
-    const bytes_read = gs.recvFromClient(fd, &buffer) catch |err| {
-        std.debug.print("Recv error: {s}\n", .{@errorName(err)});
-        return;
-    };
+// Handler function (called from async task)
+fn handleClientInner(args: ClientArgs) void {
+    const req = args.request;
 
-    if (bytes_read > 0) {
-        const clean = gs.cleanText(buffer[0..bytes_read], args.allocator) catch {
-            std.debug.print("cleanText alloc failed\n", .{});
-            return;
-        };
-        std.debug.print("Received: {s}\n", .{clean});
-
-        const bytes_written = gs.sendToClient(fd, buffer[0..bytes_read]) catch |err| {
-            std.debug.print("Send error: {s}\n", .{@errorName(err)});
-            return;
-        };
-        std.debug.print("Sent {d} bytes back to client\n", .{bytes_written});
+    if (req.body) |body| {
+        std.debug.print("Received: {s}\n", .{body});
     }
 
     std.debug.print("Client disconnected\n\n", .{});
@@ -201,23 +235,10 @@ pub fn run(init: std.process.Init) !void {
     const io = init.io;
 
     const gs = try GinwaServer.init(allocator, io, try Address.init(29584));
-    try gs.listen();
 
     std.debug.print("TCP Echo Server listening on 127.0.0.1:29584...\n", .{});
     std.debug.print("Connect with: nc 127.0.0.1 29584\n", .{});
     std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
-    while (true) {
-        const client_fd = try gs.acceptClient();
-
-        // Spawn async task — no fork(), no thread creation boilerplate.
-        // io.async immediately calls handleClient in blocking mode,
-        // or suspends/resumes it on the event loop in evented mode.
-        const future = io.async(handleClient, .{ClientArgs{
-            .gs = gs,
-            .client_fd = client_fd,
-            .allocator = allocator,
-        }});
-        _ = future;
-    }
+    try gs.listen(handleClientInner);
 }
