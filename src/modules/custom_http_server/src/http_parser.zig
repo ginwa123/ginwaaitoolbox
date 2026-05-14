@@ -8,6 +8,14 @@ pub const HttpRequest = struct {
     headers: std.StringHashMap([]const u8),
     body: []const u8,
     raw: []const u8,
+
+    /// Route params extracted from path patterns like /hello/:name
+    params: std.StringHashMap([]const u8),
+    /// Query string params extracted from URL like ?foo=bar&baz=qux
+    query: std.StringHashMap([]const u8),
+
+    allocator: std.mem.Allocator,
+    io: std.Io,
 };
 
 /// HTTP Response builder
@@ -77,7 +85,7 @@ pub const HttpResponse = struct {
 };
 
 /// Parse an HTTP request from raw bytes
-pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator) !HttpRequest {
+pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, io: std.Io) !HttpRequest {
     const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse {
         return error.IncompleteRequest;
     };
@@ -92,8 +100,16 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator) !HttpRequest
     const trimmed_line = if (first_line.len > 0 and first_line[0] == '\r') first_line[1..] else first_line;
     var first_parts = std.mem.splitScalar(u8, trimmed_line, ' ');
     const method = first_parts.next() orelse return error.InvalidRequestLine;
-    const path = first_parts.next() orelse return error.InvalidRequestLine;
+    const path_with_query = first_parts.next() orelse return error.InvalidRequestLine;
     const version = first_parts.next() orelse return error.InvalidRequestLine;
+
+    // Split path and query string
+    var path: []const u8 = path_with_query;
+    var query_str: []const u8 = "";
+    if (std.mem.indexOf(u8, path_with_query, "?")) |q_idx| {
+        path = path_with_query[0..q_idx];
+        query_str = path_with_query[q_idx + 1 ..];
+    }
 
     var headers = std.StringHashMap([]const u8).init(allocator);
     while (lines.next()) |line| {
@@ -101,10 +117,28 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator) !HttpRequest
         if (clean_line.len == 0) break;
         if (std.mem.indexOf(u8, clean_line, ":")) |colon| {
             const key = std.mem.trim(u8, clean_line[0..colon], " ");
-            const value = std.mem.trim(u8, clean_line[colon + 1..], " ");
+            const value = std.mem.trim(u8, clean_line[colon + 1 ..], " ");
             try headers.put(key, value);
         }
     }
+
+    // Parse query params
+    var query = std.StringHashMap([]const u8).init(allocator);
+    if (query_str.len > 0) {
+        var query_params = std.mem.splitScalar(u8, query_str, '&');
+        while (query_params.next()) |param| {
+            if (std.mem.indexOf(u8, param, "=")) |eq_idx| {
+                const key = param[0..eq_idx];
+                const value = param[eq_idx + 1 ..];
+                try query.put(key, value);
+            } else {
+                try query.put(param, "");
+            }
+        }
+    }
+
+    // Params are populated by the router when matching route patterns
+    const params = std.StringHashMap([]const u8).init(allocator);
 
     return HttpRequest{
         .method = method,
@@ -113,6 +147,10 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator) !HttpRequest
         .headers = headers,
         .body = body,
         .raw = data,
+        .params = params,
+        .query = query,
+        .allocator = allocator,
+        .io = io,
     };
 }
 

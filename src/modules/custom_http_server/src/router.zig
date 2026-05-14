@@ -83,15 +83,39 @@ fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: 
 }
 
 /// Route matching and execution - returns HttpResponse
-pub fn handleRoute(self: *Self, req_method: []const u8, req_path: []const u8, req: http_parser.HttpRequest) http_parser.HttpResponse {
+pub fn handleRoute(self: *Self, req_method: []const u8, req_path: []const u8, req: *http_parser.HttpRequest) http_parser.HttpResponse {
     for (self.routes.items) |route| {
-        // Match method and path
+        // Try exact match first
         if (std.mem.eql(u8, req_method, route.method) and std.mem.eql(u8, req_path, route.path)) {
-            // Execute handler with request and context
-            return route.handler(req, route.context);
+            return route.handler(req.*, route.context);
+        }
+
+        // Try pattern matching with params (e.g., /hello/:name)
+        if (std.mem.eql(u8, req_method, route.method) and matchPathWithParams(route.path, req_path, &req.params)) {
+            return route.handler(req.*, route.context);
         }
     }
     return http_parser.notFound(std.heap.page_allocator);
+}
+
+/// Match a route pattern against a request path and extract params
+fn matchPathWithParams(pattern: []const u8, path: []const u8, params: *std.StringHashMap([]const u8)) bool {
+    var pattern_parts = std.mem.splitScalar(u8, pattern, '/');
+    var path_parts = std.mem.splitScalar(u8, path, '/');
+
+    while (pattern_parts.next()) |pattern_part| {
+        const path_part = path_parts.next() orelse return false;
+
+        // If pattern part starts with ':', it's a param
+        if (pattern_part.len > 0 and pattern_part[0] == ':') {
+            const param_name = pattern_part[1..];
+            params.put(param_name, path_part) catch return false;
+        } else if (!std.mem.eql(u8, pattern_part, path_part)) {
+            return false;
+        }
+    }
+
+    return path_parts.next() == null;
 }
 
 test "basic route matching" {
@@ -116,15 +140,19 @@ test "basic route matching" {
     }.handle, my_ctx);
 
     // Create a mock request
-    const mock_req = http_parser.HttpRequest{
+    var mock_req = http_parser.HttpRequest{
         .method = "GET",
         .path = "/hello",
         .version = "HTTP/1.1",
         .headers = std.StringHashMap([]const u8).init(test_allocator),
         .body = "",
         .raw = "",
+        .params = std.StringHashMap([]const u8).init(test_allocator),
+        .query = std.StringHashMap([]const u8).init(test_allocator),
+        .allocator = test_allocator,
+        .io = undefined,
     };
 
-    const res = router.handleRoute("GET", "/hello", mock_req);
+    const res = router.handleRoute("GET", "/hello", &mock_req);
     try std.testing.expectEqual(@as(u16, 200), res.status_code);
 }
