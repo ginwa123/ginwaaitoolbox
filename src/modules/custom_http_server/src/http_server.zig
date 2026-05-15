@@ -1,7 +1,10 @@
 const std = @import("std");
 const linux = std.posix.system;
-const http_parser = @import("http_parser.zig");
-const router_mod = @import("router.zig");
+pub const http_parser = @import("http_parser.zig");
+const router = @import("router.zig");
+pub const HttpRequest = http_parser.HttpRequest;
+pub const HttpResponse = http_parser.HttpResponse;
+pub const response = http_parser;
 
 pub const Address = struct {
     sock_fd: i32,
@@ -65,7 +68,7 @@ pub const GinwaServer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     address: Address,
-    router: router_mod.Router,
+    router: router.Router,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
@@ -73,13 +76,13 @@ pub const GinwaServer = struct {
             .allocator = allocator,
             .io = io,
             .address = address,
-            .router = router_mod.Router.init(allocator),
+            .router = router.Router.init(allocator),
         };
         return gs;
     }
 
     pub fn deinit(self: *GinwaServer) void {
-        _ = self; // Router doesn't need deinit currently
+        self.router.deinit();
     }
 
     pub fn listen(self: *GinwaServer) !void {
@@ -96,6 +99,9 @@ pub const GinwaServer = struct {
                         defer arena_allocator.deinit();
                         const allocator = arena_allocator.allocator();
 
+                        var buf: std.ArrayList(u8) = .empty;
+                        defer buf.deinit(allocator);
+
                         var buffer: [4096]u8 = undefined;
                         const bytes_read = gs.recvFromClient(fd, &buffer) catch |err| {
                             std.debug.print("Recv error: {s}\n", .{@errorName(err)});
@@ -108,10 +114,11 @@ pub const GinwaServer = struct {
                             return;
                         }
 
-                        const raw_data = buffer[0..bytes_read];
-                        std.debug.print("Received {d} bytes: {s}\n", .{ bytes_read, raw_data });
+                        buf.appendSlice(allocator, buffer[0..bytes_read]) catch unreachable;
 
-                        var req = http_parser.parseRequest(raw_data, allocator, gs.io, fd) catch {
+                        std.debug.print("Received {d} bytes: {s}\n", .{ bytes_read, buf.items });
+
+                        var req = http_parser.parseRequest(buf.items, allocator, gs.io, fd) catch {
                             std.debug.print("Failed to parse HTTP request\n", .{});
                             _ = linux.close(fd);
                             return;
@@ -181,19 +188,19 @@ pub const GinwaServer = struct {
         return @as(i32, @intCast(rc));
     }
 
-    fn recvFromClient(_: *GinwaServer, fd: i32, buf: []u8) !usize {
+    pub fn recvFromClient(_: *GinwaServer, fd: i32, buf: []u8) !usize {
         const rc = linux.read(fd, @ptrCast(buf.ptr), buf.len);
         if (rc < 0) return error.RecvFailed;
         return @as(usize, @intCast(rc));
     }
 
-    fn sendToClient(_: *GinwaServer, fd: i32, data: []const u8) !usize {
+    pub fn sendToClient(_: *GinwaServer, fd: i32, data: []const u8) !usize {
         const rc = linux.write(fd, @ptrCast(data.ptr), data.len);
         if (rc < 0) return error.SendFailed;
         return @as(usize, @intCast(rc));
     }
 
-    fn getClientPort(_: *GinwaServer, fd: i32) u16 {
+    pub fn getClientPort(_: *GinwaServer, fd: i32) u16 {
         var addr: [16]u8 = undefined;
         @memset(&addr, 0);
         var addr_len: i32 = 16;

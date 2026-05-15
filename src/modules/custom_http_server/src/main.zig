@@ -1,9 +1,8 @@
 const std = @import("std");
 const linux = std.posix.system;
-const http_parser = @import("http_parser.zig");
-const http_server = @import("http_server.zig");
-const router_mod = @import("router.zig");
+const gserverz = @import("http_server.zig");
 
+// implementation http server custom
 pub fn main(init: std.process.Init) void {
     run(init) catch |err| {
         std.debug.print("Server error: {s}\n", .{@errorName(err)});
@@ -11,33 +10,32 @@ pub fn main(init: std.process.Init) void {
     };
 }
 
-
 const custom = struct {
     id: u64,
 };
 
 // Handlers - receive request, context, return response
-fn indexHandler(req: *http_parser.HttpRequest, data: *anyopaque) http_parser.HttpResponse {
+fn indexHandler(req: *gserverz.HttpRequest, data: *anyopaque) gserverz.HttpResponse {
     const allocator = req.allocator;
     const ctx: *const custom = @ptrCast(@alignCast(data));
 
     const text = std.fmt.allocPrint(allocator, "ID: {d}", .{ctx.id}) catch {
-        return http_parser.internalError("Failed to format", allocator);
+        return gserverz.response.internalError("Failed to format", allocator);
     };
-    return http_parser.ok(text, allocator);
+    return gserverz.response.ok(text, allocator);
 }
 
-fn healthHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+fn healthHandler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
     _ = req;
-    return http_parser.ok("OK", std.heap.page_allocator);
+    return gserverz.response.ok("OK", std.heap.page_allocator);
 }
 
-fn helloHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+fn helloHandler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
     _ = req;
-    return http_parser.ok("Hello, HTTP!", std.heap.page_allocator);
+    return gserverz.response.ok("Hello, HTTP!", std.heap.page_allocator);
 }
 
-fn helloNameHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+fn helloNameHandler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
     const allocator = req.allocator;
 
     const name = req.params.get("name") orelse "unknown";
@@ -45,9 +43,9 @@ fn helloNameHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.Ht
     const mood = req.query.get("mood") orelse "neutral";
 
     const text = std.fmt.allocPrint(allocator, "Hello, {s}! (greeting: {s}, mood: {s})", .{ name, greeting, mood }) catch {
-        return http_parser.internalError("Failed to format", allocator);
+        return gserverz.response.internalError("Failed to format", allocator);
     };
-    return http_parser.ok(text, allocator);
+    return gserverz.response.ok(text, allocator);
 }
 
 const User = struct {
@@ -55,22 +53,22 @@ const User = struct {
     email: []const u8 = "",
 };
 
-fn createUserHandler(req: *http_parser.HttpRequest, _: *anyopaque) http_parser.HttpResponse {
+fn createUserHandler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
     const allocator = req.allocator;
 
     // Parse JSON body directly into a struct
     const user = std.json.parseFromSliceLeaky(User, allocator, req.body, .{}) catch {
-        return http_parser.badRequest("Invalid user JSON", allocator);
+        return gserverz.response.badRequest("Invalid user JSON", allocator);
     };
 
     const text = std.fmt.allocPrint(allocator, "Created user: {s} ({s})", .{ user.username, user.email }) catch {
-        return http_parser.internalError("Failed to format", allocator);
+        return gserverz.response.internalError("Failed to format", allocator);
     };
-    return http_parser.created(text, allocator);
+    return gserverz.response.created(text, allocator);
 }
 
 /// SSE streaming handler - sends events to client
-fn sseStreamHandler(req: *http_parser.HttpRequest, _: *anyopaque) void {
+fn sseStreamHandler(req: *gserverz.HttpRequest, _: *anyopaque) void {
     const messages = [_][]const u8{
         "Hello from SSE!",
         "This is event 2",
@@ -81,7 +79,7 @@ fn sseStreamHandler(req: *http_parser.HttpRequest, _: *anyopaque) void {
     for (messages, 0..) |msg, i| {
         const event = std.fmt.allocPrint(std.heap.page_allocator, "data: {s}\nid: {d}\n\n", .{ msg, i }) catch return;
         defer std.heap.page_allocator.free(event);
-        req.write_sse_event(event);
+        req.writeSSEEvent(event);
     }
 }
 
@@ -91,8 +89,8 @@ pub fn run(init: std.process.Init) !void {
     const allocator = arena_allocator.allocator();
     const io = init.io;
 
-    const address = try http_server.Address.init(29584);
-    const gs = try http_server.GinwaServer.init(allocator, io, address);
+    const address = try gserverz.Address.init(29584);
+    const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
 
     std.debug.print("HTTP Server listening on 127.0.0.1:29584...\n", .{});

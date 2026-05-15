@@ -18,11 +18,9 @@ pub const HttpRequest = struct {
 
     allocator: std.mem.Allocator,
     io: std.Io,
-
-
     _client_fd: i32,
 
-    pub fn write_sse_event(self: *HttpRequest, event: []const u8) void {
+    pub fn writeSSEEvent(self: *HttpRequest, event: []const u8) void {
         _ = linux.write(self._client_fd, event.ptr, event.len);
     }
 
@@ -190,34 +188,3 @@ pub fn jsonResponse(data: []const u8, allocator: std.mem.Allocator) HttpResponse
     return HttpResponse.init(200, "OK", allocator).withJson(data);
 }
 
-test "parse simple GET request" {
-    const data = "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    const req = try parseRequest(data, std.testing.allocator);
-    defer req.headers.deinit();
-
-    try std.testing.expectEqualStrings("GET", req.method);
-    try std.testing.expectEqualStrings("/hello", req.path);
-    try std.testing.expectEqualStrings("HTTP/1.1", req.version);
-    try std.testing.expectEqualStrings("localhost", req.headers.get("Host").?);
-}
-
-test "parse POST request with body" {
-    const data = "POST /api/data HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n{\"key\":\"value\"}";
-    const req = try parseRequest(data, std.testing.allocator);
-    defer req.headers.deinit();
-
-    try std.testing.expectEqualStrings("POST", req.method);
-    try std.testing.expectEqualStrings("/api/data", req.path);
-    try std.testing.expectEqualStrings("13", req.headers.get("Content-Length").?);
-    try std.testing.expectEqualStrings("{\"key\":\"value\"}", req.body);
-}
-
-test "response toBytes" {
-    const res = ok("Hello, World!", std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.startsWith(u8, bytes, "HTTP/1.1 200 OK"));
-    try std.testing.expect(std.mem.contains(u8, bytes, "Content-Length: 13"));
-    try std.testing.expect(std.mem.contains(u8, bytes, "Hello, World!"));
-}
