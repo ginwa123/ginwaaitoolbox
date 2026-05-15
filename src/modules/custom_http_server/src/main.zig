@@ -14,38 +14,37 @@ const custom = struct {
     id: u64,
 };
 
-// Handlers - receive request, context, return response
-fn indexHandler(req: *gserverz.HttpRequest, data: *anyopaque) gserverz.HttpResponse {
-    const allocator = req.allocator;
-    const ctx: *const custom = @ptrCast(@alignCast(data));
+// Handlers - (ctx, req, res, custom_data) -> !HttpResponse
+fn indexHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, data: *anyopaque) !gserverz.HttpResponse {
+    _ = req;
+    const custom_ctx: *const custom = @ptrCast(@alignCast(data));
 
-    const text = std.fmt.allocPrint(allocator, "ID: {d}", .{ctx.id}) catch {
-        return gserverz.response.internalError("Failed to format", allocator);
+    const text = std.fmt.allocPrint(ctx.allocator, "ID: {d}", .{custom_ctx.id}) catch {
+        return gserverz.response.internalError("Failed to format", ctx.allocator);
     };
-    return gserverz.response.ok(text, allocator);
+    return res.withBody(text);
 }
 
-fn healthHandler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
+fn healthHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     _ = req;
-    return gserverz.response.ok("OK", std.heap.page_allocator);
+    return res.withBody("OK");
 }
 
-fn helloHandler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
+fn helloHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     _ = req;
-    return gserverz.response.ok("Hello, HTTP!", std.heap.page_allocator);
+    return res.withBody("Hello, HTTP!");
 }
 
-fn helloNameHandler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
-    const allocator = req.allocator;
-
+fn helloNameHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     const name = req.params.get("name") orelse "unknown";
     const greeting = req.query.get("greeting") orelse "hello";
     const mood = req.query.get("mood") orelse "neutral";
 
-    const text = std.fmt.allocPrint(allocator, "Hello, {s}! (greeting: {s}, mood: {s})", .{ name, greeting, mood }) catch {
-        return gserverz.response.internalError("Failed to format", allocator);
+
+    const text = std.fmt.allocPrint(ctx.allocator, "Hello, {s}! (greeting: {s}, mood: {s})", .{ name, greeting, mood }) catch {
+        return gserverz.response.internalError("Failed to format", ctx.allocator);
     };
-    return gserverz.response.ok(text, allocator);
+    return res.withBody(text);
 }
 
 const User = struct {
@@ -53,22 +52,22 @@ const User = struct {
     email: []const u8 = "",
 };
 
-fn createUserHandler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
-    const allocator = req.allocator;
+fn createUserHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
     // Parse JSON body directly into a struct
     const user = std.json.parseFromSliceLeaky(User, allocator, req.body, .{}) catch {
         return gserverz.response.badRequest("Invalid user JSON", allocator);
     };
 
-    const text = std.fmt.allocPrint(allocator, "Created user: {s} ({s})", .{ user.username, user.email }) catch {
+    const json_text = std.fmt.allocPrint(allocator, "{{\"username\":\"{s}\",\"email\":\"{s}\"}}", .{ user.username, user.email }) catch {
         return gserverz.response.internalError("Failed to format", allocator);
     };
-    return gserverz.response.created(text, allocator);
+    return res.jsonResponse(allocator, .{ .status_code = 201, .data = json_text });
 }
 
-/// SSE streaming handler - sends events to client
-fn sseStreamHandler(req: *gserverz.HttpRequest, _: *anyopaque) void {
+/// SSE streaming handler
+fn sseStreamHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, _: *anyopaque) void {
     const messages = [_][]const u8{
         "Hello from SSE!",
         "This is event 2",

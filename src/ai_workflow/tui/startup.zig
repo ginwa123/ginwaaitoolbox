@@ -30,8 +30,8 @@ pub fn startup(
     allocator: std.mem.Allocator,
     io: std.Io,
     env: *std.process.Environ.Map,
-    sqlite_db: sqlite.SqliteBackend,
-    config: *const config_mod.LlmConfig,
+    sqlite_db: *sqlite.SqliteBackend,
+    config: *config_mod.LlmConfig,
     ctxTui: *ai_workflow.ContextIPCTui,
 ) !void {
     const logger = logger_mod.getGlobal().?;

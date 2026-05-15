@@ -4,6 +4,7 @@ pub const http_parser = @import("http_parser.zig");
 const router = @import("router.zig");
 pub const HttpRequest = http_parser.HttpRequest;
 pub const HttpResponse = http_parser.HttpResponse;
+pub const HttpContext = http_parser.HttpContext;
 pub const response = http_parser;
 
 pub const Address = struct {
@@ -126,15 +127,17 @@ pub const GinwaServer = struct {
                         defer req.headers.deinit();
 
                         // Try to match route (check for SSE first)
-                        if (gs.router.matchRoute(req.method, req.path, &req)) |result| {
+                        const http_ctx = http_parser.HttpContext{ .allocator = allocator, .io = gs.io };
+                        if (gs.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
                             switch (result) {
-                                .response => |res| {
-                                    const res_bytes = res.toBytes() catch {
+                                .handler => |h| {
+                                    const final_res = h.handler(h.ctx, req, h.res, h.custom_data) catch http_parser.internalError("Handler error", allocator);
+                                    const res_bytes = final_res.toBytes() catch {
                                         std.debug.print("Failed to build response\n", .{});
                                         _ = linux.close(fd);
                                         return;
                                     };
-                                    defer res.allocator.free(res_bytes);
+                                    defer final_res.allocator.free(res_bytes);
 
                                     _ = gs.sendToClient(fd, res_bytes) catch {
                                         std.debug.print("Failed to send response\n", .{});
@@ -150,7 +153,7 @@ pub const GinwaServer = struct {
                                         return;
                                     };
                                     // Call SSE handler for streaming
-                                    sse.handler(&req, sse.context);
+                                    sse.handler(sse.ctx, req, sse.custom_data);
                                     _ = linux.close(fd);
                                     return;
                                 },

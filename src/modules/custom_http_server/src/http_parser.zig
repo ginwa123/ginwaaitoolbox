@@ -1,6 +1,11 @@
 const std = @import("std");
 const linux = std.posix.system;
 
+pub const HttpContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+};
+
 /// HTTP Request structure parsed from raw HTTP data
 pub const HttpRequest = struct {
     method: []const u8,
@@ -15,11 +20,9 @@ pub const HttpRequest = struct {
     /// Query string params extracted from URL like ?foo=bar&baz=qux
     query: std.StringHashMap([]const u8),
 
-    allocator: std.mem.Allocator,
-    io: std.Io,
     _client_fd: i32,
 
-    pub fn writeSSEEvent(self: *HttpRequest, event: []const u8) void {
+    pub fn writeSSEEvent(self: *const HttpRequest, event: []const u8) void {
         _ = linux.write(self._client_fd, event.ptr, event.len);
     }
 };
@@ -88,10 +91,16 @@ pub const HttpResponse = struct {
 
         return buf.toOwnedSlice(self.allocator);
     }
+
+
+    pub fn jsonResponse(self: HttpResponse,allocator: std.mem.Allocator, jsonStruct: JsonStruct) HttpResponse {
+        _ = self;
+        return jsonResponseHelper(allocator, jsonStruct);
+    }
 };
 
 /// Parse an HTTP request from raw bytes
-pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, io: std.Io, client_fd: i32) !HttpRequest {
+pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, _: std.Io, client_fd: i32) !HttpRequest {
     const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse {
         return error.IncompleteRequest;
     };
@@ -155,8 +164,6 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, io: std.Io, 
         .raw = data,
         .params = params,
         .query = query,
-        .allocator = allocator,
-        .io = io,
         ._client_fd = client_fd,
     };
 }
@@ -182,12 +189,12 @@ pub fn internalError(msg: []const u8, allocator: std.mem.Allocator) HttpResponse
     return HttpResponse.init(500, "Internal Server Error", allocator).withBody(msg);
 }
 
-pub const JsonResponse = struct {
+pub const JsonStruct = struct {
     data: []const u8,
     status_code: u16,
 };
 
-pub fn jsonResponse(allocator: std.mem.Allocator, jsonStruct: JsonResponse) HttpResponse {
+pub fn jsonResponseHelper(allocator: std.mem.Allocator, jsonStruct: JsonStruct) HttpResponse {
     const status_text: []const u8 = switch (jsonStruct.status_code) {
         // 1xx Informational
         100 => "Continue",
