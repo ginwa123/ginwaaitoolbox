@@ -8,7 +8,7 @@ const http_response = root_mod.http_response;
 pub fn session_latest_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const cwd = req.query.get("cwd") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing cwd parameter" }) });
+        return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing cwd parameter" }) });
     };
 
     if (gserverz.global_server) |server| {
@@ -19,7 +19,7 @@ pub fn session_latest_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
             defer arena.deinit();
 
             const latest_session = session_helpers.getLatestSessionByDir(arena.allocator(), sqlite_db, cwd) catch {
-                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
+                return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
             };
 
             if (latest_session) |session| {
@@ -28,11 +28,11 @@ pub fn session_latest_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
                     arena.allocator().free(session.cwd);
                     arena.allocator().free(session.created_at);
                 }
-                return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"session_id\":\"{s}\",\"cwd\":\"{s}\",\"created_at\":\"{s}\",\"found\":true}}", .{ session.session_id, session.cwd, session.created_at }) });
+                return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"session_id\":\"{s}\",\"cwd\":\"{s}\",\"created_at\":\"{s}\",\"found\":true}}", .{ session.session_id, session.cwd, session.created_at }) });
             } else {
-                return res.jsonResponse(allocator, .{ .status_code = 200, .data = "{\"found\":false}" });
+                return res.jsonResponse( .{ .status_code = 200, .data = "{\"found\":false}" });
             }
         }
     }
-    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
+    return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

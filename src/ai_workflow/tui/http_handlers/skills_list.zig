@@ -23,5 +23,5 @@ pub fn skillsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
     // Convert to JSON using shared module
     const json_response = try list_skills_mod.toJson(allocator, data);
 
-    return res.jsonResponse(allocator, .{ .status_code = 200, .data = json_response });
+    return res.jsonResponse( .{ .status_code = 200, .data = json_response });
 }

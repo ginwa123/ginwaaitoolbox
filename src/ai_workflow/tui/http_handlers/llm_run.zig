@@ -21,14 +21,14 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
 
     const body = req.body() orelse "";
     if (body.len == 0) {
-        res.status = 400;
+        res.status_code = 400;
         res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Missing request body" });
         return;
     }
 
     // Parse JSON body
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
-        res.status = 400;
+        res.status_code = 400;
         res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON" });
         return;
     };
@@ -37,23 +37,23 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
     const root = parsed.value.object;
 
     const session_id = root.get("session_id") orelse {
-        res.status = 400;
+        res.status_code = 400;
         res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Missing session_id" });
         return;
     };
     if (session_id != .string) {
-        res.status = 400;
+        res.status_code = 400;
         res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "session_id must be a string" });
         return;
     }
 
     const message = root.get("message") orelse {
-        res.status = 400;
+        res.status_code = 400;
         res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Missing message" });
         return;
     };
     if (message != .string) {
-        res.status = 400;
+        res.status_code = 400;
         res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "message must be a string" });
         return;
     }
@@ -106,11 +106,11 @@ pub fn llmRunHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Reque
             }.run, .{workflow_args});
             thread.detach();
 
-            res.status = 202;
+            res.status_code = 202;
             res.body = try http_response.makeLlmRunResponse(alloc, .{ .status = "processing", .session_id = session_id.string });
             return;
         }
     }
-    res.status = 500;
+    res.status_code = 500;
     res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

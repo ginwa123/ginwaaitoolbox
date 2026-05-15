@@ -11,7 +11,7 @@ pub fn worker_status_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const allocator = ctx.allocator;
 
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
+        return res.jsonResponse( .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
     };
 
     // Get worker status from activity registry
@@ -42,10 +42,10 @@ pub fn worker_status_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             queue_count = @intCast(queue.items.len);
         }
     } else {
-        return res.jsonResponse(allocator, .{ .status_code = 500, .data = "{\"error\":\"Activity registry not available\"" });
+        return res.jsonResponse( .{ .status_code = 500, .data = "{\"error\":\"Activity registry not available\"" });
     }
 
-    return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
+    return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
         "{{\"id\":\"{s}\",\"status\":\"{s}\",\"is_running\":{},\"queue_count\":{},\"registered\":{}}}",
         .{ session_id, status, is_running, queue_count, is_registered }) });
 }

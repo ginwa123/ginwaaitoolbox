@@ -14,7 +14,7 @@ const http_response = root_mod.http_response;
 pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
+        return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
     // Send initial acknowledgment via SSE
@@ -62,7 +62,7 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             // Get session messages directly for compaction
             const db_messages = llm_history.getMessages(allocator, sqlite_db, session_id) catch |err| {
                 std.debug.print("[COMPACTION] getMessages failed: {}\n", .{err});
-                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"getMessages failed\"}}", .{}) });
+                return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"getMessages failed\"}}", .{}) });
             };
 
             // Build initial messages from DB
@@ -75,12 +75,12 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 
             const initialMessages = buildMessages(allocator, ctxTui.io, sqlite_db, cwd, session_id, db_messages, merged_tools) catch |err| {
                 std.debug.print("[COMPACTION] buildMessages failed: {}\n", .{err});
-                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"buildMessages failed\"}}", .{}) });
+                return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"buildMessages failed\"}}", .{}) });
             };
 
             messagesLists.appendSlice(allocator, initialMessages) catch |err| {
                 std.debug.print("[COMPACTION] appendSlice failed: {}\n", .{err});
-                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"appendSlice failed\"}}", .{}) });
+                return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"appendSlice failed\"}}", .{}) });
             };
 
             // Call CompactionAgent
@@ -88,16 +88,16 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             if (compacted_xml) |xml| {
                 workflow.compactMessageInMemory(allocator, &messagesLists, xml, session_id, ctxTui.llm_config.model, cwd) catch {
                     std.debug.print("[COMPACTION] compactMessageInMemory failed\n", .{});
-                    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"compactMessageInMemory failed\"}}", .{}) });
+                    return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"compactMessageInMemory failed\"}}", .{}) });
                 };
             } else {
                 std.debug.print("[COMPACTION] callCompactAgent returned null\n", .{});
-                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"CompactionAgent failed\"}}", .{}) });
+                return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"CompactionAgent failed\"}}", .{}) });
             }
 
             std.debug.print("[COMPACTION] Manual compaction completed for session {s}\n", .{session_id});
-            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"message\":\"Compaction completed\"}}", .{}) });
+            return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"message\":\"Compaction completed\"}}", .{}) });
         }
     }
-    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
+    return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

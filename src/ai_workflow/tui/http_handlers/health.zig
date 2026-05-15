@@ -9,5 +9,5 @@ pub fn healthHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
     _ = req;
     const ts = std.Io.Clock.now(.real, ctx.io);
     const timestamp: i64 = ts.toSeconds();
-    return res.jsonResponse(allocator, .{ .status_code = 200, .data = try http_response.makeHealthResponse(allocator, .{ .status = "ok", .timestamp = timestamp }) });
+    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeHealthResponse(allocator, .{ .status = "ok", .timestamp = timestamp }) });
 }

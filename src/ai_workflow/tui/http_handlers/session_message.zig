@@ -9,7 +9,7 @@ const llm_history = ai_mod.llm_history;
 pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
+        return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
     const limit_str = req.query.get("limit") orelse "100";
@@ -46,7 +46,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
     const sqlite_db = di.db;
 
     const msg_response = llm_history.getSessionMessagesSorted(allocator, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
-        return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
+        return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
     };
 
     // Convert llm_history.SessionMessageResponse to http_response.SessionMessagesResponse
@@ -75,6 +75,6 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
         .max_capacity_total_tokens = msg_response.max_capacity_total_tokens,
     };
 
-    return res.jsonResponse(allocator, .{ .status_code = 200, .data = try http_response.makeSessionMessagesResponse(allocator, http_resp) });
+    return res.jsonResponse( .{ .status_code = 200, .data = try http_response.makeSessionMessagesResponse(allocator, http_resp) });
 }
 

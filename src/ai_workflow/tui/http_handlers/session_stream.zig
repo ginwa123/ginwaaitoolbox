@@ -164,11 +164,11 @@ pub fn sessionStreamHandler(_: *http_server.HttpServer.ServerHandler, req: *http
 
             try res.startEventStream(ctx_stream, sessionSseStreamHandler);
         } else {
-            res.status = 500;
+            res.status_code = 500;
             res.body = "Server not initialized";
         }
     } else {
-        res.status = 500;
+        res.status_code = 500;
         res.body = "Server not available";
     }
 }

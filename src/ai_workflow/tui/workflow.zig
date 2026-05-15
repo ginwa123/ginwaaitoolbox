@@ -69,6 +69,408 @@ pub const StreamingContext = struct {
     chunk_index: usize = 0,
 };
 
+pub const CallbackAiWorkerFlow = struct {
+    pub fn callback(data: RunParams) void {
+        runAgenticMultiStepnew(data);
+    }
+};
+
+pub fn runAgenticMultiStepnew(params: RunParams) !void {
+    const db = params.ctxTui.db;
+    const logger = params.ctxTui.logger;
+    const active_loops = params.ctxTui.active_loops;
+    const io = params.ctxTui.io;
+    const config = params.ctxTui.llm_config;
+    const environment = params.ctxTui.environment;
+
+    var is_have_queue_message = false;
+
+    // Ensure cleanup happens even on error - remove from worker table
+    defer {
+        is_have_queue_message = llm_history.hasQueuedMessages(db, params.session_id);
+        if (is_have_queue_message == false) {
+            llm_history.markSessionIdle(params.parent_allocator, db, params.session_id) catch |err| {
+                logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
+            };
+        }
+    }
+
+    const initial_agent_state = try get_current_agent_by_session_id(
+        params.parent_allocator,
+        db,
+        params.session_id,
+    );
+    const initial_agent = initial_agent_state.agent;
+
+    // Check if session is already running (exists in worker table)
+    if (llm_history.isSessionRunning(db, params.session_id) and active_loops.contains(io, params.session_id)) {
+        // Session is already running, queue the message
+        llm_history.queueMessage(params.parent_allocator, db, params.session_id, params.message) catch {
+            logger.warnFmt("Failed to queue message for session {s}", .{params.session_id});
+        };
+        logger.debugFmt("WORKFLOW: queued message for session {s}", .{params.session_id});
+        is_have_queue_message = true;
+        return;
+    }
+    defer active_loops.remove(io, params.session_id);
+
+    // Register in worker table (upsertWorker already does this)
+    llm_history.upsertWorker(params.parent_allocator, db, params.session_id, params.session_id, params.cwd) catch {
+        logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id});
+    };
+
+    // Queue the initial message
+    llm_history.queueMessage(params.parent_allocator, db, params.session_id, params.message) catch {
+        logger.warnFmt("Failed to queue initial message for session {s}", .{params.session_id});
+    };
+
+    var retryCount: usize = 0;
+    var current_max_tokens: usize = 8000;
+    var loopCounter: u32 = 0;
+    var is_first_iteration: bool = true;
+
+    // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
+    const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, io, config.mcpServers orelse .null) catch |err| blk: {
+        logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
+        break :blk null;
+    }) orelse &[_]tool_models.AgentTool{};
+    // Note: mcp_tools_fetched memory is managed by allocator
+
+    // Filter and merge tools based on allowed_tools setting
+    const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools, params.is_sub_agent);
+
+    // Debug: check merged_tools
+    std.debug.print("DEBUG_MERGE: merged_tools count={d}\n", .{merged_tools.len});
+
+    // Handle body message - add as initial user message if provided
+    if (params.body.len > 0) {
+        llm_history.queueMessage(params.parent_allocator, db, params.session_id, params.body) catch {
+            logger.warnFmt("Failed to queue body message for session {s}", .{params.session_id});
+        };
+    }
+
+    while (true) {
+        _ = active_loops.tryInsert(io, params.session_id);
+        var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(params.parent_allocator);
+        defer arenaAllocatorWhileLoop.deinit();
+        const allocator = arenaAllocatorWhileLoop.allocator();
+
+        // Check cancellation using DB
+        if (llm_history.isSessionCancelled(db, params.session_id)) {
+            logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
+            break;
+        }
+
+        // Get queued messages from DB
+        var queued_messages = try llm_history.getQueueMessages(allocator, db, params.session_id);
+        if (queued_messages) |*messages| {
+            for (messages.items) |msg| {
+                _ = try llm_history.saveMessage(allocator, io, db, .{
+                    .session_id = params.session_id,
+                    .model = config.model,
+                    .cwd = params.cwd,
+                    .content = msg,
+                    .reasoning_content = null,
+                    .role = agent.Role.user.to_str(),
+                    .finish_reason = "null",
+                    .tool_calls = null,
+                    .tool_call_id = null,
+                    .agent_name = initial_agent,
+                    .loop_index = 0,
+                    .temperature = initial_agent_state.temperature,
+                    .is_thinking = initial_agent_state.is_thinking,
+                    .prompt_tokens = 0,
+                    .completion_tokens = 0,
+                    .total_tokens = 0,
+                    .parent_id = params.parent_session_id,
+                    .parent_session_id = params.parent_session_id,
+                    .is_input = true,
+                    .is_output = false,
+                });
+
+                onEventSendLLMHistory(allocator, .{
+                    .session_id = params.session_id,
+                    .model = config.model,
+                    .cwd = params.cwd,
+                    .content = msg,
+                    .reasoning_content = null,
+                    .role = agent.Role.user.to_str(),
+                    .finish_reason = "null",
+                    .tool_calls = null,
+                    .tool_call_id = null,
+                    .agent_name = initial_agent,
+                    .loop_index = 0,
+                    .temperature = initial_agent_state.temperature,
+                    .is_thinking = initial_agent_state.is_thinking,
+                    .parent_id = params.parent_session_id,
+                    .parent_session_id = params.parent_session_id,
+                    .is_input = true,
+                    .is_output = false,
+                }) catch {};
+
+                _ = try llm_history.deleteQueuedMessage(allocator, db, params.session_id, msg);
+            }
+        }
+
+        // Update worker activity in DB to show we're actively processing
+        llm_history.updateWorkerActivity(allocator, db, params.session_id) catch {};
+
+        loopCounter += 1;
+        if (retryCount > 10) return error.TooManyRetries;
+
+        // Fetch current agent fresh from DB each iteration
+        const currentAgentState = try get_current_agent_by_session_id(
+            allocator,
+            db,
+            params.session_id,
+        );
+        const current_agent = currentAgentState.agent;
+        var agent_temperature = currentAgentState.temperature;
+        var isThinking = currentAgentState.is_thinking;
+
+        var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
+
+        const db_messages = try getMessages(allocator, db, params.session_id);
+        defer {
+            for (db_messages) |*msg| msg.deinit(allocator);
+            allocator.free(db_messages);
+        }
+        const total_tokens = blk: {
+            var max_token: u32 = 0;
+            for (db_messages) |msg| {
+                if (msg.total_tokens > max_token) {
+                    max_token = msg.total_tokens;
+                }
+            }
+            break :blk max_token;
+        };
+        const initialMessages = try buildMessages(allocator, io, db, params.cwd, params.session_id, db_messages, merged_tools);
+
+        try messagesLists.appendSlice(allocator, initialMessages);
+
+        logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
+        // if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(config.model))) {
+        //     logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{});
+        //     if (self.callCompactAgent(messagesLists.items, allocator, config.api_key, config.model, config.base_url, params.cwd)) |compacted_xml| {
+        //         try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, config.model, params.cwd);
+        //     }
+        // }
+
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, &messagesLists, agent_temperature, current_max_tokens, isThinking, config.api_key, config.model, config.base_url, params.session_id, merged_tools) catch |err| {
+            if (err == error.Cancelled) {
+                logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{params.session_id});
+                break;
+            }
+            retryCount += 1;
+            logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)});
+            continue;
+        };
+
+        retryCount = 0;
+
+        // const session_info = session_table.getSession(allocator, db, params.session_id) catch |err| {
+        //     logger.errFmt("Error getting session: {s}", .{@errorName(err)});
+        //     break;
+        // };
+
+        // Generate session name from first user message if this is the first response
+        // if (session_info) |session| {
+        //     if (is_first_iteration and std.mem.eql(u8, session.name, "New Session")) {
+        //         self.generateSessionName(db_messages, allocator, config.api_key, config.model, config.base_url, params.session_id);
+        //     }
+        // }
+
+        // Mark first iteration as complete after generating session name
+        if (is_first_iteration) {
+            is_first_iteration = false;
+        }
+
+        if (res_dynamic_agent.finish_reason) |finish_reason| {
+            if (finish_reason == .stop) {
+                _ = try llm_history.saveMessage(allocator, io, db, .{
+                    .session_id = params.session_id,
+                    .model = config.model,
+                    .cwd = params.cwd,
+                    .content = res_dynamic_agent.content,
+                    .reasoning_content = res_dynamic_agent.reasoning_content,
+                    .role = agent.Role.assistant.to_str(),
+                    .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
+                    .tool_calls = null,
+                    .tool_call_id = null,
+                    .agent_name = current_agent,
+                    .loop_index = loopCounter,
+                    .temperature = agent_temperature,
+                    .is_thinking = isThinking,
+                    .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+                    .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+                    .total_tokens = res_dynamic_agent.usage.total_tokens,
+                    .parent_id = params.parent_session_id,
+                    .parent_session_id = params.parent_session_id,
+                });
+
+                // Send SSE event directly with the agent's response content
+                // Don't use getLatestMessage as it might return wrong message if timestamps collide
+                _ = try onEventSendLLMHistory(allocator, .{
+                    .session_id = params.session_id,
+                    .model = config.model,
+                    .cwd = params.cwd,
+                    .content = res_dynamic_agent.content,
+                    .reasoning_content = res_dynamic_agent.reasoning_content,
+                    .role = agent.Role.assistant.to_str(),
+                    .finish_reason = res_dynamic_agent.finish_reason.?.to_str(),
+                    .tool_calls = null,
+                    .tool_call_id = null,
+                    .tool_name = null,
+                    .agent_name = current_agent,
+                    .loop_index = loopCounter,
+                    .temperature = agent_temperature,
+                    .is_thinking = isThinking,
+                    .is_input = false,
+                    .is_output = true,
+                    .parent_session_id = params.parent_session_id,
+                    .parent_id = params.parent_session_id,
+                    .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
+                });
+
+                const isHaveQueueMessage = llm_history.hasQueuedMessages(db, params.session_id);
+                if (isHaveQueueMessage) {
+                    continue;
+                }
+
+                break;
+            } else if (finish_reason == .length) {
+                current_max_tokens += 4096;
+                logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
+                continue;
+            } else if (finish_reason == .tool_calls) {
+                std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
+                try handle_tool(allocator, io, db, logger, params.session_id, params.parent_session_id, config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+            } else if (finish_reason == .assistant) {
+                if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
+                    try handle_tool(allocator, io, db, logger, params.session_id, params.parent_session_id, config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                } else {
+                    // Treat as normal completion
+                    _ = try llm_history.saveMessage(allocator, io, db, .{
+                        .session_id = params.session_id,
+                        .model = config.model,
+                        .cwd = params.cwd,
+                        .content = res_dynamic_agent.content,
+                        .reasoning_content = res_dynamic_agent.reasoning_content,
+                        .role = agent.Role.assistant.to_str(),
+                        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
+                        .tool_calls = null,
+                        .tool_call_id = null,
+                        .agent_name = current_agent,
+                        .loop_index = loopCounter,
+                        .temperature = agent_temperature,
+                        .is_thinking = isThinking,
+                        .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+                        .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+                        .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
+                        .parent_id = params.parent_session_id,
+                        .parent_session_id = params.parent_session_id,
+                    });
+
+                    // Send SSE event directly with the agent's response content
+                    // Don't use getLatestMessage as it might return wrong message if timestamps collide
+                    _ = try onEventSendLLMHistory(allocator, .{
+                        .session_id = params.session_id,
+                        .model = config.model,
+                        .cwd = params.cwd,
+                        .content = res_dynamic_agent.content,
+                        .reasoning_content = res_dynamic_agent.reasoning_content,
+                        .role = "assistant",
+                        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
+                        .tool_calls = null,
+                        .tool_call_id = null,
+                        .tool_name = null,
+                        .agent_name = current_agent,
+                        .loop_index = loopCounter,
+                        .temperature = agent_temperature,
+                        .is_thinking = isThinking,
+                        .is_input = false,
+                        .is_output = true,
+                        .parent_session_id = params.parent_session_id,
+                        .parent_id = params.parent_session_id,
+                        .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
+                    });
+
+                    const isHaveQueueMessage = llm_history.hasQueuedMessages(db, params.session_id);
+                    if (isHaveQueueMessage) {
+                        continue;
+                    }
+
+                    break;
+                }
+            } else {
+                retryCount += 1;
+                logger.errFmt("Error calling agent: maybe streaming failed", .{});
+                onEventSendLLMHistory(allocator, .{
+                    .session_id = params.session_id,
+                    .model = config.model,
+                    .cwd = params.cwd,
+                    .content = null,
+                    .reasoning_content = null,
+                    .role = null,
+                    .finish_reason = "stop",
+                    .tool_calls = null,
+                    .tool_call_id = null,
+                    .tool_name = null,
+                    .agent_name = current_agent,
+                    .loop_index = loopCounter,
+                    .temperature = agent_temperature,
+                    .is_thinking = isThinking,
+                    .is_input = false,
+                    .is_output = false,
+                    .parent_session_id = params.parent_session_id,
+                    .parent_id = params.parent_session_id,
+                }) catch {};
+                break;
+            }
+
+            retryCount = 0;
+        }
+
+        // Log if finish_reason is null
+        if (res_dynamic_agent.finish_reason == null) {
+            logger.warnFmt("WORKFLOW: finish_reason is NULL!", .{});
+        }
+    }
+
+    logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{params.session_id});
+}
+
+fn callDynamicAgentNew(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    messages_list: *std.ArrayList(agent.AgentMessage),
+    agent_temperature: f32,
+    current_max_tokens: usize,
+    isThinking: bool,
+    api_key: []const u8,
+    model: []const u8,
+    base_url: []const u8,
+    session_id: []const u8,
+    tools: []const tool_models.AgentTool,
+) !agent.CallResponse {
+    var dynamic_agent = try agent.Agent.init(allocator, io);
+    dynamic_agent.apiKey = api_key;
+    dynamic_agent.model = model;
+    dynamic_agent.baseUrl = base_url;
+    const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+    dynamic_agent.thinkingEnabled = isThinking;
+    dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
+
+    var stream_ctx = StreamingContext{
+        .allocator = allocator,
+        .session_id = session_id,
+        .chunk_index = 0,
+    };
+    const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
+
+    return res_dynamic_agent;
+}
+
 /// Callback for streaming chunks - sends each chunk to the client via SSE
 pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     if (ctx == null) return;
@@ -176,6 +578,8 @@ pub fn filterAndMergeTools(
 }
 
 pub const RunParams = struct {
+    ctxTui: *m.ContextIPCTui,
+
     parent_allocator: std.mem.Allocator,
     parent_session_id: []const u8,
     session_id: []const u8,
@@ -187,23 +591,15 @@ pub const RunParams = struct {
 };
 
 pub const TUIWorkflow = struct {
-    // allocator: std.mem.Allocator,
     io: std.Io,
     db: *sqlite.SqliteBackend,
-    config: *const config_mod.LlmConfig,
+    config: *config_mod.LlmConfig,
     logger: *logger_mod.Logger,
     environment: ?*const std.process.Environ.Map,
     active_loops: *ActiveLoops,
 
-    pub fn init(io: std.Io, db: *sqlite.SqliteBackend, config: *const config_mod.LlmConfig, logger: *logger_mod.Logger, environment: ?*const std.process.Environ.Map, active_loops: *ActiveLoops) TUIWorkflow {
-        return .{
-            .io = io,
-            .db = db,
-            .config = config,
-            .logger = logger,
-            .environment = environment,
-            .active_loops = active_loops,
-        };
+    pub fn init(tui_workflow: TUIWorkflow) TUIWorkflow {
+        return tui_workflow;
     }
 
     pub fn runAgenticMultiStep(self: *TUIWorkflow, params: RunParams) !void {

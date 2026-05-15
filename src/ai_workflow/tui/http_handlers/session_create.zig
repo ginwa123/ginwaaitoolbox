@@ -84,6 +84,7 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     const io = ctx.io;
 
     const di = try nalarcore.ai_mod.models.getSingleton();
+    const event_bus = di.event_bus;
 
     // Generate or parse session ID
     var session_id: []u8 = undefined;
@@ -95,7 +96,7 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 
     // Parse JSON body for optional parameters
     const parsed = std.json.parseFromSliceLeaky(Session, allocator, req.body, .{}) catch {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }) });
     };
 
     // Extract session_id if provided (empty string means not provided for non-optional fields)
@@ -133,24 +134,27 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 
     // Spawn workflow in detached thread (fire-and-forget)
     // First allocate all strings, then create struct (to handle partial failures)
-    const session_id_alloc = try allocator.dupe(u8, session_id);
-    errdefer allocator.free(session_id_alloc);
-    const session_name_alloc = try allocator.dupe(u8, session_name);
-    errdefer allocator.free(session_name_alloc);
-    const queue_message_alloc = if (queue_message.len > 0) try allocator.dupe(u8, queue_message) else try allocator.dupe(u8, "");
-    errdefer allocator.free(queue_message_alloc);
-    const cwd_session_alloc = if (cwd_session.len > 0) try allocator.dupe(u8, cwd_session) else try allocator.dupe(u8, "");
-    errdefer allocator.free(cwd_session_alloc);
-    const body_message_alloc = try allocator.dupe(u8, body_message);
-    errdefer allocator.free(body_message_alloc);
-    const allowed_tools_alloc = try allocator.dupe(u8, allowed_tools);
-    errdefer allocator.free(allowed_tools_alloc);
 
-    const thread_args = try allocator.create(SessionCreateThreadArgs);
-    errdefer allocator.destroy(thread_args);
+    const global_allocator = di.allocator;
+
+    const session_id_alloc = try global_allocator.dupe(u8, session_id);
+    errdefer global_allocator.free(session_id_alloc);
+    const session_name_alloc = try global_allocator.dupe(u8, session_name);
+    errdefer global_allocator.free(session_name_alloc);
+    const queue_message_alloc = if (queue_message.len > 0) try global_allocator.dupe(u8, queue_message) else try global_allocator.dupe(u8, "");
+    errdefer global_allocator.free(queue_message_alloc);
+    const cwd_session_alloc = if (cwd_session.len > 0) try global_allocator.dupe(u8, cwd_session) else try global_allocator.dupe(u8, "");
+    errdefer global_allocator.free(cwd_session_alloc);
+    const body_message_alloc = try global_allocator.dupe(u8, body_message);
+    errdefer global_allocator.free(body_message_alloc);
+    const allowed_tools_alloc = try global_allocator.dupe(u8, allowed_tools);
+    errdefer global_allocator.free(allowed_tools_alloc);
+
+    const thread_args = try global_allocator.create(SessionCreateThreadArgs);
+    errdefer global_allocator.destroy(thread_args);
 
     thread_args.* = .{
-        .allocator = allocator,
+        .allocator = global_allocator,
         .ctxTui = di,
         .session_id = session_id_alloc,
         .session_name = session_name_alloc,
@@ -200,38 +204,40 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
                 };
             }
 
+            event_bus.emit(ai_workflow.ai_workflow.RunParams, "ai_worker_flow", ai_workflow.ai_workflow.RunParams{ .ctxTui = args.ctxTui, .session_id = args.session_id, .message = args.queue_message, .cwd = effective_cwd, .body = args.body_message, .allowed_tools = args.allowed_tools, .is_sub_agent = false }) catch {};
+
             // Broadcast session_created event to all connected session stream clients
             // broadcastSessionCreated(thread_alloc, args.session_id, args.session_name);
 
             // Create workflow args
-            const workflow_args = thread_alloc.create(ai_workflow.models.WorkflowArgs) catch return;
-            workflow_args.* = .{
-                .allocator = thread_alloc,
-                .io = args.ctxTui.io,
-                .sqlite_db = sqlite_db,
-                .logger = args.ctxTui.logger,
-                .llm_config = args.ctxTui.llm_config,
-                .session_id = args.session_id,
-                .message = args.queue_message,
-                .cwd = effective_cwd,
-                .body = args.body_message,
-                .allowed_tools = args.allowed_tools,
-                .environment = args.environment,
-                .active_loops = args.ctxTui.active_loops,
-            };
-
-            var workflow = ai_workflow.ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger, workflow_args.environment, workflow_args.active_loops);
-            workflow.runAgenticMultiStep(.{
-                .parent_allocator = thread_alloc,
-                .parent_session_id = workflow_args.session_id,
-                .session_id = workflow_args.session_id,
-                .message = workflow_args.message,
-                .cwd = workflow_args.cwd,
-                .body = workflow_args.body,
-                .allowed_tools = workflow_args.allowed_tools,
-            }) catch |err| {
-                workflow_args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)});
-            };
+            // const workflow_args = thread_alloc.create(ai_workflow.models.WorkflowArgs) catch return;
+            // workflow_args.* = .{
+            //     .allocator = thread_alloc,
+            //     .io = args.ctxTui.io,
+            //     .sqlite_db = sqlite_db,
+            //     .logger = args.ctxTui.logger,
+            //     .llm_config = args.ctxTui.llm_config,
+            //     .session_id = args.session_id,
+            //     .message = args.queue_message,
+            //     .cwd = effective_cwd,
+            //     .body = args.body_message,
+            //     .allowed_tools = args.allowed_tools,
+            //     .environment = args.environment,
+            //     .active_loops = args.ctxTui.active_loops,
+            // };
+            //
+            // var workflow = ai_workflow.ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger, workflow_args.environment, workflow_args.active_loops);
+            // workflow.runAgenticMultiStep(.{
+            //     .parent_allocator = thread_alloc,
+            //     .parent_session_id = workflow_args.session_id,
+            //     .session_id = workflow_args.session_id,
+            //     .message = workflow_args.message,
+            //     .cwd = workflow_args.cwd,
+            //     .body = workflow_args.body,
+            //     .allowed_tools = workflow_args.allowed_tools,
+            // }) catch |err| {
+            //     workflow_args.logger.errFmt("workflow.runAgenticMultiStep failed: {s}", .{@errorName(err)});
+            // };
 
             // Clean up thread_args allocations (allocated before thread started)
             const server_alloc = args.allocator;
@@ -246,7 +252,7 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     }.run, .{thread_args});
     thread.detach();
 
-    const data = try http_response.makeSessionCreateResponse(allocator, .{ .id = session_id, .name = session_name, .status = "send" });
+    const data = try http_response.makeSessionCreateResponse(global_allocator, .{ .id = session_id, .name = session_name, .status = "send" });
 
-    return res.jsonResponse(allocator, .{ .status_code = 201, .data = data });
+    return res.jsonResponse(.{ .status_code = 201, .data = data });
 }

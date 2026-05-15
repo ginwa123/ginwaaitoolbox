@@ -1,35 +1,34 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const gserverz = root_mod.gserverz;
-const nalarcore = root_mod;
-const ai_workflow = nalarcore.ai_workflow;
-const http_response = nalarcore.http_response;
+const http_response = @import("http_response.zig");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const process = nalarcore.helpers.process;
+const getCurrentProcessId = process.getCurrentProcessId;
+const ai_mod = nalarcore.ai_mod;
 const sqlite = nalarcore.sqlite;
 
-const process = nalarcore.helpers.process;
-
-/// Cross-platform process ID getter (using helper)
-const getCurrentProcessId = process.getCurrentProcessId;
-
 /// POST /api/workspaces
-pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
+
+    const di = try nalarcore.ai_mod.models.getSingleton();
+    const sqlite_db = di.db;
 
     const body = req.body;
     if (body.len == 0) {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name required" }) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name required" }) });
     }
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
 
     const root = parsed.value.object;
     const name = root.get("name") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name required" }) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name required" }) });
     };
     if (name != .string) {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name must be a string" }) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name must be a string" }) });
     }
 
     // Generate workspace ID
@@ -46,26 +45,19 @@ pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
     }
     const workspace_id = try std.fmt.allocPrint(allocator, "ws_{d}_{s}", .{ ts_nanos, &hex_buf });
 
-    if (gserverz.global_server) |server| {
-        if (server.ctx) |server_ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
-            const sqlite_db = ctxTui.db;
+    createWorkspace(allocator, sqlite_db, workspace_id, name.string) catch {
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create workspace" }) });
+    };
 
-            createWorkspace(allocator, sqlite_db, workspace_id, name.string) catch {
-                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create workspace" }) });
-            };
-
-            return res.jsonResponse(allocator, .{ .status_code = 201, .data = try http_response.makeWorkspaceResponse(allocator, .{
-                .id = workspace_id,
-                .name = name.string,
-                .created_at = null,
-                .updated_at = null,
-            }) });
-        }
-    }
-    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
+    return res.jsonResponse(.{ .status_code = 201, .data = try http_response.makeWorkspaceResponse(allocator, .{
+        .id = workspace_id,
+        .name = name.string,
+        .created_at = null,
+        .updated_at = null,
+    }) });
 }
 
 fn createWorkspace(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, workspace_id: []const u8, name: []const u8) !void {
     _ = try db.exec(allocator, "INSERT INTO workspaces (id, name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))", &.{ workspace_id, name });
 }
+

@@ -39,7 +39,7 @@ pub fn session_list_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
 
     // Use unified getSessionListWithCursor with cwd support and sort params
     const result = llm_history.getSessionListWithCursor(alloc, sqlite_db, null, null, cwd, limit_val, cursor, sort_field, sort_direction) catch {
-        return res.jsonResponse(alloc, .{ .status_code = 500, .data = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" }) });
+        return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" }) });
     };
     defer {
         for (result.sessions) |s| s.deinit(alloc);
@@ -57,5 +57,5 @@ pub fn session_list_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     // Build JSON response with cursor pagination
     const response = try llm_history.buildSessionListJson(alloc, result.sessions, result.total, has_more, next_cursor);
 
-    return res.jsonResponse(alloc, .{ .status_code = 200, .data = response });
+    return res.jsonResponse( .{ .status_code = 200, .data = response });
 }

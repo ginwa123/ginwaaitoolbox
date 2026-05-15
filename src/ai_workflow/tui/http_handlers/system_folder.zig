@@ -1,9 +1,9 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const gserverz = root_mod.gserverz;
-const http_response = root_mod.http_response;
-const SystemFolder = root_mod.system_folder.SystemFolder;
-const SystemFolderError = root_mod.system_folder.SystemFolderError;
+const http_response = @import("http_response.zig");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const SystemFolder = nalarcore.system_folder.SystemFolder;
+const SystemFolderError = nalarcore.system_folder.SystemFolderError;
 
 /// Escape special characters for JSON string values
 fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
@@ -27,33 +27,34 @@ fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
 /// GET /api/system/folder
 /// GET /api/system/folder?path=/some/relative/path
 /// GET /api/system/folder?path=/some/relative/path&action=list
-pub fn system_folder_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+pub fn system_folder_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
     const path_param = req.query.get("path");
     const action = req.query.get("action");
     const do_list = std.mem.eql(u8, action orelse "", "list");
 
-    // Get environment from server
-    const environment = if (gserverz.global_server) |server| server.environment else null;
+    const di = try nalarcore.ai_mod.models.getSingleton();
+    const environment = di.environment;
+
 
     const home = SystemFolder.getHomeDirectory(allocator, environment) catch |err| {
-        return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeSystemFolderErrorResponse(allocator, "Failed to get home directory", err) });
+        return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeSystemFolderErrorResponse(allocator, "Failed to get home directory", err) });
     };
 
     const target_path: []u8 = if (path_param) |p|
         SystemFolder.resolvePath(allocator, p, environment) catch |err| {
-            return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeSystemFolderErrorResponse(allocator, "Invalid path", err) });
+            return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeSystemFolderErrorResponse(allocator, "Invalid path", err) });
         }
     else blk: {
         const dup = allocator.dupe(u8, home) catch {
-            return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
+            return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
         };
         break :blk dup;
     };
 
     const relative = SystemFolder.getRelativePathFromHome(allocator, target_path, home) catch |err| {
-        return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeSystemFolderErrorResponse(allocator, "Failed to compute relative path", err) });
+        return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeSystemFolderErrorResponse(allocator, "Failed to compute relative path", err) });
     };
 
     const parent_opt = SystemFolder.getParentPath(allocator, target_path, environment) catch null;
@@ -70,7 +71,7 @@ pub fn system_folder_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                 SystemFolderError.NotDirectory => "Not a directory",
                 else => @errorName(err),
             };
-            return res.jsonResponse(allocator, .{ .status_code = 403, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = err_msg }) });
+            return res.jsonResponse( .{ .status_code = 403, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = err_msg }) });
         };
         defer {
             for (entries) |entry| {
@@ -102,22 +103,22 @@ pub fn system_folder_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         }
 
         if (parent_relative) |pr| {
-            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
+            return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
                 "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"parent\":\"{s}\",\"entries\":[{s}]}}",
                 .{ relative, target_path, home, pr, entries_json.items }) });
         } else {
-            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
+            return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
                 "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"entries\":[{s}]}}",
                 .{ relative, target_path, home, entries_json.items }) });
         }
     }
 
     if (parent_relative) |pr| {
-        return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
+        return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
             "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"parent\":\"{s}\"}}",
             .{ relative, target_path, home, pr }) });
     } else {
-        return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
+        return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
             "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\"}}",
             .{ relative, target_path, home }) });
     }

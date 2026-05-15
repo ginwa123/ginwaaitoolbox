@@ -111,7 +111,7 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
 pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
+        return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
     const log = logger.getGlobal();
@@ -122,8 +122,8 @@ pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         // For now, just return a JSON response indicating SSE is not fully implemented
         // The custom HTTP server doesn't support streaming responses like httpz does
         _ = server;
-        return res.jsonResponse(allocator, .{ .status_code = 501, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "SSE streaming not implemented in custom HTTP server" }) });
+        return res.jsonResponse( .{ .status_code = 501, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "SSE streaming not implemented in custom HTTP server" }) });
     } else {
-        return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not available" }) });
+        return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not available" }) });
     }
 }

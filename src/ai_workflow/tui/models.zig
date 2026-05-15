@@ -1,7 +1,8 @@
 const sqlite = @import("nalarcore").sqlite;
 const config = @import("nalarcore").config;
 const logger = @import("nalarcore").logger;
-const nalar_mod = @import("nalarcore");
+const nalarcore = @import("nalarcore");
+const event_bus = nalarcore.event_bus;
 const std = @import("std");
 pub const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 
@@ -23,6 +24,7 @@ pub const ContextIPCTui = struct {
     logger: *logger.Logger,
     environment: ?*const std.process.Environ.Map,
     active_loops: *ActiveLoops,
+    event_bus: *event_bus.EventBus,
 };
 
 pub const TUIHistory = struct {

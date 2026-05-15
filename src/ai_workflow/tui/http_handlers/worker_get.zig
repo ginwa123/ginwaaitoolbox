@@ -10,7 +10,7 @@ pub fn worker_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     const allocator = ctx.allocator;
 
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
+        return res.jsonResponse( .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
     };
 
     if (gserverz.global_server) |server| {
@@ -19,7 +19,7 @@ pub fn worker_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
             const sqlite_db = ctxTui.db;
 
             const worker = llm_history.getWorkerBySessionId(allocator, sqlite_db, session_id) catch {
-                return res.jsonResponse(allocator, .{ .status_code = 500, .data = "{\"error\":\"Database query failed\"" });
+                return res.jsonResponse( .{ .status_code = 500, .data = "{\"error\":\"Database query failed\"" });
             };
 
             if (worker) |w| {
@@ -28,11 +28,11 @@ pub fn worker_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
                     .{ w.session_id, w.working_directory, w.last_activity, w.last_activity_description }
                 );
                 w.deinit(allocator);
-                return res.jsonResponse(allocator, .{ .status_code = 200, .data = response });
+                return res.jsonResponse( .{ .status_code = 200, .data = response });
             } else {
-                return res.jsonResponse(allocator, .{ .status_code = 404, .data = "{\"error\":\"Worker not found\"" });
+                return res.jsonResponse( .{ .status_code = 404, .data = "{\"error\":\"Worker not found\"" });
             }
         }
     }
-    return res.jsonResponse(allocator, .{ .status_code = 500, .data = "{\"error\":\"Server not initialized\"" });
+    return res.jsonResponse( .{ .status_code = 500, .data = "{\"error\":\"Server not initialized\"" });
 }

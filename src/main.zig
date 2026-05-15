@@ -2,21 +2,9 @@ const std = @import("std");
 
 const nalar_mod = @import("nalarcore");
 const ai_mod = nalar_mod.ai_mod;
-// const http_server = nalar_mod.http_server;
-// const http_handlers = nalar_mod.http_handlers;
-// const httpz = http_server.httpz;
-// const ai_workflow = nalar_mod.ai_workflow;
-// const session_monitor = nalar_mod.session_monitor;
-// const cronjob = nalar_mod.cronjob;
 const sqlite = nalar_mod.sqlite;
-// const migrations = nalar_mod.migrations;
-// const activity_registry = nalar_mod.session.session_registry;
 const helpers = nalar_mod.helpers;
-// const config = nalar_mod.config;
-// const llm_history = nalar_mod.llm_history;
-// const startup = nalar_mod.ai_workflow.startup;
 const gserverz = nalar_mod.gserverz;
-
 
 pub fn main(init: std.process.Init) !void {
     const arena_allocator = init.arena;
@@ -79,13 +67,21 @@ pub fn main(init: std.process.Init) !void {
         .logger = global_logger_ptr,
         .environment = environment,
         .active_loops = undefined, // Will be set below after initialization
+        .event_bus = undefined, // Will be set below after initialization
     };
 
     _ = try ai_mod.models.setSingleton(ctxParent);
 
+    const event_bus_mod = nalar_mod.event_bus;
+    var event_bus = event_bus_mod.EventBus.init("my-bus", parent_allocator);
+    defer event_bus.deinit();
+    ctxParent.event_bus = &event_bus;
+
     var active_loops = ai_mod.models.ActiveLoops.init(parent_allocator);
     defer active_loops.deinit(parent_allocator);
     ctxParent.active_loops = &active_loops;
+
+    _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParams, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
 
     // activity_registry.init_global_registry(parent_allocator, io);
     // defer activity_registry.deinit_global_registry();
@@ -138,6 +134,7 @@ pub fn main(init: std.process.Init) !void {
     // startup(parent_allocator, io, environment, &dbSqlite, &llm_config, ctxParent) catch |err| {
     //     std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});
     // };
+    //
 
     const address = try gserverz.Address.init(port);
     const gs = try gserverz.GinwaServer.init(parent_allocator, io, address);
@@ -166,13 +163,13 @@ pub fn main(init: std.process.Init) !void {
     // try gs.router.get("/api/ping/:session_id", http_handlers.ping_handler, ctxParent);
     //
     // // Worker API
-    // try gs.router.get("/api/workers", http_handlers.worker_list_handler, ctxParent);
+    try gs.router.get("/api/workers", ai_mod.http_handlers.worker_list_handler);
     //
     // // LLM API aliases (desktop app uses /api/llm/*)
-    // try gs.router.post("/api/llm/session", http_handlers.sessionCreateHandler, ctxParent);
+    try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
-    // try gs.router.get("/api/llm/stream/:session_id", http_handlers.streamHandler, ctxParent);
+    // try gs.router.get("/api/llm/stream/:session_id", ai_mod.http_handlers.streamHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)
@@ -181,22 +178,22 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
     try gs.router.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
     try gs.router.get("/api/git/status", ai_mod.http_handlers.gitStatusHandler);
-    // try gs.router.get("/api/system/folder", http_handlers.systemFolderHandler, ctxParent);
-    // try gs.router.get("/api/workspaces", http_handlers.workspacesListHandler, ctxParent);
-    // try gs.router.post("/api/workspaces", http_handlers.workspacesCreateHandler, ctxParent);
-    // try gs.router.get("/api/workspaces/:id", http_handlers.workspaceGetHandler, ctxParent);
-    // try gs.router.put("/api/workspaces/:id", http_handlers.workspaceUpdateHandler, ctxParent);
-    // try gs.router.delete("/api/workspaces/:id", http_handlers.workspaceDeleteHandler, ctxParent);
-    // try gs.router.post("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsCreateHandler, ctxParent);
-    // try gs.router.get("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsListHandler, ctxParent);
-    // try gs.router.get("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsGetHandler, ctxParent);
-    // try gs.router.put("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsUpdateHandler, ctxParent);
-    // try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsDeleteHandler, ctxParent);
-    // try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksListHandler, ctxParent);
-    // try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksCreateHandler, ctxParent);
-    // try gs.router.put("/api/workspaces/tasks/:task_id", http_handlers.tasksUpdateByIdHandler, ctxParent);
-    // try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksUpdateHandler, ctxParent);
-    // try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksDeleteHandler, ctxParent);
+    try gs.router.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
+    try gs.router.get("/api/workspaces", ai_mod.http_handlers.workspacesListHandler);
+    try gs.router.post("/api/workspaces", ai_mod.http_handlers.workspacesCreateHandler);
+    try gs.router.get("/api/workspaces/:id", ai_mod.http_handlers.workspaceGetHandler);
+    try gs.router.put("/api/workspaces/:id", ai_mod.http_handlers.workspaceUpdateHandler);
+    try gs.router.delete("/api/workspaces/:id", ai_mod.http_handlers.workspaceDeleteHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsCreateHandler);
+    try gs.router.get("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsListHandler);
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsGetHandler);
+    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsUpdateHandler);
+    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsDeleteHandler);
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksListHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
+    try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
+    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
+    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
     //
     try gs.listen();
 

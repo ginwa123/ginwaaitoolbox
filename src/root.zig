@@ -127,6 +127,7 @@ pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
 pub const gserverz = @import("modules/custom_http_server/src/http_server.zig");
 pub const ai_mod = @import("ai_workflow/tui/mod.zig");
+pub const event_bus = @import("modules/event_bus/src/event.zig");
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");

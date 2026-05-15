@@ -11,13 +11,13 @@ pub fn worker_cancel_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const allocator = ctx.allocator;
 
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
+        return res.jsonResponse( .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
     };
 
     // Check if session exists
     if (session_registry.get_global_registry()) |registry| {
         if (!registry.is_registered(session_id)) {
-            return res.jsonResponse(allocator, .{ .status_code = 404, .data = "{\"error\":\"Worker not found\"" });
+            return res.jsonResponse( .{ .status_code = 404, .data = "{\"error\":\"Worker not found\"" });
         }
     }
 
@@ -27,7 +27,7 @@ pub fn worker_cancel_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         registry.mark_stopped(session_id);
     }
 
-    return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
+    return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
         "{{\"id\":\"{s}\",\"cancelled\":true}}",
         .{session_id}) });
 }

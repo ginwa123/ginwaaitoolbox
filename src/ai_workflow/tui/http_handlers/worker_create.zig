@@ -30,7 +30,7 @@ pub fn worker_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 
     if (body.len > 0) {
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-            return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }) });
+            return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }) });
         };
         defer parsed.deinit();
 
@@ -74,7 +74,7 @@ pub fn worker_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         // Register session in session registry
         if (session_registry.get_global_registry()) |registry| {
             registry.register(session_id.?) catch {
-                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to register worker" }) });
+                return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to register worker" }) });
             };
         }
 
@@ -139,12 +139,12 @@ pub fn worker_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                 thread.detach();
             }
 
-            return res.jsonResponse(allocator, .{ .status_code = 201, .data = try http_response.makeWorkerResponse(allocator, .{ .id = session_id.?, .status = "running" }) });
+            return res.jsonResponse( .{ .status_code = 201, .data = try http_response.makeWorkerResponse(allocator, .{ .id = session_id.?, .status = "running" }) });
         } else {
             // Worker created but not started
-            return res.jsonResponse(allocator, .{ .status_code = 201, .data = try http_response.makeWorkerResponse(allocator, .{ .id = session_id.?, .status = "idle" }) });
+            return res.jsonResponse( .{ .status_code = 201, .data = try http_response.makeWorkerResponse(allocator, .{ .id = session_id.?, .status = "idle" }) });
         }
     }
 
-    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
+    return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

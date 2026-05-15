@@ -19,7 +19,7 @@ pub fn taskDeleteByIdHandler(
 
     const task_id = req.param("task_id") orelse "";
     if (task_id.len == 0) {
-        res.status = 400;
+        res.status_code = 400;
         res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "task_id required" });
         return;
     }
@@ -30,16 +30,16 @@ pub fn taskDeleteByIdHandler(
             const sqlite_db = ctxTui.db;
 
             workspace_item_tasks.deleteWorkspaceItemTask(alloc, sqlite_db, task_id) catch {
-                res.status = 500;
+                res.status_code = 500;
                 res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to delete task" });
                 return;
             };
 
-            res.status = 200;
+            res.status_code = 200;
             res.body = try http_response.makeTaskDeleteResponse(alloc, .{ .id = task_id, .success = true });
             return;
         }
     }
-    res.status = 500;
+    res.status_code = 500;
     res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
 }

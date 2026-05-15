@@ -1,7 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const nalar_core = @import("nalarcore");
+const gserverz = nalar_core.gserverz;
 
 /// Git status endpoint - returns current branch and status for a directory
 pub fn gitStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
@@ -18,9 +18,7 @@ pub fn gitStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
     const git_check = std.process.run(allocator, io, .{
         .argv = &.{ "git", "-C", path_param, "rev-parse", "--git-dir" },
     }) catch |err| {
-        res.status = 500;
-        res.body = try http_response.makeGitStatusErrorResponse(allocator, @errorName(err));
-        return;
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeGitStatusErrorResponse(allocator, @errorName(err)) });
     };
 
     // Determine if it's a git repo based on rev-parse exit code
@@ -31,27 +29,21 @@ pub fn gitStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
         const response = http_response.GitStatusResponse{
             .is_git_repo = false,
         };
-        res.status = 500;
-        res.body = try http_response.makeGitStatusResponse(allocator, response);
-        return;
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeGitStatusResponse(allocator, response) });
     }
 
     // Get current branch using: git -C <path> branch --show-current
     const branch_result = std.process.run(allocator, io, .{
         .argv = &.{ "git", "-C", path_param, "branch", "--show-current" },
     }) catch |err| {
-        res.status = 500;
-        res.body = try http_response.makeGitStatusErrorResponse(allocator, @errorName(err));
-        return;
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeGitStatusErrorResponse(allocator, @errorName(err)) });
     };
 
     // Get status using: git -C <path> status --porcelain
     const status_result = std.process.run(allocator, io, .{
         .argv = &.{ "git", "-C", path_param, "status", "--porcelain" },
     }) catch |err| {
-        res.status = 500;
-        res.body = try http_response.makeGitStatusErrorResponse(allocator, @errorName(err));
-        return;
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeGitStatusErrorResponse(allocator, @errorName(err)) });
     };
 
     // Parse branch name
@@ -72,6 +64,5 @@ pub fn gitStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
         .status = status_text,
     };
 
-    res.status = 200;
-    res.body = try http_response.makeGitStatusResponse(allocator, response);
+    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeGitStatusResponse(allocator, response) });
 }
