@@ -16,6 +16,7 @@ const get_current_agent_by_session_id = llm_history.get_current_agent_by_session
 const tool_models = nalar.tool_models;
 const getLatestMessage = llm_history.getLatestMessage;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
+const models = @import("models.zig");
 
 // ============================================================================
 // TOOL REGISTRY - Uses unified tool_registry.zig
@@ -39,7 +40,7 @@ const ToolContext = struct {
     agent_temperature: *f32,
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
-    active_loops: *nalar.ai_workflow.ActiveLoops,
+    active_loops: *models.ActiveLoops,
 };
 
 /// Result of executing a tool
@@ -255,7 +256,7 @@ pub fn handle_tool(
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
     environment: ?*const std.process.Environ.Map,
-    active_loops: *nalar.ai_workflow.ActiveLoops,
+    active_loops: *models.ActiveLoops,
 ) !void {
 
     if (res_dynamic_agent.tool_calls) |tc| {

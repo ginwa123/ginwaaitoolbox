@@ -1,45 +1,30 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-const nalarcore = root_mod;
-const ai_workflow = nalarcore.ai_workflow;
-
-const httpz = http_server.httpz;
-const llm_history = nalarcore.llm_history;
+const http_response = @import("http_response.zig");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const ai_mod = nalarcore.ai_mod;
+const llm_history = ai_mod.llm_history;
 
 /// Get a session by ID
-pub fn session_get_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn session_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+    const session_id = req.params.get("session_id") orelse {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
+    };
+    const di = try nalarcore.ai_mod.models.getSingleton();
+    const sqlite_db = di.db;
 
-    const session_id = req.param("session_id") orelse {
-        res.status = 400;
-        res.body = "{\"error\":\"Missing session_id\"}";
-        return;
+    const session = llm_history.get_session(allocator, sqlite_db, session_id) catch {
+        return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
     };
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
-            const sqlite_db = ctxTui.db;
-            const session = llm_history.get_session(alloc, sqlite_db, session_id) catch {
-                res.status = 500;
-                res.body = "{\"error\":\"Database query failed\"}";
-                return;
-            };
-
-            if (session) |s| {
-                const response = try std.fmt.allocPrint(alloc, "{{\"sessionId\":\"{s}\",\"cwd\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}", .{ s.session_id, s.cwd, s.created_at, s.agent, s.session_name });
-                s.deinit(alloc);
-                res.status = 200;
-                res.body = response;
-            } else {
-                res.status = 404;
-                res.body = "{\"error\":\"Session not found\"}";
-            }
-            return;
-        }
+    if (session) |s| {
+        const response = try std.fmt.allocPrint(allocator, "{{\"sessionId\":\"{s}\",\"cwd\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}", .{ s.session_id, s.cwd, s.created_at, s.agent, s.session_name });
+        s.deinit(allocator);
+        return res.jsonResponse(allocator, .{ .status_code = 200, .data = response });
+    } else {
+        return res.jsonResponse(allocator, .{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Session not found" }) });
     }
-    res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }
+

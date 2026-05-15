@@ -70,6 +70,9 @@ pub const GinwaServer = struct {
     io: std.Io,
     address: Address,
     router: router.Router,
+    ctx: ?*anyopaque = null,
+    environment: ?*const std.process.Environ.Map = null,
+    sse_manager: SseManager = .{},
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
@@ -78,6 +81,9 @@ pub const GinwaServer = struct {
             .io = io,
             .address = address,
             .router = router.Router.init(allocator),
+            .ctx = null,
+            .environment = null,
+            .sse_manager = .{},
         };
         return gs;
     }
@@ -131,7 +137,7 @@ pub const GinwaServer = struct {
                         if (gs.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
                             switch (result) {
                                 .handler => |h| {
-                                    const final_res = h.handler(h.ctx, req, h.res, h.custom_data) catch http_parser.internalError("Handler error", allocator);
+                                    const final_res = h.handler(h.ctx, req, h.res) catch http_parser.internalError("Handler error", allocator);
                                     const res_bytes = final_res.toBytes() catch {
                                         std.debug.print("Failed to build response\n", .{});
                                         _ = linux.close(fd);
@@ -153,7 +159,7 @@ pub const GinwaServer = struct {
                                         return;
                                     };
                                     // Call SSE handler for streaming
-                                    sse.handler(sse.ctx, req, sse.custom_data);
+                                    sse.handler(sse.ctx, req);
                                     _ = linux.close(fd);
                                     return;
                                 },
@@ -217,3 +223,41 @@ pub const GinwaServer = struct {
         return (@as(u16, addr[2]) << 8) | @as(u16, addr[3]);
     }
 };
+
+/// Global server instance for access from handlers
+pub var global_server: ?*GinwaServer = null;
+
+/// SSE Event structure
+pub const SseEvent = struct {
+    data: []const u8,
+    event_type: ?[]const u8 = null,
+};
+
+/// SSE Manager for handling Server-Sent Events
+pub const SseManager = struct {
+    pub fn hasSession(_: SseManager, _: []const u8) bool {
+        return false;
+    }
+
+    pub fn createQueue(_: SseManager) !*anyopaque {
+        return error.NotImplemented;
+    }
+
+    pub fn registerSession(_: SseManager, _: []const u8, _: *anyopaque) !void {
+        return error.NotImplemented;
+    }
+
+    pub fn unregisterSession(_: SseManager, _: []const u8) void {}
+
+    pub fn enqueueEvent(_: SseManager, _: []const u8, _: SseEvent) !void {
+        return error.NotImplemented;
+    }
+};
+
+/// Get global SSE manager
+pub fn getGlobalSseManager() ?*SseManager {
+    if (global_server) |server| {
+        return &server.sse_manager;
+    }
+    return null;
+}

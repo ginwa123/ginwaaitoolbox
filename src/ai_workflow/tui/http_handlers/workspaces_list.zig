@@ -1,11 +1,10 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const http_response = nalarcore.http_response;
 const sqlite = nalarcore.sqlite;
-const httpz = http_server.httpz;
 
 pub const WorkspaceWithItemsResponse = struct { id: []const u8, name: []const u8, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null, icon: []const u8 = "📁", items: []const WorkspaceItemWithTasksResponse, expanded: bool = false };
 
@@ -23,32 +22,27 @@ pub const WorkspaceItemWithTasksResponse = struct {
 pub const WorkspacesListResponse = struct { workspaces: []WorkspaceWithItemsResponse };
 
 /// GET /api/workspaces
-pub fn workspacesListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn workspacesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    _ = req;
+    const allocator = ctx.allocator;
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            const response = useCase(alloc, sqlite_db) catch |err| {
+            const response = fetchWorkspacesList(allocator, sqlite_db) catch |err| {
                 std.log.err("Failed to fetch workspaces: {s}", .{@errorName(err)});
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to fetch workspaces" });
-                return;
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspaces" }) });
             };
 
-            res.status = 200;
-            res.body = try std.json.Stringify.valueAlloc(alloc, response, .{});
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, response, .{}) });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }
 
-fn useCase(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend) !WorkspacesListResponse {
+fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend) !WorkspacesListResponse {
     // Fetch all workspaces first
     var rows = try db.query(alloc, "SELECT id, name, created_at, updated_at FROM workspaces ORDER BY created_at DESC", &[_][]const u8{});
 

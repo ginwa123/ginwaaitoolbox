@@ -1,22 +1,17 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const session_registry = root_mod.session.session_registry;
-
-const httpz = http_server.httpz;
 
 /// Get worker status
 /// Path params:
 ///   - session_id: worker ID to check
 /// Returns JSON with worker status info
-pub fn worker_status_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn worker_status_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const session_id = req.param("session_id") orelse {
-        res.status = 400;
-        res.body = "{\"error\":\"Missing session_id\"}";
-        return;
+    const session_id = req.params.get("session_id") orelse {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
     };
 
     // Get worker status from activity registry
@@ -47,14 +42,10 @@ pub fn worker_status_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
             queue_count = @intCast(queue.items.len);
         }
     } else {
-        res.status = 500;
-        res.body = "{\"error\":\"Activity registry not available\"}";
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 500, .data = "{\"error\":\"Activity registry not available\"" });
     }
 
-    res.status = 200;
-    res.body = try std.fmt.allocPrint(alloc,
+    return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
         "{{\"id\":\"{s}\",\"status\":\"{s}\",\"is_running\":{},\"queue_count\":{},\"registered\":{}}}",
-        .{ session_id, status, is_running, queue_count, is_registered }
-    );
+        .{ session_id, status, is_running, queue_count, is_registered }) });
 }

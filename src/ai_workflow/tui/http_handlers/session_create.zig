@@ -1,17 +1,9 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-const nalarcore = root_mod;
-const sqlite = nalarcore.sqlite;
-const ai_workflow = nalarcore.ai_workflow;
-const logger = nalarcore.logger;
-const http_response = nalarcore.http_response;
-
-const httpz = http_server.httpz;
-const mod = @import("mod.zig");
-const WorkflowArgs = mod.WorkflowArgs;
-const broadcastSessionCreated = @import("mod.zig").broadcastSessionCreated;
+const nalarcore = @import("nalarcore");
+const http_response = @import("http_response.zig");
+const helpers = nalarcore.helpers;
 const gserverz = nalarcore.gserverz;
+const ai_workflow = nalarcore.ai_mod;
 
 /// Helper to get nalar data directory (~/local/share/nalar/data/apps)
 fn getDataAppsDir(allocator: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map) ![]u8 {
@@ -61,23 +53,23 @@ fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const 
 /// Thread arguments for session creation workflow
 const SessionCreateThreadArgs = struct {
     allocator: std.mem.Allocator,
-    ctxTui: *ai_workflow.ContextIPCTui,
+    ctxTui: *ai_workflow.models.ContextIPCTui,
     session_id: []u8,
     session_name: []u8,
     queue_message: []u8,
     cwd_session: []u8,
     body_message: []u8,
     allowed_tools: []u8,
-    environment: *const std.process.Environ.Map,
+    environment: ?*const std.process.Environ.Map,
 };
 
 pub const Session = struct {
-    session_id: []u8,
-    session_name: []const u8,
-    queue_message: ?[]const u8,
-    cwd_session: ?[]const u8,
-    allowed_tools: []const u8,
-    body_message: []const u8,
+    session_id: []const u8 = "",
+    session_name: []const u8 = "",
+    queue_message: []const u8 = "",
+    cwd_session: []const u8 = "",
+    allowed_tools: []const u8 = "",
+    body_message: []const u8 = "",
 };
 
 /// Create a new session
@@ -87,73 +79,56 @@ pub const Session = struct {
 ///   - queue_message: initial message to add to session queue (string, optional)
 ///   - cwd_session: working directory (string, optional)
 /// Returns JSON with created session info
-pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, custom_data: *anyopaque) !gserverz.HttpResponse {
+pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const io = ctx.io;
 
-
-    const di = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(custom_data)));
+    const di = try nalarcore.ai_mod.models.getSingleton();
 
     // Generate or parse session ID
     var session_id: []u8 = undefined;
     var session_name: []const u8 = "New Session";
-    var queue_message: ?[]const u8 = null;
-    var cwd_session: ?[]const u8 = null;
-    var allowed_tools: []const u8 = ""; // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
-    var body_message: []const u8 = ""; // initial message from body field
-                                       //
+    var queue_message: []const u8 = "";
+    var cwd_session: []const u8 = "";
+    var allowed_tools: []const u8 = "";
+    var body_message: []const u8 = "";
 
     // Parse JSON body for optional parameters
     const parsed = std.json.parseFromSliceLeaky(Session, allocator, req.body, .{}) catch {
         return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }) });
     };
 
-    // Extract session_id if provided
-    if (parsed.session_id) |val| {
-        if (val == .string) {
-            session_id = try allocator.dupe(u8, val.string);
-        } else {
-            const data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "session_id must be a string" });
-            return res.jsonResponse(allocator, .{ .status_code = 400, .data = data });
-        }
+    // Extract session_id if provided (empty string means not provided for non-optional fields)
+    if (parsed.session_id.len > 0) {
+        session_id = try allocator.dupe(u8, parsed.session_id);
     } else {
         // Generate unique session ID
-        session_id = try mod.generateSessionIdNew(allocator, io);
+        session_id = try helpers.random.generateSessionId(allocator, io);
     }
 
     // Extract name if provided
-    if (parsed.session_name) |val| {
-        if (val == .string) {
-            session_name = val.string;
-        }
+    if (parsed.session_name.len > 0) {
+        session_name = parsed.session_name;
     }
 
     // Extract queue_message if provided
-    if (parsed.queue_message) |val| {
-        if (val == .string) {
-            queue_message = val.string;
-        }
+    if (parsed.queue_message.len > 0) {
+        queue_message = parsed.queue_message;
     }
 
     // Extract cwd_session if provided
-    if (parsed.cwd_session) |val| {
-        if (val == .string) {
-            cwd_session = val.string;
-        }
+    if (parsed.cwd_session.len > 0) {
+        cwd_session = parsed.cwd_session;
     }
 
     // Extract body field (initial message from body field)
-    if (parsed.body_message) |val| {
-        if (val == .string) {
-            body_message = val.string;
-        }
+    if (parsed.body_message.len > 0) {
+        body_message = parsed.body_message;
     }
 
     // Extract allowed_tools field (comma-separated list or "all")
-    if (parsed.allowed_tools) |val| {
-        if (val == .string) {
-            allowed_tools = val.string;
-        }
+    if (parsed.allowed_tools.len > 0) {
+        allowed_tools = parsed.allowed_tools;
     }
 
     // Spawn workflow in detached thread (fire-and-forget)
@@ -162,9 +137,9 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     errdefer allocator.free(session_id_alloc);
     const session_name_alloc = try allocator.dupe(u8, session_name);
     errdefer allocator.free(session_name_alloc);
-    const queue_message_alloc = if (queue_message) |m| try allocator.dupe(u8, m) else try allocator.dupe(u8, "");
+    const queue_message_alloc = if (queue_message.len > 0) try allocator.dupe(u8, queue_message) else try allocator.dupe(u8, "");
     errdefer allocator.free(queue_message_alloc);
-    const cwd_session_alloc = if (cwd_session) |c| try allocator.dupe(u8, c) else try allocator.dupe(u8, "");
+    const cwd_session_alloc = if (cwd_session.len > 0) try allocator.dupe(u8, cwd_session) else try allocator.dupe(u8, "");
     errdefer allocator.free(cwd_session_alloc);
     const body_message_alloc = try allocator.dupe(u8, body_message);
     errdefer allocator.free(body_message_alloc);
@@ -183,7 +158,7 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         .cwd_session = cwd_session_alloc,
         .body_message = body_message_alloc,
         .allowed_tools = allowed_tools_alloc,
-        .environment = di.environment,
+        .environment = di.environment.?,
     };
 
     const thread = try std.Thread.spawn(.{}, struct {
@@ -203,7 +178,7 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
                 // Create sandbox in data/apps with session_id as folder name
                 effective_cwd = createSandbox(thread_alloc, args.ctxTui.io, args.environment, args.session_id) catch blk: {
                     // Fallback: use tmp directory if sandbox creation fails
-                    const tmp_dir = args.environment.get("TMPDIR") orelse "/tmp";
+                    const tmp_dir = (args.environment orelse return).get("TMPDIR") orelse "/tmp";
                     break :blk (thread_alloc.dupe(u8, tmp_dir) catch return);
                 };
             }
@@ -226,11 +201,10 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
             }
 
             // Broadcast session_created event to all connected session stream clients
-            broadcastSessionCreated(thread_alloc, args.session_id, args.session_name);
+            // broadcastSessionCreated(thread_alloc, args.session_id, args.session_name);
 
             // Create workflow args
-            const workflow_args = thread_alloc.create(WorkflowArgs) catch return;
-
+            const workflow_args = thread_alloc.create(ai_workflow.models.WorkflowArgs) catch return;
             workflow_args.* = .{
                 .allocator = thread_alloc,
                 .io = args.ctxTui.io,
@@ -246,7 +220,7 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
                 .active_loops = args.ctxTui.active_loops,
             };
 
-            var workflow = ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger, workflow_args.environment, workflow_args.active_loops);
+            var workflow = ai_workflow.ai_workflow.TUIWorkflow.init(workflow_args.io, workflow_args.sqlite_db, workflow_args.llm_config, workflow_args.logger, workflow_args.environment, workflow_args.active_loops);
             workflow.runAgenticMultiStep(.{
                 .parent_allocator = thread_alloc,
                 .parent_session_id = workflow_args.session_id,

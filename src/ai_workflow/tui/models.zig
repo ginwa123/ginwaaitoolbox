@@ -3,15 +3,26 @@ const config = @import("nalarcore").config;
 const logger = @import("nalarcore").logger;
 const nalar_mod = @import("nalarcore");
 const std = @import("std");
-const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
+pub const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
+
+var global_ctx: ?*ContextIPCTui = null;
+
+pub fn getSingleton() anyerror!*ContextIPCTui {
+    return global_ctx orelse error.GlobalContextNotInitialized;
+}
+
+pub fn setSingleton(ctx: *ContextIPCTui) !void {
+    global_ctx = ctx;
+}
 
 pub const ContextIPCTui = struct {
+    allocator: std.mem.Allocator,
     io: std.Io,
     db: *sqlite.SqliteBackend,
     llm_config: *const config.LlmConfig,
     logger: *logger.Logger,
     environment: ?*const std.process.Environ.Map,
-    active_loops: *nalar_mod.ai_workflow.ActiveLoops,
+    active_loops: *ActiveLoops,
 };
 
 pub const TUIHistory = struct {
@@ -56,5 +67,21 @@ pub const TUIHistory = struct {
         if (self.diffview_before) |dw| allocator.free(dw);
         if (self.diffview_after) |da| allocator.free(da);
     }
+};
+
+
+pub const WorkflowArgs = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    sqlite_db: *sqlite.SqliteBackend,
+    logger: *logger.Logger,
+    llm_config: *const config.LlmConfig,
+    session_id: []u8,
+    message: []u8,
+    cwd: []u8,
+    body: []const u8 = "",
+    allowed_tools: []const u8 = "", // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
+    environment: ?*const std.process.Environ.Map,
+    active_loops: *ActiveLoops,
 };
 

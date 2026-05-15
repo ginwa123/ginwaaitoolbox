@@ -8,21 +8,8 @@ const llm_history = nalar_mod.llm_history;
 const sqlite = nalar_mod.sqlite;
 const logger_mod = nalar_mod.logger;
 const config_mod = nalar_mod.config;
+const models = @import("models.zig");
 
-/// Workflow args for spawning startup threads
-pub const WorkflowArgs = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    sqlite_db: *sqlite.SqliteBackend,
-    logger: *logger_mod.Logger,
-    llm_config: *const nalar_mod.config.LlmConfig,
-    session_id: []u8,
-    message: []u8,
-    cwd: []u8,
-    is_sub_agent: bool,
-    environment: ?*const std.process.Environ.Map,
-    active_loops: *ai_workflow.ActiveLoops,
-};
 
 /// Startup handler - queries worker table and starts a thread for each worker
 /// Called once during app initialization to bootstrap workers from database
@@ -82,7 +69,7 @@ pub fn startup(
         registry.mark_running(worker.session_id);
 
         // Prepare workflow args on heap
-        const workflow_args = try allocator.create(WorkflowArgs);
+        const workflow_args = try allocator.create(models.WorkflowArgs);
         workflow_args.* = .{
             .allocator = allocator,
             .io = io,
@@ -99,7 +86,7 @@ pub fn startup(
 
         // Spawn thread to run workflow
         const thread = try std.Thread.spawn(.{}, struct {
-            fn run(args: *WorkflowArgs) void {
+            fn run(args: *models.WorkflowArgs) void {
                 defer {
                     args.allocator.free(args.session_id);
                     args.allocator.free(args.message);

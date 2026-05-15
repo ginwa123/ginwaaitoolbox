@@ -1,21 +1,20 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-const nalarcore = root_mod;
-const ai_workflow = nalarcore.ai_workflow;
+const http_response = @import("http_response.zig");
+const nalarcore = @import("nalarcore");
 
-const httpz = http_server.httpz;
-const llm_history = nalarcore.llm_history;
+const ai_mod = nalarcore.ai_mod;
 const gserverz = nalarcore.gserverz;
+const llm_history = nalarcore.llm_history;
 
 /// List all sessions - returns sessions from database with cursor pagination
 /// Optionally filtered by cwd query parameter
-pub fn session_list_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, custom_data: *anyopaque) !gserverz.HttpResponse {
+pub fn session_list_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    const di = try nalarcore.ai_mod.models.getSingleton();
+    const sqlite_db = di.db;
+
+
     const alloc = ctx.allocator;
     const query = req.query;
-
-    const di = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(custom_data)));
-    _ = di;
 
     const limit_str = query.get("limit") orelse "50";
     const cursor = query.get("cursor");
@@ -38,14 +37,9 @@ pub fn session_list_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     else
         .desc;
 
-    const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
-    const sqlite_db = ctxTui.db;
-
     // Use unified getSessionListWithCursor with cwd support and sort params
     const result = llm_history.getSessionListWithCursor(alloc, sqlite_db, null, null, cwd, limit_val, cursor, sort_field, sort_direction) catch {
-        res.status = 500;
-        res.body = "{\"error\":\"Database query failed\"}";
-        return;
+        return res.jsonResponse(alloc, .{ .status_code = 500, .data = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" }) });
     };
     defer {
         for (result.sessions) |s| s.deinit(alloc);
@@ -63,6 +57,5 @@ pub fn session_list_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     // Build JSON response with cursor pagination
     const response = try llm_history.buildSessionListJson(alloc, result.sessions, result.total, has_more, next_cursor);
 
-    res.status = 200;
-    res.body = response;
+    return res.jsonResponse(alloc, .{ .status_code = 200, .data = response });
 }

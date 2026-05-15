@@ -89,21 +89,6 @@ pub const broadcastSessionCreated = @import("session_stream.zig").broadcastSessi
 /// Response format types
 pub const ResponseFormat = enum { json, xml };
 
-/// Workflow arguments for async LLM execution
-pub const WorkflowArgs = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    sqlite_db: *sqlite.SqliteBackend,
-    logger: *logger.Logger,
-    llm_config: *const config.LlmConfig,
-    session_id: []u8,
-    message: []u8,
-    cwd: []u8,
-    body: []const u8 = "",
-    allowed_tools: []const u8 = "", // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
-    environment: ?*const std.process.Environ.Map,
-    active_loops: *ai_workflow.ActiveLoops,
-};
 
 /// Handler arguments for async message handling
 pub const HandlerArgs = struct {
@@ -195,6 +180,6 @@ pub fn buildErrorResponse(allocator: std.mem.Allocator, format: ResponseFormat, 
 
 /// SSE stream context for persistent connections
 pub const SseStreamCtx = struct {
-    server: *http_server.HttpServer,
+    server: *nalarcore.gserverz.GinwaServer,
     session_id: []const u8,
 };

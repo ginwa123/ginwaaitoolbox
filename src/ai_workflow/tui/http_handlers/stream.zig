@@ -1,14 +1,13 @@
 const std = @import("std");
 const nalar_core = @import("nalarcore");
-const http_server = nalar_core.http_server;
+const gserverz = nalar_core.gserverz;
 const http_response = nalar_core.http_response;
 const logger = nalar_core.logger;
 
-const httpz = http_server.httpz;
 const SseStreamCtx = @import("mod.zig").SseStreamCtx;
 
 /// Format an SSE event from queue item using heap allocation
-fn formatQueueItem(allocator: std.mem.Allocator, item: *http_server.SseQueueItem) ![]u8 {
+fn formatQueueItem(allocator: std.mem.Allocator, item: *gserverz.SseQueueItem) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
@@ -49,118 +48,59 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
         log.?.errFmt("SSE: Failed to create queue for session: {s}", .{ctx.session_id});
         return;
     };
-    defer {
-        queue.close();
-        ctx.server.allocator.destroy(queue);
-    }
-    defer stream.close(ctx.server.io);
 
-    // Register this client with its own queue (supports multiple clients per session)
-    ctx.server.sse_manager.registerClient(ctx.session_id, queue) catch |err| {
-        log.?.errFmt("SSE: Failed to register client for session: {s}, error: {s}", .{
-            ctx.session_id, @errorName(err),
-        });
+    // Register this queue with the session
+    ctx.server.sse_manager.registerSession(ctx.session_id, queue) catch {
+        log.?.errFmt("SSE: Failed to register queue for session: {s}", .{ctx.session_id});
         return;
     };
+
+    // Register cleanup on return
     defer {
-        // Remove only this specific client, not the whole session
-        const was_last = ctx.server.sse_manager.removeClient(ctx.session_id, queue);
-        if (was_last) {
-            log.?.infoFmt("SSE: Last client removed, session cleaned up: {s}", .{ctx.session_id});
-        }
+        ctx.server.sse_manager.unregisterSession(ctx.session_id);
     }
 
-    // Send connected event
-    const connected_data = std.fmt.allocPrint(ctx.server.allocator, "event: connected\n{{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id}) catch {
-        std.debug.print("[SSE_ERROR] Failed to format connected event\n", .{});
+    const allocator = ctx.server.allocator;
+
+    // Send initial connection event
+    const connectEvent = try std.fmt.allocPrint(allocator, "event: connected\ndata: {{\"session_id\":\"{s}\"}}\n\n", .{ctx.session_id});
+    defer allocator.free(connectEvent);
+    stream.writeAll(connectEvent) catch {
+        log.?.errFmt("SSE: Failed to send connect event for session: {s}", .{ctx.session_id});
         return;
     };
-    defer ctx.server.allocator.free(connected_data);
 
-    std.debug.print("[SSE_DEBUG] About to write connected event, len={d}\n", .{connected_data.len});
+    // Main event loop
+    var connected = true;
+    while (connected) {
+        // Wait for event with timeout
+        if (queue.waitForEvent(5000)) {
+            // Process all available events
+            while (queue.dequeue()) |item| {
+                const event_data = formatQueueItem(allocator, item) catch {
+                    log.?.errFmt("SSE: Failed to format event for session: {s}", .{ctx.session_id});
+                    continue;
+                };
+                defer allocator.free(event_data);
 
-    // Use raw posix.write instead of Stream writer to avoid any buffering issues
-    const socket_fd = stream.socket.handle;
-    var bytes_written: usize = 0;
-    while (bytes_written < connected_data.len) {
-        const n = std.c.write(@intCast(socket_fd), connected_data[bytes_written..].ptr, connected_data[bytes_written..].len);
-        if (n < 0) {
-            std.debug.print("[SSE_ERROR] write failed - client likely disconnected\n", .{});
-            queue.close();
-            return;
-        }
-        if (n == 0) {
-            std.debug.print("[SSE_ERROR] write returned 0 - client disconnected\n", .{});
-            queue.close();
-            return;
-        }
-        bytes_written += @intCast(n);
-    }
-    std.debug.print("[SSE_DEBUG] Wrote {d} bytes via raw c.write\n", .{bytes_written});
-
-    // Get client count for logging
-    const client_count = ctx.server.sse_manager.getClientCount(ctx.session_id);
-    log.?.infoFmt("SSE: Connected event sent for session: {s}, total clients: {d}", .{
-        ctx.session_id, client_count,
-    });
-
-    // Main loop: process events from queue and keepalive
-    // Note: We don't check hasSession() here because for new sessions,
-    // hasSession returns false until the workflow enqueues its first event.
-    // The session is properly cleaned up via removeClient when the client disconnects.
-    while (!queue.closed) {
-        // Wait for an event from the queue with 5 second timeout
-        const item = queue.dequeueWithTimeout(5_000_000_000);
-
-        if (item) |queue_item| {
-            std.debug.print("[SSE_DEBUG] dequeueWithTimeout returned item, data_len={d}\n", .{queue_item.data.len});
-            std.debug.print("[SSE_DEBUG] queue_item.data contents: {s}\n", .{queue_item.data});
-            // Log body before sending
-            log.?.debugFmt("SSE: sending body: {s}", .{queue_item.data});
-
-            // Format and send the event using heap allocation
-            const formatted = formatQueueItem(ctx.server.allocator, queue_item) catch |err| {
-                std.debug.print("[SSE_ERROR] formatQueueItem failed: {}\n", .{err});
-                // Free queue item memory
-                ctx.server.allocator.free(queue_item.data);
-                if (queue_item.event_type) |et| ctx.server.allocator.free(et);
-                ctx.server.allocator.destroy(queue_item);
-                continue;
-            };
-            defer ctx.server.allocator.free(formatted);
-
-            std.debug.print("[SSE_DEBUG] formatted len={d}, sending...\n", .{formatted.len});
-            // Use raw c.write for SSE data as well
-            const sfd = stream.socket.handle;
-            var bytes_sent: usize = 0;
-            while (bytes_sent < formatted.len) {
-                const n = std.c.write(@intCast(sfd), formatted[bytes_sent..].ptr, formatted[bytes_sent..].len);
-                if (n < 0) {
-                    std.debug.print("[SSE_ERROR] SSE write failed - client likely disconnected\n", .{});
-                    // Clean up queue item and close queue to exit loop
-                    ctx.server.allocator.free(queue_item.data);
-                    if (queue_item.event_type) |et| ctx.server.allocator.free(et);
-                    ctx.server.allocator.destroy(queue_item);
-                    queue.close();
+                stream.writeAll(event_data) catch {
+                    log.?.errFmt("SSE: Failed to send event for session: {s}", .{ctx.session_id});
+                    connected = false;
                     break;
-                }
-                bytes_sent += @intCast(n);
+                };
             }
-            std.debug.print("[SSE_DEBUG] SSE write completed, {d} bytes\n", .{bytes_sent});
-
-            // Free queue item memory after successful send
-            // (only if we sent all bytes - otherwise we already freed in error handler above)
-            if (bytes_sent >= formatted.len) {
-                ctx.server.allocator.free(queue_item.data);
-                if (queue_item.event_type) |et| ctx.server.allocator.free(et);
-                ctx.server.allocator.destroy(queue_item);
-            }
-        } else {
-            // Timeout - send keepalive
-            const keepalive_text = ": keepalive\n\n";
-            const kfd = stream.socket.handle;
-            _ = std.c.write(@intCast(kfd), keepalive_text.ptr, keepalive_text.len);
         }
+
+        // Check if session still exists
+        if (!ctx.server.sse_manager.hasSession(ctx.session_id)) {
+            log.?.infoFmt("SSE: Session removed: {s}", .{ctx.session_id});
+            break;
+        }
+
+        // Send keepalive
+        const keepalive_text = ": keepalive\n\n";
+        const kfd = stream.handle;
+        _ = std.c.write(@intCast(kfd), keepalive_text.ptr, keepalive_text.len);
     }
 
     log.?.infoFmt("SSE stream handler ending: session_id={s}", .{ctx.session_id});
@@ -168,30 +108,22 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
 }
 
 /// SSE stream endpoint - establishes persistent connection for real-time events
-pub fn streamHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const allocator = res.arena;
-    const session_id = req.param("session_id") orelse {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" });
-        return;
+pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+    const session_id = req.params.get("session_id") orelse {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
     const log = logger.getGlobal();
 
-    if (http_server.global_server) |server| {
+    if (gserverz.global_server) |server| {
         log.?.infoFmt("SSE STREAM CONNECTED: session_id={s}", .{session_id});
 
-        const session_id_copy = try server.allocator.dupe(u8, session_id);
-        errdefer server.allocator.free(session_id_copy);
-
-        const ctx = SseStreamCtx{
-            .server = server,
-            .session_id = session_id_copy,
-        };
-
-        try res.startEventStream(ctx, sseStreamHandler);
+        // For now, just return a JSON response indicating SSE is not fully implemented
+        // The custom HTTP server doesn't support streaming responses like httpz does
+        _ = server;
+        return res.jsonResponse(allocator, .{ .status_code = 501, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "SSE streaming not implemented in custom HTTP server" }) });
     } else {
-        res.status = 500;
-        res.body = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not available" });
+        return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not available" }) });
     }
 }

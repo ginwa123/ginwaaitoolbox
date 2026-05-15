@@ -6,6 +6,54 @@ pub const HttpContext = struct {
     io: std.Io,
 };
 
+/// Decode URL-encoded string (handles %XX, +, and all special chars)
+pub fn urlDecode(data: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    // Calculate exact size needed
+    var decoded_len: usize = 0;
+    var i: usize = 0;
+    while (i < data.len) : (i += 1) {
+        if (data[i] == '%' and i + 2 < data.len) {
+            _ = std.fmt.parseInt(u8, data[i + 1 .. i + 3], 16) catch {
+                decoded_len += 1;
+                i += 1;
+                continue;
+            };
+            decoded_len += 1;
+            i += 2;
+        } else if (data[i] == '+') {
+            decoded_len += 1;
+        } else {
+            decoded_len += 1;
+        }
+    }
+
+    // Allocate exact size
+    const result = try allocator.alloc(u8, decoded_len);
+    var j: usize = 0;
+    i = 0;
+    while (i < data.len) : (i += 1) {
+        if (data[i] == '%' and i + 2 < data.len) {
+            const decoded = std.fmt.parseInt(u8, data[i + 1 .. i + 3], 16) catch {
+                result[j] = data[i];
+                j += 1;
+                i += 1;
+                continue;
+            };
+            result[j] = decoded;
+            j += 1;
+            i += 2;
+        } else if (data[i] == '+') {
+            result[j] = ' ';
+            j += 1;
+        } else {
+            result[j] = data[i];
+            j += 1;
+        }
+    }
+
+    return result[0..j];
+}
+
 /// HTTP Request structure parsed from raw HTTP data
 pub const HttpRequest = struct {
     method: []const u8,
@@ -92,10 +140,8 @@ pub const HttpResponse = struct {
         return buf.toOwnedSlice(self.allocator);
     }
 
-
-    pub fn jsonResponse(self: HttpResponse,allocator: std.mem.Allocator, jsonStruct: JsonStruct) HttpResponse {
-        _ = self;
-        return jsonResponseHelper(allocator, jsonStruct);
+    pub fn jsonResponse(self: HttpResponse, jsonStruct: JsonStruct) HttpResponse {
+        return jsonResponseHelper(self.allocator, jsonStruct);
     }
 };
 
@@ -126,6 +172,9 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, _: std.Io, c
         query_str = path_with_query[q_idx + 1 ..];
     }
 
+    // Decode URL-encoded path
+    const decoded_path = try urlDecode(path, allocator);
+
     var headers = std.StringHashMap([]const u8).init(allocator);
     while (lines.next()) |line| {
         const clean_line = if (line.len > 0 and line[0] == '\r') line[1..] else line;
@@ -142,13 +191,18 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, _: std.Io, c
     if (query_str.len > 0) {
         var query_params = std.mem.splitScalar(u8, query_str, '&');
         while (query_params.next()) |param| {
+            var key: []const u8 = param;
+            var value: []const u8 = "";
+
             if (std.mem.indexOf(u8, param, "=")) |eq_idx| {
-                const key = param[0..eq_idx];
-                const value = param[eq_idx + 1 ..];
-                try query.put(key, value);
-            } else {
-                try query.put(param, "");
+                key = param[0..eq_idx];
+                value = param[eq_idx + 1 ..];
             }
+
+            // URL decode both key and value
+            const decoded_key = try urlDecode(key, allocator);
+            const decoded_value = try urlDecode(value, allocator);
+            try query.put(decoded_key, decoded_value);
         }
     }
 
@@ -157,7 +211,7 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, _: std.Io, c
 
     return HttpRequest{
         .method = method,
-        .path = path,
+        .path = decoded_path,
         .version = version,
         .headers = headers,
         .body = body,

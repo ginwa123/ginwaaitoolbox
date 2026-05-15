@@ -1,11 +1,9 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const http_response = nalarcore.http_response;
-
-const httpz = http_server.httpz;
 
 /// List all workers
 /// Query params:
@@ -13,28 +11,26 @@ const httpz = http_server.httpz;
 ///   - status: filter by status (running, idle, stopped, all - default: all)
 ///   - session_id: filter by session_id (optional, for checking if session is processing)
 /// Returns JSON array of worker info from both database and registry
-pub fn workerListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn workerListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const query = try req.query();
-    const limit_str = query.get("limit") orelse "50";
-    const session_id_filter = query.get("session_id");
+    const limit_str = req.query.get("limit") orelse "50";
+    const session_id_filter = req.query.get("session_id");
 
     const limit = std.fmt.parseInt(u32, limit_str, 10) catch 50;
 
     // Get workers from database
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
             // Build query with optional session_id filter
             const base_sql = "SELECT id, session_id, working_directory, last_activity, last_activity_description, created_at FROM worker";
             const query_sql: []const u8 = if (session_id_filter != null)
-                try std.fmt.allocPrint(alloc, "{s} WHERE session_id = ? ORDER BY last_activity DESC", .{base_sql})
+                try std.fmt.allocPrint(allocator, "{s} WHERE session_id = ? ORDER BY last_activity DESC", .{base_sql})
             else
-                try std.fmt.allocPrint(alloc, "{s} ORDER BY last_activity DESC", .{base_sql});
+                try std.fmt.allocPrint(allocator, "{s} ORDER BY last_activity DESC", .{base_sql});
 
             const query_params: []const []const u8 = if (session_id_filter) |sid|
                 &[_][]const u8{sid}
@@ -42,10 +38,8 @@ pub fn workerListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.R
                 &[_][]const u8{};
 
             // Query worker table from database
-            var rows = sqlite_db.query(alloc, query_sql, query_params) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Database query failed" });
-                return;
+            var rows = sqlite_db.query(allocator, query_sql, query_params) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
             };
 
             // Collect workers into array list
@@ -66,7 +60,7 @@ pub fn workerListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.R
                 const is_running = false;
                 const queue_count: u32 = 0;
 
-                try workers.append(alloc, .{
+                try workers.append(allocator, .{
                     .id = db_id,
                     .session_id = session_id,
                     .working_directory = working_directory,
@@ -83,12 +77,9 @@ pub fn workerListHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.R
             }
 
             const count: u32 = @intCast(workers.items.len);
-            res.status = 200;
-            res.body = try http_response.makeWorkerListResponse(alloc, workers.items, count);
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try http_response.makeWorkerListResponse(allocator, workers.items, count) });
         }
     }
 
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

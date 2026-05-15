@@ -1,84 +1,60 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const workspace_items = nalarcore.workspace_items;
 const http_response = nalarcore.http_response;
 
-const httpz = http_server.httpz;
-
 /// GET /api/workspaces/:workspace_id/items - Get all workspace items
-pub fn workspaceItemsListHandler(
-    _: *http_server.HttpServer.ServerHandler,
-    req: *httpz.Request,
-    res: *httpz.Response,
-) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn workspaceItemsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const workspace_id = req.param("workspace_id") orelse "";
+    const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "workspace_id required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "workspace_id required" }) });
     }
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            const items = workspace_items.listWorkspaceItems(alloc, sqlite_db, workspace_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to fetch workspace items" });
-                return;
+            const items = workspace_items.listWorkspaceItems(allocator, sqlite_db, workspace_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspace items" }) });
             };
             defer {
-                for (items) |item| item.deinit(alloc);
-                alloc.free(items);
+                for (items) |item| item.deinit(allocator);
+                allocator.free(items);
             }
 
-            res.status = 200;
-            res.body = try http_response.makeWorkspaceItemListResponse(alloc, items);
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try http_response.makeWorkspaceItemListResponse(allocator, items) });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }
 
 /// GET /api/workspaces/:workspace_id/items/:item_id - Get a single workspace item
-pub fn workspaceItemsGetHandler(
-    _: *http_server.HttpServer.ServerHandler,
-    req: *httpz.Request,
-    res: *httpz.Response,
-) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn workspaceItemsGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const item_id = req.param("item_id") orelse "";
+    const item_id = req.params.get("item_id") orelse "";
     if (item_id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "item_id required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
     }
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            const item = workspace_items.getWorkspaceItem(alloc, sqlite_db, item_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to fetch workspace item" });
-                return;
+            const item = workspace_items.getWorkspaceItem(allocator, sqlite_db, item_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspace item" }) });
             };
 
             if (item) |i| {
-                defer i.deinit(alloc);
-                res.status = 200;
-                res.body = try http_response.makeWorkspaceItemGetResponse(alloc, .{
+                defer i.deinit(allocator);
+                return res.jsonResponse(allocator, .{ .status_code = 200, .data = try http_response.makeWorkspaceItemGetResponse(allocator, .{
                     .id = i.id,
                     .workspace_id = i.workspace_id,
                     .item_type = i.item_type,
@@ -86,15 +62,11 @@ pub fn workspaceItemsGetHandler(
                     .path = i.path,
                     .created_at = i.created_at,
                     .updated_at = i.updated_at,
-                });
-                return;
+                }) });
             } else {
-                res.status = 404;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Workspace item not found" });
-                return;
+                return res.jsonResponse(allocator, .{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Workspace item not found" }) });
             }
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

@@ -1,109 +1,75 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const workspace_item_tasks = nalarcore.workspace_item_tasks;
 const http_response = nalarcore.http_response;
 
-const httpz = http_server.httpz;
-
 /// PUT /api/workspaces/tasks/:task_id - Update task by ID only (no workspace/item needed)
-pub fn tasksUpdateByIdHandler(
-    _: *http_server.HttpServer.ServerHandler,
-    req: *httpz.Request,
-    res: *httpz.Response,
-) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn tasksUpdateByIdHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const task_id = req.param("task_id") orelse "";
+    const task_id = req.params.get("task_id") orelse "";
     if (task_id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "task_id required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "task_id required" }) });
     }
 
     // Parse request body
-    const body = req.body() orelse "";
+    const body = req.body;
     if (body.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Request body required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }) });
     }
 
-    const json_body = std.json.parseFromSliceLeaky(http_response.TaskUpdateRequest, alloc, body, .{}) catch {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON" });
-        return;
+    const json_body = std.json.parseFromSliceLeaky(http_response.TaskUpdateRequest, allocator, body, .{}) catch {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            workspace_item_tasks.updateWorkspaceItemTask(alloc, sqlite_db, task_id, json_body.name, json_body.session_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to update task" });
-                return;
+            workspace_item_tasks.updateWorkspaceItemTask(allocator, sqlite_db, task_id, json_body.name, json_body.session_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update task" }) });
             };
 
-            res.status = 200;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"success\":true,\"id\":\"{s}\"}}", .{task_id});
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"id\":\"{s}\"}}", .{task_id}) });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }
 
 /// PUT /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id
-pub fn tasksUpdateHandler(
-    _: *http_server.HttpServer.ServerHandler,
-    req: *httpz.Request,
-    res: *httpz.Response,
-) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn tasksUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const task_id = req.param("task_id") orelse "";
+    const task_id = req.params.get("task_id") orelse "";
     if (task_id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "task_id required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "task_id required" }) });
     }
 
     // Parse request body
-    const body = req.body() orelse "";
+    const body = req.body;
     if (body.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Request body required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }) });
     }
 
-    const json_body = std.json.parseFromSliceLeaky(http_response.TaskUpdateRequest, alloc, body, .{}) catch {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON" });
-        return;
+    const json_body = std.json.parseFromSliceLeaky(http_response.TaskUpdateRequest, allocator, body, .{}) catch {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            workspace_item_tasks.updateWorkspaceItemTask(alloc, sqlite_db, task_id, json_body.name, json_body.session_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to update task" });
-                return;
+            workspace_item_tasks.updateWorkspaceItemTask(allocator, sqlite_db, task_id, json_body.name, json_body.session_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update task" }) });
             };
 
-            res.status = 200;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"success\":true,\"id\":\"{s}\"}}", .{task_id});
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"id\":\"{s}\"}}", .{task_id}) });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

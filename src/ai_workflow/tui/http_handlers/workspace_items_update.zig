@@ -1,40 +1,27 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const workspace_items = nalarcore.workspace_items;
 const http_response = nalarcore.http_response;
 
-const httpz = http_server.httpz;
-
 /// PUT /api/workspaces/:workspace_id/items/:item_id - Update a workspace item
-pub fn workspaceItemsUpdateHandler(
-    _: *http_server.HttpServer.ServerHandler,
-    req: *httpz.Request,
-    res: *httpz.Response,
-) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const item_id = req.param("item_id") orelse "";
+    const item_id = req.params.get("item_id") orelse "";
     if (item_id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "item_id required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
     }
 
-    const body = req.body() orelse "";
+    const body = req.body;
     if (body.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Request body required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }) });
     }
 
-    const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON" });
-        return;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
     defer parsed.deinit();
 
@@ -42,56 +29,43 @@ pub fn workspaceItemsUpdateHandler(
 
     // Get item_type (required in update)
     const item_type_val = root.get("item_type") orelse {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "item_type required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_type required" }) });
     };
     if (item_type_val != .string) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "item_type must be a string" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_type must be a string" }) });
     }
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
             // Check if item exists first
-            const existing = workspace_items.getWorkspaceItem(alloc, sqlite_db, item_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to fetch workspace item" });
-                return;
+            const existing = workspace_items.getWorkspaceItem(allocator, sqlite_db, item_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspace item" }) });
             };
 
             if (existing == null) {
-                res.status = 404;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Workspace item not found" });
-                return;
+                return res.jsonResponse(allocator, .{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Workspace item not found" }) });
             }
-            defer existing.?.deinit(alloc);
+            defer existing.?.deinit(allocator);
 
             // Get the current workspace_id for the update
             const current_workspace_id = existing.?.workspace_id;
 
             // Update the item
-            workspace_items.updateWorkspaceItem(alloc, sqlite_db, item_id, current_workspace_id, item_type_val.string) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to update workspace item" });
-                return;
+            workspace_items.updateWorkspaceItem(allocator, sqlite_db, item_id, current_workspace_id, item_type_val.string) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update workspace item" }) });
             };
 
-            res.status = 200;
-            res.body = try http_response.makeWorkspaceItemGetResponse(alloc, .{
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try http_response.makeWorkspaceItemGetResponse(allocator, .{
                 .id = item_id,
                 .workspace_id = current_workspace_id,
                 .item_type = item_type_val.string,
                 .created_at = null,
                 .updated_at = null,
-            });
-            return;
+            }) });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

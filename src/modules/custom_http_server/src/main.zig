@@ -10,33 +10,33 @@ pub fn main(init: std.process.Init) void {
     };
 }
 
-const custom = struct {
-    id: u64,
-};
-
-// Handlers - (ctx, req, res, custom_data) -> !HttpResponse
-fn indexHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, data: *anyopaque) !gserverz.HttpResponse {
+// Handlers - (ctx, req, res) -> !HttpResponse
+fn indexHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     _ = req;
-    const custom_ctx: *const custom = @ptrCast(@alignCast(data));
-
-    const text = std.fmt.allocPrint(ctx.allocator, "ID: {d}", .{custom_ctx.id}) catch {
+    const text = std.fmt.allocPrint(ctx.allocator, "ID: {d}", .{100}) catch {
         return gserverz.response.internalError("Failed to format", ctx.allocator);
     };
     return res.withBody(text);
 }
 
-fn healthHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+fn healthHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     _ = req;
     return res.withBody("OK");
 }
 
-fn helloHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
-    _ = req;
-    return res.withBody("Hello, HTTP!");
+fn helloHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    const name = req.query.get("name") orelse "HTTP";
+    const greeting = req.query.get("greeting") orelse "hello";
+    const mood = req.query.get("mood") orelse "neutral";
+
+    const text = std.fmt.allocPrint(ctx.allocator, "Hello, {s}! (greeting: {s}, mood: {s})", .{ name, greeting, mood }) catch {
+        return gserverz.response.internalError("Failed to format", ctx.allocator);
+    };
+    return res.withBody(text);
 }
 
-fn helloNameHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
-    const name = req.params.get("name") orelse "unknown";
+fn helloNameHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    const name = req.query.get("name") orelse req.params.get("name") orelse "unknown";
     const greeting = req.query.get("greeting") orelse "hello";
     const mood = req.query.get("mood") orelse "neutral";
 
@@ -52,7 +52,7 @@ const User = struct {
     email: []const u8 = "",
 };
 
-fn createUserHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+fn createUserHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
     // Parse JSON body directly into a struct
@@ -67,7 +67,7 @@ fn createUserHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
 }
 
 /// SSE streaming handler
-fn sseStreamHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, _: *anyopaque) void {
+fn sseStreamHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest) void {
     const messages = [_][]const u8{
         "Hello from SSE!",
         "This is event 2",
@@ -96,14 +96,12 @@ pub fn run(init: std.process.Init) !void {
     std.debug.print("Test with: curl http://127.0.0.1:29584/\n", .{});
     std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
-    const custom_ctx = custom{ .id = 100 };
-
-    try gs.router.get("/hello", helloHandler, custom_ctx);
-    try gs.router.get("/health", healthHandler, .{});
-    try gs.router.get("/hello/:name", helloNameHandler, .{});
-    try gs.router.post("/users", createUserHandler, .{});
-    try gs.router.get("/", indexHandler, custom_ctx);
-    try gs.router.sse("/stream", sseStreamHandler, .{});
+    try gs.router.get("/hello", helloHandler);
+    try gs.router.get("/health", healthHandler);
+    try gs.router.get("/hello/:name", helloNameHandler);
+    try gs.router.post("/users", createUserHandler);
+    try gs.router.get("/", indexHandler);
+    try gs.router.sse("/stream", sseStreamHandler);
 
     try gs.listen();
 }

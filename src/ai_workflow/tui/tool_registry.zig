@@ -1,5 +1,7 @@
 const std = @import("std");
 const nalar_mod = @import("nalarcore");
+const models = @import("models.zig");
+const ai_workflow = @import("workflow.zig");
 const agent = nalar_mod.agent;
 const tool_models = nalar_mod.tool_models;
 const sqlite = nalar_mod.sqlite;
@@ -7,7 +9,6 @@ const logger_mod = nalar_mod.logger;
 const config_mod = nalar_mod.config;
 const spawn_sub_agent_tool = nalar_mod.spawn_sub_agent;
 const llm_history = nalar_mod.llm_history;
-const ai_workflow = nalar_mod.ai_workflow;
 
 // Tool imports for exec functions and tool_defs
 const bash_tool_mod = nalar_mod.bash_tool;
@@ -57,7 +58,7 @@ pub const ToolExecContext = struct {
     agent_temperature: *f32,
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
-    active_loops: *ai_workflow.ActiveLoops,
+    active_loops: *models.ActiveLoops,
 };
 
 /// Tool execution result with optional agent state changes
@@ -593,7 +594,7 @@ const SubAgentThreadArgs = struct {
     thread_idx: usize,
     shared_results: *SharedResults,
     environment: ?*const std.process.Environ.Map,
-    active_loops: *ai_workflow.ActiveLoops,
+    active_loops: *models.ActiveLoops,
 };
 
 // Shared result storage for thread synchronization

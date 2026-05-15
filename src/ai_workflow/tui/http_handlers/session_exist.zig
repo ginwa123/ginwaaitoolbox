@@ -1,31 +1,23 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-const nalarcore = root_mod;
-const ai_workflow = nalarcore.ai_workflow;
-
-const httpz = http_server.httpz;
-const tui_check_session_exists = nalarcore.tui_check_session_exists;
+const gserverz = root_mod.gserverz;
+const tui_check_session_exists = root_mod.tui_check_session_exists;
+const http_response = root_mod.http_response;
 
 /// Check if a session exists in the database
-pub fn session_exist_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    res.content_type = .JSON;
-    const session_id = req.param("session_id") orelse {
-        res.status = 400;
-        res.body = "{\"error\":\"Missing session_id\"}";
-        return;
+pub fn session_exist_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+    const session_id = req.params.get("session_id") orelse {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*root_mod.ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
-            const exists = tui_check_session_exists.check_session_exists(server.allocator, sqlite_db, session_id);
-            res.status = 200;
-            res.body = try std.fmt.allocPrint(req.arena, "{{\"session_id\":\"{s}\",\"exists\":{s}}}", .{ session_id, if (exists) "true" else "false" });
-            return;
+            const exists = tui_check_session_exists.check_session_exists(allocator, sqlite_db, session_id);
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"session_id\":\"{s}\",\"exists\":{s}}}", .{ session_id, if (exists) "true" else "false" }) });
         }
     }
-    res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

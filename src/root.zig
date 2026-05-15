@@ -88,9 +88,8 @@ pub const http_server = @import("modules/http_server/HttpServer.zig");
 pub const http_client = @import("modules/http/HttpClient.zig");
 pub const logger = @import("modules/logger/Logger.zig");
 pub const migrations = @import("ai_workflow/tui/migration.zig");
-pub const ai_workflow = @import("ai_workflow/tui/workflow.zig");
 pub const session_monitor = @import("modules/session/SessionMonitor.zig");
-pub const skills = @import("modules/agent/tools/skills.zig");
+pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
 pub const add_agent = @import("modules/agent/tools/add_agent.zig");
@@ -127,6 +126,7 @@ pub const http_response = @import("ai_workflow/tui/http_handlers/http_response.z
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
 pub const gserverz = @import("modules/custom_http_server/src/http_server.zig");
+pub const ai_mod = @import("ai_workflow/tui/mod.zig");
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");

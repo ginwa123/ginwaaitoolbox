@@ -19,7 +19,7 @@ const SetAgentProperties = nalar_mod.set_agent_properties;
 const ListSkillsTool = nalar_mod.list_skills_tool;
 const GetSkillTool = nalar_mod.get_skill_tool;
 const RemoveSkillTool = nalar_mod.remove_skill_tool;
-const skills = nalar_mod.skills;
+const skill_mod = nalar_mod.skill_mod;
 const bash_helper = nalar_mod.helperTool;
 const helpers = nalar_mod.helpers;
 const logger_mod = nalar_mod.logger;
@@ -60,6 +60,7 @@ const handle_tool = @import("handle_tool.zig").handle_tool;
 const SpawnSubAgentTool = nalar_mod.agents;
 const tool_registry = @import("tool_registry.zig");
 const session_table = @import("session_table.zig");
+pub const m = @import("models.zig");
 
 // Thread-safe set of active session loop IDs
 pub const StreamingContext = struct {

@@ -1,75 +1,53 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const workspace_item_tasks = nalarcore.workspace_item_tasks;
 const http_response = nalarcore.http_response;
 
-const httpz = http_server.httpz;
-
 /// POST /api/workspaces/:workspace_id/items/:item_id/tasks
-pub fn tasksCreateHandler(
-    self: *http_server.HttpServer.ServerHandler,
-    req: *httpz.Request,
-    res: *httpz.Response,
-) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const item_id = req.param("item_id") orelse "";
+    const item_id = req.params.get("item_id") orelse "";
     if (item_id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "item_id required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
     }
 
     // Parse request body
-    const body = req.body() orelse "";
+    const body = req.body;
     if (body.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Request body required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }) });
     }
 
-    const json_body = std.json.parseFromSliceLeaky(http_response.TaskCreateRequest, alloc, body, .{}) catch {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON" });
-        return;
+    const json_body = std.json.parseFromSliceLeaky(http_response.TaskCreateRequest, allocator, body, .{}) catch {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
 
-    // Generate task ID using timestamp from handler's io
-    const ts = std.Io.Timestamp.now(self.io, .real);
-    const task_id = try std.fmt.allocPrint(alloc, "task_{d}", .{@divTrunc(ts.nanoseconds, 1_000_000)});
+    // Generate task ID using timestamp
+    const ts = std.Io.Timestamp.now(ctx.io, .real);
+    const task_id = try std.fmt.allocPrint(allocator, "task_{d}", .{@divTrunc(ts.nanoseconds, 1_000_000)});
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            const task = workspace_item_tasks.createWorkspaceItemTask(alloc, sqlite_db, task_id, json_body.name, item_id, json_body.session_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to create task" });
-                return;
+            const task = workspace_item_tasks.createWorkspaceItemTask(allocator, sqlite_db, task_id, json_body.name, item_id, json_body.session_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
             };
-            defer task.deinit(alloc);
+            defer task.deinit(allocator);
 
-            res.status = 201;
-            res.body = try http_response.makeWorkspaceItemTaskResponse(alloc, http_response.WorkspaceItemTaskResponse{
+            return res.jsonResponse(allocator, .{ .status_code = 201, .data = try http_response.makeWorkspaceItemTaskResponse(allocator, http_response.WorkspaceItemTaskResponse{
                 .id = task.id,
                 .name = task.name,
                 .workspace_item_id = task.workspace_item_id,
                 .session_id = task.session_id,
                 .created_at = task.created_at,
                 .updated_at = task.updated_at,
-            });
-            return;
+            }) });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
-}
-
-fn useCase(alloc: std.mem.Allocator) !void {
-    _ = alloc;
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

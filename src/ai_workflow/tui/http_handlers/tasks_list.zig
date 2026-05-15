@@ -1,50 +1,39 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const workspace_item_tasks = nalarcore.workspace_item_tasks;
 const http_response = nalarcore.http_response;
 
-const httpz = http_server.httpz;
-
 /// GET /api/workspaces/:workspace_id/items/:item_id/tasks
-pub fn tasksListHandler(
-    _: *http_server.HttpServer.ServerHandler,
-    req: *httpz.Request,
-    res: *httpz.Response,
-) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const item_id = req.param("item_id") orelse "";
+    const item_id = req.params.get("item_id") orelse "";
     if (item_id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "item_id required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
     }
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            const tasks = workspace_item_tasks.listWorkspaceItemTasks(alloc, sqlite_db, item_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to fetch tasks" });
-                return;
+            const tasks = workspace_item_tasks.listWorkspaceItemTasks(allocator, sqlite_db, item_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch tasks" }) });
             };
             defer {
-                for (tasks) |task| task.deinit(alloc);
-                alloc.free(tasks);
+                for (tasks) |task| task.deinit(allocator);
+                allocator.free(tasks);
             }
 
             // Convert to response format
             var task_responses = std.ArrayList(http_response.WorkspaceItemTaskResponse).empty;
-            defer task_responses.deinit(alloc);
+            defer task_responses.deinit(allocator);
 
             for (tasks) |task| {
-                try task_responses.append(alloc, http_response.WorkspaceItemTaskResponse{
+                try task_responses.append(allocator, http_response.WorkspaceItemTaskResponse{
                     .id = task.id,
                     .name = task.name,
                     .workspace_item_id = task.workspace_item_id,
@@ -54,11 +43,8 @@ pub fn tasksListHandler(
                 });
             }
 
-            res.status = 200;
-            res.body = try http_response.makeWorkspaceItemTaskListResponse(alloc, task_responses.items);
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try http_response.makeWorkspaceItemTaskListResponse(allocator, task_responses.items) });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

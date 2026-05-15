@@ -1,30 +1,23 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const session_registry = root_mod.session.session_registry;
-
-const httpz = http_server.httpz;
 
 /// Cancel a running worker
 /// Path params:
 ///   - session_id: worker ID to cancel
 /// Returns JSON with cancellation result
-pub fn worker_cancel_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn worker_cancel_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const session_id = req.param("session_id") orelse {
-        res.status = 400;
-        res.body = "{\"error\":\"Missing session_id\"}";
-        return;
+    const session_id = req.params.get("session_id") orelse {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
     };
 
     // Check if session exists
     if (session_registry.get_global_registry()) |registry| {
         if (!registry.is_registered(session_id)) {
-            res.status = 404;
-            res.body = "{\"error\":\"Worker not found\"}";
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 404, .data = "{\"error\":\"Worker not found\"" });
         }
     }
 
@@ -34,9 +27,7 @@ pub fn worker_cancel_handler(_: *http_server.HttpServer.ServerHandler, req: *htt
         registry.mark_stopped(session_id);
     }
 
-    res.status = 200;
-    res.body = try std.fmt.allocPrint(alloc,
+    return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
         "{{\"id\":\"{s}\",\"cancelled\":true}}",
-        .{session_id}
-    );
+        .{session_id}) });
 }

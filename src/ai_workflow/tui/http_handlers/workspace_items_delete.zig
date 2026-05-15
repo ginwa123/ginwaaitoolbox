@@ -1,60 +1,42 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const workspace_items = nalarcore.workspace_items;
 const http_response = nalarcore.http_response;
 
-const httpz = http_server.httpz;
-
 /// DELETE /api/workspaces/:workspace_id/items/:item_id - Delete a workspace item
-pub fn workspaceItemsDeleteHandler(
-    _: *http_server.HttpServer.ServerHandler,
-    req: *httpz.Request,
-    res: *httpz.Response,
-) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn workspaceItemsDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const item_id = req.param("item_id") orelse "";
+    const item_id = req.params.get("item_id") orelse "";
     if (item_id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "item_id required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
     }
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
             // Check if item exists first
-            const existing = workspace_items.getWorkspaceItem(alloc, sqlite_db, item_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to fetch workspace item" });
-                return;
+            const existing = workspace_items.getWorkspaceItem(allocator, sqlite_db, item_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspace item" }) });
             };
 
             if (existing == null) {
-                res.status = 404;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Workspace item not found" });
-                return;
+                return res.jsonResponse(allocator, .{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Workspace item not found" }) });
             }
-            defer existing.?.deinit(alloc);
+            defer existing.?.deinit(allocator);
 
             // Delete the item
-            workspace_items.deleteWorkspaceItem(alloc, sqlite_db, item_id) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to delete workspace item" });
-                return;
+            workspace_items.deleteWorkspaceItem(allocator, sqlite_db, item_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to delete workspace item" }) });
             };
 
-            res.status = 200;
-            res.body = try http_response.makeWorkspaceItemResponse(alloc, .{ .id = item_id });
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try http_response.makeWorkspaceItemResponse(allocator, .{ .id = item_id }) });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

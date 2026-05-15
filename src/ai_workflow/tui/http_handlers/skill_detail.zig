@@ -1,9 +1,8 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-const skills = root_mod.skills;
-
-const httpz = http_server.httpz;
+const http_response = @import("http_response.zig");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const skill_mod = nalarcore.skill_mod;
 
 /// Response structure for skill detail endpoint
 pub const SkillDetailResponse = struct {
@@ -22,52 +21,42 @@ pub const SkillDetail = struct {
 
 /// GET /api/skills/:name - Get detailed skill information including full content
 /// Searches both global (~/.config/nalar/skills/) and local (.nalar/skills/) directories
-pub fn skillDetailHandler(self: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
     // Get skill name from path parameter
-    const skill_name = req.param("name") orelse {
-        res.status = 400;
-        const response = SkillDetailResponse{ .error_message = "Skill name is required" };
-        res.body = try std.json.Stringify.valueAlloc(alloc, response, .{});
-        return;
+    const skill_name = req.params.get("name") orelse {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = "Skill name is required" }, .{}) });
     };
 
-    // Get environment from server
-    const environment = self.server.environment;
+    const di = try nalarcore.ai_mod.models.getSingleton();
+    const environment = di.environment;
 
     // Get global and local skills paths
-    const global_path = skills.get_global_skills_path_from_env(alloc, environment);
-    defer if (global_path) |p| alloc.free(p);
+    const global_path = skill_mod.get_global_skills_path_from_env(allocator, environment.?);
+    defer if (global_path) |p| allocator.free(p);
 
-    const local_path = skills.get_local_skills_path_from_io(alloc, self.io);
-    defer if (local_path) |p| alloc.free(p);
+    const local_path = skill_mod.get_local_skills_path_from_io(allocator, ctx.io);
+    defer if (local_path) |p| allocator.free(p);
 
     // Try to find the skill in global directory first
     if (global_path) |path| {
-        if (try findSkillByName(alloc, self.io, path, skill_name)) |detail| {
-            res.status = 200;
-            const response = SkillDetailResponse{ .skill = detail };
-            res.body = try std.json.Stringify.valueAlloc(alloc, response, .{});
-            return;
+        if (try findSkillByName(allocator, ctx.io, path, skill_name)) |detail| {
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail }, .{}) });
         }
     }
 
     // Try local directory
     if (local_path) |path| {
-        if (try findSkillByName(alloc, self.io, path, skill_name)) |detail| {
-            res.status = 200;
-            const response = SkillDetailResponse{ .skill = detail };
-            res.body = try std.json.Stringify.valueAlloc(alloc, response, .{});
-            return;
+        if (try findSkillByName(allocator, ctx.io, path, skill_name)) |detail| {
+            var detail_with_scope = detail;
+            detail_with_scope.is_global = false;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail_with_scope }, .{}) });
         }
     }
 
     // Skill not found
-    res.status = 404;
-    const response = SkillDetailResponse{ .error_message = try std.fmt.allocPrint(alloc, "Skill '{s}' not found", .{skill_name}) };
-    res.body = try std.json.Stringify.valueAlloc(alloc, response, .{});
+    return res.jsonResponse(allocator, .{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found", .{skill_name}) }, .{}) });
 }
 
 /// Find a skill by name in the given directory
@@ -99,7 +88,7 @@ fn findSkillByName(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u
         if (content.len == 0) continue;
 
         // Parse YAML frontmatter
-        if (skills.parseYamlFrontmatter(allocator, content)) |parsed| {
+        if (skill_mod.parseYamlFrontmatter(allocator, content)) |parsed| {
             // The content from parseYamlFrontmatter has already extracted name/description
             // We return the full content including frontmatter
             const path_copy = try allocator.dupe(u8, skill_file_path);
@@ -122,14 +111,4 @@ fn findSkillByName(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u
     }
 
     return null;
-}
-
-/// Find a skill by name and return whether it's global or local
-/// is_global parameter indicates if searching global directory
-fn findSkillByNameWithScope(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8, skill_name: []const u8, is_global: bool) !?SkillDetail {
-    const detail = try findSkillByName(allocator, io, dir_path, skill_name);
-    if (detail) |*d| {
-        d.is_global = is_global;
-    }
-    return detail;
 }

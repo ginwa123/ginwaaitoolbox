@@ -3,11 +3,11 @@ const http_parser = @import("http_parser.zig");
 
 pub const Self = @This();
 
-/// Handler fn: (server_ctx, request, response, route_context) -> anyerror!void
-pub const HandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse, custom_data: *anyopaque) anyerror!http_parser.HttpResponse;
+/// Handler fn: (server_ctx, request, response) -> anyerror!void
+pub const HandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse;
 
 /// SSE streaming handler
-pub const SseHandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest, custom_data: *anyopaque) void;
+pub const SseHandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest) void;
 
 /// Route type to distinguish SSE from regular handlers
 pub const RouteType = enum {
@@ -26,10 +26,9 @@ pub const Route = struct {
     handler: HandlerFn = defaultHandler,
     sse_handler: ?SseHandlerFn = null,
     route_type: RouteType = .regular,
-    context: *anyopaque = undefined,
 };
 
-pub fn defaultHandler(_: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse, _: *anyopaque) anyerror!http_parser.HttpResponse {
+pub fn defaultHandler(_: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
     _ = req;
     return res.withBody("");
 }
@@ -46,43 +45,36 @@ pub fn deinit(self: *Self) void {
 }
 
 /// Add a GET route with generic context support
-pub fn get(self: *Self, path: []const u8, handler: anytype, context: anytype) !void {
-    return self.addRouteInternal("GET", path, handler, context);
+pub fn get(self: *Self, path: []const u8, handler: anytype) !void {
+    return self.addRouteInternal("GET", path, handler);
 }
 
 /// Add a POST route with generic context support
-pub fn post(self: *Self, path: []const u8, handler: anytype, context: anytype) !void {
-    return self.addRouteInternal("POST", path, handler, context);
+pub fn post(self: *Self, path: []const u8, handler: anytype) !void {
+    return self.addRouteInternal("POST", path, handler);
 }
 
 /// Add a PUT route with generic context support
-pub fn put(self: *Self, path: []const u8, handler: anytype, context: anytype) !void {
-    return self.addRouteInternal("PUT", path, handler, context);
+pub fn put(self: *Self, path: []const u8, handler: anytype) !void {
+    return self.addRouteInternal("PUT", path, handler);
 }
 
 /// Add a DELETE route with generic context support
-pub fn delete(self: *Self, path: []const u8, handler: anytype, context: anytype) !void {
-    return self.addRouteInternal("DELETE", path, handler, context);
+pub fn delete(self: *Self, path: []const u8, handler: anytype) !void {
+    return self.addRouteInternal("DELETE", path, handler);
 }
 
 /// Add a PATCH route with generic context support
-pub fn patch(self: *Self, path: []const u8, handler: anytype, context: anytype) !void {
-    return self.addRouteInternal("PATCH", path, handler, context);
+pub fn patch(self: *Self, path: []const u8, handler: anytype) !void {
+    return self.addRouteInternal("PATCH", path, handler);
 }
 
 /// Add an SSE streaming route
-pub fn sse(self: *Self, path: []const u8, handler: anytype, context: anytype) !void {
-    const ContextType = @TypeOf(context);
-
-    // Box the context
-    const boxed_ctx = try self.arena.create(ContextType);
-    boxed_ctx.* = context;
-
+pub fn sse(self: *Self, path: []const u8, handler: anytype) !void {
     // For SSE, we use a wrapper that receives the client_fd
     const WrappedSseHandler = struct {
-        fn wrapped(ctx: http_parser.HttpContext, req: http_parser.HttpRequest, ctx_ptr: *anyopaque) void {
-            const typed_ctx: *ContextType = @ptrCast(@alignCast(ctx_ptr));
-            @call(.auto, handler, .{ ctx, req, typed_ctx });
+        fn wrapped(ctx: http_parser.HttpContext, req: http_parser.HttpRequest) void {
+            @call(.auto, handler, .{ ctx, req });
         }
     };
 
@@ -92,24 +84,15 @@ pub fn sse(self: *Self, path: []const u8, handler: anytype, context: anytype) !v
         .handler = undefined, // SSE routes don't use regular handler
         .sse_handler = WrappedSseHandler.wrapped,
         .route_type = .sse,
-        .context = @ptrCast(boxed_ctx),
     });
 }
 
 /// Generic internal route adder - boxes context and creates typed handler wrapper
-fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: anytype, context: anytype) !void {
-    const ContextType = @TypeOf(context);
-
-    // Box the context - store it on the heap/arena
-    const boxed_ctx = try self.arena.create(ContextType);
-    boxed_ctx.* = context;
-
-    // Create a typed handler wrapper that passes context correctly
+fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: anytype) !void {
+    // Create a typed handler wrapper
     const WrappedHandler = struct {
-        fn wrapped(ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse, ctx_ptr: *anyopaque) anyerror!http_parser.HttpResponse {
-            const typed_ctx: *ContextType = @ptrCast(@alignCast(ctx_ptr));
-            // Call the original handler with context, request, response and typed context
-            return try @call(.auto, handler, .{ ctx, req, res, typed_ctx });
+        fn wrapped(ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return try @call(.auto, handler, .{ ctx, req, res });
         }
     };
 
@@ -118,7 +101,6 @@ fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: 
         .path = path,
         .handler = WrappedHandler.wrapped,
         .route_type = .regular,
-        .context = @ptrCast(boxed_ctx),
     });
 }
 
@@ -128,12 +110,10 @@ pub const RouteResult = union(enum) {
         handler: HandlerFn,
         ctx: http_parser.HttpContext,
         res: http_parser.HttpResponse,
-        custom_data: *anyopaque,
     },
     sse: struct {
         handler: SseHandlerFn,
         ctx: http_parser.HttpContext,
-        custom_data: *anyopaque,
     },
 };
 
@@ -143,19 +123,19 @@ pub fn matchRoute(self: *Self, req_method: []const u8, req_path: []const u8, req
         // Try exact match first
         if (std.mem.eql(u8, req_method, route.method) and std.mem.eql(u8, req_path, route.path)) {
             if (route.sse_handler) |sseHandler| {
-                return .{ .sse = .{ .handler = sseHandler, .ctx = ctx, .custom_data = route.context } };
+                return .{ .sse = .{ .handler = sseHandler, .ctx = ctx } };
             }
             const res = http_parser.HttpResponse.init(200, "OK", ctx.allocator);
-            return .{ .handler = .{ .handler = route.handler, .ctx = ctx, .res = res, .custom_data = route.context } };
+            return .{ .handler = .{ .handler = route.handler, .ctx = ctx, .res = res } };
         }
 
         // Try pattern matching with params (e.g., /hello/:name)
         if (std.mem.eql(u8, req_method, route.method) and matchPathWithParams(route.path, req_path, &req.params)) {
             if (route.sse_handler) |sseHandler| {
-                return .{ .sse = .{ .handler = sseHandler, .ctx = ctx, .custom_data = route.context } };
+                return .{ .sse = .{ .handler = sseHandler, .ctx = ctx } };
             }
             const res = http_parser.HttpResponse.init(200, "OK", ctx.allocator);
-            return .{ .handler = .{ .handler = route.handler, .ctx = ctx, .res = res, .custom_data = route.context } };
+            return .{ .handler = .{ .handler = route.handler, .ctx = ctx, .res = res } };
         }
     }
     return null;

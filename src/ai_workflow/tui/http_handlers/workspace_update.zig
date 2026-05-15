@@ -1,68 +1,50 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const http_response = nalarcore.http_response;
 
-const httpz = http_server.httpz;
-
 /// PUT /api/workspaces/:id
-pub fn workspaceUpdateHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn workspaceUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const id = req.param("id") orelse "";
+    const id = req.params.get("id") orelse "";
     if (id.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "id is required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "id is required" }) });
     }
 
-    const body = req.body() orelse "";
+    const body = req.body;
 
     if (body.len == 0) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "name is required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name is required" }) });
     }
 
-    const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON" });
-        return;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
     defer parsed.deinit();
 
     const root = parsed.value.object;
 
     const name_val = root.get("name") orelse {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "name is required" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name is required" }) });
     };
     if (name_val != .string) {
-        res.status = 400;
-        res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "name must be a string" });
-        return;
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name must be a string" }) });
     }
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            sqlite_db.exec(alloc, "UPDATE workspaces SET name = ?, updated_at = datetime('now') WHERE id = ?", &.{ name_val.string, id }) catch {
-                res.status = 500;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Failed to update workspace" });
-                return;
+            sqlite_db.exec(allocator, "UPDATE workspaces SET name = ?, updated_at = datetime('now') WHERE id = ?", &.{ name_val.string, id }) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update workspace" }) });
             };
 
-            res.status = 200;
-            res.body = try std.fmt.allocPrint(alloc, "{{\"success\":true,\"id\":\"{s}\",\"name\":\"{s}\"}}", .{ id, name_val.string });
-            return;
+            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"id\":\"{s}\",\"name\":\"{s}\"}}", .{ id, name_val.string }) });
         }
     }
-    res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = "{\"error\":\"Server not initialized\"" });
 }

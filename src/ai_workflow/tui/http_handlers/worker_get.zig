@@ -1,49 +1,38 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
-
-const httpz = http_server.httpz;
 const llm_history = nalarcore.llm_history;
 
 /// Get a worker by session_id
-pub fn worker_get_handler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn worker_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
 
-    const session_id = req.param("session_id") orelse {
-        res.status = 400;
-        res.body = "{\"error\":\"Missing session_id\"}";
-        return;
+    const session_id = req.params.get("session_id") orelse {
+        return res.jsonResponse(allocator, .{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"" });
     };
 
-    if (http_server.global_server) |server| {
-        if (server.ctx) |ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
+    if (gserverz.global_server) |server| {
+        if (server.ctx) |server_ctx| {
+            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
             const sqlite_db = ctxTui.db;
 
-            const worker = llm_history.getWorkerBySessionId(alloc, sqlite_db, session_id) catch {
-                res.status = 500;
-                res.body = "{\"error\":\"Database query failed\"}";
-                return;
+            const worker = llm_history.getWorkerBySessionId(allocator, sqlite_db, session_id) catch {
+                return res.jsonResponse(allocator, .{ .status_code = 500, .data = "{\"error\":\"Database query failed\"" });
             };
 
             if (worker) |w| {
-                const response = try std.fmt.allocPrint(alloc,
+                const response = try std.fmt.allocPrint(allocator,
                     "{{\"sessionId\":\"{s}\",\"workingDirectory\":\"{s}\",\"lastActivity\":{},\"lastActivityDescription\":\"{s}\"}}",
                     .{ w.session_id, w.working_directory, w.last_activity, w.last_activity_description }
                 );
-                w.deinit(alloc);
-                res.status = 200;
-                res.body = response;
+                w.deinit(allocator);
+                return res.jsonResponse(allocator, .{ .status_code = 200, .data = response });
             } else {
-                res.status = 404;
-                res.body = "{\"error\":\"Worker not found\"}";
+                return res.jsonResponse(allocator, .{ .status_code = 404, .data = "{\"error\":\"Worker not found\"" });
             }
-            return;
         }
     }
-    res.status = 500;
-    res.body = "{\"error\":\"Server not initialized\"}";
+    return res.jsonResponse(allocator, .{ .status_code = 500, .data = "{\"error\":\"Server not initialized\"" });
 }
