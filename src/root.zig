@@ -126,6 +126,7 @@ pub const workspace_item_tasks = @import("ai_workflow/tui/workspace_item_tasks_t
 pub const http_response = @import("ai_workflow/tui/http_handlers/http_response.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
+pub const gserverz = @import("modules/custom_http_server/src/http_server.zig");
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");

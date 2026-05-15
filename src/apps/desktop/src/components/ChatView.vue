@@ -898,7 +898,7 @@ const compactSession = async () => {
     </div>
 
     <!-- Folder Explorer (sidebar on right side) -->
-    <FolderExplorer :cwd="explorerCwd" />
+    <!-- <FolderExplorer :cwd="explorerCwd" /> -->
   </div>
 </template>
 

@@ -15,6 +15,7 @@ const helpers = nalar_mod.helpers;
 const config = nalar_mod.config;
 const llm_history = nalar_mod.llm_history;
 const startup = nalar_mod.ai_workflow.startup;
+const gserverz = nalar_mod.gserverz;
 
 pub fn main(init: std.process.Init) !void {
     const arena_allocator = init.arena;
@@ -122,71 +123,132 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var server = http_server.HttpServer.init(parent_allocator, io, ctxParent, port, environment);
+    // var server = http_server.HttpServer.init(parent_allocator, io, ctxParent, port, environment);
+    //
+    // // Start the SSE cleanup background thread
+    // server.startSseCleanupThread() catch |err| {
+    //     std.log.err("Failed to start SSE cleanup thread: {s}", .{@errorName(err)});
+    //     // Non-fatal - server can still run without cleanup
+    // };
 
-    // Start the SSE cleanup background thread
-    server.startSseCleanupThread() catch |err| {
-        std.log.err("Failed to start SSE cleanup thread: {s}", .{@errorName(err)});
-        // Non-fatal - server can still run without cleanup
-    };
-
-    startup(parent_allocator, &server) catch |err| {
+    startup(parent_allocator, io, environment, dbSqlite, llm_config, ctxParent) catch |err| {
         std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});
     };
 
-    const HttpRoutes = struct {
-        pub fn setup(http_port: u16, router: anytype) !void {
-            std.log.info("HTTP server listening on http://127.0.0.1:{d}/", .{http_port});
-            router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
-            router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
-            router.options("/api/session", http_handlers.corsPreflightHandler, .{});
-            router.post("/api/session", http_handlers.sessionCreateHandler, .{});
-            router.get("/api/session", http_handlers.sessionListHandler, .{});
-            router.get("/api/session/stream", http_handlers.sessionStreamHandler, .{});
-            router.get("/api/session/:session_id", http_handlers.session_get_handler, .{});
-            router.get("/api/session/:session_id/messages", http_handlers.session_message_handler, .{});
-            router.get("/api/session/exists/:session_id", http_handlers.session_exist_handler, .{});
-            router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, .{});
-            router.post("/api/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
-            router.post("/api/session/:session_id/compact", http_handlers.sessionCompactHandler, .{});
-            router.get("/api/session/:session_id/queue/messages", http_handlers.sessionQueueGetHandler, .{});
-            router.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, .{});
-            router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
+    const address = try gserverz.Address.init(29584);
+    const gs = try gserverz.GinwaServer.init(parent_allocator, io, address);
+    defer gs.deinit();
 
-            // Worker API
-            router.get("/api/workers", http_handlers.worker_list_handler, .{});
+    std.debug.print("HTTP Server listening on 127.0.0.1:29584...\n", .{});
+    std.debug.print("Test with: curl http://127.0.0.1:29584/\n", .{});
+    std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
-            // LLM API aliases (desktop app uses /api/llm/*)
-            router.post("/api/llm/session", http_handlers.sessionCreateHandler, .{});
-            router.get("/api/llm/session", http_handlers.sessionListHandler, .{});
-            router.get("/api/llm/session/:session_id/messages", http_handlers.session_message_handler, .{});
-            router.get("/api/llm/stream/:session_id", http_handlers.streamHandler, .{});
-            router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
+    // try gs.router.get("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
+    // try gs.router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
+    // try gs.router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
+    // try gs.router.options("/api/session", http_handlers.corsPreflightHandler, .{});
+    try gs.router.post("/api/session", http_handlers.sessionCreateHandler, .{});
+    try gs.router.get("/api/session", http_handlers.sessionListHandler, .{});
+    try gs.router.get("/api/session/stream", http_handlers.sessionStreamHandler, .{});
+    try gs.router.get("/api/session/:session_id", http_handlers.session_get_handler, .{});
+    try gs.router.get("/api/session/:session_id/messages", http_handlers.session_message_handler, .{});
+    try gs.router.get("/api/session/exists/:session_id", http_handlers.session_exist_handler, .{});
+    try gs.router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, .{});
+    try gs.router.post("/api/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
+    try gs.router.post("/api/session/:session_id/compact", http_handlers.sessionCompactHandler, .{});
+    try gs.router.get("/api/session/:session_id/queue/messages", http_handlers.sessionQueueGetHandler, .{});
+    try gs.router.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, .{});
+    try gs.router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
 
-            // Desktop app routes (system, health, workspaces)
-            router.get("/health", http_handlers.healthHandler, .{});
-            router.get("/api/health", http_handlers.healthHandler, .{});
-            router.get("/api/skills", http_handlers.skillsListHandler, .{});
-            router.get("/api/skills/:name", http_handlers.skillDetailHandler, .{});
-            router.delete("/api/skills", http_handlers.skillDeleteHandler, .{});
-            // router.get("/api/git/status", http_handlers.gitStatusHandler, .{});
-            router.get("/api/system/folder", http_handlers.systemFolderHandler, .{});
-            router.get("/api/workspaces", http_handlers.workspacesListHandler, .{});
-            router.post("/api/workspaces", http_handlers.workspacesCreateHandler, .{});
-            router.get("/api/workspaces/:id", http_handlers.workspaceGetHandler, .{});
-            router.put("/api/workspaces/:id", http_handlers.workspaceUpdateHandler, .{});
-            router.delete("/api/workspaces/:id", http_handlers.workspaceDeleteHandler, .{});
-            router.post("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsCreateHandler, .{});
-            router.get("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsListHandler, .{});
-            router.get("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsGetHandler, .{});
-            router.put("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsUpdateHandler, .{});
-            router.delete("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsDeleteHandler, .{});
-            router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksListHandler, .{});
-            router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksCreateHandler, .{});
-            router.put("/api/workspaces/tasks/:task_id", http_handlers.tasksUpdateByIdHandler, .{});
-            router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksUpdateHandler, .{});
-            router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksDeleteHandler, .{});
-        }
-    };
-    try server.runWithConfig(HttpRoutes.setup);
+    // Worker API
+    try gs.router.get("/api/workers", http_handlers.worker_list_handler, .{});
+
+    // LLM API aliases (desktop app uses /api/llm/*)
+    try gs.router.post("/api/llm/session", http_handlers.sessionCreateHandler, .{});
+    try gs.router.get("/api/llm/session", http_handlers.sessionListHandler, .{});
+    try gs.router.get("/api/llm/session/:session_id/messages", http_handlers.session_message_handler, .{});
+    try gs.router.get("/api/llm/stream/:session_id", http_handlers.streamHandler, .{});
+    try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
+
+    // Desktop app routes (system, health, workspaces)
+    try gs.router.get("/health", http_handlers.healthHandler, .{});
+    try gs.router.get("/api/health", http_handlers.healthHandler, .{});
+    try gs.router.get("/api/skills", http_handlers.skillsListHandler, .{});
+    try gs.router.get("/api/skills/:name", http_handlers.skillDetailHandler, .{});
+    try gs.router.delete("/api/skills", http_handlers.skillDeleteHandler, .{});
+    // try gs.router.get("/api/git/status", http_handlers.gitStatusHandler, .{});
+    try gs.router.get("/api/system/folder", http_handlers.systemFolderHandler, .{});
+    try gs.router.get("/api/workspaces", http_handlers.workspacesListHandler, .{});
+    try gs.router.post("/api/workspaces", http_handlers.workspacesCreateHandler, .{});
+    try gs.router.get("/api/workspaces/:id", http_handlers.workspaceGetHandler, .{});
+    try gs.router.put("/api/workspaces/:id", http_handlers.workspaceUpdateHandler, .{});
+    try gs.router.delete("/api/workspaces/:id", http_handlers.workspaceDeleteHandler, .{});
+    try gs.router.post("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsCreateHandler, .{});
+    try gs.router.get("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsListHandler, .{});
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsGetHandler, .{});
+    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsUpdateHandler, .{});
+    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsDeleteHandler, .{});
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksListHandler, .{});
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksCreateHandler, .{});
+    try gs.router.put("/api/workspaces/tasks/:task_id", http_handlers.tasksUpdateByIdHandler, .{});
+    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksUpdateHandler, .{});
+    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksDeleteHandler, .{});
+
+    try gs.listen();
+
+    // const HttpRoutes = struct {
+    //     pub fn setup(http_port: u16, router: anytype) !void {
+    //         std.log.info("HTTP server listening on http://127.0.0.1:{d}/", .{http_port});
+    //         router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
+    //         router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
+    //         router.options("/api/session", http_handlers.corsPreflightHandler, .{});
+    //         router.post("/api/session", http_handlers.sessionCreateHandler, .{});
+    //         router.get("/api/session", http_handlers.sessionListHandler, .{});
+    //         router.get("/api/session/stream", http_handlers.sessionStreamHandler, .{});
+    //         router.get("/api/session/:session_id", http_handlers.session_get_handler, .{});
+    //         router.get("/api/session/:session_id/messages", http_handlers.session_message_handler, .{});
+    //         router.get("/api/session/exists/:session_id", http_handlers.session_exist_handler, .{});
+    //         router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, .{});
+    //         router.post("/api/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
+    //         router.post("/api/session/:session_id/compact", http_handlers.sessionCompactHandler, .{});
+    //         router.get("/api/session/:session_id/queue/messages", http_handlers.sessionQueueGetHandler, .{});
+    //         router.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, .{});
+    //         router.get("/api/ping/:session_id", http_handlers.ping_handler, .{});
+    //
+    //         // Worker API
+    //         router.get("/api/workers", http_handlers.worker_list_handler, .{});
+    //
+    //         // LLM API aliases (desktop app uses /api/llm/*)
+    //         router.post("/api/llm/session", http_handlers.sessionCreateHandler, .{});
+    //         router.get("/api/llm/session", http_handlers.sessionListHandler, .{});
+    //         router.get("/api/llm/session/:session_id/messages", http_handlers.session_message_handler, .{});
+    //         router.get("/api/llm/stream/:session_id", http_handlers.streamHandler, .{});
+    //         router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, .{});
+    //
+    //         // Desktop app routes (system, health, workspaces)
+    //         router.get("/health", http_handlers.healthHandler, .{});
+    //         router.get("/api/health", http_handlers.healthHandler, .{});
+    //         router.get("/api/skills", http_handlers.skillsListHandler, .{});
+    //         router.get("/api/skills/:name", http_handlers.skillDetailHandler, .{});
+    //         router.delete("/api/skills", http_handlers.skillDeleteHandler, .{});
+    //         // router.get("/api/git/status", http_handlers.gitStatusHandler, .{});
+    //         router.get("/api/system/folder", http_handlers.systemFolderHandler, .{});
+    //         router.get("/api/workspaces", http_handlers.workspacesListHandler, .{});
+    //         router.post("/api/workspaces", http_handlers.workspacesCreateHandler, .{});
+    //         router.get("/api/workspaces/:id", http_handlers.workspaceGetHandler, .{});
+    //         router.put("/api/workspaces/:id", http_handlers.workspaceUpdateHandler, .{});
+    //         router.delete("/api/workspaces/:id", http_handlers.workspaceDeleteHandler, .{});
+    //         router.post("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsCreateHandler, .{});
+    //         router.get("/api/workspaces/:workspace_id/items", http_handlers.workspaceItemsListHandler, .{});
+    //         router.get("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsGetHandler, .{});
+    //         router.put("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsUpdateHandler, .{});
+    //         router.delete("/api/workspaces/:workspace_id/items/:item_id", http_handlers.workspaceItemsDeleteHandler, .{});
+    //         router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksListHandler, .{});
+    //         router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", http_handlers.tasksCreateHandler, .{});
+    //         router.put("/api/workspaces/tasks/:task_id", http_handlers.tasksUpdateByIdHandler, .{});
+    //         router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksUpdateHandler, .{});
+    //         router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", http_handlers.tasksDeleteHandler, .{});
+    //     }
+    // };
+   // try server.runWithConfig(HttpRoutes.setup);
 }

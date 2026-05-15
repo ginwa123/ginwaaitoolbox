@@ -8,9 +8,10 @@ const logger = nalarcore.logger;
 const http_response = nalarcore.http_response;
 
 const httpz = http_server.httpz;
-const WorkflowArgs = @import("mod.zig").WorkflowArgs;
-const generateSessionId = @import("mod.zig").generateSessionId;
+const mod = @import("mod.zig");
+const WorkflowArgs = mod.WorkflowArgs;
 const broadcastSessionCreated = @import("mod.zig").broadcastSessionCreated;
+const gserverz = nalarcore.gserverz;
 
 /// Helper to get nalar data directory (~/local/share/nalar/data/apps)
 fn getDataAppsDir(allocator: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map) ![]u8 {
@@ -70,6 +71,15 @@ const SessionCreateThreadArgs = struct {
     environment: *const std.process.Environ.Map,
 };
 
+pub const Session = struct {
+    session_id: []u8,
+    session_name: []const u8,
+    queue_message: ?[]const u8,
+    cwd_session: ?[]const u8,
+    allowed_tools: []const u8,
+    body_message: []const u8,
+};
+
 /// Create a new session
 /// Request body (JSON, optional):
 ///   - name: session name (string, defaults to "New Session")
@@ -77,9 +87,9 @@ const SessionCreateThreadArgs = struct {
 ///   - queue_message: initial message to add to session queue (string, optional)
 ///   - cwd_session: working directory (string, optional)
 /// Returns JSON with created session info
-pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const alloc = req.arena;
-    res.content_type = .JSON;
+pub fn session_create_handler(req: *gserverz.HttpRequest, _: *anyopaque) gserverz.HttpResponse {
+    const alloc = req.allocator;
+    const io = req.io;
 
     // Generate or parse session ID
     var session_id: []u8 = undefined;
@@ -89,70 +99,57 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
     var allowed_tools: []const u8 = ""; // empty string = no tools allowed, "all" = all tools allowed, comma-separated list = specific tools
     var body_message: []const u8 = ""; // initial message from body field
 
-    const body = req.body() orelse "";
-    std.debug.print("BODY: {s}\n", .{body});
+    // Parse JSON body for optional parameters
+    const parsed = std.json.parseFromSliceLeaky(Session, alloc, req.body, .{}) catch {
+        return gserverz.response.jsonResponse(alloc, .{ .status_code = 400, .data = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON body" }) });
+    };
 
-    if (body.len > 0) {
-        // Parse JSON body for optional parameters
-        const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
-            res.status = 400;
-            res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Invalid JSON body" });
-            return;
-        };
-
-        const root = parsed.value.object;
-
-        // Extract session_id if provided
-        if (root.get("session_id")) |val| {
-            if (val == .string) {
-                session_id = try alloc.dupe(u8, val.string);
-            } else {
-                res.status = 400;
-                res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "session_id must be a string" });
-                return;
-            }
+    // Extract session_id if provided
+    if (parsed.session_id) |val| {
+        if (val == .string) {
+            session_id = try alloc.dupe(u8, val.string);
         } else {
-            // Generate unique session ID
-            session_id = try generateSessionId(self, alloc);
-        }
-
-        // Extract name if provided
-        if (root.get("name")) |val| {
-            if (val == .string) {
-                session_name = val.string;
-            }
-        }
-
-        // Extract queue_message if provided
-        if (root.get("queue_message")) |val| {
-            if (val == .string) {
-                queue_message = val.string;
-            }
-        }
-
-        // Extract cwd_session if provided
-        if (root.get("cwd_session")) |val| {
-            if (val == .string) {
-                cwd_session = val.string;
-            }
-        }
-
-        // Extract body field (initial message from body field)
-        if (root.get("body")) |val| {
-            if (val == .string) {
-                body_message = val.string;
-            }
-        }
-
-        // Extract allowed_tools field (comma-separated list or "all")
-        if (root.get("allowed_tools")) |val| {
-            if (val == .string) {
-                allowed_tools = val.string;
-            }
+            const data = try http_response.makeErrorResponse(alloc, .{ .@"error" = "session_id must be a string" });
+            return gserverz.response.jsonResponse(alloc, .{ .status_code = 400, .data = data });
         }
     } else {
-        // No body provided, generate session ID
-        session_id = try generateSessionId(self, alloc);
+        // Generate unique session ID
+        session_id = try mod.generateSessionIdNew(alloc, io);
+    }
+
+    // Extract name if provided
+    if (parsed.session_name) |val| {
+        if (val == .string) {
+            session_name = val.string;
+        }
+    }
+
+    // Extract queue_message if provided
+    if (parsed.queue_message) |val| {
+        if (val == .string) {
+            queue_message = val.string;
+        }
+    }
+
+    // Extract cwd_session if provided
+    if (parsed.cwd_session) |val| {
+        if (val == .string) {
+            cwd_session = val.string;
+        }
+    }
+
+    // Extract body field (initial message from body field)
+    if (parsed.body_message) |val| {
+        if (val == .string) {
+            body_message = val.string;
+        }
+    }
+
+    // Extract allowed_tools field (comma-separated list or "all")
+    if (parsed.allowed_tools) |val| {
+        if (val == .string) {
+            allowed_tools = val.string;
+        }
     }
 
     if (http_server.global_server) |server| {
@@ -275,11 +272,11 @@ pub fn session_create_handler(self: *http_server.HttpServer.ServerHandler, req: 
             }.run, .{thread_args});
             thread.detach();
 
-            res.status = 201;
-            res.body = try http_response.makeSessionCreateResponse(alloc, .{ .id = session_id, .name = session_name, .status = "send" });
-            return;
+            const data = try http_response.makeSessionCreateResponse(alloc, .{ .id = session_id, .name = session_name, .status = "send" });
+
+            return gserverz.response.jsonResponse(alloc, .{ .status_code = 201, .data = data });
         }
     }
-    res.status = 500;
-    res.body = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" });
+
+    return gserverz.response.jsonResponse(alloc, .{ .status_code = 500, .data = try http_response.makeErrorResponse(alloc, .{ .@"error" = "Server not initialized" }) });
 }

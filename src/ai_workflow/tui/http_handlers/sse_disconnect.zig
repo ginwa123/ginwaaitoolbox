@@ -1,6 +1,6 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const nalar_core = @import("nalarcore");
+const http_server = nalar_core.http_server;
 
 const httpz = http_server.httpz;
 
