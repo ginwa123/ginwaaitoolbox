@@ -63,11 +63,11 @@ fn createUserHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
     const json_text = std.fmt.allocPrint(allocator, "{{\"username\":\"{s}\",\"email\":\"{s}\"}}", .{ user.username, user.email }) catch {
         return gserverz.response.internalError("Failed to format", allocator);
     };
-    return res.jsonResponse(allocator, .{ .status_code = 201, .data = json_text });
+    return res.jsonResponse(.{ .status_code = 201, .data = json_text });
 }
 
 /// SSE streaming handler
-fn sseStreamHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest) void {
+fn sseStreamHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const messages = [_][]const u8{
         "Hello from SSE!",
         "This is event 2",
@@ -76,10 +76,11 @@ fn sseStreamHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest) void {
     };
 
     for (messages, 0..) |msg, i| {
-        const event = std.fmt.allocPrint(std.heap.page_allocator, "data: {s}\nid: {d}\n\n", .{ msg, i }) catch return;
+        const event = std.fmt.allocPrint(std.heap.page_allocator, "data: {s}\nid: {d}\n\n", .{ msg, i }) catch return error.OutOfMemory;
         defer std.heap.page_allocator.free(event);
         req.writeSSEEvent(event);
     }
+    return res.withBody("");
 }
 
 pub fn run(init: std.process.Init) !void {

@@ -7,7 +7,7 @@ pub const Self = @This();
 pub const HandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse;
 
 /// SSE streaming handler
-pub const SseHandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest) void;
+pub const SseHandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse;
 
 /// Route type to distinguish SSE from regular handlers
 pub const RouteType = enum {
@@ -73,8 +73,8 @@ pub fn patch(self: *Self, path: []const u8, handler: anytype) !void {
 pub fn sse(self: *Self, path: []const u8, handler: anytype) !void {
     // For SSE, we use a wrapper that receives the client_fd
     const WrappedSseHandler = struct {
-        fn wrapped(ctx: http_parser.HttpContext, req: http_parser.HttpRequest) void {
-            @call(.auto, handler, .{ ctx, req });
+        fn wrapped(ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return try @call(.auto, handler, .{ ctx, req, res });
         }
     };
 

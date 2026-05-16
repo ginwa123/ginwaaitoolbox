@@ -72,7 +72,6 @@ pub const GinwaServer = struct {
     router: router.Router,
     ctx: ?*anyopaque = null,
     environment: ?*const std.process.Environ.Map = null,
-    sse_manager: SseManager = .{},
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
@@ -83,7 +82,6 @@ pub const GinwaServer = struct {
             .router = router.Router.init(allocator),
             .ctx = null,
             .environment = null,
-            .sse_manager = .{},
         };
         return gs;
     }
@@ -158,8 +156,15 @@ pub const GinwaServer = struct {
                                         _ = linux.close(fd);
                                         return;
                                     };
-                                    // Call SSE handler for streaming
-                                    sse.handler(sse.ctx, req);
+                                    const res = http_parser.HttpResponse.init(200, "OK", allocator);
+                                    const sse_res = sse.handler(sse.ctx, req, res) catch |err| {
+                                        std.debug.print("SSE handler error: {s}\n", .{@errorName(err)});
+                                        return;
+                                    };
+                                    _ = sse_res.toBytes() catch |err| {
+                                        std.debug.print("SSE response bytes error: {s}\n", .{@errorName(err)});
+                                        return;
+                                    };
                                     _ = linux.close(fd);
                                     return;
                                 },
