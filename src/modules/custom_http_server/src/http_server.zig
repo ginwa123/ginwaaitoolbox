@@ -100,16 +100,24 @@ pub const GinwaServer = struct {
         const rc = linux.listen(self.address.sock_fd, 128);
         if (rc < 0) return error.ListenFailed;
 
+        var group: std.Io.Group = .init;
+        defer group.cancel(self.io);
+
         while (true) {
             const client_fd = try self.acceptClient();
 
-            var arena_allocator = std.heap.ArenaAllocator.init(self.allocator);
-            defer arena_allocator.deinit();
-            const allocator_w = arena_allocator.allocator();
-
-            var async_req = self.io.async(
+            const arena = try self.allocator.create(std.heap.ArenaAllocator);
+            arena.* = std.heap.ArenaAllocator.init(self.allocator);
+            try group.concurrent(
+                self.io,
                 struct {
-                    fn run(gs: *GinwaServer, allocator: std.mem.Allocator, fd: i32) void {
+                    fn run(gs: *GinwaServer, arena_allocator: *std.heap.ArenaAllocator, fd: i32) void {
+                        defer {
+                            arena_allocator.deinit();
+                            gs.allocator.destroy(arena_allocator);
+                        }
+
+                        const allocator = arena_allocator.allocator();
                         var buf: std.ArrayList(u8) = .empty;
                         defer buf.deinit(allocator);
 
@@ -204,10 +212,8 @@ pub const GinwaServer = struct {
                         _ = linux.close(fd);
                     }
                 }.run,
-                .{ self, allocator_w, client_fd },
+                .{ self, arena, client_fd },
             );
-            errdefer async_req.cancel(self.io);
-            async_req.await(self.io); // todo dont block
         }
     }
 

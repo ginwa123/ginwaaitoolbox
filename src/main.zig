@@ -70,6 +70,7 @@ pub fn main(init: std.process.Init) !void {
         .active_loops = undefined, // Will be set below after initialization
         .event_bus = undefined, // Will be set below after initialization
         .server = undefined, // Will be set below after initialization
+        .group_emit_session_create = .init,
     };
 
     _ = try nalarcore.setSingleton(ctxParent);

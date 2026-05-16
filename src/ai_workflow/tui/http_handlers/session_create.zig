@@ -4,27 +4,12 @@ const http_response = @import("http_response.zig");
 const helpers = nalarcore.helpers;
 const gserverz = nalarcore.gserverz;
 const ai_workflow = nalarcore.ai_mod;
-
-/// Helper to get nalar data directory (~/local/share/nalar/data/apps)
-fn getDataAppsDir(allocator: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map) ![]u8 {
-    _ = io;
-    const home = environment.get("HOME") orelse {
-        return error.HomeNotFound;
-    };
-    return std.fs.path.join(allocator, &[_][]const u8{
-        home,
-        ".local",
-        "share",
-        "nalar",
-        "data",
-        "apps",
-    });
-}
+const sqlite_db_mod = nalarcore.sqlite;
 
 /// Create a sandbox directory in data/apps and return the path
 fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, session_id: []const u8) ![]u8 {
     const env = environment orelse return error.HomeNotFound;
-    const data_apps_dir = try getDataAppsDir(allocator, io, env);
+    const data_apps_dir = try helpers.dir.getDataAppsDir(allocator, io, env);
     defer allocator.free(data_apps_dir);
 
     // Create the data/apps directory and all parent directories if they don't exist
@@ -50,13 +35,19 @@ fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const 
     return sandbox_path;
 }
 
-pub const Session = struct {
+pub const RequestSession = struct {
     session_id: []const u8 = "",
     session_name: []const u8 = "",
     queue_message: []const u8 = "",
     cwd_session: []const u8 = "",
     allowed_tools: []const u8 = "",
     body_message: []const u8 = "",
+};
+
+pub const ResponseSession = struct {
+    id: []const u8,
+    name: []const u8,
+    status: []const u8,
 };
 
 /// Create a new session
@@ -66,13 +57,47 @@ pub const Session = struct {
 ///   - queue_message: initial message to add to session queue (string, optional)
 ///   - cwd_session: working directory (string, optional)
 /// Returns JSON with created session info
-pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const io = ctx.io;
     const di = try nalarcore.getSingleton();
-    const environment = di.environment orelse return error.EnvironmentNotInitialized;
-    const sqlite_db = di.db;
 
+    const parsed = std.json.parseFromSliceLeaky(RequestSession, allocator, req.body, .{}) catch {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }),
+        });
+    };
+
+    const usecase = useCase(allocator, io, di, parsed) catch |err| {
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
+        });
+    };
+
+    const data = try http_response.makeSessionCreateResponse(allocator, .{
+        .id = usecase.id,
+        .name = usecase.name,
+        .status = "send",
+    });
+
+    return res.jsonResponse(.{
+        .status_code = 201,
+        .data = data,
+    });
+}
+
+fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parsed: RequestSession) !ResponseSession {
+    const sqlite_db = di.db;
+    const environment = di.environment orelse return error.EnvironmentNotInitialized;
+
+    // Arena is ONLY for local computation in this function
+    var arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
+    defer arena_allocator.deinit();
+    const local = arena_allocator.allocator();
+
+    // --- Resolve all values locally using arena ---
     var session_id: []u8 = undefined;
     var session_name: []const u8 = "New Session";
     var queue_message: []const u8 = "";
@@ -80,68 +105,61 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     var allowed_tools: []const u8 = "";
     var body_message: []const u8 = "";
 
-    const parsed = std.json.parseFromSliceLeaky(Session, allocator, req.body, .{}) catch {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }),
-        });
-    };
-
     if (parsed.session_id.len > 0) {
-        session_id = try allocator.dupe(u8, parsed.session_id);
+        session_id = try local.dupe(u8, parsed.session_id);
     } else {
-        session_id = try helpers.random.generateSessionId(allocator, io);
+        session_id = try helpers.random.generateSessionId(local, io);
     }
-
-    if (parsed.session_name.len > 0) {
-        session_name = parsed.session_name;
-    }
-
-    if (parsed.queue_message.len > 0) {
-        queue_message = parsed.queue_message;
-    }
-
-    if (parsed.cwd_session.len > 0) {
-        cwd_session = parsed.cwd_session;
-    }
-
-    if (parsed.body_message.len > 0) {
-        body_message = parsed.body_message;
-    }
-
-    if (parsed.allowed_tools.len > 0) {
-        allowed_tools = parsed.allowed_tools;
-    }
-
-    const global_allocator = di.allocator;
+    if (parsed.session_name.len > 0) session_name = parsed.session_name;
+    if (parsed.queue_message.len > 0) queue_message = parsed.queue_message;
+    if (parsed.cwd_session.len > 0) cwd_session = parsed.cwd_session;
+    if (parsed.body_message.len > 0) body_message = parsed.body_message;
+    if (parsed.allowed_tools.len > 0) allowed_tools = parsed.allowed_tools;
 
     var effective_cwd: []const u8 = "";
     if (cwd_session.len > 0) {
-        effective_cwd = try allocator.dupe(u8, cwd_session);
+        effective_cwd = try local.dupe(u8, cwd_session);
     } else {
-        effective_cwd = createSandbox(allocator, io, environment, session_id) catch
+        effective_cwd = createSandbox(local, io, environment, session_id) catch
             environment.get("TMPDIR") orelse "/tmp";
     }
 
-    if (effective_cwd.len > 0) {
-        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at) VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-        const copy_session_name = try allocator.dupe(u8, session_name);
-        const copy_cwd = try allocator.dupe(u8, effective_cwd);
-        sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name, copy_cwd }) catch {};
-    } else {
-        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-        const copy_session_name = try allocator.dupe(u8, session_name);
-        sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name }) catch {};
+    try insertWorker(local, sqlite_db, parsed);
+
+    // --- Heap-allocate data for the async task (task owns these, frees them) ---
+    const thread_session_id = try di.allocator.dupe(u8, session_id);
+    const thread_queue_message = try di.allocator.dupe(u8, queue_message);
+    const thread_effective_cwd = try di.allocator.dupe(u8, effective_cwd);
+    const thread_body_message = try di.allocator.dupe(u8, body_message);
+    const thread_allowed_tools = try di.allocator.dupe(u8, allowed_tools);
+
+    // If concurrent() fails, we must free the heap data ourselves
+    errdefer {
+        di.allocator.free(thread_session_id);
+        di.allocator.free(thread_queue_message);
+        di.allocator.free(thread_effective_cwd);
+        di.allocator.free(thread_body_message);
+        di.allocator.free(thread_allowed_tools);
     }
 
-    const thread_di = di; // capture for async
-    const thread_session_id = session_id; // capture for async
-    const thread_effective_cwd = effective_cwd; // capture for async
-
-    _ = io.async(
+    try di.group_emit_session_create.concurrent(
+        io,
         struct {
-            fn run(ctx_inner: gserverz.HttpContext, di_inner: *nalarcore.ContextIPCTui, sid: []const u8, qmsg: []const u8, cwd: []const u8, bmsg: []const u8, atools: []const u8) void {
-                _ = ctx_inner;
+            fn run(
+                di_inner: *nalarcore.ContextIPCTui,
+                sid: []u8,
+                qmsg: []u8,
+                cwd: []u8,
+                bmsg: []u8,
+                atools: []u8,
+            ) void {
+                // Task owns these slices — free them when done
+                defer di_inner.allocator.free(sid);
+                defer di_inner.allocator.free(qmsg);
+                defer di_inner.allocator.free(cwd);
+                defer di_inner.allocator.free(bmsg);
+                defer di_inner.allocator.free(atools);
+
                 const event_bus = di_inner.event_bus;
                 event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{
                     .parent_session_id = sid,
@@ -154,14 +172,31 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
                 });
             }
         }.run,
-        .{ ctx, thread_di, thread_session_id, queue_message, thread_effective_cwd, body_message, allowed_tools },
+        .{ di, thread_session_id, thread_queue_message, thread_effective_cwd, thread_body_message, thread_allowed_tools },
     );
 
-    const data = try http_response.makeSessionCreateResponse(global_allocator, .{
-        .id = session_id,
+    // ResponseSession.id must also outlive this function (caller may hold it)
+    // If the caller is also short-lived, adjust accordingly
+    const response_id = try di.allocator.dupe(u8, session_id);
+
+    return ResponseSession{
+        .id = response_id,
         .name = session_name,
         .status = "send",
-    });
+    };
+}
 
-    return res.jsonResponse(.{ .status_code = 201, .data = data });
+fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBackend, parsed: RequestSession) !void {
+    const session_id = parsed.session_id;
+    const session_name = parsed.session_name;
+    const effective_cwd = parsed.cwd_session;
+
+    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at) VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+    const copy_session_name = try allocator.dupe(u8, session_name);
+    defer allocator.free(copy_session_name);
+    const copy_cwd = try allocator.dupe(u8, effective_cwd);
+    defer allocator.free(copy_cwd);
+    const copy_session_id = try allocator.dupe(u8, session_id);
+    defer allocator.free(copy_session_id);
+    try sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name, copy_cwd });
 }

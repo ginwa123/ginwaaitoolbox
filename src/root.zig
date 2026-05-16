@@ -87,6 +87,7 @@ pub const ContextIPCTui = struct {
     session_to_client_ids: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([16]u8)) = .empty,
     session_map_lock: SpinMutex = .{},
     on_disconnect_cb: ?*const fn (client_id: [16]u8) void = null,
+    group_emit_session_create: std.Io.Group,
 };
 
 /// Simple spinlock mutex for thread safety

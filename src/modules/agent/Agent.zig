@@ -8,7 +8,9 @@ const BashInput = schemas.BashInput;
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
-const AgentTool = schemas.AgentTool;
+pub const AgentTool = schemas.AgentTool;
+pub const prompt = @import("prompts.zig");
+pub const LLMModels = @import("LLMModels.zig");
 
 /// Log level for agent logging
 const LogLevel = enum { err, warn, info, debug };

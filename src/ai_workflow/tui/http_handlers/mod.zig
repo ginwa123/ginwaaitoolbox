@@ -27,7 +27,7 @@ pub const SessionHandler = http_server.SessionHandler;
 // Re-export all handlers
 pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
 pub const streamHandler = @import("stream.zig").streamHandler;
-pub const sessionCreateHandler = @import("session_create.zig").session_create_handler;
+pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHandler;
 pub const sessionListHandler = @import("session_list.zig").session_list_handler;
 pub const session_get_handler = @import("session_get.zig").session_get_handler;
 pub const session_exist_handler = @import("session_exist.zig").session_exist_handler;
