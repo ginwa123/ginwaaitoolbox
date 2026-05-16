@@ -35,17 +35,17 @@ pub const SpinMutex = struct {
 pub const SseClient = struct {
     id: [16]u8,
     fd: i32,
-    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
     alive: bool,
     last_heartbeat: u64,
     message_queue: std.ArrayListUnmanaged([]const u8),
     lock: SpinMutex,
 
-    pub fn init(id: [16]u8, fd: i32, allocator: std.mem.Allocator) SseClient {
+    pub fn init(id: [16]u8, fd: i32, parent_allocator: std.mem.Allocator) SseClient {
         return .{
             .id = id,
             .fd = fd,
-            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(parent_allocator),
             .alive = true,
             .last_heartbeat = timestamp(),
             .message_queue = .empty,
@@ -53,8 +53,13 @@ pub const SseClient = struct {
         };
     }
 
+    pub fn allocator(self: *SseClient) std.mem.Allocator {
+        return self.arena.allocator();
+    }
+
     pub fn deinit(self: *SseClient) void {
-        self.message_queue.deinit(self.allocator);
+        self.message_queue.deinit(self.allocator());
+        self.arena.deinit();
         _ = linux.close(self.fd);
         self.* = undefined;
     }
@@ -140,9 +145,8 @@ pub const SseManager = struct {
         const n = std.c.getrandom(&id, id.len, 0);
         if (n != id.len) return error.GetRandomFailed;
 
-        var client_allocator = std.heap.ArenaAllocator.init(self.allocator);
         const client = try self.server_allocator.create(SseClient);
-        client.* = SseClient.init(id, fd, client_allocator.allocator());
+        client.* = SseClient.init(id, fd, self.allocator);
 
         var ev: linux.epoll_event = .{
             .events = EPOLLIN | EPOLLHUP | EPOLLRDHUP,
