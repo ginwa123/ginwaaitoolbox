@@ -1,10 +1,10 @@
 const std = @import("std");
 
-const nalar_mod = @import("nalarcore");
-const ai_mod = nalar_mod.ai_mod;
-const sqlite = nalar_mod.sqlite;
-const helpers = nalar_mod.helpers;
-const gserverz = nalar_mod.gserverz;
+const nalarcore = @import("nalarcore");
+const ai_mod = nalarcore.ai_mod;
+const sqlite = nalarcore.sqlite;
+const helpers = nalarcore.helpers;
+const gserverz = nalarcore.gserverz;
 
 pub fn main(init: std.process.Init) !void {
     const arena_allocator = init.arena;
@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("HOME={s}", .{home});
     }
 
-    var llm_config = nalar_mod.config.LlmConfig.init(allocator, io, null, environment) catch |err| {
+    var llm_config = nalarcore.config.LlmConfig.init(allocator, io, null, environment) catch |err| {
         std.log.err("Failed to load config: {s}", .{@errorName(err)});
         return err;
     };
@@ -43,9 +43,9 @@ pub fn main(init: std.process.Init) !void {
     const log_file_path = try std.fs.path.join(allocator, &.{ tmp_path, "agentic_coding.log" });
     defer allocator.free(log_file_path);
 
-    nalar_mod.setPanicLogPath(log_file_path);
+    nalarcore.setPanicLogPath(log_file_path);
 
-    nalar_mod.logger.initGlobalColor(allocator, io, .{
+    nalarcore.logger.initGlobalColor(allocator, io, .{
         .min_level = .debug,
         .output_mode = .file,
         .log_file_path = log_file_path,
@@ -53,9 +53,9 @@ pub fn main(init: std.process.Init) !void {
         .include_request_id = true,
         .include_timestamp = true,
     });
-    defer nalar_mod.logger.deinitGlobal(io);
+    defer nalarcore.logger.deinitGlobal(io);
 
-    const global_logger_ptr = nalar_mod.logger.getGlobal().?;
+    const global_logger_ptr = nalarcore.logger.getGlobal().?;
 
     const ctxParent = try allocator.create(ai_mod.models.ContextIPCTui);
     defer allocator.destroy(ctxParent);
@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
 
     _ = try ai_mod.models.setSingleton(ctxParent);
 
-    const event_bus_mod = nalar_mod.event_bus;
+    const event_bus_mod = nalarcore.event_bus;
     var event_bus = event_bus_mod.EventBus.init("my-bus", allocator);
     defer event_bus.deinit();
     ctxParent.event_bus = &event_bus;

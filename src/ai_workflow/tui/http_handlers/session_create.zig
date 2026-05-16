@@ -50,19 +50,6 @@ fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const 
     return sandbox_path;
 }
 
-/// Thread arguments for session creation workflow
-const SessionCreateThreadArgs = struct {
-    allocator: std.mem.Allocator,
-    ctxTui: *ai_workflow.models.ContextIPCTui,
-    session_id: []u8,
-    session_name: []u8,
-    queue_message: []u8,
-    cwd_session: []u8,
-    body_message: []u8,
-    allowed_tools: []u8,
-    environment: ?*const std.process.Environ.Map,
-};
-
 pub const Session = struct {
     session_id: []const u8 = "",
     session_name: []const u8 = "",
@@ -85,7 +72,6 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     const di = try nalarcore.ai_mod.models.getSingleton();
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
     const sqlite_db = di.db;
-    const event_bus = di.event_bus;
 
     var session_id: []u8 = undefined;
     var session_name: []const u8 = "New Session";
@@ -148,15 +134,27 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name }) catch {};
     }
 
-    const dataa = ai_workflow.ai_workflow.RunParamsNew{ .parent_session_id = session_id, .session_id = session_id, .message = queue_message, .cwd = effective_cwd, .body = body_message, .allowed_tools = allowed_tools, .is_sub_agent = false };
+    const thread_di = di; // capture for async
+    const thread_session_id = session_id; // capture for async
+    const thread_effective_cwd = effective_cwd; // capture for async
 
     _ = io.async(
         struct {
-            fn run(dataaa: ai_workflow.ai_workflow.RunParamsNew) void {
-                event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", dataaa);
+            fn run(ctx_inner: gserverz.HttpContext, di_inner: *ai_workflow.models.ContextIPCTui, sid: []const u8, qmsg: []const u8, cwd: []const u8, bmsg: []const u8, atools: []const u8) void {
+                _ = ctx_inner;
+                const event_bus = di_inner.event_bus;
+                event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{
+                    .parent_session_id = sid,
+                    .session_id = sid,
+                    .message = qmsg,
+                    .cwd = cwd,
+                    .body = bmsg,
+                    .allowed_tools = atools,
+                    .is_sub_agent = false,
+                });
             }
         }.run,
-        dataa,
+        .{ ctx, thread_di, thread_session_id, queue_message, thread_effective_cwd, body_message, allowed_tools },
     );
 
     const data = try http_response.makeSessionCreateResponse(global_allocator, .{
