@@ -36,8 +36,8 @@ const isPendingSession = computed(() => props.chatId.startsWith('pending-'))
 // Active workspace item for FolderExplorer (passed as prop for task view, from store otherwise)
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
 
-// FolderExplorer uses cwd directly - prefer prop cwd, fallback to activeWorkspaceItem.path
-const explorerCwd = computed(() => props.cwd || activeWorkspaceItem.value?.path || '')
+// FolderExplorer uses cwd directly - prefer prop cwd, fallback to local cwd (from API), fallback to activeWorkspaceItem.path
+const explorerCwd = computed(() => props.cwd || cwd.value || activeWorkspaceItem.value?.path || '')
 
 interface Message {
   id: string
@@ -901,7 +901,7 @@ const compactSession = async () => {
     </div>
 
     <!-- Folder Explorer (sidebar on right side) -->
-    <FolderExplorer :cwd="explorerCwd" />
+    <FolderExplorer v-if="explorerCwd" :cwd="explorerCwd" />
   </div>
 </template>
 
