@@ -53,7 +53,7 @@ fn panicHandler(comptime message: []const u8, _: ?*std.builtin.StackTrace) noret
     std.debug.print("{s}", .{panic_log});
 
     // Broadcast panic to all connected TUI clients via SSE
-    http_server.broadcastPanic(panic_log);
+    gserverz.broadcastPanic(panic_log);
 
     // Exit with error code
     std.process.exit(1);
@@ -253,7 +253,6 @@ pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 
 pub const set_agent_properties = @import("modules/agent/tools/set_agent_properties.zig");
 
-pub const http_server = @import("modules/http_server/HttpServer.zig");
 pub const http_client = @import("modules/http/HttpClient.zig");
 pub const logger = @import("modules/logger/Logger.zig");
 pub const migrations = @import("ai_workflow/tui/migration.zig");
@@ -305,5 +304,4 @@ test {
     _ = @import("modules/http/test_runner.zig");
     _ = @import("modules/session/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
-    _ = @import("modules/http_server/test_runner.zig"); // temporary
 }

@@ -5,9 +5,6 @@ const sqlite = tree1_mod.sqlite;
 const logger = @import("nalarcore").logger;
 const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
-// Legacy http_server for streaming helper functions (sendStreamChunk*)
-// These use the old SseManager.enqueueEvent approach
-const http_server = tree1_mod.http_server;
 
 // ============================================================================
 // Session-to-Client ID mapping for SSE event bus integration
@@ -325,7 +322,7 @@ pub fn serializeToolCallDeltas(allocator: std.mem.Allocator, chunk: ToolCallDelt
 }
 
 // ============================================================================
-// Streaming helpers (using structured serialization)
+// Streaming helpers (using event_bus for SSE)
 
 // ============================================================================
 
@@ -335,15 +332,17 @@ pub fn sendStreamChunkContent(
     session_id: []const u8,
     chunk: ContentChunk,
 ) void {
-    const sse_manager = http_server.getGlobalSseManager() orelse return;
-
+    const di = tree1_mod.getSingleton() catch return;
+    const event_bus = di.event_bus;
+    
     const data = serializeContentChunk(allocator, chunk) catch return;
     defer allocator.free(data);
 
-    const event = http_server.SseEvent{
+    const event = SseEvent{
+        .session_id = session_id,
         .data = data,
     };
-    sse_manager.enqueueEvent(session_id, event) catch {};
+    event_bus.emit(SseEvent, session_id, event);
 }
 
 /// Send reasoning chunk during streaming response
@@ -352,14 +351,17 @@ pub fn sendStreamChunkReasoning(
     session_id: []const u8,
     chunk: ReasoningChunk,
 ) void {
-    const sse_manager = http_server.getGlobalSseManager() orelse return;
+    const di = tree1_mod.getSingleton() catch return;
+    const event_bus = di.event_bus;
+    
     const data = serializeReasoningChunk(allocator, chunk) catch return;
     defer allocator.free(data);
 
-    const event = http_server.SseEvent{
+    const event = SseEvent{
+        .session_id = session_id,
         .data = data,
     };
-    sse_manager.enqueueEvent(session_id, event) catch {};
+    event_bus.emit(SseEvent, session_id, event);
 }
 
 /// Send final chunk with usage information during streaming
@@ -368,14 +370,17 @@ pub fn sendStreamChunkFinal(
     session_id: []const u8,
     chunk: FinalChunk,
 ) void {
-    const sse_manager = http_server.getGlobalSseManager() orelse return;
+    const di = tree1_mod.getSingleton() catch return;
+    const event_bus = di.event_bus;
+    
     const data = serializeFinalChunk(allocator, chunk) catch return;
     defer allocator.free(data);
 
-    const event = http_server.SseEvent{
+    const event = SseEvent{
+        .session_id = session_id,
         .data = data,
     };
-    sse_manager.enqueueEvent(session_id, event) catch {};
+    event_bus.emit(SseEvent, session_id, event);
 }
 
 /// Send tool call delta chunk during streaming response
@@ -384,12 +389,15 @@ pub fn sendStreamToolCallDelta(
     session_id: []const u8,
     chunk: ToolCallDeltaChunk,
 ) void {
-    const sse_manager = http_server.getGlobalSseManager() orelse return;
+    const di = tree1_mod.getSingleton() catch return;
+    const event_bus = di.event_bus;
+    
     const data = serializeToolCallDeltas(allocator, chunk) catch return;
     defer allocator.free(data);
 
-    const event = http_server.SseEvent{
+    const event = SseEvent{
+        .session_id = session_id,
         .data = data,
     };
-    sse_manager.enqueueEvent(session_id, event) catch {};
+    event_bus.emit(SseEvent, session_id, event);
 }

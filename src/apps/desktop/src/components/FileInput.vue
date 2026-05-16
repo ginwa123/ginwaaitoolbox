@@ -17,6 +17,7 @@ interface FileEntry {
 }
 
 const inputText = ref('')
+const cursorPos = ref(0)
 const showFilePicker = ref(false)
 const fileQuery = ref('')
 const fileList = ref<FileEntry[]>([])
@@ -100,9 +101,12 @@ const filteredFiles = computed(() => {
 
 const detectAtTrigger = () => {
   const text = inputText.value
-  const match = text.match(/@([\w.]*)$/)
-  if (match) {
-    fileQuery.value = match[1] ?? ''
+  const pos = cursorPos.value
+  // Find @ before cursor that starts a file query (includes / and \ for paths)
+  const textBeforeCursor = text.slice(0, pos)
+  const atMatch = textBeforeCursor.match(/@([\w./\\:-]*)$/)
+  if (atMatch) {
+    fileQuery.value = atMatch[1] ?? ''
     if (!showFilePicker.value) {
       showFilePicker.value = true
       selectedFileIndex.value = 0
@@ -121,8 +125,14 @@ watch(inputText, () => {
 
 const selectFile = (file: FileEntry) => {
   const text = inputText.value
-  // Replace @query with the file path (handle dots in query)
-  inputText.value = text.replace(/@[\w.]*$/, file.path)
+  const pos = cursorPos.value
+  // Replace @query at cursor position (includes /, \, :, - for paths)
+  const textBeforeCursor = text.slice(0, pos)
+  const textAfterCursor = text.slice(pos)
+  const atMatch = textBeforeCursor.match(/@([\w./\\:-]*)$/)
+  if (atMatch) {
+    inputText.value = textBeforeCursor.slice(0, -atMatch[0].length) + file.path + textAfterCursor
+  }
   showFilePicker.value = false
   fileQuery.value = ''
 }
@@ -168,6 +178,11 @@ const handleKeydown = (e: KeyboardEvent) => {
     e.preventDefault()
     sendMessage()
   }
+}
+
+const updateCursorPos = (e: Event) => {
+  const target = e.target as HTMLTextAreaElement
+  cursorPos.value = target.selectionStart ?? 0
 }
 
 const scrollSelectedIntoView = () => {
@@ -235,7 +250,7 @@ const sendMessage = () => {
           border: 1px solid var(--color-border);
           min-height: 60px;
           max-height: 200px;
-        " @keydown="handleKeydown"></textarea>
+        " @keydown="handleKeydown" @input="updateCursorPos" @click="updateCursorPos" @blur="updateCursorPos"></textarea>
       <button type="submit"
         class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200"
         style="background-color: var(--color-violet); color: var(--color-bg);"

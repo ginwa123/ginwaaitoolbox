@@ -1,14 +1,18 @@
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-
-const httpz = http_server.httpz;
+const nalar_core = @import("nalarcore");
+const gserverz = nalar_core.gserverz;
 
 /// Handle OPTIONS preflight requests for CORS
-pub fn corsPreflightHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
+pub fn corsPreflightHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    _ = ctx;
     _ = req;
-    res.status_code = 204;
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin");
-    res.header("Access-Control-Max-Age", "86400");
+    return res.rawResponse(.{
+        .status_code = 204,
+        .headers = &.{
+            .{ .key = "Access-Control-Allow-Origin", .value = "*" },
+            .{ .key = "Access-Control-Allow-Methods", .value = "GET, POST, PUT, DELETE, OPTIONS" },
+            .{ .key = "Access-Control-Allow-Headers", .value = "Content-Type, Authorization, Accept, Origin" },
+            .{ .key = "Access-Control-Max-Age", .value = "86400" },
+        },
+        .body = "",
+    });
 }

@@ -1,11 +1,11 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
-
-const httpz = http_server.httpz;
+const nalar_core = @import("nalarcore");
+const gserverz = nalar_core.gserverz;
 
 /// DELETE /api/workspaces/:workspace_id/items/:item_id
-pub fn workspaceItemDeleteHandler(_: *http_server.HttpServer.ServerHandler, req: *httpz.Request, res: *httpz.Response) anyerror!void {
-    const item_id = req.param("item_id") orelse "unknown";
-    res.body = try std.fmt.allocPrint(res.arena, "{{\"success\":true,\"id\":\"{s}\"}}", .{item_id});
+pub fn workspaceItemDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    const item_id = req.path_param("item_id") orelse "unknown";
+    const allocator = ctx.allocator;
+    const body = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"id\":\"{s}\"}}", .{item_id});
+    return res.jsonResponse(.{ .status_code = 200, .data = body });
 }

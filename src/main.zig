@@ -172,6 +172,7 @@ pub fn main(init: std.process.Init) !void {
     //
     // // Desktop app routes (system, health, workspaces)
     try gs.router.get("/health", ai_mod.http_handlers.healthHandler);
+    try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);
     try gs.router.get("/api/skills", ai_mod.http_handlers.skillsListHandler);
     try gs.router.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
     try gs.router.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);

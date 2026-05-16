@@ -280,3 +280,10 @@ pub fn getGlobalSseManager() ?*SseManager {
     }
     return null;
 }
+
+/// Broadcast a panic event to all connected SSE clients
+pub fn broadcastPanic(panic_info: []const u8) void {
+    if (getGlobalSseManager()) |sse_mgr| {
+        sse_mgr.broadcast(panic_info) catch {};
+    }
+}

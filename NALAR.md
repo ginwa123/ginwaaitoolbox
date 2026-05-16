@@ -12,35 +12,20 @@
 
 **Name:** nalarcore
 **Executables:** `nalar` (server), `nalar-tui` (old TUI), `nalar-new-tui` (new ZigZag TUI), `nalar-dev`/`nalar-dev-tui` (debug builds)
-**Language:** Zig 0.15.2
+**Language:** Zig 0.16.0
 **Type:** AI agentic coding toolbox with HTTP server + TUI interfaces
 
 ## HTTP Server Architecture
 
-**HttpServer** (`src/modules/http_server/HttpServer.zig`) uses a single `ctx` field of type `?*anyopaque` to hold application context. This context contains `ContextIPCTui` which includes:
-- `db: *sqlite.SqliteBackend` — database handle
-- `llm_config: *const config.LlmConfig` — LLM configuration
-- `logger: *logger.Logger` — global logger
+**GinwaServer** (`src/modules/custom_http_server/src/http_server.zig`) is the main HTTP server that handles:
+- HTTP request routing
+- SSE (Server-Sent Events) for real-time streaming
+- Session management
+- Panic broadcast to all connected clients
 
-**Access pattern:** Cast `ctx` to `*ai_workflow.ContextIPCTui` to get both db and config:
-```zig
-if (server.ctx) |ctx| {
-    const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(ctx)));
-    const sqlite_db = ctxTui.db;  // Access database
-    const api_key = ctxTui.llm_config.api_key;  // Access LLM config
-}
-```
+**SSE Manager:** Manages SSE client connections with automatic stale client cleanup. Provides `broadcastPanic()` for panic events.
 
-## SSE Connection Manager (Stale Client Cleanup)
-
-**SseConnectionManager** (`src/modules/http_server/SseManager.zig`) manages SSE client connections with automatic stale client cleanup:
-
-| Field | Default | Purpose |
-|-------|---------|---------|
-| `idle_timeout_ns` | 15 seconds | Kill session if no activity within this time |
-| `cleanup_interval_ns` | 5 seconds | How often cleanup thread checks |
-
-**Background cleanup thread:** Automatically started via `HttpServer.startSseCleanupThread()` in `main.zig`. Runs every 5s, removes sessions idle > 15s. Uses simple `io.sleep()` for memory efficiency. Clean shutdown on `deinit()`.
+**Global access:** `gserverz.global_server` holds the singleton instance. Use `gserverz.getGlobalSseManager()` to access SSE functionality.
 
 ## Workflow Methods
 
@@ -165,7 +150,8 @@ src/
 │   │   ├── database.zig               # DB abstraction (placeholder)
 │   │   └── sqlite/Sqlite.zig          # SQLite implementation
 │   ├── http/HttpClient.zig            # HTTP client
-│   ├── http_server/HttpServer.zig     # Router + handlers
+│   ├── custom_http_server/           # Custom HTTP server with SSE support
+│   │   └── src/http_server.zig       # GinwaServer + gserverz exports
 │   ├── logger/                        # Logger module
 │   │   ├── Logger.zig, Formatter.zig, RequestId.zig, Timing.zig
 │   ├── session/

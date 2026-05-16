@@ -42,6 +42,7 @@ pub const sessionQueueDeleteHandler = @import("session_queue_delete.zig").sessio
 pub const sessionQueueGetHandler = @import("session_queue_get.zig").sessionQueueGetHandler;
 pub const systemFolderHandler = @import("system_folder.zig").system_folder_handler;
 pub const healthHandler = @import("health.zig").healthHandler;
+pub const shutdownHandler = @import("shutdown.zig").shutdownHandler;
 
 // Workspace handlers (stub implementations for desktop app compatibility)
 pub const workspacesListHandler = @import("workspaces_list.zig").workspacesListHandler;
