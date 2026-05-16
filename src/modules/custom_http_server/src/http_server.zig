@@ -103,13 +103,13 @@ pub const GinwaServer = struct {
         while (true) {
             const client_fd = try self.acceptClient();
 
-            _ = self.io.async(
-                struct {
-                    fn run(gs: *GinwaServer, fd: i32) void {
-                        var arena_allocator = std.heap.ArenaAllocator.init(gs.allocator);
-                        defer arena_allocator.deinit();
-                        const allocator = arena_allocator.allocator();
+            var arena_allocator = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena_allocator.deinit();
+            const allocator_w = arena_allocator.allocator();
 
+            var async_req = self.io.async(
+                struct {
+                    fn run(gs: *GinwaServer, allocator: std.mem.Allocator, fd: i32) void {
                         var buf: std.ArrayList(u8) = .empty;
                         defer buf.deinit(allocator);
 
@@ -204,8 +204,10 @@ pub const GinwaServer = struct {
                         _ = linux.close(fd);
                     }
                 }.run,
-                .{ self, client_fd },
+                .{ self, allocator_w, client_fd },
             );
+            errdefer async_req.cancel(self.io);
+            async_req.await(self.io); // todo dont block
         }
     }
 

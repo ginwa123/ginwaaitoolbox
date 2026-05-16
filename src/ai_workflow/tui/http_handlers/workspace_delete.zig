@@ -7,7 +7,7 @@ const ai_workflow = nalarcore.ai_workflow;
 /// DELETE /api/workspaces/:id
 pub fn workspaceDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
     const id = req.params.get("id") orelse "";

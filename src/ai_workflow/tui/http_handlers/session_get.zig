@@ -11,7 +11,7 @@ pub fn session_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
     const session = llm_history.get_session(allocator, sqlite_db, session_id) catch {

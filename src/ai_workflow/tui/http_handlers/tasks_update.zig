@@ -7,7 +7,7 @@ const ai_mod = nalarcore.ai_mod;
 /// PUT /api/workspaces/tasks/:task_id - Update task by ID only (no workspace/item needed)
 pub fn tasksUpdateByIdHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
     const task_id = req.params.get("task_id") orelse "";
@@ -36,7 +36,7 @@ pub fn tasksUpdateByIdHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 pub fn tasksUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
     const task_id = req.params.get("task_id") orelse "";

@@ -9,7 +9,7 @@ const llm_history = nalarcore.llm_history;
 /// List all sessions - returns sessions from database with cursor pagination
 /// Optionally filtered by cwd query parameter
 pub fn session_list_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
 

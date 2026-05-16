@@ -13,7 +13,7 @@ fn generateItemId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
 pub fn workspaceItemsCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";

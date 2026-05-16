@@ -12,7 +12,7 @@ pub fn skillsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
     const allocator = ctx.allocator;
     const cwd_param = req.query.get("cwd");
 
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const environment = di.environment;
 
 

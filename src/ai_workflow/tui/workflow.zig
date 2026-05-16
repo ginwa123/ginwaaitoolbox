@@ -71,7 +71,7 @@ pub const StreamingContext = struct {
 
 pub const CallbackAiWorkerFlow = struct {
     pub fn callback(data: RunParamsNew) void {
-        const di = m.getSingleton() catch return;
+        const di = nalar_mod.getSingleton() catch return;
         const logger = di.logger;
         runAgenticMultiStepnew(data) catch |err| {
             logger.errFmt("runAgenticMultiStepnew failed: {s}", .{@errorName(err)});
@@ -80,7 +80,7 @@ pub const CallbackAiWorkerFlow = struct {
 };
 
 pub fn runAgenticMultiStepnew(params: RunParamsNew) !void {
-    const di = try m.getSingleton();
+    const di = try nalar_mod.getSingleton();
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
     defer parent_arena_allocator.deinit();
     const parent_allocator = parent_arena_allocator.allocator();

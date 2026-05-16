@@ -8,7 +8,7 @@ const ai_mod = nalarcore.ai_mod;
 pub fn tasksDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
     const task_id = req.params.get("task_id") orelse "";

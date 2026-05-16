@@ -69,7 +69,7 @@ pub const Session = struct {
 pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const io = ctx.io;
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
     const sqlite_db = di.db;
 
@@ -140,7 +140,7 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 
     _ = io.async(
         struct {
-            fn run(ctx_inner: gserverz.HttpContext, di_inner: *ai_workflow.models.ContextIPCTui, sid: []const u8, qmsg: []const u8, cwd: []const u8, bmsg: []const u8, atools: []const u8) void {
+            fn run(ctx_inner: gserverz.HttpContext, di_inner: *nalarcore.ContextIPCTui, sid: []const u8, qmsg: []const u8, cwd: []const u8, bmsg: []const u8, atools: []const u8) void {
                 _ = ctx_inner;
                 const event_bus = di_inner.event_bus;
                 event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{

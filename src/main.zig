@@ -57,9 +57,9 @@ pub fn main(init: std.process.Init) !void {
 
     const global_logger_ptr = nalarcore.logger.getGlobal().?;
 
-    const ctxParent = try allocator.create(ai_mod.models.ContextIPCTui);
+    const ctxParent = try allocator.create(nalarcore.ContextIPCTui);
     defer allocator.destroy(ctxParent);
-    ctxParent.* = ai_mod.models.ContextIPCTui{
+    ctxParent.* = nalarcore.ContextIPCTui{
         .allocator = allocator,
         .io = io,
         .db = &dbSqlite,
@@ -71,7 +71,7 @@ pub fn main(init: std.process.Init) !void {
         .server = undefined, // Will be set below after initialization
     };
 
-    _ = try ai_mod.models.setSingleton(ctxParent);
+    _ = try nalarcore.setSingleton(ctxParent);
 
     const event_bus_mod = nalarcore.event_bus;
     var event_bus = event_bus_mod.EventBus.init("my-bus", allocator);
@@ -140,11 +140,6 @@ pub fn main(init: std.process.Init) !void {
     defer gs.deinit();
 
     ctxParent.server = gs;
-    //
-    // std.debug.print("HTTP Server listening on 127.0.0.1:29584...\n", .{});
-    // std.debug.print("Test with: curl http://127.0.0.1:29584/\n", .{});
-    // std.debug.print("Press Ctrl+C to stop\n\n", .{});
-    //
     // // try gs.router.get("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
     // // try gs.router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
     // // try gs.router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
@@ -197,7 +192,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
 
     _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParamsNew, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
-    ctxParent.server.sse_manager.on_disconnect = ai_mod.on_event_sent.handleClientDisconnect;
+    ctxParent.server.sse_manager.on_disconnect = ai_mod.handleClientDisconnect;
 
     try gs.listen();
 

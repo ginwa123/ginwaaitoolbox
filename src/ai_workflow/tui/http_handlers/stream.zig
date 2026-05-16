@@ -111,13 +111,13 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
 pub const CallbackAiStream = struct {
     pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
         const session_id = data.session_id;
-        const di = ai_mod.models.getSingleton() catch return;
+        const di = nalar_core.getSingleton() catch return;
         const allocator = di.allocator;
         const server = di.server;
 
         std.debug.print("SSE_DEBUG: callback for session {s}\n", .{session_id});
 
-        const client_id = ai_mod.on_event_sent.getClientIdForSession(session_id) orelse return;
+        const client_id = ai_mod.getClientIdForSession(session_id) orelse return;
         std.debug.print("GILANG_SERVER 2: client_id={s}\n", .{client_id});
 
         std.debug.print("SSE_DEBUG: got client_id {s}, sending event\n", .{client_id});
@@ -155,7 +155,7 @@ pub const CallbackAiStream = struct {
 pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try ai_mod.models.getSingleton();
+    const di = try nalar_core.getSingleton();
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
@@ -178,7 +178,7 @@ pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         //     di.event_bus.unsubscribe(session_id);
         // }
 
-        ai_mod.on_event_sent.registerSessionClient(session_id, client_id) catch {};
+        ai_mod.registerSessionClient(session_id, client_id) catch {};
 
         // Set up disconnect callback to clean up event bus subscription
         // ai_mod.on_event_sent.on_disconnect_cb = ai_mod.on_event_sent.handleClientDisconnect;

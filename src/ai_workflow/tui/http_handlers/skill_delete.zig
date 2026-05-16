@@ -15,7 +15,7 @@ pub const SkillDeleteResponse = struct {
 /// Deletes a skill from either global (~/.config/nalar/skills/) or local (.nalar/skills/) directory
 pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const environment = di.environment;
 
     // Get query parameters

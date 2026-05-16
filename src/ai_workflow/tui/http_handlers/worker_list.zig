@@ -13,7 +13,7 @@ const ai_mod = nalarcore.ai_mod;
 pub fn workerListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
     const limit_str = req.query.get("limit") orelse "50";

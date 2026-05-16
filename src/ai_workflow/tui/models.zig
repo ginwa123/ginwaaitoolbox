@@ -7,27 +7,6 @@ const std = @import("std");
 pub const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 const gserverz = nalarcore.gserverz;
 
-var global_ctx: ?*ContextIPCTui = null;
-
-pub fn getSingleton() anyerror!*ContextIPCTui {
-    return global_ctx orelse error.GlobalContextNotInitialized;
-}
-
-pub fn setSingleton(ctx: *ContextIPCTui) !void {
-    global_ctx = ctx;
-}
-
-pub const ContextIPCTui = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    db: *sqlite.SqliteBackend,
-    llm_config: *const config.LlmConfig,
-    logger: *logger.Logger,
-    environment: ?*const std.process.Environ.Map,
-    active_loops: *ActiveLoops,
-    event_bus: *event_bus.EventBus,
-    server: *gserverz.GinwaServer,
-};
 
 pub const TUIHistory = struct {
     id: []const u8,

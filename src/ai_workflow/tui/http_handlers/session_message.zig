@@ -42,7 +42,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
         }
     };
 
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
     const msg_response = llm_history.getSessionMessagesSorted(allocator, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {

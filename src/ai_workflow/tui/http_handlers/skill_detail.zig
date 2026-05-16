@@ -29,7 +29,7 @@ pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = "Skill name is required" }, .{}) });
     };
 
-    const di = try nalarcore.ai_mod.models.getSingleton();
+    const di = try nalarcore.getSingleton();
     const environment = di.environment;
 
     // Get global and local skills paths

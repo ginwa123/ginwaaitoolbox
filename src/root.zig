@@ -64,6 +64,174 @@ pub const std_options: std.Options = .{
     .panic = panicHandler,
 };
 
+var global_ctx: ?*ContextIPCTui = null;
+
+pub fn getSingleton() anyerror!*ContextIPCTui {
+    return global_ctx orelse error.GlobalContextNotInitialized;
+}
+
+pub fn setSingleton(ctx: *ContextIPCTui) !void {
+    global_ctx = ctx;
+}
+
+pub const ContextIPCTui = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    llm_config: *const config.LlmConfig,
+    logger: *logger.Logger,
+    environment: ?*const std.process.Environ.Map,
+    active_loops: *ai_mod.active_loops,
+    event_bus: *event_bus.EventBus,
+    server: *gserverz.GinwaServer,
+    session_to_client_ids: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([16]u8)) = .empty,
+    session_map_lock: SpinMutex = .{},
+    on_disconnect_cb: ?*const fn (client_id: [16]u8) void = null,
+};
+
+/// Simple spinlock mutex for thread safety
+const SpinMutex = struct {
+    state: u8 = 0,
+    pub fn init() SpinMutex {
+        return .{ .state = 0 };
+    }
+    pub fn lock(self: *SpinMutex) void {
+        while (@cmpxchgStrong(u8, &self.state, 0, 1, .acquire, .acquire) != null) {}
+    }
+    pub fn unlock(self: *SpinMutex) void {
+        @atomicStore(u8, &self.state, 0, .release);
+    }
+};
+
+/// Register a session -> client_id mapping (appends to list)
+pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8) !void {
+    const di = try getSingleton();
+
+    di.session_map_lock.lock();
+    defer di.session_map_lock.unlock();
+
+    // Check if session already has a client list
+    if (di.session_to_client_ids.getPtr(session_id)) |list| {
+        // Check if client already registered
+        for (list.items) |existing_id| {
+            var equal = true;
+            for (existing_id, client_id) |a, b| {
+                if (a != b) {
+                    equal = false;
+                    break;
+                }
+            }
+            if (equal) return; // already registered
+        }
+        // Append new client to existing list
+        try list.append(di.allocator, client_id);
+    } else {
+        // Create new list for this session
+        var list = std.ArrayListUnmanaged([16]u8).empty;
+        try list.append(di.allocator, client_id);
+        try di.session_to_client_ids.put(di.allocator, session_id, list);
+    }
+}
+
+/// Unregister a session -> client_id mapping (removes all clients for session)
+pub fn unregisterSessionClient(session_id: []const u8) void {
+    const di = getSingleton() catch return;
+
+    di.session_map_lock.lock();
+    defer di.session_map_lock.unlock();
+
+    if (di.session_to_client_ids.getPtr(session_id)) |list| {
+        // Clear the entire session entry
+        list.deinit(di.allocator);
+        _ = di.session_to_client_ids.remove(session_id);
+    }
+}
+
+/// Get client_id for a session, if registered (returns first client if multiple)
+pub fn getClientIdForSession(session_id: []const u8) ?[16]u8 {
+    const di = getSingleton() catch return null;
+
+    di.session_map_lock.lock();
+    defer di.session_map_lock.unlock();
+
+    if (di.session_to_client_ids.getPtr(session_id)) |list| {
+        if (list.items.len > 0) {
+            return list.items[0];
+        }
+    }
+    return null;
+}
+
+/// Get list of client_ids for a session
+/// Returns owned memory that caller must free, or null if session not found
+pub fn getListClientsForSession(session_id: []const u8, allocator: std.mem.Allocator) !?[][16]u8 {
+    const di = try getSingleton();
+
+    di.session_map_lock.lock();
+    defer di.session_map_lock.unlock();
+
+    const list = di.session_to_client_ids.get(session_id) orelse return null;
+    if (list.items.len == 0) return null;
+
+    const copy = try allocator.alloc([16]u8, list.items.len);
+    for (list.items, 0..) |client_id, i| {
+        copy[i] = client_id;
+    }
+    return copy;
+}
+
+/// Find session_id by client_id (reverse lookup)
+pub fn getSessionIdForClient(client_id: [16]u8) ?[]const u8 {
+    const di = getSingleton() catch return null;
+
+    di.session_map_lock.lock();
+    defer di.session_map_lock.unlock();
+
+    var it = di.session_to_client_ids.iterator();
+    while (it.next()) |entry| {
+        for (entry.value_ptr.items) |v| {
+            var equal = true;
+            for (v, client_id) |a, b| {
+                if (a != b) {
+                    equal = false;
+                    break;
+                }
+            }
+            if (equal) return entry.key_ptr.*;
+        }
+    }
+    return null;
+}
+
+/// Handle client disconnect - called by SseManager on_disconnect callback
+pub fn handleClientDisconnect(client_id: [16]u8) void {
+    const di = getSingleton() catch return;
+    const ev_bus = di.event_bus;
+
+    if (di.on_disconnect_cb) |cb| {
+        cb(client_id);
+    }
+    // Also clean up session mapping
+    if (getSessionIdForClient(client_id)) |session_id| {
+        unregisterSessionClient(session_id);
+
+        const listClients = getListClientsForSession(session_id, di.allocator) catch |err| {
+            std.debug.print("SSE_DEBUG: Failed to get list of clients for session {s}: {any}\n", .{ session_id, err });
+            return;
+        };
+
+        if (listClients) |clients| {
+            if (clients.len == 0) {
+                std.debug.print("SSE_DEBUG: No clients left for session {s}\n", .{session_id});
+                ev_bus.unsubscribe(session_id);
+            }
+        } else {
+            std.debug.print("SSE_DEBUG: Failed to get list of clients for session {s}\n", .{session_id});
+            ev_bus.unsubscribe(session_id);
+        }
+    }
+}
+
 // Module exports - these are available via @import("nalarcore")
 // it should import from folder modules only
 pub const agent = @import("modules/agent/Agent.zig");
@@ -103,7 +271,6 @@ pub const remove_file = @import("modules/agent/tools/remove_file.zig");
 pub const system_folder = @import("modules/system_folder/system_folder.zig");
 
 pub const update_activity = @import("modules/agent/tools/update_activity.zig");
-
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
