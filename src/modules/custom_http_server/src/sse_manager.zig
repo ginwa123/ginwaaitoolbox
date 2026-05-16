@@ -246,6 +246,10 @@ fn runEventLoopThread(sse_mgr: *SseManager, heartbeat_secs: u32) void {
     fn sendHeartbeat(self: *SseManager) void {
         const ping = "data: ping\n\n";
 
+        // Consume the timerfd event by reading from it
+        var buf: [8]u8 = undefined;
+        _ = linux.read(self.timerfd, @ptrCast(&buf), buf.len);
+
         self.lock.lock();
         defer self.lock.unlock();
 
