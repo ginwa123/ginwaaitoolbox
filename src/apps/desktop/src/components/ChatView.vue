@@ -728,69 +728,6 @@ const compactSession = async () => {
   <div class="flex h-full w-full">
     <!-- Main Chat Content -->
     <div class="flex flex-col h-full flex-1 min-w-0">
-      <!-- Header -->
-      <div class="px-6 py-4 flex items-center gap-3"
-        style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
-        <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg"
-          style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
-          <span v-if="viewType === 'task'">✓</span>
-          <span v-else>💬</span>
-        </div>
-        <div>
-          <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
-            {{ viewType === 'task' ? taskInfo.taskName : chatName }}
-          </h2>
-          <p class="text-xs" style="color: var(--semantic-text-dim);">
-            <span v-if="viewType === 'task'">{{ taskInfo.projectName }}</span>
-            <span v-else-if="isLoading">Loading...</span>
-            <span v-else-if="error" style="color: var(--color-red);">{{ error }}</span>
-            <span v-else-if="isStreaming" style="color: var(--color-violet);">Receiving...</span>
-            <span v-else-if="isLLMProcessing" style="color: var(--color-orange);">⚡ Processing</span>
-            <span v-else-if="compactError" style="color: var(--color-red);">Compact failed</span>
-            <span v-else>{{ messages.length }} message{{ messages.length !== 1 ? 's' : '' }}</span>
-          </p>
-        </div>
-        <!-- Compact button in header right -->
-        <div class="ml-auto flex items-center gap-2">
-          <button @click="compactSession" :disabled="isCompacting || isLoading || isLLMProcessing || !sessionId"
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
-            :class="isCompacting || isLoading || isLLMProcessing || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
-            :title="isCompacting ? 'Compacting...' : 'Compact conversation history'">
-            <span v-if="isCompacting" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
-              style="border-color: var(--color-violet); border-top-color: transparent;"></span>
-            <span v-else>🗜️</span>
-            <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
-          </button>
-          <!-- Token usage display -->
-          <div v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0"
-            class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
-            <span style="color: var(--semantic-text-dim);">Tokens:</span>
-            <span style="color: var(--semantic-text);">{{ maxTotalTokens.toLocaleString() }}</span>
-            <span v-if="maxCapacityTotalTokens > 0" style="color: var(--semantic-text-dim);">/ {{
-              maxCapacityTotalTokens.toLocaleString() }}</span>
-            <div v-if="maxCapacityTotalTokens > 0" class="w-16 h-2 rounded-full overflow-hidden"
-              style="background-color: var(--color-border);">
-              <div class="h-full rounded-full transition-all duration-300" :style="{
-                width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
-                backgroundColor: (maxTotalTokens / maxCapacityTotalTokens) > 0.8 ? 'var(--color-red)' : (maxTotalTokens / maxCapacityTotalTokens) > 0.6 ? 'var(--color-orange)' : 'var(--color-violet)'
-              }"></div>
-            </div>
-          </div>
-          <!-- Git status display -->
-          <div v-if="gitStatus && gitStatus.is_git_repo"
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-            :title="gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'">
-            <span>🌿</span>
-            <span style="color: var(--semantic-text);">{{ gitStatus.branch || 'main' }}</span>
-            <span v-if="!gitStatus.is_clean" style="color: var(--color-orange);">●</span>
-            <span v-else style="color: var(--color-green);">✓</span>
-          </div>
-        </div>
-      </div>
-
       <!-- Messages -->
       <div ref="messagesContainer" tabindex="0" class="flex-1 overflow-y-auto" @scroll="handleScroll">
         <!-- Loading More -->
@@ -896,6 +833,55 @@ const compactSession = async () => {
       <div class="p-4" style="border-top: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
         <div class="max-w-4xl mx-auto">
           <FileInput :cwd="cwd" @submit="handleFileInputSubmit" />
+          <!-- Status bar: compact, tokens, git branch below input -->
+          <div class="flex items-center gap-2 mt-3">
+            <!-- Compact button -->
+            <button @click="compactSession" :disabled="isCompacting || isLoading || isLLMProcessing || !sessionId"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
+              :class="isCompacting || isLoading || isLLMProcessing || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
+              style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
+              :title="isCompacting ? 'Compacting...' : 'Compact conversation history'">
+              <span v-if="isCompacting" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+                style="border-color: var(--color-violet); border-top-color: transparent;"></span>
+              <span v-else>🗜️</span>
+              <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
+            </button>
+            <!-- Token usage display -->
+            <div v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
+              style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
+              <span style="color: var(--semantic-text-dim);">Tokens:</span>
+              <span style="color: var(--semantic-text);">{{ maxTotalTokens.toLocaleString() }}</span>
+              <span v-if="maxCapacityTotalTokens > 0" style="color: var(--semantic-text-dim);">/ {{
+                maxCapacityTotalTokens.toLocaleString() }}</span>
+              <div v-if="maxCapacityTotalTokens > 0" class="w-16 h-2 rounded-full overflow-hidden"
+                style="background-color: var(--color-border);">
+                <div class="h-full rounded-full transition-all duration-300" :style="{
+                  width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
+                  backgroundColor: (maxTotalTokens / maxCapacityTotalTokens) > 0.8 ? 'var(--color-red)' : (maxTotalTokens / maxCapacityTotalTokens) > 0.6 ? 'var(--color-orange)' : 'var(--color-violet)'
+                }"></div>
+              </div>
+            </div>
+            <!-- Git status display -->
+            <div v-if="gitStatus && gitStatus.is_git_repo"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+              style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+              :title="gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'">
+              <span>🌿</span>
+              <span style="color: var(--semantic-text);">{{ gitStatus.branch || 'main' }}</span>
+              <span v-if="!gitStatus.is_clean" style="color: var(--color-orange);">●</span>
+              <span v-else style="color: var(--color-green);">✓</span>
+            </div>
+            <!-- Session status -->
+            <div class="ml-auto text-xs" style="color: var(--semantic-text-dim);">
+              <span v-if="isLoading">Loading...</span>
+              <span v-else-if="error" style="color: var(--color-red);">{{ error }}</span>
+              <span v-else-if="isStreaming" style="color: var(--color-violet);">Receiving...</span>
+              <span v-else-if="isLLMProcessing" style="color: var(--color-orange);">⚡ Processing</span>
+              <span v-else-if="compactError" style="color: var(--color-red);">Compact failed</span>
+              <span v-else>{{ messages.length }} msg</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>

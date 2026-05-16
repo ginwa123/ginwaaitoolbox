@@ -2,6 +2,7 @@ const std = @import("std");
 const tree1 = @import("nalarcore");
 const sqlite = tree1.sqlite;
 const agent = tree1.agent;
+const logger_mod = tree1.logger;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
 
@@ -1427,4 +1428,489 @@ pub fn hasQueuedMessages(
     }
 
     return false;
+}
+
+// =============================================================================
+// Session Table Functions (migrated from session_table.zig)
+// =============================================================================
+
+/// Session info for CRUD operations (from session_table.zig)
+pub const SessionTableInfo = struct {
+    id: []u8,
+    name: []u8,
+    status: []u8,
+    created_at: []u8,
+    updated_at: []u8,
+
+    pub fn deinit(self: SessionTableInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.name);
+        allocator.free(self.status);
+        allocator.free(self.created_at);
+        allocator.free(self.updated_at);
+    }
+};
+
+/// Create a new session with status set to 'active'
+pub fn create_session(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    name: []const u8,
+) !SessionTableInfo {
+    const sql = "INSERT INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+    try db.exec(allocator, sql, &.{ id, name });
+
+    return SessionTableInfo{
+        .id = try allocator.dupe(u8, id),
+        .name = try allocator.dupe(u8, name),
+        .status = try allocator.dupe(u8, "active"),
+        .created_at = try allocator.dupe(u8, ""),
+        .updated_at = try allocator.dupe(u8, ""),
+    };
+}
+
+/// Get a session by id
+pub fn getSession(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !?SessionTableInfo {
+    const sql = "SELECT id, name, status, COALESCE(created_at, ''), COALESCE(updated_at, '') FROM sessions WHERE id = ?";
+
+    var rows = try db.query(allocator, sql, &.{id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const session = SessionTableInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .name = try allocator.dupe(u8, row.values[1]),
+            .status = try allocator.dupe(u8, row.values[2]),
+            .created_at = try allocator.dupe(u8, row.values[3]),
+            .updated_at = try allocator.dupe(u8, row.values[4]),
+        };
+        row.deinit(allocator);
+        return session;
+    }
+
+    return null;
+}
+
+/// Update session status
+pub fn update_session_status(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    new_status: []const u8,
+) !void {
+    const sql = "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(allocator, sql, &.{ new_status, id });
+}
+
+/// Update session name
+pub fn updateSessionName(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    new_name: []const u8,
+) !void {
+    const sql = "UPDATE sessions SET name = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ new_name, id });
+}
+
+/// Delete a session by id
+pub fn delete_session(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !void {
+    const sql = "DELETE FROM sessions WHERE id = ?";
+    try db.exec(allocator, sql, &.{id});
+}
+
+/// List all sessions
+pub fn list_sessions(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+) ![]SessionTableInfo {
+    const sql = "SELECT id, name, status FROM sessions ORDER BY id";
+
+    var rows = try db.query(allocator, sql, &.{});
+    defer rows.deinit();
+
+    var sessions = std.ArrayList(SessionTableInfo).empty;
+    errdefer {
+        for (sessions.items) |s| s.deinit(allocator);
+        sessions.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const session = SessionTableInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .name = try allocator.dupe(u8, row.values[1]),
+            .status = try allocator.dupe(u8, row.values[2]),
+        };
+        try sessions.append(allocator, session);
+        row.deinit(allocator);
+    }
+
+    return try sessions.toOwnedSlice(allocator);
+}
+
+// =============================================================================
+// Session Skills Functions (migrated from session_skills.zig)
+// =============================================================================
+
+/// Check if a skill is already loaded in the database
+pub fn isSkillLoaded(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    skill_name: []const u8,
+) !bool {
+    if (session_id.len == 0) return false;
+
+    const sql = "SELECT 1 FROM session_skills WHERE session_id = ? AND skill_name = ? LIMIT 1";
+    var rows = try db.query(allocator, sql, &.{ session_id, skill_name });
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        row.deinit(allocator);
+        return true;
+    }
+    return false;
+}
+
+/// Save a loaded skill to the database for persistence
+pub fn saveSkill(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    logger: *logger_mod.Logger,
+    session_id: []const u8,
+    skill_name: []const u8,
+    content: []const u8,
+) !void {
+    // Skip if session_id is empty
+    if (session_id.len == 0) return;
+
+    const sql = "INSERT OR REPLACE INTO session_skills (session_id, skill_name, content, loaded_at) VALUES (?, ?, ?, strftime('%s', 'now'))";
+    try db.exec(allocator, sql, &.{ session_id, skill_name, content });
+    logger.debugFmt("Skill '{s}' saved to database for session {s}", .{ skill_name, session_id });
+}
+
+// =============================================================================
+// Workspace Items Functions (migrated from workspace_items_table.zig)
+// =============================================================================
+
+/// WorkspaceItem info for CRUD operations
+pub const WorkspaceItemInfo = struct {
+    id: []u8,
+    workspace_id: []u8,
+    item_type: []u8,
+    name: ?[]u8 = null,
+    path: ?[]u8 = null,
+    created_at: ?[]u8 = null,
+    updated_at: ?[]u8 = null,
+
+    pub fn deinit(self: WorkspaceItemInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.workspace_id);
+        allocator.free(self.item_type);
+        if (self.name) |n| allocator.free(n);
+        if (self.path) |p| allocator.free(p);
+        if (self.created_at) |ca| allocator.free(ca);
+        if (self.updated_at) |ua| allocator.free(ua);
+    }
+};
+
+/// Create a new workspace item
+pub fn createWorkspaceItem(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    workspace_id: []const u8,
+    item_type: []const u8,
+) !WorkspaceItemInfo {
+    const sql = "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES (?, ?, ?)";
+    try db.exec(allocator, sql, &.{ id, workspace_id, item_type });
+
+    return WorkspaceItemInfo{
+        .id = try allocator.dupe(u8, id),
+        .workspace_id = try allocator.dupe(u8, workspace_id),
+        .item_type = try allocator.dupe(u8, item_type),
+    };
+}
+
+/// Get a workspace item by id
+pub fn getWorkspaceItem(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !?WorkspaceItemInfo {
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE id = ?";
+
+    var rows = try db.query(allocator, sql, &.{id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const item = WorkspaceItemInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .workspace_id = try allocator.dupe(u8, row.values[1]),
+            .item_type = try allocator.dupe(u8, row.values[2]),
+            .name = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .path = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .created_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .updated_at = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else null,
+        };
+        row.deinit(allocator);
+        return item;
+    }
+
+    return null;
+}
+
+/// Update workspace item
+pub fn updateWorkspaceItem(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    workspace_id: []const u8,
+    item_type: []const u8,
+) !void {
+    const sql = "UPDATE workspace_items SET workspace_id = ?, item_type = ?, updated_at = datetime('now') WHERE id = ?";
+    try db.exec(allocator, sql, &.{ workspace_id, item_type, id });
+}
+
+/// Delete a workspace item by id
+pub fn deleteWorkspaceItem(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !void {
+    const sql = "DELETE FROM workspace_items WHERE id = ?";
+    try db.exec(allocator, sql, &.{id});
+}
+
+/// List all workspace items by workspace_id
+pub fn listWorkspaceItems(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_id: []const u8,
+) ![]WorkspaceItemInfo {
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id = ? ORDER BY created_at DESC";
+
+    var rows = try db.query(allocator, sql, &.{workspace_id});
+    defer rows.deinit();
+
+    var items = std.ArrayList(WorkspaceItemInfo).empty;
+    errdefer {
+        for (items.items) |item| item.deinit(allocator);
+        items.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const item = WorkspaceItemInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .workspace_id = try allocator.dupe(u8, row.values[1]),
+            .item_type = try allocator.dupe(u8, row.values[2]),
+            .name = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .path = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .created_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .updated_at = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else null,
+        };
+        try items.append(allocator, item);
+        row.deinit(allocator);
+    }
+
+    return try items.toOwnedSlice(allocator);
+}
+
+/// List ALL workspace items (for N+1 fix)
+pub fn listAllWorkspaceItems(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+) ![]WorkspaceItemInfo {
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items ORDER BY created_at DESC";
+
+    var rows = try db.query(allocator, sql, &.{});
+    defer rows.deinit();
+
+    var items = std.ArrayList(WorkspaceItemInfo).empty;
+    errdefer {
+        for (items.items) |item| item.deinit(allocator);
+        items.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const item = WorkspaceItemInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .workspace_id = try allocator.dupe(u8, row.values[1]),
+            .item_type = try allocator.dupe(u8, row.values[2]),
+            .name = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .path = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .created_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .updated_at = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else null,
+        };
+        try items.append(allocator, item);
+        row.deinit(allocator);
+    }
+
+    return try items.toOwnedSlice(allocator);
+}
+
+// =============================================================================
+// Workspace Item Tasks Functions (migrated from workspace_item_tasks_table.zig)
+// =============================================================================
+
+/// WorkspaceItemTask info for CRUD operations
+pub const WorkspaceItemTaskInfo = struct {
+    id: []u8,
+    name: []u8,
+    workspace_item_id: []u8,
+    session_id: ?[]u8 = null,
+    created_at: ?[]u8 = null,
+    updated_at: ?[]u8 = null,
+
+    pub fn deinit(self: WorkspaceItemTaskInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.name);
+        allocator.free(self.workspace_item_id);
+        if (self.session_id) |s| allocator.free(s);
+        if (self.created_at) |ca| allocator.free(ca);
+        if (self.updated_at) |ua| allocator.free(ua);
+    }
+};
+
+/// Create a new workspace item task
+pub fn createWorkspaceItemTask(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    name: []const u8,
+    workspace_item_id: []const u8,
+    session_id: ?[]const u8,
+) !WorkspaceItemTaskInfo {
+    if (session_id) |sid| {
+        const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES (?, ?, ?, ?)";
+        try db.exec(allocator, sql, &.{ id, name, workspace_item_id, sid });
+    } else {
+        const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES (?, ?, ?)";
+        try db.exec(allocator, sql, &.{ id, name, workspace_item_id });
+    }
+
+    return WorkspaceItemTaskInfo{
+        .id = try allocator.dupe(u8, id),
+        .name = try allocator.dupe(u8, name),
+        .workspace_item_id = try allocator.dupe(u8, workspace_item_id),
+        .session_id = if (session_id) |s| try allocator.dupe(u8, s) else null,
+    };
+}
+
+/// Get a workspace item task by id
+pub fn getWorkspaceItemTask(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !?WorkspaceItemTaskInfo {
+    const sql = "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE id = ?";
+
+    var rows = try db.query(allocator, sql, &.{id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const task = WorkspaceItemTaskInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .name = try allocator.dupe(u8, row.values[1]),
+            .workspace_item_id = try allocator.dupe(u8, row.values[2]),
+            .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+        };
+        row.deinit(allocator);
+        return task;
+    }
+
+    return null;
+}
+
+/// Update workspace item task
+pub fn updateWorkspaceItemTask(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    name: ?[]const u8,
+    session_id: ?[]const u8,
+) !void {
+    if (name == null and session_id == null) {
+        // Nothing to update
+        return;
+    }
+
+    var set_clauses = std.ArrayList([]const u8).empty;
+    var values = std.ArrayList([]const u8).empty;
+
+    if (name) |n| {
+        try set_clauses.append(allocator, "name = ?");
+        try values.append(allocator, n);
+    }
+
+    if (session_id) |s| {
+        try set_clauses.append(allocator, "session_id = ?");
+        try values.append(allocator, s);
+    }
+
+    try values.append(allocator, id);
+
+    var sql = std.ArrayList(u8).empty;
+    try sql.appendSlice(allocator, "UPDATE workspace_item_tasks SET ");
+    for (set_clauses.items, 0..) |clause, i| {
+        if (i > 0) try sql.appendSlice(allocator, ", ");
+        try sql.appendSlice(allocator, clause);
+    }
+    try sql.appendSlice(allocator, ", updated_at = datetime('now') WHERE id = ?");
+
+    try db.exec(allocator, sql.items, values.items);
+}
+
+/// Delete a workspace item task by id
+pub fn deleteWorkspaceItemTask(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !void {
+    const sql = "DELETE FROM workspace_item_tasks WHERE id = ?";
+    try db.exec(allocator, sql, &.{id});
+}
+
+/// List all workspace item tasks by workspace_item_id
+pub fn listWorkspaceItemTasks(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+) ![]WorkspaceItemTaskInfo {
+    const sql = "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id = ? ORDER BY created_at DESC";
+
+    var rows = try db.query(allocator, sql, &.{workspace_item_id});
+    defer rows.deinit();
+
+    var tasks = std.ArrayList(WorkspaceItemTaskInfo).empty;
+    errdefer {
+        for (tasks.items) |task| task.deinit(allocator);
+        tasks.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const task = WorkspaceItemTaskInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .name = try allocator.dupe(u8, row.values[1]),
+            .workspace_item_id = try allocator.dupe(u8, row.values[2]),
+            .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+        };
+        try tasks.append(allocator, task);
+        row.deinit(allocator);
+    }
+
+    return try tasks.toOwnedSlice(allocator);
 }

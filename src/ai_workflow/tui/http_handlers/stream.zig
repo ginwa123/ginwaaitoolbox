@@ -59,28 +59,9 @@ pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
-    std.debug.print("STREAM_HANDLER: session_id={s} client_id present={}\n", .{
-        session_id,
-        ctx.client_id != null,
-    });
-
     // Register the client_id mapping (set by http_server after registerClient)
     if (ctx.client_id) |client_id| {
-        std.debug.print("STREAM_HANDLER: registering client_id for session {s}\n", .{session_id});
-        std.debug.print("STREAM_HANDLER: client_id={s}\n", .{client_id});
-        std.debug.print("GILANG_SERVER: client_id={s}\n", .{client_id});
-
-        // Check if this session already has a client - clean up old one first
-        // if (ai_mod.on_event_sent.getClientIdForSession(session_id)) |_| {
-        //     std.debug.print("STREAM_HANDLER: cleaning up old client for session {s}\n", .{session_id});
-        //     ai_mod.on_event_sent.unregisterSessionClient(session_id);
-        //     di.event_bus.unsubscribe(session_id);
-        // }
-
         ai_mod.registerSessionClient(session_id, client_id) catch {};
-
-        // Set up disconnect callback to clean up event bus subscription
-        // ai_mod.on_event_sent.on_disconnect_cb = ai_mod.on_event_sent.handleClientDisconnect;
     }
 
     const event_bus = di.event_bus;

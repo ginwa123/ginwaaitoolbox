@@ -1,5 +1,3 @@
-const json = std.json;
-
 const nalar_mod = @import("nalarcore");
 const llm_history = @import("llm_history.zig");
 const build_msg_prompt = @import("build_messages_for_agent_prompt.zig");
@@ -8,7 +6,6 @@ const models = @import("models.zig");
 const on_event_sent = @import("on_event_sent.zig");
 const tool_registry = @import("tool_registry.zig");
 const handle_tool = @import("handle_tool.zig").handle_tool;
-const session_table = @import("session_table.zig");
 
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
@@ -19,6 +16,8 @@ const prompt = nalarcore.agent.prompt;
 const helpers = nalarcore.helpers;
 
 const std = @import("std");
+const json = std.json;
+
 // Thread-safe set of active session loop IDs
 pub const StreamingContext = struct {
     allocator: std.mem.Allocator,
@@ -229,7 +228,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
         logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
         if (agent.LLMModels.is_do_compact(total_tokens, agent.LLMModels.get_model_token_count(config.model))) {
-            if (callCompactAgentNew(messagesLists.items, allocator, config.api_key, config.model, config.base_url, copy_cwd, logger, io )) |compacted_xml| {
+            if (callCompactAgentNew(messagesLists.items, allocator, config.api_key, config.model, config.base_url, copy_cwd, logger, io)) |compacted_xml| {
                 try compactMessageInMemoryNew(allocator, &messagesLists, compacted_xml, copy_session_id, config.model, copy_cwd, db, io, logger);
             }
         }
@@ -466,7 +465,7 @@ fn generateSessionNameNew(
         }
 
         // Update session name in database
-        session_table.updateSessionName(allocator, db, session_id, stripped_content) catch {
+        llm_history.updateSessionName(allocator, db, session_id, stripped_content) catch {
             logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{stripped_content});
             if (needs_free) allocator.free(stripped_content);
             return;

@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const save_skill = @import("session_skills.zig");
+const llm_history = @import("llm_history.zig");
 
 test "save_skill - empty session_id returns early" {
     // Test that empty session_id is handled correctly

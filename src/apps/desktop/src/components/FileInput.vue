@@ -185,6 +185,13 @@ const updateCursorPos = (e: Event) => {
   cursorPos.value = target.selectionStart ?? 0
 }
 
+const autoResize = (e: Event) => {
+  const target = e.target as HTMLTextAreaElement
+  cursorPos.value = target.selectionStart ?? 0
+  target.style.height = 'auto'
+  target.style.height = `${Math.min(target.scrollHeight, 200)}px`
+}
+
 const scrollSelectedIntoView = () => {
   setTimeout(() => {
     const buttons = document.querySelectorAll('.file-picker-list button')
@@ -242,19 +249,19 @@ const sendMessage = () => {
 
     <!-- Input form -->
     <form @submit.prevent="sendMessage" class="flex gap-3 items-end">
-      <textarea v-model="inputText" placeholder="Type a message... (@ to search files)" rows="3"
+      <textarea v-model="inputText" placeholder="Type a message... (@ to search files)"
         class="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all duration-200 resize-none"
         style="
           background-color: var(--semantic-card-bg);
           color: var(--semantic-text);
           border: 1px solid var(--color-border);
-          min-height: 60px;
+          height: 48px;
           max-height: 200px;
-        " @keydown="handleKeydown" @input="updateCursorPos" @click="updateCursorPos" @blur="updateCursorPos"></textarea>
+          overflow-y: auto;
+        " @keydown="handleKeydown" @input="autoResize" @click="autoResize" @blur="updateCursorPos"></textarea>
       <button type="submit"
-        class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200"
-        style="background-color: var(--color-violet); color: var(--color-bg);"
-        onmouseover="this.style.opacity='0.85';" onmouseout="this.style.opacity='1';">
+        class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:opacity-90 active:scale-95 border"
+        style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border);">
         Send
       </button>
     </form>
