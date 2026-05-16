@@ -26,7 +26,7 @@ pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
 
     // Get skill name from path parameter
     const skill_name = req.params.get("name") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = "Skill name is required" }, .{}) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = "Skill name is required" }, .{}) });
     };
 
     const di = try nalarcore.ai_mod.models.getSingleton();
@@ -42,7 +42,7 @@ pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     // Try to find the skill in global directory first
     if (global_path) |path| {
         if (try findSkillByName(allocator, ctx.io, path, skill_name)) |detail| {
-            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail }, .{}) });
+            return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail }, .{}) });
         }
     }
 
@@ -51,12 +51,12 @@ pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         if (try findSkillByName(allocator, ctx.io, path, skill_name)) |detail| {
             var detail_with_scope = detail;
             detail_with_scope.is_global = false;
-            return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail_with_scope }, .{}) });
+            return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail_with_scope }, .{}) });
         }
     }
 
     // Skill not found
-    return res.jsonResponse(allocator, .{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found", .{skill_name}) }, .{}) });
+    return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found", .{skill_name}) }, .{}) });
 }
 
 /// Find a skill by name in the given directory

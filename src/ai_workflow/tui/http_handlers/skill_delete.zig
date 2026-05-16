@@ -20,7 +20,7 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
 
     // Get query parameters
     const name = req.query.get("name") orelse {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+        return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
             .success = false,
             .skill_name = "",
             .error_message = "name query parameter is required",
@@ -28,7 +28,7 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     };
 
     if (name.len == 0) {
-        return res.jsonResponse(allocator, .{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+        return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
             .success = false,
             .skill_name = "",
             .error_message = "name query parameter cannot be empty",
@@ -50,7 +50,7 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         defer if (global_path) |p| allocator.free(p);
 
         if (global_path == null) {
-            return res.jsonResponse(allocator, .{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+            return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = "Global skills directory not found",
@@ -67,7 +67,7 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         };
 
         if (!dir_exists) {
-            return res.jsonResponse(allocator, .{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+            return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found in global directory", .{name}),
@@ -76,14 +76,14 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
 
         // Delete the skill directory recursively
         std.Io.Dir.cwd().deleteTree(io, skill_dir_path) catch {
-            return res.jsonResponse(allocator, .{ .status_code = 500, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+            return res.jsonResponse(.{ .status_code = 500, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = "Failed to delete skill directory",
             }, .{}) });
         };
 
-        return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+        return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
             .success = true,
             .skill_name = name,
             .deleted_from = "global",
@@ -91,7 +91,7 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     } else {
         // Delete from local skills directory
         if (cwd == null) {
-            return res.jsonResponse(allocator, .{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+            return res.jsonResponse( .{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = "cwd query parameter is required for local skill deletion",
@@ -102,7 +102,7 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         defer if (local_path) |p| allocator.free(p);
 
         if (local_path == null) {
-            return res.jsonResponse(allocator, .{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+            return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = "Local skills directory not found",
@@ -119,7 +119,7 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         };
 
         if (!dir_exists) {
-            return res.jsonResponse(allocator, .{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+            return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found in local directory", .{name}),
@@ -128,14 +128,14 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
 
         // Delete the skill directory recursively
         std.Io.Dir.cwd().deleteTree(io, skill_dir_path) catch {
-            return res.jsonResponse(allocator, .{ .status_code = 500, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+            return res.jsonResponse(.{ .status_code = 500, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = "Failed to delete skill directory",
             }, .{}) });
         };
 
-        return res.jsonResponse(allocator, .{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+        return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
             .success = true,
             .skill_name = name,
             .deleted_from = local_path,

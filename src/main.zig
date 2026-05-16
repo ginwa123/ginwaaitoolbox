@@ -81,8 +81,6 @@ pub fn main(init: std.process.Init) !void {
     defer active_loops.deinit(parent_allocator);
     ctxParent.active_loops = &active_loops;
 
-    _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParams, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
-
     // activity_registry.init_global_registry(parent_allocator, io);
     // defer activity_registry.deinit_global_registry();
 
@@ -194,7 +192,9 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
-    //
+
+    _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParamsNew, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
+
     try gs.listen();
 
     // const HttpRoutes = struct {

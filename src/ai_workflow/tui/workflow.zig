@@ -70,58 +70,75 @@ pub const StreamingContext = struct {
 };
 
 pub const CallbackAiWorkerFlow = struct {
-    pub fn callback(data: RunParams) void {
-        runAgenticMultiStepnew(data);
+    pub fn callback(data: RunParamsNew) void {
+        const di = m.getSingleton() catch return;
+        const logger = di.logger;
+        runAgenticMultiStepnew(data) catch |err| {
+            logger.errFmt("runAgenticMultiStepnew failed: {s}", .{@errorName(err)});
+        };
     }
 };
 
-pub fn runAgenticMultiStepnew(params: RunParams) !void {
-    const db = params.ctxTui.db;
-    const logger = params.ctxTui.logger;
-    const active_loops = params.ctxTui.active_loops;
-    const io = params.ctxTui.io;
-    const config = params.ctxTui.llm_config;
-    const environment = params.ctxTui.environment;
+pub fn runAgenticMultiStepnew(params: RunParamsNew) !void {
+    const di = try m.getSingleton();
+    var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
+    defer parent_arena_allocator.deinit();
+    const parent_allocator = parent_arena_allocator.allocator();
+
+    const db = di.db;
+    const logger = di.logger;
+    const active_loops = di.active_loops;
+    const io = di.io;
+    const config = di.llm_config;
+    const environment = di.environment;
+
+    const copy_parent_session_id = try parent_allocator.dupe(u8, params.parent_session_id);
+    const copy_session_id = try parent_allocator.dupe(u8, params.session_id);
+    const copy_message = try parent_allocator.dupe(u8, params.message);
+    const copy_cwd = try parent_allocator.dupe(u8, params.cwd);
+    const copy_body = try parent_allocator.dupe(u8, params.body);
+    const copy_allowed_tools = try parent_allocator.dupe(u8, params.allowed_tools);
+    const copy_is_sub_agent = params.is_sub_agent;
 
     var is_have_queue_message = false;
 
     // Ensure cleanup happens even on error - remove from worker table
     defer {
-        is_have_queue_message = llm_history.hasQueuedMessages(db, params.session_id);
+        is_have_queue_message = llm_history.hasQueuedMessages(db, copy_session_id);
         if (is_have_queue_message == false) {
-            llm_history.markSessionIdle(params.parent_allocator, db, params.session_id) catch |err| {
+            llm_history.markSessionIdle(parent_allocator, db, copy_session_id) catch |err| {
                 logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
             };
         }
     }
 
     const initial_agent_state = try get_current_agent_by_session_id(
-        params.parent_allocator,
+        parent_allocator,
         db,
-        params.session_id,
+        copy_session_id,
     );
     const initial_agent = initial_agent_state.agent;
 
     // Check if session is already running (exists in worker table)
-    if (llm_history.isSessionRunning(db, params.session_id) and active_loops.contains(io, params.session_id)) {
+    if (llm_history.isSessionRunning(db, copy_session_id) and active_loops.contains(io, copy_session_id)) {
         // Session is already running, queue the message
-        llm_history.queueMessage(params.parent_allocator, db, params.session_id, params.message) catch {
-            logger.warnFmt("Failed to queue message for session {s}", .{params.session_id});
+        llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message) catch {
+            logger.warnFmt("Failed to queue message for session {s}", .{copy_session_id});
         };
-        logger.debugFmt("WORKFLOW: queued message for session {s}", .{params.session_id});
+        logger.debugFmt("WORKFLOW: queued message for session {s}", .{copy_session_id});
         is_have_queue_message = true;
         return;
     }
-    defer active_loops.remove(io, params.session_id);
+    defer active_loops.remove(io, copy_session_id);
 
     // Register in worker table (upsertWorker already does this)
-    llm_history.upsertWorker(params.parent_allocator, db, params.session_id, params.session_id, params.cwd) catch {
-        logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id});
+    llm_history.upsertWorker(parent_allocator, db, copy_session_id, copy_session_id, copy_cwd) catch {
+        logger.warnFmt("Failed to upsert worker info for {s}", .{copy_session_id});
     };
 
     // Queue the initial message
-    llm_history.queueMessage(params.parent_allocator, db, params.session_id, params.message) catch {
-        logger.warnFmt("Failed to queue initial message for session {s}", .{params.session_id});
+    llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message) catch {
+        logger.warnFmt("Failed to queue initial message for session {s}", .{copy_session_id});
     };
 
     var retryCount: usize = 0;
@@ -130,45 +147,45 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
     var is_first_iteration: bool = true;
 
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-    const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, io, config.mcpServers orelse .null) catch |err| blk: {
+    const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(parent_allocator, io, config.mcpServers orelse .null) catch |err| blk: {
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     }) orelse &[_]tool_models.AgentTool{};
     // Note: mcp_tools_fetched memory is managed by allocator
 
     // Filter and merge tools based on allowed_tools setting
-    const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools, params.is_sub_agent);
+    const merged_tools = try filterAndMergeTools(parent_allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
 
     // Debug: check merged_tools
     std.debug.print("DEBUG_MERGE: merged_tools count={d}\n", .{merged_tools.len});
 
     // Handle body message - add as initial user message if provided
-    if (params.body.len > 0) {
-        llm_history.queueMessage(params.parent_allocator, db, params.session_id, params.body) catch {
-            logger.warnFmt("Failed to queue body message for session {s}", .{params.session_id});
+    if (copy_body.len > 0) {
+        llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_body) catch {
+            logger.warnFmt("Failed to queue body message for session {s}", .{copy_session_id});
         };
     }
 
     while (true) {
-        _ = active_loops.tryInsert(io, params.session_id);
-        var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(params.parent_allocator);
+        _ = active_loops.tryInsert(io, copy_session_id);
+        var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
         defer arenaAllocatorWhileLoop.deinit();
         const allocator = arenaAllocatorWhileLoop.allocator();
 
         // Check cancellation using DB
-        if (llm_history.isSessionCancelled(db, params.session_id)) {
+        if (llm_history.isSessionCancelled(db, copy_session_id)) {
             logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
             break;
         }
 
         // Get queued messages from DB
-        var queued_messages = try llm_history.getQueueMessages(allocator, db, params.session_id);
+        var queued_messages = try llm_history.getQueueMessages(allocator, db, copy_session_id);
         if (queued_messages) |*messages| {
             for (messages.items) |msg| {
                 _ = try llm_history.saveMessage(allocator, io, db, .{
-                    .session_id = params.session_id,
+                    .session_id = copy_session_id,
                     .model = config.model,
-                    .cwd = params.cwd,
+                    .cwd = copy_cwd,
                     .content = msg,
                     .reasoning_content = null,
                     .role = agent.Role.user.to_str(),
@@ -182,16 +199,16 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                     .prompt_tokens = 0,
                     .completion_tokens = 0,
                     .total_tokens = 0,
-                    .parent_id = params.parent_session_id,
-                    .parent_session_id = params.parent_session_id,
+                    .parent_id = copy_parent_session_id,
+                    .parent_session_id = copy_parent_session_id,
                     .is_input = true,
                     .is_output = false,
                 });
 
                 onEventSendLLMHistory(allocator, .{
-                    .session_id = params.session_id,
+                    .session_id = copy_session_id,
                     .model = config.model,
-                    .cwd = params.cwd,
+                    .cwd = copy_cwd,
                     .content = msg,
                     .reasoning_content = null,
                     .role = agent.Role.user.to_str(),
@@ -202,18 +219,18 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                     .loop_index = 0,
                     .temperature = initial_agent_state.temperature,
                     .is_thinking = initial_agent_state.is_thinking,
-                    .parent_id = params.parent_session_id,
-                    .parent_session_id = params.parent_session_id,
+                    .parent_id = copy_parent_session_id,
+                    .parent_session_id = copy_parent_session_id,
                     .is_input = true,
                     .is_output = false,
                 }) catch {};
 
-                _ = try llm_history.deleteQueuedMessage(allocator, db, params.session_id, msg);
+                _ = try llm_history.deleteQueuedMessage(allocator, db, copy_session_id, msg);
             }
         }
 
         // Update worker activity in DB to show we're actively processing
-        llm_history.updateWorkerActivity(allocator, db, params.session_id) catch {};
+        llm_history.updateWorkerActivity(allocator, db, copy_session_id) catch {};
 
         loopCounter += 1;
         if (retryCount > 10) return error.TooManyRetries;
@@ -222,7 +239,7 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
         const currentAgentState = try get_current_agent_by_session_id(
             allocator,
             db,
-            params.session_id,
+            copy_session_id,
         );
         const current_agent = currentAgentState.agent;
         var agent_temperature = currentAgentState.temperature;
@@ -230,7 +247,7 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
 
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
-        const db_messages = try getMessages(allocator, db, params.session_id);
+        const db_messages = try getMessages(allocator, db, copy_session_id);
         defer {
             for (db_messages) |*msg| msg.deinit(allocator);
             allocator.free(db_messages);
@@ -244,21 +261,21 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
             }
             break :blk max_token;
         };
-        const initialMessages = try buildMessages(allocator, io, db, params.cwd, params.session_id, db_messages, merged_tools);
+        const initialMessages = try buildMessages(allocator, io, db, copy_cwd, copy_session_id, db_messages, merged_tools);
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
         logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
         // if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(config.model))) {
         //     logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{});
-        //     if (self.callCompactAgent(messagesLists.items, allocator, config.api_key, config.model, config.base_url, params.cwd)) |compacted_xml| {
-        //         try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, config.model, params.cwd);
+        //     if (self.callCompactAgent(messagesLists.items, allocator, config.api_key, config.model, config.base_url, copy_cwd)) |compacted_xml| {
+        //         try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, copy_session_id, config.model, copy_cwd);
         //     }
         // }
 
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, &messagesLists, agent_temperature, current_max_tokens, isThinking, config.api_key, config.model, config.base_url, params.session_id, merged_tools) catch |err| {
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, &messagesLists, agent_temperature, current_max_tokens, isThinking, config.api_key, config.model, config.base_url, copy_session_id, merged_tools) catch |err| {
             if (err == error.Cancelled) {
-                logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{params.session_id});
+                logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
             }
             retryCount += 1;
@@ -268,7 +285,7 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
 
         retryCount = 0;
 
-        // const session_info = session_table.getSession(allocator, db, params.session_id) catch |err| {
+        // const session_info = session_table.getSession(allocator, db, copy_session_id) catch |err| {
         //     logger.errFmt("Error getting session: {s}", .{@errorName(err)});
         //     break;
         // };
@@ -276,7 +293,7 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
         // Generate session name from first user message if this is the first response
         // if (session_info) |session| {
         //     if (is_first_iteration and std.mem.eql(u8, session.name, "New Session")) {
-        //         self.generateSessionName(db_messages, allocator, config.api_key, config.model, config.base_url, params.session_id);
+        //         self.generateSessionName(db_messages, allocator, config.api_key, config.model, config.base_url, copy_session_id);
         //     }
         // }
 
@@ -288,9 +305,9 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
         if (res_dynamic_agent.finish_reason) |finish_reason| {
             if (finish_reason == .stop) {
                 _ = try llm_history.saveMessage(allocator, io, db, .{
-                    .session_id = params.session_id,
+                    .session_id = copy_session_id,
                     .model = config.model,
-                    .cwd = params.cwd,
+                    .cwd = copy_cwd,
                     .content = res_dynamic_agent.content,
                     .reasoning_content = res_dynamic_agent.reasoning_content,
                     .role = agent.Role.assistant.to_str(),
@@ -304,16 +321,16 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                     .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
                     .completion_tokens = res_dynamic_agent.usage.completion_tokens,
                     .total_tokens = res_dynamic_agent.usage.total_tokens,
-                    .parent_id = params.parent_session_id,
-                    .parent_session_id = params.parent_session_id,
+                    .parent_id = copy_parent_session_id,
+                    .parent_session_id = copy_parent_session_id,
                 });
 
                 // Send SSE event directly with the agent's response content
                 // Don't use getLatestMessage as it might return wrong message if timestamps collide
                 _ = try onEventSendLLMHistory(allocator, .{
-                    .session_id = params.session_id,
+                    .session_id = copy_session_id,
                     .model = config.model,
-                    .cwd = params.cwd,
+                    .cwd = copy_cwd,
                     .content = res_dynamic_agent.content,
                     .reasoning_content = res_dynamic_agent.reasoning_content,
                     .role = agent.Role.assistant.to_str(),
@@ -327,12 +344,12 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                     .is_thinking = isThinking,
                     .is_input = false,
                     .is_output = true,
-                    .parent_session_id = params.parent_session_id,
-                    .parent_id = params.parent_session_id,
+                    .parent_session_id = copy_parent_session_id,
+                    .parent_id = copy_parent_session_id,
                     .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
                 });
 
-                const isHaveQueueMessage = llm_history.hasQueuedMessages(db, params.session_id);
+                const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
                 if (isHaveQueueMessage) {
                     continue;
                 }
@@ -344,16 +361,16 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                 continue;
             } else if (finish_reason == .tool_calls) {
                 std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
-                try handle_tool(allocator, io, db, logger, params.session_id, params.parent_session_id, config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, config.model, copy_cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
             } else if (finish_reason == .assistant) {
                 if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                    try handle_tool(allocator, io, db, logger, params.session_id, params.parent_session_id, config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                    try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, config.model, copy_cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
                 } else {
                     // Treat as normal completion
                     _ = try llm_history.saveMessage(allocator, io, db, .{
-                        .session_id = params.session_id,
+                        .session_id = copy_session_id,
                         .model = config.model,
-                        .cwd = params.cwd,
+                        .cwd = copy_cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
                         .role = agent.Role.assistant.to_str(),
@@ -367,16 +384,16 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                         .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
                         .completion_tokens = res_dynamic_agent.usage.completion_tokens,
                         .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
-                        .parent_id = params.parent_session_id,
-                        .parent_session_id = params.parent_session_id,
+                        .parent_id = copy_parent_session_id,
+                        .parent_session_id = copy_parent_session_id,
                     });
 
                     // Send SSE event directly with the agent's response content
                     // Don't use getLatestMessage as it might return wrong message if timestamps collide
                     _ = try onEventSendLLMHistory(allocator, .{
-                        .session_id = params.session_id,
+                        .session_id = copy_session_id,
                         .model = config.model,
-                        .cwd = params.cwd,
+                        .cwd = copy_cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
                         .role = "assistant",
@@ -390,12 +407,12 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                         .is_thinking = isThinking,
                         .is_input = false,
                         .is_output = true,
-                        .parent_session_id = params.parent_session_id,
-                        .parent_id = params.parent_session_id,
+                        .parent_session_id = copy_parent_session_id,
+                        .parent_id = copy_parent_session_id,
                         .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
                     });
 
-                    const isHaveQueueMessage = llm_history.hasQueuedMessages(db, params.session_id);
+                    const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
                     if (isHaveQueueMessage) {
                         continue;
                     }
@@ -406,9 +423,9 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                 retryCount += 1;
                 logger.errFmt("Error calling agent: maybe streaming failed", .{});
                 onEventSendLLMHistory(allocator, .{
-                    .session_id = params.session_id,
+                    .session_id = copy_session_id,
                     .model = config.model,
-                    .cwd = params.cwd,
+                    .cwd = copy_cwd,
                     .content = null,
                     .reasoning_content = null,
                     .role = null,
@@ -422,8 +439,8 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
                     .is_thinking = isThinking,
                     .is_input = false,
                     .is_output = false,
-                    .parent_session_id = params.parent_session_id,
-                    .parent_id = params.parent_session_id,
+                    .parent_session_id = copy_parent_session_id,
+                    .parent_id = copy_parent_session_id,
                 }) catch {};
                 break;
             }
@@ -437,7 +454,7 @@ pub fn runAgenticMultiStepnew(params: RunParams) !void {
         }
     }
 
-    logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{params.session_id});
+    logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{copy_session_id});
 }
 
 fn callDynamicAgentNew(
@@ -581,6 +598,16 @@ pub const RunParams = struct {
     ctxTui: *m.ContextIPCTui,
 
     parent_allocator: std.mem.Allocator,
+    parent_session_id: []const u8,
+    session_id: []const u8,
+    message: []const u8,
+    cwd: []const u8,
+    body: []const u8,
+    allowed_tools: []const u8,
+    is_sub_agent: bool = false,
+};
+
+pub const RunParamsNew = struct {
     parent_session_id: []const u8,
     session_id: []const u8,
     message: []const u8,
