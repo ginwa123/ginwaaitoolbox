@@ -264,8 +264,6 @@ pub const GinwaServer = struct {
     }
 };
 
-/// Global server instance for access from handlers
-pub var global_server: ?*GinwaServer = null;
 
 /// SSE Event structure
 pub const SseEvent = struct {
@@ -273,17 +271,3 @@ pub const SseEvent = struct {
     event_type: ?[]const u8 = null,
 };
 
-/// Get global SSE manager
-pub fn getGlobalSseManager() ?*SseManager {
-    if (global_server) |server| {
-        return &server.sse_manager;
-    }
-    return null;
-}
-
-/// Broadcast a panic event to all connected SSE clients
-pub fn broadcastPanic(panic_info: []const u8) void {
-    if (getGlobalSseManager()) |sse_mgr| {
-        sse_mgr.broadcast(panic_info) catch {};
-    }
-}

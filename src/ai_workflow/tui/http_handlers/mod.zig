@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const root_mod = @import("nalarcore");
-const http_server = root_mod.http_server;
+const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const sqlite = nalarcore.sqlite;
 const ai_workflow = nalarcore.ai_workflow;
@@ -14,15 +14,9 @@ const logger = nalarcore.logger;
 const config = nalarcore.config;
 const http_response = nalarcore.http_response;
 
-const httpz = http_server.httpz;
-const process = nalarcore.helpers.process;
-
 // =============================================================================
 // Re-exports
 // =============================================================================
-
-pub const MessageHandler = http_server.MessageHandler;
-pub const SessionHandler = http_server.SessionHandler;
 
 // Re-export all handlers
 pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
@@ -35,11 +29,7 @@ pub const session_message_handler = @import("session_message.zig").session_messa
 pub const getLatestSessionByDirHandler = @import("session_latest.zig").session_latest_handler;
 pub const sseDisconnectHandler = @import("sse_disconnect.zig").sseDisconnectHandler;
 pub const ping_handler = @import("ping.zig").ping_handler;
-pub const llmRunHandler = @import("llm_run.zig").llmRunHandler;
-pub const sessionCancelHandler = @import("session_cancel.zig").sessionCancelHandler;
 pub const sessionCompactHandler = @import("session_compact.zig").sessionCompactHandler;
-pub const sessionQueueDeleteHandler = @import("session_queue_delete.zig").sessionQueueDeleteHandler;
-pub const sessionQueueGetHandler = @import("session_queue_get.zig").sessionQueueGetHandler;
 pub const systemFolderHandler = @import("system_folder.zig").system_folder_handler;
 pub const healthHandler = @import("health.zig").healthHandler;
 pub const shutdownHandler = @import("shutdown.zig").shutdownHandler;
@@ -62,14 +52,11 @@ pub const tasksCreateHandler = @import("tasks_create.zig").tasksCreateHandler;
 pub const tasksUpdateHandler = @import("tasks_update.zig").tasksUpdateHandler;
 pub const tasksUpdateByIdHandler = @import("tasks_update.zig").tasksUpdateByIdHandler;
 pub const tasksDeleteHandler = @import("tasks_delete.zig").tasksDeleteHandler;
-pub const taskDeleteByIdHandler = @import("task_delete_by_id.zig").taskDeleteByIdHandler;
 
 // Worker API handlers
-pub const worker_create_handler = @import("worker_create.zig").worker_create_handler;
 pub const worker_get_handler = @import("worker_get.zig").worker_get_handler;
 pub const workerListHandler = @import("worker_list.zig").workerListHandler;
 pub const worker_list_handler = @import("worker_list.zig").workerListHandler;
-pub const worker_cancel_handler = @import("worker_cancel.zig").worker_cancel_handler;
 
 // Skills API handlers
 pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
@@ -79,10 +66,6 @@ pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 // Git API handlers
 pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
 
-// Session stream handler
-pub const sessionStreamHandler = @import("session_stream.zig").sessionStreamHandler;
-pub const broadcastSessionCreated = @import("session_stream.zig").broadcastSessionCreated;
-
 // =============================================================================
 // Shared Types & Helpers
 // =============================================================================
@@ -90,64 +73,8 @@ pub const broadcastSessionCreated = @import("session_stream.zig").broadcastSessi
 /// Response format types
 pub const ResponseFormat = enum { json, xml };
 
-
-/// Handler arguments for async message handling
-pub const HandlerArgs = struct {
-    allocator: std.mem.Allocator,
-    body: []const u8,
-    handler: MessageHandler,
-    ctx: ?*anyopaque,
-};
-
-/// Hex digits for session ID generation
-const hexDigits = process.hex_digits;
-
-/// Cross-platform process ID getter
-/// Returns the current process ID in a cross-platform compatible way
-/// Uses helper from process.zig for cross-platform support
-const getCurrentProcessId = process.getCurrentProcessId;
-
-/// Generate a unique session ID using timestamp and random suffix
-pub fn generateSessionId(self: *http_server.HttpServer.ServerHandler, allocator: std.mem.Allocator) ![]u8 {
-    const ts = std.Io.Clock.now(.real, self.io);
-    const timestamp: i64 = ts.toSeconds();
-    const pid = getCurrentProcessId();
-    // Use timestamp + PID + pointer for pseudo-random entropy
-    const entropy: u64 = @intFromPtr(self) ^ (@as(u64, @intCast(pid)) << 32) ^ @as(u64, @intCast(timestamp));
-    var random_bytes: [8]u8 = undefined;
-    @as(*u64, @ptrCast(@alignCast(&random_bytes))).* = entropy;
-
-    // Convert random bytes to hex string
-    var hex_chars: [16]u8 = undefined;
-    for (random_bytes, 0..) |b, i| {
-        hex_chars[i * 2] = hexDigits[b >> 4];
-        hex_chars[i * 2 + 1] = hexDigits[b & 0xF];
-    }
-
-    return std.fmt.allocPrint(allocator, "sess_{d}_{s}", .{ timestamp, hex_chars });
-}
-
-pub fn generateSessionIdNew(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
-    const ts = std.Io.Clock.now(.real, io);
-    const timestamp: i64 = ts.toSeconds();
-    const pid = getCurrentProcessId();
-    // Use timestamp + PID + pointer for pseudo-random entropy
-    const entropy: u64 = (@as(u64, @intCast(pid)) << 32) ^ @as(u64, @intCast(timestamp));
-    var random_bytes: [8]u8 = undefined;
-    @as(*u64, @ptrCast(@alignCast(&random_bytes))).* = entropy;
-
-    // Convert random bytes to hex string
-    var hex_chars: [16]u8 = undefined;
-    for (random_bytes, 0..) |b, i| {
-        hex_chars[i * 2] = hexDigits[b >> 4];
-        hex_chars[i * 2 + 1] = hexDigits[b & 0xF];
-    }
-
-    return std.fmt.allocPrint(allocator, "sess_{d}_{s}", .{ timestamp, hex_chars });
-}
-
 /// Determine response format from Accept header or query param
-pub fn getResponseFormat(req: *httpz.Request) ResponseFormat {
+pub fn getResponseFormat(req: gserverz.HttpRequest) ResponseFormat {
     // First check Accept header (higher priority)
     if (req.header("accept")) |accept| {
         if (std.mem.indexOf(u8, accept, "text/xml") != null or

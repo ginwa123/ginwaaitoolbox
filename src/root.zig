@@ -256,7 +256,6 @@ pub const set_agent_properties = @import("modules/agent/tools/set_agent_properti
 pub const http_client = @import("modules/http/HttpClient.zig");
 pub const logger = @import("modules/logger/Logger.zig");
 pub const migrations = @import("ai_workflow/tui/migration.zig");
-pub const session_monitor = @import("modules/session/SessionMonitor.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
@@ -275,7 +274,6 @@ pub const update_activity = @import("modules/agent/tools/update_activity.zig");
 pub const web_search = @import("modules/agent/tools/web_search.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
-pub const session = @import("modules/session/mod.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
 pub const helpers = @import("helpers/mod.zig");
@@ -302,6 +300,5 @@ test {
     _ = @import("ai_workflow/tui/test_runner.zig");
     _ = @import("modules/agent/test_runner.zig");
     _ = @import("modules/http/test_runner.zig");
-    _ = @import("modules/session/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
 }

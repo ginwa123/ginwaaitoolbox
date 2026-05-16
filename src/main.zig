@@ -141,6 +141,8 @@ pub fn main(init: std.process.Init) !void {
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
 
+    _ = try gs.sse_manager.startEventLoop(5);
+
     ctxParent.server = gs;
     // // try gs.router.get("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
     // // try gs.router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
