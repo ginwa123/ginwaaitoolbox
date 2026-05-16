@@ -5,6 +5,7 @@ const nalarcore = @import("nalarcore");
 const event_bus = nalarcore.event_bus;
 const std = @import("std");
 pub const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
+const gserverz = nalarcore.gserverz;
 
 var global_ctx: ?*ContextIPCTui = null;
 
@@ -25,6 +26,7 @@ pub const ContextIPCTui = struct {
     environment: ?*const std.process.Environ.Map,
     active_loops: *ActiveLoops,
     event_bus: *event_bus.EventBus,
+    server: *gserverz.GinwaServer,
 };
 
 pub const TUIHistory = struct {

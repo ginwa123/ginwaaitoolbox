@@ -2,9 +2,156 @@ const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
-const http_server = @import("nalarcore").http_server;
 const logger = @import("nalarcore").logger;
 const models = @import("models.zig");
+const gserverz = tree1_mod.gserverz;
+// Legacy http_server for streaming helper functions (sendStreamChunk*)
+// These use the old SseManager.enqueueEvent approach
+const http_server = tree1_mod.http_server;
+
+// ============================================================================
+// Session-to-Client ID mapping for SSE event bus integration
+// ============================================================================
+
+/// Simple spinlock mutex for thread safety
+const SpinMutex = struct {
+    state: u8 = 0,
+    pub fn init() SpinMutex {
+        return .{ .state = 0 };
+    }
+    pub fn lock(self: *SpinMutex) void {
+        while (@cmpxchgStrong(u8, &self.state, 0, 1, .acquire, .acquire) != null) {}
+    }
+    pub fn unlock(self: *SpinMutex) void {
+        @atomicStore(u8, &self.state, 0, .release);
+    }
+};
+
+/// Global map from session_id to list of client_ids
+var session_to_client_ids: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([16]u8)) = .empty;
+var session_map_lock: SpinMutex = .{};
+
+/// Global callback for client disconnect (set by streamHandler)
+pub var on_disconnect_cb: ?*const fn (client_id: [16]u8) void = null;
+
+/// Register a session -> client_id mapping (appends to list)
+pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8) !void {
+    session_map_lock.lock();
+    defer session_map_lock.unlock();
+    const ctx = models.getSingleton() catch return;
+
+    // Check if session already has a client list
+    if (session_to_client_ids.getPtr(session_id)) |list| {
+        // Check if client already registered
+        for (list.items) |existing_id| {
+            var equal = true;
+            for (existing_id, client_id) |a, b| {
+                if (a != b) {
+                    equal = false;
+                    break;
+                }
+            }
+            if (equal) return; // already registered
+        }
+        // Append new client to existing list
+        try list.append(ctx.allocator, client_id);
+    } else {
+        // Create new list for this session
+        var list = std.ArrayListUnmanaged([16]u8).empty;
+        try list.append(ctx.allocator, client_id);
+        try session_to_client_ids.put(ctx.allocator, session_id, list);
+    }
+}
+
+/// Unregister a session -> client_id mapping (removes all clients for session)
+pub fn unregisterSessionClient(session_id: []const u8) void {
+    session_map_lock.lock();
+    defer session_map_lock.unlock();
+
+    if (session_to_client_ids.getPtr(session_id)) |list| {
+        const ctx = models.getSingleton() catch return;
+        // Clear the entire session entry
+        list.deinit(ctx.allocator);
+        _ = session_to_client_ids.remove(session_id);
+    }
+}
+
+/// Get client_id for a session, if registered (returns first client if multiple)
+pub fn getClientIdForSession(session_id: []const u8) ?[16]u8 {
+    session_map_lock.lock();
+    defer session_map_lock.unlock();
+    if (session_to_client_ids.getPtr(session_id)) |list| {
+        if (list.items.len > 0) {
+            return list.items[0];
+        }
+    }
+    return null;
+}
+
+/// Get list of client_ids for a session
+/// Returns owned memory that caller must free, or null if session not found
+pub fn getListClientsForSession(session_id: []const u8, allocator: std.mem.Allocator) !?[][16]u8 {
+    session_map_lock.lock();
+    defer session_map_lock.unlock();
+
+    const list = session_to_client_ids.get(session_id) orelse return null;
+    if (list.items.len == 0) return null;
+
+    const copy = try allocator.alloc([16]u8, list.items.len);
+    for (list.items, 0..) |client_id, i| {
+        copy[i] = client_id;
+    }
+    return copy;
+}
+
+/// Find session_id by client_id (reverse lookup)
+pub fn getSessionIdForClient(client_id: [16]u8) ?[]const u8 {
+    session_map_lock.lock();
+    defer session_map_lock.unlock();
+    var it = session_to_client_ids.iterator();
+    while (it.next()) |entry| {
+        for (entry.value_ptr.items) |v| {
+            var equal = true;
+            for (v, client_id) |a, b| {
+                if (a != b) {
+                    equal = false;
+                    break;
+                }
+            }
+            if (equal) return entry.key_ptr.*;
+        }
+    }
+    return null;
+}
+
+/// Handle client disconnect - called by SseManager on_disconnect callback
+pub fn handleClientDisconnect(client_id: [16]u8) void {
+    const di = models.getSingleton() catch return;
+    const event_bus = di.event_bus;
+
+    if (on_disconnect_cb) |cb| {
+        cb(client_id);
+    }
+    // Also clean up session mapping
+    if (getSessionIdForClient(client_id)) |session_id| {
+        unregisterSessionClient(session_id);
+
+        const listClients = getListClientsForSession(session_id, di.allocator) catch |err| {
+            std.debug.print("SSE_DEBUG: Failed to get list of clients for session {s}: {any}\n", .{ session_id, err });
+            return;
+        };
+
+        if (listClients) |clients| {
+            if (clients.len == 0) {
+                std.debug.print("SSE_DEBUG: No clients left for session {s}\n", .{session_id});
+                event_bus.unsubscribe(session_id);
+            }
+        } else {
+            std.debug.print("SSE_DEBUG: Failed to get list of clients for session {s}\n", .{session_id});
+            event_bus.unsubscribe(session_id);
+        }
+    }
+}
 
 // ============================================================================
 // JSON Protocol Constants
@@ -45,7 +192,7 @@ pub const OnEventInputLLMHistory = struct {
 pub const SseEventLLMHistory = struct {
     index: ?usize = null,
     content: []const u8,
-    @"type": []const u8 = "full",
+    type: []const u8 = "full",
     session_id: []const u8,
     model: []const u8,
     cwd: []const u8,
@@ -73,6 +220,12 @@ pub const ToolCallJson = struct {
     arguments: []const u8,
 };
 
+pub const SseEvent = struct {
+    session_id: []const u8,
+    data: []const u8,
+    event_type: ?[]const u8 = null,
+};
+
 /// Send an SSE event to all clients connected to the given session
 ///
 /// JSON Protocol:
@@ -86,13 +239,6 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
 
     const log = logger.getGlobal();
     const session_id = input.session_id;
-
-    const sse_manager = http_server.getGlobalSseManager() orelse {
-        std.debug.print("SSE_ERROR: no SSE manager available for session {s}\n", .{session_id});
-        log.?.warnFmt("on_event_send_new[{s}]: no SSE manager available", .{session_id});
-        return;
-    };
-    std.debug.print("SSE_DEBUG: on_event_send_new called for session {s}, manager={*}\n", .{ session_id, sse_manager });
 
     // Trace: log what content we're receiving
     if (input.content) |c| {
@@ -164,25 +310,21 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         buf.items,
     });
 
-    const event = http_server.SseEvent{
+    const event = SseEvent{
+        .session_id = input.session_id,
         .data = buf.items,
     };
 
-    std.debug.print("SSE_DEBUG: calling enqueueEvent for session {s}, data_len={d}\n", .{ session_id, buf.items.len });
+    std.debug.print("SSE_DEBUG: emitting event for session {s}, data_len={d}\n", .{ session_id, buf.items.len });
     log.?.debugFmt("on_event_send_new[{s}]: event created, data_ptr=0x{x}, data_len={d}", .{
         session_id,
         @intFromPtr(event.data.ptr),
         event.data.len,
     });
 
-    event_bus.emit(http_server.SseEvent, input.session_id, event);
+    event_bus.emit(SseEvent, input.session_id, event);
 
-    // sse_manager.enqueueEvent(input.session_id, event) catch |err| {
-    //     std.debug.print("SSE_ERROR: enqueueEvent failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
-    //     return;
-    // };
-
-    log.?.infoFmt("on_event_send_new[{s}]: event enqueued successfully", .{session_id});
+    std.debug.print("SSE_DEBUG: on_event_send_new[{s}]: event emitted successfully\n", .{session_id});
 }
 
 // ============================================================================
@@ -228,20 +370,20 @@ pub const ToolCallDeltaChunk = struct {
 const ContentChunkJson = struct {
     index: usize,
     content: []const u8,
-    @"type": []const u8 = "chunk",
+    type: []const u8 = "chunk",
 };
 
 /// JSON structure for reasoning chunk
 const ReasoningChunkJson = struct {
     index: usize,
     reasoning_content: []const u8,
-    @"type": []const u8 = "chunk",
+    type: []const u8 = "chunk",
 };
 
 /// JSON structure for final chunk with usage
 const FinalChunkJson = struct {
     index: usize,
-    @"type": []const u8 = "chunk_final",
+    type: []const u8 = "chunk_final",
     finish_reason: []const u8 = "stop",
     usage: ?ChunkUsage = null,
 };
@@ -249,7 +391,7 @@ const FinalChunkJson = struct {
 /// JSON structure for tool call delta chunk
 const ToolCallDeltaChunkJson = struct {
     index: usize,
-    @"type": []const u8 = "tool_call_delta",
+    type: []const u8 = "tool_call_delta",
     deltas: []const agent.ToolCallDelta,
 };
 
@@ -271,7 +413,6 @@ pub fn serializeContentChunk(allocator: std.mem.Allocator, chunk: ContentChunk) 
 }
 
 /// Serialize a reasoning chunk to JSON format
-
 pub fn serializeReasoningChunk(allocator: std.mem.Allocator, chunk: ReasoningChunk) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
@@ -289,7 +430,6 @@ pub fn serializeReasoningChunk(allocator: std.mem.Allocator, chunk: ReasoningChu
 }
 
 /// Serialize a final chunk with usage information
-
 pub fn serializeFinalChunk(allocator: std.mem.Allocator, chunk: FinalChunk) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
@@ -392,4 +532,3 @@ pub fn sendStreamToolCallDelta(
     };
     sse_manager.enqueueEvent(session_id, event) catch {};
 }
-

@@ -149,7 +149,15 @@ pub fn session_create_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     }
 
     const dataa = ai_workflow.ai_workflow.RunParamsNew{ .parent_session_id = session_id, .session_id = session_id, .message = queue_message, .cwd = effective_cwd, .body = body_message, .allowed_tools = allowed_tools, .is_sub_agent = false };
-    event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", dataa);
+
+    _ = io.async(
+        struct {
+            fn run(dataaa: ai_workflow.ai_workflow.RunParamsNew) void {
+                event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", dataaa);
+            }
+        }.run,
+        dataa,
+    );
 
     const data = try http_response.makeSessionCreateResponse(global_allocator, .{
         .id = session_id,

@@ -8,8 +8,8 @@ const gserverz = nalar_mod.gserverz;
 
 pub fn main(init: std.process.Init) !void {
     const arena_allocator = init.arena;
-    defer _ = arena_allocator.reset(.free_all);
-    const parent_allocator = arena_allocator.allocator();
+    defer _ = arena_allocator.deinit();
+    const allocator = arena_allocator.allocator();
     const environment = init.environ_map;
     const io = init.io;
 
@@ -17,21 +17,21 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("HOME={s}", .{home});
     }
 
-    var llm_config = nalar_mod.config.LlmConfig.init(parent_allocator, io, null, environment) catch |err| {
+    var llm_config = nalar_mod.config.LlmConfig.init(allocator, io, null, environment) catch |err| {
         std.log.err("Failed to load config: {s}", .{@errorName(err)});
         return err;
     };
     defer llm_config.deinit();
     try llm_config.validate();
 
-    const db_path = try helpers.db_path.getDbPath(parent_allocator, io, environment);
-    defer parent_allocator.free(db_path);
+    const db_path = try helpers.db_path.getDbPath(allocator, io, environment);
+    defer allocator.free(db_path);
 
     var dbSqlite: sqlite.SqliteBackend = .{};
     defer dbSqlite.deinit();
     try dbSqlite.init(io, db_path);
 
-    var migrationManager = ai_mod.migration.MigrationManager.init(parent_allocator, &dbSqlite);
+    var migrationManager = ai_mod.migration.MigrationManager.init(allocator, &dbSqlite);
     defer migrationManager.deinit();
     try ai_mod.migration.registerAllMigrations(&migrationManager);
     try migrationManager.runMigrations();
@@ -40,12 +40,12 @@ pub fn main(init: std.process.Init) !void {
         environment.get("TEMP") orelse
         environment.get("TMP") orelse
         "/tmp";
-    const log_file_path = try std.fs.path.join(parent_allocator, &.{ tmp_path, "agentic_coding.log" });
-    defer parent_allocator.free(log_file_path);
+    const log_file_path = try std.fs.path.join(allocator, &.{ tmp_path, "agentic_coding.log" });
+    defer allocator.free(log_file_path);
 
     nalar_mod.setPanicLogPath(log_file_path);
 
-    nalar_mod.logger.initGlobalColor(parent_allocator, io, .{
+    nalar_mod.logger.initGlobalColor(allocator, io, .{
         .min_level = .debug,
         .output_mode = .file,
         .log_file_path = log_file_path,
@@ -57,10 +57,10 @@ pub fn main(init: std.process.Init) !void {
 
     const global_logger_ptr = nalar_mod.logger.getGlobal().?;
 
-    const ctxParent = try parent_allocator.create(ai_mod.models.ContextIPCTui);
-    defer parent_allocator.destroy(ctxParent);
+    const ctxParent = try allocator.create(ai_mod.models.ContextIPCTui);
+    defer allocator.destroy(ctxParent);
     ctxParent.* = ai_mod.models.ContextIPCTui{
-        .allocator = parent_allocator,
+        .allocator = allocator,
         .io = io,
         .db = &dbSqlite,
         .llm_config = &llm_config,
@@ -68,17 +68,18 @@ pub fn main(init: std.process.Init) !void {
         .environment = environment,
         .active_loops = undefined, // Will be set below after initialization
         .event_bus = undefined, // Will be set below after initialization
+        .server = undefined, // Will be set below after initialization
     };
 
     _ = try ai_mod.models.setSingleton(ctxParent);
 
     const event_bus_mod = nalar_mod.event_bus;
-    var event_bus = event_bus_mod.EventBus.init("my-bus", parent_allocator);
+    var event_bus = event_bus_mod.EventBus.init("my-bus", allocator);
     defer event_bus.deinit();
     ctxParent.event_bus = &event_bus;
 
-    var active_loops = ai_mod.models.ActiveLoops.init(parent_allocator);
-    defer active_loops.deinit(parent_allocator);
+    var active_loops = ai_mod.models.ActiveLoops.init(allocator);
+    defer active_loops.deinit(allocator);
     ctxParent.active_loops = &active_loops;
 
     // activity_registry.init_global_registry(parent_allocator, io);
@@ -135,8 +136,10 @@ pub fn main(init: std.process.Init) !void {
     //
 
     const address = try gserverz.Address.init(port);
-    const gs = try gserverz.GinwaServer.init(parent_allocator, io, address);
+    const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
+
+    ctxParent.server = gs;
     //
     // std.debug.print("HTTP Server listening on 127.0.0.1:29584...\n", .{});
     // std.debug.print("Test with: curl http://127.0.0.1:29584/\n", .{});
@@ -167,7 +170,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
-    try gs.router.get("/api/llm/stream/:session_id", ai_mod.http_handlers.streamHandler);
+    try gs.router.sse("/api/llm/stream/:session_id", ai_mod.http_handlers.streamHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)
@@ -194,6 +197,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
 
     _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParamsNew, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
+    ctxParent.server.sse_manager.on_disconnect = ai_mod.on_event_sent.handleClientDisconnect;
 
     try gs.listen();
 

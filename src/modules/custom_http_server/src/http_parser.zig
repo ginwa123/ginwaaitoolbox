@@ -4,6 +4,8 @@ const linux = std.posix.system;
 pub const HttpContext = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
+    /// Optional client ID for SSE connections (set after registerClient)
+    client_id: ?[16]u8 = null,
 };
 
 /// Decode URL-encoded string (handles %XX, +, and all special chars)

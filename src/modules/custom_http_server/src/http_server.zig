@@ -127,7 +127,7 @@ pub const GinwaServer = struct {
 
                         buf.appendSlice(allocator, buffer[0..bytes_read]) catch unreachable;
 
-                        std.debug.print("Received {d} bytes: {s}\n", .{ bytes_read, buf.items });
+                        // std.debug.print("Received {d} bytes: {s}\n", .{ bytes_read, buf.items });
 
                         var req = http_parser.parseRequest(buf.items, allocator, gs.io, fd) catch {
                             std.debug.print("Failed to parse HTTP request\n", .{});
@@ -152,7 +152,7 @@ pub const GinwaServer = struct {
                                     _ = gs.sendToClient(fd, res_bytes) catch {
                                         std.debug.print("Failed to send response\n", .{});
                                     };
-                                    std.debug.print("Response sent: {d} bytes\n", .{res_bytes.len});
+                                    // std.debug.print("Response sent: {d} bytes\n", .{res_bytes.len});
                                 },
                                 .sse => |sse| {
                                     // Send SSE headers (keep-alive)
@@ -167,12 +167,17 @@ pub const GinwaServer = struct {
                                         _ = linux.close(fd);
                                         return;
                                     };
-                                    _ = client_id;
+
+                                    // Set client_id in context so handler can access it
+                                    var sse_ctx = sse.ctx;
+
+                                    sse_ctx.client_id = client_id;
+                                    std.debug.print("HTTP_SERVER: client_id {s}\n", .{client_id});
 
                                     // Call SSE handler - it returns immediately (error.WouldBlock expected)
                                     // The SSE manager event loop handles ongoing streaming
                                     const res = http_parser.HttpResponse.init(200, "OK", allocator);
-                                    _ = sse.handler(sse.ctx, req, res) catch |err| {
+                                    _ = sse.handler(sse_ctx, req, res) catch |err| {
                                         if (err != error.WouldBlock) {
                                             std.debug.print("SSE handler error: {s}\n", .{@errorName(err)});
                                         }

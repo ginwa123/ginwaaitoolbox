@@ -1,8 +1,9 @@
 const std = @import("std");
+const http_response = @import("http_response.zig");
 const nalar_core = @import("nalarcore");
 const gserverz = nalar_core.gserverz;
-const http_response = nalar_core.http_response;
 const logger = nalar_core.logger;
+const ai_mod = nalar_core.ai_mod;
 
 const SseStreamCtx = @import("mod.zig").SseStreamCtx;
 
@@ -107,23 +108,85 @@ fn sseStreamHandler(ctx: SseStreamCtx, stream: std.Io.net.Stream) void {
     ctx.server.allocator.free(ctx.session_id);
 }
 
+pub const CallbackAiStream = struct {
+    pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
+        const session_id = data.session_id;
+        const di = ai_mod.models.getSingleton() catch return;
+        const allocator = di.allocator;
+        const server = di.server;
+
+        std.debug.print("SSE_DEBUG: callback for session {s}\n", .{session_id});
+
+        const client_id = ai_mod.on_event_sent.getClientIdForSession(session_id) orelse return;
+        std.debug.print("GILANG_SERVER 2: client_id={s}\n", .{client_id});
+
+        std.debug.print("SSE_DEBUG: got client_id {s}, sending event\n", .{client_id});
+        const event_str = std.fmt.allocPrint(allocator, "data: {s}\n\n", .{data.data}) catch return;
+        defer allocator.free(event_str);
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
+        if (data.event_type) |event_type| {
+             buf.appendSlice(allocator, "event: ") catch return;
+             buf.appendSlice(allocator, event_type) catch return;
+             buf.append(allocator, '\n') catch return;
+        }
+
+        if (data.data.len == 0) {
+             buf.appendSlice(allocator, "data: \n") catch return;
+        } else {
+            var iter = std.mem.splitScalar(u8, data.data, '\n');
+            while (iter.next()) |line| {
+                 buf.appendSlice(allocator, "data: ") catch return;
+                 buf.appendSlice(allocator, line) catch return;
+                 buf.append(allocator, '\n') catch return;
+            }
+        }
+         buf.append(allocator, '\n') catch return;
+        const dataaaa = buf.toOwnedSlice(allocator) catch return;
+        defer allocator.free(dataaaa);
+
+
+        server.sse_manager.sendToClient(client_id, dataaaa) catch {};
+    }
+};
+
 /// SSE stream endpoint - establishes persistent connection for real-time events
-pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest) !gserverz.HttpResponse {
+pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
+
+    const di = try ai_mod.models.getSingleton();
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
-    const log = logger.getGlobal();
+    std.debug.print("STREAM_HANDLER: session_id={s} client_id present={}\n", .{
+        session_id,
+        ctx.client_id != null,
+    });
 
-    if (gserverz.global_server) |server| {
-        log.?.infoFmt("SSE STREAM CONNECTED: session_id={s}", .{session_id});
+    // Register the client_id mapping (set by http_server after registerClient)
+    if (ctx.client_id) |client_id| {
+        std.debug.print("STREAM_HANDLER: registering client_id for session {s}\n", .{session_id});
+        std.debug.print("STREAM_HANDLER: client_id={s}\n", .{client_id});
+        std.debug.print("GILANG_SERVER: client_id={s}\n", .{client_id});
 
-        // For now, just return a JSON response indicating SSE is not fully implemented
-        // The custom HTTP server doesn't support streaming responses like httpz does
-        _ = server;
-        return res.jsonResponse( .{ .status_code = 501, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "SSE streaming not implemented in custom HTTP server" }) });
-    } else {
-        return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not available" }) });
+        // Check if this session already has a client - clean up old one first
+        // if (ai_mod.on_event_sent.getClientIdForSession(session_id)) |_| {
+        //     std.debug.print("STREAM_HANDLER: cleaning up old client for session {s}\n", .{session_id});
+        //     ai_mod.on_event_sent.unregisterSessionClient(session_id);
+        //     di.event_bus.unsubscribe(session_id);
+        // }
+
+        ai_mod.on_event_sent.registerSessionClient(session_id, client_id) catch {};
+
+        // Set up disconnect callback to clean up event bus subscription
+        // ai_mod.on_event_sent.on_disconnect_cb = ai_mod.on_event_sent.handleClientDisconnect;
     }
+
+    const event_bus = di.event_bus;
+
+    event_bus.subscribe(ai_mod.on_event_sent.SseEvent, session_id, CallbackAiStream.callback) catch {};
+
+    return error.WouldBlock; // Handler should not complete - connection stays open
 }

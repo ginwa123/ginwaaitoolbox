@@ -495,11 +495,13 @@ const handleScroll = async () => {
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
 
+const isAlreadyConnectedSSE = ref(false)
 const connectSse = () => {
   console.log('[connectSse] Connecting SSE for session:', sessionId.value)
   if (!sessionId.value) return
 
-  disconnectSse()
+
+  if (isAlreadyConnectedSSE.value == false) disconnectSse()
 
   isStreaming.value = true
   streamingContent.value = ''
@@ -578,6 +580,7 @@ const connectSse = () => {
     },
     () => {
       console.log('SSE connected')
+      isAlreadyConnectedSSE.value = true
     }
   )
 }
@@ -666,14 +669,12 @@ const handleFileInputSubmit = async (userMessage: string) => {
   await nextTick()
   scrollToBottom(true)
 
-  disconnectSse()
 
   // Handle pending session - create real session first
   let currentSessionId = sessionId.value
 
   try {
     await api.sendChatMessage(currentSessionId, userMessage, cwd.value)
-    connectSse()
   } catch (err) {
     console.error('Failed to send message:', err)
     messages.value.push({
@@ -727,174 +728,176 @@ const compactSession = async () => {
   <div class="flex h-full w-full">
     <!-- Main Chat Content -->
     <div class="flex flex-col h-full flex-1 min-w-0">
-    <!-- Header -->
-    <div class="px-6 py-4 flex items-center gap-3"
-      style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
-      <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg"
-        style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
-        <span v-if="viewType === 'task'">✓</span>
-        <span v-else>💬</span>
-      </div>
-      <div>
-        <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
-          {{ viewType === 'task' ? taskInfo.taskName : chatName }}
-        </h2>
-        <p class="text-xs" style="color: var(--semantic-text-dim);">
-          <span v-if="viewType === 'task'">{{ taskInfo.projectName }}</span>
-          <span v-else-if="isLoading">Loading...</span>
-          <span v-else-if="error" style="color: var(--color-red);">{{ error }}</span>
-          <span v-else-if="isStreaming" style="color: var(--color-violet);">Receiving...</span>
-          <span v-else-if="isLLMProcessing" style="color: var(--color-orange);">⚡ Processing</span>
-          <span v-else-if="compactError" style="color: var(--color-red);">Compact failed</span>
-          <span v-else>{{ messages.length }} message{{ messages.length !== 1 ? 's' : '' }}</span>
-        </p>
-      </div>
-      <!-- Compact button in header right -->
-      <div class="ml-auto flex items-center gap-2">
-        <button @click="compactSession" :disabled="isCompacting || isLoading || isLLMProcessing || !sessionId"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
-          :class="isCompacting || isLoading || isLLMProcessing || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
-          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
-          :title="isCompacting ? 'Compacting...' : 'Compact conversation history'">
-          <span v-if="isCompacting" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
-            style="border-color: var(--color-violet); border-top-color: transparent;"></span>
-          <span v-else>🗜️</span>
-          <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
-        </button>
-        <!-- Token usage display -->
-        <div v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0"
-          class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
-          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
-          <span style="color: var(--semantic-text-dim);">Tokens:</span>
-          <span style="color: var(--semantic-text);">{{ maxTotalTokens.toLocaleString() }}</span>
-          <span v-if="maxCapacityTotalTokens > 0" style="color: var(--semantic-text-dim);">/ {{
-            maxCapacityTotalTokens.toLocaleString() }}</span>
-          <div v-if="maxCapacityTotalTokens > 0" class="w-16 h-2 rounded-full overflow-hidden"
-            style="background-color: var(--color-border);">
-            <div class="h-full rounded-full transition-all duration-300" :style="{
-              width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
-              backgroundColor: (maxTotalTokens / maxCapacityTotalTokens) > 0.8 ? 'var(--color-red)' : (maxTotalTokens / maxCapacityTotalTokens) > 0.6 ? 'var(--color-orange)' : 'var(--color-violet)'
-            }"></div>
+      <!-- Header -->
+      <div class="px-6 py-4 flex items-center gap-3"
+        style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
+        <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg"
+          style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
+          <span v-if="viewType === 'task'">✓</span>
+          <span v-else>💬</span>
+        </div>
+        <div>
+          <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
+            {{ viewType === 'task' ? taskInfo.taskName : chatName }}
+          </h2>
+          <p class="text-xs" style="color: var(--semantic-text-dim);">
+            <span v-if="viewType === 'task'">{{ taskInfo.projectName }}</span>
+            <span v-else-if="isLoading">Loading...</span>
+            <span v-else-if="error" style="color: var(--color-red);">{{ error }}</span>
+            <span v-else-if="isStreaming" style="color: var(--color-violet);">Receiving...</span>
+            <span v-else-if="isLLMProcessing" style="color: var(--color-orange);">⚡ Processing</span>
+            <span v-else-if="compactError" style="color: var(--color-red);">Compact failed</span>
+            <span v-else>{{ messages.length }} message{{ messages.length !== 1 ? 's' : '' }}</span>
+          </p>
+        </div>
+        <!-- Compact button in header right -->
+        <div class="ml-auto flex items-center gap-2">
+          <button @click="compactSession" :disabled="isCompacting || isLoading || isLLMProcessing || !sessionId"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
+            :class="isCompacting || isLoading || isLLMProcessing || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
+            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
+            :title="isCompacting ? 'Compacting...' : 'Compact conversation history'">
+            <span v-if="isCompacting" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+              style="border-color: var(--color-violet); border-top-color: transparent;"></span>
+            <span v-else>🗜️</span>
+            <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
+          </button>
+          <!-- Token usage display -->
+          <div v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0"
+            class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
+            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
+            <span style="color: var(--semantic-text-dim);">Tokens:</span>
+            <span style="color: var(--semantic-text);">{{ maxTotalTokens.toLocaleString() }}</span>
+            <span v-if="maxCapacityTotalTokens > 0" style="color: var(--semantic-text-dim);">/ {{
+              maxCapacityTotalTokens.toLocaleString() }}</span>
+            <div v-if="maxCapacityTotalTokens > 0" class="w-16 h-2 rounded-full overflow-hidden"
+              style="background-color: var(--color-border);">
+              <div class="h-full rounded-full transition-all duration-300" :style="{
+                width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
+                backgroundColor: (maxTotalTokens / maxCapacityTotalTokens) > 0.8 ? 'var(--color-red)' : (maxTotalTokens / maxCapacityTotalTokens) > 0.6 ? 'var(--color-orange)' : 'var(--color-violet)'
+              }"></div>
+            </div>
+          </div>
+          <!-- Git status display -->
+          <div v-if="gitStatus && gitStatus.is_git_repo"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+            :title="gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'">
+            <span>🌿</span>
+            <span style="color: var(--semantic-text);">{{ gitStatus.branch || 'main' }}</span>
+            <span v-if="!gitStatus.is_clean" style="color: var(--color-orange);">●</span>
+            <span v-else style="color: var(--color-green);">✓</span>
           </div>
         </div>
-        <!-- Git status display -->
-        <div v-if="gitStatus && gitStatus.is_git_repo" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
-          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-          :title="gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'">
-          <span>🌿</span>
-          <span style="color: var(--semantic-text);">{{ gitStatus.branch || 'main' }}</span>
-          <span v-if="!gitStatus.is_clean" style="color: var(--color-orange);">●</span>
-          <span v-else style="color: var(--color-green);">✓</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Messages -->
-    <div ref="messagesContainer" tabindex="0" class="flex-1 overflow-y-auto" @scroll="handleScroll">
-      <!-- Loading More -->
-      <div v-if="isLoadingMore" class="flex justify-center py-4">
-        <div class="flex items-center gap-2 px-4 py-2 rounded-full" style="background-color: var(--semantic-card-bg);">
-          <div class="w-4 h-4 border-2 rounded-full animate-spin"
-            style="border-color: var(--color-violet); border-top-color: transparent;"></div>
-          <span class="text-sm" style="color: var(--semantic-text-dim);">Loading more...</span>
-        </div>
       </div>
 
-      <!-- Empty State -->
-      <div v-if="!isLoading && messages.length === 0" class="flex flex-col items-center justify-center h-full px-4">
-        <div class="w-16 h-16 rounded-2xl mb-4 flex items-center justify-center text-3xl"
-          style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
-          💬
-        </div>
-        <h3 class="text-lg font-medium mb-2" style="color: var(--semantic-text);">
-          How can I help you?
-        </h3>
-        <p class="text-sm text-center" style="color: var(--semantic-text-dim);">
-          Start a conversation by typing a message below
-        </p>
-      </div>
-
-      <!-- Message List -->
-      <div v-else class="max-w-4xl mx-auto px-4 py-6 space-y-4">
-        <!-- Load More Button (when content doesn't overflow) -->
-        <div v-if="hasMoreMessages" class="flex justify-center pb-2">
-          <button @click="loadChatHistory(true)" :disabled="isLoadingMore"
-            class="flex items-center gap-2 px-4 py-2 rounded-full text-sm transition-all duration-200 hover:scale-105"
-            :class="isLoadingMore ? 'opacity-50 cursor-not-allowed' : ''"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);">
-            <div v-if="isLoadingMore" class="w-4 h-4 border-2 rounded-full animate-spin"
+      <!-- Messages -->
+      <div ref="messagesContainer" tabindex="0" class="flex-1 overflow-y-auto" @scroll="handleScroll">
+        <!-- Loading More -->
+        <div v-if="isLoadingMore" class="flex justify-center py-4">
+          <div class="flex items-center gap-2 px-4 py-2 rounded-full"
+            style="background-color: var(--semantic-card-bg);">
+            <div class="w-4 h-4 border-2 rounded-full animate-spin"
               style="border-color: var(--color-violet); border-top-color: transparent;"></div>
-            <span v-else>↑</span>
-            <span>{{ isLoadingMore ? 'Loading...' : 'Load more messages' }}</span>
-          </button>
+            <span class="text-sm" style="color: var(--semantic-text-dim);">Loading more...</span>
+          </div>
         </div>
 
-        <div v-for="(group, groupIndex) in messageGroups" :key="groupIndex" class="flex gap-3"
-          :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'">
-          <!-- Bubble -->
-          <div class="max-w-[90%] min-w-0">
-            <div class="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
-              :class="group.role === 'user' ? 'whitespace-pre-wrap break-words' : 'markdown-content'" :style="group.role === 'user'
-                ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
-                : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
-                ">
-              <template v-if="group.role === 'user'">
-                {{ group.messages[0]!.content }}
-              </template>
-              <template v-else-if="group.role === 'tool'">
-                <div class="tool-sequence">
-                  <div v-for="(msg, idx) in group.messages" :key="idx" class="tool-item"
-                    :class="idx < group.messages.length - 1 ? 'tool-item-border' : ''">
-                    <div class="tool-expandable">
-                      <button class="tool-summary" @click="toggleToolExpanded(groupIndex, idx)" :style="[
-                        'cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;',
-                        expandedToolIds.has(`${groupIndex}-${idx}`) ? 'border-bottom: 1px dashed var(--color-border);' : ''
-                      ]">
-                        <span v-html="renderResponse(msg.content, msg.role, msg.tool_name)"></span>
-                      </button>
-                      <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content">
-                        <pre class="tool-content-pre"
-                          style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto; box-sizing: border-box; width: 100%;">
-                          {{ msg.content.trim() }}</pre>
+        <!-- Empty State -->
+        <div v-if="!isLoading && messages.length === 0" class="flex flex-col items-center justify-center h-full px-4">
+          <div class="w-16 h-16 rounded-2xl mb-4 flex items-center justify-center text-3xl"
+            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
+            💬
+          </div>
+          <h3 class="text-lg font-medium mb-2" style="color: var(--semantic-text);">
+            How can I help you?
+          </h3>
+          <p class="text-sm text-center" style="color: var(--semantic-text-dim);">
+            Start a conversation by typing a message below
+          </p>
+        </div>
+
+        <!-- Message List -->
+        <div v-else class="max-w-4xl mx-auto px-4 py-6 space-y-4">
+          <!-- Load More Button (when content doesn't overflow) -->
+          <div v-if="hasMoreMessages" class="flex justify-center pb-2">
+            <button @click="loadChatHistory(true)" :disabled="isLoadingMore"
+              class="flex items-center gap-2 px-4 py-2 rounded-full text-sm transition-all duration-200 hover:scale-105"
+              :class="isLoadingMore ? 'opacity-50 cursor-not-allowed' : ''"
+              style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);">
+              <div v-if="isLoadingMore" class="w-4 h-4 border-2 rounded-full animate-spin"
+                style="border-color: var(--color-violet); border-top-color: transparent;"></div>
+              <span v-else>↑</span>
+              <span>{{ isLoadingMore ? 'Loading...' : 'Load more messages' }}</span>
+            </button>
+          </div>
+
+          <div v-for="(group, groupIndex) in messageGroups" :key="groupIndex" class="flex gap-3"
+            :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'">
+            <!-- Bubble -->
+            <div class="max-w-[90%] min-w-0">
+              <div class="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
+                :class="group.role === 'user' ? 'whitespace-pre-wrap break-words' : 'markdown-content'" :style="group.role === 'user'
+                  ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
+                  : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
+                  ">
+                <template v-if="group.role === 'user'">
+                  {{ group.messages[0]!.content }}
+                </template>
+                <template v-else-if="group.role === 'tool'">
+                  <div class="tool-sequence">
+                    <div v-for="(msg, idx) in group.messages" :key="idx" class="tool-item"
+                      :class="idx < group.messages.length - 1 ? 'tool-item-border' : ''">
+                      <div class="tool-expandable">
+                        <button class="tool-summary" @click="toggleToolExpanded(groupIndex, idx)" :style="[
+                          'cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;',
+                          expandedToolIds.has(`${groupIndex}-${idx}`) ? 'border-bottom: 1px dashed var(--color-border);' : ''
+                        ]">
+                          <span v-html="renderResponse(msg.content, msg.role, msg.tool_name)"></span>
+                        </button>
+                        <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content">
+                          <pre class="tool-content-pre"
+                            style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto; box-sizing: border-box; width: 100%;">
+                            {{ msg.content.trim() }}</pre>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </template>
-              <template v-else>
-                <!-- eslint-disable-next-line vue/no-v-html -->
-                <span
-                  v-html="renderResponse(group.messages[0]!.content, group.role, group.messages[0]!.tool_name)"></span>
-              </template>
-            </div>
-            <div class="text-xs mt-1 px-1" :class="group.role === 'user' ? 'text-right' : 'text-left'"
-              style="color: var(--semantic-text-dim);">
-              {{ formatTime(group.timestamp) }}
+                </template>
+                <template v-else>
+                  <!-- eslint-disable-next-line vue/no-v-html -->
+                  <span
+                    v-html="renderResponse(group.messages[0]!.content, group.role, group.messages[0]!.tool_name)"></span>
+                </template>
+              </div>
+              <div class="text-xs mt-1 px-1" :class="group.role === 'user' ? 'text-right' : 'text-left'"
+                style="color: var(--semantic-text-dim);">
+                {{ formatTime(group.timestamp) }}
+              </div>
             </div>
           </div>
+
+          <div ref="bottomMarker"></div>
         </div>
-
-        <div ref="bottomMarker"></div>
       </div>
-    </div>
 
-    <!-- Scroll to bottom button -->
-    <Transition name="fade">
-      <button v-if="!isAtBottom && messages.length > 0" @click="scrollToBottom(true)"
-        class="absolute bottom-24 right-8 p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
-        style="background-color: var(--color-violet); color: var(--color-bg);">
-        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-        </svg>
-      </button>
-    </Transition>
+      <!-- Scroll to bottom button -->
+      <Transition name="fade">
+        <button v-if="!isAtBottom && messages.length > 0" @click="scrollToBottom(true)"
+          class="absolute bottom-24 right-8 p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
+          style="background-color: var(--color-violet); color: var(--color-bg);">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+          </svg>
+        </button>
+      </Transition>
 
-    <!-- Input -->
-    <div class="p-4" style="border-top: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
-      <div class="max-w-4xl mx-auto">
-        <FileInput :cwd="cwd" @submit="handleFileInputSubmit" />
+      <!-- Input -->
+      <div class="p-4" style="border-top: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
+        <div class="max-w-4xl mx-auto">
+          <FileInput :cwd="cwd" @submit="handleFileInputSubmit" />
+        </div>
       </div>
-    </div>
     </div>
 
     <!-- Folder Explorer (sidebar on right side) -->
