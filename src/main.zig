@@ -167,7 +167,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
-    // try gs.router.get("/api/llm/stream/:session_id", ai_mod.http_handlers.streamHandler);
+    try gs.router.get("/api/llm/stream/:session_id", ai_mod.http_handlers.streamHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)

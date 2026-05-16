@@ -4,6 +4,7 @@ const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
 const http_server = @import("nalarcore").http_server;
 const logger = @import("nalarcore").logger;
+const models = @import("models.zig");
 
 // ============================================================================
 // JSON Protocol Constants
@@ -78,6 +79,11 @@ pub const ToolCallJson = struct {
 /// - Response events contain all message fields as JSON object
 /// - Tool result events include tool_call_id and tool_name
 pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLLMHistory) !void {
+
+    // todo dirty code
+    const di = try models.getSingleton();
+    const event_bus = di.event_bus;
+
     const log = logger.getGlobal();
     const session_id = input.session_id;
 
@@ -169,10 +175,12 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         event.data.len,
     });
 
-    sse_manager.enqueueEvent(input.session_id, event) catch |err| {
-        std.debug.print("SSE_ERROR: enqueueEvent failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
-        return;
-    };
+    event_bus.emit(http_server.SseEvent, input.session_id, event);
+
+    // sse_manager.enqueueEvent(input.session_id, event) catch |err| {
+    //     std.debug.print("SSE_ERROR: enqueueEvent failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
+    //     return;
+    // };
 
     log.?.infoFmt("on_event_send_new[{s}]: event enqueued successfully", .{session_id});
 }
