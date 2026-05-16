@@ -64,7 +64,6 @@ pub const ToolExecContext = struct {
 /// Tool execution result with optional agent state changes
 pub const ToolExecResult = struct {
     output: []const u8,
-    /// If true, the caller must free output with allocator.free()
     output_allocated: bool = false,
     temperature: ?f32 = null,
     is_thinking: ?bool = null,

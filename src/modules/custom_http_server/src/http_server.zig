@@ -75,6 +75,7 @@ pub const GinwaServer = struct {
     sse_manager: SseManager,
     ctx: ?*anyopaque = null,
     environment: ?*const std.process.Environ.Map = null,
+    is_running: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
@@ -103,7 +104,8 @@ pub const GinwaServer = struct {
         var group: std.Io.Group = .init;
         defer group.cancel(self.io);
 
-        while (true) {
+        self.is_running = true;
+        while (self.is_running) {
             const client_fd = try self.acceptClient();
 
             const arena = try self.allocator.create(std.heap.ArenaAllocator);
@@ -255,6 +257,10 @@ pub const GinwaServer = struct {
         );
         if (rc < 0) return 0;
         return (@as(u16, addr[2]) << 8) | @as(u16, addr[3]);
+    }
+
+    pub fn shutdown(self: *GinwaServer) void {
+        self.is_running = false;
     }
 };
 
