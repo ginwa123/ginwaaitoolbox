@@ -2,10 +2,12 @@ const std = @import("std");
 const linux = std.posix.system;
 pub const http_parser = @import("http_parser.zig");
 const router = @import("router.zig");
+pub const sse_manager = @import("sse_manager.zig");
 pub const HttpRequest = http_parser.HttpRequest;
 pub const HttpResponse = http_parser.HttpResponse;
 pub const HttpContext = http_parser.HttpContext;
 pub const response = http_parser;
+pub const SseManager = sse_manager.SseManager;
 
 pub const Address = struct {
     sock_fd: i32,
@@ -70,6 +72,7 @@ pub const GinwaServer = struct {
     io: std.Io,
     address: Address,
     router: router.Router,
+    sse_manager: SseManager,
     ctx: ?*anyopaque = null,
     environment: ?*const std.process.Environ.Map = null,
 
@@ -80,6 +83,7 @@ pub const GinwaServer = struct {
             .io = io,
             .address = address,
             .router = router.Router.init(allocator),
+            .sse_manager = try SseManager.init(allocator, allocator),
             .ctx = null,
             .environment = null,
         };
@@ -87,6 +91,8 @@ pub const GinwaServer = struct {
     }
 
     pub fn deinit(self: *GinwaServer) void {
+        self.sse_manager.gracefulShutdown();
+        self.sse_manager.deinit();
         self.router.deinit();
     }
 
@@ -149,23 +155,33 @@ pub const GinwaServer = struct {
                                     std.debug.print("Response sent: {d} bytes\n", .{res_bytes.len});
                                 },
                                 .sse => |sse| {
-                                    // Send SSE headers
+                                    // Send SSE headers (keep-alive)
                                     const headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
                                     _ = gs.sendToClient(fd, headers) catch {
-                                        std.debug.print("Failed to send SSE headers\n", .{});
                                         _ = linux.close(fd);
                                         return;
                                     };
+
+                                    // Register client with SSE manager (ownership transfers)
+                                    const client_id = gs.sse_manager.registerClient(fd) catch {
+                                        _ = linux.close(fd);
+                                        return;
+                                    };
+                                    _ = client_id;
+
+                                    // Call SSE handler - it returns immediately (error.WouldBlock expected)
+                                    // The SSE manager event loop handles ongoing streaming
                                     const res = http_parser.HttpResponse.init(200, "OK", allocator);
-                                    const sse_res = sse.handler(sse.ctx, req, res) catch |err| {
-                                        std.debug.print("SSE handler error: {s}\n", .{@errorName(err)});
-                                        return;
+                                    _ = sse.handler(sse.ctx, req, res) catch |err| {
+                                        if (err != error.WouldBlock) {
+                                            std.debug.print("SSE handler error: {s}\n", .{@errorName(err)});
+                                        }
+                                        // Don't remove client on WouldBlock - it's expected
+                                        // Client stays connected until disconnect
                                     };
-                                    _ = sse_res.toBytes() catch |err| {
-                                        std.debug.print("SSE response bytes error: {s}\n", .{@errorName(err)});
-                                        return;
-                                    };
-                                    _ = linux.close(fd);
+
+                                    // DON'T close fd - SSE manager owns it now
+                                    // SSE manager will close on disconnect or graceful shutdown
                                     return;
                                 },
                             }
@@ -236,27 +252,6 @@ pub var global_server: ?*GinwaServer = null;
 pub const SseEvent = struct {
     data: []const u8,
     event_type: ?[]const u8 = null,
-};
-
-/// SSE Manager for handling Server-Sent Events
-pub const SseManager = struct {
-    pub fn hasSession(_: SseManager, _: []const u8) bool {
-        return false;
-    }
-
-    pub fn createQueue(_: SseManager) !*anyopaque {
-        return error.NotImplemented;
-    }
-
-    pub fn registerSession(_: SseManager, _: []const u8, _: *anyopaque) !void {
-        return error.NotImplemented;
-    }
-
-    pub fn unregisterSession(_: SseManager, _: []const u8) void {}
-
-    pub fn enqueueEvent(_: SseManager, _: []const u8, _: SseEvent) !void {
-        return error.NotImplemented;
-    }
 };
 
 /// Get global SSE manager

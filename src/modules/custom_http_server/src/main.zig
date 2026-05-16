@@ -66,21 +66,15 @@ fn createUserHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
     return res.jsonResponse(.{ .status_code = 201, .data = json_text });
 }
 
-/// SSE streaming handler
-fn sseStreamHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
-    const messages = [_][]const u8{
-        "Hello from SSE!",
-        "This is event 2",
-        "This is event 3",
-        "Goodbye from SSE!",
-    };
-
-    for (messages, 0..) |msg, i| {
-        const event = std.fmt.allocPrint(std.heap.page_allocator, "data: {s}\nid: {d}\n\n", .{ msg, i }) catch return error.OutOfMemory;
-        defer std.heap.page_allocator.free(event);
-        req.writeSSEEvent(event);
-    }
-    return res.withBody("");
+/// SSE streaming handler - registers client with SSE manager
+/// Actual streaming handled by SseManager.runEventLoop()
+fn sseStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    _ = ctx;
+    _ = req;
+    _ = res;
+    // Client is registered in http_server.zig before this is called
+    // The SSE manager event loop handles ongoing messaging and heartbeat
+    return error.WouldBlock; // Handler should not complete - connection stays open
 }
 
 pub fn run(init: std.process.Init) !void {
@@ -89,12 +83,17 @@ pub fn run(init: std.process.Init) !void {
     const allocator = arena_allocator.allocator();
     const io = init.io;
 
-    const address = try gserverz.Address.init(29584);
+    const address = try gserverz.Address.init(29590);
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
 
-    std.debug.print("HTTP Server listening on 127.0.0.1:29584...\n", .{});
-    std.debug.print("Test with: curl http://127.0.0.1:29584/\n", .{});
+    // Start SSE event loop in background thread
+    try gs.sse_manager.startEventLoop(15); // 15 second heartbeat
+    defer gs.sse_manager.stop();
+
+    std.debug.print("HTTP Server listening on 127.0.0.1:29590...\n", .{});
+    std.debug.print("SSE Event loop running with 15s heartbeat...\n", .{});
+    std.debug.print("Test with: curl http://127.0.0.1:29590/\n", .{});
     std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
     try gs.router.get("/hello", helloHandler);
@@ -107,6 +106,6 @@ pub fn run(init: std.process.Init) !void {
     try gs.listen();
 }
 
-// curl http://127.0.0.1:29584/       # → "Welcome to GinwaServer!"
-// curl http://127.0.0.1:29584/health # → "OK"
-// curl http://127.0.0.1:29584/hello   # → "Hello, HTTP!"
+// curl http://127.0.0.1:29590/       # → "Welcome to GinwaServer!"
+// curl http://127.0.0.1:29590/health # → "OK"
+// curl http://127.0.0.1:29590/hello   # → "Hello, HTTP!"
