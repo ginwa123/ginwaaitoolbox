@@ -131,6 +131,8 @@ pub const SseManager = struct {
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
+            // Unregister fd from epoll before closing and deallocating
+            _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, entry.value_ptr.*.fd, null);
             entry.value_ptr.*.deinit();
             self.server_allocator.destroy(entry.value_ptr);
         }
@@ -166,6 +168,8 @@ pub const SseManager = struct {
         defer self.lock.unlock();
 
         if (self.clients.fetchRemove(id)) |entry| {
+            // Unregister fd from epoll before closing and deallocating
+            _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, entry.value.*.fd, null);
             entry.value.*.deinit();
             self.server_allocator.destroy(entry.value);
         }
@@ -177,11 +181,15 @@ pub const SseManager = struct {
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
-            if (entry.value.*.fd == fd) {
-                const id = entry.value.*.id;
-                entry.value.*.deinit();
-                self.server_allocator.destroy(entry.value);
-                _ = self.clients.remove(id);
+            if (entry.value_ptr.*.fd == fd) {
+                // Copy the key to a local array before removing
+                var id: [16]u8 = undefined;
+                @memcpy(&id, entry.key_ptr.*);
+                // Unregister fd from epoll before closing and deallocating
+                _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, fd, null);
+                entry.value_ptr.*.deinit();
+                self.server_allocator.destroy(entry.value_ptr);
+                _ = self.clients.remove(&id);
                 return id;
             }
         }
@@ -232,8 +240,27 @@ fn runEventLoopThread(sse_mgr: *SseManager, heartbeat_secs: u32) void {
     }
 
     fn handleClientEvent(self: *SseManager, client: *SseClient, events: u32) void {
+        // Take a local copy of the fd before any operations
+        const fd = client.fd;
+
+        // If we got events but client is not in our map, we need to clean up the fd from epoll
+        // This happens when client was already removed but epoll still has events pending
+        self.lock.lock();
+        const valid = self.clients.contains(&client.id);
+        self.lock.unlock();
+
+        if (!valid) {
+            if (events & (EPOLLHUP | EPOLLRDHUP) != 0) {
+                // Clean up the orphaned fd from epoll and close it
+                _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, fd, null);
+                _ = linux.close(fd);
+            }
+            return;
+        }
+
         if (events & (EPOLLHUP | EPOLLRDHUP) != 0) {
-            self.removeClient(&client.id);
+            // Let removeClientByFd handle the epoll cleanup and closing
+            _ = self.removeClientByFd(fd);
             return;
         }
 
@@ -241,7 +268,7 @@ fn runEventLoopThread(sse_mgr: *SseManager, heartbeat_secs: u32) void {
             var buf: [64]u8 = undefined;
             const n = linux.read(client.*.fd, &buf, buf.len);
             if (n <= 0) {
-                self.removeClient(&client.id);
+                _ = self.removeClientByFd(fd);
                 return;
             }
         }
@@ -254,13 +281,33 @@ fn runEventLoopThread(sse_mgr: *SseManager, heartbeat_secs: u32) void {
         var buf: [8]u8 = undefined;
         _ = linux.read(self.timerfd, @ptrCast(&buf), buf.len);
 
+        // Collect client pointers under lock
         self.lock.lock();
-        defer self.lock.unlock();
+        var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
+        defer client_ptrs.deinit(self.allocator);
 
-        var it = self.clients.valueIterator();
-        while (it.next()) |client| {
+        var it = self.clients.iterator();
+        while (it.next()) |entry| {
+            client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
+        }
+        self.lock.unlock();
+
+        // Perform I/O without holding the lock - track dead clients
+        var dead_ids: std.ArrayListUnmanaged([16]u8) = .empty;
+        defer dead_ids.deinit(self.allocator);
+
+        for (client_ptrs.items) |client| {
             client.*.last_heartbeat = timestamp();
-            _ = linux.write(client.*.fd, ping.ptr, ping.len);
+            const n = linux.write(client.*.fd, ping.ptr, ping.len);
+            if (n < 0) {
+                // Mark client as dead - don't remove during iteration
+                dead_ids.append(self.allocator, client.*.id) catch break;
+            }
+        }
+
+        // Remove dead clients AFTER iteration
+        for (dead_ids.items) |id| {
+            self.removeClient(&id);
         }
     }
 
@@ -269,12 +316,22 @@ fn runEventLoopThread(sse_mgr: *SseManager, heartbeat_secs: u32) void {
         const event = try std.fmt.allocPrint(self.allocator, "data: {s}\n\n", .{data});
         defer self.allocator.free(event);
 
+        // Collect client pointers under lock
         self.lock.lock();
-        defer self.lock.unlock();
+        var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
+        defer client_ptrs.deinit(self.allocator);
 
-        var it = self.clients.valueIterator();
-        while (it.next()) |client| {
-            _ = linux.write(client.*.fd, event.ptr, event.len);
+        var it = self.clients.iterator();
+        while (it.next()) |entry| {
+            client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
+        }
+        self.lock.unlock();
+
+        for (client_ptrs.items) |client| {
+            const n = linux.write(client.*.fd, event.ptr, event.len);
+            if (n < 0) {
+                self.removeClient(&client.*.id);
+            }
         }
     }
 
@@ -283,12 +340,22 @@ fn runEventLoopThread(sse_mgr: *SseManager, heartbeat_secs: u32) void {
         const event = try std.fmt.allocPrint(self.allocator, "event: {s}\ndata: {s}\n\n", .{ event_type, data });
         defer self.allocator.free(event);
 
+        // Collect client pointers under lock
         self.lock.lock();
-        defer self.lock.unlock();
+        var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
+        defer client_ptrs.deinit(self.allocator);
 
-        var it = self.clients.valueIterator();
-        while (it.next()) |client| {
-            _ = linux.write(client.*.fd, event.ptr, event.len);
+        var it = self.clients.iterator();
+        while (it.next()) |entry| {
+            client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
+        }
+        self.lock.unlock();
+
+        for (client_ptrs.items) |client| {
+            const n = linux.write(client.*.fd, event.ptr, event.len);
+            if (n < 0) {
+                self.removeClient(&client.*.id);
+            }
         }
     }
 
@@ -298,10 +365,16 @@ fn runEventLoopThread(sse_mgr: *SseManager, heartbeat_secs: u32) void {
         defer self.allocator.free(event);
 
         self.lock.lock();
-        defer self.lock.unlock();
+        const client = self.clients.get(id);
+        self.lock.unlock();
 
-        const client = self.clients.get(id) orelse return error.ClientNotFound;
-        try client.*.sendEvent(event);
+        if (client == null) return error.ClientNotFound;
+
+        const n = linux.write(client.?.*.fd, event.ptr, event.len);
+        if (n < 0) {
+            self.removeClient(id);
+            return error.ClientDisconnected;
+        }
     }
 
     /// Graceful shutdown - notify all clients, then close
