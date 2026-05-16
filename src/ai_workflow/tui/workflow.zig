@@ -29,7 +29,6 @@ const get_current_agent_by_session_id = llm_history.get_current_agent_by_session
 const TUIHistory = @import("models.zig").TUIHistory;
 const transform_llm_history_to_agent_message = @import("transform_llm_history_to_agent_messages.zig");
 const buildMessages = @import("build_messages_for_agent_prompt.zig").buildMessages;
-pub const startup = @import("startup.zig").startup;
 const getMessages = session_helpers.getMessages;
 const getLatestMessage = session_helpers.getLatestMessage;
 const mark_messages_not_for_llm = @import("llm_history.zig");

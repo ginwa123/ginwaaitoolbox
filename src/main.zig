@@ -5,6 +5,7 @@ const ai_mod = nalarcore.ai_mod;
 const sqlite = nalarcore.sqlite;
 const helpers = nalarcore.helpers;
 const gserverz = nalarcore.gserverz;
+const startup = nalarcore.startup;
 
 pub fn main(init: std.process.Init) !void {
     const arena_allocator = init.arena;
@@ -130,9 +131,9 @@ pub fn main(init: std.process.Init) !void {
     //     // Non-fatal - server can still run without cleanup
     // };
 
-    // startup(parent_allocator, io, environment, &dbSqlite, &llm_config, ctxParent) catch |err| {
-    //     std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});
-    // };
+    startup.startup(allocator, ctxParent) catch |err| {
+        std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});
+    };
     //
 
     const address = try gserverz.Address.init(port);

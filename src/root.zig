@@ -296,6 +296,8 @@ pub const gserverz = @import("modules/custom_http_server/src/http_server.zig");
 pub const ai_mod = @import("ai_workflow/tui/mod.zig");
 pub const event_bus = @import("modules/event_bus/src/event.zig");
 
+pub const startup = @import("startup.zig");
+
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
     _ = @import("modules/agent/test_runner.zig");
