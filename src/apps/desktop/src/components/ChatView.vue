@@ -6,6 +6,7 @@ import { getThinkingTags, isThinkingTags, stripThinkingTags } from '@/helpers';
 import FileInput from './FileInput.vue'
 import FolderExplorer from './FolderExplorer.vue'
 import DiffView from './DiffView.vue'
+import ReadFile from './ReadFile.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -759,7 +760,11 @@ const compactSession = async () => {
                   <div class="tool-sequence">
                     <div v-for="(msg, idx) in group.messages" :key="idx" class="tool-item"
                       :class="idx < group.messages.length - 1 ? 'tool-item-border' : ''">
-                      <div class="tool-expandable">
+                      <!-- ReadFile component for read_file tool -->
+                      <ReadFile v-if="msg.tool_name === 'read_file'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- Default tool rendering for other tools -->
+                      <div v-else class="tool-expandable">
                         <button class="tool-summary" @click="toggleToolExpanded(groupIndex, idx)" :style="[
                           'cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;',
                           expandedToolIds.has(`${groupIndex}-${idx}`) ? 'border-bottom: 1px dashed var(--color-border);' : ''

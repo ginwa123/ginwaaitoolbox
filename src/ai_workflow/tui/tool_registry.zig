@@ -191,7 +191,6 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const read_opts = read_file_mod.ReadFileOptions{
         .offset = parsed.value.offset,
         .limit = parsed.value.limit,
-        .show_line_numbers = parsed.value.show_line_numbers,
     };
 
     const read_result = try read_file_mod.read_file(ctx.allocator, ctx.io, parsed.value.path, read_opts);

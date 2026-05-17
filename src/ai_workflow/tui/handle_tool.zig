@@ -43,6 +43,73 @@ const ToolContext = struct {
     active_loops: *models.ActiveLoops,
 };
 
+/// Result of parsing diff_view XML from tool result.
+/// If diff_view was found, content_without_diffview is an allocated string (caller must free).
+/// Otherwise, content_without_diffview is the original content slice.
+pub const DiffViewParseResult = struct {
+    /// The content with diff_view section removed (allocated if diff_view found).
+    /// Caller must free this if diff_view_found is true.
+    content_without_diffview: []const u8,
+    /// Whether a diff_view section was found and removed
+    diff_view_found: bool,
+    /// The before content extracted from <before> tag (null if not found)
+    before: ?[]const u8,
+    /// The after content extracted from <after> tag (null if not found)
+    after: ?[]const u8,
+};
+
+/// Parses diff_view XML from a text_replace tool result.
+/// Extracts before/after content and returns content with diff_view section removed.
+/// ALWAYS returns an allocated string for content_without_diffview - caller MUST free it.
+pub fn parseDiffViewFromResult(allocator: std.mem.Allocator, content: []const u8) !DiffViewParseResult {
+    const dv_start = std.mem.indexOf(u8, content, "<diff_view>");
+    const dv_end = std.mem.indexOf(u8, content, "</diff_view>");
+
+    // Even if no diff_view found, return allocated copy of original content
+    if (dv_start == null or dv_end == null) {
+        const allocated = try std.fmt.allocPrint(allocator, "{s}", .{content});
+        return DiffViewParseResult{
+            .content_without_diffview = allocated,
+            .diff_view_found = false,
+            .before = null,
+            .after = null,
+        };
+    }
+
+    const dv_content = content[dv_start.? + 10 .. dv_end.?]; // 10 = len("<diff_view>")
+
+    // Extract before content
+    var before_val: ?[]const u8 = null;
+    if (std.mem.indexOf(u8, dv_content, "<before>")) |b_start| {
+        const b_content_start = b_start + 8; // 8 = len("<before>")
+        if (std.mem.indexOf(u8, dv_content, "</before>")) |b_end| {
+            before_val = dv_content[b_content_start..b_end];
+        }
+    }
+
+    // Extract after content
+    var after_val: ?[]const u8 = null;
+    if (std.mem.indexOf(u8, dv_content, "<after>")) |a_start| {
+        const a_content_start = a_start + 7; // 7 = len("<after>")
+        if (std.mem.indexOf(u8, dv_content, "</after>")) |a_end| {
+            after_val = dv_content[a_content_start..a_end];
+        }
+    }
+
+    // Remove diff_view section from content by concatenating before + after parts
+    const before_part = content[0..dv_start.?];
+    const after_part_start = dv_end.? + 12; // 12 = len("</diff_view>")
+    const after_part = if (after_part_start < content.len) content[after_part_start..] else "";
+    const content_without_diffview = try std.fmt.allocPrint(allocator, "{s}{s}", .{ before_part, after_part });
+
+    return DiffViewParseResult{
+        .content_without_diffview = content_without_diffview,
+        .diff_view_found = true,
+        .before = before_val,
+        .after = after_val,
+    };
+}
+
 /// Result of executing a tool
 const ToolResult = struct {
     output: []const u8,
@@ -410,33 +477,19 @@ fn saveAndSendToolResult(
 
     var diffview_before: ?[]const u8 = null;
     var diffview_after: ?[]const u8 = null;
-    var content_modified = result;
+    var content_modified: []const u8 = result;
+    var content_modified_allocated: ?[]u8 = null;
 
     if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
-        // Parse diff_view from XML result
-        if (std.mem.indexOf(u8, result, "<diff_view>")) |dv_start| {
-            if (std.mem.indexOf(u8, result, "</diff_view>")) |dv_end| {
-                const dv_content = result[dv_start + 10 .. dv_end];
-                
-                if (std.mem.indexOf(u8, dv_content, "<before>")) |b_start| {
-                    const b_content_start = b_start + 8;
-                    if (std.mem.indexOf(u8, dv_content, "</before>")) |b_end| {
-                        diffview_before = dv_content[b_content_start..b_end];
-                    }
-                }
-                
-                if (std.mem.indexOf(u8, dv_content, "<after>")) |a_start| {
-                    const a_content_start = a_start + 7;
-                    if (std.mem.indexOf(u8, dv_content, "</after>")) |a_end| {
-                        diffview_after = dv_content[a_content_start..a_end];
-                    }
-                }
-                
-                // Remove diff_view section from content
-                const before_part = result[0..dv_start];
-                const after_part = result[dv_end + 11 .. result.len]; // 11 = len("</diff_view>")
-                content_modified = std.fmt.allocPrint(allocator, "{s}{s}", .{ before_part, after_part }) catch result;
-            }
+        // Parse diff_view from XML result - ALWAYS returns allocated string
+        if (parseDiffViewFromResult(allocator, result)) |parsed| {
+            diffview_before = parsed.before;
+            diffview_after = parsed.after;
+            content_modified_allocated = @constCast(@ptrCast(parsed.content_without_diffview));
+            content_modified = parsed.content_without_diffview;
+        } else |_| {
+            // Keep original result on parse error
+            content_modified = result;
         }
     }
 
@@ -465,6 +518,11 @@ fn saveAndSendToolResult(
         .diffview_after = diffview_after,
         .diffview_before = diffview_before,
     });
+
+    // Free the allocated content_after_diff_view
+    if (content_modified_allocated) |allocated| {
+        allocator.free(allocated);
+    }
 
     try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true);
 }

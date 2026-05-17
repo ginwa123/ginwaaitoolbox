@@ -21,7 +21,6 @@ pub const ReadFileResult = struct {
 pub const ReadFileOptions = struct {
     offset: ?usize = null, // line number to start from (0-indexed)
     limit: ?usize = null, // max number of lines to return
-    show_line_numbers: ?bool = null, // whether to prefix each line with line number
 };
 
 pub fn read_file(
@@ -51,8 +50,6 @@ pub fn read_file(
         return error.OffsetOutOfRange;
     }
 
-    const show_line_numbers = opts.show_line_numbers orelse true;
-
     // collect lines in [offset, offset+limit)
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -66,14 +63,12 @@ pub fn read_file(
         if (c == '\n' or i == raw.len - 1) {
             const line_end = if (c == '\n') i + 1 else i + 1;
             if (line_idx >= offset and captured < limit) {
-                if (show_line_numbers) {
-                    // format: "    1\t" (4-digit padded line number + tab)
-                    const line_num_len = std.fmt.count("{d:>4}\t", .{line_idx + 1});
-                    const num_buf = try allocator.alloc(u8, line_num_len);
-                    defer allocator.free(num_buf);
-                    const num_str = std.fmt.bufPrint(num_buf, "{d:>4}\t", .{line_idx + 1}) catch unreachable;
-                    try out.appendSlice(allocator, num_str);
-                }
+                // format: "    1\t" (4-digit padded line number + tab)
+                const line_num_len = std.fmt.count("{d:>4}\t", .{line_idx + 1});
+                const num_buf = try allocator.alloc(u8, line_num_len);
+                defer allocator.free(num_buf);
+                const num_str = std.fmt.bufPrint(num_buf, "{d:>4}\t", .{line_idx + 1}) catch unreachable;
+                try out.appendSlice(allocator, num_str);
                 try out.appendSlice(allocator, raw[line_start..line_end]);
                 captured += 1;
                 end_line = line_idx;
@@ -118,7 +113,7 @@ pub const read_file_tool = AgentTool{
         \\- Omit offset and limit to read the whole file.
         \\- Use offset + limit to paginate large files (recommended page: 500 lines).
         \\- Never guess offsets — check total_lines from a prior call first.
-        \\- Set show_line_numbers to true to prefix each line with its line number.
+        \\- Each line is prefixed with its line number (1-indexed).
         ,
         .parameters = .{
             .type = "object",
@@ -137,11 +132,6 @@ pub const read_file_tool = AgentTool{
                     .name = "limit",
                     .type = "number",
                     .description = "Max lines to return. Default: entire file.",
-                },
-                .{
-                    .name = "show_line_numbers",
-                    .type = "boolean",
-                    .description = "Whether to prefix each line with its line number, line number start from 1. Default: true.",
                 },
             },
             .required = &.{"path"},

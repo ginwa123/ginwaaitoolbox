@@ -3,6 +3,7 @@
 
 test {
     _ = @import("handle_tool_test.zig");
+    _ = @import("parse_diff_view_test.zig");
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
