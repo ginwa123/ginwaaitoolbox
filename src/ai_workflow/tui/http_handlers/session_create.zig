@@ -62,6 +62,8 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     const io = ctx.io;
     const di = try nalarcore.getSingleton();
 
+    std.debug.print("DEBUG_HANDLER: req.body.len={}, body_start_20={}\n", .{req.body.len, req.body.len});
+
     const parsed = std.json.parseFromSliceLeaky(RequestSession, allocator, req.body, .{}) catch |err| {
         return res.jsonResponse(.{
             .status_code = 400,

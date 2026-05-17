@@ -12,9 +12,8 @@ let processingPollInterval: ReturnType<typeof setInterval> | null = null
 const checkLLMProcessing = async () => {
   try {
     const { workers } = await api.getWorkers(undefined, 50)
-    // For testing: show spinner when workers exist
-    // Production: use workers.some(w => w.is_running)
-    isLLMProcessing.value = workers.length > 0
+    if (workers.length > 0) isLLMProcessing.value = true;
+    else isLLMProcessing.value = false;
   } catch (err) {
     console.error('Failed to check LLM processing:', err)
     isLLMProcessing.value = false

@@ -44,8 +44,6 @@ pub const CallbackAiStream = struct {
         }
         buf.append(allocator, '\n') catch return;
         const dataaaa = buf.toOwnedSlice(allocator) catch return;
-        defer allocator.free(dataaaa);
-
         server.sse_manager.sendToClient(client_id, dataaaa) catch {};
     }
 };

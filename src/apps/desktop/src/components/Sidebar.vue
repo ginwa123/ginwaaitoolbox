@@ -62,7 +62,7 @@ watch(isLLMProcessing, (processing) => {
     ...item,
     processing: processing && item.active
   }))
-})
+}, { immediate: true })
 
 // Dialog states
 const showAddWorkspaceModal = ref(false)
@@ -562,8 +562,7 @@ const handleSelectTask = (taskId: string) => {
                   : 'color: var(--semantic-text-muted);'"
               >
                 <span class="w-5 h-5 flex items-center justify-center shrink-0 text-sm">
-                  <div v-if="item.processing === true" class="w-4 h-4 border-2 rounded-full animate-spin"
-                    style="border-color: var(--color-yellow); border-top-color: transparent;"></div>
+                  <div v-if="item.processing === true" class="w-4 h-4 border-2 rounded-full animate-spin" style="border-color: var(--color-yellow); border-top-color: transparent;"></div>
                   <span v-else>{{ item.icon }}</span>
                 </span>
                 <span class="flex-1 text-left truncate">{{ item.name }}</span>

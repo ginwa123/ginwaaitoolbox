@@ -8,11 +8,11 @@ const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
 
 pub fn main(init: std.process.Init) !void {
-    const arena_allocator = init.arena;
-    defer arena_allocator.deinit();
-    const allocator = arena_allocator.allocator();
+    // const arena_allocator = init.arena;
+    // defer arena_allocator.deinit();
+    // const allocator = arena_allocator.allocator();
 
-    // const allocator = init.gpa;
+    const allocator = init.gpa;
     const environment = init.environ_map;
     const io = init.io;
 

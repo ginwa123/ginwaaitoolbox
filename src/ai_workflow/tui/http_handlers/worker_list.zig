@@ -52,8 +52,8 @@ pub fn workerListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
         const last_activity_description = row.values[4];
         const created_at = row.values[5];
 
-        const status = "idle";
-        const is_running = false;
+        const status = "running";
+        const is_running = true;
         const queue_count: u32 = 0;
 
         try workers.append(allocator, .{

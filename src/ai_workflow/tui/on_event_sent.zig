@@ -178,9 +178,12 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         .whitespace = .indent_4,
     })});
 
+    // Duplicate the data so event owns its own copy (buf will be deallocated below)
+    const data_copy = try allocator.dupe(u8, buf.items);
+
     const event = SseEvent{
         .session_id = input.session_id,
-        .data = buf.items,
+        .data = data_copy,
     };
     event_bus.emit(SseEvent, input.session_id, event);
 }
@@ -217,10 +220,13 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
         buf.items,
     });
 
+    // Duplicate the data so event owns its own copy (buf will be deallocated below)
+    const data_copy = try allocator.dupe(u8, buf.items);
+
     // Use actual session_id as routing key and in event
     const event = SseEvent{
         .session_id = input.id,
-        .data = buf.items,
+        .data = data_copy,
     };
 
     event_bus.emit(SseEvent, "sessions", event);

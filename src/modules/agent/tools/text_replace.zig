@@ -293,27 +293,19 @@ pub fn xmlError(allocator: std.mem.Allocator, err_msg: []const u8, path: []const
 
 /// Serialize result to XML string with diff view
 pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, path: []const u8) []const u8 {
-    // if (result.diff_view) |dv| {
-    //     // Format: side-by-side diff view
-    //     return std.fmt.allocPrint(allocator,
-    //         \\<success>true</success>
-    //         \\<path>{s}</path>
-    //         \\<diff_view>
-    //         \\<before>{s}</before>
-    //         \\<after>{s}</after>
-    //         \\</diff_view>
-    //     , .{ path, dv.before, dv.after }) catch "<success>true</success><path>Unknown</path>";
-    // }
-    if (result.diff_view) |dv| {
-        _ = dv; // unused
-        // Format: side-by-side diff view
-        return std.fmt.allocPrint(allocator,
-            \\<success>true</success>
-            \\<path>{s}</path>
-        , .{ path }) catch "<success>true</success><path>Unknown</path>";
-    }
+    const dv = result.diff_view;
+    const before = if (dv) |d| d.before else "";
+    const after = if (dv) |d| d.after else "";
 
-    return std.fmt.allocPrint(allocator, "<success>true</success><path>{s}</path>", .{path}) catch "<success>true</success><path>Unknown</path>";
+    return std.fmt.allocPrint(allocator,
+        \\<success>true</success>
+        \\<path>{s}</path>
+        \\<diff_view>
+        \\<before>{s}</before>
+        \\<after>{s}</after>
+        \\</diff_view>
+    , .{ path, before, after }) catch "<success>true</success><path>Unknown</path>";
+
 }
 
 pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const u8, old_str: []const u8) []const u8 {

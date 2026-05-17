@@ -407,11 +407,44 @@ fn saveAndSendToolResult(
     is_thinking: bool,
     agent_name: []const u8,
 ) !void {
+
+    var diffview_before: ?[]const u8 = null;
+    var diffview_after: ?[]const u8 = null;
+    var content_modified = result;
+
+    if (std.mem.eql(u8, tool_call.function.name, "text_replace")) {
+        // Parse diff_view from XML result
+        if (std.mem.indexOf(u8, result, "<diff_view>")) |dv_start| {
+            if (std.mem.indexOf(u8, result, "</diff_view>")) |dv_end| {
+                const dv_content = result[dv_start + 10 .. dv_end];
+                
+                if (std.mem.indexOf(u8, dv_content, "<before>")) |b_start| {
+                    const b_content_start = b_start + 8;
+                    if (std.mem.indexOf(u8, dv_content, "</before>")) |b_end| {
+                        diffview_before = dv_content[b_content_start..b_end];
+                    }
+                }
+                
+                if (std.mem.indexOf(u8, dv_content, "<after>")) |a_start| {
+                    const a_content_start = a_start + 7;
+                    if (std.mem.indexOf(u8, dv_content, "</after>")) |a_end| {
+                        diffview_after = dv_content[a_content_start..a_end];
+                    }
+                }
+                
+                // Remove diff_view section from content
+                const before_part = result[0..dv_start];
+                const after_part = result[dv_end + 11 .. result.len]; // 11 = len("</diff_view>")
+                content_modified = std.fmt.allocPrint(allocator, "{s}{s}", .{ before_part, after_part }) catch result;
+            }
+        }
+    }
+
     _ = try llm_history.saveMessage(allocator, io, db, .{
         .session_id = session_id,
         .model = model,
         .cwd = cwd,
-        .content = result,
+        .content = content_modified,
         .reasoning_content = null,
         .role = agent.Role.tool.to_str(),
         .finish_reason = agent.FinishReason.tool.to_str(),
@@ -429,6 +462,8 @@ fn saveAndSendToolResult(
         .tool_name = tool_call.function.name,
         .parent_id = parent_session_id,
         .parent_session_id = parent_session_id,
+        .diffview_after = diffview_after,
+        .diffview_before = diffview_before,
     });
 
     try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true);
