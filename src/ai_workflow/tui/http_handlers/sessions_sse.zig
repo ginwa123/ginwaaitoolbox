@@ -16,8 +16,11 @@ pub const CallbackSessionsStream = struct {
 
         std.debug.print("SSE_SESSIONS_DEBUG: callback for routing key {s}\n", .{data.session_id});
 
+
+        di.session_map_lock.lock(di.io) catch {};
+        defer di.session_map_lock.unlock(di.io);
         // Get client_id for "sessions" routing
-        const client_id = ai_mod.getClientIdForSession("sessions") orelse {
+        const client_id = ai_mod.getClientIdForSession("sessions", false) orelse {
             std.debug.print("SSE_SESSIONS_DEBUG: no client registered for sessions\n", .{});
             return;
         };
@@ -72,8 +75,8 @@ pub fn sessionsStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 
     // Register client mapping for "sessions" routing key
     if (ctx.client_id) |client_id| {
-        std.debug.print("SSE_SESSIONS_DEBUG: registering client {s} for sessions\n", .{client_id});
-        ai_mod.registerSessionClient("sessions", client_id) catch {
+        const client_id_copy: [16]u8 = client_id;
+        ai_mod.registerSessionClient("sessions", client_id_copy, true) catch {
             std.debug.print("SSE_SESSIONS_DEBUG: failed to register client\n", .{});
         };
     }
@@ -83,7 +86,6 @@ pub fn sessionsStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         std.debug.print("SSE_SESSIONS_DEBUG: failed to subscribe\n", .{});
     };
 
-    std.debug.print("SSE_SESSIONS_DEBUG: handler complete, connection stays open\n", .{});
 
     return error.WouldBlock; // Keep connection open
 }

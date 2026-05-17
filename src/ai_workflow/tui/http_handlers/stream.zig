@@ -16,7 +16,9 @@ pub const CallbackAiStream = struct {
 
         std.debug.print("SSE_DEBUG: callback for session {s}\n", .{session_id});
 
-        const client_id = ai_mod.getClientIdForSession(session_id) orelse return;
+        di.session_map_lock.lock(di.io) catch {};
+        defer di.session_map_lock.unlock(di.io);
+        const client_id = ai_mod.getClientIdForSession(session_id, false) orelse return;
         std.debug.print("GILANG_SERVER 2: client_id={s}\n", .{client_id});
 
         std.debug.print("SSE_DEBUG: got client_id {s}, sending event\n", .{client_id});
@@ -26,25 +28,24 @@ pub const CallbackAiStream = struct {
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         if (data.event_type) |event_type| {
-             buf.appendSlice(allocator, "event: ") catch return;
-             buf.appendSlice(allocator, event_type) catch return;
-             buf.append(allocator, '\n') catch return;
+            buf.appendSlice(allocator, "event: ") catch return;
+            buf.appendSlice(allocator, event_type) catch return;
+            buf.append(allocator, '\n') catch return;
         }
 
         if (data.data.len == 0) {
-             buf.appendSlice(allocator, "data: \n") catch return;
+            buf.appendSlice(allocator, "data: \n") catch return;
         } else {
             var iter = std.mem.splitScalar(u8, data.data, '\n');
             while (iter.next()) |line| {
-                 buf.appendSlice(allocator, "data: ") catch return;
-                 buf.appendSlice(allocator, line) catch return;
-                 buf.append(allocator, '\n') catch return;
+                buf.appendSlice(allocator, "data: ") catch return;
+                buf.appendSlice(allocator, line) catch return;
+                buf.append(allocator, '\n') catch return;
             }
         }
-         buf.append(allocator, '\n') catch return;
+        buf.append(allocator, '\n') catch return;
         const dataaaa = buf.toOwnedSlice(allocator) catch return;
         defer allocator.free(dataaaa);
-
 
         server.sse_manager.sendToClient(client_id, dataaaa) catch {};
     }
@@ -55,13 +56,17 @@ pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
     const allocator = ctx.allocator;
 
     const di = try nalar_core.getSingleton();
+    const global_allocator = di.allocator;
+
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
     // Register the client_id mapping (set by http_server after registerClient)
     if (ctx.client_id) |client_id| {
-        ai_mod.registerSessionClient(session_id, client_id) catch {};
+        const session_id_copy = try global_allocator.dupe(u8, session_id);
+        const client_id_copy: [16]u8 = client_id;
+        ai_mod.registerSessionClient(session_id_copy, client_id_copy, true) catch {};
     }
 
     const event_bus = di.event_bus;
