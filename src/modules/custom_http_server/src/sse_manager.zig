@@ -206,13 +206,17 @@ pub const SseManager = struct {
         var it = self.clients.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.*.fd == fd) {
-                // Copy the key to a local array before removing
+                // Copy the key to a local array before any modifications
                 const id = entry.key_ptr.*;
                 // Unregister fd from epoll before closing and deallocating
                 _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, fd, null);
-                entry.value_ptr.*.deinit();
-                self.server_allocator.destroy(entry.value_ptr);
+                // Copy the pointer before removing from hash map
+                const client_ptr = entry.value_ptr.*;
+                // Remove from hash map FIRST to invalidate the entry
                 _ = self.clients.remove(id);
+                // Now safe to deinit and destroy - client_ptr is no longer in hash map
+                client_ptr.deinit();
+                self.server_allocator.destroy(client_ptr);
                 // Call disconnect callback if set
                 if (self.on_disconnect) |cb| {
                     cb(id);

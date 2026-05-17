@@ -199,4 +199,15 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     const copy_session_id = try allocator.dupe(u8, session_id);
     defer allocator.free(copy_session_id);
     try sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name, copy_cwd });
+
+    // Broadcast session created event
+    ai_workflow.on_event_sent.onEventSendSessions(allocator, .{
+        .action = "created",
+        .id = session_id,
+        .name = session_name,
+        .status = "active",
+        .cwd = effective_cwd,
+        .created_at = "",
+        .updated_at = "",
+    }) catch {};
 }

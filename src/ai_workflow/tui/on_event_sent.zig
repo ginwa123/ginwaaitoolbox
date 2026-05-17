@@ -10,7 +10,6 @@ const gserverz = tree1_mod.gserverz;
 // Session-to-Client ID mapping for SSE event bus integration
 // ============================================================================
 
-
 // ============================================================================
 // JSON Protocol Constants
 // ============================================================================
@@ -78,6 +77,24 @@ pub const ToolCallJson = struct {
     arguments: []const u8,
 };
 
+/// Input parameters for sending SSE session events
+/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at
+pub const OnEventInputSessions = struct {
+    action: []const u8, // "created", "updated", "deleted"
+    id: []const u8,
+    name: []const u8,
+    status: []const u8,
+    cwd: []const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// JSON event payload for SSE session events
+pub const SseEventSessionsPayload = struct {
+    action: []const u8,
+    session_id: ?[]const u8 = null,
+};
+
 pub const SseEvent = struct {
     session_id: []const u8,
     data: []const u8,
@@ -103,8 +120,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         // Truncate content for logging if too long (>500 chars)
         const truncated_content = if (c.len > 500) c[0..500] else c;
         const suffix = if (c.len > 500) "... [truncated]" else "";
-        log.?.infoFmt("on_event_send_new[{s}]: content=\"{s}{s}\", len={d}, is_thinking={}, role={s}", .{
-            session_id,
+        log.?.infoFmt("on_event_send_new[{s}]: content=\"{s}{s}\", len={d}, is_thinking={}, role={s}", .{ session_id,
             truncated_content,
             suffix,
             c.len,
@@ -162,27 +178,54 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         .whitespace = .indent_4,
     })});
 
-    log.?.debugFmt("on_event_send_new[{s}]: buf prepared, size={d}, body={s}", .{
-        session_id,
-        buf.items.len,
-        buf.items,
-    });
-
     const event = SseEvent{
         .session_id = input.session_id,
         .data = buf.items,
     };
+    event_bus.emit(SseEvent, input.session_id, event);
+}
 
-    std.debug.print("SSE_DEBUG: emitting event for session {s}, data_len={d}\n", .{ session_id, buf.items.len });
-    log.?.debugFmt("on_event_send_new[{s}]: event created, data_ptr=0x{x}, data_len={d}", .{
-        session_id,
-        @intFromPtr(event.data.ptr),
-        event.data.len,
+/// Send session events to all subscribed clients via SSE
+/// Broadcasts session list updates (created, updated, deleted, list actions)
+pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSessions) !void {
+    const di = try tree1_mod.getSingleton();
+    const event_bus = di.event_bus;
+
+    const log = logger.getGlobal();
+
+    // Build the payload with action and all session columns
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    const payload = .{
+        .action = input.action,
+        .id = input.id,
+        .name = input.name,
+        .status = input.status,
+        .cwd = input.cwd,
+        .created_at = input.created_at,
+        .updated_at = input.updated_at,
+    };
+    try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
+        .whitespace = .indent_4,
+    })});
+
+    log.?.debugFmt("on_event_send_sessions: action={s}, id={s}, name={s}, data={s}", .{
+        input.action,
+        input.id,
+        input.name,
+        buf.items,
     });
 
-    event_bus.emit(SseEvent, input.session_id, event);
+    // Use actual session_id as routing key and in event
+    const event = SseEvent{
+        .session_id = input.id,
+        .data = buf.items,
+    };
 
-    std.debug.print("SSE_DEBUG: on_event_send_new[{s}]: event emitted successfully\n", .{session_id});
+    event_bus.emit(SseEvent, "sessions", event);
+
+    std.debug.print("SSE_DEBUG: on_event_send_sessions: event emitted, action={s}, id={s}\n", .{ input.action, input.id });
 }
 
 // ============================================================================
@@ -334,7 +377,7 @@ pub fn sendStreamChunkContent(
 ) void {
     const di = tree1_mod.getSingleton() catch return;
     const event_bus = di.event_bus;
-    
+
     const data = serializeContentChunk(allocator, chunk) catch return;
     defer allocator.free(data);
 
@@ -353,7 +396,7 @@ pub fn sendStreamChunkReasoning(
 ) void {
     const di = tree1_mod.getSingleton() catch return;
     const event_bus = di.event_bus;
-    
+
     const data = serializeReasoningChunk(allocator, chunk) catch return;
     defer allocator.free(data);
 
@@ -372,7 +415,7 @@ pub fn sendStreamChunkFinal(
 ) void {
     const di = tree1_mod.getSingleton() catch return;
     const event_bus = di.event_bus;
-    
+
     const data = serializeFinalChunk(allocator, chunk) catch return;
     defer allocator.free(data);
 
@@ -391,7 +434,7 @@ pub fn sendStreamToolCallDelta(
 ) void {
     const di = tree1_mod.getSingleton() catch return;
     const event_bus = di.event_bus;
-    
+
     const data = serializeToolCallDeltas(allocator, chunk) catch return;
     defer allocator.free(data);
 

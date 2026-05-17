@@ -213,22 +213,33 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
         cb(client_id);
     }
     // Also clean up session mapping
-    if (getSessionIdForClient(client_id)) |session_id| {
-        unregisterSessionClient(session_id);
+    // IMPORTANT: We must copy the session_id BEFORE removing from hash map,
+    // because getSessionIdForClient returns a borrowed reference to internal storage
+    // that becomes invalid once we remove the entry.
+    const maybe_session_id = getSessionIdForClient(client_id);
+    if (maybe_session_id) |session_id| {
+        // Duplicate the session_id before removing it from the hash map
+        const session_id_copy = di.allocator.dupe(u8, session_id) catch return;
+        defer di.allocator.free(session_id_copy);
 
-        const listClients = getListClientsForSession(session_id, di.allocator) catch |err| {
-            std.debug.print("SSE_DEBUG: Failed to get list of clients for session {s}: {any}\n", .{ session_id, err });
+        // Now safe to remove - we have our own copy
+        unregisterSessionClient(session_id_copy);
+
+        // Use our copy for subsequent operations
+        const listClients = getListClientsForSession(session_id_copy, di.allocator) catch |err| {
+            std.debug.print("SSE_DEBUG: Failed to get list of clients for session {s}: {any}\n", .{ session_id_copy, err });
             return;
         };
 
         if (listClients) |clients| {
+            defer di.allocator.free(clients);
             if (clients.len == 0) {
-                std.debug.print("SSE_DEBUG: No clients left for session {s}\n", .{session_id});
-                ev_bus.unsubscribe(session_id);
+                std.debug.print("SSE_DEBUG: No clients left for session {s}\n", .{session_id_copy});
+                ev_bus.unsubscribe(session_id_copy);
             }
         } else {
-            std.debug.print("SSE_DEBUG: Failed to get list of clients for session {s}\n", .{session_id});
-            ev_bus.unsubscribe(session_id);
+            std.debug.print("SSE_DEBUG: Failed to get list of clients for session {s}\n", .{session_id_copy});
+            ev_bus.unsubscribe(session_id_copy);
         }
     }
 }
@@ -300,4 +311,5 @@ test {
     _ = @import("modules/agent/test_runner.zig");
     _ = @import("modules/http/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
+    _ = @import("modules/custom_http_server/src/test_session_lifecycle.zig");
 }

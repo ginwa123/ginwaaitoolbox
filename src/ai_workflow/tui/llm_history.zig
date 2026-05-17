@@ -5,6 +5,7 @@ const agent = tree1.agent;
 const logger_mod = tree1.logger;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
+const ai_mod = @import("nalarcore").ai_mod;
 
 pub fn mark_message_not_for_llm_run(
     allocator: std.mem.Allocator,
@@ -58,6 +59,17 @@ pub const SessionDetail = struct {
         allocator.free(self.session_name);
         allocator.free(self.model);
     }
+};
+
+/// Session info for SSE broadcast (lightweight)
+pub const SessionBroadcastInfo = struct {
+    session_id: []const u8,
+    session_name: []const u8,
+    status: []const u8,
+    cwd: []const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+    agent: []const u8,
 };
 
 /// Get a list of sessions from the database
@@ -1439,6 +1451,7 @@ pub const SessionTableInfo = struct {
     id: []u8,
     name: []u8,
     status: []u8,
+    cwd: []u8,
     created_at: []u8,
     updated_at: []u8,
 
@@ -1446,6 +1459,7 @@ pub const SessionTableInfo = struct {
         allocator.free(self.id);
         allocator.free(self.name);
         allocator.free(self.status);
+        allocator.free(self.cwd);
         allocator.free(self.created_at);
         allocator.free(self.updated_at);
     }
@@ -1460,6 +1474,17 @@ pub fn create_session(
 ) !SessionTableInfo {
     const sql = "INSERT INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
     try db.exec(allocator, sql, &.{ id, name });
+
+    // Broadcast session created event
+    ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+        .action = "created",
+        .id = id,
+        .name = name,
+        .status = "active",
+        .cwd = "",
+        .created_at = "",
+        .updated_at = "",
+    }) catch {};
 
     return SessionTableInfo{
         .id = try allocator.dupe(u8, id),
@@ -1476,7 +1501,7 @@ pub fn getSession(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?SessionTableInfo {
-    const sql = "SELECT id, name, status, COALESCE(created_at, ''), COALESCE(updated_at, '') FROM sessions WHERE id = ?";
+    const sql = "SELECT id, name, status, COALESCE(cwd, ''), COALESCE(created_at, ''), COALESCE(updated_at, '') FROM sessions WHERE id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -1486,8 +1511,9 @@ pub fn getSession(
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
             .status = try allocator.dupe(u8, row.values[2]),
-            .created_at = try allocator.dupe(u8, row.values[3]),
-            .updated_at = try allocator.dupe(u8, row.values[4]),
+            .cwd = try allocator.dupe(u8, row.values[3]),
+            .created_at = try allocator.dupe(u8, row.values[4]),
+            .updated_at = try allocator.dupe(u8, row.values[5]),
         };
         row.deinit(allocator);
         return session;
@@ -1505,6 +1531,21 @@ pub fn update_session_status(
 ) !void {
     const sql = "UPDATE sessions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
     try db.exec(allocator, sql, &.{ new_status, id });
+
+    // Get updated session data and broadcast
+    const session = getSession(allocator, db, id) catch null;
+    if (session) |s| {
+        defer s.deinit(allocator);
+        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+            .action = "updated",
+            .id = s.id,
+            .name = s.name,
+            .status = s.status,
+            .cwd = s.cwd,
+            .created_at = s.created_at,
+            .updated_at = s.updated_at,
+        }) catch {};
+    }
 }
 
 /// Update session name
@@ -1516,6 +1557,21 @@ pub fn updateSessionName(
 ) !void {
     const sql = "UPDATE sessions SET name = ? WHERE id = ?";
     try db.exec(allocator, sql, &.{ new_name, id });
+
+    // Get updated session data and broadcast
+    const session = getSession(allocator, db, id) catch null;
+    if (session) |s| {
+        defer s.deinit(allocator);
+        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+            .action = "updated",
+            .id = s.id,
+            .name = s.name,
+            .status = s.status,
+            .cwd = s.cwd,
+            .created_at = s.created_at,
+            .updated_at = s.updated_at,
+        }) catch {};
+    }
 }
 
 /// Delete a session by id
@@ -1526,6 +1582,17 @@ pub fn delete_session(
 ) !void {
     const sql = "DELETE FROM sessions WHERE id = ?";
     try db.exec(allocator, sql, &.{id});
+
+    // Broadcast session deleted event
+    ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+        .action = "deleted",
+        .id = id,
+        .name = "",
+        .status = "",
+        .cwd = "",
+        .created_at = "",
+        .updated_at = "",
+    }) catch {};
 }
 
 /// List all sessions
@@ -1913,4 +1980,47 @@ pub fn listWorkspaceItemTasks(
     }
 
     return try tasks.toOwnedSlice(allocator);
+}
+
+/// Get all active sessions for SSE broadcast
+pub fn getSessionsForBroadcast(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+) ![]SessionBroadcastInfo {
+    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
+
+    var rows = db.query(allocator, sql, &[_][]const u8{}) catch return &[_]SessionBroadcastInfo{};
+    defer rows.deinit();
+
+    var sessions = std.ArrayList(SessionBroadcastInfo).empty;
+    errdefer sessions.deinit(allocator);
+
+    while (rows.next() catch false) |row| {
+        const session = SessionBroadcastInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .session_name = try allocator.dupe(u8, row.values[1]),
+            .status = try allocator.dupe(u8, row.values[2]),
+            .cwd = try allocator.dupe(u8, row.values[3]),
+            .created_at = try allocator.dupe(u8, row.values[4]),
+            .updated_at = try allocator.dupe(u8, row.values[5]),
+            .agent = try allocator.dupe(u8, row.values[6]),
+        };
+        try sessions.append(allocator, session);
+    }
+
+    return try sessions.toOwnedSlice(allocator);
+}
+
+/// Free session broadcast info array
+pub fn freeSessionsForBroadcast(allocator: std.mem.Allocator, sessions: []SessionBroadcastInfo) void {
+    for (sessions) |*s| {
+        allocator.free(s.session_id);
+        allocator.free(s.session_name);
+        allocator.free(s.status);
+        allocator.free(s.cwd);
+        allocator.free(s.created_at);
+        allocator.free(s.updated_at);
+        allocator.free(s.agent);
+    }
+    allocator.free(sessions);
 }

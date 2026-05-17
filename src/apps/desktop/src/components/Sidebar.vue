@@ -71,6 +71,9 @@ const isChatsResizing = ref(false)
 const chatsResizeStartY = ref(0)
 const chatsResizeStartPx = ref(0)
 
+// SSE connection for session events
+const sessionsEventSource = ref<EventSource | null>(null)
+
 // Get computed chats height in pixels from percentage
 const getChatsHeightPx = (): number => {
   const aside = document.querySelector('aside')
@@ -153,10 +156,12 @@ const handleChatsScroll = (e: Event) => {
 onUnmounted(() => {
   stopResize()
   stopChatsResize()
+  disconnectSessionsSse()
 })
 
 onMounted(async () => {
   await loadChats()
+  connectSessionsSse()
 })
 
 const loadChats = async () => {
@@ -206,6 +211,89 @@ const loadMoreChats = async () => {
     console.error('Failed to load more chats:', err)
   } finally {
     chatsLoading.value = false
+  }
+}
+
+// ─── Session Events SSE ────────────────────────────────────────────────────────
+
+const connectSessionsSse = () => {
+  console.log('[Sidebar] Connecting sessions SSE')
+  if (sessionsEventSource.value) {
+    sessionsEventSource.value.close()
+  }
+  sessionsEventSource.value = api.createSessionsSseConnection(
+    (event) => {
+      console.log('[Sidebar] Received session event:', event)
+      handleSessionEvent(event)
+    },
+    (error) => {
+      console.error('[Sidebar] Sessions SSE error:', error)
+    },
+    () => {
+      console.log('[Sidebar] Sessions SSE connected')
+    }
+  )
+}
+
+const disconnectSessionsSse = () => {
+  if (sessionsEventSource.value) {
+    sessionsEventSource.value.close()
+    sessionsEventSource.value = null
+  }
+}
+
+// Handle session events from SSE - create, update, or delete
+const handleSessionEvent = (event: api.SessionEvent) => {
+  console.log('[Sidebar] handleSessionEvent:', event)
+  
+  if (event.action === 'created') {
+    // Prepend new session to top of list
+    const newItem = {
+      id: event.id,
+      name: event.name || 'New Chat',
+      icon: '💬',
+      active: false,
+    }
+    // Check if already exists (avoid duplicates)
+    const existingIndex = navItems.value.findIndex(item => item.id === event.id)
+    if (existingIndex === -1) {
+      navItems.value.unshift(newItem)
+    }
+  } else if (event.action === 'updated') {
+    // Update existing session or create if not found
+    const existingIndex = navItems.value.findIndex(item => item.id === event.id)
+    if (existingIndex !== -1) {
+      const existing = navItems.value[existingIndex]
+      if (existing) {
+        navItems.value[existingIndex] = {
+          ...existing,
+          name: event.name || existing.name,
+        }
+      }
+    } else {
+      // Create if not exists
+      navItems.value.unshift({
+        id: event.id,
+        name: event.name || 'New Chat',
+        icon: '💬',
+        active: false,
+      })
+    }
+  } else if (event.action === 'deleted') {
+    // Remove session from list
+    const index = navItems.value.findIndex(item => item.id === event.id)
+    if (index !== -1) {
+      const wasActive = navItems.value[index]?.active ?? false
+      navItems.value.splice(index, 1)
+      // If was active, navigate to first chat
+      if (wasActive && navItems.value.length > 0) {
+        const firstItem = navItems.value[0]
+        if (firstItem) {
+          firstItem.active = true
+          emit('navigate', firstItem.id, firstItem.name)
+        }
+      }
+    }
   }
 }
 

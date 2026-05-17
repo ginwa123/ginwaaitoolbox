@@ -78,9 +78,11 @@ fn sseStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: g
 }
 
 pub fn run(init: std.process.Init) !void {
-    const arena_allocator = init.arena;
-    defer arena_allocator.deinit();
-    const allocator = arena_allocator.allocator();
+    // const arena_allocator = init.arena;
+    // defer arena_allocator.deinit();
+    // const allocator = arena_allocator.allocator();
+    //
+    const allocator = init.gpa;
     const io = init.io;
 
     const address = try gserverz.Address.init(29590);

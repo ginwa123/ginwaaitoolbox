@@ -670,3 +670,84 @@ export async function listFiles(cwd: string, dirPath?: string): Promise<string[]
     return [];
   }
 }
+
+// Session event types for SSE subscription
+export interface SessionEvent {
+  action: 'created' | 'updated' | 'deleted';
+  id: string;
+  name: string;
+  status: string;
+  cwd: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Create SSE connection for session events (global chat list updates)
+export function createSessionsSseConnection(
+  onEvent: (event: SessionEvent) => void,
+  onError?: (error: Event) => void,
+  onConnected?: () => void,
+): EventSource {
+  console.log("[createSessionsSseConnection] Creating SSE connection for session events");
+  const eventSource = new EventSource(`${API_BASE}/session/stream`);
+
+  // Buffer to accumulate multi-line JSON
+  let jsonBuffer = "";
+
+  // Handle named event: "connected"
+  eventSource.addEventListener("connected", (e: MessageEvent) => {
+    try {
+      const data = JSON.parse(e.data);
+      console.log("[SessionsSSE] connected event:", data);
+      onConnected?.();
+    } catch (err) {
+      console.error("Failed to parse connected event:", err);
+    }
+  });
+
+  // Handle default events (data: lines without event: prefix)
+  eventSource.onmessage = (event) => {
+    console.log("[SessionsSSE] onmessage raw:", JSON.stringify(event.data));
+    try {
+      const raw = event.data;
+      if (!raw) return;
+
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+
+      // Accumulate JSON until we have complete object
+      jsonBuffer += trimmed + "\n";
+
+      // Try to find complete JSON object (starts with { and ends with })
+      const jsonStart = jsonBuffer.indexOf("{");
+      const jsonEnd = jsonBuffer.lastIndexOf("}");
+
+      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+        const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1);
+        try {
+          const data = JSON.parse(jsonStr);
+          console.log("[SessionsSSE] Received data:", data);
+          onEvent(data as SessionEvent);
+          // Keep anything after the JSON for next event
+          jsonBuffer = jsonBuffer.slice(jsonEnd + 1);
+        } catch (e) {
+          // Not complete yet, keep buffering
+          console.log("[SessionsSSE] Buffering, not complete JSON yet, buffer length:", jsonBuffer.length);
+        }
+      }
+    } catch (e) {
+      console.error("SessionsSSE onmessage error:", e);
+    }
+  };
+
+  eventSource.onerror = (error) => {
+    console.error("[SessionsSSE] EventSource onerror:", error);
+    onError?.(error);
+  };
+
+  eventSource.onopen = () => {
+    console.log("[SessionsSSE] EventSource connected");
+  };
+
+  return eventSource;
+}

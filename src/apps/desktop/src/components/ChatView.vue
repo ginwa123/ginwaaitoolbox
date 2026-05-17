@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../api'
 import { getThinkingTags, isThinkingTags, stripThinkingTags } from '@/helpers';
@@ -259,7 +259,9 @@ const isAtBottom = ref(true)
 const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
-const isLLMProcessing = ref(false)
+
+// Inject isLLMProcessing from App.vue
+const isLLMProcessing = inject<Ref<boolean>>('isLLMProcessing', ref(false))
 
 // Track which tool items are expanded (by index)
 const expandedToolIds = ref<Set<string>>(new Set())
@@ -274,39 +276,6 @@ const toggleToolExpanded = (groupIndex: number, msgIndex: number) => {
     newSet.add(key)
   }
   expandedToolIds.value = newSet
-}
-
-// Poll for LLM processing status
-let processingPollInterval: ReturnType<typeof setInterval> | null = null
-
-const checkLLMProcessing = async () => {
-  if (!sessionId.value || isPendingSession.value) {
-    isLLMProcessing.value = false
-    return
-  }
-
-  try {
-    const { workers } = await api.getWorkers(undefined, 50, sessionId.value)
-    isLLMProcessing.value = workers.length > 0
-  } catch (err) {
-    console.error('Failed to check LLM processing:', err)
-    isLLMProcessing.value = false
-  }
-}
-
-const startProcessingPoll = () => {
-  // Check immediately
-  checkLLMProcessing()
-  // Then poll every 2 seconds
-  if (processingPollInterval) clearInterval(processingPollInterval)
-  processingPollInterval = setInterval(checkLLMProcessing, 2000)
-}
-
-const stopProcessingPoll = () => {
-  if (processingPollInterval) {
-    clearInterval(processingPollInterval)
-    processingPollInterval = null
-  }
 }
 
 // Git status state
@@ -634,14 +603,12 @@ onMounted(async () => {
   if (sessionId.value) {
     await loadChatHistory()
     connectSse()
-    startProcessingPoll()
     startGitStatusPoll()
   }
 })
 
 onUnmounted(() => {
   disconnectSse()
-  stopProcessingPoll()
   stopGitStatusPoll()
 })
 

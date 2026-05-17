@@ -8,9 +8,11 @@ const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
 
 pub fn main(init: std.process.Init) !void {
-    const arena_allocator = init.arena;
-    defer _ = arena_allocator.deinit();
-    const allocator = arena_allocator.allocator();
+    // const arena_allocator = init.arena;
+    // defer arena_allocator.deinit();
+    // const allocator = arena_allocator.allocator();
+
+    const allocator = init.gpa;
     const environment = init.environ_map;
     const io = init.io;
 
@@ -170,6 +172,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
     try gs.router.sse("/api/llm/stream/:session_id", ai_mod.http_handlers.streamHandler);
+    try gs.router.sse("/api/sessions/stream", ai_mod.http_handlers.sessionsStreamHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)

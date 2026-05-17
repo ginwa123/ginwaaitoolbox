@@ -208,6 +208,10 @@ const sendMessage = () => {
   inputText.value = ''
   showFilePicker.value = false
   emit('submit', message)
+  nextTick(() => {
+    const textarea = document.querySelector('.file-input-wrapper textarea') as HTMLTextAreaElement
+    if (textarea) textarea.style.height = '48px'
+  })
 }
 </script>
 

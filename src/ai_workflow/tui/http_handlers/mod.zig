@@ -21,6 +21,7 @@ const http_response = nalarcore.http_response;
 // Re-export all handlers
 pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
 pub const streamHandler = @import("stream.zig").streamHandler;
+pub const sessionsStreamHandler = @import("sessions_sse.zig").sessionsStreamHandler;
 pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHandler;
 pub const sessionListHandler = @import("session_list.zig").session_list_handler;
 pub const session_get_handler = @import("session_get.zig").session_get_handler;
