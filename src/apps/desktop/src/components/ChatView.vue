@@ -5,6 +5,7 @@ import * as api from '../api'
 import { getThinkingTags, isThinkingTags, stripThinkingTags } from '@/helpers';
 import FileInput from './FileInput.vue'
 import FolderExplorer from './FolderExplorer.vue'
+import DiffView from './DiffView.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -45,6 +46,8 @@ interface Message {
   content: string
   timestamp: Date
   tool_name?: string
+  diffview_before?: string
+  diffview_after?: string
 }
 
 // Escape HTML to prevent XSS
@@ -94,7 +97,7 @@ const setupCodeBlockCopyButtons = () => {
 // Format tool output for display (handles <stdout>, <stderr>, <success>, <error> tags)
 
 // Render markdown content to HTML
-const renderResponse = (content: string, role: string, tool_name: string | undefined): string => {
+const renderResponse = (content: string, role: string, tool_name: string | undefined, diffviewBefore?: string, diffviewAfter?: string): string => {
   content = content.trim()
   if (!content) return ''
   try {
@@ -127,7 +130,7 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
         const isSuccess = mathSuccess ? mathSuccess[1] === 'true' : false;
         const error = content.match(/<error>([\s\S]*?)<\/error>/);
         if (isSuccess) {
-          return `<span class="tool-inline">${tool_name} → ${path} ' ✓' }</span>`;
+          return `<span class="tool-inline">${tool_name} → ${path} ✓</span>`;
         }
         console.log('error text replace', error);
         return `<span class="tool-inline">${tool_name} → ${`${error} ✗`}</span>`;
@@ -395,6 +398,8 @@ const loadChatHistory = async (loadMore = false) => {
       content: msg.content,
       timestamp: new Date(msg.created_at * 1000),
       tool_name: msg.tool_name,
+      diffview_before: msg.diffview_before,
+      diffview_after: msg.diffview_after,
     }))
 
     if (loadMore) {
@@ -515,6 +520,8 @@ const connectSse = () => {
           content: event.content,
           timestamp: new Date(),
           tool_name: event.tool_name,
+          diffview_before: event.diffview_before,
+          diffview_after: event.diffview_after,
         })
         streamingContent.value = ''
         isStreaming.value = false
@@ -757,12 +764,14 @@ const compactSession = async () => {
                           'cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;',
                           expandedToolIds.has(`${groupIndex}-${idx}`) ? 'border-bottom: 1px dashed var(--color-border);' : ''
                         ]">
-                          <span v-html="renderResponse(msg.content, msg.role, msg.tool_name)"></span>
+                          <span v-html="renderResponse(msg.content, msg.role, msg.tool_name, msg.diffview_before, msg.diffview_after)"></span>
                         </button>
                         <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content">
-                          <pre class="tool-content-pre"
-                            style="white-space: pre-wrap; word-break: break-all; margin: 8px 0 0 0; padding: 8px; background: var(--semantic-sidebar-bg); border-radius: 6px; font-size: 12px; max-height: 300px; overflow-y: auto; box-sizing: border-box; width: 100%;">
-                            {{ msg.content.trim() }}</pre>
+                          <pre class="tool-content-pre">{{ msg.content.trim() }}</pre>
+                          <!-- Show diff view when expanded and diff data available -->
+                          <DiffView v-if="msg.diffview_before && msg.diffview_after"
+                            :before="msg.diffview_before"
+                            :after="msg.diffview_after" />
                         </div>
                       </div>
                     </div>
@@ -771,7 +780,7 @@ const compactSession = async () => {
                 <template v-else>
                   <!-- eslint-disable-next-line vue/no-v-html -->
                   <span
-                    v-html="renderResponse(group.messages[0]!.content, group.role, group.messages[0]!.tool_name)"></span>
+                    v-html="renderResponse(group.messages[0]!.content, group.role, group.messages[0]!.tool_name, group.messages[0]!.diffview_before, group.messages[0]!.diffview_after)"></span>
                 </template>
               </div>
               <div class="text-xs mt-1 px-1" :class="group.role === 'user' ? 'text-right' : 'text-left'"

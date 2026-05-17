@@ -43,6 +43,8 @@ pub const OnEventInputLLMHistory = struct {
     parent_session_id: ?[]const u8 = null,
     parent_id: ?[]const u8 = null,
     total_tokens: ?u32 = null,
+    diffview_before: ?[]const u8 = null,
+    diffview_after: ?[]const u8 = null,
 };
 
 /// JSON event payload structure for SSE
@@ -68,6 +70,8 @@ pub const SseEventLLMHistory = struct {
     parent_session_id: ?[]const u8 = null,
     parent_id: ?[]const u8 = null,
     total_tokens: ?u32 = null,
+    diffview_before: ?[]const u8 = null,
+    diffview_after: ?[]const u8 = null,
 };
 
 /// JSON representation of a tool call
@@ -168,6 +172,8 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         .parent_session_id = input.parent_session_id,
         .parent_id = input.parent_id,
         .total_tokens = input.total_tokens,
+        .diffview_before = input.diffview_before,
+        .diffview_after = input.diffview_after,
     };
 
     var buf: std.ArrayList(u8) = .empty;

@@ -163,11 +163,12 @@ pub const GinwaServer = struct {
                             };
                         }
 
-                        var req = http_parser.parseRequest(buf.items, allocator, gs.io, fd) catch {
-                            std.debug.print("Failed to parse HTTP request\n", .{});
+                        var req = http_parser.parseRequest(buf.items, allocator, gs.io, fd) catch |err| {
+                            std.debug.print("HTTP_SERVER: parseRequest failed: {s}\n", .{@errorName(err)});
                             _ = linux.close(fd);
                             return;
                         };
+                        std.debug.print("HTTP_SERVER: req.method={s}, path={s}, body.len={}\n", .{req.method, req.path, req.body.len});
                         defer req.headers.deinit();
 
                         const http_ctx = http_parser.HttpContext{ .allocator = allocator, .io = gs.io };
@@ -223,6 +224,8 @@ pub const GinwaServer = struct {
                 .{ self, arena, client_fd },
             );
         }
+
+        try group.await(self.io);
     }
 
     fn getContentLength(data: []const u8) ?usize {
@@ -231,8 +234,11 @@ pub const GinwaServer = struct {
         const cl_header = "Content-Length: ";
         const cl_pos = std.mem.indexOf(u8, headers, cl_header) orelse return null;
         const cl_start = cl_pos + cl_header.len;
-        const cl_end = std.mem.indexOf(u8, headers[cl_start..], "\r\n") orelse return null;
-        return std.fmt.parseInt(usize, headers[cl_start .. cl_start + cl_end], 10) catch null;
+        // Look for \r\n after the value, or use end of headers if that's the line ending
+        const after_value = headers[cl_start..];
+        const cl_end = std.mem.indexOf(u8, after_value, "\r\n") orelse after_value.len;
+        const cl_str = headers[cl_start..cl_start + cl_end];
+        return std.fmt.parseInt(usize, cl_str, 10) catch null;
     }
 
     fn isHttpRequestComplete(data: []const u8) bool {

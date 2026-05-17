@@ -116,6 +116,8 @@ pub const SessionMessage = struct {
     tool_name: []const u8,
     finish_reason: []const u8,
     reasoning_content: []const u8,
+    diffview_before: []const u8 = "",
+    diffview_after: []const u8 = "",
 };
 
 pub const SessionMessagesResponse = struct {

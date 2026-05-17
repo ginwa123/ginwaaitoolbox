@@ -55,8 +55,13 @@ const User = struct {
 fn createUserHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    // Parse JSON body directly into a struct
-    const user = std.json.parseFromSliceLeaky(User, allocator, req.body, .{}) catch {
+    std.debug.print("HANDLER: req.body.len={}\n", .{req.body.len});
+
+    const user = std.json.parseFromSliceLeaky(User, allocator, req.body, .{}) catch |err| {
+        std.debug.print("HANDLER JSON error: {s}\n", .{@errorName(err)});
+        if (req.body.len > 0) {
+            std.debug.print("HANDLER body[0..50]={s}\n", .{req.body[0..@min(50, req.body.len)]});
+        }
         return gserverz.response.badRequest("Invalid user JSON", allocator);
     };
 
@@ -84,6 +89,15 @@ pub fn run(init: std.process.Init) !void {
     //
     const allocator = init.gpa;
     const io = init.io;
+
+    // Test allocator with a large allocation first
+    std.debug.print("DEBUG: Testing allocator with 1MB allocation...\n", .{});
+    const test_alloc = allocator.alloc(u8, 1024 * 1024) catch |err| {
+        std.debug.print("DEBUG: 1MB alloc failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    allocator.free(test_alloc);
+    std.debug.print("DEBUG: 1MB alloc succeeded\n", .{});
 
     const address = try gserverz.Address.init(29590);
     const gs = try gserverz.GinwaServer.init(allocator, io, address);

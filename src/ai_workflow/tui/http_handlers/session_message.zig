@@ -63,6 +63,8 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
             .tool_name = msg.tool_name,
             .finish_reason = msg.finish_reason,
             .reasoning_content = msg.reasoning_content,
+            .diffview_before = msg.diffview_before orelse "",
+            .diffview_after = msg.diffview_after orelse "",
         };
     }
 

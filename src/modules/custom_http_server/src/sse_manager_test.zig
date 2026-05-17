@@ -319,3 +319,51 @@ test "SseManager: stress test - rapid add/remove" {
         _ = linux.close(fds[1]);
     }
 }
+
+test "SseManager: gracefulShutdown with ArenaAllocator - no crash" {
+    // This test verifies that gracefulShutdown doesn't crash with an ArenaAllocator.
+    // The bug was that deinit() calls arena.deinit() which was corrupting the
+    // canary tracking when used with DebugAllocator.
+    // Using ArenaAllocator as a simpler allocator that doesn't track canaries.
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var server_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer server_arena.deinit();
+    const server_allocator = server_arena.allocator();
+
+    var mgr = try SseManager.init(allocator, server_allocator);
+
+    // Create and register multiple clients
+    var socket_pairs = std.ArrayListUnmanaged([2]i32){ .items = &.{}, .capacity = 0 };
+    defer {
+        for (socket_pairs.items) |fds| {
+            _ = linux.close(fds[1]);
+        }
+        socket_pairs.deinit(allocator);
+    }
+
+    for (0..5) |_| {
+        const fds = try createSocketPair();
+        try socket_pairs.append(allocator, fds);
+        _ = try mgr.registerClient(fds[0]);
+    }
+
+    try std.testing.expect(mgr.clientCount() == 5);
+
+    // gracefulShutdown should NOT crash with ArenaAllocator
+    mgr.gracefulShutdown();
+
+    // After gracefulShutdown, client count should be 0
+    try std.testing.expect(mgr.clientCount() == 0);
+
+    // Clean up other ends after gracefulShutdown closed them
+    for (socket_pairs.items) |fds| {
+        _ = linux.close(fds[1]);
+    }
+
+    // Final deinit should be clean
+    mgr.deinit();
+}

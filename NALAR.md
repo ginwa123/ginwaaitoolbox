@@ -382,7 +382,22 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 The `GET /api/session/:session_id/messages` endpoint returns:
 ```json
 {
-  "messages": [...],
+  "messages": [
+    {
+      "id": "...",
+      "session_id": "...",
+      "role": "user|assistant",
+      "content": "...",
+      "timestamp": "...",
+      "is_input": "0|1",
+      "is_output": "0|1",
+      "tool_name": "...",
+      "finish_reason": "stop|tool_calls|...",
+      "reasoning_content": "...",
+      "diffview_before": "",
+      "diffview_after": ""
+    }
+  ],
   "has_more": false,
   "next_cursor": null,
   "cwd": "/path/to/cwd",
@@ -394,6 +409,8 @@ The `GET /api/session/:session_id/messages` endpoint returns:
 Where:
 - `max_total_tokens`: Maximum total_tokens from LLM responses where `is_feed_to_llm = 1`
 - `max_capacity_total_tokens`: Model's token capacity (e.g., 200000 for MiniMax-M2.7)
+- `diffview_before`: Content before text_replace operation (for diff view)
+- `diffview_after`: Content after text_replace operation (for diff view)
 
 ### Session List Sorting
 

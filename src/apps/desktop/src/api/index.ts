@@ -196,6 +196,8 @@ export interface Message {
   content: string;
   created_at: number;
   tool_name?: string;
+  diffview_before?: string;
+  diffview_after?: string;
 }
 
 // All chat endpoints go through Zig backend at /api/llm/*
@@ -241,11 +243,15 @@ export async function getChatHistory(
           content: string;
           created_at: number | string;
           tool_name?: string;
+          diffview_before?: string;
+          diffview_after?: string;
         }) => ({
           ...msg,
           content: msg.content,
           created_at: parseTimestamp(msg.created_at),
           tool_name: msg.tool_name,
+          diffview_before: msg.diffview_before,
+          diffview_after: msg.diffview_after,
         }),
       ),
       has_more: data.has_more,
@@ -361,6 +367,9 @@ export interface SseEvent {
     | "full";
   index?: number;
   total_tokens?: number;
+  // Diff view data for text_replace tool
+  diffview_before?: string;
+  diffview_after?: string;
 }
 
 // Create SSE connection for real-time updates

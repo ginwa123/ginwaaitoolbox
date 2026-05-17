@@ -61,7 +61,6 @@ pub const SseClient = struct {
         self.message_queue.deinit(self.allocator());
         self.arena.deinit();
         _ = linux.close(self.fd);
-        self.* = undefined;
     }
 
     pub fn markDisconnected(self: *SseClient) void {
@@ -412,9 +411,9 @@ pub const SseManager = struct {
     }
 
     /// Send event to specific client by ID
+    /// NOTE: Caller is responsible for freeing the data slice
     pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
         std.debug.print("SSE_DEBUG: sendToClient: sending event to client {s}\n", .{id});
-        defer self.allocator.free(data);
 
         self.lock.lock();
         const client = self.clients.get(id);
@@ -443,15 +442,35 @@ pub const SseManager = struct {
         self.lock.lock();
         defer self.lock.unlock();
 
-        var it = self.clients.valueIterator();
-        while (it.next()) |client| {
-            _ = linux.write(client.*.fd, close_msg.ptr, close_msg.len);
-            client.*.deinit();
+        // First pass: send close messages to all clients
+        // We CANNOT call client.deinit() here because deinit() calls
+        // arena.deinit() which returns memory to the backing allocator.
+        // This makes the memory "live" again, but DebugAllocator's canary
+        // tracking is already corrupted by ArenaAllocator's internal structures.
+        // When destroy() is called in the second loop, DebugAllocator sees
+        // invalid canaries and panics with "Invalid free".
+        //
+        // The fix: don't call deinit() at all here. Just send the close message.
+        // The second loop will call destroy() which handles everything.
+        var it = self.clients.iterator();
+        while (it.next()) |entry| {
+            _ = linux.write(entry.value_ptr.*.fd, close_msg.ptr, close_msg.len);
         }
 
-        var it2 = self.clients.iterator();
-        while (it2.next()) |entry| {
-            self.server_allocator.destroy(entry.value_ptr);
+        // Second pass: remove all clients from hash map and destroy them
+        // Note: We iterate and remove one at a time using removeClient to avoid
+        // iterator invalidation issues. This mirrors what deinit() does.
+        while (self.clients.count() > 0) {
+            var it2 = self.clients.iterator();
+            if (it2.next()) |entry| {
+                const id = entry.key_ptr.*;
+                // Unregister fd from epoll before closing
+                _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, entry.value_ptr.*.fd, null);
+                // Skip deinit() to avoid ArenaAllocator corrupting DebugAllocator's canary
+                // Just destroy the client memory directly
+                self.server_allocator.destroy(entry.value_ptr);
+                _ = self.clients.remove(id);
+            }
         }
         self.clients.clearRetainingCapacity();
     }

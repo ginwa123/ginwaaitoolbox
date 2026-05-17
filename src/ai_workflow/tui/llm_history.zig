@@ -368,6 +368,8 @@ pub const SessionMessage = struct {
     tool_name: []const u8,
     finish_reason: []const u8,
     reasoning_content: []const u8,
+    diffview_before: ?[]const u8 = null,
+    diffview_after: ?[]const u8 = null,
 
     pub fn deinit(self: *const SessionMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -380,6 +382,8 @@ pub const SessionMessage = struct {
         allocator.free(self.tool_name);
         allocator.free(self.finish_reason);
         allocator.free(self.reasoning_content);
+        if (self.diffview_before) |dv| allocator.free(dv);
+        if (self.diffview_after) |da| allocator.free(da);
     }
 };
 
@@ -442,7 +446,8 @@ pub fn getSessionMessagesSorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, '')
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
         , .{ cursor_cmp, order_part });
@@ -459,7 +464,8 @@ pub fn getSessionMessagesSorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, '')
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
         , .{order_part});
@@ -499,6 +505,8 @@ pub fn getSessionMessagesSorted(
             .tool_name = try allocator.dupe(u8, row.values[7]),
             .finish_reason = try allocator.dupe(u8, row.values[8]),
             .reasoning_content = try allocator.dupe(u8, row.values[10]),
+            .diffview_before = if (row.values[11].len > 0) try allocator.dupe(u8, row.values[11]) else null,
+            .diffview_after = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);

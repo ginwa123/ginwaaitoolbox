@@ -39,17 +39,28 @@ pub const TextReplaceResult = struct {
     diff_view: ?DiffView = null,
 
     pub fn deinit(self: *TextReplaceResult, allocator: std.mem.Allocator) void {
-        if (self.diff_view) |dv| {
-            allocator.free(dv.before);
-            allocator.free(dv.after);
+        if (self.diff_view) |*dv| {
+            dv.deinit(allocator);
         }
     }
 };
 
-/// Diff view showing before and after content
+/// Diff view showing before and after content (git-style split view)
 pub const DiffView = struct {
+    /// Unified diff format showing the change with +/-/space prefixes
+    unified: []const u8,
+    /// Content before the change (for split view)
     before: []const u8,
+    /// Content after the change (for split view)
     after: []const u8,
+    /// Number of lines changed (added + removed)
+    lines_changed: usize,
+
+    pub fn deinit(self: *DiffView, allocator: std.mem.Allocator) void {
+        allocator.free(self.unified);
+        allocator.free(self.before);
+        allocator.free(self.after);
+    }
 };
 
 /// Normalize CRLF (\r\n) to LF (\n), always returns a new allocation
@@ -156,6 +167,170 @@ fn lfToCrlf(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     return try result.toOwnedSlice(allocator);
 }
 
+/// Generate unified diff format showing the change with git merge conflict style
+/// Output includes both traditional unified diff AND split view with conflict markers:
+///
+/// ```diff
+/// --- a/(file)
+/// +++ b/(file)
+/// @@ -start,count +start,count @@
+///  context line
+/// -removed line
+/// +added line
+/// ```
+///
+/// And then the split view:
+///
+/// ```txt
+/// <<<<<<< BEFORE
+/// old content
+/// =======
+/// new content
+/// >>>>>>> AFTER
+/// ```
+fn generateUnifiedDiff(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    first: usize,
+    old_str: []const u8,
+    new_str: []const u8,
+) !struct { unified: []const u8, lines_changed: usize } {
+    // Split into lines
+    var old_lines = std.ArrayList([]const u8).empty;
+    defer old_lines.deinit(allocator);
+    var new_lines = std.ArrayList([]const u8).empty;
+    defer new_lines.deinit(allocator);
+
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= raw.len) : (i += 1) {
+        const is_end = i == raw.len;
+        const is_newline = i < raw.len and raw[i] == '\n';
+        if (is_end or is_newline) {
+            const end = if (is_newline) i else raw.len;
+            const line = raw[start..end];
+            try old_lines.append(allocator, line);
+            try new_lines.append(allocator, line);
+            start = i + 1;
+        }
+    }
+
+    // Find which line the replacement starts on
+    var line_idx: usize = 0;
+    var char_count: usize = 0;
+    while (line_idx < old_lines.items.len) {
+        const line = old_lines.items[line_idx];
+        if (char_count + line.len + 1 > first) break;
+        char_count += line.len + 1; // +1 for newline
+        line_idx += 1;
+    }
+
+    var old_str_line_list = std.ArrayList([]const u8).empty;
+    defer old_str_line_list.deinit(allocator);
+    start = 0;
+    i = 0;
+    while (i <= old_str.len) : (i += 1) {
+        const is_end = i == old_str.len;
+        const is_newline = i < old_str.len and old_str[i] == '\n';
+        if (is_end or is_newline) {
+            const end = if (is_newline) i else old_str.len;
+            try old_str_line_list.append(allocator, old_str[start..end]);
+            start = i + 1;
+        }
+    }
+
+    // Split new_str into its lines
+    var new_str_line_list = std.ArrayList([]const u8).empty;
+    defer new_str_line_list.deinit(allocator);
+    start = 0;
+    i = 0;
+    while (i <= new_str.len) : (i += 1) {
+        const is_end = i == new_str.len;
+        const is_newline = i < new_str.len and new_str[i] == '\n';
+        if (is_end or is_newline) {
+            const end = if (is_newline) i else new_str.len;
+            try new_str_line_list.append(allocator, new_str[start..end]);
+            start = i + 1;
+        }
+    }
+
+    // Build unified diff output
+    var diff = std.ArrayList(u8).empty;
+    defer diff.deinit(allocator);
+
+    // Determine context lines (3 before/after)
+    const context_start: usize = if (line_idx >= 3) line_idx - 3 else 0;
+    const old_end_line = line_idx + old_str_line_list.items.len;
+    const new_end_line = line_idx + new_str_line_list.items.len;
+    const context_end: usize = @min(old_lines.items.len, @max(old_end_line, new_end_line) + 3);
+
+    // Write traditional unified diff header
+    try diff.appendSlice(allocator, "--- a/(file)\n");
+    try diff.appendSlice(allocator, "+++ b/(file)\n");
+
+    // Write hunk header: @@ -start,count +start,count @@
+    const old_count = context_end - context_start;
+    const line_diff = if (new_str_line_list.items.len >= old_str_line_list.items.len)
+        new_str_line_list.items.len - old_str_line_list.items.len
+    else
+        old_str_line_list.items.len - new_str_line_list.items.len;
+    const new_count = context_end - context_start + line_diff;
+
+    var hunk_buf: [64]u8 = undefined;
+    const hunk = try std.fmt.bufPrint(&hunk_buf, "@@ -{d},{d} +{d},{d} @@\n", .{
+        context_start + 1,
+        old_count,
+        context_start + 1,
+        new_count,
+    });
+    try diff.appendSlice(allocator, hunk);
+
+    // Write context + change lines
+    var out_line_idx: usize = context_start;
+    while (out_line_idx < context_end) : (out_line_idx += 1) {
+        const is_in_old_range = out_line_idx >= line_idx and out_line_idx < old_end_line;
+        const is_in_new_range = out_line_idx >= line_idx and out_line_idx < new_end_line;
+
+        if (is_in_old_range and !is_in_new_range) {
+            // Line removed
+            try diff.append(allocator, '-');
+            try diff.appendSlice(allocator, old_str_line_list.items[out_line_idx - line_idx]);
+            try diff.append(allocator, '\n');
+        } else if (!is_in_old_range and is_in_new_range) {
+            // Line added
+            try diff.append(allocator, '+');
+            try diff.appendSlice(allocator, new_str_line_list.items[out_line_idx - line_idx]);
+            try diff.append(allocator, '\n');
+        } else {
+            // Context line
+            try diff.append(allocator, ' ');
+            try diff.appendSlice(allocator, old_lines.items[out_line_idx]);
+            try diff.append(allocator, '\n');
+        }
+    }
+
+    // Append separator between unified diff and split view
+    try diff.appendSlice(allocator, "\n");
+
+    // Write git merge conflict style split view
+    try diff.appendSlice(allocator, "<<<<<<< BEFORE\n");
+    for (old_str_line_list.items) |line| {
+        try diff.appendSlice(allocator, line);
+        try diff.append(allocator, '\n');
+    }
+    try diff.appendSlice(allocator, "=======\n");
+    for (new_str_line_list.items) |line| {
+        try diff.appendSlice(allocator, line);
+        try diff.append(allocator, '\n');
+    }
+    try diff.appendSlice(allocator, ">>>>>>> AFTER\n");
+
+    const unified = try diff.toOwnedSlice(allocator);
+    const lines_changed = old_str_line_list.items.len + new_str_line_list.items.len;
+
+    return .{ .unified = unified, .lines_changed = lines_changed };
+}
+
 /// Text replace - applies a single replacement in a file
 pub fn executeTextReplace(
     allocator: std.mem.Allocator,
@@ -195,26 +370,27 @@ pub fn executeTextReplace(
         return TextReplaceError.OldStrNotUnique;
     }
 
-    // Build before content for diff view: prefix + old_str + trailing content
-    const before_content = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
-        raw[0..first],
-        old_str,
-        raw[first + old_str.len ..],
-    });
+    // Generate unified diff view showing the change
+    const diff_result = try generateUnifiedDiff(allocator, raw, first, old_str, new_str);
+    errdefer allocator.free(diff_result.unified);
+
+    // Create diff view with before/after content showing ONLY the changed region
+    // (like git merge conflict: <<<<<<< BEFORE / ======= / >>>>>>> AFTER)
+    // before = just old_str (what was removed)
+    // after = just new_str (what was added)
+    const before_content = try allocator.dupe(u8, old_str);
     errdefer allocator.free(before_content);
 
-    // Build after content for diff view: prefix + new_str + trailing content
-    const after_content = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
-        raw[0..first],
-        new_str,
-        raw[first + old_str.len ..],
-    });
+    // Build after content for diff view: just new_str
+    const after_content = try allocator.dupe(u8, new_str);
     errdefer allocator.free(after_content);
 
-    // Create diff view with before/after content showing only the changed region
+    // Create diff view
     const diff_view = DiffView{
+        .unified = diff_result.unified,
         .before = before_content,
         .after = after_content,
+        .lines_changed = diff_result.lines_changed,
     };
 
     // Build new content: before + new_str + after
@@ -294,8 +470,10 @@ pub fn xmlError(allocator: std.mem.Allocator, err_msg: []const u8, path: []const
 /// Serialize result to XML string with diff view
 pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, path: []const u8) []const u8 {
     const dv = result.diff_view;
+    // const unified = if (dv) |d| d.unified else "";
     const before = if (dv) |d| d.before else "";
     const after = if (dv) |d| d.after else "";
+    const lines_changed = if (dv) |d| d.lines_changed else 0;
 
     return std.fmt.allocPrint(allocator,
         \\<success>true</success>
@@ -303,9 +481,20 @@ pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, pat
         \\<diff_view>
         \\<before>{s}</before>
         \\<after>{s}</after>
+        \\<lines_changed>{d}</lines_changed>
         \\</diff_view>
-    , .{ path, before, after }) catch "<success>true</success><path>Unknown</path>";
+    , .{ path, before, after, lines_changed }) catch "<success>true</success><path>Unknown</path>";
 
+    // return std.fmt.allocPrint(allocator,
+    //     \\<success>true</success>
+    //     \\<path>{s}</path>
+    //     \\<diff_view>
+    //     \\<unified>{s}</unified>
+    //     \\<before>{s}</before>
+    //     \\<after>{s}</after>
+    //     \\<lines_changed>{d}</lines_changed>
+    //     \\</diff_view>
+    // , .{ path, unified, before, after, lines_changed }) catch "<success>true</success><path>Unknown</path>";
 }
 
 pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const u8, old_str: []const u8) []const u8 {
