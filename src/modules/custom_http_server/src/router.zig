@@ -71,35 +71,21 @@ pub fn patch(self: *Self, path: []const u8, handler: anytype) !void {
 
 /// Add an SSE streaming route
 pub fn sse(self: *Self, path: []const u8, handler: anytype) !void {
-    // For SSE, we use a wrapper that receives the client_fd
-    const WrappedSseHandler = struct {
-        fn wrapped(ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
-            return try @call(.auto, handler, .{ ctx, req, res });
-        }
-    };
-
     try self.routes.append(self.arena, Route{
         .method = "GET",
         .path = path,
-        .handler = undefined, // SSE routes don't use regular handler
-        .sse_handler = WrappedSseHandler.wrapped,
+        .handler = undefined,
+        .sse_handler = handler,
         .route_type = .sse,
     });
 }
 
-/// Generic internal route adder - boxes context and creates typed handler wrapper
+/// Generic internal route adder
 fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: anytype) !void {
-    // Create a typed handler wrapper
-    const WrappedHandler = struct {
-        fn wrapped(ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
-            return try @call(.auto, handler, .{ ctx, req, res });
-        }
-    };
-
     try self.routes.append(self.arena, Route{
         .method = method,
         .path = path,
-        .handler = WrappedHandler.wrapped,
+        .handler = handler,
         .route_type = .regular,
     });
 }
@@ -142,11 +128,11 @@ pub fn matchRoute(self: *Self, req_method: []const u8, req_path: []const u8, req
 }
 
 /// Legacy route handler for backward compatibility
-pub fn handleRoute(self: *Self, req_method: []const u8, req_path: []const u8, req: *http_parser.HttpRequest) http_parser.HttpResponse {
-    if (matchRoute(self, req_method, req_path, req)) |result| {
+pub fn handleRoute(self: *Self, req_method: []const u8, req_path: []const u8, req: *http_parser.HttpRequest, ctx: http_parser.HttpContext) http_parser.HttpResponse {
+    if (matchRoute(self, req_method, req_path, req, ctx)) |result| {
         switch (result) {
-            .response => |res| return res,
-            .sse => return http_parser.notFound(std.heap.page_allocator), // SSE should be handled separately
+            .handler => |res_data| return res_data.res,
+            .sse => return http_parser.notFound(std.heap.page_allocator),
         }
     }
     return http_parser.notFound(std.heap.page_allocator);

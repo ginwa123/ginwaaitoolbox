@@ -62,10 +62,10 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     const io = ctx.io;
     const di = try nalarcore.getSingleton();
 
-    const parsed = std.json.parseFromSliceLeaky(RequestSession, allocator, req.body, .{}) catch {
+    const parsed = std.json.parseFromSliceLeaky(RequestSession, allocator, req.body, .{}) catch |err| {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }),
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
         });
     };
 

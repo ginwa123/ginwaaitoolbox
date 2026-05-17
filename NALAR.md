@@ -223,6 +223,12 @@ src/
 
 **Note:** Workspace and workspace item expand states are persisted in `workspaces.ts` store. Nav section and workspaces section expand states are persisted in `sidebar.ts` store.
 
+**LLM Processing Indicator in Sidebar:**
+When the LLM is processing (detected via `isLLMProcessing` from App.vue), the active chat item shows a spinner animation instead of the 💬 icon. Implementation in `Sidebar.vue`:
+- Injects `isLLMProcessing` from App.vue
+- Watches `isLLMProcessing` and syncs `processing` flag to active navItem
+- Template shows spinner when `item.processing` is true, icon otherwise
+
 **URL routing for navigation state:**
 | URL | View | Parameters |
 |-----|------|------------|

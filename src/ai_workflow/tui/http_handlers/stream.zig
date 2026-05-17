@@ -26,7 +26,6 @@ pub const CallbackAiStream = struct {
         defer allocator.free(event_str);
 
         var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
         if (data.event_type) |event_type| {
             buf.appendSlice(allocator, "event: ") catch return;
             buf.appendSlice(allocator, event_type) catch return;

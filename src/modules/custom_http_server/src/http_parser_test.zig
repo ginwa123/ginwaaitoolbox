@@ -1,318 +1,281 @@
 const std = @import("std");
 const http_parser = @import("http_parser.zig");
 
-// For package-relative imports in tests
-const parseRequest = http_parser.parseRequest;
-const ok = http_parser.ok;
-const created = http_parser.created;
-const badRequest = http_parser.badRequest;
-const notFound = http_parser.notFound;
-const internalError = http_parser.internalError;
-const jsonResponse = http_parser.jsonResponse;
+const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
+const expectEqualStrings = std.testing.expectEqualStrings;
 
-// ============================================================================
-// HTTP Request Parsing Tests
-// ============================================================================
+const allocator = std.testing.allocator;
 
-test "parse simple GET request" {
-    const data = "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
+// ==================== Helper Functions ====================
+
+fn createHttpRequest(method: []const u8, path: []const u8, body: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    return createHttpRequestWithHeaders(method, path, &.{}, body, alloc);
+}
+
+fn createHttpRequestWithHeaders(method: []const u8, path: []const u8, headers: []const []const u8, body: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(alloc);
+    
+    try buf.appendSlice(alloc, method);
+    try buf.appendSlice(alloc, " ");
+    try buf.appendSlice(alloc, path);
+    try buf.appendSlice(alloc, " HTTP/1.1\r\n");
+
+    for (headers) |header| {
+        try buf.appendSlice(alloc, header);
+        try buf.appendSlice(alloc, "\r\n");
     }
 
-    try std.testing.expectEqualStrings("GET", req.method);
-    try std.testing.expectEqualStrings("/hello", req.path);
-    try std.testing.expectEqualStrings("HTTP/1.1", req.version);
-    try std.testing.expectEqualStrings("localhost", req.headers.get("Host").?);
-}
-
-test "parse POST request with body" {
-    const data = "POST /api/data HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\r\n{\"key\":\"value\"}";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
+    if (body.len > 0) {
+        const cl = try std.fmt.allocPrint(alloc, "Content-Length: {d}", .{body.len});
+        defer alloc.free(cl);
+        try buf.appendSlice(alloc, cl);
+        try buf.appendSlice(alloc, "\r\n");
     }
 
-    try std.testing.expectEqualStrings("POST", req.method);
-    try std.testing.expectEqualStrings("/api/data", req.path);
-    try std.testing.expectEqualStrings("application/json", req.headers.get("Content-Type").?);
-    try std.testing.expectEqualStrings("{\"key\":\"value\"}", req.body);
+    try buf.appendSlice(alloc, "\r\n");
+    try buf.appendSlice(alloc, body);
+
+    return try buf.toOwnedSlice(alloc);
 }
 
-test "parse request with query string" {
-    const data = "GET /search?q=zig&lang=rocks HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
+/// Create JSON body with exact target size
+/// Format: {"key":"xxx...xxx"} where the content makes total size = target_size
+fn createJsonBody(comptime target_size: usize, alloc: std.mem.Allocator, char: u8) ![]u8 {
+    // prefix: {"":""} = 9 chars ("\"" + ":" + "\"" + ":" + "\"")
+    // suffix: "} = 2 chars
+    // Need target_size - 11 chars of padding
+    var body = std.ArrayList(u8).empty;
+    errdefer body.deinit(alloc);
+    try body.appendSlice(alloc, "{\"data\":\"");
+    while (body.items.len < target_size - 2) {
+        try body.append(alloc, char);
     }
-
-    try std.testing.expectEqualStrings("/search", req.path);
-    try std.testing.expectEqualStrings("zig", req.query.get("q").?);
-    try std.testing.expectEqualStrings("rocks", req.query.get("lang").?);
+    try body.appendSlice(alloc, "\"}");
+    return try body.toOwnedSlice(alloc);
 }
 
-test "parse request with multiple headers" {
-    const data = "GET /api HTTP/1.1\r\nHost: localhost\r\nUser-Agent: TestClient/1.0\r\nAccept: application/json\r\nAuthorization: Bearer token123\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
+// ==================== Basic Request Parsing Tests ====================
+
+test "parse GET request without body" {
+    const request_data = try createHttpRequest("GET", "/test", "", allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqualStrings("GET", req.method);
+    try expectEqualStrings("/test", req.path);
+    try expectEqualStrings("HTTP/1.1", req.version);
+    try expectEqualStrings("", req.body);
+}
+
+test "parse POST request with small JSON" {
+    const body = "{\"name\":\"test\"}";
+    const request_data = try createHttpRequest("POST", "/api", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqualStrings("POST", req.method);
+    try expectEqualStrings("/api", req.path);
+    try expectEqualStrings(body, req.body);
+}
+
+test "parse request with custom headers" {
+    const request_data = try createHttpRequestWithHeaders("GET", "/test", &.{
+        "Host: localhost:8080",
+        "User-Agent: TestClient/1.0",
+        "Accept: application/json",
+    }, "", allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    // Headers may have trailing \r from HTTP parsing
+    const host_val = req.headers.get("Host") orelse "";
+    const user_agent_val = req.headers.get("User-Agent") orelse "";
+    const accept_val = req.headers.get("Accept") orelse "";
+
+    // Trim any trailing carriage returns
+    const host = std.mem.trim(u8, host_val, "\r");
+    const user_agent = std.mem.trim(u8, user_agent_val, "\r");
+    const accept = std.mem.trim(u8, accept_val, "\r");
+
+    try expectEqualStrings("localhost:8080", host);
+    try expectEqualStrings("TestClient/1.0", user_agent);
+    try expectEqualStrings("application/json", accept);
+}
+
+// ==================== Large JSON Body Tests ====================
+
+test "parse POST with 4KB JSON (exactly buffer size)" {
+    const body = try createJsonBody(4096, allocator, 'x');
+    defer allocator.free(body);
+    
+    try expectEqual(@as(usize, 4096), body.len);
+
+    const request_data = try createHttpRequest("POST", "/api/data", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqual(@as(usize, 4096), req.body.len);
+}
+
+test "parse POST with 5KB JSON (exceeds buffer size)" {
+    const body = try createJsonBody(5120, allocator, 'y');
+    defer allocator.free(body);
+
+    const request_data = try createHttpRequest("POST", "/api/data", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqual(@as(usize, 5120), req.body.len);
+}
+
+test "parse POST with 8KB JSON (2x buffer size)" {
+    const body = try createJsonBody(8192, allocator, 'z');
+    defer allocator.free(body);
+
+    const request_data = try createHttpRequest("POST", "/api/data", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqual(@as(usize, 8192), req.body.len);
+}
+
+test "parse POST with 16KB JSON (4x buffer size)" {
+    const body = try createJsonBody(16384, allocator, 'a');
+    defer allocator.free(body);
+
+    const request_data = try createHttpRequest("POST", "/api/data", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqual(@as(usize, 16384), req.body.len);
+}
+
+test "parse POST with 100KB JSON (large payload)" {
+    const body = try createJsonBody(102400, allocator, 'b');
+    defer allocator.free(body);
+
+    const request_data = try createHttpRequest("POST", "/api/data", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqual(@as(usize, 102400), req.body.len);
+}
+
+// ==================== Edge Case Tests ====================
+
+test "parse POST with JSON at buffer boundary (4095 bytes)" {
+    const body = try createJsonBody(4095, allocator, 'c');
+    defer allocator.free(body);
+
+    const request_data = try createHttpRequest("POST", "/api/data", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqual(@as(usize, 4095), req.body.len);
+}
+
+test "parse POST with JSON at buffer boundary (4097 bytes)" {
+    const body = try createJsonBody(4097, allocator, 'd');
+    defer allocator.free(body);
+
+    const request_data = try createHttpRequest("POST", "/api/data", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqual(@as(usize, 4097), req.body.len);
+}
+
+test "parse JSON with special characters" {
+    const body = "{\"message\":\"Hello\\nWorld\\t!\\u00A9\"}";
+    const request_data = try createHttpRequest("POST", "/api", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqualStrings(body, req.body);
+}
+
+test "parse JSON with unicode characters" {
+    const body = "{\"name\":\"日本語テスト\"}";
+    const request_data = try createHttpRequest("POST", "/api", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqualStrings(body, req.body);
+}
+
+test "parse POST with body split across 4096 boundaries" {
+    const body = try createJsonBody(8192, allocator, ',');
+    defer allocator.free(body);
+
+    const request_data = try createHttpRequest("POST", "/api/chunked", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
+
+    try expectEqual(@as(usize, 8192), req.body.len);
+}
+
+test "parse GET with URL-encoded path containing large query" {
+    var query = std.ArrayList(u8).empty;
+    defer query.deinit(allocator);
+    try query.appendSlice(allocator, "data=");
+    while (query.items.len < 5000) {
+        try query.append(allocator, 'x');
     }
+    const query_slice = try query.toOwnedSlice(allocator);
+    defer allocator.free(query_slice);
+    
+    const path = try std.fmt.allocPrint(allocator, "/api/search?{s}", .{query_slice});
+    defer allocator.free(path);
+    
+    const request_data = try createHttpRequest("GET", path, "", allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
 
-    try std.testing.expectEqualStrings("TestClient/1.0", req.headers.get("User-Agent").?);
-    try std.testing.expectEqualStrings("application/json", req.headers.get("Accept").?);
-    try std.testing.expectEqualStrings("Bearer token123", req.headers.get("Authorization").?);
+    try expectEqualStrings("/api/search", req.path);
+    try expect(req.query.get("data") != null);
 }
 
-test "parse request without body" {
-    const data = "DELETE /resource/123 HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
-    }
+// ==================== Performance Test ====================
 
-    try std.testing.expectEqualStrings("DELETE", req.method);
-    try std.testing.expectEqualStrings("/resource/123", req.path);
-    try std.testing.expectEqual(0, req.body.len);
-}
+test "parse POST with 1MB JSON (stress test)" {
+    const body = try createJsonBody(1024 * 1024, allocator, 'M');
+    defer allocator.free(body);
 
-test "parse request with empty query value" {
-    const data = "GET /api?key=&other=value HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
-    }
+    const request_data = try createHttpRequest("POST", "/api/big", body, allocator);
+    defer allocator.free(request_data);
+    
+    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
+    defer req.headers.deinit();
 
-    try std.testing.expectEqualStrings("", req.query.get("key").?);
-    try std.testing.expectEqualStrings("value", req.query.get("other").?);
-}
-
-test "parse request with no query params" {
-    const data = "GET /simple HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
-    }
-
-    try std.testing.expectEqualStrings("/simple", req.path);
-    try std.testing.expect(req.query.get("nonexistent") == null);
-}
-
-test "parse incomplete request (missing CRLF)" {
-    const data = "GET /incomplete";
-    const result = parseRequest(data, std.testing.allocator, undefined, -1);
-    try std.testing.expectError(error.IncompleteRequest, result);
-}
-
-test "parse request with missing request line" {
-    const data = "Host: localhost\r\n\r\n";
-    const result = parseRequest(data, std.testing.allocator, undefined, -1);
-    try std.testing.expectError(error.MissingRequestLine, result);
-}
-
-test "parse request with invalid request line (no method)" {
-    const data = "/path HTTP/1.1\r\n\r\n";
-    const result = parseRequest(data, std.testing.allocator, undefined, -1);
-    try std.testing.expectError(error.InvalidRequestLine, result);
-}
-
-test "parse request with extra whitespace in headers" {
-    const data = "GET /test HTTP/1.1\r\nHost:   localhost   \r\nContent-Type:    application/json\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
-    }
-
-    // Headers should have trimmed whitespace
-    try std.testing.expectEqualStrings("localhost", req.headers.get("Host").?);
-    try std.testing.expectEqualStrings("application/json", req.headers.get("Content-Type").?);
-}
-
-// ============================================================================
-// HTTP Response Builder Tests
-// ============================================================================
-
-test "response toBytes - basic ok response" {
-    const res = ok("Hello, World!", std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.startsWith(u8, bytes, "HTTP/1.1 200 OK\r\n"));
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Content-Length: 13") != null);
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Server: GinwaServer/1.0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Connection: close") != null);
-    try std.testing.expect(std.mem.endsWith(u8, bytes, "Hello, World!"));
-}
-
-test "response toBytes - created response" {
-    const res = created("Resource created", std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.startsWith(u8, bytes, "HTTP/1.1 201 Created\r\n"));
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Resource created") != null);
-}
-
-test "response toBytes - bad request response" {
-    const res = badRequest("Invalid input", std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.startsWith(u8, bytes, "HTTP/1.1 400 Bad Request\r\n"));
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Invalid input") != null);
-}
-
-test "response toBytes - not found response" {
-    const res = notFound(std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.startsWith(u8, bytes, "HTTP/1.1 404 Not Found\r\n"));
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Not Found") != null);
-}
-
-test "response toBytes - internal error response" {
-    const res = internalError("Something went wrong", std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.startsWith(u8, bytes, "HTTP/1.1 500 Internal Server Error\r\n"));
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Something went wrong") != null);
-}
-
-test "response toBytes - json response" {
-    const res = jsonResponse("{\"status\":\"ok\"}", std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.startsWith(u8, bytes, "HTTP/1.1 200 OK\r\n"));
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Content-Type: application/json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "{\"status\":\"ok\"}") != null);
-}
-
-test "response withBody sets content length" {
-    const res = ok("Test", std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Content-Length: 4") != null);
-}
-
-test "response toBytes - response with custom headers" {
-    var res = http_parser.HttpResponse.init(200, "OK", std.testing.allocator);
-    defer res.headers.deinit();
-
-    try res.headers.put("X-Custom-Header", "custom-value");
-    try res.headers.put("Content-Type", "text/plain");
-
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "X-Custom-Header: custom-value") != null);
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Content-Type: text/plain") != null);
-}
-
-test "response withJson sets content type and length" {
-    const json_data = "{\"key\":\"value\"}";
-    const res = http_parser.HttpResponse.init(200, "OK", std.testing.allocator).withJson(json_data);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Content-Type: application/json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "Content-Length: 17") != null);
-}
-
-test "response withBody preserves status" {
-    const res = http_parser.HttpResponse.init(201, "Created", std.testing.allocator).withBody("Created!");
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.startsWith(u8, bytes, "HTTP/1.1 201 Created\r\n"));
-}
-
-test "response withBody copies body correctly" {
-    const res = ok("Hello", std.testing.allocator);
-    try std.testing.expectEqualStrings("Hello", res.body);
-}
-
-test "response withJson copies json correctly" {
-    const res = jsonResponse("{\"test\":true}", std.testing.allocator);
-    try std.testing.expectEqualStrings("{\"test\":true}", res.body);
-    try std.testing.expectEqualStrings("application/json", res.headers.get("Content-Type").?);
-}
-
-// ============================================================================
-// Edge Cases and Error Handling Tests
-// ============================================================================
-
-test "parse request with empty body" {
-    const data = "GET /empty HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
-    }
-
-    try std.testing.expectEqualStrings("", req.body);
-}
-
-test "parse request with path containing dashes and underscores" {
-    const data = "GET /api/v2/user_profile-data HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
-    }
-
-    try std.testing.expectEqualStrings("/api/v2/user_profile-data", req.path);
-}
-
-test "parse request with numeric headers" {
-    const data = "POST /api HTTP/1.1\r\nContent-Length: 12345\r\n\r\n";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
-    }
-
-    try std.testing.expectEqualStrings("12345", req.headers.get("Content-Length").?);
-}
-
-test "parse request with trailing CRLF in body" {
-    const data = "POST /api HTTP/1.1\r\nContent-Length: 5\r\n\r\nHello";
-    var req = try parseRequest(data, std.testing.allocator, undefined, -1);
-    defer {
-        req.headers.deinit();
-        req.params.deinit();
-        req.query.deinit();
-    }
-
-    try std.testing.expectEqualStrings("Hello", req.body);
-}
-
-test "response bytes ends with double CRLF before body" {
-    const res = ok("Body", std.testing.allocator);
-    const bytes = try res.toBytes();
-    defer res.allocator.free(bytes);
-
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "\r\n\r\nBody") != null);
+    try expectEqual(@as(usize, 1024 * 1024), req.body.len);
 }

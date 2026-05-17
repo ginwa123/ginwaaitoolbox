@@ -122,22 +122,46 @@ pub const GinwaServer = struct {
                         const allocator = arena_allocator.allocator();
                         var buf: std.ArrayList(u8) = .empty;
                         defer buf.deinit(allocator);
+                        var tmp: [4096]u8 = undefined;
 
-                        var buffer: [4096]u8 = undefined;
-                        const bytes_read = gs.recvFromClient(fd, &buffer) catch |err| {
-                            std.debug.print("Recv error: {s}\n", .{@errorName(err)});
-                            _ = linux.close(fd);
-                            return;
-                        };
+                        // Phase 1: read until we have the full headers
+                        while (std.mem.indexOf(u8, buf.items, "\r\n\r\n") == null) {
+                            const n = gs.recvFromClient(fd, &tmp) catch |err| {
+                                std.debug.print("Recv error (headers): {s}\n", .{@errorName(err)});
+                                _ = linux.close(fd);
+                                return;
+                            };
+                            if (n == 0) break;
+                            buf.appendSlice(allocator,tmp[0..n]) catch {
+                                _ = linux.close(fd);
+                                return;
+                            };
+                        }
 
-                        if (bytes_read == 0) {
+                        if (buf.items.len == 0) {
                             _ = linux.close(fd);
                             return;
                         }
 
-                        buf.appendSlice(allocator, buffer[0..bytes_read]) catch unreachable;
+                        // Phase 2: read body until Content-Length is satisfied
+                        const content_length = getContentLength(buf.items) orelse 0;
+                        const header_end = (std.mem.indexOf(u8, buf.items, "\r\n\r\n") orelse 0) + 4;
+                        const target_len = header_end + content_length;
 
-                        // std.debug.print("Received {d} bytes: {s}\n", .{ bytes_read, buf.items });
+                        while (buf.items.len < target_len) {
+                            const remaining = target_len - buf.items.len;
+                            const to_read = @min(remaining, tmp.len);
+                            const n = gs.recvFromClient(fd, tmp[0..to_read]) catch |err| {
+                                std.debug.print("Recv error (body): {s}\n", .{@errorName(err)});
+                                _ = linux.close(fd);
+                                return;
+                            };
+                            if (n == 0) break;
+                            buf.appendSlice(allocator,tmp[0..n]) catch {
+                                _ = linux.close(fd);
+                                return;
+                            };
+                        }
 
                         var req = http_parser.parseRequest(buf.items, allocator, gs.io, fd) catch {
                             std.debug.print("Failed to parse HTTP request\n", .{});
@@ -146,7 +170,6 @@ pub const GinwaServer = struct {
                         };
                         defer req.headers.deinit();
 
-                        // Try to match route (check for SSE first)
                         const http_ctx = http_parser.HttpContext{ .allocator = allocator, .io = gs.io };
                         if (gs.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
                             switch (result) {
@@ -158,50 +181,33 @@ pub const GinwaServer = struct {
                                         return;
                                     };
                                     defer final_res.allocator.free(res_bytes);
-
                                     _ = gs.sendToClient(fd, res_bytes) catch {
                                         std.debug.print("Failed to send response\n", .{});
                                     };
-                                    // std.debug.print("Response sent: {d} bytes\n", .{res_bytes.len});
                                 },
                                 .sse => |sse| {
-                                    // Send SSE headers (keep-alive)
                                     const headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
                                     _ = gs.sendToClient(fd, headers) catch {
                                         _ = linux.close(fd);
                                         return;
                                     };
-
-                                    // Register client with SSE manager (ownership transfers)
                                     const client_id = gs.sse_manager.registerClient(fd) catch {
                                         _ = linux.close(fd);
                                         return;
                                     };
-
-                                    // Set client_id in context so handler can access it
                                     var sse_ctx = sse.ctx;
-
                                     sse_ctx.client_id = client_id;
                                     std.debug.print("HTTP_SERVER: client_id {s}\n", .{client_id});
-
-                                    // Call SSE handler - it returns immediately (error.WouldBlock expected)
-                                    // The SSE manager event loop handles ongoing streaming
                                     const res = http_parser.HttpResponse.init(200, "OK", allocator);
                                     _ = sse.handler(sse_ctx, req, res) catch |err| {
                                         if (err != error.WouldBlock) {
                                             std.debug.print("SSE handler error: {s}\n", .{@errorName(err)});
                                         }
-                                        // Don't remove client on WouldBlock - it's expected
-                                        // Client stays connected until disconnect
                                     };
-
-                                    // DON'T close fd - SSE manager owns it now
-                                    // SSE manager will close on disconnect or graceful shutdown
                                     return;
                                 },
                             }
                         } else {
-                            // No route matched - send 404
                             const not_found = http_parser.notFound(allocator);
                             const res_bytes = not_found.toBytes() catch {
                                 _ = linux.close(fd);
@@ -217,6 +223,34 @@ pub const GinwaServer = struct {
                 .{ self, arena, client_fd },
             );
         }
+    }
+
+    fn getContentLength(data: []const u8) ?usize {
+        const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return null;
+        const headers = data[0..header_end];
+        const cl_header = "Content-Length: ";
+        const cl_pos = std.mem.indexOf(u8, headers, cl_header) orelse return null;
+        const cl_start = cl_pos + cl_header.len;
+        const cl_end = std.mem.indexOf(u8, headers[cl_start..], "\r\n") orelse return null;
+        return std.fmt.parseInt(usize, headers[cl_start .. cl_start + cl_end], 10) catch null;
+    }
+
+    fn isHttpRequestComplete(data: []const u8) bool {
+        // Find end of headers
+        const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return false;
+        const headers = data[0..header_end];
+
+        // No Content-Length means no body (GET, OPTIONS, etc.)
+        const cl_header = "Content-Length: ";
+        const cl_pos = std.mem.indexOf(u8, headers, cl_header) orelse return true;
+        const cl_start = cl_pos + cl_header.len;
+        const cl_end = std.mem.indexOf(u8, headers[cl_start..], "\r\n") orelse return false;
+        const cl_str = headers[cl_start .. cl_start + cl_end];
+        const content_length = std.fmt.parseInt(usize, cl_str, 10) catch return false;
+
+        // Check body bytes received
+        const body_start = header_end + 4;
+        return data.len >= body_start + content_length;
     }
 
     fn acceptClient(self: *GinwaServer) !i32 {
@@ -264,10 +298,8 @@ pub const GinwaServer = struct {
     }
 };
 
-
 /// SSE Event structure
 pub const SseEvent = struct {
     data: []const u8,
     event_type: ?[]const u8 = null,
 };
-

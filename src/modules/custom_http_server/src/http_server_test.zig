@@ -85,12 +85,11 @@ test "GinwaServer with registered route" {
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.deinit();
 
-    const Context = struct {};
     try server.router.get("/test", struct {
-        fn handle(_: *http_parser.HttpRequest, _: *const Context) http_parser.HttpResponse {
+        fn handle(_: http_parser.HttpContext, _: http_parser.HttpRequest, _: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
             return http_parser.ok("Test Response", std.heap.page_allocator);
         }
-    }.handle, Context{});
+    }.handle);
 
     try std.testing.expect(server.router.routes.items.len == 1);
     try std.testing.expectEqualStrings("/test", server.router.routes.items[0].path);

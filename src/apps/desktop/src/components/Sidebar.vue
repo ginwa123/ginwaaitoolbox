@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, inject, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
@@ -10,6 +10,9 @@ import AddItemDialog from './AddItemDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
 import * as api from '../api'
+
+// Inject isLLMProcessing from App.vue
+const isLLMProcessing = inject<Ref<boolean>>('isLLMProcessing', ref(false))
 
 const router = useRouter()
 const navigationStore = useNavigationStore()
@@ -43,7 +46,7 @@ const isCollapsed = computed(() => props.collapsed ?? false)
 const sidebarWidth = computed(() => props.width ?? 280)
 const activeChatName = computed(() => navigationStore.activeChatName)
 const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; icon: string; active?: boolean }[]>([])
+const navItems = ref<{ id: string; name: string; icon: string; active?: boolean; processing?: boolean }[]>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
@@ -51,6 +54,14 @@ const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirectio
 // Watch for local changes and sync to store
 watch(chatsSortDirection, (newVal) => {
   navigationStore.setChatsSortDirection(newVal)
+})
+
+// Sync processing state to navItems when isLLMProcessing changes
+watch(isLLMProcessing, (processing) => {
+  navItems.value = navItems.value.map(item => ({
+    ...item,
+    processing: processing && item.active
+  }))
 })
 
 // Dialog states
@@ -550,7 +561,11 @@ const handleSelectTask = (taskId: string) => {
                   ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
                   : 'color: var(--semantic-text-muted);'"
               >
-
+                <span class="w-5 h-5 flex items-center justify-center shrink-0 text-sm">
+                  <div v-if="item.processing === true" class="w-4 h-4 border-2 rounded-full animate-spin"
+                    style="border-color: var(--color-yellow); border-top-color: transparent;"></div>
+                  <span v-else>{{ item.icon }}</span>
+                </span>
                 <span class="flex-1 text-left truncate">{{ item.name }}</span>
                 <button
                   v-if="item.id !== 'chat'"

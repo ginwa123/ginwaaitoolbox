@@ -161,14 +161,11 @@ export async function updateTaskSimple(
   taskId: string,
   data: { name?: string; session_id?: string },
 ): Promise<{ success: boolean }> {
-  const response = await fetch(
-    `${API_BASE}/workspaces/tasks/${taskId}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    },
-  );
+  const response = await fetch(`${API_BASE}/workspaces/tasks/${taskId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -260,7 +257,14 @@ export async function getChatHistory(
   } catch (error) {
     // Return empty messages when LLM backend unavailable
     console.log(error);
-    return { messages: [], has_more: false, next_cursor: null, cwd: undefined, max_total_tokens: undefined, max_capacity_total_tokens: undefined };
+    return {
+      messages: [],
+      has_more: false,
+      next_cursor: null,
+      cwd: undefined,
+      max_total_tokens: undefined,
+      max_capacity_total_tokens: undefined,
+    };
   }
 }
 
@@ -270,22 +274,57 @@ export async function sendChatMessage(
   message: string,
   cwdSession: string,
 ): Promise<{ status: string }> {
-  // cwdSession = '/home/ginwa/agentic_coding_zig/ginwaaitoolbox'
+  let body: string;
+
+  // Step 1: Safely serialize — catch any JSON.stringify failures
+  try {
+    body = JSON.stringify({
+      session_id: sessionId,
+      queue_message: message,
+      allowed_tools: "all",
+      cwd_session: cwdSession,
+    });
+  } catch (serializeError) {
+    console.error("Failed to serialize request body:", serializeError);
+    return { status: "invalid_payload" };
+  }
+
+  // Step 2: Validate the serialized body can be parsed back (round-trip check)
+  try {
+    JSON.parse(body);
+  } catch (parseError) {
+    console.error("Serialized body failed round-trip validation:", parseError);
+    return { status: "invalid_payload" };
+  }
+
+  // Step 3: Send the request
   try {
     const response = await fetch(`${API_BASE}/llm/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: sessionId,
-        queue_message: message,
-        allowed_tools: "all",
-        cwd_session: cwdSession,
-      }),
+      body,
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.json();
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      console.error(`HTTP ${response.status}: ${errorText}`);
+
+      // Distinguish backend JSON rejection from other HTTP errors
+      if (response.status === 400) return { status: "bad_request" };
+      if (response.status === 422) return { status: "unprocessable_entity" };
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    // Step 4: Safely parse response JSON
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      console.error("Response is not valid JSON:", text);
+      return { status: "invalid_response" };
+    }
   } catch (error) {
-    // Return offline status when LLM backend unavailable
+    console.error("Request failed:", error);
     return { status: "offline" };
   }
 }
@@ -321,7 +360,7 @@ export interface SseEvent {
     | "connected"
     | "full";
   index?: number;
-  total_tokens?: number
+  total_tokens?: number;
 }
 
 // Create SSE connection for real-time updates
@@ -411,11 +450,15 @@ export function createSseConnection(
 
 // List all chat sessions with pagination
 export async function getChats(
-  sortBy: 'created_at' | 'session_name' | 'agent' = 'created_at',
-  direction: 'asc' | 'desc' = 'desc',
+  sortBy: "created_at" | "session_name" | "agent" = "created_at",
+  direction: "asc" | "desc" = "desc",
   limit: number = 10,
-  cursor?: string
-): Promise<{ sessions: Chat[]; has_more: boolean; next_cursor: string | null }> {
+  cursor?: string,
+): Promise<{
+  sessions: Chat[];
+  has_more: boolean;
+  next_cursor: string | null;
+}> {
   try {
     const params = new URLSearchParams({
       sort_by: sortBy,
@@ -500,7 +543,9 @@ export async function deleteChat(id: string): Promise<{ success: boolean }> {
 }
 
 // Compact chat session history
-export async function compactSession(sessionId: string): Promise<{ success: boolean; message?: string }> {
+export async function compactSession(
+  sessionId: string,
+): Promise<{ success: boolean; message?: string }> {
   try {
     const response = await fetch(`${API_BASE}/session/${sessionId}/compact`, {
       method: "POST",
@@ -527,7 +572,11 @@ export interface Worker {
   queue_count: number;
 }
 
-export async function getWorkers(status?: string, limit = 50, sessionId?: string): Promise<{ workers: Worker[]; count: number }> {
+export async function getWorkers(
+  status?: string,
+  limit = 50,
+  sessionId?: string,
+): Promise<{ workers: Worker[]; count: number }> {
   const params = new URLSearchParams({ limit: limit.toString() });
   if (status) params.set("status", status);
   if (sessionId) params.set("session_id", sessionId);
@@ -555,7 +604,7 @@ export async function createWorkspaceItem(
 export async function deleteWorkspaceItem(
   workspaceId: string,
   itemId: string,
-): Promise<{success: boolean}> {
+): Promise<{ success: boolean }> {
   const response = await fetch(
     `${API_BASE}/workspaces/${workspaceId}/items/${itemId}`,
     {
@@ -585,21 +634,28 @@ export interface SkillDeleteResponse {
   error_message: string | null;
 }
 
-export async function getSkills(): Promise<{ global_skills: Skill[]; local_skills: Skill[] }> {
+export async function getSkills(): Promise<{
+  global_skills: Skill[];
+  local_skills: Skill[];
+}> {
   const response = await fetch(`${API_BASE}/skills`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
-export async function getSkillDetail(name: string): Promise<{ skill: SkillDetail | null; error_message: string | null }> {
-  const response = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`);
+export async function getSkillDetail(
+  name: string,
+): Promise<{ skill: SkillDetail | null; error_message: string | null }> {
+  const response = await fetch(
+    `${API_BASE}/skills/${encodeURIComponent(name)}`,
+  );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
 export async function deleteSkill(
   name: string,
-  options: { is_global?: boolean; cwd?: string }
+  options: { is_global?: boolean; cwd?: string },
 ): Promise<SkillDeleteResponse> {
   const params = new URLSearchParams({ name });
   if (options.is_global !== undefined) {
@@ -640,13 +696,16 @@ export async function getGitStatus(cwd: string): Promise<GitStatus> {
       has_changes: false,
       is_clean: true,
       current: "",
-      status: "error"
+      status: "error",
     };
   }
 }
 
 // File listing for autocomplete
-export async function listFiles(cwd: string, dirPath?: string): Promise<string[]> {
+export async function listFiles(
+  cwd: string,
+  dirPath?: string,
+): Promise<string[]> {
   try {
     const targetPath = dirPath || cwd;
     const response = await fetch(
@@ -659,8 +718,12 @@ export async function listFiles(cwd: string, dirPath?: string): Promise<string[]
     return entries
       .map((e: FolderEntry) => e.name)
       .sort((a: string, b: string) => {
-        const aIsDir = entries.find((e: FolderEntry) => e.name === a)?.is_directory;
-        const bIsDir = entries.find((e: FolderEntry) => e.name === b)?.is_directory;
+        const aIsDir = entries.find(
+          (e: FolderEntry) => e.name === a,
+        )?.is_directory;
+        const bIsDir = entries.find(
+          (e: FolderEntry) => e.name === b,
+        )?.is_directory;
         if (aIsDir && !bIsDir) return -1;
         if (!aIsDir && bIsDir) return 1;
         return a.localeCompare(b);
@@ -673,7 +736,7 @@ export async function listFiles(cwd: string, dirPath?: string): Promise<string[]
 
 // Session event types for SSE subscription
 export interface SessionEvent {
-  action: 'created' | 'updated' | 'deleted';
+  action: "created" | "updated" | "deleted";
   id: string;
   name: string;
   status: string;
@@ -688,8 +751,10 @@ export function createSessionsSseConnection(
   onError?: (error: Event) => void,
   onConnected?: () => void,
 ): EventSource {
-  console.log("[createSessionsSseConnection] Creating SSE connection for session events");
-  const eventSource = new EventSource(`${API_BASE}/session/stream`);
+  console.log(
+    "[createSessionsSseConnection] Creating SSE connection for session events",
+  );
+  const eventSource = new EventSource(`${API_BASE}/sessions/stream`);
 
   // Buffer to accumulate multi-line JSON
   let jsonBuffer = "";
@@ -732,7 +797,10 @@ export function createSessionsSseConnection(
           jsonBuffer = jsonBuffer.slice(jsonEnd + 1);
         } catch (e) {
           // Not complete yet, keep buffering
-          console.log("[SessionsSSE] Buffering, not complete JSON yet, buffer length:", jsonBuffer.length);
+          console.log(
+            "[SessionsSSE] Buffering, not complete JSON yet, buffer length:",
+            jsonBuffer.length,
+          );
         }
       }
     } catch (e) {
