@@ -197,6 +197,10 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
 /// Send session events to all subscribed clients via SSE
 /// Broadcasts session list updates (created, updated, deleted, list actions)
 pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSessions) !void {
+    if (std.mem.indexOf(u8, input.id, "subagent")) |_| {
+        return;
+    }
+
     const di = try tree1_mod.getSingleton();
     const event_bus = di.event_bus;
 

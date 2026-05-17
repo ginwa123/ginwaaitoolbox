@@ -303,7 +303,7 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         const name_end = std.mem.indexOf(u8, output[name_begin..], "</skill_name>") orelse {
             return ToolExecResult{ .output = output };
         };
-        const skill_name = output[name_begin..name_begin + name_end];
+        const skill_name = output[name_begin .. name_begin + name_end];
 
         // Parse content from XML output
         const content_start = std.mem.indexOf(u8, output, "<content>") orelse {
@@ -313,7 +313,7 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         const content_end = std.mem.indexOf(u8, output[content_begin..], "</content>") orelse {
             return ToolExecResult{ .output = output };
         };
-        const skill_content = output[content_begin..content_begin + content_end];
+        const skill_content = output[content_begin .. content_begin + content_end];
 
         // Return with skill_save info so handle_tool can auto-save to session_skills
         return ToolExecResult{
@@ -612,208 +612,189 @@ const ThreadResult = struct {
 
 // spawn_sub_agent implementation - uses workflow.zig logic
 pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    _ = ctx;
-    _ = tc;
-    return error.NotImplemented;
-    // ctx.logger.debugFmt("execSpawnSubAgent called, arguments len={}", .{tc.function.arguments.len});
-    // ctx.logger.debugFmt("arguments: '{s}'", .{tc.function.arguments[0..@min(tc.function.arguments.len, 200)]});
-    // // Parse sub-agents from tool call arguments
-    // const parsed = spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20) catch |err| {
-    //     ctx.logger.errFmt("parse_sub_agents failed: {}", .{err});
-    //     return error.InvalidArguments;
-    // };
-    // defer parsed.deinit(ctx.allocator);
-    //
-    // // Build results array for sub-agent outputs
-    // var results = std.ArrayList(u8).empty;
-    // defer results.deinit(ctx.allocator);
-    // // Use Writer.Allocating instead of Writer.fromArrayList to properly handle buffer growth
-    // var aw = std.Io.Writer.Allocating.fromArrayList(ctx.allocator, &results);
-    // const w = &aw.writer; // *std.Io.Writer — use this for all writes
-    //
-    // // Run each sub-agent in its own thread
-    // var threads = std.ArrayList(std.Thread).empty;
-    // defer threads.deinit(ctx.allocator);
-    //
-    // const sub_agent_count = parsed.sub_agents.len;
-    // ctx.logger.debugFmt("Parsed {} sub-agents", .{sub_agent_count});
-    // for (parsed.sub_agents, 0..) |sa, i| {
-    //     ctx.logger.debugFmt("Sub-agent {}: name='{s}', instruction_len={}", .{ i, sa.name, sa.instruction.len });
-    // }
-    //
-    // // Shared result storage with atomics for thread synchronization
-    // const shared_results = try ctx.allocator.create(SharedResults);
-    // shared_results.* = .{
-    //     .results = try ctx.allocator.alloc(ThreadResult, sub_agent_count),
-    //     .completed_count = std.atomic.Value(usize).init(0),
-    //     .mutex = std.Io.Mutex.init,
-    // };
-    // // Initialize all results to failed by default with agent names
-    // for (shared_results.results, 0..) |*r, i| {
-    //     r.* = .{ .success = false, .name = parsed.sub_agents[i].name, .response = null, .error_message = null };
-    // }
-    // defer {
-    //     ctx.allocator.free(shared_results.results);
-    //     ctx.allocator.destroy(shared_results);
-    // }
-    //
-    // for (parsed.sub_agents, 0..) |sub_agent, idx| {
-    //     std.Io.sleep(ctx.io, .{ .nanoseconds = 500_000_000 }, .real) catch {};
-    //     ctx.logger.debugFmt("Spawning thread for agent '{s}' (index {})", .{ sub_agent.name, idx });
-    //     // Allocate thread args on the heap to avoid pointer stability issues
-    //     // This ensures the data remains valid even if stack frames are deallocated
-    //     const args = try ctx.allocator.create(SubAgentThreadArgs);
-    //     args.* = .{
-    //         .allocator = ctx.allocator,
-    //         .io = ctx.io,
-    //         .sqlite_db = ctx.db,
-    //         .logger = ctx.logger,
-    //         .parent_sess_id = ctx.session_id,
-    //         .agent_name = sub_agent.name,
-    //         .instruction = sub_agent.instruction,
-    //         .tools = sub_agent.tools,
-    //         .llm_config = ctx.config,
-    //         .cwd = ctx.cwd,
-    //         .is_sub_agent = true,
-    //         .thread_idx = idx,
-    //         .shared_results = shared_results,
-    //         .environment = ctx.environment,
-    //         .active_loops = ctx.active_loops,
-    //     };
-    //
-    //     ctx.logger.debugFmt("About to spawn thread for '{s}'", .{ sub_agent.name });
-    //     const thread = try std.Thread.spawn(.{}, struct {
-    //         fn run(args_ptr: *SubAgentThreadArgs) void {
-    //             args_ptr.logger.debugFmt("Thread started for '{s}'", .{ args_ptr.agent_name });
-    //             // Create a dedicated arena allocator for this sub-agent to avoid memory contention
-    //             // when multiple sub-agents run concurrently (e.g., 5 parallel agents all fetching MCP tools)
-    //             var thread_arena_alloc = std.heap.ArenaAllocator.init(args_ptr.allocator);
-    //             defer thread_arena_alloc.deinit();
-    //             const sub_agent_allocator = thread_arena_alloc.allocator();
-    //
-    //             defer {
-    //                 // Clean up the heap-allocated args (allocated from parent's heap, not arena)
-    //                 args_ptr.allocator.destroy(args_ptr);
-    //             }
-    //
-    //             // Mark this slot as in-progress (result defaults to failed)
-    //             // Generate unique session ID for this sub-agent
-    //             const sess_id = std.fmt.allocPrint(sub_agent_allocator, "subagent_{}_{s}", .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, args_ptr.agent_name }) catch {
-    //                 const err_msg = args_ptr.allocator.dupe(u8, "Failed to create session_id") catch "Failed to allocate";
-    //                 args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
-    //                 args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{ args_ptr.agent_name });
-    //                 return;
-    //             };
-    //             defer sub_agent_allocator.free(sess_id);
-    //             args_ptr.logger.debugFmt("Session ID created: '{s}'", .{ sess_id });
-    //
-    //             args_ptr.logger.debugFmt("About to init workflow for '{s}'", .{ args_ptr.agent_name });
-    //             var workflow = ai_workflow.TUIWorkflow.init(args_ptr.io, args_ptr.sqlite_db, args_ptr.llm_config, args_ptr.logger, args_ptr.environment, args_ptr.active_loops);
-    //             // Derive is_sub_agent from session_id - no need to pass it explicitly
-    //             const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
-    //             args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{ args_ptr.agent_name });
-    //             workflow.runAgenticMultiStep(.{
-    //                 .parent_allocator = sub_agent_allocator,
-    //                 .parent_session_id = args_ptr.parent_sess_id,
-    //                 .session_id = sess_id,
-    //                 .message = args_ptr.instruction,
-    //                 .cwd = args_ptr.cwd,
-    //                 .body = "",
-    //                 .allowed_tools = if (args_ptr.tools) |tools| blk: {
-    //                     var tools_str = std.ArrayList(u8).empty;
-    //                     for (tools, 0..) |tool, i| {
-    //                         if (i > 0) tools_str.append(args_ptr.allocator, ',') catch break;
-    //                         tools_str.appendSlice(args_ptr.allocator, tool) catch break;
-    //                     }
-    //                     break :blk tools_str.items;
-    //                 } else "",
-    //                 .is_sub_agent = is_sub_agent,
-    //             }) catch |err| {
-    //                 const err_msg = args_ptr.allocator.dupe(u8, "Workflow error") catch "Failed to allocate";
-    //                 args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
-    //                 args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) });
-    //                 return;
-    //             };
-    //
-    //             args_ptr.logger.debugFmt("workflow.runAgenticMultiStep completed for '{s}', fetching message", .{ args_ptr.agent_name });
-    //             // Get the agent's response from the database
-    //             // Use c_allocator to avoid arena aliasing issues
-    //             const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
-    //                 const err_msg = args_ptr.allocator.dupe(u8, "getLatestMessage error") catch return;
-    //                 args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
-    //                 args_ptr.logger.errFmt("getLatestMessage error for '{s}': {s}", .{ sess_id, @errorName(err) });
-    //                 return;
-    //             };
-    //
-    //             args_ptr.logger.debugFmt("Latest message result: {any}", .{latest_msg_result});
-    //             if (latest_msg_result) |msg| {
-    //                 var mutable_msg = msg;
-    //                 // Check response BEFORE deinit - deinit frees all allocated strings!
-    //                 if (mutable_msg.response_content.len > 0) {
-    //                     const response_copy = args_ptr.allocator.dupe(u8, mutable_msg.response_content) catch {
-    //                         const err_msg = args_ptr.allocator.dupe(u8, "Failed to copy response") catch "allocation failed";
-    //                         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
-    //                         mutable_msg.deinit(args_ptr.allocator);
-    //                         return;
-    //                     };
-    //                     args_ptr.shared_results.results[args_ptr.thread_idx].response = response_copy;
-    //                     // Only mark success if we actually got a response
-    //                     args_ptr.shared_results.results[args_ptr.thread_idx].success = true;
-    //                 } else {
-    //                     args_ptr.shared_results.results[args_ptr.thread_idx].error_message = "Empty response content";
-    //                 }
-    //                 mutable_msg.deinit(args_ptr.allocator);
-    //             } else {
-    //                 // No message found - workflow may have failed or not saved any messages
-    //                 args_ptr.shared_results.results[args_ptr.thread_idx].error_message = "No message found in database";
-    //             }
-    //
-    //             _ = args_ptr.shared_results.completed_count.fetchAdd(1, .monotonic);
-    //         }
-    //     }.run, .{args});
-    //
-    //     try threads.append(ctx.allocator, thread);
-    // }
-    //
-    // // Wait for all threads to complete
-    // ctx.logger.debugFmt("Waiting for {} threads to complete...", .{threads.items.len});
-    // for (threads.items) |thread| {
-    //     thread.join();
-    // }
-    // ctx.logger.debugFmt("All threads completed", .{});
-    //
-    // // Collect results from shared storage
-    // var success_count: usize = 0;
-    // for (shared_results.results) |result| {
-    //     if (result.success) success_count += 1;
-    // }
-    //
-    // // Format results based on thread results - per-agent summary with XML response
-    // try w.print("<results>\n", .{});
-    // for (shared_results.results) |result| {
-    //     const success = if (result.success) "true" else "false";
-    //     try w.print("<agent name=\"{s}\" success=\"{s}\">\n", .{ result.name, success });
-    //     if (result.success) {
-    //         if (result.response) |resp| {
-    //             try w.print("<response>{s}</response>\n", .{resp});
-    //         } else {
-    //             try w.print("<response></response>\n", .{});
-    //         }
-    //     } else if (result.error_message) |err| {
-    //         try w.print("<error>{s}</error>\n", .{err});
-    //     } else {
-    //         try w.print("<error>unknown error</error>\n", .{});
-    //     }
-    //     try w.print("</agent>\n", .{});
-    // }
-    // try w.print("<summary succeeded=\"{}\" failed=\"{}\" />\n", .{ success_count, sub_agent_count - success_count });
-    // try w.print("</results>\n", .{});
-    //
-    // // Transfer ownership from Allocating writer to results ArrayList before toOwnedSlice
-    // results = aw.toArrayList();
-    // return ToolExecResult{ .output = try results.toOwnedSlice(ctx.allocator) };
+    ctx.logger.debugFmt("execSpawnSubAgent called, arguments len={}", .{tc.function.arguments.len});
+    ctx.logger.debugFmt("arguments: '{s}'", .{tc.function.arguments[0..@min(tc.function.arguments.len, 200)]});
+
+    const parsed = spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20) catch |err| {
+        ctx.logger.errFmt("parse_sub_agents failed: {}", .{err});
+        return error.InvalidArguments;
+    };
+    defer parsed.deinit(ctx.allocator);
+
+    var results = std.ArrayList(u8).empty;
+    defer results.deinit(ctx.allocator);
+    var aw = std.Io.Writer.Allocating.fromArrayList(ctx.allocator, &results);
+    const w = &aw.writer;
+
+    const sub_agent_count = parsed.sub_agents.len;
+    ctx.logger.debugFmt("Parsed {} sub-agents", .{sub_agent_count});
+    for (parsed.sub_agents, 0..) |sa, i| {
+        ctx.logger.debugFmt("Sub-agent {}: name='{s}', instruction_len={}", .{ i, sa.name, sa.instruction.len });
+    }
+
+    const shared_results = try ctx.allocator.create(SharedResults);
+    shared_results.* = .{
+        .results = try ctx.allocator.alloc(ThreadResult, sub_agent_count),
+        .completed_count = std.atomic.Value(usize).init(0),
+        .mutex = std.Io.Mutex.init,
+    };
+    for (shared_results.results, 0..) |*r, i| {
+        r.* = .{ .success = false, .name = parsed.sub_agents[i].name, .response = null, .error_message = null };
+    }
+    defer {
+        ctx.allocator.free(shared_results.results);
+        ctx.allocator.destroy(shared_results);
+    }
+
+    // Launch all sub-agents concurrently using std.Io.Group.
+    // We need `concurrent` (not `async`) because agents must run in parallel —
+    // using `async` on a single-threaded Io can deadlock.
+    var group: std.Io.Group = .init;
+
+    for (parsed.sub_agents, 0..) |sub_agent, idx| {
+        ctx.logger.debugFmt("Launching concurrent task for agent '{s}' (index {})", .{ sub_agent.name, idx });
+
+        const args = try ctx.allocator.create(SubAgentThreadArgs);
+        args.* = .{
+            .allocator = ctx.allocator,
+            .io = ctx.io,
+            .sqlite_db = ctx.db,
+            .logger = ctx.logger,
+            .parent_sess_id = ctx.session_id,
+            .agent_name = sub_agent.name,
+            .instruction = sub_agent.instruction,
+            .tools = sub_agent.tools,
+            .llm_config = ctx.config,
+            .cwd = ctx.cwd,
+            .is_sub_agent = true,
+            .thread_idx = idx,
+            .shared_results = shared_results,
+            .environment = ctx.environment,
+            .active_loops = ctx.active_loops,
+        };
+
+        // group.concurrent returns error.ConcurrencyUnavailable if the Io
+        // backend cannot run tasks in parallel (e.g. a bare blocking Io).
+        try group.concurrent(ctx.io, runSubAgent, .{args});
+    }
+
+    // Wait for every sub-agent to finish (replaces the thread.join loop).
+    ctx.logger.debugFmt("Awaiting {} concurrent tasks...", .{sub_agent_count});
+    try group.await(ctx.io);
+    ctx.logger.debugFmt("All concurrent tasks completed", .{});
+
+    var success_count: usize = 0;
+    for (shared_results.results) |result| {
+        if (result.success) success_count += 1;
+    }
+
+    try w.print("<results>\n", .{});
+    for (shared_results.results) |result| {
+        const success = if (result.success) "true" else "false";
+        try w.print("<agent name=\"{s}\" success=\"{s}\">\n", .{ result.name, success });
+        if (result.success) {
+            if (result.response) |resp| {
+                try w.print("<response>{s}</response>\n", .{resp});
+            } else {
+                try w.print("<response></response>\n", .{});
+            }
+        } else if (result.error_message) |err| {
+            try w.print("<error>{s}</error>\n", .{err});
+        } else {
+            try w.print("<error>unknown error</error>\n", .{});
+        }
+        try w.print("</agent>\n", .{});
+    }
+    try w.print("<summary succeeded=\"{}\" failed=\"{}\" />\n", .{ success_count, sub_agent_count - success_count });
+    try w.print("</results>\n", .{});
+
+    results = aw.toArrayList();
+    return ToolExecResult{ .output = try results.toOwnedSlice(ctx.allocator) };
 }
 
+// Top-level function required by group.concurrent — takes a single *SubAgentThreadArgs.
+// The function signature must NOT return an error union if you want group.await
+// to not propagate individual task errors; handle them internally instead and
+// write results into shared_results, exactly as the original thread fn did.
+fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
+    args_ptr.logger.debugFmt("Concurrent task started for '{s}'", .{args_ptr.agent_name});
+
+    var thread_arena_alloc = std.heap.ArenaAllocator.init(args_ptr.allocator);
+    defer thread_arena_alloc.deinit();
+    const sub_agent_allocator = thread_arena_alloc.allocator();
+
+    defer args_ptr.allocator.destroy(args_ptr);
+
+    const sess_id = std.fmt.allocPrint(
+        sub_agent_allocator,
+        "subagent_{}_{s}",
+        .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, args_ptr.agent_name },
+    ) catch {
+        const err_msg = args_ptr.allocator.dupe(u8, "Failed to create session_id") catch "Failed to allocate";
+        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+        args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{args_ptr.agent_name});
+        return;
+    };
+    defer sub_agent_allocator.free(sess_id);
+    args_ptr.logger.debugFmt("Session ID created: '{s}'", .{sess_id});
+
+    const di = nalar_mod.getSingleton() catch unreachable;
+
+    const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
+    args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{args_ptr.agent_name});
+
+    ai_workflow.runAgenticMultiStepnew(di, .{
+        .parent_session_id = args_ptr.parent_sess_id,
+        .session_id = sess_id,
+        .message = args_ptr.instruction,
+        .cwd = args_ptr.cwd,
+        .body = "",
+        .allowed_tools = if (args_ptr.tools) |tools| blk: {
+            var tools_str = std.ArrayList(u8).empty;
+            for (tools, 0..) |tool, i| {
+                if (i > 0) tools_str.append(args_ptr.allocator, ',') catch break;
+                tools_str.appendSlice(args_ptr.allocator, tool) catch break;
+            }
+            break :blk tools_str.items;
+        } else "",
+        .is_sub_agent = is_sub_agent,
+    }) catch |err| {
+        const err_msg = args_ptr.allocator.dupe(u8, "Workflow error") catch "Failed to allocate";
+        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+        args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) });
+        return;
+    };
+
+    args_ptr.logger.debugFmt("workflow.runAgenticMultiStep completed for '{s}', fetching message", .{args_ptr.agent_name});
+
+    const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
+        const err_msg = args_ptr.allocator.dupe(u8, "getLatestMessage error") catch return;
+        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+        args_ptr.logger.errFmt("getLatestMessage error for '{s}': {s}", .{ sess_id, @errorName(err) });
+        return;
+    };
+
+    if (latest_msg_result) |msg| {
+        var mutable_msg = msg;
+        if (mutable_msg.response_content.len > 0) {
+            const response_copy = args_ptr.allocator.dupe(u8, mutable_msg.response_content) catch {
+                const err_msg = args_ptr.allocator.dupe(u8, "Failed to copy response") catch "allocation failed";
+                args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+                mutable_msg.deinit(args_ptr.allocator);
+                return;
+            };
+            args_ptr.shared_results.results[args_ptr.thread_idx].response = response_copy;
+            args_ptr.shared_results.results[args_ptr.thread_idx].success = true;
+        } else {
+            args_ptr.shared_results.results[args_ptr.thread_idx].error_message = "Empty response content";
+        }
+        mutable_msg.deinit(args_ptr.allocator);
+    } else {
+        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = "No message found in database";
+    }
+
+    _ = args_ptr.shared_results.completed_count.fetchAdd(1, .monotonic);
+}
 // Placeholder LSP exec functions
 pub fn execLspReferences(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = ctx;

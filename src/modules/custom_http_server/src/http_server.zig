@@ -137,7 +137,6 @@ pub const GinwaServer = struct {
                             _ = linux.close(fd);
                             return;
                         };
-                        std.debug.print("HTTP_SERVER: req.method={s}, path={s}, body.len={}\n", .{ req.method, req.path, req.body.len });
                         defer req.headers.deinit();
 
                         const http_ctx = http_parser.HttpContext{ .allocator = allocator, .io = gs.io };
@@ -167,7 +166,6 @@ pub const GinwaServer = struct {
                                     };
                                     var sse_ctx = sse.ctx;
                                     sse_ctx.client_id = client_id;
-                                    std.debug.print("HTTP_SERVER: client_id {s}\n", .{client_id});
                                     const res = http_parser.HttpResponse.init(200, "OK", allocator);
                                     _ = sse.handler(sse_ctx, req, res) catch |err| {
                                         if (err != error.WouldBlock) {
@@ -328,15 +326,11 @@ pub const RequestBuffer = struct {
     /// Read the full HTTP request (headers + body) from a socket
     /// Returns the complete request data or an error
     pub fn readFullRequest(self: *RequestBuffer, fd: i32) ![]u8 {
-        std.debug.print("DEBUG: Phase 1 - reading headers\n", .{});
-
         // Phase 1: read until we have complete headers
         while (std.mem.indexOf(u8, self.buf.items, "\r\n\r\n") == null) {
-            std.debug.print("DEBUG: No complete headers yet, buf.len={}, reading more...\n", .{self.buf.items.len});
             const n = linux.read(fd, @ptrCast(&self.tmp), self.tmp.len);
             if (n < 0) return error.RecvFailed;
             if (n == 0) break;
-            std.debug.print("DEBUG: Read {} bytes, buf.total now {}\n", .{ n, self.buf.items.len + @as(usize, @intCast(n)) });
             try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
         }
 
@@ -356,21 +350,17 @@ pub const RequestBuffer = struct {
                     // Find the colon, skip it and any whitespace
                     const colon_pos = std.mem.indexOf(u8, line, ":") orelse continue;
                     const value = std.mem.trim(u8, line[colon_pos + 1 ..], " \t");
-                    std.debug.print("DEBUG: Parsed Content-Length from buffer: '{s}'\n", .{value});
                     break :blk std.fmt.parseInt(usize, value, 10) catch {
-                        std.debug.print("DEBUG: Failed to parse Content-Length\n", .{});
                         return error.BadRequest;
                     };
                 }
             }
             // No Content-Length header found (e.g. GET request)
-            std.debug.print("DEBUG: Found \\r\\n\\r\\n at {}, but no Content-Length\n", .{header_end_idx});
             return self.buf.toOwnedSlice(self.allocator);
         };
 
         // Phase 3: read body
         const target_len = header_end_idx + 4 + content_length;
-        std.debug.print("DEBUG: target_len={}, have={}\n", .{ target_len, self.buf.items.len });
 
         while (self.buf.items.len < target_len) {
             const remaining_bytes = target_len - self.buf.items.len;
@@ -379,10 +369,8 @@ pub const RequestBuffer = struct {
             if (n < 0) return error.RecvFailed;
             if (n == 0) break;
             try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
-            std.debug.print("DEBUG: Read body chunk {} bytes, total {}/{}\n", .{ n, self.buf.items.len, target_len });
         }
 
-        std.debug.print("DEBUG: readFullRequest complete: {} bytes\n", .{self.buf.items.len});
         return self.buf.toOwnedSlice(self.allocator);
     }
 };

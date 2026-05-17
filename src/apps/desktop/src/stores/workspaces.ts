@@ -312,7 +312,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     try {
       const newWorkspace = await api.createWorkspace(name, icon)
       const expandedWorkspaces = loadExpandedWorkspaces()
-      workspaces.value.push({
+      workspaces.value.unshift({
         ...newWorkspace,
         expanded: expandedWorkspaces.has(newWorkspace.id),
         items: newWorkspace.items || [],
@@ -322,7 +322,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Fallback to local creation if API fails
       const id = `workspace-${Date.now()}`
       const expandedWorkspaces = loadExpandedWorkspaces()
-      workspaces.value.push({
+      workspaces.value.unshift({
         id,
         name,
         icon,
@@ -388,13 +388,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     try {
       const newTask = await api.createTask(workspaceId, itemId, name, description)
-      item.tasks.push(newTask)
+      item.tasks.unshift(newTask)
       return newTask.id
     } catch (err) {
       console.error('Failed to create task:', err)
       // Fallback to local creation if API fails
       const taskId = `task-${Date.now()}`
-      item.tasks.push({
+      item.tasks.unshift({
         id: taskId,
         name,
         description,
