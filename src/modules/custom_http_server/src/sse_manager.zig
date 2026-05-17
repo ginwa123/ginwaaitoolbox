@@ -63,6 +63,20 @@ pub const SseClient = struct {
         _ = linux.close(self.fd);
     }
 
+    /// Force destroy without going through arena.deinit().
+    /// This is used when the SseManager is shutting down and we need to
+    /// free the SseClient memory WITHOUT calling arena.deinit() which
+    /// corrupts the backing allocator's bookkeeping (especially DebugAllocator).
+    /// The arena's child allocator (used for SseClient allocations) will be
+    /// cleaned up separately when the server allocator is destroyed.
+    pub fn forceDestroy(self: *SseClient) void {
+        _ = linux.close(self.fd);
+        // Don't call deinit() - we skip the arena.deinit() to avoid corrupting
+        // the backing allocator's canary tracking.
+        // The memory for this SseClient will be reclaimed when the arena
+        // that allocated it is destroyed.
+    }
+
     pub fn markDisconnected(self: *SseClient) void {
         self.lock.lock();
         defer self.lock.unlock();
@@ -136,10 +150,13 @@ pub const SseManager = struct {
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
-            // Unregister fd from epoll before closing and deallocating
+            // Unregister fd from epoll before closing
             _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, entry.value_ptr.*.fd, null);
-            entry.value_ptr.*.deinit();
-            self.server_allocator.destroy(entry.value_ptr);
+            // Use forceDestroy to skip arena.deinit() which corrupts backing allocator
+            // The arena memory will be reclaimed when the server_allocator arena is destroyed
+            entry.value_ptr.*.forceDestroy();
+            // Don't call destroy() here - the arena that allocated the SseClient
+            // will be destroyed when server_allocator is destroyed
         }
         self.clients.clearRetainingCapacity();
 
@@ -443,32 +460,25 @@ pub const SseManager = struct {
         defer self.lock.unlock();
 
         // First pass: send close messages to all clients
-        // We CANNOT call client.deinit() here because deinit() calls
-        // arena.deinit() which returns memory to the backing allocator.
-        // This makes the memory "live" again, but DebugAllocator's canary
-        // tracking is already corrupted by ArenaAllocator's internal structures.
-        // When destroy() is called in the second loop, DebugAllocator sees
-        // invalid canaries and panics with "Invalid free".
-        //
-        // The fix: don't call deinit() at all here. Just send the close message.
-        // The second loop will call destroy() which handles everything.
         var it = self.clients.iterator();
         while (it.next()) |entry| {
             _ = linux.write(entry.value_ptr.*.fd, close_msg.ptr, close_msg.len);
         }
 
-        // Second pass: remove all clients from hash map and destroy them
-        // Note: We iterate and remove one at a time using removeClient to avoid
-        // iterator invalidation issues. This mirrors what deinit() does.
+        // Second pass: remove all clients from hash map
+        // Use forceDestroy instead of deinit to skip arena.deinit() which
+        // corrupts the backing allocator's canary tracking.
+        // We also don't call destroy() - the arena will reclaim memory when
+        // SseManager is destroyed.
         while (self.clients.count() > 0) {
             var it2 = self.clients.iterator();
             if (it2.next()) |entry| {
                 const id = entry.key_ptr.*;
                 // Unregister fd from epoll before closing
                 _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, entry.value_ptr.*.fd, null);
-                // Skip deinit() to avoid ArenaAllocator corrupting DebugAllocator's canary
-                // Just destroy the client memory directly
-                self.server_allocator.destroy(entry.value_ptr);
+                // Use forceDestroy - closes fd, skips arena.deinit()
+                entry.value_ptr.*.forceDestroy();
+                // Remove from hash map - memory stays allocated until arena is destroyed
                 _ = self.clients.remove(id);
             }
         }

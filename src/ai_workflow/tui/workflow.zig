@@ -228,7 +228,11 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
         logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
         if (agent.LLMModels.is_do_compact(total_tokens, agent.LLMModels.get_model_token_count(config.model))) {
-            if (callCompactAgentNew(messagesLists.items, allocator, config.api_key, config.model, config.base_url, copy_cwd, logger, io)) |compacted_xml| {
+            const copy_messages = try allocator.dupe(agent.AgentMessage, messagesLists.items);
+            defer allocator.free(copy_messages);
+            var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
+            defer copy_list.deinit(allocator);
+            if (callCompactAgentNew(&copy_list, allocator, config.api_key, config.model, config.base_url, copy_cwd, logger, io)) |compacted_xml| {
                 try compactMessageInMemoryNew(allocator, &messagesLists, compacted_xml, copy_session_id, config.model, copy_cwd, db, io, logger);
             }
         }
@@ -509,8 +513,8 @@ fn callDynamicAgentNew(
 /// Call CompactionAgent to compress conversation history.
 /// Returns compacted context or null on failure.
 pub fn callCompactAgentNew(
-    messages: []agent.AgentMessage,
-    arena: std.mem.Allocator,
+    messages: *std.ArrayList(agent.AgentMessage),
+    allocator: std.mem.Allocator,
     api_key: []const u8,
     model: []const u8,
     base_url: []const u8,
@@ -520,43 +524,43 @@ pub fn callCompactAgentNew(
 ) ?[]const u8 {
     _ = cwd;
     logger.infoFmt("[COMPACTION] Starting callCompactAgent", .{});
+    logger.infoFmt("[COMPACTION] Building compaction messages...", .{});
 
-    // Serialize messages for CompactionAgent
-    var history: std.ArrayList(u8) = .empty;
-    var aw = std.Io.Writer.Allocating.fromArrayList(arena, &history);
-    const w = &aw.writer; // *std.Io.Writer — use this for all writes
+    messages.items[0] = .{ .role = .system, .content = prompt.CompactionAgent };
 
-    w.writeAll("Conversation history to compact:\n\n") catch |err| {
-        logger.errFmt("[COMPACTION] Failed to write history header: {s}", .{@errorName(err)});
-        return null;
-    };
+    const last_idx = messages.items.len - 1;
 
-    for (messages[1..], 1..) |msg, i| {
-        _ = i;
-        if (msg.content) |c| w.writeAll(c) catch |err| {
-            logger.errFmt("[COMPACTION] Failed to write tool msg content: {s}", .{@errorName(err)});
+    // Collect content from all messages between first and last
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
+    for (messages.items[1..last_idx]) |msg| {
+        if (msg.content) |c| parts.append(allocator,c) catch |err| {
+            logger.errFmt("[COMPACTION] Failed to collect message content: {s}", .{@errorName(err)});
             return null;
         };
     }
 
-    // Transfer ownership back from the Allocating writer to the ArrayList
-    history = aw.toArrayList();
-    defer history.deinit(arena);
-
-    logger.infoFmt("[COMPACTION] Building compaction messages...", .{});
-    const msgs = arena.alloc(agent.AgentMessage, 2) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to alloc msgs: {s}", .{@errorName(err)});
+    const history_str = std.mem.join(allocator, "\n", parts.items) catch |err| {
+        logger.errFmt("[COMPACTION] Failed to join history: {s}", .{@errorName(err)});
         return null;
     };
-    msgs[0] = .{ .role = .system, .content = prompt.CompactionAgent };
+    defer allocator.free(history_str);
 
-    // Slice is arena-owned, safe to use directly
-    const history_content = history.items;
-    msgs[1] = .{ .role = .user, .content = history_content };
-    logger.infoFmt("[COMPACTION] History content: {} bytes", .{history_content.len});
+    const compact_message = std.fmt.allocPrint(allocator,
+        \\Please provide a concise summary of the following conversation history, in a single paragraph and what to do next.
+        \\
+        \\{s}
+        \\
+    , .{history_str}) catch |err| {
+        logger.errFmt("[COMPACTION] Failed to format compact message: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(compact_message);
+
+    messages.items[last_idx] = .{ .role = .user, .content = compact_message };
 
     logger.infoFmt("[COMPACTION] Initializing compaction agent...", .{});
-    var compaction_agent = agent.Agent.init(arena, io) catch |err| {
+    var compaction_agent = agent.Agent.init(allocator, io) catch |err| {
         logger.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)});
         return null;
     };
@@ -568,30 +572,29 @@ pub fn callCompactAgentNew(
     logger.infoFmt("[COMPACTION] Calling callStreaming...", .{});
     const response = compaction_agent.callStreaming(.{
         .tools = &.{},
-        .messages = msgs,
+        .messages = messages.items,
         .temperature = 0.0,
     }, null, noopStreamCallbackNew) catch |err| {
         logger.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)});
         return null;
     };
-    logger.infoFmt("[COMPACTION] callStreaming succeeded", .{});
     defer response.deinit();
+    logger.infoFmt("[COMPACTION] callStreaming succeeded", .{});
 
     logger.infoFmt("[COMPACTION] Response content null? {}", .{response.content == null});
     const content = response.content orelse {
         logger.errFmt("[COMPACTION] Response content is null", .{});
         return null;
     };
-
     if (content.len == 0) {
         logger.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{});
         return null;
     }
 
     logger.infoFmt("[COMPACTION] Got response: {} bytes", .{content.len});
-    logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{ messages.len, content.len });
+    logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{ messages.items.len, content.len });
 
-    const duplicated = arena.dupe(u8, content) catch |err| {
+    const duplicated = allocator.dupe(u8, content) catch |err| {
         logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
         return null;
     };
