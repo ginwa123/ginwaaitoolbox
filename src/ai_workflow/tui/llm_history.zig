@@ -1379,7 +1379,7 @@ pub fn markSessionIdle(
     try db.exec(allocator, sql, &.{session_id});
 }
 
-/// Queue a message for a session
+/// Queue a message for a session and emit SSE event to notify connected clients
 pub fn queueMessage(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -1390,6 +1390,35 @@ pub fn queueMessage(
     defer allocator.free(id);
     const sql = "INSERT INTO session_queue_messages (id, session_id, message) VALUES (?, ?, ?)";
     try db.exec(allocator, sql, &.{ id, session_id, message });
+
+    // Emit SSE event to notify connected clients
+    const di = tree1.getSingleton() catch return;
+    const event_bus = di.event_bus;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    const payload = .{
+        .action = "queued",
+        .id = id,
+        .message = message,
+        .session_id = session_id,
+    };
+    try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
+        .whitespace = .indent_4,
+    })});
+
+    const data_copy = try allocator.dupe(u8, buf.items);
+    const event = ai_mod.on_event_sent.SseEvent{
+        .session_id = session_id,
+        .data = data_copy,
+        .event_type = "queue_message",
+    };
+
+    const key = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{session_id});
+    defer allocator.free(key);
+
+    event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
 }
 
 /// Returns null if no messages queued
@@ -1422,7 +1451,7 @@ pub fn getQueueMessages(
     return messages;
 }
 
-/// Delete a specific queued message
+/// Delete a specific queued message and emit SSE event
 pub fn deleteQueuedMessage(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -1431,6 +1460,34 @@ pub fn deleteQueuedMessage(
 ) !void {
     const sql = "DELETE FROM session_queue_messages WHERE session_id = ? AND message = ? ";
     try db.exec(allocator, sql, &.{ session_id, message });
+
+    // Emit SSE event to notify connected clients
+    const di = tree1.getSingleton() catch return;
+    const event_bus = di.event_bus;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    const payload = .{
+        .action = "deleted",
+        .message = message,
+        .session_id = session_id,
+    };
+    try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
+        .whitespace = .indent_4,
+    })});
+
+    const data_copy = try allocator.dupe(u8, buf.items);
+    const event = ai_mod.on_event_sent.SseEvent{
+        .session_id = session_id,
+        .data = data_copy,
+        .event_type = "queue_message",
+    };
+
+    const key = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{session_id});
+    defer allocator.free(key);
+
+    event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
 }
 
 /// Check if session has queued messages

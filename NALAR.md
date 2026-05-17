@@ -361,6 +361,8 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | POST | `/api/session/:session_id/compact` | Trigger compaction |
 | DELETE | `/api/session/:session_id/queue/message?message=` | Delete queued message |
 | GET | `/api/session/:session_id/queue/messages` | Get queued messages |
+| GET | `/api/llm/session/:session_id/queue_messages` | Get queued messages (alias) |
+| GET | `/api/llm/session/:session_id/queue_messages/stream` | SSE real-time queue message events |
 | POST | `/api/llm/run` | Run LLM workflow |
 | GET | `/api/ping/:session_id` | Health check |
 | POST | `/api/worker` | Create/register a worker |

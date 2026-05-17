@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick, computed, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../api'
 import { getThinkingTags, isThinkingTags, stripThinkingTags } from '@/helpers';
@@ -7,6 +7,7 @@ import FileInput from './FileInput.vue'
 import FolderExplorer from './FolderExplorer.vue'
 import DiffView from './DiffView.vue'
 import ReadFile from './ReadFile.vue'
+import Search from './Search.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -161,30 +162,20 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
       }
 
       if (tool_name === 'search') {
-        // Parse search results format: <file path="..." total="..." count="...">...</file>
-        const mathQuery = content.match(/<query>(.*?)<\/query>/) || content.match(/"(.*?)"/);
-        const query = mathQuery ? mathQuery[1] : null;
-
-        // Check if we have file match format
+        // Return a simple summary - Search component handles full display
         const fileMatch = content.match(/<file path="([^"]+)" total="(\d+)" count="(\d+)">/);
         if (fileMatch) {
-          const filePath = fileMatch[1];
           const matchCount = fileMatch[3];
-          return `<span class="tool-inline">search → "${query || 'unknown'}"</span><br><span class="tool-inline-result">  ${filePath} (${matchCount})</span>`;
+          return `<span class="tool-inline">search → ${matchCount} matches</span>`;
         }
-        let warningQueryArr = content.match(/<warning>(.*?)<\/warning>/);
-        let warningQuery = ""
-        if (warningQueryArr != null && warningQueryArr?.length > 0) {
-          warningQuery = warningQueryArr[0];
-
-          return `<span class="tool-inline">search → "${warningQuery || 'unknown'}"</span>`;
-
+        
+        const warningMatch = content.match(/<warning>(.*?)<\/warning>/);
+        if (warningMatch) {
+          return `<span class="tool-inline">search → ${warningMatch[1]}</span>`;
         }
-
-        let errorQueryArr = content.match(/<error>(.*?)<\/error>/);
-        let errorQuery = errorQueryArr?.[0] ?? "unknown"
-        return `<span class="tool-inline">search → "${errorQuery || 'unknown'}"</span>`;
-
+        
+        const errorMatch = content.match(/<error>(.*?)<\/error>/);
+        return `<span class="tool-inline">search → ${errorMatch?.[1] || 'unknown'}</span>`;
       }
 
       if (tool_name === 'glob') {
@@ -240,14 +231,48 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
 // Session ID extracted from props on mount
 const sessionId = ref('')
 
+// Local LLM processing state - per session
+const isLLMProcessing = ref(false)
+let processingPollInterval: ReturnType<typeof setInterval> | null = null
+
+const checkLLMProcessing = async () => {
+  if (!sessionId.value) {
+    isLLMProcessing.value = false
+    return
+  }
+  try {
+    const { workers } = await api.getWorkers(undefined, 50, sessionId.value)
+    isLLMProcessing.value = workers.length > 0
+  } catch {
+    isLLMProcessing.value = false
+  }
+}
+
+const startProcessingPoll = () => {
+  checkLLMProcessing()
+  if (processingPollInterval) clearInterval(processingPollInterval)
+  processingPollInterval = setInterval(checkLLMProcessing, 2000)
+}
+
+const stopProcessingPoll = () => {
+  if (processingPollInterval) {
+    clearInterval(processingPollInterval)
+    processingPollInterval = null
+  }
+}
+
 // Pagination state
 const messageCursor = ref<string | null>(null)
 const PAGE_SIZE = 40
 
 // SSE connection
 const eventSource = ref<EventSource | null>(null)
+const queueEventSource = ref<EventSource | null>(null)
 const isStreaming = ref(false)
 const streamingContent = ref('')
+
+// Queue state
+const queuedMessages = ref<api.QueuedMessage[]>([])
 
 // Scroll refs
 const messagesContainer = ref<HTMLElement | null>(null)
@@ -263,9 +288,6 @@ const isAtBottom = ref(true)
 const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
-
-// Inject isLLMProcessing from App.vue
-const isLLMProcessing = inject<Ref<boolean>>('isLLMProcessing', ref(false))
 
 // Track which tool items are expanded (by index)
 const expandedToolIds = ref<Set<string>>(new Set())
@@ -560,12 +582,42 @@ const connectSse = () => {
       isAlreadyConnectedSSE.value = true
     }
   )
+
+  // Connect to queue messages SSE
+  queueEventSource.value = api.createQueueMessagesSseConnection(
+    sessionId.value,
+    (event: api.QueueMessageEvent) => {
+      console.log('[QueueMessages SSE] Received event:', event)
+      if (event.action === 'queued') {
+        // Add new queued message
+        queuedMessages.value.push({
+          id: event.id ?? `q-${Date.now()}`,
+          message: event.message
+        })
+      } else if (event.action === 'deleted') {
+        // Remove deleted message
+        queuedMessages.value = queuedMessages.value.filter(
+          m => m.message !== event.message
+        )
+      }
+    },
+    (err) => {
+      console.error('QueueMessages SSE error:', err)
+    },
+    () => {
+      console.log('QueueMessages SSE connected')
+    }
+  )
 }
 
 const disconnectSse = () => {
   if (eventSource.value) {
     eventSource.value.close()
     eventSource.value = null
+  }
+  if (queueEventSource.value) {
+    queueEventSource.value.close()
+    queueEventSource.value = null
   }
   isStreaming.value = false
   streamingContent.value = ''
@@ -612,12 +664,22 @@ onMounted(async () => {
     await loadChatHistory()
     connectSse()
     startGitStatusPoll()
+    startProcessingPoll()
+
+    // Fetch initial queue count
+    try {
+      const result = await api.getQueuedMessages(sessionId.value)
+      queuedMessages.value = result.messages
+    } catch (err) {
+      console.error('Failed to get queued messages:', err)
+    }
   }
 })
 
 onUnmounted(() => {
   disconnectSse()
   stopGitStatusPoll()
+  stopProcessingPoll()
 })
 
 watch(
@@ -633,6 +695,21 @@ watch(
       checkGitStatus()
     } else {
       gitStatus.value = null
+    }
+  }
+)
+
+// Watch for session changes to restart processing poll
+watch(
+  () => sessionId.value,
+  (newSessionId, oldSessionId) => {
+    if (newSessionId !== oldSessionId) {
+      stopProcessingPoll()
+      if (newSessionId) {
+        startProcessingPoll()
+      } else {
+        isLLMProcessing.value = false
+      }
     }
   }
 )
@@ -763,6 +840,9 @@ const compactSession = async () => {
                       <!-- ReadFile component for read_file tool -->
                       <ReadFile v-if="msg.tool_name === 'read_file'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- Search component for search tool -->
+                      <Search v-else-if="msg.tool_name === 'search'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- Default tool rendering for other tools -->
                       <div v-else class="tool-expandable">
                         <button class="tool-summary" @click="toggleToolExpanded(groupIndex, idx)" :style="[
@@ -813,7 +893,7 @@ const compactSession = async () => {
       <!-- Input -->
       <div class="p-4" style="border-top: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
         <div class="max-w-4xl mx-auto">
-          <FileInput :cwd="cwd" @submit="handleFileInputSubmit" />
+          <FileInput :cwd="cwd" :queuedMessages="queuedMessages" :isLoading="isLoading" :isLLMProcessing="isLLMProcessing" @submit="handleFileInputSubmit" />
           <!-- Status bar: compact, tokens, git branch below input -->
           <div class="flex items-center gap-2 mt-3">
             <!-- Compact button -->
@@ -852,15 +932,6 @@ const compactSession = async () => {
               <span style="color: var(--semantic-text);">{{ gitStatus.branch || 'main' }}</span>
               <span v-if="!gitStatus.is_clean" style="color: var(--color-orange);">●</span>
               <span v-else style="color: var(--color-green);">✓</span>
-            </div>
-            <!-- Session status -->
-            <div class="ml-auto text-xs" style="color: var(--semantic-text-dim);">
-              <span v-if="isLoading">Loading...</span>
-              <span v-else-if="error" style="color: var(--color-red);">{{ error }}</span>
-              <span v-else-if="isStreaming" style="color: var(--color-violet);">Receiving...</span>
-              <span v-else-if="isLLMProcessing" style="color: var(--color-orange);">⚡ Processing</span>
-              <span v-else-if="compactError" style="color: var(--color-red);">Compact failed</span>
-              <span v-else>{{ messages.length }} msg</span>
             </div>
           </div>
         </div>

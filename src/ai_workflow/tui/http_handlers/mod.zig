@@ -67,6 +67,10 @@ pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 // Git API handlers
 pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
 
+// Queue messages handlers
+pub const queueMessagesStreamHandler = @import("queue_messages_sse.zig").queueMessagesStreamHandler;
+pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;
+
 // =============================================================================
 // Shared Types & Helpers
 // =============================================================================

@@ -828,3 +828,105 @@ export function createSessionsSseConnection(
 
   return eventSource;
 }
+
+// Queue messages SSE event types
+export interface QueueMessageEvent {
+  action: 'queued' | 'deleted'
+  id?: string
+  message: string
+  session_id: string
+}
+
+export function createQueueMessagesSseConnection(
+  sessionId: string,
+  onEvent: (event: QueueMessageEvent) => void,
+  onError?: (error: Event) => void,
+  onConnected?: () => void,
+): EventSource {
+  console.log(
+    "[createQueueMessagesSseConnection] Creating SSE connection for session:",
+    sessionId,
+  );
+  const eventSource = new EventSource(`${API_BASE}/llm/session/${sessionId}/queue_messages/stream`);
+
+  // Buffer to accumulate multi-line JSON
+  let jsonBuffer = "";
+
+  // Handle named event: "queue_message"
+  eventSource.addEventListener("queue_message", (e: MessageEvent) => {
+    try {
+      const data = JSON.parse(e.data);
+      console.log("[QueueMessagesSSE] queue_message event:", data);
+      onEvent(data as QueueMessageEvent);
+      onConnected?.();
+    } catch (err) {
+      console.error("Failed to parse queue_message event:", err);
+    }
+  });
+
+  // Handle default events (data: lines without event: prefix)
+  eventSource.onmessage = (event) => {
+    console.log("[QueueMessagesSSE] onmessage raw:", JSON.stringify(event.data));
+    try {
+      const raw = event.data;
+      if (!raw) return;
+
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+
+      // Accumulate JSON until we have complete object
+      jsonBuffer += trimmed + "\n";
+
+      // Try to find complete JSON object (starts with { and ends with })
+      const jsonStart = jsonBuffer.indexOf("{");
+      const jsonEnd = jsonBuffer.lastIndexOf("}");
+
+      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+        const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1);
+        try {
+          const data = JSON.parse(jsonStr);
+          console.log("[QueueMessagesSSE] Received data:", data);
+          onEvent(data as QueueMessageEvent);
+          // Keep anything after the JSON for next event
+          jsonBuffer = jsonBuffer.slice(jsonEnd + 1);
+        } catch (e) {
+          // Not complete yet, keep buffering
+          console.log(
+            "[QueueMessagesSSE] Buffering, not complete JSON yet, buffer length:",
+            jsonBuffer.length,
+          );
+        }
+      }
+    } catch (e) {
+      console.error("QueueMessagesSSE onmessage error:", e);
+    }
+  };
+
+  eventSource.onerror = (error) => {
+    console.error("[QueueMessagesSSE] EventSource onerror:", error);
+    onError?.(error);
+  };
+
+  eventSource.onopen = () => {
+    console.log("[QueueMessagesSSE] EventSource connected");
+  };
+
+  return eventSource;
+}
+
+// GET queued messages
+export interface QueuedMessage {
+  id: string
+  message: string
+}
+
+export async function getQueuedMessages(sessionId: string): Promise<{
+  messages: QueuedMessage[]
+  count: number
+}> {
+  const response = await fetch(`${API_BASE}/llm/session/${sessionId}/queue_messages`)
+  if (!response.ok) {
+    throw new Error(`Failed to get queued messages: ${response.statusText}`)
+  }
+  return response.json()
+}

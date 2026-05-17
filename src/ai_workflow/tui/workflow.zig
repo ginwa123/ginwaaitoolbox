@@ -248,7 +248,6 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         };
 
         retry_count = 0;
-
         if (res_dynamic_agent.finish_reason) |finish_reason| {
             if (finish_reason == .stop) {
                 _ = try llm_history.saveMessage(allocator, io, db, .{
@@ -534,7 +533,7 @@ pub fn callCompactAgentNew(
     var parts: std.ArrayList([]const u8) = .empty;
     defer parts.deinit(allocator);
     for (messages.items[1..last_idx]) |msg| {
-        if (msg.content) |c| parts.append(allocator,c) catch |err| {
+        if (msg.content) |c| parts.append(allocator, c) catch |err| {
             logger.errFmt("[COMPACTION] Failed to collect message content: {s}", .{@errorName(err)});
             return null;
         };

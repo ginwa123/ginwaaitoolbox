@@ -94,32 +94,38 @@ pub const ContextIPCTui = struct {
 /// Register a session -> client_id mapping (appends to list)
 pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8, is_use_lock: bool) !void {
     var di = try getSingleton();
+    const allocator = di.allocator;
     const io = di.io;
+
     if (is_use_lock) {
         di.session_map_lock.lock(io) catch {};
         defer di.session_map_lock.unlock(io);
     }
 
-    // Check if session already has a client list
     if (di.session_to_client_ids.getPtr(session_id)) |list| {
-        // Check if client already registered
         for (list.items) |existing_id| {
-            var equal = true;
-            for (existing_id, client_id) |a, b| {
-                if (a != b) {
-                    equal = false;
-                    break;
-                }
-            }
-            if (equal) return; // already registered
+            if (std.mem.eql(u8, &existing_id, &client_id)) return;
         }
-        // Append new client to existing list
-        try list.append(di.allocator, client_id);
+        try list.append(allocator, client_id);
     } else {
-        // Create new list for this session
+        const copy_session_id = try allocator.dupe(u8, session_id);
+        errdefer allocator.free(copy_session_id);
+
         var list = std.ArrayListUnmanaged([16]u8).empty;
-        try list.append(di.allocator, client_id);
-        try di.session_to_client_ids.put(di.allocator, session_id, list);
+        errdefer list.deinit(allocator);
+
+        try list.append(allocator, client_id);
+
+        // Use getOrPut instead of put
+        const result = try di.session_to_client_ids.getOrPut(allocator, copy_session_id);
+        if (result.found_existing) {
+            // race: another thread inserted between our getPtr and here
+            allocator.free(copy_session_id);
+            list.deinit(allocator);
+            try result.value_ptr.append(allocator, client_id);
+        } else {
+            result.value_ptr.* = list;
+        }
     }
 }
 

@@ -44,7 +44,7 @@ const isLineChanged = (idx: number): boolean => {
   border: 1px solid var(--color-border);
   border-radius: 6px;
   overflow: hidden;
-  background: var(--color-bg-p1);
+  background: var(--semantic-card-bg);
 }
 
 .diffview-section {
@@ -57,25 +57,29 @@ const isLineChanged = (idx: number): boolean => {
 }
 
 .diffview-section-label {
-  padding: 4px 8px;
-  font-size: 10px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
-  background: rgba(0,0,0,0.2);
+  background: rgba(0,0,0,0.02);
   border-bottom: 1px solid var(--color-border);
+}
+
+.diffview-section-label:hover {
+  background: rgba(139, 92, 246, 0.04);
 }
 
 .diffview-section-content {
   overflow-x: auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: monospace;
+  font-size: 0.72rem;
   line-height: 1.5;
 }
 
 .diffview-line {
   display: flex;
   min-width: max-content;
-  padding: 0 8px;
+  padding: 0.125rem 0.5rem;
   white-space: pre;
 }
 
@@ -90,9 +94,11 @@ const isLineChanged = (idx: number): boolean => {
 }
 
 .diffview-line-prefix {
-  margin-right: 4px;
+  margin-right: 0.75rem;
   font-weight: 600;
   flex-shrink: 0;
+  min-width: 1rem;
+  text-align: center;
 }
 
 .diffview-line-content {
@@ -102,5 +108,17 @@ const isLineChanged = (idx: number): boolean => {
 .diffview-line-removed .diffview-line-content,
 .diffview-line-added .diffview-line-content {
   color: inherit;
+}
+
+.diffview-line:hover {
+  background: rgba(139, 92, 246, 0.04);
+}
+
+.diffview-line-removed:hover {
+  background: rgba(196, 116, 110, 0.2);
+}
+
+.diffview-line-added:hover {
+  background: rgba(135, 169, 135, 0.2);
 }
 </style>

@@ -169,5 +169,11 @@ const copyPath = async (e: Event) => {
   overflow-x: visible;
   line-height: 1.5;
   color: var(--semantic-text);
+  font-family: monospace;
+  font-size: 0.72rem;
+}
+
+.rf-pre:hover {
+  background: rgba(139, 92, 246, 0.04);
 }
 </style>

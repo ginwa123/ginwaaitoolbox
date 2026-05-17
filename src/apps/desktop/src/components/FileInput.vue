@@ -2,8 +2,16 @@
 import { ref, watch, nextTick, computed } from 'vue'
 import * as api from '../api'
 
+export interface QueuedMessage {
+  id: string
+  message: string
+}
+
 const props = defineProps<{
   cwd: string
+  queuedMessages?: QueuedMessage[]
+  isLoading?: boolean
+  isLLMProcessing?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +36,22 @@ let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const MAX_DEPTH = 5
 const MAX_FILES = 500
+
+const queuedMessagesList = computed(() => props.queuedMessages ?? [])
+const hasQueuedMessages = computed(() => queuedMessagesList.value.length > 0)
+
+// Toggle queue panel
+const showQueuePanel = ref(false)
+
+const toggleQueuePanel = () => {
+  showQueuePanel.value = !showQueuePanel.value
+}
+
+// Use a queued message
+const useQueuedMessage = (msg: QueuedMessage) => {
+  inputText.value = msg.message
+  showQueuePanel.value = false
+}
 
 const loadAllFiles = async (rootPath: string) => {
   if (!rootPath) return
@@ -253,6 +277,55 @@ const sendMessage = () => {
 
     <!-- Input form -->
     <form @submit.prevent="sendMessage" class="flex gap-3 items-end">
+      <!-- Queue indicator button -->
+      <div v-if="hasQueuedMessages" class="relative">
+        <button type="button" @click="toggleQueuePanel"
+          class="flex items-center gap-2 px-3 py-3 rounded-xl text-sm transition-all duration-200 border"
+          :style="showQueuePanel
+            ? 'background-color: var(--color-blue-1); border-color: var(--color-violet); color: var(--semantic-text);'
+            : 'background-color: var(--semantic-card-bg); border-color: var(--color-border); color: var(--semantic-text);'">
+          <span class="text-xs font-medium px-1.5 py-0.5 rounded"
+            style="background-color: var(--color-violet); color: var(--color-bg);">
+            {{ queuedMessagesList.length }}
+          </span>
+          <span style="color: var(--semantic-text-dim);">Queued</span>
+          <span class="text-xs" :style="showQueuePanel ? 'color: var(--color-violet);' : 'color: var(--semantic-text-muted);'">
+            {{ showQueuePanel ? '▲' : '▼' }}
+          </span>
+        </button>
+
+        <!-- Queue messages panel -->
+        <div v-if="showQueuePanel"
+          class="absolute bottom-full left-0 mb-2 w-80 rounded-xl border shadow-lg overflow-hidden"
+          style="background-color: var(--semantic-card-bg); border-color: var(--color-border); max-height: 300px;">
+          <!-- Panel header -->
+          <div class="px-4 py-2 border-b flex items-center justify-between"
+            style="border-color: var(--color-border);">
+            <span class="text-sm font-medium" style="color: var(--semantic-text);">Queued Messages</span>
+            <span class="text-xs" style="color: var(--semantic-text-dim);">{{ queuedMessagesList.length }} messages</span>
+          </div>
+
+          <!-- Messages list -->
+          <div class="overflow-y-auto" style="max-height: 220px;">
+            <div v-for="msg in queuedMessagesList" :key="msg.id"
+              class="px-4 py-3 border-b cursor-pointer transition-colors"
+              style="border-color: var(--color-border-light);"
+              @mouseenter="(e) => (e.target as HTMLElement).style.backgroundColor = 'var(--hover-bg, #1D1C19)'"
+              @mouseleave="(e) => (e.target as HTMLElement).style.backgroundColor = ''"
+              @click="useQueuedMessage(msg)">
+              <p class="text-sm truncate" style="color: var(--semantic-text);">{{ msg.message }}</p>
+              <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">Click to use</p>
+            </div>
+          </div>
+
+          <!-- Panel footer -->
+          <div class="px-4 py-2 text-xs text-center"
+            style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);">
+            Click a message to use it
+          </div>
+        </div>
+      </div>
+
       <textarea v-model="inputText" placeholder="Type a message... (@ to search files)"
         class="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all duration-200 resize-none"
         style="
@@ -263,10 +336,15 @@ const sendMessage = () => {
           max-height: 200px;
           overflow-y: auto;
         " @keydown="handleKeydown" @input="autoResize" @click="autoResize" @blur="updateCursorPos"></textarea>
-      <button type="submit"
-        class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:opacity-90 active:scale-95 border"
-        style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border);">
-        Send
+      <button type="submit" :disabled="isLoading || isLLMProcessing"
+        class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center gap-2"
+        :class="isLoading || isLLMProcessing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'"
+        :style="isLoading || isLLMProcessing
+          ? 'background-color: var(--color-orange); color: var(--color-bg); border-color: var(--color-border);'
+          : 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border);'">
+        <div v-if="isLoading || isLLMProcessing" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+          style="border-color: var(--color-bg); border-top-color: transparent;"></div>
+        <span>{{ isLoading || isLLMProcessing ? 'Queue' : 'Send' }}</span>
       </button>
     </form>
   </div>

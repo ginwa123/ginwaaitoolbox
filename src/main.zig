@@ -171,6 +171,8 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
+    try gs.router.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
+    try gs.router.sse("/api/llm/session/:session_id/queue_messages/stream", ai_mod.http_handlers.queueMessagesStreamHandler);
     try gs.router.sse("/api/llm/stream/:session_id", ai_mod.http_handlers.streamHandler);
     try gs.router.sse("/api/sessions/stream", ai_mod.http_handlers.sessionsStreamHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
@@ -203,6 +205,9 @@ pub fn main(init: std.process.Init) !void {
     ctxParent.server.sse_manager.on_disconnect = ai_mod.handleClientDisconnect;
 
     try gs.listen();
+
+    // Clean shutdown after listen() returns (after shutdown endpoint is called)
+    gs.sse_manager.stop();
 
     // const HttpRoutes = struct {
     //     pub fn setup(http_port: u16, router: anytype) !void {

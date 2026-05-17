@@ -511,13 +511,14 @@ pub const GitignoreContext = struct {
     /// Load .gitignore from a directory and add its entries
     pub fn loadGitignoreForDir(self: *@This(), allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) void {
         const gitignore_path = std.fs.path.join(allocator, &.{ dir_path, ".gitignore" }) catch return;
+        defer allocator.free(gitignore_path);
 
-        const file = std.Io.Dir.openFileAbsolute(io, gitignore_path, .{}) catch {
-            allocator.free(gitignore_path);
-            return;
-        };
-        defer std.Io.File.close(file, io);
-        allocator.free(gitignore_path);
+        // Open file - use openFileAbsolute only for absolute paths
+        const file: std.Io.File = if (std.fs.path.isAbsolute(gitignore_path))
+            std.Io.Dir.openFileAbsolute(io, gitignore_path, .{}) catch return
+        else
+            std.Io.Dir.cwd().openFile(io, gitignore_path, .{}) catch return;
+        defer file.close(io);
 
         const content = std.Io.Dir.cwd().readFileAlloc(io, gitignore_path, allocator, std.Io.Limit.limited(1024 * 64)) catch return;
 
