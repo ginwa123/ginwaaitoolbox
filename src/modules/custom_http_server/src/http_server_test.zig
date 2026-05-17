@@ -213,3 +213,109 @@ test "Server accepts client connection" {
 
     // Socket creation verified - full integration test would require actual server listening
 }
+
+// ============================================================================
+// RequestBuffer Tests - Auto-growing buffer for large payloads
+// ============================================================================
+
+test "RequestBuffer.init creates empty buffer" {
+    const allocator = std.testing.allocator;
+    var rb = http_server.RequestBuffer.init(allocator);
+    defer rb.deinit();
+
+    try std.testing.expect(rb.buf.items.len == 0);
+}
+
+// Test that simulates your exact request
+test "RequestBuffer.readFullRequest with exact POST headers (13248 body)" {
+    const allocator = std.testing.allocator;
+
+    // Create a socket pair for testing
+    var pipe_fds: [2]i32 = undefined;
+    const rc = linux.socketpair(2, 1, 0, &pipe_fds);
+    if (rc < 0) {
+        // socketpair not supported, skip test
+        return;
+    }
+    defer {
+        _ = linux.close(pipe_fds[0]);
+        _ = linux.close(pipe_fds[1]);
+    }
+
+    // Build the exact headers you sent
+    const headers = 
+        "POST /api/llm/session HTTP/1.1\r\n" ++
+        "Accept: */*\r\n" ++
+        "Accept-Encoding: gzip, deflate, br, zstd\r\n" ++
+        "Accept-Language: en-US,en;q=0.9\r\n" ++
+        "Connection: keep-alive\r\n" ++
+        "Content-Length: 13248\r\n" ++
+        "Content-Type: application/json\r\n" ++
+        "Host: localhost:5173\r\n" ++
+        "Origin: http://localhost:5173\r\n" ++
+        "Referer: http://localhost:5173/app?view=task&task=task_1779042417517\r\n" ++
+        "Sec-Fetch-Dest: empty\r\n" ++
+        "Sec-Fetch-Mode: cors\r\n" ++
+        "Sec-Fetch-Site: same-origin\r\n" ++
+        "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36\r\n" ++
+        "sec-ch-ua: \"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", \"Not/A)Brand\";v=\"99\"\r\n" ++
+        "sec-ch-ua-mobile: ?0\r\n" ++
+        "sec-ch-ua-platform: \"Linux\"\r\n" ++
+        "\r\n";
+    
+    // Create a 13248 byte body
+    const body_size: usize = 13248;
+    const body = try allocator.alloc(u8, body_size);
+    defer allocator.free(body);
+    // Fill with pattern
+    for (0..body_size) |i| {
+        body[i] = @as(u8, @truncate(i));
+    }
+
+    // Send headers first
+    const written1 = linux.write(pipe_fds[1], headers.ptr, headers.len);
+    if (written1 < 0) return error.WriteFailed;
+    
+    // Send body in chunks to simulate real scenario
+    var sent: usize = 0;
+    while (sent < body_size) {
+        const chunk = @min(4096, body_size - sent);
+        const written = linux.write(pipe_fds[1], body.ptr + sent, chunk);
+        if (written < 0) return error.WriteFailed;
+        sent += @as(usize, @intCast(written));
+    }
+
+    // Use RequestBuffer to read
+    var rb = http_server.RequestBuffer.init(allocator);
+    defer rb.deinit();
+
+    const result = rb.readFullRequest(pipe_fds[0]) catch |err| {
+        std.debug.print("readFullRequest failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(result);
+
+    // Verify: total should be headers.len + body_size
+    const expected_len = headers.len + body_size;
+    try std.testing.expectEqual(expected_len, result.len);
+    
+    // Verify the body content
+    const result_body = result[headers.len..];
+    try std.testing.expectEqual(@as(u8, 0), result_body[0]);
+    try std.testing.expectEqual(@as(u8, 1), result_body[1]);
+    try std.testing.expectEqual(@as(u8, 100), result_body[100]);
+    try std.testing.expectEqual(@as(u8, @truncate(body_size - 1)), result_body[body_size - 1]);
+}
+
+// Test getContentLength with your exact headers
+test "RequestBuffer.getContentLength with your headers" {
+    const data = 
+        "POST /api/llm/session HTTP/1.1\r\n" ++
+        "Accept: */*\r\n" ++
+        "Content-Length: 13248\r\n" ++
+        "\r\n";
+    
+    const content_length = http_server.RequestBuffer.getContentLength(data);
+    try std.testing.expect(content_length != null);
+    try std.testing.expectEqual(@as(usize, 13248), content_length.?);
+}

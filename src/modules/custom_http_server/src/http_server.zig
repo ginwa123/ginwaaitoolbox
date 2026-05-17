@@ -120,55 +120,24 @@ pub const GinwaServer = struct {
                         }
 
                         const allocator = arena_allocator.allocator();
-                        var buf: std.ArrayList(u8) = .empty;
-                        defer buf.deinit(allocator);
-                        var tmp: [4096]u8 = undefined;
 
-                        // Phase 1: read until we have the full headers
-                        while (std.mem.indexOf(u8, buf.items, "\r\n\r\n") == null) {
-                            const n = gs.recvFromClient(fd, &tmp) catch |err| {
-                                std.debug.print("Recv error (headers): {s}\n", .{@errorName(err)});
-                                _ = linux.close(fd);
-                                return;
-                            };
-                            if (n == 0) break;
-                            buf.appendSlice(allocator,tmp[0..n]) catch {
-                                _ = linux.close(fd);
-                                return;
-                            };
-                        }
+                        // Use RequestBuffer for auto-growing request reading
+                        var rb = RequestBuffer.init(allocator);
+                        defer rb.deinit();
 
-                        if (buf.items.len == 0) {
+                        const request_data = rb.readFullRequest(fd) catch |err| {
+                            std.debug.print("HTTP_SERVER: readFullRequest failed: {s}\n", .{@errorName(err)});
                             _ = linux.close(fd);
                             return;
-                        }
+                        };
+                        defer allocator.free(request_data);
 
-                        // Phase 2: read body until Content-Length is satisfied
-                        const content_length = getContentLength(buf.items) orelse 0;
-                        const header_end = (std.mem.indexOf(u8, buf.items, "\r\n\r\n") orelse 0) + 4;
-                        const target_len = header_end + content_length;
-
-                        while (buf.items.len < target_len) {
-                            const remaining = target_len - buf.items.len;
-                            const to_read = @min(remaining, tmp.len);
-                            const n = gs.recvFromClient(fd, tmp[0..to_read]) catch |err| {
-                                std.debug.print("Recv error (body): {s}\n", .{@errorName(err)});
-                                _ = linux.close(fd);
-                                return;
-                            };
-                            if (n == 0) break;
-                            buf.appendSlice(allocator,tmp[0..n]) catch {
-                                _ = linux.close(fd);
-                                return;
-                            };
-                        }
-
-                        var req = http_parser.parseRequest(buf.items, allocator, gs.io, fd) catch |err| {
+                        var req = http_parser.parseRequest(request_data, allocator, gs.io, fd) catch |err| {
                             std.debug.print("HTTP_SERVER: parseRequest failed: {s}\n", .{@errorName(err)});
                             _ = linux.close(fd);
                             return;
                         };
-                        std.debug.print("HTTP_SERVER: req.method={s}, path={s}, body.len={}\n", .{req.method, req.path, req.body.len});
+                        std.debug.print("HTTP_SERVER: req.method={s}, path={s}, body.len={}\n", .{ req.method, req.path, req.body.len });
                         defer req.headers.deinit();
 
                         const http_ctx = http_parser.HttpContext{ .allocator = allocator, .io = gs.io };
@@ -228,7 +197,7 @@ pub const GinwaServer = struct {
         try group.await(self.io);
     }
 
-    fn getContentLength(data: []const u8) ?usize {
+    pub fn getContentLength(data: []const u8) ?usize {
         const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return null;
         const headers = data[0..header_end];
         const cl_header = "Content-Length: ";
@@ -237,7 +206,7 @@ pub const GinwaServer = struct {
         // Look for \r\n after the value, or use end of headers if that's the line ending
         const after_value = headers[cl_start..];
         const cl_end = std.mem.indexOf(u8, after_value, "\r\n") orelse after_value.len;
-        const cl_str = headers[cl_start..cl_start + cl_end];
+        const cl_str = headers[cl_start .. cl_start + cl_end];
         return std.fmt.parseInt(usize, cl_str, 10) catch null;
     }
 
@@ -301,6 +270,120 @@ pub const GinwaServer = struct {
 
     pub fn shutdown(self: *GinwaServer) void {
         self.is_running = false;
+    }
+};
+
+/// Request buffer with auto-growing capability for reading HTTP requests
+pub const RequestBuffer = struct {
+    allocator: std.mem.Allocator,
+    buf: std.ArrayList(u8),
+    tmp: [4096]u8,
+
+    /// Initialize a new RequestBuffer
+    pub fn init(allocator: std.mem.Allocator) RequestBuffer {
+        return .{
+            .allocator = allocator,
+            .buf = .empty,
+            .tmp = undefined,
+        };
+    }
+
+    /// Free all resources
+    pub fn deinit(self: *RequestBuffer) void {
+        self.buf.deinit(self.allocator);
+    }
+
+    pub fn getContentLength(data: []const u8) ?usize {
+        const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return null;
+        const headers = data[0..header_end];
+
+        // Try different search patterns
+        const cl_pattern1 = "Content-Length:";
+
+        const cl_pos = std.mem.indexOf(u8, headers, cl_pattern1);
+        if (cl_pos == null) {
+            return null;
+        }
+
+        const cl_start = cl_pos.? + cl_pattern1.len;
+
+        // Skip whitespace
+        var actual_start = cl_start;
+        while (actual_start < headers.len and headers[actual_start] == ' ') {
+            actual_start += 1;
+        }
+
+        const after_value = headers[actual_start..];
+
+        // Find end of line
+        var end_idx: usize = 0;
+        while (end_idx < after_value.len and after_value[end_idx] != '\r' and after_value[end_idx] != '\n') {
+            end_idx += 1;
+        }
+
+        const cl_str = after_value[0..end_idx];
+        return std.fmt.parseInt(usize, cl_str, 10) catch null;
+    }
+
+    /// Read the full HTTP request (headers + body) from a socket
+    /// Returns the complete request data or an error
+    pub fn readFullRequest(self: *RequestBuffer, fd: i32) ![]u8 {
+        std.debug.print("DEBUG: Phase 1 - reading headers\n", .{});
+
+        // Phase 1: read until we have complete headers
+        while (std.mem.indexOf(u8, self.buf.items, "\r\n\r\n") == null) {
+            std.debug.print("DEBUG: No complete headers yet, buf.len={}, reading more...\n", .{self.buf.items.len});
+            const n = linux.read(fd, @ptrCast(&self.tmp), self.tmp.len);
+            if (n < 0) return error.RecvFailed;
+            if (n == 0) break;
+            std.debug.print("DEBUG: Read {} bytes, buf.total now {}\n", .{ n, self.buf.items.len + @as(usize, @intCast(n)) });
+            try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
+        }
+
+        const header_end_idx = std.mem.indexOf(u8, self.buf.items, "\r\n\r\n") orelse {
+            if (self.buf.items.len == 0) return error.ConnectionClosed;
+            return self.buf.toOwnedSlice(self.allocator);
+        };
+
+        // Phase 2: parse Content-Length by scanning header lines
+        const content_length = blk: {
+            const header_section = self.buf.items[0..header_end_idx];
+            var lines = std.mem.splitSequence(u8, header_section, "\r\n");
+            _ = lines.next(); // skip request line
+            while (lines.next()) |line| {
+                // Case-insensitive match for "content-length"
+                if (line.len > 15 and std.ascii.eqlIgnoreCase(line[0..14], "content-length")) {
+                    // Find the colon, skip it and any whitespace
+                    const colon_pos = std.mem.indexOf(u8, line, ":") orelse continue;
+                    const value = std.mem.trim(u8, line[colon_pos + 1 ..], " \t");
+                    std.debug.print("DEBUG: Parsed Content-Length from buffer: '{s}'\n", .{value});
+                    break :blk std.fmt.parseInt(usize, value, 10) catch {
+                        std.debug.print("DEBUG: Failed to parse Content-Length\n", .{});
+                        return error.BadRequest;
+                    };
+                }
+            }
+            // No Content-Length header found (e.g. GET request)
+            std.debug.print("DEBUG: Found \\r\\n\\r\\n at {}, but no Content-Length\n", .{header_end_idx});
+            return self.buf.toOwnedSlice(self.allocator);
+        };
+
+        // Phase 3: read body
+        const target_len = header_end_idx + 4 + content_length;
+        std.debug.print("DEBUG: target_len={}, have={}\n", .{ target_len, self.buf.items.len });
+
+        while (self.buf.items.len < target_len) {
+            const remaining_bytes = target_len - self.buf.items.len;
+            const to_read = @min(remaining_bytes, self.tmp.len);
+            const n = linux.read(fd, @ptrCast(&self.tmp), to_read);
+            if (n < 0) return error.RecvFailed;
+            if (n == 0) break;
+            try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
+            std.debug.print("DEBUG: Read body chunk {} bytes, total {}/{}\n", .{ n, self.buf.items.len, target_len });
+        }
+
+        std.debug.print("DEBUG: readFullRequest complete: {} bytes\n", .{self.buf.items.len});
+        return self.buf.toOwnedSlice(self.allocator);
     }
 };
 
