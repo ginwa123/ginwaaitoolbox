@@ -462,9 +462,9 @@ pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment
 /// Get local skills path (.nalar/skills/) using io
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn get_local_skills_path_from_io(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
-        std.log.debug("Could not get current working directory", .{});
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch |err| {
+        std.log.debug("Could not get current working directory: {s}", .{@errorName(err)});
         return null;
     };
     const cwd = cwd_buf[0..cwd_len];

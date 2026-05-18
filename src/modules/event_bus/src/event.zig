@@ -20,11 +20,12 @@ pub const EventBus = struct {
     }
 
     pub fn subscribe(self: *Self, comptime T: type, id: []const u8, callback: *const fn (T) void) !void {
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
+
         const owned_id = try self.alloc.dupe(u8, id);
         errdefer self.alloc.free(owned_id); // free if getOrPut fails
         //
-        try self.mutex.lock(self.io);
-        defer self.mutex.unlock(self.io);
 
         const result = try self.listeners.getOrPut(self.alloc, owned_id);
         if (result.found_existing) {
@@ -44,8 +45,8 @@ pub const EventBus = struct {
     }
 
     pub fn emit(self: *Self, comptime T: type, id: []const u8, data: T) void {
-        self.mutex.lock(self.io) catch unreachable;
-        defer self.mutex.unlock(self.io);
+        // self.mutex.lock(self.io) catch unreachable;
+        // defer self.mutex.unlock(self.io);
 
         if (self.listeners.get(id)) |cb| {
             const typed_fn: *const fn (T) void = @ptrCast(@alignCast(cb.ptr));

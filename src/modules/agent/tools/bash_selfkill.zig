@@ -1,16 +1,17 @@
 const std = @import("std");
+const process = @import("nalarcore").helpers.process;
 
 /// Self-kill detection result: null = safe, error message = dangerous
 pub const SelfKillResult = ?[]const u8;
 
-/// Get the current process ID
-pub fn get_self_pid() i32 {
-    return std.os.linux.getpid();
+/// Get the current process ID (cross-platform)
+pub fn get_self_pid() std.c.pid_t {
+    return process.getCurrentProcessId();
 }
 
 /// Detect if a command attempts to kill the current process
 /// Returns an error message if self-kill is detected, null otherwise
-pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_pid: i32) !SelfKillResult {
+pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_pid: std.c.pid_t) !SelfKillResult {
     _ = allocator; // Reserved for future use
     const trimmed = std.mem.trim(u8, command, " \t\n\r");
 

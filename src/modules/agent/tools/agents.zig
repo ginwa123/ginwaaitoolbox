@@ -104,10 +104,10 @@ pub fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedAgentFrontm
 /// Get the local agents directory path (.nalar/agents/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
-    // Get current working directory
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
-        std.log.debug("Could not get current working directory", .{});
+    // Get current working directory using Io
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch |err| {
+        std.log.debug("Could not get current working directory: {s}", .{@errorName(err)});
         return null;
     };
     const cwd = cwd_buf[0..cwd_len];
@@ -354,7 +354,7 @@ pub fn parseAgentFromDir(allocator: std.mem.Allocator, io: std.Io, environment: 
     defer freeAgentFiles(allocator, files);
 
     for (files) |file_path| {
-        const content = loadAgentFromPath(allocator, file_path);
+        const content = loadAgentFromPath(allocator, io, file_path);
         if (content == null) {
             continue;
         }

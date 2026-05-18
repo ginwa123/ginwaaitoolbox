@@ -96,12 +96,11 @@ pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8, is_use_l
     var di = try getSingleton();
     const allocator = di.allocator;
     const io = di.io;
-    _ = is_use_lock;
 
-    // if (is_use_lock) {}
-
-    di.session_map_lock.lock(io) catch {};
-    defer di.session_map_lock.unlock(io);
+    if (is_use_lock) {
+        di.session_map_lock.lock(io) catch {};
+        defer di.session_map_lock.unlock(io);
+    }
 
     if (di.session_to_client_ids.getPtr(session_id)) |list| {
         for (list.items) |existing_id| {
@@ -217,21 +216,23 @@ pub fn getSessionIdForClient(client_id: [16]u8, is_use_lock: bool) ?[]const u8 {
 pub fn handleClientDisconnect(client_id: [16]u8) void {
     const di = getSingleton() catch return;
     const io = di.io;
-    di.on_disconnect_lock.lock(io) catch {};
-    defer di.on_disconnect_lock.unlock(io);
 
     const ev_bus = di.event_bus;
 
     if (di.on_disconnect_cb) |cb| {
+        di.on_disconnect_lock.lock(io) catch {};
+        defer di.on_disconnect_lock.unlock(io);
+
+        di.session_map_lock.lock(io) catch {};
+        defer di.session_map_lock.unlock(io);
+
         cb(client_id);
     }
+
     // Also clean up session mapping
     // IMPORTANT: We must copy the session_id BEFORE removing from hash map,
     // because getSessionIdForClient returns a borrowed reference to internal storage
     // that becomes invalid once we remove the entry.
-
-    di.session_map_lock.lock(io) catch {};
-    defer di.session_map_lock.unlock(io);
 
     const maybe_session_id = getSessionIdForClient(client_id, false);
     if (maybe_session_id) |session_id| {
