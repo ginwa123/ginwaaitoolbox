@@ -34,6 +34,41 @@ const selectedFileIndex = ref(0)
 const filePickerRef = ref<HTMLElement | null>(null)
 let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
+// File input ref for native file selection
+const nativeFileInput = ref<HTMLInputElement | null>(null)
+
+// Trigger native file picker
+const triggerFilePicker = () => {
+  nativeFileInput.value?.click()
+}
+
+// Handle native file selection
+const handleNativeFileSelect = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const files = target.files
+  if (!files || files.length === 0) return
+  
+  const file = files[0]
+  if (!file) return
+  
+  // Insert file path at cursor position
+  const text = inputText.value
+  const pos = cursorPos.value
+  const textBeforeCursor = text.slice(0, pos)
+  const textAfterCursor = text.slice(pos)
+  
+  // Use the file path - try to make it relative to cwd if possible
+  let filePath = file.name
+  if (file.webkitRelativePath) {
+    filePath = file.webkitRelativePath
+  }
+  
+  inputText.value = textBeforeCursor + filePath + textAfterCursor
+  
+  // Reset the input so same file can be selected again
+  target.value = ''
+}
+
 const MAX_DEPTH = 5
 const MAX_FILES = 500
 
@@ -241,6 +276,14 @@ const sendMessage = () => {
 
 <template>
   <div class="file-input-wrapper">
+    <!-- Hidden native file input -->
+    <input
+      ref="nativeFileInput"
+      type="file"
+      class="hidden"
+      @change="handleNativeFileSelect"
+    />
+
     <!-- File picker dropdown -->
     <div v-if="showFilePicker && (filteredFiles.length > 0 || isLoadingFiles)" ref="filePickerRef"
       class="file-picker-list mb-2 p-2 rounded-lg shadow-lg max-h-72 overflow-y-auto"
@@ -336,6 +379,15 @@ const sendMessage = () => {
           max-height: 200px;
           overflow-y: auto;
         " @keydown="handleKeydown" @input="autoResize" @click="autoResize" @blur="updateCursorPos"></textarea>
+      <!-- Native file picker button -->
+      <button type="button" @click="triggerFilePicker"
+        class="px-3 py-3 rounded-xl text-sm transition-all duration-200 border flex items-center gap-1"
+        style="background-color: var(--semantic-card-bg); border-color: var(--color-border); color: var(--semantic-text);"
+        title="Select a file (docs, images, etc.)">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.586a6 6 0 108.486 8.486L20.5 13"/>
+        </svg>
+      </button>
       <button type="submit" :disabled="isLoading || isLLMProcessing"
         class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center gap-2"
         :class="isLoading || isLLMProcessing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'"
