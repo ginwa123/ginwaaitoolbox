@@ -8,4 +8,5 @@ test {
     _ = @import("tools/text_replace_test.zig");
     _ = @import("tools/list_skills_test.zig");
     _ = @import("tools/glob_test.zig");
+    _ = @import("tools/add_skill_test.zig");
 }

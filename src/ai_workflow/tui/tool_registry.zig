@@ -359,10 +359,7 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, parsed.value) catch {
-        const out = add_skill_mod.xmlError(ctx.allocator, parsed.value.name, "Failed to add skill");
-        return ToolExecResult{ .output = out };
-    };
+    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, parsed.value);
     return ToolExecResult{ .output = output };
 }
 

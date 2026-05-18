@@ -130,7 +130,9 @@ pub const SessionMessagesResponse = struct {
 };
 
 pub fn makeSessionMessagesResponse(allocator: std.mem.Allocator, response: SessionMessagesResponse) ![]u8 {
-    return std.json.Stringify.valueAlloc(allocator, response, .{});
+    return std.json.Stringify.valueAlloc(allocator, response, .{
+        .emit_strings_as_arrays = false,
+    });
 }
 
 pub fn makeSystemFolderErrorResponse(allocator: std.mem.Allocator, message: []const u8, err: anytype) ![]u8 {

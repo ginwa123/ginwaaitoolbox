@@ -51,82 +51,91 @@ pub const add_skill_tool = AgentTool{
 /// Creates a new skill file at .nalar/skills/<name>/SKILL.MD
 /// Returns an XML string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, input: AddSkillInput) ![]const u8 {
+pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, input: AddSkillInput) []const u8 {
     // Validate input
-    if (input.name.len == 0) return error.InvalidInput;
-    if (input.description.len == 0) return error.InvalidInput;
-    if (input.content.len == 0) return error.InvalidInput;
+    if (input.name.len == 0) return errorToXml(allocator, input.name, "Skill name cannot be empty");
+    if (input.description.len == 0) return errorToXml(allocator, input.name, "Description cannot be empty");
+    if (input.content.len == 0) return errorToXml(allocator, input.name, "Content cannot be empty");
 
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
-        return errorToXml(allocator, input.name, "Failed to get current working directory");
+        return xmlError(allocator, input.name, "Failed to get current working directory");
     };
     const cwd = cwd_buf[0..cwd_len];
 
     // Build paths
-    const skills_dir = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
+    const skills_dir = std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" }) catch {
+        return xmlError(allocator, input.name, "Failed to build skills directory path");
+    };
     defer allocator.free(skills_dir);
 
-    const skill_dir = try std.fs.path.join(allocator, &[_][]const u8{ skills_dir, input.name });
+    const skill_dir = std.fs.path.join(allocator, &[_][]const u8{ skills_dir, input.name }) catch {
+        return xmlError(allocator, input.name, "Failed to build skill directory path");
+    };
     defer allocator.free(skill_dir);
 
-    const skill_file = try std.fs.path.join(allocator, &[_][]const u8{ skill_dir, "SKILL.MD" });
+    const skill_file = std.fs.path.join(allocator, &[_][]const u8{ skill_dir, "SKILL.MD" }) catch {
+        return xmlError(allocator, input.name, "Failed to build skill file path");
+    };
     defer allocator.free(skill_file);
 
     // Create directories if needed
     if (input.create_with_dir) {
         std.Io.Dir.cwd().createDirPath(io, skill_dir) catch {
-            return errorToXml(allocator, input.name, "Failed to create skill directory");
+            return xmlError(allocator, input.name, "Failed to create skill directory");
         };
     }
 
     // Build skill content with YAML frontmatter
-    const file_content = try buildSkillContent(allocator, input);
+    const file_content = buildSkillContent(allocator, input);
     defer allocator.free(file_content);
+    if (file_content.len == 0) {
+        return xmlError(allocator, input.name, "Failed to build skill content");
+    }
 
     // Write the file
     const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
-        return errorToXml(allocator, input.name, "Failed to create skill file");
+        return xmlError(allocator, input.name, "Failed to create skill file");
     };
     defer std.Io.File.close(file, io);
 
     std.Io.File.writeStreamingAll(file, io, file_content) catch {
-        return errorToXml(allocator, input.name, "Failed to write skill file");
+        return xmlError(allocator, input.name, "Failed to write skill file");
     };
 
     // Return success XML
-    return try successToXml(allocator, input.name, skill_file);
+    return successToXml(allocator, input.name, skill_file);
 }
 
 /// Build skill file content with YAML frontmatter
-fn buildSkillContent(allocator: std.mem.Allocator, input: AddSkillInput) ![]const u8 {
+pub fn buildSkillContent(allocator: std.mem.Allocator, input: AddSkillInput) []const u8 {
     // Escape quotes in description for YAML string
-    const escaped_desc = try escapeYamlString(allocator, input.description);
+    const escaped_desc = escapeYamlString(allocator, input.description);
     defer allocator.free(escaped_desc);
 
     // Build the content: frontmatter + separator + content
     const total_len = 15 + input.name.len + 16 + escaped_desc.len + 5 + input.content.len + 1;
-    var result = try std.ArrayList(u8).initCapacity(allocator, total_len);
+    var result = std.ArrayList(u8).initCapacity(allocator, total_len) catch return "";
     errdefer result.deinit(allocator);
 
-    try result.appendSlice(allocator, "---\n");
-    try result.appendSlice(allocator, "name: ");
-    try result.appendSlice(allocator, input.name);
-    try result.appendSlice(allocator, "\n");
-    try result.appendSlice(allocator, "description: \"");
-    try result.appendSlice(allocator, escaped_desc);
-    try result.appendSlice(allocator, "\"\n");
-    try result.appendSlice(allocator, "---\n");
-    try result.appendSlice(allocator, input.content);
-    try result.append(allocator, '\n');
+    result.appendSlice(allocator, "---\n") catch return "";
+    result.appendSlice(allocator, "name: ") catch return "";
+    result.appendSlice(allocator, input.name) catch return "";
+    result.appendSlice(allocator, "\n") catch return "";
+    result.appendSlice(allocator, "description: \"") catch return "";
+    result.appendSlice(allocator, escaped_desc) catch return "";
+    result.appendSlice(allocator, "\"\n") catch return "";
+    result.appendSlice(allocator, "---\n") catch return "";
+    result.appendSlice(allocator, input.content) catch return "";
+    result.append(allocator, '\n') catch return "";
 
-    return result.toOwnedSlice(allocator);
+    return result.toOwnedSlice(allocator) catch return "";
 }
 
 /// Escape special characters in a YAML string value
 /// Handles: double quotes, backslashes
-fn escapeYamlString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+fn escapeYamlString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
     var needs_escape = false;
 
     // Check if escaping is needed
@@ -138,33 +147,33 @@ fn escapeYamlString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     }
 
     if (!needs_escape) {
-        return allocator.dupe(u8, s);
+        return allocator.dupe(u8, s) catch return s;
     }
 
     // Build escaped string
-    var result = std.ArrayList(u8).empty;
+    var result = std.ArrayList(u8).initCapacity(allocator, s.len + 16) catch return s;
     errdefer result.deinit(allocator);
 
     for (s) |c| {
         switch (c) {
-            '"' => try result.appendSlice(allocator, "\\\""),
-            '\\' => try result.appendSlice(allocator, "\\\\"),
-            else => try result.append(allocator, c),
+            '"' => result.appendSlice(allocator, "\\\"") catch return s,
+            '\\' => result.appendSlice(allocator, "\\\\") catch return s,
+            else => result.append(allocator, c) catch return s,
         }
     }
 
-    return result.toOwnedSlice(allocator);
+    return result.toOwnedSlice(allocator) catch return s;
 }
 
 /// Generate success XML response
-fn successToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8) ![]const u8 {
-    return try std.fmt.allocPrint(allocator,
+fn successToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8) []const u8 {
+    return std.fmt.allocPrint(allocator,
         \\<skill>
         \\<name>{s}</name>
         \\<created>true</created>
         \\<path>{s}</path>
         \\</skill>
-    , .{ name, path });
+    , .{ name, path }) catch "<skill><name></name><created>false</created><error>UnknownError</error></skill>";
 }
 
 /// Internal error-to-XML helper (doesn't return error)

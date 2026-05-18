@@ -108,22 +108,22 @@ pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8, is_use_l
         }
         try list.append(allocator, client_id);
     } else {
-        const copy_session_id = try allocator.dupe(u8, session_id);
-        errdefer allocator.free(copy_session_id);
-
+        // session_id is already []const u8 pointing to stable memory
+        // (either from StringHashMap key or a temporary that won't be used after)
+        // We only need to duplicate if we're storing it as a key
         var list = std.ArrayListUnmanaged([16]u8).empty;
         errdefer list.deinit(allocator);
 
         try list.append(allocator, client_id);
 
-        // Use getOrPut instead of put
-        const result = try di.session_to_client_ids.getOrPut(allocator, copy_session_id);
+        // Use getOrPut - this allocates a COPY of session_id as the key
+        const result = try di.session_to_client_ids.getOrPut(allocator, session_id);
         if (result.found_existing) {
             // race: another thread inserted between our getPtr and here
-            allocator.free(copy_session_id);
             list.deinit(allocator);
             try result.value_ptr.append(allocator, client_id);
         } else {
+            // session_id is now owned by the hash map - store the key's copy
             result.value_ptr.* = list;
         }
     }
@@ -234,7 +234,9 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
 
     const maybe_session_id = getSessionIdForClient(client_id, false);
     if (maybe_session_id) |session_id| {
-        // Copy ONCE — needed because unregisterSessionClient frees the key
+        defer di.allocator.free(session_id);
+
+        // Copy for unregisterSessionClient — it frees the key
         const session_id_copy = di.allocator.dupe(u8, session_id) catch return;
         defer di.allocator.free(session_id_copy);
 

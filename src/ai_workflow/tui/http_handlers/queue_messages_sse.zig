@@ -79,7 +79,6 @@ pub fn queueMessagesStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpR
     // Pass session_id directly — registerSessionClient dupes internally
     if (ctx.client_id) |client_id| {
         const copy_key_for_register = try global_allocator.dupe(u8, copy_key_for_event_bus);
-        defer global_allocator.free(copy_key_for_register);
         const client_id_copy: [16]u8 = client_id;
         ai_mod.registerSessionClient(copy_key_for_register, client_id_copy, true) catch {
             std.debug.print("SSE_QUEUE_DEBUG: failed to register client\n", .{});

@@ -28,7 +28,8 @@ const warningMessage = computed(() => {
 // Parse error if any
 const errorMessage = computed(() => {
   const match = props.content.match(/<error>(.*?)<\/error>/)
-  return match ? match[1] : null
+  if (!match || !match[1]) return null
+  return match[1].trim()
 })
 
 // Parse all files with matches
@@ -82,6 +83,10 @@ const totalMatchCount = computed(() => {
 // Total file count
 const totalFileCount = computed(() => fileResults.value.length)
 
+// Status for styling
+const hasWarning = computed(() => !!warningMessage.value)
+const hasError = computed(() => !!errorMessage.value)
+
 // Toggle expansion
 const toggle = () => {
   if (!warningMessage.value && !errorMessage.value && fileResults.value.length > 0) {
@@ -97,233 +102,81 @@ const copyPath = async (e: Event, path: string) => {
 </script>
 
 <template>
-  <div class="sr" :class="{ 'sr--warning': warningMessage, 'sr--error': errorMessage }">
+  <div 
+    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
+    :class="{ 'border-orange-500/50 opacity-85': hasWarning, 'border-red-500/50 opacity-85': hasError }"
+  >
     <!-- Header -->
-    <div class="sr-header" @click="toggle"
-    role="button" tabindex="0"
+    <div 
+      class="group flex flex-wrap items-center gap-1 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
+      @click="toggle"
+      role="button"
+      tabindex="0"
     >
-      <span class="sr-title">search</span>
-      <span class="sr-pattern" :title="searchPattern || ''">
+      <span class="text-[var(--color-violet)] font-semibold text-xs">search</span>
+      <span class="text-[var(--color-violet)] font-semibold max-w-[200px] truncate" :title="searchPattern || ''">
         "{{ searchPattern || 'unknown' }}"
       </span>
-      <span class="sr-path" :title="searchPath || ''">
+      <span class="text-[var(--semantic-text-dim)] text-[0.7rem] max-w-[150px] truncate" :title="searchPath || ''">
         in {{ searchPath || 'unknown' }}
       </span>
       
       <!-- Results summary -->
-      <template v-if="!warningMessage && !errorMessage">
-        <span class="sr-summary">
+      <template v-if="!hasWarning && !hasError">
+        <span class="ml-auto text-[var(--semantic-text-muted)] text-[0.65rem]">
           {{ totalFileCount }} {{ totalFileCount === 1 ? 'file' : 'files' }},
           {{ totalMatchCount }} {{ totalMatchCount === 1 ? 'match' : 'matches' }}
         </span>
       </template>
       
       <!-- Warning or error message -->
-      <template v-else-if="warningMessage">
-        <span class="sr-warning-text">{{ warningMessage }}</span>
+      <template v-else-if="hasWarning">
+        <span class="ml-auto text-orange-500 text-[0.7rem]">{{ warningMessage }}</span>
       </template>
-      <template v-else-if="errorMessage">
-        <span class="sr-error-text">{{ errorMessage }}</span>
+      <template v-else-if="hasError">
+        <span class="ml-auto text-red-500 text-[0.7rem]">{{ errorMessage }}</span>
       </template>
       
       <!-- Toggle indicator -->
-      <span v-if="!warningMessage && !errorMessage" class="sr-toggle">
+      <span v-if="!hasWarning && !hasError" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
 
     <!-- Expanded content -->
-    <div v-if="isExpanded && fileResults.length > 0" class="sr-content">
-      <div v-for="(file, idx) in fileResults" :key="idx" class="sr-file">
+    <div v-if="isExpanded && fileResults.length > 0" class="border-t border-[var(--color-border)] bg-black/[0.02]">
+      <div v-for="(file, idx) in fileResults" :key="idx" class="border-b border-dashed border-[var(--color-border)] last:border-b-0">
         <!-- File header -->
-        <div class="sr-file-header">
-          <span class="sr-file-path" :title="file.path">
+        <div class="flex items-center gap-1 px-2 py-1 bg-black/[0.02] sticky top-0">
+          <span class="flex-1 text-[var(--color-violet)] text-[0.7rem] truncate" :title="file.path">
             {{ file.path }}
           </span>
-          <span class="sr-file-count">{{ file.count }}/{{ file.total }}</span>
-          <button class="sr-copy" @click="(e) => copyPath(e, file.path)" title="Copy path">⎘</button>
+          <span class="text-[var(--semantic-text-muted)] text-[0.65rem]">{{ file.count }}/{{ file.total }}</span>
+          <button 
+            class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+            @click="(e) => copyPath(e, file.path)" 
+            title="Copy path"
+          >
+            ⎘
+          </button>
         </div>
         
         <!-- Match list -->
-        <div class="sr-matches">
-          <div v-for="(m, mIdx) in file.matches" :key="mIdx" class="sr-match">
-            <span class="sr-line-num">{{ m.lineNumber }}</span>
-            <span class="sr-snippet">{{ m.snippet }}</span>
+        <div class="py-0.5">
+          <div 
+            v-for="(m, mIdx) in file.matches" 
+            :key="mIdx" 
+            class="flex py-0.5 px-2 leading-relaxed hover:bg-violet-500/5"
+          >
+            <span class="min-w-[3rem] text-right mr-3 text-[var(--semantic-text-dim)] select-none shrink-0">
+              {{ m.lineNumber }}
+            </span>
+            <span class="whitespace-pre-wrap break-all text-[0.72rem] text-[var(--semantic-text)]">
+              {{ m.snippet }}
+            </span>
           </div>
         </div>
       </div>
     </div>
   </div>
 </template>
-
-<style scoped>
-.sr {
-  font-family: monospace;
-  font-size: 0.75rem;
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--semantic-card-bg);
-  border: 1px solid var(--color-border);
-}
-
-.sr--warning {
-  border-color: var(--color-orange);
-  opacity: 0.85;
-}
-
-.sr--error {
-  border-color: var(--color-red);
-  opacity: 0.85;
-}
-
-.sr-header {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  padding: 0.35rem 0.5rem;
-  cursor: pointer;
-  user-select: none;
-}
-
-.sr-title {
-  color: var(--color-violet);
-  font-weight: 600;
-  font-size: 0.75rem;
-}
-
-.sr-header:hover {
-  background: rgba(139, 92, 246, 0.04);
-}
-
-.sr-pattern {
-  color: var(--color-violet);
-  font-weight: 600;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sr-path {
-  color: var(--semantic-text-dim);
-  font-size: 0.7rem;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sr-summary {
-  margin-left: auto;
-  color: var(--semantic-text-muted);
-  font-size: 0.65rem;
-}
-
-.sr-warning-text,
-.sr-error-text {
-  margin-left: auto;
-  font-size: 0.7rem;
-}
-
-.sr--warning .sr-warning-text {
-  color: var(--color-orange);
-}
-
-.sr--error .sr-error-text {
-  color: var(--color-red);
-}
-
-.sr-toggle {
-  color: var(--semantic-text-muted);
-  font-size: 0.8rem;
-  width: 1rem;
-  text-align: center;
-}
-
-.sr-content {
-  border-top: 1px solid var(--color-border);
-  background: rgba(0, 0, 0, 0.02);
-}
-
-.sr-file {
-  border-bottom: 1px dashed var(--color-border);
-}
-
-.sr-file:last-child {
-  border-bottom: none;
-}
-
-.sr-file-header {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.25rem 0.5rem;
-  background: rgba(0, 0, 0, 0.02);
-  position: sticky;
-  top: 0;
-}
-
-.sr-file-path {
-  flex: 1;
-  color: var(--color-violet);
-  font-size: 0.7rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sr-file-count {
-  color: var(--semantic-text-muted);
-  font-size: 0.65rem;
-}
-
-.sr-copy {
-  padding: 0 0.15rem;
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: var(--semantic-text-muted);
-  opacity: 0;
-  transition: opacity 0.15s;
-  font-size: 0.85rem;
-}
-
-.sr-file-header:hover .sr-copy {
-  opacity: 1;
-}
-
-.sr-copy:hover {
-  color: var(--color-violet);
-}
-
-.sr-matches {
-  padding: 0.25rem 0;
-}
-
-.sr-match {
-  display: flex;
-  padding: 0.125rem 0.5rem;
-  line-height: 1.5;
-}
-
-.sr-match:hover {
-  background: rgba(139, 92, 246, 0.04);
-}
-
-.sr-line-num {
-  color: var(--semantic-text-dim);
-  min-width: 3rem;
-  text-align: right;
-  margin-right: 0.75rem;
-  user-select: none;
-  flex-shrink: 0;
-}
-
-.sr-snippet {
-  color: var(--semantic-text);
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-size: 0.72rem;
-}
-</style>

@@ -12,36 +12,18 @@ const EPOLLRDHUP: u32 = 0x2000;
 
 pub const Self = @This();
 
-/// Simple spinlock mutex for SSE client protection
-pub const SpinMutex = struct {
-    state: u8 = 0,
-
-    pub fn init() SpinMutex {
-        return .{ .state = 0 };
-    }
-
-    pub fn lock(self: *SpinMutex) void {
-        while (@cmpxchgStrong(u8, &self.state, 0, 1, .acquire, .acquire) != null) {
-            // spin
-        }
-    }
-
-    pub fn unlock(self: *SpinMutex) void {
-        @atomicStore(u8, &self.state, 0, .release);
-    }
-};
-
 /// SSE Client state - each connected SSE client has one of these
 pub const SseClient = struct {
+    io: std.Io,
     id: [16]u8,
     fd: i32,
     arena: std.heap.ArenaAllocator,
     alive: bool,
     last_heartbeat: u64,
     message_queue: std.ArrayListUnmanaged([]const u8),
-    lock: SpinMutex,
+    lock: std.Io.Mutex = .init,
 
-    pub fn init(id: [16]u8, fd: i32, parent_allocator: std.mem.Allocator) SseClient {
+    pub fn init(id: [16]u8, fd: i32, parent_allocator: std.mem.Allocator, io: std.Io) SseClient {
         return .{
             .id = id,
             .fd = fd,
@@ -49,7 +31,8 @@ pub const SseClient = struct {
             .alive = true,
             .last_heartbeat = timestamp(),
             .message_queue = .empty,
-            .lock = .{},
+            .lock = .init,
+            .io = io,
         };
     }
 
@@ -98,11 +81,12 @@ pub const SseClient = struct {
 /// SSE Manager - owns all SSE clients and event loop
 pub const SseManager = struct {
     const Self = @This();
+    io: std.Io,
 
     clients: std.AutoHashMapUnmanaged([16]u8, *SseClient),
     timerfd: i32,
     epoll_fd: i32,
-    lock: SpinMutex,
+    lock: std.Io.Mutex = .init,
     allocator: std.mem.Allocator,
     server_allocator: std.mem.Allocator,
     running: bool,
@@ -112,7 +96,7 @@ pub const SseManager = struct {
     /// Takes the client_id as argument
     on_disconnect: ?*const fn (client_id: [16]u8) void = null,
 
-    pub fn init(allocator: std.mem.Allocator, server_allocator: std.mem.Allocator) !SseManager {
+    pub fn init(allocator: std.mem.Allocator, server_allocator: std.mem.Allocator, io: std.Io) !SseManager {
         const epoll_fd_int = c.epoll_create1(0);
         if (epoll_fd_int < 0) return error.EpollCreateFailed;
         const epoll_fd: i32 = @intCast(epoll_fd_int);
@@ -136,17 +120,18 @@ pub const SseManager = struct {
             .clients = .empty,
             .timerfd = timerfd,
             .epoll_fd = epoll_fd,
-            .lock = .{},
+            .lock = .init,
             .allocator = allocator,
             .server_allocator = server_allocator,
             .running = true,
+            .io = io,
         };
     }
 
     pub fn deinit(self: *SseManager) void {
         self.running = false;
-        self.lock.lock();
-        defer self.lock.unlock();
+        self.lock.lock(self.io) catch unreachable;
+        defer self.lock.unlock(self.io);
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
@@ -165,8 +150,8 @@ pub const SseManager = struct {
     }
 
     pub fn registerClient(self: *SseManager, fd: i32) ![16]u8 {
-        self.lock.lock();
-        defer self.lock.unlock();
+        _ = try self.lock.lock(self.io);
+        defer self.lock.unlock(self.io);
 
         // Check if already registered
         if (self.getClientIdByFdLocked(fd)) |id| {
@@ -184,7 +169,7 @@ pub const SseManager = struct {
         }
 
         const client = try self.server_allocator.create(SseClient);
-        client.* = SseClient.init(id, fd, self.allocator);
+        client.* = SseClient.init(id, fd, self.allocator, self.io);
 
         var ev: linux.epoll_event = .{
             .events = EPOLLIN | EPOLLHUP | EPOLLRDHUP,
@@ -200,8 +185,8 @@ pub const SseManager = struct {
     }
 
     pub fn removeClient(self: *SseManager, id: [16]u8) void {
-        self.lock.lock();
-        defer self.lock.unlock();
+        self.lock.lock(self.io) catch unreachable;
+        defer self.lock.unlock(self.io);
 
         if (self.clients.fetchRemove(id)) |entry| {
             // Unregister fd from epoll before closing and deallocating
@@ -216,8 +201,8 @@ pub const SseManager = struct {
     }
 
     pub fn removeClientByFd(self: *SseManager, fd: i32) ?[16]u8 {
-        self.lock.lock();
-        defer self.lock.unlock();
+        self.lock.lock(self.io) catch unreachable;
+        defer self.lock.unlock(self.io);
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
@@ -315,9 +300,9 @@ pub const SseManager = struct {
 
         // If we got events but client is not in our map, we need to clean up the fd from epoll
         // This happens when client was already removed but epoll still has events pending
-        self.lock.lock();
+        self.lock.lock(self.io) catch unreachable;
         const valid = self.clients.contains(client.id);
-        self.lock.unlock();
+        self.lock.unlock(self.io);
 
         if (!valid) {
             if (events & (EPOLLHUP | EPOLLRDHUP) != 0) {
@@ -350,7 +335,7 @@ pub const SseManager = struct {
         // Note: timerfd event already consumed in event loop before calling sendHeartbeat
 
         // Collect client pointers under lock
-        self.lock.lock();
+        self.lock.lock(self.io) catch unreachable;
         var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
         defer client_ptrs.deinit(self.allocator);
 
@@ -358,7 +343,7 @@ pub const SseManager = struct {
         while (it.next()) |entry| {
             client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
         }
-        self.lock.unlock();
+        self.lock.unlock(self.io);
 
         // Perform I/O without holding the lock - track dead clients
         var dead_ids: std.ArrayListUnmanaged([16]u8) = .empty;
@@ -430,24 +415,18 @@ pub const SseManager = struct {
     /// Send event to specific client by ID
     /// NOTE: Caller is responsible for freeing the data slice
     pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
-        std.debug.print("SSE_DEBUG: sendToClient: sending event to client {s}\n", .{id});
 
-        self.lock.lock();
+        _ = try self.lock.lock(self.io);
         const client = self.clients.get(id);
-        self.lock.unlock();
+        self.lock.unlock(self.io);
 
         if (client == null) {
-            std.debug.print("SSE_DEBUG: sendToClient: client not found\n", .{});
             return error.ClientNotFound;
         }
 
-        std.debug.print("SSE_DEBUG: sendToClient: fd={}\n", .{client.?.*.fd});
-        std.debug.print("SSE_DEBUG: sendToClient: data={any}\n", .{data});
-        std.debug.print("SSE_DEBUG: sendToClient: event={any}\n", .{data});
         const n = linux.write(client.?.*.fd, data.ptr, data.len);
         if (n < 0) {
             self.removeClient(id);
-            std.debug.print("SSE_DEBUG: sendToClient: client disconnected, removing client\n", .{});
             return error.ClientDisconnected;
         }
     }
@@ -456,8 +435,8 @@ pub const SseManager = struct {
     pub fn gracefulShutdown(self: *SseManager) void {
         const close_msg = "event: close\ndata: Server shutting down\n\n";
 
-        self.lock.lock();
-        defer self.lock.unlock();
+        _ = self.lock.lock(self.io) catch unreachable;
+        defer self.lock.unlock(self.io);
 
         // First pass: send close messages to all clients
         var it = self.clients.iterator();
@@ -486,8 +465,8 @@ pub const SseManager = struct {
     }
 
     pub fn clientCount(self: *SseManager) usize {
-        self.lock.lock();
-        defer self.lock.unlock();
+        self.lock.lock(self.io);
+        defer self.lock.unlock(self.io);
         return self.clients.count();
     }
 };

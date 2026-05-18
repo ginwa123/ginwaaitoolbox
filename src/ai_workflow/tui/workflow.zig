@@ -129,8 +129,17 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         var queued_messages = try llm_history.getQueueMessages(allocator, db, copy_session_id);
         if (queued_messages) |*messages| {
             for (messages.items) |msg| {
-                // Check if message contains a base64 image
-                const image_url = extractBase64ImageUrl(msg);
+                // Check if message contains base64 images (support for multiple)
+                const image_urls = helpers.image.extractBase64ImageUrls(msg, allocator) catch |err| blk: {
+                    logger.warnFmt("Failed to extract image URLs: {s}", .{@errorName(err)});
+                    break :blk null;
+                };
+                defer {
+                    if (image_urls) |urls| {
+                        for (urls) |url| allocator.free(url);
+                        allocator.free(urls);
+                    }
+                }
 
                 _ = try llm_history.saveMessage(allocator, io, db, .{
                     .session_id = copy_session_id,
@@ -153,14 +162,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .parent_session_id = copy_parent_session_id,
                     .is_input = true,
                     .is_output = false,
-                    .image_urls = blk: {
-                        if (image_url) |url| {
-                            const owned = try allocator.alloc([]const u8, 1);
-                            owned[0] = url;
-                            break :blk owned;
-                        }
-                        break :blk @as(?[][]const u8, null);
-                    },
+                    .image_urls = image_urls,
                 });
 
                 on_event_sent.onEventSendLLMHistory(allocator, .{
@@ -733,39 +735,7 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     stream_ctx.chunk_index += 1;
 }
 
-/// Extract base64 image URL from a message if present
-/// Looks for patterns like: data:image/png;base64,... or data:image/jpeg;base64,...
-/// Returns the full data URL if found, null otherwise
-fn extractBase64ImageUrl(message: []const u8) ?[]const u8 {
-    // Pattern: data:image/<type>;base64,<data>
-    const prefix = "data:image/";
-    const base64_marker = ";base64,";
-    
-    // Find the prefix
-    const data_start = std.mem.indexOf(u8, message, prefix) orelse return null;
-    
-    // Find the base64 marker after the prefix
-    const base64_idx = std.mem.indexOf(u8, message[data_start..], base64_marker) orelse return null;
-    const marker_start = data_start + base64_idx;
-    
-    // Find the end of the data URL - it's the shorter of:
-    // 1. The end of the message
-    // 2. A space or newline after the base64 data starts
-    const data_start_pos = marker_start + base64_marker.len;
-    const remaining = message[data_start_pos..];
-    
-    // Find end of base64 data (space, newline, or end)
-    var end_idx: usize = remaining.len;
-    for (remaining, 0..) |byte, i| {
-        if (byte == ' ' or byte == '\n' or byte == '\r' or byte == '\t') {
-            end_idx = i;
-            break;
-        }
-    }
-    
-    // Return full data URL
-    return message[data_start..data_start_pos + end_idx];
-}
+
 
 /// Filter and merge tools based on allowed_tools setting
 /// - allowed_tools: "" = no tools, "all" = all tools, comma-separated = specific tools

@@ -9,6 +9,7 @@ import DiffView from './DiffView.vue'
 import ReadFile from './ReadFile.vue'
 import Search from './Search.vue'
 import Glob from './Glob.vue'
+import TextReplace from './TextReplace.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -126,19 +127,6 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
 
 
     if (role === 'tool') {
-      if (tool_name === 'text_replace') {
-        const mathPath = content.match(/<path>(.*?)<\/path>/);
-        const mathSuccess = content.match(/<success>([\s\S]*?)<\/success>/);
-        const path = mathPath ? mathPath[1] : null;
-        const isSuccess = mathSuccess ? mathSuccess[1] === 'true' : false;
-        const error = content.match(/<error>([\s\S]*?)<\/error>/);
-        if (isSuccess) {
-          return `<span class="tool-inline">${tool_name} → ${path} ✓</span>`;
-        }
-        console.log('error text replace', error);
-        return `<span class="tool-inline">${tool_name} → ${`${error} ✗`}</span>`;
-      }
-
       if (tool_name === 'read_file') {
         const mathPath = content.match(/<path>(.*?)<\/path>/);
         const path = mathPath ? mathPath[1] : null;
@@ -856,6 +844,10 @@ const compactSession = async () => {
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- Glob component for glob tool -->
                       <Glob v-else-if="msg.tool_name === 'glob'" :content="msg.content" />
+                      <!-- TextReplace component for text_replace tool -->
+                      <TextReplace v-else-if="msg.tool_name === 'text_replace'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                        :diffview-before="msg.diffview_before" :diffview-after="msg.diffview_after" />
                       <!-- Default tool rendering for other tools -->
                       <div v-else class="tool-expandable">
                         <button class="tool-summary" @click="toggleToolExpanded(groupIndex, idx)" :style="[
@@ -865,7 +857,7 @@ const compactSession = async () => {
                           <span v-html="renderResponse(msg.content, msg.role, msg.tool_name, msg.diffview_before, msg.diffview_after)"></span>
                         </button>
                         <div v-if="expandedToolIds.has(`${groupIndex}-${idx}`)" class="tool-full-content">
-                          <pre class="tool-content-pre">{{ msg.content.trim() }}</pre>
+                          <!-- <pre class="tool-content-pre">{{ msg.content.trim() }}</pre> -->
                           <!-- Show diff view when expanded and diff data available -->
                           <DiffView v-if="msg.diffview_before && msg.diffview_after"
                             :before="msg.diffview_before"

@@ -84,7 +84,7 @@ pub const GinwaServer = struct {
             .io = io,
             .address = address,
             .router = router.Router.init(allocator),
-            .sse_manager = try SseManager.init(allocator, allocator),
+            .sse_manager = try SseManager.init(allocator, allocator, io),
             .ctx = null,
             .environment = null,
         };

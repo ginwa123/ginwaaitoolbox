@@ -2,6 +2,7 @@ const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
+const helpers = nalarcore.helpers;
 const ai_mod = nalarcore.ai_mod;
 const llm_history = ai_mod.llm_history;
 
@@ -9,7 +10,7 @@ const llm_history = ai_mod.llm_history;
 pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
 
     const limit_str = req.query.get("limit") orelse "100";
@@ -46,7 +47,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
     const sqlite_db = di.db;
 
     const msg_response = llm_history.getSessionMessagesSorted(allocator, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
-        return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
     };
 
     // Convert llm_history.SessionMessageResponse to http_response.SessionMessagesResponse
@@ -56,7 +57,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
             .id = msg.id,
             .session_id = msg.session_id,
             .role = msg.role,
-            .content = msg.content,
+            .content = try helpers.sanitize.sanitizeUtf8(allocator, msg.content),
             .timestamp = msg.timestamp,
             .is_input = msg.is_input,
             .is_output = msg.is_output,
@@ -77,6 +78,34 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
         .max_capacity_total_tokens = msg_response.max_capacity_total_tokens,
     };
 
-    return res.jsonResponse( .{ .status_code = 200, .data = try http_response.makeSessionMessagesResponse(allocator, http_resp) });
+    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeSessionMessagesResponse(allocator, http_resp) });
 }
 
+fn sanitizeUtf8(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    // Replace invalid UTF-8 bytes with the replacement character U+FFFD
+    var result : std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+    var i: usize = 0;
+    while (i < input.len) {
+        const byte = input[i];
+        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
+            // Invalid start byte - replace with replacement char
+            try result.appendSlice(allocator,&[_]u8{ 0xEF, 0xBF, 0xBD });
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > input.len) {
+            try result.appendSlice(allocator,&[_]u8{ 0xEF, 0xBF, 0xBD });
+            i += 1;
+            continue;
+        }
+        const slice = input[i .. i + seq_len];
+        if (std.unicode.utf8ValidateSlice(slice)) {
+            try result.appendSlice(allocator,slice);
+        } else {
+            try result.appendSlice(allocator,&[_]u8{ 0xEF, 0xBF, 0xBD });
+        }
+        i += seq_len;
+    }
+    return result.toOwnedSlice(allocator);
+}
