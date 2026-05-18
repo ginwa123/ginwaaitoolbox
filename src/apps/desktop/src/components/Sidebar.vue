@@ -29,11 +29,27 @@ const emit = defineEmits<{
   resize: [width: number]
 }>()
 
+// ─── Chats State (moved from ChatsList) ──────────────────────────────────────
+const navItems = ref<Array<{ id: string; name: string; icon: string; active?: boolean; processing?: boolean }>>([])
+const chatsLoading = ref(false)
+const chatsHasMore = ref(false)
+const chatsNextCursor = ref<string | null>(null)
+const chatsSortDirection = ref<'asc' | 'desc'>('desc')
+
 // Expose method to update chat ID
 const updateChatId = (oldId: string, newId: string) => {
   const chatItem = navItems.value.find(item => item.id === oldId)
   if (chatItem) {
     chatItem.id = newId
+  }
+}
+
+// Handle session events from SSE
+const handleSessionEvent = (event: api.SessionEvent) => {
+  console.log('[Sidebar] handleSessionEvent:', event)
+  // Refresh chats on session change
+  if (chatsListRef.value) {
+    chatsListRef.value.loadChats()
   }
 }
 

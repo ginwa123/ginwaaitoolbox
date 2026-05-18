@@ -427,9 +427,9 @@ const loadChatHistory = async (loadMore = false) => {
 
     const newMessages = (data.messages || []).map((msg) => ({
       id: msg.id || `msg-${msg.created_at}`,
-      role: msg.role as 'user' | 'assistant' | 'system',
+      role: msg.role as 'user' | 'assistant' | 'system' | 'tool',
       content: msg.content,
-      timestamp: new Date(msg.created_at * 1000),
+      timestamp: new Date((msg.created_at || 0) * 1000),  // Backend sends created_at in seconds
       tool_name: msg.tool_name,
       diffview_before: msg.diffview_before,
       diffview_after: msg.diffview_after,

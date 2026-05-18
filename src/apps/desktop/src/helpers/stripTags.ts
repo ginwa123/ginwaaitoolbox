@@ -4,7 +4,9 @@
  */
 export function stripThinkingTags(content: string | undefined): string {
   if (!content) return "";
-  let result = content.trim();
+  // Coerce to string to handle numbers, objects, etc. passed at runtime
+  const str = String(content);
+  let result = str.trim();
 
   // Remove <think>... blocks
   result = result.replace(/<think>[\s\S]*?<\/think>/gi, "");

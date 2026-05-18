@@ -99,7 +99,9 @@ const copyPath = async (e: Event, path: string) => {
 <template>
   <div class="sr" :class="{ 'sr--warning': warningMessage, 'sr--error': errorMessage }">
     <!-- Header -->
-    <div class="sr-header" @click="toggle">
+    <div class="sr-header" @click="toggle"
+    role="button" tabindex="0"
+    >
       <span class="sr-title">search</span>
       <span class="sr-pattern" :title="searchPattern || ''">
         "{{ searchPattern || 'unknown' }}"

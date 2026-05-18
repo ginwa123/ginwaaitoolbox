@@ -72,7 +72,9 @@ const copyPath = async (e: Event, path: string) => {
 <template>
   <div class="gl" :class="{ 'gl--warning': warningMessage }">
     <!-- Header -->
-    <div class="gl-header" @click="toggle">
+    <div 
+    role="button" tabindex="0"
+    class="gl-header" @click="toggle">
       <span class="gl-title">glob</span>
       <span class="gl-pattern" :title="globPattern || ''">
         "{{ globPattern || 'unknown' }}"

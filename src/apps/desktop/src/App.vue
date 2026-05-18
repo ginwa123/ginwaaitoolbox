@@ -19,7 +19,7 @@ const checkLLMProcessing = async () => {
     const newState: Record<string, boolean> = {}
     for (const worker of workers) {
       // Extract session ID from worker (workers are identified by session_id)
-      const sessionId = worker.session_id || worker.worker_id
+      const sessionId = worker.session_id || worker.id
       if (sessionId) {
         newState[sessionId] = true
       }
