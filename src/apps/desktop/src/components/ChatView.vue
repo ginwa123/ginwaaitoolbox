@@ -7,9 +7,12 @@ import FileInput from './FileInput.vue'
 import FolderExplorer from './FolderExplorer.vue'
 import DiffView from './DiffView.vue'
 import ReadFile from './ReadFile.vue'
+import WriteFile from './WriteFile.vue'
+import UpdateActivity from './UpdateActivity.vue'
 import Search from './Search.vue'
 import Glob from './Glob.vue'
 import TextReplace from './TextReplace.vue'
+import Bash from './Bash.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -138,18 +141,6 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
         return `<span class="tool-inline">${tool_name} → ${path}</span>`;
       }
 
-      if (tool_name === 'write_file') {
-        const mathPath = content.match(/<file_write>(.*?)<\/file_write>/);
-        const path = mathPath ? mathPath[1] : null;
-        return `<span class="tool-inline">${tool_name} → ${path}</span>`;
-      }
-
-      if (tool_name === 'bash' || tool_name === 'run_command') {
-        const mathCmd = content.match(/<command>([\s\S]*?)<\/command>/);
-        const command = mathCmd && mathCmd[1] ? mathCmd[1].trim() : null;
-        return `<span class="tool-inline">${tool_name} → $ ${command || 'unknown command'}</span>`;
-      }
-
       if (tool_name === 'search') {
         // Return a simple summary - Search component handles full display
         const fileMatch = content.match(/<file path="([^"]+)" total="(\d+)" count="(\d+)">/);
@@ -205,13 +196,6 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
         const mathCount = content.match(/<count>(\d+)<\/count>/);
         const count = mathCount ? mathCount[1] : null;
         return `<span class="tool-inline">${tool_name} → ${count || '0'} agents spawned</span>`;
-      }
-
-      if (tool_name === 'update_activity') {
-        const thoughtArray = content.match(/<thought>(.*?)<\/thought>/);
-        const thoughtQuery = thoughtArray?.[0];
-
-        return `<span class="tool-inline">${tool_name || 'tool'} → ${thoughtQuery}</span>`;
       }
 
       /// Default tool badge for other tools
@@ -839,6 +823,12 @@ const compactSession = async () => {
                       <!-- ReadFile component for read_file tool -->
                       <ReadFile v-if="msg.tool_name === 'read_file'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- WriteFile component for write_file tool -->
+                      <WriteFile v-else-if="msg.tool_name === 'write_file'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- UpdateActivity component for update_activity tool -->
+                      <UpdateActivity v-else-if="msg.tool_name === 'update_activity'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- Search component for search tool -->
                       <Search v-else-if="msg.tool_name === 'search'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
@@ -848,6 +838,9 @@ const compactSession = async () => {
                       <TextReplace v-else-if="msg.tool_name === 'text_replace'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                         :diffview-before="msg.diffview_before" :diffview-after="msg.diffview_after" />
+                      <!-- Bash component for bash tool -->
+                      <Bash v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- Default tool rendering for other tools -->
                       <div v-else class="tool-expandable">
                         <button class="tool-summary" @click="toggleToolExpanded(groupIndex, idx)" :style="[

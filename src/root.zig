@@ -96,11 +96,12 @@ pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8, is_use_l
     var di = try getSingleton();
     const allocator = di.allocator;
     const io = di.io;
+    _ = is_use_lock;
 
-    if (is_use_lock) {
-        di.session_map_lock.lock(io) catch {};
-        defer di.session_map_lock.unlock(io);
-    }
+    // if (is_use_lock) {}
+
+    di.session_map_lock.lock(io) catch {};
+    defer di.session_map_lock.unlock(io);
 
     if (di.session_to_client_ids.getPtr(session_id)) |list| {
         for (list.items) |existing_id| {

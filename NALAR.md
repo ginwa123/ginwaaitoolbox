@@ -291,6 +291,7 @@ When the LLM is processing (detected via `isLLMProcessing` from App.vue), the ac
 - **Never build JSON manually** — Use `std.json.Stringify.valueAlloc(allocator, response_struct, .{})` instead of manual string concatenation with manual escaping. Zig's standard library handles JSON escaping properly and the code is cleaner. Example: see `http_response.zig` for response structure definitions and `skills_list.zig` for usage pattern.
 - **Unit tests belong in separate files** — Keep implementation (`.zig`) and tests (`_test.zig`) separate. This improves code organization, makes tests easier to find, and avoids cluttering the implementation with test code. Never inline tests in production code.
 - **Always register new tests in test_runner.zig** — When creating a new `_test.zig` file, immediately add `_ = @import("path/to/test.zig")` to the appropriate test_runner.zig. This ensures tests are included in the test suite and won't be forgotten.
+- **Desktop app: ALWAYS run `bun run build-only`** — After any Vue component changes (create, edit, delete), MUST run `bun run build-only` in `src/apps/desktop/` directory to verify build succeeds. This is MANDATORY before declaring the task complete.
 
 ## Key Tool Conventions
 

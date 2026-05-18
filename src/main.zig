@@ -78,7 +78,7 @@ pub fn main(init: std.process.Init) !void {
     _ = try nalarcore.setSingleton(ctxParent);
 
     const event_bus_mod = nalarcore.event_bus;
-    var event_bus = event_bus_mod.EventBus.init("my-bus", allocator);
+    var event_bus = event_bus_mod.EventBus.init("my-bus", allocator, io);
     defer event_bus.deinit();
     ctxParent.event_bus = &event_bus;
 
@@ -169,6 +169,8 @@ pub fn main(init: std.process.Init) !void {
     //
     // // LLM API aliases (desktop app uses /api/llm/*)
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
+    // try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
+
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
     try gs.router.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);

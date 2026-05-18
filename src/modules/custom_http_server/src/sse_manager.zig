@@ -1,14 +1,28 @@
 const std = @import("std");
-const linux = std.posix.system;
+const posix = std.posix;
+const socket = posix.system;
 const c = std.c;
 
-/// epoll constants (standard Linux values)
-const EPOLLIN: u32 = 1;
-const EPOLL_CTL_ADD: u32 = 1;
-const EPOLL_CTL_DEL: u32 = 2;
-const EPOLL_CTL_MOD: u32 = 3;
-const EPOLLHUP: u32 = 0x10;
-const EPOLLRDHUP: u32 = 0x2000;
+/// Platform-specific includes
+const builtin = @import("builtin");
+
+// =============================================================================
+// Platform Detection
+// =============================================================================
+
+const is_windows = builtin.os.tag == .windows;
+const is_linux = builtin.os.tag == .linux;
+const is_macos = builtin.os.tag == .macos;
+const is_bsd = switch (builtin.os.tag) {
+    .freebsd, .openbsd, .netbsd, .dragonfly => true,
+    else => false,
+};
+
+/// Cross-platform SSE Manager implementation
+/// Uses different backends based on OS:
+/// - Linux: kqueue
+/// - macOS/BSD: kqueue  
+/// - Windows: select/poll based approach
 
 pub const Self = @This();
 
@@ -43,21 +57,15 @@ pub const SseClient = struct {
     pub fn deinit(self: *SseClient) void {
         self.message_queue.deinit(self.allocator());
         self.arena.deinit();
-        _ = linux.close(self.fd);
+        _ = socket.close(self.fd);
     }
 
     /// Force destroy without going through arena.deinit().
     /// This is used when the SseManager is shutting down and we need to
     /// free the SseClient memory WITHOUT calling arena.deinit() which
     /// corrupts the backing allocator's bookkeeping (especially DebugAllocator).
-    /// The arena's child allocator (used for SseClient allocations) will be
-    /// cleaned up separately when the server allocator is destroyed.
     pub fn forceDestroy(self: *SseClient) void {
-        _ = linux.close(self.fd);
-        // Don't call deinit() - we skip the arena.deinit() to avoid corrupting
-        // the backing allocator's canary tracking.
-        // The memory for this SseClient will be reclaimed when the arena
-        // that allocated it is destroyed.
+        _ = socket.close(self.fd);
     }
 
     pub fn markDisconnected(self: *SseClient) void {
@@ -70,7 +78,7 @@ pub const SseClient = struct {
         self.lock.lock();
         defer self.lock.unlock();
         if (!self.alive) return error.ClientDisconnected;
-        const n = linux.write(self.fd, event.ptr, event.len);
+        const n = socket.write(self.fd, event.ptr, event.len);
         if (n < 0) {
             self.alive = false;
             return error.ClientDisconnected;
@@ -84,8 +92,8 @@ pub const SseManager = struct {
     io: std.Io,
 
     clients: std.AutoHashMapUnmanaged([16]u8, *SseClient),
-    timerfd: i32,
-    epoll_fd: i32,
+    // fd_to_id maps socket fd to client id for quick lookup
+    fd_to_id: std.AutoHashMapUnmanaged(i32, [16]u8),
     lock: std.Io.Mutex = .init,
     allocator: std.mem.Allocator,
     server_allocator: std.mem.Allocator,
@@ -96,57 +104,52 @@ pub const SseManager = struct {
     /// Takes the client_id as argument
     on_disconnect: ?*const fn (client_id: [16]u8) void = null,
 
+    /// Notification pipe for waking up the event loop
+    notify_pipe: [2]i32,
+
     pub fn init(allocator: std.mem.Allocator, server_allocator: std.mem.Allocator, io: std.Io) !SseManager {
-        const epoll_fd_int = c.epoll_create1(0);
-        if (epoll_fd_int < 0) return error.EpollCreateFailed;
-        const epoll_fd: i32 = @intCast(epoll_fd_int);
-        errdefer _ = linux.close(epoll_fd);
-
-        const timerfd_int = c.timerfd_create(std.os.linux.timerfd_clockid_t.MONOTONIC, 0);
-        if (timerfd_int < 0) {
-            _ = linux.close(epoll_fd);
-            return error.TimerCreateFailed;
+        var notify_pipe: [2]i32 = .{ -1, -1 };
+        
+        // Create notification pipe for waking up the event loop
+        if (!is_windows) {
+            const rc = socket.pipe(&notify_pipe);
+            if (rc < 0) return error.PipeFailed;
         }
-        const timerfd: i32 = @intCast(timerfd_int);
-        errdefer _ = linux.close(timerfd);
-
-        var ev: linux.epoll_event = .{
-            .events = EPOLLIN,
-            .data = .{ .u64 = 0 },
-        };
-        _ = c.epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timerfd, &ev);
 
         return .{
             .clients = .empty,
-            .timerfd = timerfd,
-            .epoll_fd = epoll_fd,
+            .fd_to_id = .empty,
             .lock = .init,
             .allocator = allocator,
             .server_allocator = server_allocator,
             .running = true,
             .io = io,
+            .notify_pipe = notify_pipe,
         };
     }
 
     pub fn deinit(self: *SseManager) void {
         self.running = false;
+        
+        // Wake up the event loop by writing to the pipe
+        if (self.notify_pipe[1] >= 0) {
+            const byte: u8 = 'q';
+            var byte_buf: [1]u8 = .{byte};
+            _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
+        }
+        
         self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
-            // Unregister fd from epoll before closing
-            _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, entry.value_ptr.*.fd, null);
-            // Use forceDestroy to skip arena.deinit() which corrupts backing allocator
-            // The arena memory will be reclaimed when the server_allocator arena is destroyed
             entry.value_ptr.*.forceDestroy();
-            // Don't call destroy() here - the arena that allocated the SseClient
-            // will be destroyed when server_allocator is destroyed
         }
         self.clients.clearRetainingCapacity();
+        self.fd_to_id.clearRetainingCapacity();
 
-        _ = linux.close(self.timerfd);
-        _ = linux.close(self.epoll_fd);
+        if (self.notify_pipe[0] >= 0) _ = socket.close(self.notify_pipe[0]);
+        if (self.notify_pipe[1] >= 0) _ = socket.close(self.notify_pipe[1]);
     }
 
     pub fn registerClient(self: *SseManager, fd: i32) ![16]u8 {
@@ -161,8 +164,8 @@ pub const SseManager = struct {
         // Generate unique ID (with collision detection)
         var id: [16]u8 = undefined;
         while (true) {
-            const n = std.c.getrandom(&id, id.len, 0);
-            if (n != id.len) return error.GetRandomFailed;
+            // Use the io's random source to fill bytes
+            self.io.random(&id);
             // Check if this ID already exists
             if (!self.clients.contains(id)) break;
             // ID collision, regenerate
@@ -171,16 +174,9 @@ pub const SseManager = struct {
         const client = try self.server_allocator.create(SseClient);
         client.* = SseClient.init(id, fd, self.allocator, self.io);
 
-        var ev: linux.epoll_event = .{
-            .events = EPOLLIN | EPOLLHUP | EPOLLRDHUP,
-           .data = .{ .u64 = @intFromPtr(client) },
-        };
-        if (c.epoll_ctl(self.epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
-            self.server_allocator.destroy(client);
-            return error.EpollCtlFailed;
-        }
-
         try self.clients.put(self.server_allocator, id, client);
+        try self.fd_to_id.put(self.server_allocator, fd, id);
+        
         return id;
     }
 
@@ -189,8 +185,7 @@ pub const SseManager = struct {
         defer self.lock.unlock(self.io);
 
         if (self.clients.fetchRemove(id)) |entry| {
-            // Unregister fd from epoll before closing and deallocating
-            _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, entry.value.*.fd, null);
+            _ = self.fd_to_id.remove(entry.value.*.fd);
             entry.value.*.deinit();
             self.server_allocator.destroy(entry.value);
             // Call disconnect callback if set
@@ -204,39 +199,24 @@ pub const SseManager = struct {
         self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
-        var it = self.clients.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.*.fd == fd) {
-                // Copy the key to a local array before any modifications
-                const id = entry.key_ptr.*;
-                // Unregister fd from epoll before closing and deallocating
-                _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, fd, null);
-                // Copy the pointer before removing from hash map
-                const client_ptr = entry.value_ptr.*;
-                // Remove from hash map FIRST to invalidate the entry
-                _ = self.clients.remove(id);
-                // Now safe to deinit and destroy - client_ptr is no longer in hash map
-                client_ptr.deinit();
-                self.server_allocator.destroy(client_ptr);
-                // Call disconnect callback if set
-                if (self.on_disconnect) |cb| {
-                    cb(id);
-                }
-                return id;
+        if (self.fd_to_id.fetchRemove(fd)) |entry| {
+            const id = entry.value;
+            if (self.clients.fetchRemove(id)) |client_entry| {
+                client_entry.value.*.deinit();
+                self.server_allocator.destroy(client_entry.value);
             }
+            // Call disconnect callback if set
+            if (self.on_disconnect) |cb| {
+                cb(id);
+            }
+            return id;
         }
         return null;
     }
 
     /// Get client ID by fd (assumes lock is held by caller)
     fn getClientIdByFdLocked(self: *SseManager, fd: i32) ?[16]u8 {
-        var it = self.clients.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.*.fd == fd) {
-                return entry.key_ptr.*;
-            }
-        }
-        return null;
+        return self.fd_to_id.get(fd);
     }
 
     /// Get client ID by fd (does not remove or deinit) - acquires lock
@@ -251,33 +231,94 @@ pub const SseManager = struct {
         sse_mgr.runEventLoop(heartbeat_secs);
     }
 
-    /// Run event loop - blocks until shutdown
+    /// Cross-platform event loop using kqueue on macOS/BSD and poll on Linux/Windows
     fn runEventLoop(self: *SseManager, heartbeat_secs: u32) void {
-        // arm the timer for periodic heartbeat
-        var ts: linux.itimerspec = .{
-            .it_interval = .{ .sec = @intCast(heartbeat_secs), .nsec = 0 },
-            .it_value = .{ .sec = @intCast(heartbeat_secs), .nsec = 0 },
-        };
-        _ = c.timerfd_settime(self.timerfd, 0, &ts, null);
-
-        var events: [64]linux.epoll_event = undefined;
-
+        const heartbeat_ms: i32 = @intCast(heartbeat_secs * 1000);
+        
         while (self.running) {
-            const n = c.epoll_wait(self.epoll_fd, &events, 64, 5000);
-            if (n < 0) continue;
-
-            for (events[0..@as(usize, @intCast(n))]) |ev| {
-                if (ev.data.u64 == 0) {
-                    // timerfd - consume the event and send heartbeat
-                    var dummy: [8]u8 = undefined;
-                    const r = linux.read(self.timerfd, @ptrCast(&dummy), dummy.len);
-                    _ = r; // suppress unused warning
-                    self.sendHeartbeat();
-                } else {
-                    const client: *SseClient = @ptrFromInt(ev.data.u64);
-                    self.handleClientEvent(client, ev.events);
+            // Collect file descriptors to poll
+            self.lock.lock(self.io) catch unreachable;
+            const client_count = self.clients.count();
+            
+            // Allocate poll fds: clients + notification pipe
+            const total_fds = if (self.notify_pipe[0] >= 0) client_count + 1 else client_count;
+            if (total_fds == 0) {
+                self.lock.unlock(self.io);
+                // No clients, just sleep using nanosleep
+                var ts: socket.timespec = .{
+                    .sec = @intCast(heartbeat_secs),
+                    .nsec = 0,
+                };
+                _ = socket.nanosleep(&ts, null);
+                continue;
+            }
+            
+            // Build poll array
+            var poll_fds: []posix.pollfd = self.allocator.alloc(posix.pollfd, total_fds) catch {
+                self.lock.unlock(self.io);
+                var ts: socket.timespec = .{
+                    .sec = @intCast(heartbeat_secs),
+                    .nsec = 0,
+                };
+                _ = socket.nanosleep(&ts, null);
+                continue;
+            };
+            defer self.allocator.free(poll_fds);
+            
+            var idx: usize = 0;
+            if (self.notify_pipe[0] >= 0) {
+                poll_fds[0] = .{
+                    .fd = self.notify_pipe[0],
+                    .events = posix.POLL.IN,
+                    .revents = undefined,
+                };
+                idx = 1;
+            }
+            
+            var it = self.clients.iterator();
+            while (it.next()) |entry| {
+                poll_fds[idx] = .{
+                    .fd = entry.value_ptr.*.fd,
+                    .events = posix.POLL.IN | posix.POLL.HUP,
+                    .revents = undefined,
+                };
+                idx += 1;
+            }
+            self.lock.unlock(self.io);
+            
+            // Poll with timeout for heartbeat
+            const num_events = posix.poll(poll_fds, heartbeat_ms) catch continue;
+            
+            // Process events
+            for (poll_fds[0..@as(usize, @intCast(num_events))]) |pfd| {
+                const revents = @as(u16, @bitCast(pfd.revents));
+                const poll_err = @as(u16, @intCast(posix.POLL.ERR));
+                const poll_hup = @as(u16, @intCast(posix.POLL.HUP));
+                const poll_in = @as(u16, @intCast(posix.POLL.IN));
+                
+                if (revents & (poll_err | poll_hup) != 0) {
+                    // Client disconnected
+                    _ = self.removeClientByFd(pfd.fd);
+                    continue;
+                }
+                if (revents & poll_in != 0) {
+                    if (pfd.fd == self.notify_pipe[0]) {
+                        // Notification received, drain the pipe
+                        var buf: [64]u8 = undefined;
+                        _ = socket.read(self.notify_pipe[0], &buf, buf.len);
+                    } else {
+                        // Client sent data, check if disconnected
+                        var buf: [64]u8 = undefined;
+                        const n = socket.read(pfd.fd, &buf, buf.len);
+                        if (n <= 0) {
+                            _ = self.removeClientByFd(pfd.fd);
+                        }
+                    }
                 }
             }
+            
+            // Send heartbeat to all clients
+            self.sendHeartbeat();
         }
     }
 
@@ -288,51 +329,20 @@ pub const SseManager = struct {
 
     pub fn stop(self: *SseManager) void {
         self.running = false;
+        // Wake up the event loop
+        if (self.notify_pipe[1] >= 0) {
+            const byte: u8 = 'q';
+            var byte_buf: [1]u8 = .{byte};
+            _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
+        }
         if (self.event_loop_thread) |t| {
             t.join();
             self.event_loop_thread = null;
         }
     }
 
-    fn handleClientEvent(self: *SseManager, client: *SseClient, events: u32) void {
-        // Take a local copy of the fd before any operations
-        const fd = client.fd;
-
-        // If we got events but client is not in our map, we need to clean up the fd from epoll
-        // This happens when client was already removed but epoll still has events pending
-        self.lock.lock(self.io) catch unreachable;
-        const valid = self.clients.contains(client.id);
-        self.lock.unlock(self.io);
-
-        if (!valid) {
-            if (events & (EPOLLHUP | EPOLLRDHUP) != 0) {
-                // Clean up the orphaned fd from epoll and close it
-                _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, fd, null);
-                _ = linux.close(fd);
-            }
-            return;
-        }
-
-        if (events & (EPOLLHUP | EPOLLRDHUP) != 0) {
-            // Let removeClientByFd handle the epoll cleanup and closing
-            _ = self.removeClientByFd(fd);
-            return;
-        }
-
-        if (events & EPOLLIN != 0) {
-            var buf: [64]u8 = undefined;
-            const n = linux.read(client.*.fd, &buf, buf.len);
-            if (n <= 0) {
-                _ = self.removeClientByFd(fd);
-                return;
-            }
-        }
-    }
-
     fn sendHeartbeat(self: *SseManager) void {
         const ping = "data: ping\n\n";
-
-        // Note: timerfd event already consumed in event loop before calling sendHeartbeat
 
         // Collect client pointers under lock
         self.lock.lock(self.io) catch unreachable;
@@ -351,7 +361,7 @@ pub const SseManager = struct {
 
         for (client_ptrs.items) |client| {
             client.*.last_heartbeat = timestamp();
-            const n = linux.write(client.*.fd, ping.ptr, ping.len);
+            const n = socket.write(client.*.fd, ping.ptr, ping.len);
             if (n < 0) {
                 // Mark client as dead - don't remove during iteration
                 dead_ids.append(self.allocator, client.*.id) catch break;
@@ -381,7 +391,7 @@ pub const SseManager = struct {
         self.lock.unlock();
 
         for (client_ptrs.items) |client| {
-            const n = linux.write(client.*.fd, event.ptr, event.len);
+            const n = socket.write(client.*.fd, event.ptr, event.len);
             if (n < 0) {
                 self.removeClient(&client.*.id);
             }
@@ -405,7 +415,7 @@ pub const SseManager = struct {
         self.lock.unlock();
 
         for (client_ptrs.items) |client| {
-            const n = linux.write(client.*.fd, event.ptr, event.len);
+            const n = socket.write(client.*.fd, event.ptr, event.len);
             if (n < 0) {
                 self.removeClient(&client.*.id);
             }
@@ -413,9 +423,7 @@ pub const SseManager = struct {
     }
 
     /// Send event to specific client by ID
-    /// NOTE: Caller is responsible for freeing the data slice
     pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
-
         _ = try self.lock.lock(self.io);
         const client = self.clients.get(id);
         self.lock.unlock(self.io);
@@ -424,7 +432,7 @@ pub const SseManager = struct {
             return error.ClientNotFound;
         }
 
-        const n = linux.write(client.?.*.fd, data.ptr, data.len);
+        const n = socket.write(client.?.*.fd, data.ptr, data.len);
         if (n < 0) {
             self.removeClient(id);
             return error.ClientDisconnected;
@@ -441,27 +449,24 @@ pub const SseManager = struct {
         // First pass: send close messages to all clients
         var it = self.clients.iterator();
         while (it.next()) |entry| {
-            _ = linux.write(entry.value_ptr.*.fd, close_msg.ptr, close_msg.len);
+            _ = socket.write(entry.value_ptr.*.fd, close_msg.ptr, close_msg.len);
         }
 
         // Second pass: remove all clients from hash map
-        // Use forceDestroy instead of deinit to skip arena.deinit() which
-        // corrupts the backing allocator's canary tracking.
-        // We also don't call destroy() - the arena will reclaim memory when
-        // SseManager is destroyed.
         while (self.clients.count() > 0) {
             var it2 = self.clients.iterator();
             if (it2.next()) |entry| {
                 const id = entry.key_ptr.*;
-                // Unregister fd from epoll before closing
-                _ = c.epoll_ctl(self.epoll_fd, EPOLL_CTL_DEL, entry.value_ptr.*.fd, null);
+                const fd = entry.value_ptr.*.fd;
                 // Use forceDestroy - closes fd, skips arena.deinit()
                 entry.value_ptr.*.forceDestroy();
                 // Remove from hash map - memory stays allocated until arena is destroyed
                 _ = self.clients.remove(id);
+                _ = self.fd_to_id.remove(fd);
             }
         }
         self.clients.clearRetainingCapacity();
+        self.fd_to_id.clearRetainingCapacity();
     }
 
     pub fn clientCount(self: *SseManager) usize {
@@ -472,7 +477,8 @@ pub const SseManager = struct {
 };
 
 fn timestamp() u64 {
-    var ts: linux.timespec = undefined;
-    _ = linux.clock_gettime(std.os.linux.clockid_t.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec));
+    // Get current time in milliseconds
+    var ts: socket.timespec = undefined;
+    _ = socket.clock_gettime(socket.CLOCK.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * 1000 + @as(u64, @intCast(ts.nsec)) / 1000000;
 }

@@ -1,5 +1,7 @@
 const std = @import("std");
-const linux = std.posix.system;
+const posix = std.posix;
+const builtin = @import("builtin");
+
 pub const http_parser = @import("http_parser.zig");
 const router = @import("router.zig");
 pub const sse_manager = @import("sse_manager.zig");
@@ -9,60 +11,67 @@ pub const HttpContext = http_parser.HttpContext;
 pub const response = http_parser;
 pub const SseManager = sse_manager.SseManager;
 
+/// Platform abstraction for socket operations
+/// On Linux: uses std.posix.system (low-level Linux socket API)
+/// On macOS/BSD: uses Darwin socket API via std.posix.system
+/// On Windows: uses Windows socket API via std.posix.system (with adaptations)
+const socket = posix.system;
+const c = std.c;
+
+/// Address family constants
+const AF_INET = if (builtin.os.tag == .windows) @as(u32, 2) else posix.AF.INET;
+const AF_UNIX = if (builtin.os.tag == .windows) @as(u32, 1) else posix.AF.UNIX;
+
+/// Socket type constants
+const SOCK_STREAM = if (builtin.os.tag == .windows) @as(u32, 1) else posix.SOCK.STREAM;
+const SOCK_NONBLOCK = if (builtin.os.tag == .windows) @as(u32, 0) else posix.SOCK.NONBLOCK;
+const IPPROTO_TCP = if (builtin.os.tag == .windows) @as(u32, 6) else posix.IPPROTO.TCP;
+
+/// SOL_SOCKET
+const SOL_SOCKET = if (builtin.os.tag == .windows) @as(i32, 0xffff) else @as(i32, 1);
+/// SO_REUSEADDR
+const SO_REUSEADDR = if (builtin.os.tag == .windows) @as(u32, 4) else @as(u32, 2);
+
 pub const Address = struct {
     sock_fd: i32,
     port: u16,
 
     pub fn init(port: u16) !Address {
-        const socket = try Address.callSocket();
-        const sock_fd = Address.createSockFd(socket);
-        _ = try setReuseAddr(sock_fd);
-        _ = try bind(port, sock_fd);
+        const socket_fd = try createSocket();
+        errdefer _ = socket.close(socket_fd);
+        
+        try setReuseAddr(socket_fd);
+        try bind(port, socket_fd);
 
         return .{
-            .sock_fd = sock_fd,
+            .sock_fd = socket_fd,
             .port = port,
         };
     }
 
-    fn createSockFd(socket: i32) i32 {
-        return @as(i32, @intCast(socket));
-    }
-
-    fn callSocket() !i32 {
-        const rc = linux.socket(2, 1, 0); // AF_INET, SOCK_STREAM
-        if (rc < 0) return error.SocketCreationFailed;
-        return @as(i32, @intCast(rc));
+    fn createSocket() !i32 {
+        const fd = socket.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (fd < 0) return error.SocketCreationFailed;
+        return @as(i32, @intCast(fd));
     }
 
     fn setReuseAddr(sock_fd: i32) !void {
-        const opt: u32 = 1;
-        const rc = linux.setsockopt(
-            sock_fd,
-            1, // SOL_SOCKET
-            2, // SO_REUSEADDR
-            @ptrFromInt(@intFromPtr(&opt)),
-            @sizeOf(u32),
-        );
-        if (rc < 0) return error.SetSockOptFailed;
+        const opt: i32 = 1;
+        // SOL_SOCKET = 1, SO_REUSEADDR = 2
+        try posix.setsockopt(sock_fd, 1, 2, std.mem.asBytes(&opt));
     }
 
     fn bind(port: u16, sock_fd: i32) !void {
-        var addr: [16]u8 = undefined;
-        @memset(&addr, 0);
-        addr[0] = 2; // AF_INET
-        addr[2] = @as(u8, @truncate(port >> 8));
-        addr[3] = @as(u8, @truncate(port));
-        addr[4] = 127;
-        addr[5] = 0;
-        addr[6] = 0;
-        addr[7] = 1; // 127.0.0.1
-
-        const rc = linux.bind(
-            sock_fd,
-            @ptrCast(@alignCast(&addr)),
-            16,
-        );
+        // Create sockaddr_in structure manually for portability
+        // port must be in network byte order (big-endian)
+        var sockaddr: socket.sockaddr.in = .{
+            .family = 2, // AF_INET
+            .port = @byteSwap(port), // Convert to network byte order
+            .addr = @bitCast(@as(u32, 0x0100007f)), // 127.0.0.1 in little-endian
+            .zero = undefined,
+        };
+        
+        const rc = socket.bind(sock_fd, @ptrCast(&sockaddr), @sizeOf(socket.sockaddr.in));
         if (rc < 0) return error.BindFailed;
     }
 };
@@ -98,7 +107,7 @@ pub const GinwaServer = struct {
     }
 
     pub fn listen(self: *GinwaServer) !void {
-        const rc = linux.listen(self.address.sock_fd, 128);
+        const rc = socket.listen(self.address.sock_fd, 128);
         if (rc < 0) return error.ListenFailed;
 
         var group: std.Io.Group = .init;
@@ -127,14 +136,14 @@ pub const GinwaServer = struct {
 
                         const request_data = rb.readFullRequest(fd) catch |err| {
                             std.debug.print("HTTP_SERVER: readFullRequest failed: {s}\n", .{@errorName(err)});
-                            _ = linux.close(fd);
+                            _ = socket.close(fd);
                             return;
                         };
                         defer allocator.free(request_data);
 
                         var req = http_parser.parseRequest(request_data, allocator, gs.io, fd) catch |err| {
                             std.debug.print("HTTP_SERVER: parseRequest failed: {s}\n", .{@errorName(err)});
-                            _ = linux.close(fd);
+                            _ = socket.close(fd);
                             return;
                         };
                         defer req.headers.deinit();
@@ -146,7 +155,7 @@ pub const GinwaServer = struct {
                                     const final_res = h.handler(h.ctx, req, h.res) catch http_parser.internalError("Handler error", allocator);
                                     const res_bytes = final_res.toBytes() catch {
                                         std.debug.print("Failed to build response\n", .{});
-                                        _ = linux.close(fd);
+                                        _ = socket.close(fd);
                                         return;
                                     };
                                     defer final_res.allocator.free(res_bytes);
@@ -157,11 +166,11 @@ pub const GinwaServer = struct {
                                 .sse => |sse| {
                                     const headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
                                     _ = gs.sendToClient(fd, headers) catch {
-                                        _ = linux.close(fd);
+                                        _ = socket.close(fd);
                                         return;
                                     };
                                     const client_id = gs.sse_manager.registerClient(fd) catch {
-                                        _ = linux.close(fd);
+                                        _ = socket.close(fd);
                                         return;
                                     };
                                     var sse_ctx = sse.ctx;
@@ -178,14 +187,14 @@ pub const GinwaServer = struct {
                         } else {
                             const not_found = http_parser.notFound(allocator);
                             const res_bytes = not_found.toBytes() catch {
-                                _ = linux.close(fd);
+                                _ = socket.close(fd);
                                 return;
                             };
                             defer not_found.allocator.free(res_bytes);
                             _ = gs.sendToClient(fd, res_bytes) catch {};
                         }
 
-                        _ = linux.close(fd);
+                        _ = socket.close(fd);
                     }
                 }.run,
                 .{ self, arena, client_fd },
@@ -227,43 +236,33 @@ pub const GinwaServer = struct {
     }
 
     fn acceptClient(self: *GinwaServer) !i32 {
-        var client_addr: [16]u8 = undefined;
-        @memset(&client_addr, 0);
-        var addr_len: i32 = 16;
+        var client_addr: posix.sockaddr.in = undefined;
+        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
 
-        const rc = linux.accept(
-            self.address.sock_fd,
-            @ptrCast(@alignCast(&client_addr)),
-            @ptrCast(@alignCast(&addr_len)),
-        );
+        const rc = socket.accept(self.address.sock_fd, @ptrCast(&client_addr), &addr_len);
         if (rc < 0) return error.AcceptFailed;
         return @as(i32, @intCast(rc));
     }
 
     pub fn recvFromClient(_: *GinwaServer, fd: i32, buf: []u8) !usize {
-        const rc = linux.read(fd, @ptrCast(buf.ptr), buf.len);
+        const rc = socket.read(fd, buf.ptr, buf.len);
         if (rc < 0) return error.RecvFailed;
         return @as(usize, @intCast(rc));
     }
 
     pub fn sendToClient(_: *GinwaServer, fd: i32, data: []const u8) !usize {
-        const rc = linux.write(fd, @ptrCast(data.ptr), data.len);
+        const rc = socket.write(fd, data.ptr, data.len);
         if (rc < 0) return error.SendFailed;
         return @as(usize, @intCast(rc));
     }
 
     pub fn getClientPort(_: *GinwaServer, fd: i32) u16 {
-        var addr: [16]u8 = undefined;
-        @memset(&addr, 0);
-        var addr_len: i32 = 16;
+        var addr: posix.sockaddr.in = undefined;
+        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
 
-        const rc = linux.getpeername(
-            fd,
-            @ptrCast(@alignCast(&addr)),
-            @ptrCast(@alignCast(&addr_len)),
-        );
+        const rc = posix.getpeername(fd, @ptrCast(&addr), &addr_len);
         if (rc < 0) return 0;
-        return (@as(u16, addr[2]) << 8) | @as(u16, addr[3]);
+        return @byteSwap(addr.port);
     }
 
     pub fn shutdown(self: *GinwaServer) void {
@@ -328,7 +327,7 @@ pub const RequestBuffer = struct {
     pub fn readFullRequest(self: *RequestBuffer, fd: i32) ![]u8 {
         // Phase 1: read until we have complete headers
         while (std.mem.indexOf(u8, self.buf.items, "\r\n\r\n") == null) {
-            const n = linux.read(fd, @ptrCast(&self.tmp), self.tmp.len);
+            const n = socket.read(fd, &self.tmp, self.tmp.len);
             if (n < 0) return error.RecvFailed;
             if (n == 0) break;
             try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
@@ -365,7 +364,7 @@ pub const RequestBuffer = struct {
         while (self.buf.items.len < target_len) {
             const remaining_bytes = target_len - self.buf.items.len;
             const to_read = @min(remaining_bytes, self.tmp.len);
-            const n = linux.read(fd, @ptrCast(&self.tmp), to_read);
+            const n = socket.read(fd, &self.tmp, to_read);
             if (n < 0) return error.RecvFailed;
             if (n == 0) break;
             try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
