@@ -24,7 +24,6 @@ const sidebarStore = useSidebarStore()
 const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
 
 // Helper to check if a session is processing
-const isSessionProcessing = (sessionId: string) => !!processingState.value[sessionId]
 
 // State
 const chatsLoading = ref(false)
@@ -32,7 +31,6 @@ const navItems = ref<{ id: string; name: string; active?: boolean; processing?: 
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
-const chatsContainerRef = ref<HTMLElement | null>(null)
 
 // Chats resize handling
 const isChatsResizing = ref(false)
@@ -95,7 +93,7 @@ watch(chatsSortDirection, (newVal) => {
 watch(processingState, (state) => {
   navItems.value = navItems.value.map(item => ({
     ...item,
-    processing: !!state[item.id] && item.active
+    processing: !!state[item.id]  // Show spinner for ANY processing chat, not just active
   }))
 }, { deep: true })
 
@@ -121,7 +119,7 @@ const loadChats = async () => {
       id: session.session_id,
       name: session.session_name || 'New Chat',
       active: savedSessionId === session.session_id,
-      processing: !!processingState.value[session.session_id] && savedSessionId === session.session_id,
+      processing: !!processingState.value[session.session_id],  // Show spinner for any processing chat
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
@@ -316,8 +314,8 @@ onMounted(async () => {
 // Watch for navItems changes to sync active state
 watch(navItems, (newItems) => {
   newItems.forEach((item, index) => {
-    if (item.active && processingState.value[item.id]) {
-      item.processing = true
+    if (item.processing && processingState.value[item.id]) {
+      item.processing = true  // Keep processing state true
     }
   })
 }, { deep: true })
@@ -326,7 +324,7 @@ watch(navItems, (newItems) => {
 watch(processingState, (state) => {
   navItems.value = navItems.value.map(item => ({
     ...item,
-    processing: !!state[item.id] && item.active
+    processing: !!state[item.id]  // Show spinner for ANY processing chat, not just active
   }))
 })
 

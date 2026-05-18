@@ -8,6 +8,7 @@ import FolderExplorer from './FolderExplorer.vue'
 import DiffView from './DiffView.vue'
 import ReadFile from './ReadFile.vue'
 import Search from './Search.vue'
+import Glob from './Glob.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -168,23 +169,32 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
           const matchCount = fileMatch[3];
           return `<span class="tool-inline">search → ${matchCount} matches</span>`;
         }
-        
+
         const warningMatch = content.match(/<warning>(.*?)<\/warning>/);
         if (warningMatch) {
           return `<span class="tool-inline">search → ${warningMatch[1]}</span>`;
         }
-        
+
         const errorMatch = content.match(/<error>(.*?)<\/error>/);
         return `<span class="tool-inline">search → ${errorMatch?.[1] || 'unknown'}</span>`;
       }
 
       if (tool_name === 'glob') {
-        const mathPattern = content.match(/<pattern>(.*?)<\/pattern>/) || content.match(/"(.*?)"/);
-        const pattern = mathPattern ? mathPattern[1] : null;
-        const mathResults = content.match(/<count>(\d+)<\/count>/);
-        const count = mathResults ? mathResults[1] : null;
-        const resultsText = count ? ` (${count} files)` : '';
-        return `<span class="tool-inline">${tool_name} → "${pattern || 'unknown'}"${resultsText}</span>`;
+        // Return a simple summary - Glob component handles full display
+        const patternMatch = content.match(/pattern="([^"]+)"/);
+        const totalMatch = content.match(/total="(\d+)"/);
+        const returnedMatch = content.match(/returned="(\d+)"/);
+        const warningMatch = content.match(/<warning>(.*?)<\/warning>/);
+
+        if (warningMatch) {
+          return `<span class="tool-inline">glob → ${warningMatch[1]}</span>`;
+        }
+
+        const pattern = patternMatch ? patternMatch[1] : 'unknown';
+        const total = totalMatch ? totalMatch[1] : '0';
+        const returned = returnedMatch ? returnedMatch[1] : total;
+        const resultsText = total !== '0' ? ` (${returned} files)` : '';
+        return `<span class="tool-inline">glob → "${pattern}"${resultsText}</span>`;
       }
 
       if (tool_name === 'web_search') {
@@ -826,6 +836,7 @@ const compactSession = async () => {
             <!-- Bubble -->
             <div class="max-w-[90%] min-w-0">
               <div class="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
+                   role="button" tabindex="0"
                 :class="group.role === 'user' ? 'whitespace-pre-wrap break-words' : 'markdown-content'" :style="group.role === 'user'
                   ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
                   : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
@@ -843,6 +854,8 @@ const compactSession = async () => {
                       <!-- Search component for search tool -->
                       <Search v-else-if="msg.tool_name === 'search'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- Glob component for glob tool -->
+                      <Glob v-else-if="msg.tool_name === 'glob'" :content="msg.content" />
                       <!-- Default tool rendering for other tools -->
                       <div v-else class="tool-expandable">
                         <button class="tool-summary" @click="toggleToolExpanded(groupIndex, idx)" :style="[
