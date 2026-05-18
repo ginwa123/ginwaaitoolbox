@@ -70,13 +70,46 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
         }
 
         const content = try allocator.dupe(u8, message.response_content);
-
-
         const reasoning_content: ?[]const u8 = if (message.reasoning_content) |rc| try allocator.dupe(u8, rc) else null;
+
+        // Handle vision support: if image_urls is set, create content_parts with text and images
+        var content_parts: ?[]agent.ContentPart = null;
+        if (message.image_urls != null and message.image_urls.?.len > 0) {
+            const image_count = message.image_urls.?.len;
+            const has_text = content.len > 0;
+            const total_parts = if (has_text) image_count + 1 else image_count;
+            var parts = try allocator.alloc(agent.ContentPart, total_parts);
+            var part_idx: usize = 0;
+            // Text part (first) if there's text content
+            if (has_text) {
+                parts[part_idx] = .{
+                    .part_type = "text",
+                    .text = content,
+                    .image_url = null,
+                };
+                part_idx += 1;
+            }
+            // Image URL parts
+            for (message.image_urls.?) |image_url| {
+                parts[part_idx] = .{
+                    .part_type = "image_url",
+                    .text = null,
+                    .image_url = .{
+                        .url = try allocator.dupe(u8, image_url),
+                        .detail = null,
+                    },
+                };
+                part_idx += 1;
+            }
+            content_parts = parts;
+        } else {
+
+        }
 
         const agentMessage = agent.AgentMessage{
             .role = role,
-            .content = content,
+            .content = if (content_parts != null) null else content,
+            .content_parts = content_parts,
             .tool_calls = tool_calls,
             .reasoning_content = reasoning_content,
         };

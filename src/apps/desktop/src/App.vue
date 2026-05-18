@@ -3,8 +3,12 @@ import { ref, provide, onMounted, onUnmounted } from 'vue'
 import * as api from './api'
 
 // LLM processing state - provided to child components
-const isLLMProcessing = ref(false)
-provide('isLLMProcessing', isLLMProcessing)
+// Object mapping sessionId to processing status (using object instead of Set for better reactivity)
+const processingState = ref<Record<string, boolean>>({})
+provide('processingState', processingState)
+
+// Check if a session is processing
+const isProcessing = (sessionId: string) => !!processingState.value[sessionId]
 
 // Poll for LLM processing status
 let processingPollInterval: ReturnType<typeof setInterval> | null = null
@@ -12,11 +16,18 @@ let processingPollInterval: ReturnType<typeof setInterval> | null = null
 const checkLLMProcessing = async () => {
   try {
     const { workers } = await api.getWorkers(undefined, 50)
-    if (workers.length > 0) isLLMProcessing.value = true;
-    else isLLMProcessing.value = false;
+    const newState: Record<string, boolean> = {}
+    for (const worker of workers) {
+      // Extract session ID from worker (workers are identified by session_id)
+      const sessionId = worker.session_id || worker.worker_id
+      if (sessionId) {
+        newState[sessionId] = true
+      }
+    }
+    processingState.value = newState
   } catch (err) {
     console.error('Failed to check LLM processing:', err)
-    isLLMProcessing.value = false
+    processingState.value = {}
   }
 }
 

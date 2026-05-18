@@ -73,12 +73,12 @@ const copyPath = async (e: Event) => {
 <template>
   <div class="rf" :class="{ 'rf--error': errorMessage }">
     <!-- Header -->
-    <div class="rf-header" @click="toggle">
+    <button class="rf-header" @click="toggle">
       <span class="rf-path" :title="filePath || ''">{{ filePath || 'unknown' }}</span>
       <span class="rf-lines" v-if="!errorMessage">{{ lineCount }}L</span>
       <button class="rf-copy" @click="copyPath" title="Copy path">⎘</button>
       <span class="rf-toggle">{{ isExpanded ? '−' : '+' }}</span>
-    </div>
+    </button>
 
     <!-- Content -->
     <div v-if="isExpanded" class="rf-content">

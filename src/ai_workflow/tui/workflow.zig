@@ -129,6 +129,9 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         var queued_messages = try llm_history.getQueueMessages(allocator, db, copy_session_id);
         if (queued_messages) |*messages| {
             for (messages.items) |msg| {
+                // Check if message contains a base64 image
+                const image_url = extractBase64ImageUrl(msg);
+
                 _ = try llm_history.saveMessage(allocator, io, db, .{
                     .session_id = copy_session_id,
                     .model = config.model,
@@ -150,6 +153,14 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .parent_session_id = copy_parent_session_id,
                     .is_input = true,
                     .is_output = false,
+                    .image_urls = blk: {
+                        if (image_url) |url| {
+                            const owned = try allocator.alloc([]const u8, 1);
+                            owned[0] = url;
+                            break :blk owned;
+                        }
+                        break :blk @as(?[][]const u8, null);
+                    },
                 });
 
                 on_event_sent.onEventSendLLMHistory(allocator, .{
@@ -342,7 +353,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                         .cwd = copy_cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
-                        .role = "assistant",
+                        .role = agent.Role.assistant.to_str(),
                         .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
                         .tool_calls = null,
                         .tool_call_id = null,
@@ -722,6 +733,40 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     stream_ctx.chunk_index += 1;
 }
 
+/// Extract base64 image URL from a message if present
+/// Looks for patterns like: data:image/png;base64,... or data:image/jpeg;base64,...
+/// Returns the full data URL if found, null otherwise
+fn extractBase64ImageUrl(message: []const u8) ?[]const u8 {
+    // Pattern: data:image/<type>;base64,<data>
+    const prefix = "data:image/";
+    const base64_marker = ";base64,";
+    
+    // Find the prefix
+    const data_start = std.mem.indexOf(u8, message, prefix) orelse return null;
+    
+    // Find the base64 marker after the prefix
+    const base64_idx = std.mem.indexOf(u8, message[data_start..], base64_marker) orelse return null;
+    const marker_start = data_start + base64_idx;
+    
+    // Find the end of the data URL - it's the shorter of:
+    // 1. The end of the message
+    // 2. A space or newline after the base64 data starts
+    const data_start_pos = marker_start + base64_marker.len;
+    const remaining = message[data_start_pos..];
+    
+    // Find end of base64 data (space, newline, or end)
+    var end_idx: usize = remaining.len;
+    for (remaining, 0..) |byte, i| {
+        if (byte == ' ' or byte == '\n' or byte == '\r' or byte == '\t') {
+            end_idx = i;
+            break;
+        }
+    }
+    
+    // Return full data URL
+    return message[data_start..data_start_pos + end_idx];
+}
+
 /// Filter and merge tools based on allowed_tools setting
 /// - allowed_tools: "" = no tools, "all" = all tools, comma-separated = specific tools
 /// Returns filtered base tools merged with MCP tools
@@ -801,589 +846,3 @@ pub const RunParamsNew = struct {
     is_sub_agent: bool = false,
 };
 
-// pub const TUIWorkflow = struct {
-//     io: std.Io,
-//     db: *sqlite.SqliteBackend,
-//     config: *config_mod.LlmConfig,
-//     logger: *logger_mod.Logger,
-//     environment: ?*const std.process.Environ.Map,
-//     active_loops: *ActiveLoops,
-//
-//     pub fn init(tui_workflow: TUIWorkflow) TUIWorkflow {
-//         return tui_workflow;
-//     }
-//
-//     pub fn runAgenticMultiStep(self: *TUIWorkflow, params: RunParams) !void {
-//         var is_have_queue_message = false;
-//
-//         // Ensure cleanup happens even on error - remove from worker table
-//         defer {
-//             is_have_queue_message = llm_history.hasQueuedMessages(self.db, params.session_id);
-//             if (is_have_queue_message == false) {
-//                 llm_history.markSessionIdle(params.parent_allocator, self.db, params.session_id) catch |err| {
-//                     self.logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
-//                 };
-//             }
-//         }
-//
-//         const initial_agent_state = try llm_history.get_current_agent_by_session_id(
-//             params.parent_allocator,
-//             self.db,
-//             params.session_id,
-//         );
-//         const initial_agent = initial_agent_state.agent;
-//
-//         // Check if session is already running (exists in worker table)
-//         if (llm_history.isSessionRunning(self.db, params.session_id) and self.active_loops.contains(self.io, params.session_id)) {
-//             // Session is already running, queue the message
-//             llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.message) catch {
-//                 self.logger.warnFmt("Failed to queue message for session {s}", .{params.session_id});
-//             };
-//             self.logger.debugFmt("WORKFLOW: queued message for session {s}", .{params.session_id});
-//             is_have_queue_message = true;
-//             return;
-//         }
-//         defer self.active_loops.remove(self.io, params.session_id);
-//
-//         // Register in worker table (upsertWorker already does this)
-//         llm_history.upsertWorker(params.parent_allocator, self.db, params.session_id, params.session_id, params.cwd) catch {
-//             self.logger.warnFmt("Failed to upsert worker info for {s}", .{params.session_id});
-//         };
-//
-//         // Queue the initial message
-//         llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.message) catch {
-//             self.logger.warnFmt("Failed to queue initial message for session {s}", .{params.session_id});
-//         };
-//
-//         var retryCount: usize = 0;
-//         var current_max_tokens: usize = 8000;
-//         var loopCounter: u32 = 0;
-//         var is_first_iteration: bool = true;
-//
-//         // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-//         const mcp_tools_fetched = (buildMcpTools.buildMCPToolsRun(params.parent_allocator, self.io, self.config.mcpServers orelse .null) catch |err| blk: {
-//             self.logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
-//             break :blk null;
-//         }) orelse &[_]tool_models.AgentTool{};
-//         // Note: mcp_tools_fetched memory is managed by allocator
-//
-//         // Filter and merge tools based on allowed_tools setting
-//         const merged_tools = try filterAndMergeTools(params.parent_allocator, mcp_tools_fetched, params.allowed_tools, params.is_sub_agent);
-//
-//         // Debug: check merged_tools
-//         std.debug.print("DEBUG_MERGE: merged_tools count={d}\n", .{merged_tools.len});
-//
-//         // Handle body message - add as initial user message if provided
-//         if (params.body.len > 0) {
-//             llm_history.queueMessage(params.parent_allocator, self.db, params.session_id, params.body) catch {
-//                 self.logger.warnFmt("Failed to queue body message for session {s}", .{params.session_id});
-//             };
-//         }
-//
-//         while (true) {
-//             _ = self.active_loops.tryInsert(self.io, params.session_id);
-//             var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(params.parent_allocator);
-//             defer arenaAllocatorWhileLoop.deinit();
-//             const allocator = arenaAllocatorWhileLoop.allocator();
-//
-//             // Check cancellation using DB
-//             if (llm_history.isSessionCancelled(self.db, params.session_id)) {
-//                 self.logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
-//                 break;
-//             }
-//
-//             // Get queued messages from DB
-//             var queued_messages = try llm_history.getQueueMessages(allocator, self.db, params.session_id);
-//             if (queued_messages) |*messages| {
-//                 for (messages.items) |msg| {
-//                     _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
-//                         .session_id = params.session_id,
-//                         .model = self.config.model,
-//                         .cwd = params.cwd,
-//                         .content = msg,
-//                         .reasoning_content = null,
-//                         .role = agent.Role.user.to_str(),
-//                         .finish_reason = "null",
-//                         .tool_calls = null,
-//                         .tool_call_id = null,
-//                         .agent_name = initial_agent,
-//                         .loop_index = 0,
-//                         .temperature = initial_agent_state.temperature,
-//                         .is_thinking = initial_agent_state.is_thinking,
-//                         .prompt_tokens = 0,
-//                         .completion_tokens = 0,
-//                         .total_tokens = 0,
-//                         .parent_id = params.parent_session_id,
-//                         .parent_session_id = params.parent_session_id,
-//                         .is_input = true,
-//                         .is_output = false,
-//                     });
-//
-//                     onEventSendLLMHistory(allocator, .{
-//                         .session_id = params.session_id,
-//                         .model = self.config.model,
-//                         .cwd = params.cwd,
-//                         .content = msg,
-//                         .reasoning_content = null,
-//                         .role = agent.Role.user.to_str(),
-//                         .finish_reason = "null",
-//                         .tool_calls = null,
-//                         .tool_call_id = null,
-//                         .agent_name = initial_agent,
-//                         .loop_index = 0,
-//                         .temperature = initial_agent_state.temperature,
-//                         .is_thinking = initial_agent_state.is_thinking,
-//                         .parent_id = params.parent_session_id,
-//                         .parent_session_id = params.parent_session_id,
-//                         .is_input = true,
-//                         .is_output = false,
-//                     }) catch {};
-//
-//                     _ = try llm_history.deleteQueuedMessage(allocator, self.db, params.session_id, msg);
-//                 }
-//             }
-//
-//             // Update worker activity in DB to show we're actively processing
-//             llm_history.updateWorkerActivity(allocator, self.db, params.session_id) catch {};
-//
-//             loopCounter += 1;
-//             if (retryCount > 10) return error.TooManyRetries;
-//
-//             // Fetch current agent fresh from DB each iteration
-//             const currentAgentState = try get_current_agent_by_session_id(
-//                 allocator,
-//                 self.db,
-//                 params.session_id,
-//             );
-//             const current_agent = currentAgentState.agent;
-//             var agent_temperature = currentAgentState.temperature;
-//             var isThinking = currentAgentState.is_thinking;
-//
-//             var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
-//
-//             const db_messages = try getMessages(allocator, self.db, params.session_id);
-//             defer {
-//                 for (db_messages) |*msg| msg.deinit(allocator);
-//                 allocator.free(db_messages);
-//             }
-//             const total_tokens = blk: {
-//                 var max_token: u32 = 0;
-//                 for (db_messages) |msg| {
-//                     if (msg.total_tokens > max_token) {
-//                         max_token = msg.total_tokens;
-//                     }
-//                 }
-//                 break :blk max_token;
-//             };
-//             const initialMessages = try buildMessages(allocator, self.io, self.db, params.cwd, params.session_id, db_messages, merged_tools);
-//
-//             try messagesLists.appendSlice(allocator, initialMessages);
-//
-//             self.logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
-//             if (llm_models.is_do_compact(total_tokens, llm_models.get_model_token_count(self.config.model))) {
-//                 self.logger.debugFmt("[COMPACTION] Threshold exceeded, triggering compaction", .{});
-//                 if (self.callCompactAgent(messagesLists.items, allocator, self.config.api_key, self.config.model, self.config.base_url, params.cwd)) |compacted_xml| {
-//                     try self.compactMessageInMemory(allocator, &messagesLists, compacted_xml, params.session_id, self.config.model, params.cwd);
-//                 }
-//             }
-//
-//             const res_dynamic_agent = self.callDynamicAgent(allocator, &messagesLists, agent_temperature, current_max_tokens, isThinking, self.config.api_key, self.config.model, self.config.base_url, params.session_id, merged_tools) catch |err| {
-//                 if (err == error.Cancelled) {
-//                     self.logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{params.session_id});
-//                     break;
-//                 }
-//                 retryCount += 1;
-//                 self.logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)});
-//                 continue;
-//             };
-//
-//             retryCount = 0;
-//
-//             const session_info = session_table.getSession(allocator, self.db, params.session_id) catch |err| {
-//                 self.logger.errFmt("Error getting session: {s}", .{@errorName(err)});
-//                 break;
-//             };
-//
-//             // Generate session name from first user message if this is the first response
-//             if (session_info) |session| {
-//                 if (is_first_iteration and std.mem.eql(u8, session.name, "New Session")) {
-//                     self.generateSessionName(db_messages, allocator, self.config.api_key, self.config.model, self.config.base_url, params.session_id);
-//                 }
-//             }
-//
-//             // Mark first iteration as complete after generating session name
-//             if (is_first_iteration) {
-//                 is_first_iteration = false;
-//             }
-//
-//             if (res_dynamic_agent.finish_reason) |finish_reason| {
-//                 if (finish_reason == .stop) {
-//                     _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
-//                         .session_id = params.session_id,
-//                         .model = self.config.model,
-//                         .cwd = params.cwd,
-//                         .content = res_dynamic_agent.content,
-//                         .reasoning_content = res_dynamic_agent.reasoning_content,
-//                         .role = agent.Role.assistant.to_str(),
-//                         .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
-//                         .tool_calls = null,
-//                         .tool_call_id = null,
-//                         .agent_name = current_agent,
-//                         .loop_index = loopCounter,
-//                         .temperature = agent_temperature,
-//                         .is_thinking = isThinking,
-//                         .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
-//                         .completion_tokens = res_dynamic_agent.usage.completion_tokens,
-//                         .total_tokens = res_dynamic_agent.usage.total_tokens,
-//                         .parent_id = params.parent_session_id,
-//                         .parent_session_id = params.parent_session_id,
-//                     });
-//
-//                     // Send SSE event directly with the agent's response content
-//                     // Don't use getLatestMessage as it might return wrong message if timestamps collide
-//                     _ = try onEventSendLLMHistory(allocator, .{
-//                         .session_id = params.session_id,
-//                         .model = self.config.model,
-//                         .cwd = params.cwd,
-//                         .content = res_dynamic_agent.content,
-//                         .reasoning_content = res_dynamic_agent.reasoning_content,
-//                         .role = agent.Role.assistant.to_str(),
-//                         .finish_reason = res_dynamic_agent.finish_reason.?.to_str(),
-//                         .tool_calls = null,
-//                         .tool_call_id = null,
-//                         .tool_name = null,
-//                         .agent_name = current_agent,
-//                         .loop_index = loopCounter,
-//                         .temperature = agent_temperature,
-//                         .is_thinking = isThinking,
-//                         .is_input = false,
-//                         .is_output = true,
-//                         .parent_session_id = params.parent_session_id,
-//                         .parent_id = params.parent_session_id,
-//                         .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
-//                     });
-//
-//                     const isHaveQueueMessage = llm_history.hasQueuedMessages(self.db, params.session_id);
-//                     if (isHaveQueueMessage) {
-//                         continue;
-//                     }
-//
-//                     break;
-//                 } else if (finish_reason == .length) {
-//                     current_max_tokens += 4096;
-//                     self.logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
-//                     continue;
-//                 } else if (finish_reason == .tool_calls) {
-//                     std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
-//                     try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, self.environment, self.active_loops);
-//                 } else if (finish_reason == .assistant) {
-//                     if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-//                         try handle_tool(allocator, self.io, self.db, self.logger, params.session_id, params.parent_session_id, self.config.model, params.cwd, loopCounter, res_dynamic_agent, &agent_temperature, &isThinking, self.config.api_key, self.config.base_url, self.config, self.environment, self.active_loops);
-//                     } else {
-//                         // Treat as normal completion
-//                         _ = try llm_history.saveMessage(allocator, self.io, self.db, .{
-//                             .session_id = params.session_id,
-//                             .model = self.config.model,
-//                             .cwd = params.cwd,
-//                             .content = res_dynamic_agent.content,
-//                             .reasoning_content = res_dynamic_agent.reasoning_content,
-//                             .role = agent.Role.assistant.to_str(),
-//                             .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
-//                             .tool_calls = null,
-//                             .tool_call_id = null,
-//                             .agent_name = current_agent,
-//                             .loop_index = loopCounter,
-//                             .temperature = agent_temperature,
-//                             .is_thinking = isThinking,
-//                             .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
-//                             .completion_tokens = res_dynamic_agent.usage.completion_tokens,
-//                             .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
-//                             .parent_id = params.parent_session_id,
-//                             .parent_session_id = params.parent_session_id,
-//                         });
-//
-//                         // Send SSE event directly with the agent's response content
-//                         // Don't use getLatestMessage as it might return wrong message if timestamps collide
-//                         _ = try onEventSendLLMHistory(allocator, .{
-//                             .session_id = params.session_id,
-//                             .model = self.config.model,
-//                             .cwd = params.cwd,
-//                             .content = res_dynamic_agent.content,
-//                             .reasoning_content = res_dynamic_agent.reasoning_content,
-//                             .role = "assistant",
-//                             .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
-//                             .tool_calls = null,
-//                             .tool_call_id = null,
-//                             .tool_name = null,
-//                             .agent_name = current_agent,
-//                             .loop_index = loopCounter,
-//                             .temperature = agent_temperature,
-//                             .is_thinking = isThinking,
-//                             .is_input = false,
-//                             .is_output = true,
-//                             .parent_session_id = params.parent_session_id,
-//                             .parent_id = params.parent_session_id,
-//                             .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
-//                         });
-//
-//                         const isHaveQueueMessage = llm_history.hasQueuedMessages(self.db, params.session_id);
-//                         if (isHaveQueueMessage) {
-//                             continue;
-//                         }
-//
-//                         break;
-//                     }
-//                 } else {
-//                     retryCount += 1;
-//                     self.logger.errFmt("Error calling agent: maybe streaming failed", .{});
-//                     onEventSendLLMHistory(allocator, .{
-//                         .session_id = params.session_id,
-//                         .model = self.config.model,
-//                         .cwd = params.cwd,
-//                         .content = null,
-//                         .reasoning_content = null,
-//                         .role = null,
-//                         .finish_reason = "stop",
-//                         .tool_calls = null,
-//                         .tool_call_id = null,
-//                         .tool_name = null,
-//                         .agent_name = current_agent,
-//                         .loop_index = loopCounter,
-//                         .temperature = agent_temperature,
-//                         .is_thinking = isThinking,
-//                         .is_input = false,
-//                         .is_output = false,
-//                         .parent_session_id = params.parent_session_id,
-//                         .parent_id = params.parent_session_id,
-//                     }) catch {};
-//                     break;
-//                 }
-//
-//                 retryCount = 0;
-//             }
-//
-//             // Log if finish_reason is null
-//             if (res_dynamic_agent.finish_reason == null) {
-//                 self.logger.warnFmt("WORKFLOW: finish_reason is NULL!", .{});
-//             }
-//         }
-//
-//         self.logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{params.session_id});
-//     }
-//     fn callDynamicAgent(
-//         self: *TUIWorkflow,
-//         allocator: std.mem.Allocator,
-//         messages_list: *std.ArrayList(agent.AgentMessage),
-//         agent_temperature: f32,
-//         current_max_tokens: usize,
-//         isThinking: bool,
-//         api_key: []const u8,
-//         model: []const u8,
-//         base_url: []const u8,
-//         session_id: []const u8,
-//         tools: []const tool_models.AgentTool,
-//     ) !agent.CallResponse {
-//         var dynamic_agent = try agent.Agent.init(allocator, self.io);
-//         dynamic_agent.apiKey = api_key;
-//         dynamic_agent.model = model;
-//         dynamic_agent.baseUrl = base_url;
-//         const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
-//         dynamic_agent.thinkingEnabled = isThinking;
-//         dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
-//
-//         var stream_ctx = StreamingContext{
-//             .allocator = allocator,
-//             .session_id = session_id,
-//             .chunk_index = 0,
-//         };
-//         const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
-//
-//         return res_dynamic_agent;
-//     }
-//
-//     /// No-op callback for streaming - used when we don't need to stream chunks to client.
-//     fn noopStreamCallback(_: ?*anyopaque, _: agent.StreamChunk) void {}
-//
-//     /// Generate session name from the first user message using LLM
-//     fn generateSessionName(
-//         self: *TUIWorkflow,
-//         db_messages: []models.TUIHistory,
-//         allocator: std.mem.Allocator,
-//         api_key: []const u8,
-//         model: []const u8,
-//         base_url: []const u8,
-//         session_id: []const u8,
-//     ) void {
-//         // Find the first user message from db_messages (TUIHistory)
-//         var first_user_message: ?[]const u8 = null;
-//         for (db_messages) |msg| {
-//             // role is stored as string "user" in TUIHistory
-//             if (std.mem.eql(u8, msg.role, "user") and msg.response_content.len > 0) {
-//                 first_user_message = msg.response_content;
-//                 break;
-//             }
-//         }
-//
-//         if (first_user_message == null) {
-//             self.logger.debugFmt("No user message found in db_messages", .{});
-//             return;
-//         }
-//
-//         // Build messages for the name generation prompt
-//         const name_messages = allocator.alloc(agent.AgentMessage, 2) catch return;
-//         name_messages[0] = .{ .role = .system, .content = prompt.GenerateSessionNameAgent };
-//         name_messages[1] = .{ .role = .user, .content = first_user_message.? };
-//
-//         var name_agent = agent.Agent.init(allocator, self.io) catch return;
-//         defer name_agent.deinit();
-//         name_agent.apiKey = api_key;
-//         name_agent.model = model;
-//         name_agent.baseUrl = base_url;
-//
-//         const params = agent.AgentCall{
-//             .tools = &.{},
-//             .messages = name_messages,
-//         };
-//
-//         const response = name_agent.callStreaming(params, null, noopStreamCallback) catch {
-//             self.logger.errFmt("[SESSION NAME] Failed to call LLM for session name", .{});
-//             return;
-//         };
-//         defer response.deinit();
-//
-//         if (response.content) |content| {
-//             // Strip thinking tags if present, fallback to original content on error
-//             var stripped_content: []const u8 = content;
-//             var needs_free = false;
-//             if (helpers.xml.stripThinkingTags(content, allocator)) |stripped| {
-//                 stripped_content = stripped;
-//                 needs_free = true;
-//             } else |err| {
-//                 self.logger.warnFmt("[SESSION NAME] Failed to strip thinking tags: {s}, using original content", .{@errorName(err)});
-//             }
-//
-//             // limit to 50 chars
-//             if (stripped_content.len > 50) {
-//                 stripped_content = stripped_content[0..50];
-//             }
-//
-//             // Update session name in database
-//             session_table.updateSessionName(allocator, self.db, session_id, stripped_content) catch {
-//                 self.logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{stripped_content});
-//                 if (needs_free) allocator.free(stripped_content);
-//                 return;
-//             };
-//             self.logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{stripped_content});
-//             if (needs_free) allocator.free(stripped_content);
-//         }
-//     }
-//
-//     /// Compact messages in memory based on CompactionAgent output
-//     /// Also persists to database: marks old messages as not for LLM, saves new compacted message
-//     pub fn compactMessageInMemory(
-//         self: *TUIWorkflow,
-//         allocator: std.mem.Allocator,
-//         messages: *std.ArrayList(agent.AgentMessage),
-//         compacted_xml: []const u8,
-//         session_id: []const u8,
-//         model: []const u8,
-//         cwd: []const u8,
-//     ) !void {
-//         const total = messages.items.len;
-//         if (total <= 4) return;
-//
-//         // Mark all existing messages in this session as not for LLM (soft-delete)
-//         try llm_history.mark_message_not_for_llm_run(allocator, self.db, session_id);
-//
-//         // Build the compacted summary content
-//         var summary: std.ArrayList(u8) = .empty;
-//         defer summary.deinit(allocator);
-//         try summary.print(allocator, "[CONTEXT SUMMARY]\n\n", .{});
-//         try summary.print(allocator, "{s}", .{compacted_xml});
-//         const summary_content = try summary.toOwnedSlice(allocator);
-//
-//         // Save the compacted summary to the database with is_feed_to_llm = 1
-//         const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(self.io, .real).nanoseconds});
-//         defer allocator.free(id);
-//         const created_at = try std.fmt.allocPrint(allocator, "{}", .{@divTrunc(std.Io.Timestamp.now(self.io, .real).nanoseconds, 1_000_000)});
-//         defer allocator.free(created_at);
-//
-//         const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
-//         try self.db.exec(allocator, sql, &.{ id, session_id, model, summary_content, "stop", "user", "", "", "Agent", "0", created_at, "1", "0", "" });
-//
-//         // Update the session's cwd in the sessions table
-//         const copy_cwd = try std.heap.c_allocator.dupe(u8, cwd);
-//         defer std.heap.c_allocator.free(copy_cwd);
-//         try self.db.exec(allocator, "UPDATE sessions SET cwd = ? WHERE id = ?", &.{ copy_cwd, session_id });
-//
-//         // Build new in-memory message list: system message + compacted summary
-//         var new_messages: std.ArrayList(agent.AgentMessage) = .empty;
-//
-//         // Keep system message - duplicate content to be safe
-//         const system_content = if (messages.items[0].content) |c|
-//             try allocator.dupe(u8, c)
-//         else
-//             null;
-//         try new_messages.append(allocator, .{
-//             .role = .system,
-//             .content = system_content,
-//         });
-//
-//         // Add compacted summary as user message
-//         try new_messages.append(allocator, .{
-//             .role = .user,
-//             .content = summary_content,
-//         });
-//
-//         // Free ALL old messages (including ones we "kept" - we have copies now)
-//         for (messages.items) |*msg| {
-//             msg.deinit(allocator);
-//         }
-//         messages.deinit(allocator);
-//         messages.* = new_messages;
-//
-//         self.logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len });
-//     }
-//
-//     /// Add a file listing to the writer for project context
-//     fn addFileListing(self: *TUIWorkflow, w: *anyopaque, cwd: []const u8, arena: std.mem.Allocator) void {
-//         // Fallback: skip file listing if directory can't be opened
-//         // The compaction can still proceed without this context
-//         inline for (.{ ".zig", ".c", ".h", ".cpp", ".js", ".ts", ".json", ".md", ".txt", ".toml", ".yaml", ".yml" }) |ext| {
-//             self.findFilesWithExtension(w, cwd, ext, arena, 0, 3);
-//         }
-//     }
-//
-//     /// Recursively find files with specific extension
-//     fn findFilesWithExtension(self: *TUIWorkflow, w: *anyopaque, dir_path: []const u8, ext: []const u8, arena: std.mem.Allocator, depth: usize, max_depth: usize) void {
-//         if (depth > max_depth) return;
-//
-//         // Use std.Io.Dir.openDirAbsolute to open directory directly (doesn't depend on process cwd)
-//         // NOTE: .iterate = true is required for iterate() to work properly
-//         var dir = std.Io.Dir.openDirAbsolute(self.io, dir_path, .{ .iterate = true }) catch return;
-//         defer std.Io.Dir.close(dir, self.io);
-//
-//         var iterator = dir.iterate();
-//         while (iterator.next(self.io) catch null) |entry| {
-//             if (std.mem.eql(u8, entry.name, ".git")) continue;
-//             if (std.mem.eql(u8, entry.name, "node_modules")) continue;
-//             if (std.mem.eql(u8, entry.name, "zig-cache")) continue;
-//             if (std.mem.eql(u8, entry.name, "zig-out")) continue;
-//             if (std.mem.eql(u8, entry.name, ".cache")) continue;
-//             if (entry.name[0] == '.') continue;
-//
-//             if (entry.kind == .directory) {
-//                 const subdir = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch return;
-//                 defer arena.free(subdir);
-//                 self.findFilesWithExtension(w, subdir, ext, arena, depth + 1, max_depth);
-//             } else if (entry.kind == .file) {
-//                 if (std.mem.endsWith(u8, entry.name, ext)) {
-//                     const rel_path = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name }) catch return;
-//                     defer arena.free(rel_path);
-//                     const writer: *std.Io.Writer = @ptrCast(@alignCast(w));
-//                     writer.print("  {s}\n", .{rel_path}) catch {};
-//                 }
-//             }
-//         }
-//     }
-// };

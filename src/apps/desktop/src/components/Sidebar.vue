@@ -5,6 +5,7 @@ import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import WorkspaceList from './WorkspaceList.vue'
+import ChatsList from './ChatsList.vue'
 import WorkspaceModal from './WorkspaceModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -45,24 +46,6 @@ const sidebarStore = useSidebarStore()
 const isCollapsed = computed(() => props.collapsed ?? false)
 const sidebarWidth = computed(() => props.width ?? 280)
 const activeChatName = computed(() => navigationStore.activeChatName)
-const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; icon: string; active?: boolean; processing?: boolean }[]>([])
-const chatsHasMore = ref(false)
-const chatsNextCursor = ref<string | null>(null)
-const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
-
-// Watch for local changes and sync to store
-watch(chatsSortDirection, (newVal) => {
-  navigationStore.setChatsSortDirection(newVal)
-})
-
-// Sync processing state to navItems when isLLMProcessing changes
-watch(isLLMProcessing, (processing) => {
-  navItems.value = navItems.value.map(item => ({
-    ...item,
-    processing: processing && item.active
-  }))
-}, { immediate: true })
 
 // Dialog states
 const showAddWorkspaceModal = ref(false)
@@ -75,59 +58,12 @@ const deleteConfirmConfig = ref<{ title: string; message: string; onConfirm: () 
 const isResizing = ref(false)
 const resizeStartX = ref(0)
 const resizeStartWidth = ref(0)
-const chatsContainerRef = ref<HTMLElement | null>(null)
 
-// Chats resize handling
-const isChatsResizing = ref(false)
-const chatsResizeStartY = ref(0)
-const chatsResizeStartPx = ref(0)
+// Ref to ChatsList component
+const chatsListRef = ref<InstanceType<typeof ChatsList> | null>(null)
 
 // SSE connection for session events
 const sessionsEventSource = ref<EventSource | null>(null)
-
-// Get computed chats height in pixels from percentage
-const getChatsHeightPx = (): number => {
-  const aside = document.querySelector('aside')
-  if (!aside) return 200
-  const navHeight = aside.clientHeight - 56 - 48 // header + footer
-  return (navHeight * sidebarStore.chatsHeight) / 100
-}
-
-const startChatsResize = (e: MouseEvent) => {
-  e.preventDefault()
-  e.stopPropagation()
-  console.log('[Sidebar] startChatsResize', e.clientY)
-  isChatsResizing.value = true
-  chatsResizeStartY.value = e.clientY
-  chatsResizeStartPx.value = getChatsHeightPx()
-  document.addEventListener('mousemove', handleChatsResize, { passive: false })
-  document.addEventListener('mouseup', stopChatsResize)
-  document.body.style.userSelect = 'none'
-  document.body.style.cursor = 'row-resize'
-}
-
-const handleChatsResize = (e: MouseEvent) => {
-  e.preventDefault()
-  if (!isChatsResizing.value) return
-  console.log('[Sidebar] handleChatsResize', e.clientY, 'delta:', e.clientY - chatsResizeStartY.value)
-  const deltaY = e.clientY - chatsResizeStartY.value
-  const newHeightPx = Math.max(80, chatsResizeStartPx.value + deltaY)
-  // Convert back to percentage
-  const aside = document.querySelector('aside')
-  if (!aside) return
-  const navHeight = aside.clientHeight - 56 - 48
-  const newPercent = (newHeightPx / navHeight) * 100
-  console.log('[Sidebar] newPercent:', newPercent)
-  sidebarStore.setChatsHeight(newPercent)
-}
-
-const stopChatsResize = () => {
-  isChatsResizing.value = false
-  document.removeEventListener('mousemove', handleChatsResize)
-  document.removeEventListener('mouseup', stopChatsResize)
-  document.body.style.userSelect = ''
-  document.body.style.cursor = ''
-}
 
 const startResize = (e: MouseEvent | TouchEvent) => {
   isResizing.value = true
@@ -156,22 +92,12 @@ const stopResize = () => {
   document.body.style.cursor = ''
 }
 
-const handleChatsScroll = (e: Event) => {
-  const target = e.target as HTMLElement
-  const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight
-  if (scrollBottom < 100 && chatsHasMore.value && !chatsLoading.value) {
-    loadMoreChats()
-  }
-}
-
 onUnmounted(() => {
   stopResize()
-  stopChatsResize()
   disconnectSessionsSse()
 })
 
 onMounted(async () => {
-  await loadChats()
   connectSessionsSse()
 })
 
@@ -253,116 +179,40 @@ const disconnectSessionsSse = () => {
   }
 }
 
-// Handle session events from SSE - create, update, or delete
-const handleSessionEvent = (event: api.SessionEvent) => {
-  console.log('[Sidebar] handleSessionEvent:', event)
-  
-  if (event.action === 'created') {
-    // Prepend new session to top of list
-    const newItem = {
-      id: event.id,
-      name: event.name || 'New Chat',
-      icon: '💬',
-      active: false,
-    }
-    // Check if already exists (avoid duplicates)
-    const existingIndex = navItems.value.findIndex(item => item.id === event.id)
-    if (existingIndex === -1) {
-      navItems.value.unshift(newItem)
-    }
-  } else if (event.action === 'updated') {
-    // Update existing session or create if not found
-    const existingIndex = navItems.value.findIndex(item => item.id === event.id)
-    if (existingIndex !== -1) {
-      const existing = navItems.value[existingIndex]
-      if (existing) {
-        navItems.value[existingIndex] = {
-          ...existing,
-          name: event.name || existing.name,
-        }
-      }
-    } else {
-      // Create if not exists
-      navItems.value.unshift({
-        id: event.id,
-        name: event.name || 'New Chat',
-        icon: '💬',
-        active: false,
+const toggleCollapse = () => emit('toggle-collapse')
+const goToSettings = () => emit('navigate', 'settings')
+
+// Handle navigation events from ChatsList component
+const handleChatsNavigate = (id: string, chatName?: string) => {
+  if (id === 'delete-chat') {
+    // Handle chat deletion request - chatName is actually the chatId
+    const chatId = chatName
+    if (chatId && chatsListRef.value) {
+      openDeleteConfirm({
+        title: 'Delete Chat',
+        message: 'Delete this chat?',
+        onConfirm: () => chatsListRef.value?.removeChat(chatId)
       })
     }
-  } else if (event.action === 'deleted') {
-    // Remove session from list
-    const index = navItems.value.findIndex(item => item.id === event.id)
-    if (index !== -1) {
-      const wasActive = navItems.value[index]?.active ?? false
-      navItems.value.splice(index, 1)
-      // If was active, navigate to first chat
-      if (wasActive && navItems.value.length > 0) {
-        const firstItem = navItems.value[0]
-        if (firstItem) {
-          firstItem.active = true
-          emit('navigate', firstItem.id, firstItem.name)
-        }
-      }
-    }
+  } else if (id.startsWith('chat-')) {
+    // Navigate to chat
+    const sessionId = id.replace('chat-', '')
+    navigationStore.setActiveChat(sessionId, chatName || '')
+    workspacesStore.setActiveWorkspaceItem(null)
+    workspacesStore.setActiveTask(null)
+    router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
+  } else {
+    // Direct navigation
+    emit('navigate', id, chatName)
   }
 }
 
-const toggleCollapse = () => emit('toggle-collapse')
-const toggleNavSection = () => sidebarStore.toggleNavExpanded()
-const goToSettings = () => emit('navigate', 'settings')
-
-const createChat = () => {
-  const name = 'New Chat'
-  const newChatId = `session-${Date.now()}`
-  navItems.value.forEach(item => item.active = false)
-  navItems.value.unshift({ id: newChatId, name, icon: '💬', active: true })
-  // Update navigation store
-  navigationStore.setActiveChat(newChatId, name)
-  workspacesStore.setActiveWorkspaceItem(null)
-  workspacesStore.setActiveTask(null)
-  emit('navigate', `chat-${newChatId}`, name)
-}
-
-const setActive = (id: string) => {
-  const chat = navItems.value.find(item => item.id === id)
-  const chatName = chat?.name || ''
-  navigationStore.setActiveChatName(chatName)
-  navItems.value = navItems.value.map(item => ({ ...item, active: item.id === id }))
-  workspacesStore.setActiveWorkspaceItem(null)
-  workspacesStore.setActiveTask(null)
-  // Update navigation store with the chat session ID (without chat- prefix)
-  navigationStore.setActiveChat(id, chatName)
-  // Update URL with session ID
-  router.replace({ path: '/app', query: { view: 'chat', session: id } })
-}
-
-const confirmDeleteChat = (chatId: string) => {
-  openDeleteConfirm({
-    title: 'Delete Chat',
-    message: 'Delete this chat?',
-    onConfirm: () => removeChat(chatId)
-  })
-}
-
-const removeChat = async (chatId: string) => {
-  const index = navItems.value.findIndex(item => item.id === chatId)
-  if (index !== -1) {
-    const wasActive = navItems.value[index]?.active ?? false
-    navItems.value.splice(index, 1)
-    // Clear from navigation store if this was the active chat
-    if (wasActive) {
-      navigationStore.clearActiveChat()
-    }
-    try {
-      await api.deleteChat(chatId)
-    } catch (err) {
-      console.error('Failed to delete chat:', err)
-    }
-    if (wasActive && navItems.value.length > 0 && navItems.value[0]) {
-      navItems.value[0].active = true
-      emit('navigate', navItems.value[0].id)
-    }
+// Toggle nav section and reload chats if needed
+const toggleNavSectionAndReload = () => {
+  sidebarStore.toggleNavExpanded()
+  // If expanding and no chats loaded yet, trigger load
+  if (sidebarStore.navExpanded && chatsListRef.value) {
+    chatsListRef.value.loadChats()
   }
 }
 
@@ -389,7 +239,10 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
   if (item?.path && !item.isLoaded && !item.isLoading) {
     await workspacesStore.fetchFolderContents(workspaceId, itemId)
   }
-  navItems.value = navItems.value.map(navItem => ({ ...navItem, active: false }))
+  // Reset active state in ChatsList component
+  if (chatsListRef.value) {
+    chatsListRef.value.resetActiveChat()
+  }
   workspacesStore.setActiveWorkspaceItem(itemId)
   emit('navigate', 'workspace')
 }
@@ -514,105 +367,12 @@ const handleSelectTask = (taskId: string) => {
     <!-- Content -->
     <nav class="flex-1 flex flex-col overflow-hidden" :class="isCollapsed ? 'px-2 py-3' : 'p-3'">
 
-      <!-- Chats Section with Resizable Height -->
-      <div v-if="!isCollapsed" class="shrink-0 flex flex-col" :style="sidebarStore.navExpanded ? { height: sidebarStore.chatsHeight + '%', minHeight: '80px' } : { height: 'auto', minHeight: '0' }">
-
-        <!-- Header with expand/collapse toggle -->
-        <button
-          class="px-3 py-2 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0"
-          @click="toggleNavSection"
-        >
-          <span
-            class="text-xs transition-transform duration-200"
-            :style="{ transform: sidebarStore.navExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
-            style="color: var(--semantic-text-dim);"
-          >▶</span>
-          <span class="text-xs font-semibold uppercase tracking-wider" style="color: var(--semantic-text-dim);">Chats</span>
-          <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
-            <select
-              v-model="chatsSortDirection"
-              @change="loadChats"
-              @click.stop
-              class="text-xs px-1.5 py-0.5 rounded cursor-pointer"
-              style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: none;"
-            >
-              <option value="desc">↓</option>
-              <option value="asc">↑</option>
-            </select>
-            <button
-              @click.stop="createChat"
-              class="w-5 h-5 rounded flex items-center justify-center transition-colors hover:opacity-70"
-              style="color: var(--semantic-text-dim);"
-              title="New Chat"
-            >
-              <span class="text-sm">+</span>
-            </button>
-          </div>
-        </button>
-
-        <!-- Chat List -->
-        <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col">
-          <ul ref="chatsContainerRef" @scroll="handleChatsScroll" class="flex-1 overflow-y-auto space-y-0.5 min-h-0">
-            <li v-for="item in navItems" :key="item.id" class="group/chat">
-              <button
-                @click="setActive(item.id)"
-                class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150"
-                :style="item.active
-                  ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
-                  : 'color: var(--semantic-text-muted);'"
-              >
-                <span class="w-5 h-5 flex items-center justify-center shrink-0 text-sm">
-                  <div v-if="item.processing === true" class="w-4 h-4 border-2 rounded-full animate-spin" style="border-color: var(--color-yellow); border-top-color: transparent;"></div>
-                  <span v-else>{{ item.icon }}</span>
-                </span>
-                <span class="flex-1 text-left truncate">{{ item.name }}</span>
-                <button
-                  v-if="item.id !== 'chat'"
-                  @click.stop="confirmDeleteChat(item.id)"
-                  class="w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover/chat:opacity-100 transition-opacity hover:text-red-400 shrink-0"
-                  style="color: var(--semantic-text-dim);"
-                >
-                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </button>
-            </li>
-            <li v-if="chatsLoading" class="py-2 text-center">
-              <span class="text-xs" style="color: var(--semantic-text-dim);">Loading...</span>
-            </li>
-            <li v-else-if="chatsHasMore">
-              <button @click="loadMoreChats" class="w-full py-2 text-xs hover:opacity-70" style="color: var(--color-violet);">
-                Load more
-              </button>
-            </li>
-          </ul>
-
-          <!-- Drag Resize Handle -->
-          <div
-            class="h-3 cursor-row-resize flex items-center justify-center group/resize shrink-0 mt-1"
-            @mousedown="startChatsResize"
-          >
-            <div
-              class="w-full h-0.5 transition-all duration-200 group-hover/resize:h-1 rounded"
-              style="background: linear-gradient(90deg, transparent, var(--color-border), transparent);"
-            />
-          </div>
-        </div>
-      </div>
-
-      <!-- Collapsed Chats Button -->
-      <div v-else class="mb-3 shrink-0">
-        <button
-          @click="createChat"
-          class="w-full h-10 rounded-lg flex items-center justify-center transition-colors hover:opacity-80"
-          style="color: var(--semantic-text-muted);"
-        >
-          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-          </svg>
-        </button>
-      </div>
+      <!-- Chats List Component -->
+      <ChatsList
+        ref="chatsListRef"
+        :collapsed="isCollapsed"
+        @navigate="handleChatsNavigate"
+      />
 
       <!-- Workspaces -->
       <div class="flex-1 min-h-0 overflow-hidden">

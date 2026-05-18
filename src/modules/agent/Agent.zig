@@ -39,6 +39,47 @@ pub const UnresolvedIntentResult = struct {
     reason: ?[]const u8, // Owned by caller, must be freed
 };
 
+/// Content part types for multimodal messages (text or image_url)
+pub const ContentPart = struct {
+    part_type: []const u8,
+    text: ?[]const u8 = null,
+    image_url: ?ImageUrl = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write(self.part_type);
+        if (self.text) |t| {
+            try stringify.objectField("text");
+            try stringify.write(t);
+        }
+        if (self.image_url) |img| {
+            try stringify.objectField("image_url");
+            try img.jsonStringify(stringify);
+        }
+        try stringify.endObject();
+    }
+};
+
+/// Image URL content for vision support
+pub const ImageUrl = struct {
+    url: ?[]const u8 = null,
+    detail: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        if (self.url) |u| {
+            try stringify.objectField("url");
+            try stringify.write(u);
+        }
+        if (self.detail) |d| {
+            try stringify.objectField("detail");
+            try stringify.write(d);
+        }
+        try stringify.endObject();
+    }
+};
+
 pub const ToolCall = struct {
     id: []const u8,
     type: []const u8 = "function",
@@ -48,6 +89,46 @@ pub const ToolCall = struct {
 pub const FunctionCall = struct {
     name: []const u8,
     arguments: []const u8,
+};
+
+pub const FinishReason = enum {
+    /// Model generated a complete message
+    stop,
+    /// Model hit max tokens limit
+    length,
+    /// Model triggered a tool call
+    tool_calls,
+    /// Content was filtered due to safety policies
+    content_filter,
+    tool,
+    null,
+    /// No finish reason provided
+    /// Model returned assistant role (some providers use this)
+    assistant,
+
+    pub fn from_str(s: ?[]const u8) ?FinishReason {
+        if (s == null) return .null;
+        const str = s.?;
+        if (std.mem.eql(u8, str, "stop")) return .stop;
+        if (std.mem.eql(u8, str, "length")) return .length;
+        if (std.mem.eql(u8, str, "tool_calls")) return .tool_calls;
+        if (std.mem.eql(u8, str, "content_filter")) return .content_filter;
+        if (std.mem.eql(u8, str, "tool")) return .tool;
+        if (std.mem.eql(u8, str, "assistant")) return .assistant;
+        return null;
+    }
+
+    pub fn to_str(self: FinishReason) []const u8 {
+        return switch (self) {
+            .stop => "stop",
+            .length => "length",
+            .tool_calls => "tool_calls",
+            .content_filter => "content_filter",
+            .tool => "tool",
+            .null => "null",
+            .assistant => "assistant",
+        };
+    }
 };
 
 // JSON serialization types for API requests
@@ -70,6 +151,7 @@ const JsonToolCall = struct {
 const JsonMessage = struct {
     role: []const u8,
     content: ?[]const u8 = null,
+    content_parts: ?[]const ContentPart = null,
     tool_calls: ?[]const JsonToolCall = null,
     tool_call_id: ?[]const u8 = null,
     reasoning_content: ?[]const u8 = null,
@@ -81,6 +163,9 @@ const JsonMessage = struct {
         if (self.content) |c| {
             try stringify.objectField("content");
             try stringify.write(c);
+        } else if (self.content_parts) |parts| {
+            try stringify.objectField("content");
+            try stringify.write(parts);
         }
         if (self.tool_calls) |tc| {
             try stringify.objectField("tool_calls");
@@ -259,12 +344,23 @@ pub const Role = enum {
 pub const AgentMessage = struct {
     role: Role,
     content: ?[]const u8,
+    content_parts: ?[]const ContentPart = null,
     tool_calls: ?[]ToolCall = null,
     tool_call_id: ?[]const u8 = null,
     reasoning_content: ?[]const u8 = null,
 
     pub fn deinit(self: *const AgentMessage, allocator: std.mem.Allocator) void {
         if (self.content) |c| allocator.free(c);
+        if (self.content_parts) |parts| {
+            for (parts) |part| {
+                if (part.text) |t| allocator.free(t);
+                if (part.image_url) |img| {
+                    if (img.url) |u| allocator.free(u);
+                    if (img.detail) |d| allocator.free(d);
+                }
+            }
+            allocator.free(parts);
+        }
         if (self.tool_call_id) |id| allocator.free(id);
         if (self.reasoning_content) |rc| allocator.free(rc);
         if (self.tool_calls) |tc| {
@@ -278,45 +374,6 @@ pub const AgentMessage = struct {
     }
 };
 
-pub const FinishReason = enum {
-    /// Model generated a complete message
-    stop,
-    /// Model hit max tokens limit
-    length,
-    /// Model triggered a tool call
-    tool_calls,
-    /// Content was filtered due to safety policies
-    content_filter,
-    tool,
-    null,
-    /// No finish reason provided
-    /// Model returned assistant role (some providers use this)
-    assistant,
-
-    pub fn from_str(s: ?[]const u8) ?FinishReason {
-        if (s == null) return .null;
-        const str = s.?;
-        if (std.mem.eql(u8, str, "stop")) return .stop;
-        if (std.mem.eql(u8, str, "length")) return .length;
-        if (std.mem.eql(u8, str, "tool_calls")) return .tool_calls;
-        if (std.mem.eql(u8, str, "content_filter")) return .content_filter;
-        if (std.mem.eql(u8, str, "tool")) return .tool;
-        if (std.mem.eql(u8, str, "assistant")) return .assistant;
-        return null;
-    }
-
-    pub fn to_str(self: FinishReason) []const u8 {
-        return switch (self) {
-            .stop => "stop",
-            .length => "length",
-            .tool_calls => "tool_calls",
-            .content_filter => "content_filter",
-            .tool => "tool",
-            .null => "null",
-            .assistant => "assistant",
-        };
-    }
-};
 
 /// Token usage information from the API
 pub const Usage = struct {
@@ -660,9 +717,25 @@ pub const Agent = struct {
                 }
                 json_tool_calls = tc_slice;
             }
+            
+            // Convert content_parts if present (for multimodal/vision support)
+            var json_content_parts: ?[]const ContentPart = null;
+            if (msg.content_parts) |parts| {
+                const parts_copy = try arena_alloc.alloc(ContentPart, parts.len);
+                for (parts, 0..) |part, j| {
+                    parts_copy[j] = .{
+                        .part_type = part.part_type,
+                        .text = part.text,
+                        .image_url = part.image_url,
+                    };
+                }
+                json_content_parts = parts_copy;
+            }
+            
             json_messages[i] = .{
                 .role = msg.role.to_str(),
                 .content = msg.content,
+                .content_parts = json_content_parts,
                 .tool_calls = json_tool_calls,
                 .tool_call_id = msg.tool_call_id,
                 .reasoning_content = msg.reasoning_content,

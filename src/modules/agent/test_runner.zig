@@ -1,4 +1,7 @@
 test {
+    // Image content tests
+    _ = @import("image_content_test.zig");
+    
     // Tool tests
     _ = @import("tools/change_agent_test.zig");
     _ = @import("tools/diff_test.zig");

@@ -370,6 +370,7 @@ pub const SessionMessage = struct {
     reasoning_content: []const u8,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
+    image_urls: ?[][]const u8 = null,
 
     pub fn deinit(self: *const SessionMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -384,6 +385,10 @@ pub const SessionMessage = struct {
         allocator.free(self.reasoning_content);
         if (self.diffview_before) |dv| allocator.free(dv);
         if (self.diffview_after) |da| allocator.free(da);
+        if (self.image_urls) |iums| {
+            for (iums) |img| allocator.free(img);
+            allocator.free(iums);
+        }
     }
 };
 
@@ -447,7 +452,7 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, '')
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
         , .{ cursor_cmp, order_part });
@@ -465,7 +470,7 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, '')
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
         , .{order_part});
@@ -507,6 +512,20 @@ pub fn getSessionMessagesSorted(
             .reasoning_content = try allocator.dupe(u8, row.values[10]),
             .diffview_before = if (row.values[11].len > 0) try allocator.dupe(u8, row.values[11]) else null,
             .diffview_after = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
+            .image_urls = if (row.values[13].len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, row.values[13], '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) urls.items else null;
+            } else null,
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);
@@ -838,6 +857,7 @@ pub const SaveMessageInput = struct {
     total_tokens: usize = 0,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
+    image_urls: ?[][]const u8 = null,
 };
 
 /// Helper function to safely duplicate a string
@@ -876,7 +896,7 @@ pub fn saveMessage(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name, diffview_before, diffview_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name, diffview_before, diffview_after, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     // Use safeDupe to avoid arena aliasing issues
     const copy_session_id = try safeDupe(allocator, input.session_id);
@@ -916,8 +936,25 @@ pub fn saveMessage(
     defer std.heap.c_allocator.free(copy_diffview_before);
     const copy_diffview_after = try safeDupe(allocator, input.diffview_after orelse "");
     defer std.heap.c_allocator.free(copy_diffview_after);
+    
+    // Join multiple image URLs with || delimiter
+    var image_urls_str: []const u8 = "";
+    var copy_image_urls: ?[]u8 = null;
+    if (input.image_urls) |urls| {
+        if (urls.len > 0) {
+            var combined = std.ArrayList(u8).empty;
+            defer combined.deinit(allocator);
+            for (urls, 0..) |url, i| {
+                if (i > 0) try combined.appendSlice(allocator, "||");
+                try combined.appendSlice(allocator, url);
+            }
+            copy_image_urls = try std.heap.c_allocator.dupe(u8, combined.items);
+            image_urls_str = copy_image_urls.?;
+        }
+    }
+    defer if (copy_image_urls) |c| std.heap.c_allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -980,7 +1017,8 @@ pub fn getMessages(
         \\    COALESCE(h.is_input, 0),
         \\    COALESCE(h.is_output, 0),
         \\    COALESCE(h.diffview_before, ''),
-        \\    COALESCE(h.diffview_after, '')
+        \\    COALESCE(h.diffview_after, ''),
+        \\    COALESCE(h.image_url, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
@@ -995,6 +1033,7 @@ pub fn getMessages(
         const parent_session_id_str = row.values[13];
         const diffview_before_str = row.values[21];
         const diffview_after_str = row.values[22];
+        const image_url_str = row.values[23];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1019,6 +1058,20 @@ pub fn getMessages(
             .is_output = std.mem.eql(u8, row.values[20], "1"),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
+            .image_urls = if (image_url_str.len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, image_url_str, '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) urls.items else null;
+            } else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -1052,7 +1105,8 @@ pub fn getLatestMessage(
         \\    COALESCE(h.is_input, 0),
         \\    COALESCE(h.is_output, 0),
         \\    COALESCE(h.diffview_before, ''),
-        \\    COALESCE(h.diffview_after, '')
+        \\    COALESCE(h.diffview_after, ''),
+        \\    COALESCE(h.image_url, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
@@ -1068,6 +1122,7 @@ pub fn getLatestMessage(
         const parent_session_id_str = row.values[13];
         const diffview_before_str = row.values[21];
         const diffview_after_str = row.values[22];
+        const image_url_str = row.values[23];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1092,6 +1147,20 @@ pub fn getLatestMessage(
             .is_output = std.mem.eql(u8, row.values[20], "1"),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
+            .image_urls = if (image_url_str.len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, image_url_str, '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) urls.items else null;
+            } else null,
         };
         row.deinit(allocator);
         return history;

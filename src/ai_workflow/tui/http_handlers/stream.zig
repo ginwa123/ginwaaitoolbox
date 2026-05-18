@@ -22,10 +22,9 @@ pub const CallbackAiStream = struct {
         std.debug.print("GILANG_SERVER 2: client_id={s}\n", .{client_id});
 
         std.debug.print("SSE_DEBUG: got client_id {s}, sending event\n", .{client_id});
-        const event_str = std.fmt.allocPrint(allocator, "data: {s}\n\n", .{data.data}) catch return;
-        defer allocator.free(event_str);
 
         var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
         if (data.event_type) |event_type| {
             buf.appendSlice(allocator, "event: ") catch return;
             buf.appendSlice(allocator, event_type) catch return;
@@ -44,6 +43,7 @@ pub const CallbackAiStream = struct {
         }
         buf.append(allocator, '\n') catch return;
         const dataaaa = buf.toOwnedSlice(allocator) catch return;
+        defer allocator.free(dataaaa);
         server.sse_manager.sendToClient(client_id, dataaaa) catch {};
     }
 };
