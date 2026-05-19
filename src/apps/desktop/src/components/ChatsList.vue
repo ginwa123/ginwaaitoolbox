@@ -64,7 +64,12 @@ const startChatsResize = (e: MouseEvent) => {
 const handleChatsResize = (e: MouseEvent) => {
   e.preventDefault()
   if (!isChatsResizing.value) return
-  console.log('[ChatsList] handleChatsResize', e.clientY, 'delta:', e.clientY - chatsResizeStartY.value)
+  console.log(
+    '[ChatsList] handleChatsResize',
+    e.clientY,
+    'delta:',
+    e.clientY - chatsResizeStartY.value,
+  )
   const deltaY = e.clientY - chatsResizeStartY.value
   const newHeightPx = Math.max(80, chatsResizeStartPx.value + deltaY)
   // Convert back to percentage
@@ -90,12 +95,16 @@ watch(chatsSortDirection, (newVal) => {
 })
 
 // Watch for processingState changes from App.vue
-watch(processingState, (state) => {
-  navItems.value = navItems.value.map(item => ({
-    ...item,
-    processing: !!state[item.id]  // Show spinner for ANY processing chat, not just active
-  }))
-}, { deep: true })
+watch(
+  processingState,
+  (state) => {
+    navItems.value = navItems.value.map((item) => ({
+      ...item,
+      processing: !!state[item.id], // Show spinner for ANY processing chat, not just active
+    }))
+  },
+  { deep: true },
+)
 
 const handleChatsScroll = (e: Event) => {
   const target = e.target as HTMLElement
@@ -119,14 +128,14 @@ const loadChats = async () => {
       id: session.session_id,
       name: session.session_name || 'New Chat',
       active: savedSessionId === session.session_id,
-      processing: !!processingState.value[session.session_id],  // Show spinner for any processing chat
+      processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
     chatsNextCursor.value = data.next_cursor
 
     // If we found and activated a saved chat, restore it in AppLayout
-    const activeItem = navItems.value.find(item => item.active)
+    const activeItem = navItems.value.find((item) => item.active)
     if (activeItem) {
       navigationStore.setActiveChatName(activeItem.name)
       emit('navigate', `chat-${activeItem.id}`, activeItem.name)
@@ -135,7 +144,12 @@ const loadChats = async () => {
     console.error('Failed to load chats:', err)
     navItems.value = []
   } finally {
-    console.log('[ChatsList] loadChats finished, chatsLoading:', chatsLoading.value, 'navItems:', navItems.value.length)
+    console.log(
+      '[ChatsList] loadChats finished, chatsLoading:',
+      chatsLoading.value,
+      'navItems:',
+      navItems.value.length,
+    )
     chatsLoading.value = false
   }
 }
@@ -144,7 +158,12 @@ const loadMoreChats = async () => {
   if (!chatsHasMore.value || chatsLoading.value || !chatsNextCursor.value) return
   chatsLoading.value = true
   try {
-    const data = await api.getChats('created_at', chatsSortDirection.value, 20, chatsNextCursor.value)
+    const data = await api.getChats(
+      'created_at',
+      chatsSortDirection.value,
+      20,
+      chatsNextCursor.value,
+    )
     const newItems = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
@@ -173,7 +192,7 @@ const toggleNavSection = () => {
 const createChat = () => {
   const name = 'New Chat'
   const newChatId = `session-${Date.now()}`
-  navItems.value.forEach(item => item.active = false)
+  navItems.value.forEach((item) => (item.active = false))
   navItems.value.unshift({ id: newChatId, name, active: true, processing: false })
   // Update navigation store
   navigationStore.setActiveChat(newChatId, name)
@@ -181,10 +200,10 @@ const createChat = () => {
 }
 
 const setActive = (id: string) => {
-  const chat = navItems.value.find(item => item.id === id)
+  const chat = navItems.value.find((item) => item.id === id)
   const chatName = chat?.name || ''
   navigationStore.setActiveChatName(chatName)
-  navItems.value = navItems.value.map(item => ({ ...item, active: item.id === id }))
+  navItems.value = navItems.value.map((item) => ({ ...item, active: item.id === id }))
   navigationStore.setActiveChat(id, chatName)
   // Update URL with session ID
   router.replace({ path: '/app', query: { view: 'chat', session: id } })
@@ -196,7 +215,7 @@ const confirmDeleteChat = (chatId: string) => {
 }
 
 const removeChat = async (chatId: string) => {
-  const index = navItems.value.findIndex(item => item.id === chatId)
+  const index = navItems.value.findIndex((item) => item.id === chatId)
   if (index !== -1) {
     const wasActive = navItems.value[index]?.active ?? false
     navItems.value.splice(index, 1)
@@ -235,7 +254,7 @@ const connectSessionsSse = () => {
     },
     () => {
       console.log('[ChatsList] Sessions SSE connected')
-    }
+    },
   )
 }
 
@@ -259,13 +278,13 @@ const handleSessionEvent = (event: api.SessionEvent) => {
       processing: false,
     }
     // Check if already exists (avoid duplicates)
-    const existingIndex = navItems.value.findIndex(item => item.id === event.id)
+    const existingIndex = navItems.value.findIndex((item) => item.id === event.id)
     if (existingIndex === -1) {
       navItems.value.unshift(newItem)
     }
   } else if (event.action === 'updated') {
     // Update existing session or create if not found
-    const existingIndex = navItems.value.findIndex(item => item.id === event.id)
+    const existingIndex = navItems.value.findIndex((item) => item.id === event.id)
     if (existingIndex !== -1) {
       const existing = navItems.value[existingIndex]
       if (existing) {
@@ -285,7 +304,7 @@ const handleSessionEvent = (event: api.SessionEvent) => {
     }
   } else if (event.action === 'deleted') {
     // Remove session from list
-    const index = navItems.value.findIndex(item => item.id === event.id)
+    const index = navItems.value.findIndex((item) => item.id === event.id)
     if (index !== -1) {
       const wasActive = navItems.value[index]?.active ?? false
       navItems.value.splice(index, 1)
@@ -308,23 +327,28 @@ onMounted(async () => {
   await nextTick()
   // Load chats immediately when mounted
   loadChats()
-  connectSessionsSse()
+
+  Promise.all([connectSessionsSse])
 })
 
 // Watch for navItems changes to sync active state
-watch(navItems, (newItems) => {
-  newItems.forEach((item, index) => {
-    if (item.processing && processingState.value[item.id]) {
-      item.processing = true  // Keep processing state true
-    }
-  })
-}, { deep: true })
+watch(
+  navItems,
+  (newItems) => {
+    newItems.forEach((item, index) => {
+      if (item.processing && processingState.value[item.id]) {
+        item.processing = true // Keep processing state true
+      }
+    })
+  },
+  { deep: true },
+)
 
 // Watch for processingState changes
 watch(processingState, (state) => {
-  navItems.value = navItems.value.map(item => ({
+  navItems.value = navItems.value.map((item) => ({
     ...item,
-    processing: !!state[item.id]  // Show spinner for ANY processing chat, not just active
+    processing: !!state[item.id], // Show spinner for ANY processing chat, not just active
   }))
 })
 
@@ -342,22 +366,29 @@ defineExpose({
   loadChats,
   removeChat,
   resetActiveChat: () => {
-    navItems.value = navItems.value.map(navItem => ({ ...navItem, active: false }))
+    navItems.value = navItems.value.map((navItem) => ({ ...navItem, active: false }))
   },
   cleanup,
   updateChatId: (oldId: string, newId: string) => {
-    const chatItem = navItems.value.find(item => item.id === oldId)
+    const chatItem = navItems.value.find((item) => item.id === oldId)
     if (chatItem) {
       chatItem.id = newId
     }
-  }
+  },
 })
 </script>
 
 <template>
   <!-- Chats Section with Resizable Height -->
-  <div v-if="!collapsed" class="shrink-0 flex flex-col" :style="sidebarStore.navExpanded ? { height: sidebarStore.chatsHeight + '%', minHeight: '80px' } : { height: 'auto', minHeight: '0' }">
-
+  <div
+    v-if="!collapsed"
+    class="shrink-0 flex flex-col"
+    :style="
+      sidebarStore.navExpanded
+        ? { height: sidebarStore.chatsHeight + '%', minHeight: '80px' }
+        : { height: 'auto', minHeight: '0' }
+    "
+  >
     <!-- Header with expand/collapse toggle -->
     <button
       class="px-3 py-2 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0"
@@ -366,16 +397,21 @@ defineExpose({
       <span
         class="text-xs transition-transform duration-200"
         :style="{ transform: sidebarStore.navExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
-        style="color: var(--semantic-text-dim);"
-      >▶</span>
-      <span class="text-xs font-semibold uppercase tracking-wider" style="color: var(--semantic-text-dim);">Chats</span>
+        style="color: var(--semantic-text-dim)"
+        >▶</span
+      >
+      <span
+        class="text-xs font-semibold uppercase tracking-wider"
+        style="color: var(--semantic-text-dim)"
+        >Chats</span
+      >
       <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
         <select
           v-model="chatsSortDirection"
           @change="loadChats"
           @click.stop
           class="text-xs px-1.5 py-0.5 rounded cursor-pointer"
-          style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: none;"
+          style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: none"
         >
           <option value="desc">↓</option>
           <option value="asc">↑</option>
@@ -383,7 +419,7 @@ defineExpose({
         <button
           @click.stop="createChat"
           class="w-5 h-5 rounded flex items-center justify-center transition-colors hover:opacity-70"
-          style="color: var(--semantic-text-dim);"
+          style="color: var(--semantic-text-dim)"
           title="New Chat"
         >
           <span class="text-sm">+</span>
@@ -393,36 +429,57 @@ defineExpose({
 
     <!-- Chat List -->
     <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col">
-      <ul ref="chatsContainerRef" @scroll="handleChatsScroll" class="flex-1 overflow-y-auto space-y-0.5 min-h-0">
+      <ul
+        ref="chatsContainerRef"
+        @scroll="handleChatsScroll"
+        class="flex-1 overflow-y-auto space-y-0.5 min-h-0"
+      >
         <li v-for="item in navItems" :key="item.id" class="group/chat">
           <button
             @click="setActive(item.id)"
             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150"
-            :style="item.active
-              ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
-              : 'color: var(--semantic-text-muted);'"
+            :style="
+              item.active
+                ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
+                : 'color: var(--semantic-text-muted);'
+            "
           >
-            <span v-if="item.processing === true" class="w-5 h-5 flex items-center justify-center shrink-0">
-              <div class="w-4 h-4 border-2 rounded-full animate-spin" style="border-color: var(--color-yellow); border-top-color: transparent;"></div>
+            <span
+              v-if="item.processing === true"
+              class="w-5 h-5 flex items-center justify-center shrink-0"
+            >
+              <div
+                class="w-4 h-4 border-2 rounded-full animate-spin"
+                style="border-color: var(--color-yellow); border-top-color: transparent"
+              ></div>
             </span>
             <span class="flex-1 text-left truncate">{{ item.name }}</span>
             <button
               v-if="item.id !== 'chat'"
               @click.stop="confirmDeleteChat(item.id)"
               class="w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover/chat:opacity-100 transition-opacity hover:text-red-400 shrink-0"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
               </svg>
             </button>
           </button>
         </li>
         <li v-if="chatsLoading" class="py-2 text-center">
-          <span class="text-xs" style="color: var(--semantic-text-dim);">Loading...</span>
+          <span class="text-xs" style="color: var(--semantic-text-dim)">Loading...</span>
         </li>
         <li v-else-if="chatsHasMore">
-          <button @click="loadMoreChats" class="w-full py-2 text-xs hover:opacity-70" style="color: var(--color-violet);">
+          <button
+            @click="loadMoreChats"
+            class="w-full py-2 text-xs hover:opacity-70"
+            style="color: var(--color-violet)"
+          >
             Load more
           </button>
         </li>
@@ -435,7 +492,7 @@ defineExpose({
       >
         <div
           class="w-full h-0.5 transition-all duration-200 group-hover/resize:h-1 rounded"
-          style="background: linear-gradient(90deg, transparent, var(--color-border), transparent);"
+          style="background: linear-gradient(90deg, transparent, var(--color-border), transparent)"
         />
       </div>
     </div>
@@ -446,7 +503,7 @@ defineExpose({
     <button
       @click="createChat"
       class="w-full h-10 rounded-lg flex items-center justify-center transition-colors hover:opacity-80"
-      style="color: var(--semantic-text-muted);"
+      style="color: var(--semantic-text-muted)"
     >
       <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />

@@ -143,7 +143,18 @@ pub fn main(init: std.process.Init) !void {
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
 
-    // _ = try gs.sse_manager.startEventLoop(5);
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+
+    try group.concurrent(
+        io,
+        struct {
+            fn run(gss: *gserverz.GinwaServer) void {
+                gss.sse_manager.startEventLoop(5) catch {};
+            }
+        }.run,
+        .{gs},
+    );
 
     ctxParent.server = gs;
     // // try gs.router.get("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
@@ -170,8 +181,6 @@ pub fn main(init: std.process.Init) !void {
     // // LLM API aliases (desktop app uses /api/llm/*)
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
     try gs.router.post("/api/llm/session/:session/stop", ai_mod.http_handlers.sessionStopHandler);
-
-
 
     // try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
 

@@ -262,7 +262,7 @@ pub const SseManager = struct {
             }
             self.lock.unlock(self.io); // release before poll — critical
 
-            const has_pipe = self.notify_pipe[0] >= 0 and loop_id == 0;
+            const has_pipe = self.notify_pipe[0] >= 0;
             const total_fds = if (has_pipe) my_fds.items.len + 1 else my_fds.items.len;
 
             if (total_fds == 0) {

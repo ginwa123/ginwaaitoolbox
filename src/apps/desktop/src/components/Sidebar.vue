@@ -171,28 +171,9 @@ const loadMoreChats = async () => {
 
 const connectSessionsSse = () => {
   console.log('[Sidebar] Connecting sessions SSE')
-  if (sessionsEventSource.value) {
-    sessionsEventSource.value.close()
-  }
-  sessionsEventSource.value = api.createSessionsSseConnection(
-    (event) => {
-      console.log('[Sidebar] Received session event:', event)
-      handleSessionEvent(event)
-    },
-    (error) => {
-      console.error('[Sidebar] Sessions SSE error:', error)
-    },
-    () => {
-      console.log('[Sidebar] Sessions SSE connected')
-    }
-  )
 }
 
 const disconnectSessionsSse = () => {
-  if (sessionsEventSource.value) {
-    sessionsEventSource.value.close()
-    sessionsEventSource.value = null
-  }
 }
 
 const toggleCollapse = () => emit('toggle-collapse')

@@ -138,9 +138,9 @@ pub fn unregisterSessionClient(session_id: []const u8, is_use_lock: bool) void {
     _ = is_use_lock;
     const di = getSingleton() catch return;
     const allocator = di.allocator;
-    // const io = di.io;
-    // di.session_map_lock.lock(io) catch {};
-    // defer di.session_map_lock.unlock(io);
+    const io = di.io;
+    di.session_map_lock.lock(io) catch {};
+    defer di.session_map_lock.unlock(io);
     if (di.session_to_client_ids.fetchRemove(session_id)) |kv| {
         var list = kv.value;
         list.deinit(allocator);
@@ -170,9 +170,9 @@ pub fn getListClientsForSession(session_id: []const u8, allocator: std.mem.Alloc
     _ = is_use_lock;
     _ = allocator;
     const di = try getSingleton();
-    // const io = di.io;
-    // di.session_map_lock.lock(io) catch {};
-    // defer di.session_map_lock.unlock(io);
+    const io = di.io;
+    di.session_map_lock.lock(io) catch {};
+    defer di.session_map_lock.unlock(io);
 
     const list = di.session_to_client_ids.get(session_id) orelse return null;
     if (list.items.len == 0) return null;
@@ -184,9 +184,9 @@ pub fn getListClientsForSession(session_id: []const u8, allocator: std.mem.Alloc
 pub fn getSessionIdForClient(client_id: [16]u8, is_use_lock: bool) ?[]const u8 {
     _ = is_use_lock;
     const di = getSingleton() catch return null;
-    // const io = di.io;
-    // di.session_map_lock.lock(io) catch {};
-    // defer di.session_map_lock.unlock(io);
+   const io = di.io;
+    di.session_map_lock.lock(io) catch {};
+    defer di.session_map_lock.unlock(io);
     var it = di.session_to_client_ids.iterator();
     while (it.next()) |entry| {
         for (entry.value_ptr.items) |v| {

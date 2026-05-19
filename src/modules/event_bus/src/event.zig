@@ -30,9 +30,9 @@ pub const EventBus = struct {
         const result = try self.listeners.getOrPut(self.alloc, owned_id);
         if (result.found_existing) {
             self.alloc.free(owned_id); // key already stored, discard duplicate
+        } else {
+            result.value_ptr.* = .{ .ptr = @ptrCast(callback) };
         }
-        // Last-writer-wins: replaces any existing callback for this id
-        result.value_ptr.* = .{ .ptr = @ptrCast(callback) };
     }
 
     pub fn unsubscribe(self: *Self, id: []const u8) void {

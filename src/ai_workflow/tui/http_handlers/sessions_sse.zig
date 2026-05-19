@@ -5,7 +5,6 @@ const gserverz = nalar_core.gserverz;
 const logger = nalar_core.logger;
 const ai_mod = nalar_core.ai_mod;
 
-const SseStreamCtx = @import("mod.zig").SseStreamCtx;
 
 /// Callback for session SSE events - broadcasts to client
 pub const CallbackSessionsStream = struct {
@@ -14,18 +13,11 @@ pub const CallbackSessionsStream = struct {
         const allocator = di.allocator;
         const server = di.server;
 
-        std.debug.print("SSE_SESSIONS_DEBUG: callback for routing key {s}\n", .{data.session_id});
-
         // Get ALL client_ids for "sessions" routing, not just the first
         const maybe_clients = ai_mod.getListClientsForSession("sessions", allocator, false) catch return;
-        const client_ids = maybe_clients orelse {
-            std.debug.print("SSE_SESSIONS_DEBUG: no clients registered for sessions\n", .{});
-            return;
-        };
+        const client_ids = maybe_clients orelse return;
 
         if (client_ids.len == 0) return;
-
-        std.debug.print("SSE_SESSIONS_DEBUG: sending to {d} clients\n", .{client_ids.len});
 
         // Build SSE message once (reused for all clients)
         var buf: std.ArrayList(u8) = .empty;
@@ -56,10 +48,7 @@ pub const CallbackSessionsStream = struct {
 
         // Send to ALL clients for "sessions"
         for (client_ids) |client_id| {
-            std.debug.print("SSE_SESSIONS_DEBUG: sending to client, len={d}\n", .{sse_event_data.len});
-            server.sse_manager.sendToClient(client_id, sse_event_data) catch {
-                std.debug.print("SSE_SESSIONS_DEBUG: failed to send to client\n", .{});
-            };
+            server.sse_manager.sendToClient(client_id, sse_event_data) catch {};
         }
     }
 };
@@ -76,16 +65,11 @@ pub fn sessionsStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // Register client mapping for "sessions" routing key
     if (ctx.client_id) |client_id| {
         const client_id_copy: [16]u8 = client_id;
-        ai_mod.registerSessionClient("sessions", client_id_copy, true) catch {
-            std.debug.print("SSE_SESSIONS_DEBUG: failed to register client\n", .{});
-        };
+        ai_mod.registerSessionClient("sessions", client_id_copy, true) catch {};
     }
 
     // Subscribe to session events with callback
-    event_bus.subscribe(ai_mod.on_event_sent.SseEvent, "sessions", CallbackSessionsStream.callback) catch {
-        std.debug.print("SSE_SESSIONS_DEBUG: failed to subscribe\n", .{});
-    };
-
+    event_bus.subscribe(ai_mod.on_event_sent.SseEvent, "sessions", CallbackSessionsStream.callback) catch {};
 
     return error.WouldBlock; // Keep connection open
 }

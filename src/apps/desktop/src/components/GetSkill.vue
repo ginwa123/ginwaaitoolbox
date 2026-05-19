@@ -58,7 +58,7 @@ const statusIndicator = computed(() => isLoaded.value ? '✓' : '✗')
 const contentPreview = computed(() => {
   const content = skillContent.value
   if (!content) return ''
-  const firstLine = content.split('\n')[0]
+  const firstLine = content.split('\n')[0] ?? ''
   return firstLine.length > 80 ? firstLine.slice(0, 80) + '...' : firstLine
 })
 

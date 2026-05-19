@@ -103,9 +103,18 @@ pub fn run(init: std.process.Init) !void {
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
 
-    // Start SSE event loop in background thread
-    try gs.sse_manager.startEventLoop(15); // 15 second heartbeat
-    defer gs.sse_manager.stop();
+    // Start SSE event loop in a separate thread (non-blocking)
+    const sse_thread = try std.Thread.spawn(.{}, struct {
+        fn run(sm: *gserverz.SseManager, secs: u32) void {
+            sm.startEventLoop(secs) catch |err| {
+                std.debug.print("SSE event loop error: {s}\n", .{@errorName(err)});
+            };
+        }
+    }.run, .{ &gs.sse_manager, @as(u32, 15) });
+    defer {
+        gs.sse_manager.stop();
+        sse_thread.join();
+    }
 
     std.debug.print("HTTP Server listening on 127.0.0.1:29590...\n", .{});
     std.debug.print("SSE Event loop running with 15s heartbeat...\n", .{});

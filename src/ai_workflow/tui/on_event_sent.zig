@@ -204,8 +204,6 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
     const di = try tree1_mod.getSingleton();
     const event_bus = di.event_bus;
 
-    const log = logger.getGlobal();
-
     // Build the payload with action and all session columns
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -223,13 +221,6 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
         .whitespace = .indent_4,
     })});
 
-    log.?.debugFmt("on_event_send_sessions: action={s}, id={s}, name={s}, data={s}", .{
-        input.action,
-        input.id,
-        input.name,
-        buf.items,
-    });
-
     // Duplicate the data so event owns its own copy (buf will be deallocated below)
     const data_copy = try allocator.dupe(u8, buf.items);
 
@@ -240,8 +231,6 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
     };
 
     event_bus.emit(SseEvent, "sessions", event);
-
-    std.debug.print("SSE_DEBUG: on_event_send_sessions: event emitted, action={s}, id={s}\n", .{ input.action, input.id });
 }
 
 // ============================================================================
