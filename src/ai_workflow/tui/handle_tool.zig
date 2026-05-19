@@ -566,6 +566,7 @@ fn sendSSEForLatestMessage(
             .parent_id = session_id,
             .diffview_before = msg.diffview_before,
             .diffview_after = msg.diffview_after,
+            .total_tokens = msg.total_tokens,
         }) catch |err| {
             std.debug.print("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         };

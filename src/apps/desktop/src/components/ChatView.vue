@@ -13,6 +13,7 @@ import Search from './Search.vue'
 import Glob from './Glob.vue'
 import TextReplace from './TextReplace.vue'
 import Bash from './Bash.vue'
+import GetSkill from './GetSkill.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -840,6 +841,9 @@ const compactSession = async () => {
                         :diffview-before="msg.diffview_before" :diffview-after="msg.diffview_after" />
                       <!-- Bash component for bash tool -->
                       <Bash v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- GetSkill component for get_skill tool -->
+                      <GetSkill v-else-if="msg.tool_name === 'get_skill'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- Default tool rendering for other tools -->
                       <div v-else class="tool-expandable">

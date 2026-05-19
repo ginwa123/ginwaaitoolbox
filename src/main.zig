@@ -143,7 +143,7 @@ pub fn main(init: std.process.Init) !void {
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
 
-    _ = try gs.sse_manager.startEventLoop(5);
+    // _ = try gs.sse_manager.startEventLoop(5);
 
     ctxParent.server = gs;
     // // try gs.router.get("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
@@ -169,6 +169,10 @@ pub fn main(init: std.process.Init) !void {
     //
     // // LLM API aliases (desktop app uses /api/llm/*)
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
+    try gs.router.post("/api/llm/session/:session/stop", ai_mod.http_handlers.sessionStopHandler);
+
+
+
     // try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
 
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
@@ -181,7 +185,6 @@ pub fn main(init: std.process.Init) !void {
     //
     // // Desktop app routes (system, health, workspaces)
     try gs.router.get("/health", ai_mod.http_handlers.healthHandler);
-    try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);
     try gs.router.get("/api/skills", ai_mod.http_handlers.skillsListHandler);
     try gs.router.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
     try gs.router.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
@@ -202,6 +205,9 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
+
+    try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);
+    try gs.router.get("/test/sessions/client_ids", ai_mod.http_handlers.sessionToClientIdsHandler);
 
     _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParamsNew, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
     ctxParent.server.sse_manager.on_disconnect = ai_mod.handleClientDisconnect;

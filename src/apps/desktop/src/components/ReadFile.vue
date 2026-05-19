@@ -16,9 +16,12 @@ const filePath = computed(() => {
 
 // Parse error if any
 const errorMessage = computed(() => {
-  const match = props.content.match(/<error>(.*?)<\/error>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
+  if (isSuccess.value == false) {
+    const match = props.content.match(/<error>(.*?)<\/error>/)
+    if (!match || !match[1]) return null
+    return match[1].trim()
+  }
+  return
 })
 
 // Parse success status
@@ -68,28 +71,30 @@ const copyPath = async (e: Event) => {
 </script>
 
 <template>
-  <div 
+  <div
     class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
     :class="{ 'border-red-500/50 opacity-80': errorMessage }"
   >
     <!-- Header -->
-    <div 
+    <div
       class="group flex items-center gap-1 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
       @click="toggle"
       role="button"
       tabindex="0"
     >
       <span class="text-[var(--color-violet)] font-semibold text-xs">read_file</span>
-      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="filePath || ''">{{ filePath || 'unknown' }}</span>
+      <span
+        class="flex-1 truncate text-left text-[var(--color-violet)] font-medium"
+        :title="filePath || ''"
+        >{{ filePath || 'unknown' }}</span
+      >
       <span v-if="!errorMessage" class="text-[var(--semantic-text-muted)] text-xs">
         {{ lineCount }}L
       </span>
-      <span v-if="errorMessage" class="text-red-500 text-xs font-medium">
-        Error
-      </span>
-      <button 
+      <span v-if="errorMessage" class="text-red-500 text-xs font-medium"> Error </span>
+      <button
         class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
-        @click="copyPath" 
+        @click="copyPath"
         title="Copy path"
       >
         ⎘
@@ -101,7 +106,10 @@ const copyPath = async (e: Event) => {
 
     <!-- Content -->
     <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
-      <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre overflow-x-visible leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ fileContent || '(empty)' }}</pre>
+      <pre
+        class="p-2 m-0 bg-black/[0.02] whitespace-pre overflow-x-visible leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
+        >{{ fileContent || '(empty)' }}</pre
+      >
     </div>
   </div>
 </template>

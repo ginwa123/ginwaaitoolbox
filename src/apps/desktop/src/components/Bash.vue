@@ -88,6 +88,20 @@ const copyCommand = async (e: Event) => {
     await navigator.clipboard.writeText(command.value)
   }
 }
+
+const copyStdout = async (e: Event) => {
+  e.stopPropagation()
+  if (stdout.value) {
+    await navigator.clipboard.writeText(stdout.value)
+  }
+}
+
+const copyStderr = async (e: Event) => {
+  e.stopPropagation()
+  if (stderr.value) {
+    await navigator.clipboard.writeText(stderr.value)
+  }
+}
 </script>
 
 <template>
@@ -140,30 +154,44 @@ const copyCommand = async (e: Event) => {
       >
         ⎘
       </button>
-      <span v-if="hasStderr || isTruncated || hasWarning" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
 
-    <!-- Expanded content -->
-    <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
-      <!-- stdout section -->
-      <div v-if="stdout" class="border-b border-dashed border-[var(--color-border)] last:border-b-0">
-        <div class="px-2 py-0.5 text-[0.65rem] text-blue-600 font-medium bg-black/[0.02]">
-          stdout
-          <span class="text-[var(--semantic-text-muted)] ml-1">{{ stdoutLines }}L</span>
+      <!-- Expanded content -->
+      <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
+        <!-- stdout section -->
+        <div v-if="stdout" class="group relative border-b border-dashed border-[var(--color-border)] last:border-b-0">
+          <div class="px-2 py-0.5 text-[0.65rem] text-blue-600 font-medium bg-black/[0.02] flex items-center gap-2">
+            <span>stdout</span>
+            <span class="text-[var(--semantic-text-muted)]">{{ stdoutLines }}L</span>
+            <button
+              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-blue-500 cursor-pointer text-xs"
+              @click="copyStdout"
+              title="Copy stdout"
+            >
+              ⎘
+            </button>
+          </div>
+          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ stdout || '(empty)' }}</pre>
         </div>
-        <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ stdout || '(empty)' }}</pre>
-      </div>
 
-      <!-- stderr section -->
-      <div v-if="hasStderr" class="border-b border-dashed border-[var(--color-border)] last:border-b-0">
-        <div class="px-2 py-0.5 text-[0.65rem] text-red-600 font-medium bg-black/[0.02]">
-          stderr
-          <span class="text-[var(--semantic-text-muted)] ml-1">{{ stderrLines }}L</span>
+        <!-- stderr section -->
+        <div v-if="hasStderr" class="group relative border-b border-dashed border-[var(--color-border)] last:border-b-0">
+          <div class="px-2 py-0.5 text-[0.65rem] text-red-600 font-medium bg-black/[0.02] flex items-center gap-2">
+            <span>stderr</span>
+            <span class="text-[var(--semantic-text-muted)]">{{ stderrLines }}L</span>
+            <button
+              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-red-500 cursor-pointer text-xs"
+              @click="copyStderr"
+              title="Copy stderr"
+            >
+              ⎘
+            </button>
+          </div>
+          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ stderr }}</pre>
         </div>
-        <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ stderr }}</pre>
       </div>
-    </div>
   </div>
 </template>

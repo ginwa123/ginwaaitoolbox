@@ -14,17 +14,15 @@ pub const CallbackAiStream = struct {
         const allocator = di.allocator;
         const server = di.server;
 
-        std.debug.print("SSE_DEBUG: callback for session {s}\n", .{session_id});
+        // Get ALL client_ids for this session, not just the first
+        const maybe_clients = ai_mod.getListClientsForSession(session_id, allocator, false) catch return;
+        const client_ids = maybe_clients orelse return;
 
-        di.session_map_lock.lock(di.io) catch {};
-        defer di.session_map_lock.unlock(di.io);
-        const client_id = ai_mod.getClientIdForSession(session_id, false) orelse return;
-        std.debug.print("GILANG_SERVER 2: client_id={s}\n", .{client_id});
+        if (client_ids.len == 0) return;
 
-        std.debug.print("SSE_DEBUG: got client_id {s}, sending event\n", .{client_id});
-
+        // Build SSE message once (reused for all clients)
         var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
+        errdefer buf.deinit(allocator);
         if (data.event_type) |event_type| {
             buf.appendSlice(allocator, "event: ") catch return;
             buf.appendSlice(allocator, event_type) catch return;
@@ -42,9 +40,13 @@ pub const CallbackAiStream = struct {
             }
         }
         buf.append(allocator, '\n') catch return;
-        const dataaaa = buf.toOwnedSlice(allocator) catch return;
-        defer allocator.free(dataaaa);
-        server.sse_manager.sendToClient(client_id, dataaaa) catch {};
+        const sse_event_data = buf.toOwnedSlice(allocator) catch return;
+        defer allocator.free(sse_event_data);
+
+        // Send to ALL clients for this session
+        for (client_ids) |client_id| {
+            server.sse_manager.sendToClient(client_id, sse_event_data) catch {};
+        }
     }
 };
 

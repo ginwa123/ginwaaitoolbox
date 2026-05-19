@@ -24,6 +24,7 @@ pub const streamHandler = @import("stream.zig").streamHandler;
 pub const sessionsStreamHandler = @import("sessions_sse.zig").sessionsStreamHandler;
 pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHandler;
 pub const sessionListHandler = @import("session_list.zig").session_list_handler;
+pub const sessionStopHandler = @import("session_stop.zig").sessionStopHandler;
 pub const session_get_handler = @import("session_get.zig").session_get_handler;
 pub const session_exist_handler = @import("session_exist.zig").session_exist_handler;
 pub const session_message_handler = @import("session_message.zig").session_message_handler;
@@ -70,6 +71,9 @@ pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
 // Queue messages handlers
 pub const queueMessagesStreamHandler = @import("queue_messages_sse.zig").queueMessagesStreamHandler;
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;
+
+// Session to client IDs monitoring
+pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessionToClientIdsHandler;
 
 // =============================================================================
 // Shared Types & Helpers

@@ -633,11 +633,12 @@ pub fn compactMessageInMemoryNew(
     // Mark all existing messages in this session as not for LLM (soft-delete)
     try llm_history.mark_message_not_for_llm_run(allocator, db, session_id);
 
-    // Build the compacted summary content
+    // Build the compacted summary content with XML wrapping
     var summary: std.ArrayList(u8) = .empty;
     defer summary.deinit(allocator);
-    try summary.print(allocator, "[CONTEXT SUMMARY]\n\n", .{});
+    try summary.print(allocator, "<compact_messages>\n\n", .{});
     try summary.print(allocator, "{s}", .{compacted_xml});
+    try summary.print(allocator, "\n\n</compact_messages>", .{});
     const summary_content = try summary.toOwnedSlice(allocator);
 
     // Save the compacted summary to the database with is_feed_to_llm = 1

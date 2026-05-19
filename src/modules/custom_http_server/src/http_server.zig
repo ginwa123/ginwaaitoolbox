@@ -39,7 +39,7 @@ pub const Address = struct {
     pub fn init(port: u16) !Address {
         const socket_fd = try createSocket();
         errdefer _ = socket.close(socket_fd);
-        
+
         try setReuseAddr(socket_fd);
         try bind(port, socket_fd);
 
@@ -70,7 +70,7 @@ pub const Address = struct {
             .addr = @bitCast(@as(u32, 0x0100007f)), // 127.0.0.1 in little-endian
             .zero = undefined,
         };
-        
+
         const rc = socket.bind(sock_fd, @ptrCast(&sockaddr), @sizeOf(socket.sockaddr.in));
         if (rc < 0) return error.BindFailed;
     }
@@ -110,98 +110,135 @@ pub const GinwaServer = struct {
         const rc = socket.listen(self.address.sock_fd, 128);
         if (rc < 0) return error.ListenFailed;
 
-        var group: std.Io.Group = .init;
-        defer group.cancel(self.io);
+        // var group: std.Io.Group = .init;
+        // defer group.cancel(self.io);
+
+        var sse_group: std.Io.Group = .init;
+        defer sse_group.cancel(self.io);
+
+        var http_group: std.Io.Group = .init;
+        defer http_group.cancel(self.io);
 
         self.is_running = true;
-        while (self.is_running) {
-            const client_fd = try self.acceptClient();
 
-            const arena = try self.allocator.create(std.heap.ArenaAllocator);
-            arena.* = std.heap.ArenaAllocator.init(self.allocator);
-            try group.concurrent(
-                self.io,
-                struct {
-                    fn run(gs: *GinwaServer, arena_allocator: *std.heap.ArenaAllocator, fd: i32) void {
-                        defer {
-                            arena_allocator.deinit();
-                            gs.allocator.destroy(arena_allocator);
-                        }
+        // Start SSE event loops concurrently with the accept loop
+        // try sse_group.concurrent(
+        //     self.io,
+        //     struct {
+        //         fn run(gs: *GinwaServer) void {
+        //             gs.sse_manager.startEventLoop(5) catch |err| {
+        //                 std.debug.print("SSE event loop error: {s}\n", .{@errorName(err)});
+        //             };
+        //         }
+        //     }.run,
+        //     .{self},
+        // );
 
-                        const allocator = arena_allocator.allocator();
+        // Accept loop
+        try http_group.concurrent(
+            self.io,
+            struct {
+                fn run(gs: *GinwaServer, grp: *std.Io.Group) void {
+                    gs.is_running = true;
+                    while (gs.is_running) {
+                        const client_fd = gs.acceptClient() catch break;
 
-                        // Use RequestBuffer for auto-growing request reading
-                        var rb = RequestBuffer.init(allocator);
-                        defer rb.deinit();
+                        const arena = gs.allocator.create(std.heap.ArenaAllocator) catch break;
+                        arena.* = std.heap.ArenaAllocator.init(gs.allocator);
 
-                        const request_data = rb.readFullRequest(fd) catch |err| {
-                            std.debug.print("HTTP_SERVER: readFullRequest failed: {s}\n", .{@errorName(err)});
-                            _ = socket.close(fd);
-                            return;
-                        };
-                        defer allocator.free(request_data);
+                        grp.concurrent(
+                            gs.io,
+                            struct {
+                                fn handle(server: *GinwaServer, arena_allocator: *std.heap.ArenaAllocator, fd: i32) void {
+                                    defer {
+                                        arena_allocator.deinit();
+                                        server.allocator.destroy(arena_allocator);
+                                    }
 
-                        var req = http_parser.parseRequest(request_data, allocator, gs.io, fd) catch |err| {
-                            std.debug.print("HTTP_SERVER: parseRequest failed: {s}\n", .{@errorName(err)});
-                            _ = socket.close(fd);
-                            return;
-                        };
-                        defer req.headers.deinit();
+                                    const allocator = arena_allocator.allocator();
 
-                        const http_ctx = http_parser.HttpContext{ .allocator = allocator, .io = gs.io };
-                        if (gs.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
-                            switch (result) {
-                                .handler => |h| {
-                                    const final_res = h.handler(h.ctx, req, h.res) catch http_parser.internalError("Handler error", allocator);
-                                    const res_bytes = final_res.toBytes() catch {
-                                        std.debug.print("Failed to build response\n", .{});
+                                    var rb = RequestBuffer.init(allocator);
+                                    defer rb.deinit();
+
+                                    const request_data = rb.readFullRequest(fd) catch |err| {
+                                        std.debug.print("HTTP_SERVER: readFullRequest failed: {s}\n", .{@errorName(err)});
                                         _ = socket.close(fd);
                                         return;
                                     };
-                                    defer final_res.allocator.free(res_bytes);
-                                    _ = gs.sendToClient(fd, res_bytes) catch {
-                                        std.debug.print("Failed to send response\n", .{});
-                                    };
-                                },
-                                .sse => |sse| {
-                                    const headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
-                                    _ = gs.sendToClient(fd, headers) catch {
+                                    defer allocator.free(request_data);
+
+                                    var req = http_parser.parseRequest(request_data, allocator, server.io, fd) catch |err| {
+                                        std.debug.print("HTTP_SERVER: parseRequest failed: {s}\n", .{@errorName(err)});
                                         _ = socket.close(fd);
                                         return;
                                     };
-                                    const client_id = gs.sse_manager.registerClient(fd) catch {
-                                        _ = socket.close(fd);
-                                        return;
-                                    };
-                                    var sse_ctx = sse.ctx;
-                                    sse_ctx.client_id = client_id;
-                                    const res = http_parser.HttpResponse.init(200, "OK", allocator);
-                                    _ = sse.handler(sse_ctx, req, res) catch |err| {
-                                        if (err != error.WouldBlock) {
-                                            std.debug.print("SSE handler error: {s}\n", .{@errorName(err)});
+                                    defer req.headers.deinit();
+
+                                    const http_ctx = http_parser.HttpContext{ .allocator = allocator, .io = server.io };
+                                    if (server.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
+                                        switch (result) {
+                                            .handler => |h| {
+                                                const final_res = h.handler(h.ctx, req, h.res) catch http_parser.internalError("Handler error", allocator);
+                                                const res_bytes = final_res.toBytes() catch {
+                                                    std.debug.print("Failed to build response\n", .{});
+                                                    _ = socket.close(fd);
+                                                    return;
+                                                };
+                                                defer final_res.allocator.free(res_bytes);
+                                                _ = server.sendToClient(fd, res_bytes) catch {
+                                                    std.debug.print("Failed to send response\n", .{});
+                                                };
+                                            },
+                                            .sse => |sse| {
+                                                const headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
+                                                _ = server.sendToClient(fd, headers) catch {
+                                                    _ = socket.close(fd);
+                                                    return;
+                                                };
+                                                const client_id = server.sse_manager.registerClient(fd) catch {
+                                                    _ = socket.close(fd);
+                                                    return;
+                                                };
+                                                var sse_ctx = sse.ctx;
+                                                sse_ctx.client_id = client_id;
+                                                const res = http_parser.HttpResponse.init(200, "OK", allocator);
+                                                _ = sse.handler(sse_ctx, req, res) catch |err| {
+                                                    if (err != error.WouldBlock) {
+                                                        std.debug.print("SSE handler error: {s}\n", .{@errorName(err)});
+                                                    }
+                                                };
+                                                return;
+                                            },
                                         }
-                                    };
-                                    return;
-                                },
-                            }
-                        } else {
-                            const not_found = http_parser.notFound(allocator);
-                            const res_bytes = not_found.toBytes() catch {
-                                _ = socket.close(fd);
-                                return;
-                            };
-                            defer not_found.allocator.free(res_bytes);
-                            _ = gs.sendToClient(fd, res_bytes) catch {};
-                        }
+                                    } else {
+                                        const not_found = http_parser.notFound(allocator);
+                                        const res_bytes = not_found.toBytes() catch {
+                                            _ = socket.close(fd);
+                                            return;
+                                        };
+                                        defer not_found.allocator.free(res_bytes);
+                                        _ = server.sendToClient(fd, res_bytes) catch {};
+                                    }
 
-                        _ = socket.close(fd);
+                                    _ = socket.close(fd);
+                                }
+                            }.handle,
+                            .{ gs, arena, client_fd },
+                        ) catch |err| {
+                            std.debug.print("Failed to spawn handler: {s}\n", .{@errorName(err)});
+                            arena.deinit();
+                            gs.allocator.destroy(arena);
+                            _ = socket.close(client_fd);
+                        };
                     }
-                }.run,
-                .{ self, arena, client_fd },
-            );
-        }
+                }
+            }.run,
+            .{ self, &http_group },
+        );
 
-        try group.await(self.io);
+
+        try http_group.await(self.io);
+        try sse_group.await(self.io);
     }
 
     pub fn getContentLength(data: []const u8) ?usize {

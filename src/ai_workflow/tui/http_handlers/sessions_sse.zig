@@ -16,23 +16,20 @@ pub const CallbackSessionsStream = struct {
 
         std.debug.print("SSE_SESSIONS_DEBUG: callback for routing key {s}\n", .{data.session_id});
 
-
-        di.session_map_lock.lock(di.io) catch {};
-        defer di.session_map_lock.unlock(di.io);
-        // Get client_id for "sessions" routing
-        const client_id = ai_mod.getClientIdForSession("sessions", false) orelse {
-            std.debug.print("SSE_SESSIONS_DEBUG: no client registered for sessions\n", .{});
+        // Get ALL client_ids for "sessions" routing, not just the first
+        const maybe_clients = ai_mod.getListClientsForSession("sessions", allocator, false) catch return;
+        const client_ids = maybe_clients orelse {
+            std.debug.print("SSE_SESSIONS_DEBUG: no clients registered for sessions\n", .{});
             return;
         };
 
-        std.debug.print("SSE_SESSIONS_DEBUG: client_id={s}, sending event\n", .{client_id});
+        if (client_ids.len == 0) return;
 
-        // Format SSE message with data prefix and blank line
-        const event_str = std.fmt.allocPrint(allocator, "data: {s}\n\n", .{data.data}) catch return;
-        defer allocator.free(event_str);
+        std.debug.print("SSE_SESSIONS_DEBUG: sending to {d} clients\n", .{client_ids.len});
 
+        // Build SSE message once (reused for all clients)
         var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
+        errdefer buf.deinit(allocator);
 
         // Add event type if present
         if (data.event_type) |event_type| {
@@ -54,13 +51,16 @@ pub const CallbackSessionsStream = struct {
         }
         buf.append(allocator, '\n') catch return;
 
-        const dataaaa = buf.toOwnedSlice(allocator) catch return;
-        defer allocator.free(dataaaa);
+        const sse_event_data = buf.toOwnedSlice(allocator) catch return;
+        defer allocator.free(sse_event_data);
 
-        std.debug.print("SSE_SESSIONS_DEBUG: sending to client, len={d}\n", .{dataaaa.len});
-        server.sse_manager.sendToClient(client_id, dataaaa) catch {
-            std.debug.print("SSE_SESSIONS_DEBUG: failed to send to client\n", .{});
-        };
+        // Send to ALL clients for "sessions"
+        for (client_ids) |client_id| {
+            std.debug.print("SSE_SESSIONS_DEBUG: sending to client, len={d}\n", .{sse_event_data.len});
+            server.sse_manager.sendToClient(client_id, sse_event_data) catch {
+                std.debug.print("SSE_SESSIONS_DEBUG: failed to send to client\n", .{});
+            };
+        }
     }
 };
 

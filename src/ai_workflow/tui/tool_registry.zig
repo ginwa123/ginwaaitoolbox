@@ -35,6 +35,7 @@ const web_search_mod = nalar_mod.web_search;
 const update_activity_mod = nalar_mod.update_activity;
 const glob_tool_mod = nalar_mod.glob_tool;
 const search_tool_mod = nalar_mod.search_tool;
+const semantic_search_mod = nalar_mod.semantic_search;
 
 // Handle tool imports for exec functions
 const background_process = @import("background_process.zig");
@@ -895,6 +896,37 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     return ToolExecResult{ .output = res_search };
 }
 
+// pub fn execSemanticSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+//     const args = tc.function.arguments;
+//     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
+//
+//     const parsed = std.json.parseFromSlice(
+//         semantic_search_mod.SemanticSearchInput,
+//         ctx.allocator,
+//         args_to_parse,
+//         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+//     ) catch {
+//         const output = try semantic_search_mod.xmlError(ctx.allocator, "Failed to parse arguments");
+//         return ToolExecResult{ .output = output };
+//     };
+//     defer parsed.deinit();
+//
+//     const handle_semantic_search = @import("handle_semantic_search.zig");
+//     const result = try handle_semantic_search.handleSemanticSearch(ctx, .{
+//         .query = parsed.value.query,
+//         .limit = parsed.value.limit,
+//     });
+//     return result;
+// }
+//
+// pub fn execIndexCodebase(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+//     _ = tc;
+//
+//     const handle_semantic_search = @import("handle_semantic_search.zig");
+//     const result = try handle_semantic_search.handleIndexCodebase(ctx);
+//     return result;
+// }
+
 // ============================================================================
 // UNIFIED TOOL REGISTRY - Single source of truth for ALL tool metadata
 // ============================================================================
@@ -946,6 +978,8 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     // === FILE SEARCH TOOLS ===
     .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool },
     .{ .name = "search", .exec = execSearch, .tool_def = search_tool_mod.search_tool },
+    // .{ .name = "semantic_search", .exec = execSemanticSearch, .tool_def = semantic_search_mod.semantic_search_tool },
+    // .{ .name = "index_codebase", .exec = execIndexCodebase, .tool_def = semantic_search_mod.index_codebase_tool },
 };
 
 // ============================================================================

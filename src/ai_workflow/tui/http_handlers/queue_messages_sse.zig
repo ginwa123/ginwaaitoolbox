@@ -16,21 +16,26 @@ pub const CallbackQueueMessagesStream = struct {
 
         std.debug.print("SSE_QUEUE_DEBUG: callback for session {s}\n", .{data.session_id});
 
-        di.session_map_lock.lock(di.io) catch {};
-        defer di.session_map_lock.unlock(di.io);
-
         const copy_key_for_event_bus = std.fmt.allocPrint(allocator, "queue_messages_{s}", .{data.session_id}) catch return;
         defer allocator.free(copy_key_for_event_bus);
 
-        const client_id = ai_mod.getClientIdForSession(copy_key_for_event_bus, false) orelse {
-            std.debug.print("SSE_QUEUE_DEBUG: no client registered for session {s}\n", .{data.session_id});
+        // Get ALL client_ids for this queue_messages session, not just the first
+        const maybe_clients = ai_mod.getListClientsForSession(copy_key_for_event_bus, allocator, false) catch return;
+        const client_ids = maybe_clients orelse {
+            std.debug.print("SSE_QUEUE_DEBUG: no clients registered for session {s}\n", .{data.session_id});
             return;
         };
 
-        std.debug.print("SSE_QUEUE_DEBUG: client_id={s}, sending event\n", .{client_id});
+        if (client_ids.len == 0) {
+            std.debug.print("SSE_QUEUE_DEBUG: no client registered for session {s}\n", .{data.session_id});
+            return;
+        }
 
+        std.debug.print("SSE_QUEUE_DEBUG: sending to {d} clients\n", .{client_ids.len});
+
+        // Build SSE message once (reused for all clients)
         var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
+        errdefer buf.deinit(allocator);
 
         // Add event type if present
         if (data.event_type) |event_type| {
@@ -52,12 +57,15 @@ pub const CallbackQueueMessagesStream = struct {
         }
         buf.append(allocator, '\n') catch return;
 
-        const dataaaa = buf.toOwnedSlice(allocator) catch return;
-        defer allocator.free(dataaaa);
+        const sse_event_data = buf.toOwnedSlice(allocator) catch return;
+        defer allocator.free(sse_event_data);
 
-        server.sse_manager.sendToClient(client_id, dataaaa) catch {
-            std.debug.print("SSE_QUEUE_DEBUG: failed to send to client\n", .{});
-        };
+        // Send to ALL clients for this queue_messages session
+        for (client_ids) |client_id| {
+            server.sse_manager.sendToClient(client_id, sse_event_data) catch {
+                std.debug.print("SSE_QUEUE_DEBUG: failed to send to client\n", .{});
+            };
+        }
     }
 };
 

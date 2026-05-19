@@ -3,12 +3,7 @@ const posix = std.posix;
 const socket = posix.system;
 const c = std.c;
 
-/// Platform-specific includes
 const builtin = @import("builtin");
-
-// =============================================================================
-// Platform Detection
-// =============================================================================
 
 const is_windows = builtin.os.tag == .windows;
 const is_linux = builtin.os.tag == .linux;
@@ -18,15 +13,10 @@ const is_bsd = switch (builtin.os.tag) {
     else => false,
 };
 
-/// Cross-platform SSE Manager implementation
-/// Uses different backends based on OS:
-/// - Linux: kqueue
-/// - macOS/BSD: kqueue  
-/// - Windows: select/poll based approach
+const LOOP_COUNT = 4;
 
 pub const Self = @This();
 
-/// SSE Client state - each connected SSE client has one of these
 pub const SseClient = struct {
     io: std.Io,
     id: [16]u8,
@@ -60,10 +50,6 @@ pub const SseClient = struct {
         _ = socket.close(self.fd);
     }
 
-    /// Force destroy without going through arena.deinit().
-    /// This is used when the SseManager is shutting down and we need to
-    /// free the SseClient memory WITHOUT calling arena.deinit() which
-    /// corrupts the backing allocator's bookkeeping (especially DebugAllocator).
     pub fn forceDestroy(self: *SseClient) void {
         _ = socket.close(self.fd);
     }
@@ -86,36 +72,23 @@ pub const SseClient = struct {
     }
 };
 
-/// SSE Manager - owns all SSE clients and event loop
 pub const SseManager = struct {
-    const Self = @This();
     io: std.Io,
-
     clients: std.AutoHashMapUnmanaged([16]u8, *SseClient),
-    // fd_to_id maps socket fd to client id for quick lookup
     fd_to_id: std.AutoHashMapUnmanaged(i32, [16]u8),
     lock: std.Io.Mutex = .init,
     allocator: std.mem.Allocator,
     server_allocator: std.mem.Allocator,
     running: bool,
-    event_loop_thread: ?std.Thread = null,
-
-    /// Optional callback called when a client disconnects
-    /// Takes the client_id as argument
     on_disconnect: ?*const fn (client_id: [16]u8) void = null,
-
-    /// Notification pipe for waking up the event loop
     notify_pipe: [2]i32,
 
     pub fn init(allocator: std.mem.Allocator, server_allocator: std.mem.Allocator, io: std.Io) !SseManager {
         var notify_pipe: [2]i32 = .{ -1, -1 };
-        
-        // Create notification pipe for waking up the event loop
         if (!is_windows) {
             const rc = socket.pipe(&notify_pipe);
             if (rc < 0) return error.PipeFailed;
         }
-
         return .{
             .clients = .empty,
             .fd_to_id = .empty,
@@ -130,14 +103,10 @@ pub const SseManager = struct {
 
     pub fn deinit(self: *SseManager) void {
         self.running = false;
-        
-        // Wake up the event loop by writing to the pipe
         if (self.notify_pipe[1] >= 0) {
-            const byte: u8 = 'q';
-            var byte_buf: [1]u8 = .{byte};
+            var byte_buf: [1]u8 = .{'q'};
             _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
         }
-        
         self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
@@ -156,19 +125,12 @@ pub const SseManager = struct {
         _ = try self.lock.lock(self.io);
         defer self.lock.unlock(self.io);
 
-        // Check if already registered
-        if (self.getClientIdByFdLocked(fd)) |id| {
-            return id;
-        }
+        if (self.getClientIdByFdLocked(fd)) |id| return id;
 
-        // Generate unique ID (with collision detection)
         var id: [16]u8 = undefined;
         while (true) {
-            // Use the io's random source to fill bytes
             self.io.random(&id);
-            // Check if this ID already exists
             if (!self.clients.contains(id)) break;
-            // ID collision, regenerate
         }
 
         const client = try self.server_allocator.create(SseClient);
@@ -176,7 +138,10 @@ pub const SseManager = struct {
 
         try self.clients.put(self.server_allocator, id, client);
         try self.fd_to_id.put(self.server_allocator, fd, id);
-        
+
+        // Wake up all event loops so they pick up the new client
+        self.notifyLoops();
+
         return id;
     }
 
@@ -188,10 +153,7 @@ pub const SseManager = struct {
             _ = self.fd_to_id.remove(entry.value.*.fd);
             entry.value.*.deinit();
             self.server_allocator.destroy(entry.value);
-            // Call disconnect callback if set
-            if (self.on_disconnect) |cb| {
-                cb(id);
-            }
+            if (self.on_disconnect) |cb| cb(id);
         }
     }
 
@@ -205,46 +167,106 @@ pub const SseManager = struct {
                 client_entry.value.*.deinit();
                 self.server_allocator.destroy(client_entry.value);
             }
-            // Call disconnect callback if set
-            if (self.on_disconnect) |cb| {
-                cb(id);
-            }
+            if (self.on_disconnect) |cb| cb(id);
             return id;
         }
         return null;
     }
 
-    /// Get client ID by fd (assumes lock is held by caller)
     fn getClientIdByFdLocked(self: *SseManager, fd: i32) ?[16]u8 {
         return self.fd_to_id.get(fd);
     }
 
-    /// Get client ID by fd (does not remove or deinit) - acquires lock
     pub fn getClientIdByFd(self: *SseManager, fd: i32) ?[16]u8 {
-        self.lock.lock();
-        defer self.lock.unlock();
+        self.lock.lock(self.io) catch unreachable;
+        defer self.lock.unlock(self.io);
         return self.getClientIdByFdLocked(fd);
     }
 
-    /// Run event loop - blocks until shutdown (static wrapper)
-    fn runEventLoopThread(sse_mgr: *SseManager, heartbeat_secs: u32) void {
-        sse_mgr.runEventLoop(heartbeat_secs);
+    fn notifyLoops(self: *SseManager) void {
+        if (self.notify_pipe[1] >= 0) {
+            var byte_buf: [1]u8 = .{'x'};
+            _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
+        }
     }
 
-    /// Cross-platform event loop using kqueue on macOS/BSD and poll on Linux/Windows
-    fn runEventLoop(self: *SseManager, heartbeat_secs: u32) void {
+    /// Start LOOP_COUNT concurrent event loops using std.Io.Group
+    pub fn startEventLoop(self: *SseManager, heartbeat_secs: u32) !void {
+        self.running = true;
+        var group: std.Io.Group = .init;
+        defer group.cancel(self.io);
+
+        for (0..LOOP_COUNT) |loop_id| {
+            try group.concurrent(
+                self.io,
+                struct {
+                    fn run(mgr: *SseManager, secs: u32, id: usize) void {
+                        mgr.runEventLoop(secs, id);
+                    }
+                }.run,
+                .{ self, heartbeat_secs, loop_id },
+            );
+        }
+
+        try group.await(self.io);
+    }
+
+    pub fn gracefulShutdown(self: *SseManager) void {
+        const close_msg = "event: close\ndata: Server shutting down\n\n";
+
+        self.lock.lock(self.io) catch unreachable;
+        defer self.lock.unlock(self.io);
+
+        var it = self.clients.iterator();
+        while (it.next()) |entry| {
+            _ = socket.write(entry.value_ptr.*.fd, close_msg.ptr, close_msg.len);
+        }
+
+        while (self.clients.count() > 0) {
+            var it2 = self.clients.iterator();
+            if (it2.next()) |entry| {
+                const id = entry.key_ptr.*;
+                const fd = entry.value_ptr.*.fd;
+                entry.value_ptr.*.forceDestroy();
+                _ = self.clients.remove(id);
+                _ = self.fd_to_id.remove(fd);
+            }
+        }
+        self.clients.clearRetainingCapacity();
+        self.fd_to_id.clearRetainingCapacity();
+    }
+
+    pub fn stop(self: *SseManager) void {
+        self.running = false;
+        self.notifyLoops();
+    }
+
+    /// Each loop handles clients at indices where client_index % LOOP_COUNT == loop_id
+    fn runEventLoop(self: *SseManager, heartbeat_secs: u32, loop_id: usize) void {
         const heartbeat_ms: i32 = @intCast(heartbeat_secs * 1000);
-        
+        var last_hb: i64 = @intCast(timestamp());
+
         while (self.running) {
-            // Collect file descriptors to poll
+            // --- snapshot fds under lock (fast, no poll while holding lock) ---
             self.lock.lock(self.io) catch unreachable;
-            const client_count = self.clients.count();
-            
-            // Allocate poll fds: clients + notification pipe
-            const total_fds = if (self.notify_pipe[0] >= 0) client_count + 1 else client_count;
+
+            var my_fds = std.ArrayListUnmanaged(i32).empty;
+            defer my_fds.deinit(self.allocator);
+
+            var it = self.clients.iterator();
+            while (it.next()) |entry| {
+                // deterministic ownership by client id — stable across inserts/removes
+                if (entry.value_ptr.*.id[0] % LOOP_COUNT == loop_id) {
+                    my_fds.append(self.allocator, entry.value_ptr.*.fd) catch break;
+                }
+            }
+            self.lock.unlock(self.io); // release before poll — critical
+
+            const has_pipe = self.notify_pipe[0] >= 0 and loop_id == 0;
+            const total_fds = if (has_pipe) my_fds.items.len + 1 else my_fds.items.len;
+
             if (total_fds == 0) {
-                self.lock.unlock(self.io);
-                // No clients, just sleep using nanosleep
+                // no clients — wait for notification or heartbeat interval
                 var ts: socket.timespec = .{
                     .sec = @intCast(heartbeat_secs),
                     .nsec = 0,
@@ -252,10 +274,8 @@ pub const SseManager = struct {
                 _ = socket.nanosleep(&ts, null);
                 continue;
             }
-            
-            // Build poll array
+
             var poll_fds: []posix.pollfd = self.allocator.alloc(posix.pollfd, total_fds) catch {
-                self.lock.unlock(self.io);
                 var ts: socket.timespec = .{
                     .sec = @intCast(heartbeat_secs),
                     .nsec = 0,
@@ -264,9 +284,9 @@ pub const SseManager = struct {
                 continue;
             };
             defer self.allocator.free(poll_fds);
-            
+
             var idx: usize = 0;
-            if (self.notify_pipe[0] >= 0) {
+            if (has_pipe) {
                 poll_fds[0] = .{
                     .fd = self.notify_pipe[0],
                     .events = posix.POLL.IN,
@@ -274,40 +294,36 @@ pub const SseManager = struct {
                 };
                 idx = 1;
             }
-            
-            var it = self.clients.iterator();
-            while (it.next()) |entry| {
+            for (my_fds.items) |fd| {
                 poll_fds[idx] = .{
-                    .fd = entry.value_ptr.*.fd,
+                    .fd = fd,
                     .events = posix.POLL.IN | posix.POLL.HUP,
                     .revents = undefined,
                 };
                 idx += 1;
             }
-            self.lock.unlock(self.io);
-            
-            // Poll with timeout for heartbeat
-            const num_events = posix.poll(poll_fds, heartbeat_ms) catch continue;
-            
-            // Process events
-            for (poll_fds[0..@as(usize, @intCast(num_events))]) |pfd| {
+
+            // poll blocks here — lock is FREE, sendToClient/registerClient can proceed
+            _ = posix.poll(poll_fds, heartbeat_ms) catch continue;
+
+            for (poll_fds[0..total_fds]) |pfd| {
                 const revents = @as(u16, @bitCast(pfd.revents));
+                if (revents == 0) continue;
+
                 const poll_err = @as(u16, @intCast(posix.POLL.ERR));
                 const poll_hup = @as(u16, @intCast(posix.POLL.HUP));
                 const poll_in = @as(u16, @intCast(posix.POLL.IN));
-                
+
                 if (revents & (poll_err | poll_hup) != 0) {
-                    // Client disconnected
                     _ = self.removeClientByFd(pfd.fd);
                     continue;
                 }
+
                 if (revents & poll_in != 0) {
-                    if (pfd.fd == self.notify_pipe[0]) {
-                        // Notification received, drain the pipe
+                    if (has_pipe and pfd.fd == self.notify_pipe[0]) {
                         var buf: [64]u8 = undefined;
                         _ = socket.read(self.notify_pipe[0], &buf, buf.len);
                     } else {
-                        // Client sent data, check if disconnected
                         var buf: [64]u8 = undefined;
                         const n = socket.read(pfd.fd, &buf, buf.len);
                         if (n <= 0) {
@@ -316,35 +332,65 @@ pub const SseManager = struct {
                     }
                 }
             }
-            
-            // Send heartbeat to all clients
-            self.sendHeartbeat();
+
+            // only send heartbeat when actually due
+            const now: i64 = @intCast(timestamp());
+            if (now - last_hb >= heartbeat_ms) {
+                self.sendHeartbeat(loop_id);
+                last_hb = now;
+            }
         }
     }
 
-    pub fn startEventLoop(self: *SseManager, heartbeat_secs: u32) !void {
-        self.running = true;
-        self.event_loop_thread = try std.Thread.spawn(.{}, runEventLoopThread, .{ self, heartbeat_secs });
-    }
-
-    pub fn stop(self: *SseManager) void {
-        self.running = false;
-        // Wake up the event loop
-        if (self.notify_pipe[1] >= 0) {
-            const byte: u8 = 'q';
-            var byte_buf: [1]u8 = .{byte};
-            _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
-        }
-        if (self.event_loop_thread) |t| {
-            t.join();
-            self.event_loop_thread = null;
-        }
-    }
-
-    fn sendHeartbeat(self: *SseManager) void {
+    /// Only send heartbeat to clients owned by this loop
+    fn sendHeartbeat(self: *SseManager, loop_id: usize) void {
         const ping = "data: ping\n\n";
 
-        // Collect client pointers under lock
+        // self.lock.lock(self.io) catch unreachable;
+        var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
+        defer client_ptrs.deinit(self.allocator);
+
+        var it = self.clients.iterator();
+        var global_idx: usize = 0;
+        while (it.next()) |entry| : (global_idx += 1) {
+            if (global_idx % LOOP_COUNT == loop_id) {
+                client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
+            }
+        }
+        // self.lock.unlock(self.io);
+
+        var dead_ids: std.ArrayListUnmanaged([16]u8) = .empty;
+        defer dead_ids.deinit(self.allocator);
+
+        for (client_ptrs.items) |client| {
+            client.last_heartbeat = timestamp();
+            const n = socket.write(client.fd, ping.ptr, ping.len);
+            if (n < 0) {
+                dead_ids.append(self.allocator, client.id) catch break;
+            }
+        }
+
+        for (dead_ids.items) |id| {
+            self.removeClient(id);
+        }
+    }
+
+    pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
+        const client = self.clients.get(id);
+
+        if (client == null) return error.ClientNotFound;
+
+        const n = socket.write(client.?.fd, data.ptr, data.len);
+        if (n < 0) {
+            self.removeClient(id);
+            return error.ClientDisconnected;
+        }
+    }
+
+    pub fn broadcast(self: *SseManager, data: []const u8) !void {
+        const event = try std.fmt.allocPrint(self.allocator, "data: {s}\n\n", .{data});
+        defer self.allocator.free(event);
+
         self.lock.lock(self.io) catch unreachable;
         var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
         defer client_ptrs.deinit(self.allocator);
@@ -355,56 +401,17 @@ pub const SseManager = struct {
         }
         self.lock.unlock(self.io);
 
-        // Perform I/O without holding the lock - track dead clients
-        var dead_ids: std.ArrayListUnmanaged([16]u8) = .empty;
-        defer dead_ids.deinit(self.allocator);
-
         for (client_ptrs.items) |client| {
-            client.*.last_heartbeat = timestamp();
-            const n = socket.write(client.*.fd, ping.ptr, ping.len);
-            if (n < 0) {
-                // Mark client as dead - don't remove during iteration
-                dead_ids.append(self.allocator, client.*.id) catch break;
-            }
-        }
-
-        // Remove dead clients AFTER iteration
-        for (dead_ids.items) |id| {
-            self.removeClient(id);
+            const n = socket.write(client.fd, event.ptr, event.len);
+            if (n < 0) self.removeClient(client.id);
         }
     }
 
-    /// Broadcast event to all connected clients
-    pub fn broadcast(self: *SseManager, data: []const u8) !void {
-        const event = try std.fmt.allocPrint(self.allocator, "data: {s}\n\n", .{data});
-        defer self.allocator.free(event);
-
-        // Collect client pointers under lock
-        self.lock.lock();
-        var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
-        defer client_ptrs.deinit(self.allocator);
-
-        var it = self.clients.iterator();
-        while (it.next()) |entry| {
-            client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
-        }
-        self.lock.unlock();
-
-        for (client_ptrs.items) |client| {
-            const n = socket.write(client.*.fd, event.ptr, event.len);
-            if (n < 0) {
-                self.removeClient(&client.*.id);
-            }
-        }
-    }
-
-    /// Broadcast event with type
     pub fn broadcastTyped(self: *SseManager, event_type: []const u8, data: []const u8) !void {
         const event = try std.fmt.allocPrint(self.allocator, "event: {s}\ndata: {s}\n\n", .{ event_type, data });
         defer self.allocator.free(event);
 
-        // Collect client pointers under lock
-        self.lock.lock();
+        self.lock.lock(self.io) catch unreachable;
         var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
         defer client_ptrs.deinit(self.allocator);
 
@@ -412,72 +419,22 @@ pub const SseManager = struct {
         while (it.next()) |entry| {
             client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
         }
-        self.lock.unlock();
-
-        for (client_ptrs.items) |client| {
-            const n = socket.write(client.*.fd, event.ptr, event.len);
-            if (n < 0) {
-                self.removeClient(&client.*.id);
-            }
-        }
-    }
-
-    /// Send event to specific client by ID
-    pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
-        _ = try self.lock.lock(self.io);
-        const client = self.clients.get(id);
         self.lock.unlock(self.io);
 
-        if (client == null) {
-            return error.ClientNotFound;
+        for (client_ptrs.items) |client| {
+            const n = socket.write(client.fd, event.ptr, event.len);
+            if (n < 0) self.removeClient(client.id);
         }
-
-        const n = socket.write(client.?.*.fd, data.ptr, data.len);
-        if (n < 0) {
-            self.removeClient(id);
-            return error.ClientDisconnected;
-        }
-    }
-
-    /// Graceful shutdown - notify all clients, then close
-    pub fn gracefulShutdown(self: *SseManager) void {
-        const close_msg = "event: close\ndata: Server shutting down\n\n";
-
-        _ = self.lock.lock(self.io) catch unreachable;
-        defer self.lock.unlock(self.io);
-
-        // First pass: send close messages to all clients
-        var it = self.clients.iterator();
-        while (it.next()) |entry| {
-            _ = socket.write(entry.value_ptr.*.fd, close_msg.ptr, close_msg.len);
-        }
-
-        // Second pass: remove all clients from hash map
-        while (self.clients.count() > 0) {
-            var it2 = self.clients.iterator();
-            if (it2.next()) |entry| {
-                const id = entry.key_ptr.*;
-                const fd = entry.value_ptr.*.fd;
-                // Use forceDestroy - closes fd, skips arena.deinit()
-                entry.value_ptr.*.forceDestroy();
-                // Remove from hash map - memory stays allocated until arena is destroyed
-                _ = self.clients.remove(id);
-                _ = self.fd_to_id.remove(fd);
-            }
-        }
-        self.clients.clearRetainingCapacity();
-        self.fd_to_id.clearRetainingCapacity();
     }
 
     pub fn clientCount(self: *SseManager) usize {
-        self.lock.lock(self.io);
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
         return self.clients.count();
     }
 };
 
 fn timestamp() u64 {
-    // Get current time in milliseconds
     var ts: socket.timespec = undefined;
     _ = socket.clock_gettime(socket.CLOCK.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * 1000 + @as(u64, @intCast(ts.nsec)) / 1000000;

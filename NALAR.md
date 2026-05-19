@@ -247,6 +247,7 @@ When the LLM is processing (detected via `isLLMProcessing` from App.vue), the ac
 
 | Component | File | Purpose |
 |-----------|------|---------|
+| GetSkill | `components/GetSkill.vue` | Tool output component for get_skill tool. Displays skill content, load status, error messages, and available skills list. |
 | SkillList | `components/SkillList.vue` | Reusable skills list with loading/error/empty states. Fetches from `/api/skills` endpoint. |
 | response-path-api-skills | `.nalar/skills/response-path-api-skills/SKILL.MD` | Documents GET /api/skills endpoint response format and usage |
 | SettingsView | `components/SettingsView.vue` | Settings page with tabs for Model, API, and Skills configuration |
@@ -337,6 +338,27 @@ modified file content
 - Actions: `open`, `snapshot`, `get`, `click`, `fill`, `press`, `scroll`
 - Parameters: `query`, `url`, `action`, `selector`, `args`
 
+### semantic_search Tool
+**Semantic search** uses meaning-based matching instead of keyword matching.
+
+**Files created:**
+- `src/modules/agent/tools/semantic_search.zig` — Tool schemas (XML output formatting)
+- `src/ai_workflow/tui/indexing_semantic_search.zig` — Core indexing and search logic
+- `src/ai_workflow/tui/handle_semantic_search.zig` — Tool execution handlers
+
+**Key functions:**
+- `indexing.walkWorkspace()` — Walks workspace with gitignore support
+- `indexing.chunkFile()` — Chunks files into smaller pieces (500 lines default)
+- `indexing.loadChunks()` / `indexing.writeChunks()` — Binary chunk I/O
+- `indexing.loadEmbeddings()` / `indexing.writeEmbeddings()` — Binary embeddings I/O
+- `indexing.search()` — Placeholder for actual semantic search (needs embedding provider)
+
+**Index location:** `<cwd>/.nalar/search_index/`
+
+**Current state:** Build succeeds, but search function is a placeholder. Needs integration with an embedding provider (e.g., OpenAI embeddings API) for actual functionality.
+
+**Note:** This module uses `std.Io.Dir` API (not `std.fs`) for file operations in Zig 0.16. All file operations require `io: std.Io` parameter.
+
 ## Search Tool Features
 
 When the search tool finds no matches, it returns:
@@ -382,6 +404,7 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | GET | `/api/skills?cwd=/path` | List skills from specific working directory (local skills only) |
 | DELETE | `/api/skills?name=X&is_global=true` | Delete global skill by name |
 | DELETE | `/api/skills?name=X&cwd=/path` | Delete local skill by name (requires `cwd` param) |
+| GET | `/api/sessions/client_ids` | Get all session to client IDs mappings (for monitoring) |
 
 ### Session Messages Response
 

@@ -84,8 +84,12 @@ pub const ContextIPCTui = struct {
     active_loops: *ai_mod.active_loops,
     event_bus: *event_bus.EventBus,
     server: *gserverz.GinwaServer,
-    session_to_client_ids: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([16]u8)) = .empty,
+
+    session_ids_to_release: std.ArrayList([]const u8) = .empty,
+
+    session_to_client_ids: std.StringHashMapUnmanaged(std.ArrayList([16]u8)) = .empty,
     session_map_lock: std.Io.Mutex = .init,
+
     on_disconnect_cb: ?*fn (client_id: [16]u8) void = null,
     on_disconnect_lock: std.Io.Mutex = .init,
     group_emit_session_create: std.Io.Group,
@@ -93,69 +97,64 @@ pub const ContextIPCTui = struct {
 
 /// Register a session -> client_id mapping (appends to list)
 pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8, is_use_lock: bool) !void {
+    _ = is_use_lock;
     var di = try getSingleton();
     const allocator = di.allocator;
     const io = di.io;
-
-    if (is_use_lock) {
-        di.session_map_lock.lock(io) catch {};
-        defer di.session_map_lock.unlock(io);
-    }
+    di.session_map_lock.lock(io) catch {};
+    defer di.session_map_lock.unlock(io);
 
     if (di.session_to_client_ids.getPtr(session_id)) |list| {
+        // Session already exists — just append if not duplicate
         for (list.items) |existing_id| {
             if (std.mem.eql(u8, &existing_id, &client_id)) return;
         }
         try list.append(allocator, client_id);
-    } else {
-        // session_id is already []const u8 pointing to stable memory
-        // (either from StringHashMap key or a temporary that won't be used after)
-        // We only need to duplicate if we're storing it as a key
-        var list = std.ArrayListUnmanaged([16]u8).empty;
-        errdefer list.deinit(allocator);
+        return;
+    }
 
-        try list.append(allocator, client_id);
+    // New session — build list first
+    var list = std.ArrayListUnmanaged([16]u8).empty;
+    try list.append(allocator, client_id);
 
-        // Use getOrPut - this allocates a COPY of session_id as the key
-        const result = try di.session_to_client_ids.getOrPut(allocator, session_id);
-        if (result.found_existing) {
-            // race: another thread inserted between our getPtr and here
-            list.deinit(allocator);
-            try result.value_ptr.append(allocator, client_id);
-        } else {
-            // session_id is now owned by the hash map - store the key's copy
-            result.value_ptr.* = list;
+    const result = try di.session_to_client_ids.getOrPut(allocator, session_id);
+    if (result.found_existing) {
+        // Another thread beat us — discard our list, append to existing
+        list.deinit(allocator);
+        for (result.value_ptr.items) |existing_id| {
+            if (std.mem.eql(u8, &existing_id, &client_id)) return;
         }
+        try result.value_ptr.append(allocator, client_id);
+    } else {
+        // We own the new entry — dupe the key so we can free it later
+        const owned_key = try allocator.dupe(u8, session_id);
+        result.key_ptr.* = owned_key;
+        result.value_ptr.* = list;
     }
 }
 
 /// Unregister a session -> client_id mapping (removes all clients for session)
 pub fn unregisterSessionClient(session_id: []const u8, is_use_lock: bool) void {
+    _ = is_use_lock;
     const di = getSingleton() catch return;
     const allocator = di.allocator;
-    const io = di.io;
-    if (is_use_lock) {
-        di.session_map_lock.lock(io) catch {};
-        defer di.session_map_lock.unlock(io);
-    }
-
-    const copy_session_id = allocator.dupe(u8, session_id) catch return;
-    defer allocator.free(copy_session_id);
-    if (di.session_to_client_ids.getPtr(copy_session_id)) |list| {
-        // Clear the entire session entry
-        list.deinit(di.allocator);
-        _ = di.session_to_client_ids.remove(copy_session_id);
+    // const io = di.io;
+    // di.session_map_lock.lock(io) catch {};
+    // defer di.session_map_lock.unlock(io);
+    if (di.session_to_client_ids.fetchRemove(session_id)) |kv| {
+        var list = kv.value;
+        list.deinit(allocator);
+        allocator.free(kv.key); // safe — we duped this with allocator in register
     }
 }
 
 /// Get client_id for a session, if registered (returns first client if multiple)
 pub fn getClientIdForSession(session_id: []const u8, is_use_lock: bool) ?[16]u8 {
+    _ = is_use_lock;
     const di = getSingleton() catch return null;
-    const io = di.io;
-    if (is_use_lock) {
-        di.session_map_lock.lock(io) catch {};
-        defer di.session_map_lock.unlock(io);
-    }
+    // const io = di.io;
+    // di.session_map_lock.lock(io) catch {};
+    // defer di.session_map_lock.unlock(io);
 
     if (di.session_to_client_ids.getPtr(session_id)) |list| {
         if (list.items.len > 0) {
@@ -168,31 +167,26 @@ pub fn getClientIdForSession(session_id: []const u8, is_use_lock: bool) ?[16]u8 
 /// Get list of client_ids for a session
 /// Returns owned memory that caller must free, or null if session not found
 pub fn getListClientsForSession(session_id: []const u8, allocator: std.mem.Allocator, is_use_lock: bool) !?[][16]u8 {
+    _ = is_use_lock;
+    _ = allocator;
     const di = try getSingleton();
-    const io = di.io;
-    if (is_use_lock) {
-        di.session_map_lock.lock(io) catch {};
-        defer di.session_map_lock.unlock(io);
-    }
+    // const io = di.io;
+    // di.session_map_lock.lock(io) catch {};
+    // defer di.session_map_lock.unlock(io);
 
     const list = di.session_to_client_ids.get(session_id) orelse return null;
     if (list.items.len == 0) return null;
 
-    const copy = try allocator.alloc([16]u8, list.items.len);
-    for (list.items, 0..) |client_id, i| {
-        copy[i] = client_id;
-    }
-    return copy;
+    return list.items;
 }
 
 /// Find session_id by client_id (reverse lookup)
 pub fn getSessionIdForClient(client_id: [16]u8, is_use_lock: bool) ?[]const u8 {
+    _ = is_use_lock;
     const di = getSingleton() catch return null;
-    const io = di.io;
-    if (is_use_lock) {
-        di.session_map_lock.lock(io) catch {};
-        defer di.session_map_lock.unlock(io);
-    }
+    // const io = di.io;
+    // di.session_map_lock.lock(io) catch {};
+    // defer di.session_map_lock.unlock(io);
     var it = di.session_to_client_ids.iterator();
     while (it.next()) |entry| {
         for (entry.value_ptr.items) |v| {
@@ -216,47 +210,37 @@ pub fn getSessionIdForClient(client_id: [16]u8, is_use_lock: bool) ?[]const u8 {
 pub fn handleClientDisconnect(client_id: [16]u8) void {
     const di = getSingleton() catch return;
     const io = di.io;
-
     const ev_bus = di.event_bus;
 
+    di.on_disconnect_lock.lock(io) catch {};
+    defer di.on_disconnect_lock.unlock(io);
+
     if (di.on_disconnect_cb) |cb| {
-        di.on_disconnect_lock.lock(io) catch {};
-        defer di.on_disconnect_lock.unlock(io);
-
-        di.session_map_lock.lock(io) catch {};
-        defer di.session_map_lock.unlock(io);
-
+        // di.session_map_lock.lock(io) catch {};
+        // defer di.session_map_lock.unlock(io);
         cb(client_id);
     }
 
-    // Also clean up session mapping
-    // IMPORTANT: We must copy the session_id BEFORE removing from hash map,
-    // because getSessionIdForClient returns a borrowed reference to internal storage
-    // that becomes invalid once we remove the entry.
-
+    // getSessionIdForClient returns an owned copy — we free it at end of scope
     const maybe_session_id = getSessionIdForClient(client_id, false);
     if (maybe_session_id) |session_id| {
         defer di.allocator.free(session_id);
 
-        // Copy for unregisterSessionClient — it frees the key
-        const session_id_copy = di.allocator.dupe(u8, session_id) catch return;
-        defer di.allocator.free(session_id_copy);
+        // Unregister and free the map key
+        unregisterSessionClient(session_id, false);
 
-        // Safe to remove now — we have our copy
-        unregisterSessionClient(session_id_copy, false); // frees the original key
-
-        // Use copy for everything after
-        const listClients = getListClientsForSession(session_id_copy, di.allocator, false) catch |err| {
-            std.debug.print("SSE_DEBUG: Failed to get clients for session {s}: {any}\n", .{ session_id_copy, err });
+        const listClients = getListClientsForSession(session_id, di.allocator, false) catch |err| {
+            std.debug.print("SSE_DEBUG: Failed to get clients for session {s}: {any}\n", .{ session_id, err });
             return;
         };
+
         if (listClients) |clients| {
             defer di.allocator.free(clients);
             if (clients.len == 0) {
-                ev_bus.unsubscribe(session_id_copy);
+                ev_bus.unsubscribe(session_id);
             }
         } else {
-            ev_bus.unsubscribe(session_id_copy);
+            ev_bus.unsubscribe(session_id);
         }
     }
 }
@@ -302,6 +286,7 @@ pub const update_activity = @import("modules/agent/tools/update_activity.zig");
 pub const web_search = @import("modules/agent/tools/web_search.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
+pub const semantic_search = @import("modules/agent/tools/semantic_search.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
 pub const helpers = @import("helpers/mod.zig");
