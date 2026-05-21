@@ -690,6 +690,21 @@ export interface GitStatus {
   status: string;
 }
 
+export interface GitFileChange {
+  index_status: string;
+  worktree_status: string;
+  path: string;
+}
+
+export interface GitChangesResponse {
+  is_git_repo: boolean;
+  branch: string | null;
+  has_changes: boolean;
+  staged_files: GitFileChange[];
+  modified_files: GitFileChange[];
+  untracked_files: GitFileChange[];
+}
+
 export async function getGitStatus(cwd: string): Promise<GitStatus> {
   try {
     const response = await fetch(
@@ -706,6 +721,26 @@ export async function getGitStatus(cwd: string): Promise<GitStatus> {
       is_clean: true,
       current: "",
       status: "error",
+    };
+  }
+}
+
+export async function getGitChanges(cwd: string): Promise<GitChangesResponse> {
+  try {
+    const response = await fetch(
+      `${API_BASE}/git/changes?path=${encodeURIComponent(cwd)}`,
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  } catch (error) {
+    // Return non-repo status on error
+    return {
+      is_git_repo: false,
+      branch: null,
+      has_changes: false,
+      staged_files: [],
+      modified_files: [],
+      untracked_files: [],
     };
   }
 }
@@ -928,5 +963,65 @@ export async function getQueuedMessages(sessionId: string): Promise<{
   if (!response.ok) {
     throw new Error(`Failed to get queued messages: ${response.statusText}`)
   }
+  return response.json()
+}
+
+// Nalar Config API
+export interface NalarConfig {
+  api_endpoint?: string
+  api_key?: string
+  model?: string
+  temperature?: number
+  max_tokens?: string
+  system_prompt?: string
+}
+
+export async function getNalarConfig(): Promise<NalarConfig> {
+  try {
+    const response = await fetch(`${API_BASE}/config/nalar`)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return response.json()
+  } catch {
+    return {}
+  }
+}
+
+export async function saveNalarConfig(config: NalarConfig): Promise<{ success: boolean }> {
+  const response = await fetch(`${API_BASE}/config/nalar`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+// Git File Diff API
+export interface GitFileDiff {
+  path: string
+  diff_content: string  // Unified diff output from git diff command
+  staged: boolean
+}
+
+export async function getGitFileDiff(
+  cwd: string,
+  filePath: string,
+  staged: boolean = false,
+): Promise<GitFileDiff> {
+  const response = await fetch(
+    `${API_BASE}/git/file/diff?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}&staged=${staged}`,
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+export async function readGitFile(
+  cwd: string,
+  filePath: string,
+): Promise<{ content: string; encoding: string }> {
+  const response = await fetch(
+    `${API_BASE}/git/file/read?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}`,
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json()
 }

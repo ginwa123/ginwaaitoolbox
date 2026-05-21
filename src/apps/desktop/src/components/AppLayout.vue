@@ -2,12 +2,14 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
-import FolderExplorer from './FolderExplorer.vue'
+import RightSidebar from './RightSidebar.vue'
+import GitFileViewer from './GitFileViewer.vue'
 import ChatView from './ChatView.vue'
 import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
+import * as api from '../api'
 
 const router = useRouter()
 const route = useRoute()
@@ -83,13 +85,68 @@ const closeSettings = () => {
   router.back()
 }
 
+const handleRightSidebarFileClick = (file: api.GitFileChange, staged: boolean) => {
+  console.log('RightSidebar file click:', file.path, 'staged:', staged)
+  // Store file info and navigate to gitfile view
+  gitViewerFile.value = file
+  gitViewerStaged.value = staged
+  
+  // Encode the file path for URL (base64 to handle special chars)
+  const encodedPath = btoa(file.path)
+  router.replace({ 
+    path: '/app', 
+    query: { 
+      view: 'gitfile', 
+      file: encodedPath,
+      staged: staged ? '1' : '0',
+      cwd: rightSidebarCwd.value
+    } 
+  })
+}
+
+const closeGitViewer = () => {
+  gitViewerFile.value = null
+  gitViewerStaged.value = false
+  // Navigate back to previous view based on state
+  if (activeTask.value) {
+    router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
+  } else if (activeChatId.value.startsWith('chat-')) {
+    const sessionId = activeChatId.value.replace(/^chat-/, '')
+    router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
+  } else {
+    router.replace({ path: '/app', query: { view: 'chat' } })
+  }
+}
+
+// Git file viewer state
+const gitViewerFile = ref<api.GitFileChange | null>(null)
+const gitViewerStaged = ref(false)
+
 const currentView = computed(() => {
   const path = route.path
   if (path === '/app/settings') return 'settings'
+  // gitfile view takes priority when gitViewerFile is set
+  if (route.query.view === 'gitfile' && gitViewerFile.value) return 'gitfile'
   return route.query.view as string || 'chat'
 })
 
 const activeTask = computed(() => workspacesStore.activeTask)
+
+// Right sidebar cwd - show when chat is open OR task is active
+const rightSidebarCwd = computed(() => {
+  // Show for task view (has active task + workspace item with path)
+  if (activeTask.value && activeWorkspaceItem.value?.path) {
+    return activeWorkspaceItem.value.path
+  }
+  // Show for chat view if there's a cwd from the chat session
+  // For now, we'll show it whenever an active chat exists
+  if (navigationStore.activeChatId && navigationStore.activeChatId.startsWith('chat-')) {
+    // For chat sessions, we'd need to get cwd from the session
+    // For now, show when chat is active and has workspace item
+    return activeWorkspaceItem.value?.path || ''
+  }
+  return ''
+})
 
 // Watch route query changes to sync with app state
 watch(
@@ -99,12 +156,36 @@ watch(
     const taskId = query.task as string
     const view = query.view as string
 
-    if (view === 'chat' && sessionId) {
-      if (activeChatId.value !== `chat-${sessionId}`) {
-        navigationStore.setActiveChat(sessionId, navigationStore.activeChatName)
+    if (view === 'gitfile') {
+      // Restore git file viewer state from URL
+      const filePath = query.file as string
+      const staged = query.staged === '1'
+      const cwd = query.cwd as string
+      
+      if (filePath) {
+        // Decode the file path
+        try {
+          const decodedPath = atob(filePath)
+          gitViewerFile.value = { path: decodedPath, index_status: staged ? 'M' : ' ', worktree_status: staged ? ' ' : 'M' }
+          gitViewerStaged.value = staged
+        } catch {
+          // Fallback if decoding fails
+          gitViewerFile.value = { path: filePath, index_status: staged ? 'M' : ' ', worktree_status: staged ? ' ' : 'M' }
+          gitViewerStaged.value = staged
+        }
       }
-    } else if (view === 'task' && taskId) {
-      // Task is handled by workspacesStore.setActiveTask already called in onMounted
+    } else {
+      // Clear git viewer when not in gitfile view
+      gitViewerFile.value = null
+      gitViewerStaged.value = false
+      
+      if (view === 'chat' && sessionId) {
+        if (activeChatId.value !== `chat-${sessionId}`) {
+          navigationStore.setActiveChat(sessionId, navigationStore.activeChatName)
+        }
+      } else if (view === 'task' && taskId) {
+        // Task is handled by workspacesStore.setActiveTask already called in onMounted
+      }
     }
   }
 )
@@ -121,9 +202,19 @@ watch(
       @resize="handleSidebarResize"
     />
     <main class="flex-1 flex flex-col overflow-hidden">
+      <!-- Git File Viewer (shown when view is gitfile) -->
+      <GitFileViewer
+        v-if="currentView === 'gitfile' && gitViewerFile && rightSidebarCwd"
+        :cwd="rightSidebarCwd"
+        :file-path="gitViewerFile.path"
+        :file-name="gitViewerFile.path.split('/').pop() || gitViewerFile.path"
+        :staged="gitViewerStaged"
+        @close="closeGitViewer"
+      />
+
       <!-- Task view takes priority -->
       <ChatView
-        v-if="currentView === 'task' && activeTask"
+        v-else-if="currentView === 'task' && activeTask"
         :key="'task-' + activeTask.id"
         :chat-id="activeTask.id"
         :chat-name="activeTask.name"
@@ -213,5 +304,12 @@ watch(
 
     <!-- Settings page -->
     <SettingsView v-if="currentView === 'settings'" />
+
+    <!-- Right Sidebar (Explorer + Git tabs) -->
+    <RightSidebar
+      v-if="rightSidebarCwd"
+      :cwd="rightSidebarCwd"
+      @file-click="handleRightSidebarFileClick"
+    />
   </div>
 </template>

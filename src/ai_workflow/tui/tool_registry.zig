@@ -341,7 +341,7 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, parsed.value) catch {
+    const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch {
         const out = remove_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Unknown error");
         return ToolExecResult{ .output = out };
     };
@@ -360,7 +360,7 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, parsed.value);
+    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, parsed.value);
     return ToolExecResult{ .output = output };
 }
 
@@ -376,7 +376,7 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, ctx.io, parsed.value) catch {
+    const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch {
         const out = edit_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Failed to edit skill");
         return ToolExecResult{ .output = out };
     };

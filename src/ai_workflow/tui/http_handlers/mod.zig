@@ -67,6 +67,9 @@ pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 
 // Git API handlers
 pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
+pub const gitChangesHandler = @import("git_changes.zig").gitChangesHandler;
+pub const gitFileDiffHandler = @import("git_file_diff.zig").gitFileDiffHandler;
+pub const gitFileReadHandler = @import("git_file_diff.zig").gitFileReadHandler;
 
 // Queue messages handlers
 pub const queueMessagesStreamHandler = @import("queue_messages_sse.zig").queueMessagesStreamHandler;
@@ -74,6 +77,10 @@ pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessa
 
 // Session to client IDs monitoring
 pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessionToClientIdsHandler;
+
+// Nalar config handlers
+pub const nalarConfigGetHandler = @import("nalar_config_get.zig").nalarConfigGetHandler;
+pub const nalarConfigPutHandler = @import("nalar_config_put.zig").nalarConfigPutHandler;
 
 // =============================================================================
 // Shared Types & Helpers

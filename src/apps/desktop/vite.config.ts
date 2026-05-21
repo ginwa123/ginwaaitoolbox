@@ -17,6 +17,9 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
+  optimizeDeps: {
+    include: ['monaco-editor']
+  },
   server: {
     proxy: {
       '/api': {

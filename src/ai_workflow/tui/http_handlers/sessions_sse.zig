@@ -61,11 +61,16 @@ pub fn sessionsStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 
     const di = try nalar_core.getSingleton();
     const event_bus = di.event_bus;
+    const server = di.server;
 
     // Register client mapping for "sessions" routing key
     if (ctx.client_id) |client_id| {
         const client_id_copy: [16]u8 = client_id;
         ai_mod.registerSessionClient("sessions", client_id_copy, true) catch {};
+
+        // Send "connected" event to the newly connected client
+        const connected_event = "event: connected\ndata: {\"connected\": true}\n\n";
+        server.sse_manager.sendToClient(client_id_copy, connected_event) catch {};
     }
 
     // Subscribe to session events with callback

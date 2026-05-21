@@ -328,7 +328,7 @@ onMounted(async () => {
   // Load chats immediately when mounted
   loadChats()
 
-  Promise.all([connectSessionsSse])
+  Promise.all([connectSessionsSse()])
 })
 
 // Watch for navItems changes to sync active state

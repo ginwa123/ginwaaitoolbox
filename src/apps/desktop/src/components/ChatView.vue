@@ -940,8 +940,6 @@ const compactSession = async () => {
       </div>
     </div>
 
-    <!-- Folder Explorer (sidebar on right side) -->
-    <FolderExplorer v-if="explorerCwd" :cwd="explorerCwd" />
   </div>
 </template>
 

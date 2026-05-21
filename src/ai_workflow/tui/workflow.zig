@@ -29,8 +29,18 @@ pub const CallbackAiWorkerFlow = struct {
     pub fn callback(data: RunParamsNew) void {
         const di = nalar_mod.getSingleton() catch return;
         const logger = di.logger;
+        const allocator = di.allocator;
+        const sqlite_db = di.db;
         runAgenticMultiStepnew(di, data) catch |err| {
             logger.errFmt("runAgenticMultiStepnew failed: {s}", .{@errorName(err)});
+            // delete all workers this is temporrary
+            llm_history.deleteAllWorkers(allocator, sqlite_db) catch |error_sqlite| {
+                logger.errFmt("Failed to delete all workers: {s}", .{@errorName(error_sqlite)});
+            };
+
+            llm_history.deleteAllQueuedMessages(allocator, sqlite_db) catch |error_sqlite| {
+                logger.errFmt("Failed to delete all queued messages: {s}", .{@errorName(error_sqlite)});
+            };
         };
     }
 };
@@ -240,7 +250,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         try messagesLists.appendSlice(allocator, initialMessages);
 
         logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
-        if (agent.LLMModels.is_do_compact(total_tokens, agent.LLMModels.get_model_token_count(config.model))) {
+        if (agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(config.model))) {
             const copy_messages = try allocator.dupe(agent.AgentMessage, messagesLists.items);
             defer allocator.free(copy_messages);
             var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
@@ -736,8 +746,6 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     stream_ctx.chunk_index += 1;
 }
 
-
-
 /// Filter and merge tools based on allowed_tools setting
 /// - allowed_tools: "" = no tools, "all" = all tools, comma-separated = specific tools
 /// Returns filtered base tools merged with MCP tools
@@ -816,4 +824,3 @@ pub const RunParamsNew = struct {
     allowed_tools: []const u8,
     is_sub_agent: bool = false,
 };
-

@@ -49,7 +49,7 @@ pub const edit_skill_tool = AgentTool{
 /// Updates an existing skill file at .nalar/skills/<skill_name>/SKILL.MD
 /// Returns an XML string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, input: EditSkillInput) ![]const u8 {
+pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, input: EditSkillInput) ![]const u8 {
     // Validate input
     if (input.skill_name.len == 0) {
         return errorToXml(allocator, input.skill_name, "Skill name cannot be empty");
@@ -60,13 +60,7 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, input:
         return errorToXml(allocator, input.skill_name, "At least one of description or content must be provided");
     }
 
-    // Get current working directory
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
-        return errorToXml(allocator, input.skill_name, "Failed to get current working directory");
-    };
-    const cwd = cwd_buf[0..cwd_len];
-
+    // Use cwd from context (already absolute path from session)
     // Build path to skill file
     const skill_file = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills", input.skill_name, "SKILL.MD" });
     defer allocator.free(skill_file);

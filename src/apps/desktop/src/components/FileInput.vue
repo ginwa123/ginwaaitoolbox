@@ -12,6 +12,8 @@ const props = defineProps<{
   queuedMessages?: QueuedMessage[]
   isLoading?: boolean
   isLLMProcessing?: boolean
+  initialMessage?: string
+  reviewMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -36,6 +38,18 @@ let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 // File input ref for native file selection
 const nativeFileInput = ref<HTMLInputElement | null>(null)
+
+// Pre-fill input when initialMessage is provided (after inputText is declared)
+if (props.initialMessage) {
+  inputText.value = props.initialMessage
+}
+
+// Watch for changes to initialMessage (e.g., when selecting diff lines)
+watch(() => props.initialMessage, (newVal) => {
+  if (newVal) {
+    inputText.value = newVal
+  }
+})
 
 // Trigger native file picker
 const triggerFilePicker = () => {
@@ -74,6 +88,7 @@ const MAX_FILES = 500
 
 const queuedMessagesList = computed(() => props.queuedMessages ?? [])
 const hasQueuedMessages = computed(() => queuedMessagesList.value.length > 0)
+const isReviewMode = computed(() => props.reviewMode ?? false)
 
 // Toggle queue panel
 const showQueuePanel = ref(false)
@@ -275,7 +290,7 @@ const sendMessage = () => {
 </script>
 
 <template>
-  <div class="file-input-wrapper">
+  <div class="file-input-wrapper" :class="{ 'review-mode': reviewMode }">
     <!-- Hidden native file input -->
     <input
       ref="nativeFileInput"
@@ -283,6 +298,14 @@ const sendMessage = () => {
       class="hidden"
       @change="handleNativeFileSelect"
     />
+
+    <!-- Review mode header -->
+    <div v-if="reviewMode" class="mb-3 px-4 py-2 rounded-lg flex items-center gap-2"
+      style="background: rgba(135, 169, 135, 0.15); border: 1px solid var(--color-green);">
+      <span style="color: var(--color-green);">💬</span>
+      <span class="text-sm font-medium" style="color: var(--color-green);">Review Mode</span>
+      <span class="text-xs" style="color: var(--semantic-text-dim);">- Submit your code review comment</span>
+    </div>
 
     <!-- File picker dropdown -->
     <div v-if="showFilePicker && (filteredFiles.length > 0 || isLoadingFiles)" ref="filePickerRef"

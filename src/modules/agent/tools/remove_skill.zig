@@ -68,6 +68,7 @@ pub const remove_skill_tool = AgentTool{
 pub fn execute_remove_skill_to_string(
     allocator: std.mem.Allocator,
     io: std.Io,
+    cwd: []const u8,
     input: RemoveSkillInput,
 ) ![]const u8 {
     // Validate input
@@ -80,18 +81,7 @@ pub fn execute_remove_skill_to_string(
         return result;
     }
 
-    // Get current working directory
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<skill_name>{s}</skill_name>
-            \\<removed>false</removed>
-            \\<error>Failed to get current working directory</error>
-        , .{input.skill_name});
-        return result;
-    };
-    const cwd = cwd_buf[0..cwd_len];
-
+    // Use cwd from context (already absolute path from session)
     // Build path to skill directory: .nalar/skills/<skill_name>/
     const skill_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills", input.skill_name });
     defer allocator.free(skill_dir_path);

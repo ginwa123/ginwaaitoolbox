@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { getNalarConfig, saveNalarConfig } from '../api'
 import SkillList from './SkillList.vue'
 import SkillDetail from './SkillDetail.vue'
 
 const router = useRouter()
 
 // Settings sidebar state
-const activeSettingsTab = ref('model')
+const activeSettingsTab = ref('nalar')
 
 // Skills tab state
 const selectedSkillName = ref<string | null>(null)
@@ -24,13 +25,29 @@ const systemPrompt = ref('')
 // Notification state
 const notification = ref<{ message: string; type: 'success' | 'error' } | null>(null)
 
-onMounted(() => {
+onMounted(async () => {
+  // Load from localStorage as fallback
   apiEndpoint.value = localStorage.getItem('settings-api-endpoint') || ''
   apiKey.value = localStorage.getItem('settings-api-key') || ''
   model.value = localStorage.getItem('settings-model') || ''
   temperature.value = parseFloat(localStorage.getItem('settings-temperature') || '0.7')
   maxTokens.value = localStorage.getItem('settings-max-tokens') || ''
   systemPrompt.value = localStorage.getItem('settings-system-prompt') || ''
+  
+  // Try to load from nalar.json via API
+  try {
+    const data = await getNalarConfig()
+    if (data) {
+      apiEndpoint.value = data.api_endpoint || ''
+      apiKey.value = data.api_key || ''
+      model.value = data.model || ''
+      temperature.value = data.temperature ?? 0.7
+      maxTokens.value = data.max_tokens?.toString() || ''
+      systemPrompt.value = data.system_prompt || ''
+    }
+  } catch {
+    // Use localStorage fallback
+  }
 })
 
 const showNotification = (message: string, type: 'success' | 'error') => {
@@ -40,14 +57,30 @@ const showNotification = (message: string, type: 'success' | 'error') => {
   }, 3000)
 }
 
-const saveSettings = () => {
-  localStorage.setItem('settings-api-endpoint', apiEndpoint.value)
-  localStorage.setItem('settings-api-key', apiKey.value)
-  localStorage.setItem('settings-model', model.value)
-  localStorage.setItem('settings-temperature', temperature.value.toString())
-  localStorage.setItem('settings-max-tokens', maxTokens.value)
-  localStorage.setItem('settings-system-prompt', systemPrompt.value)
-  showNotification('Settings saved!', 'success')
+const saveSettings = async () => {
+  // Save to nalar.json via API
+  const settings = {
+    api_endpoint: apiEndpoint.value,
+    api_key: apiKey.value,
+    model: model.value,
+    temperature: temperature.value,
+    max_tokens: maxTokens.value,
+    system_prompt: systemPrompt.value
+  }
+  
+  try {
+    await saveNalarConfig(settings)
+    showNotification('Settings saved to nalar.json!', 'success')
+  } catch {
+    // Fallback to localStorage if API not available
+    localStorage.setItem('settings-api-endpoint', apiEndpoint.value)
+    localStorage.setItem('settings-api-key', apiKey.value)
+    localStorage.setItem('settings-model', model.value)
+    localStorage.setItem('settings-temperature', temperature.value.toString())
+    localStorage.setItem('settings-max-tokens', maxTokens.value)
+    localStorage.setItem('settings-system-prompt', systemPrompt.value)
+    showNotification('Settings saved!', 'success')
+  }
 }
 
 const resetSettings = () => {
@@ -125,14 +158,14 @@ const handleSkillError = (message: string) => {
       <!-- Settings Menu -->
       <nav class="flex-1 py-4 px-3 overflow-y-auto">
         <button
-          @click="setSettingsTab('model')"
+          @click="setSettingsTab('nalar')"
           class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 mb-1"
-          :style="activeSettingsTab === 'model'
+          :style="activeSettingsTab === 'nalar'
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
           <span class="text-lg">🤖</span>
-          <span>Model</span>
+          <span>Nalar</span>
         </button>
 
         <button
@@ -150,8 +183,8 @@ const handleSkillError = (message: string) => {
 
     <!-- Settings Content -->
     <main class="flex-1 flex flex-col overflow-hidden">
-      <!-- Model Tab Content -->
-      <div v-if="activeSettingsTab === 'model'" class="flex-1 overflow-y-auto p-6">
+      <!-- Nalar Tab Content -->
+      <div v-if="activeSettingsTab === 'nalar'" class="flex-1 overflow-y-auto p-6">
         <div class="max-w-2xl mx-auto space-y-6">
           <!-- API Configuration Section -->
           <div
@@ -161,7 +194,7 @@ const handleSkillError = (message: string) => {
             <h2
               class="text-base font-semibold mb-4"
               style="color: var(--semantic-text);"
-            >API Configuration</h2>
+            >Nalar Configuration</h2>
 
             <div class="space-y-4">
               <!-- API Endpoint -->

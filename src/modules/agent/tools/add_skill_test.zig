@@ -23,7 +23,8 @@ test "executeAddSkillToString - empty name returns error XML" {
         .content = "Test content",
     };
 
-    const result = add_skill.executeAddSkillToString(alloc, io, input);
+    const cwd = "/tmp";
+    const result = add_skill.executeAddSkillToString(alloc, io, cwd, input);
     defer alloc.free(result);
 
     try std.testing.expect(contains(result, "<created>false</created>"));
@@ -40,7 +41,8 @@ test "executeAddSkillToString - empty description returns error XML" {
         .content = "Test content",
     };
 
-    const result = add_skill.executeAddSkillToString(alloc, io, input);
+    const cwd = "/tmp";
+    const result = add_skill.executeAddSkillToString(alloc, io, cwd, input);
     defer alloc.free(result);
 
     try std.testing.expect(contains(result, "<created>false</created>"));
@@ -57,7 +59,8 @@ test "executeAddSkillToString - empty content returns error XML" {
         .content = "",
     };
 
-    const result = add_skill.executeAddSkillToString(alloc, io, input);
+    const cwd = "/tmp";
+    const result = add_skill.executeAddSkillToString(alloc, io, cwd, input);
     defer alloc.free(result);
 
     try std.testing.expect(contains(result, "<created>false</created>"));

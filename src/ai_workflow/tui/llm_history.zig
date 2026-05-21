@@ -596,7 +596,7 @@ fn getMaxCapacityTotalTokensForSession(
     if (rows.next() catch return 200000) |row| {
         const model_name = row.values[0];
         row.deinit(allocator);
-        return llm_models.get_model_token_count(model_name);
+        return llm_models.getModelTokenCount(model_name);
     }
     return 200000;
 }

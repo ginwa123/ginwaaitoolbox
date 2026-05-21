@@ -20,7 +20,6 @@ pub fn sessionStopHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
 
     // Cancel the session in the database (sets cancelled = 1)
     llm_history.cancelSession(allocator, di.db, session_id) catch |err| {
-        std.debug.print("DEBUG: cancelSession error: {any}\n", .{err});
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),

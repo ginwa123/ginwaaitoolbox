@@ -197,7 +197,15 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/skills", ai_mod.http_handlers.skillsListHandler);
     try gs.router.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
     try gs.router.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
+
+    // Nalar config routes (reads/writes config.json as nalar.json mapping)
+    try gs.router.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
+    try gs.router.put("/api/config/nalar", ai_mod.http_handlers.nalarConfigPutHandler);
+
     try gs.router.get("/api/git/status", ai_mod.http_handlers.gitStatusHandler);
+    try gs.router.get("/api/git/changes", ai_mod.http_handlers.gitChangesHandler);
+    try gs.router.get("/api/git/file/diff", ai_mod.http_handlers.gitFileDiffHandler);
+    try gs.router.get("/api/git/file/read", ai_mod.http_handlers.gitFileReadHandler);
     try gs.router.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
     try gs.router.get("/api/workspaces", ai_mod.http_handlers.workspacesListHandler);
     try gs.router.post("/api/workspaces", ai_mod.http_handlers.workspacesCreateHandler);
@@ -215,6 +223,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
 
+    // testing debug
     try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);
     try gs.router.get("/test/sessions/client_ids", ai_mod.http_handlers.sessionToClientIdsHandler);
 

@@ -179,6 +179,19 @@ pub fn makeErrorResponse(allocator: std.mem.Allocator, response: ErrorResponse) 
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+pub const NalarConfigResponse = struct {
+    api_endpoint: []const u8,
+    api_key: []const u8,
+    model: []const u8,
+    temperature: f64,
+    max_tokens: ?usize,
+    system_prompt: []const u8
+};
+
+pub fn makeNalarConfigResponse(allocator: std.mem.Allocator, response: NalarConfigResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 pub fn makeWorkspaceResponse(allocator: std.mem.Allocator, response: WorkspaceResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }

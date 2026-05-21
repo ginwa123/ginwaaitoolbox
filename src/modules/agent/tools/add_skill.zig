@@ -51,20 +51,13 @@ pub const add_skill_tool = AgentTool{
 /// Creates a new skill file at .nalar/skills/<name>/SKILL.MD
 /// Returns an XML string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, input: AddSkillInput) []const u8 {
+pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, input: AddSkillInput) []const u8 {
     // Validate input
     if (input.name.len == 0) return errorToXml(allocator, input.name, "Skill name cannot be empty");
     if (input.description.len == 0) return errorToXml(allocator, input.name, "Description cannot be empty");
     if (input.content.len == 0) return errorToXml(allocator, input.name, "Content cannot be empty");
 
-    // Get current working directory
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
-        return xmlError(allocator, input.name, "Failed to get current working directory");
-    };
-    const cwd = cwd_buf[0..cwd_len];
-
-    // Build paths
+    // Use cwd from context (already absolute path from session)
     const skills_dir = std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" }) catch {
         return xmlError(allocator, input.name, "Failed to build skills directory path");
     };
@@ -80,9 +73,10 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, input: 
     };
     defer allocator.free(skill_file);
 
-    // Create directories if needed
+    // Create directories if needed using std.io.Dir
     if (input.create_with_dir) {
-        std.Io.Dir.cwd().createDirPath(io, skill_dir) catch {
+        const cwd_dir = std.Io.Dir.cwd();
+        cwd_dir.createDirPath(io, skill_dir) catch {
             return xmlError(allocator, input.name, "Failed to create skill directory");
         };
     }
@@ -94,7 +88,7 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, input: 
         return xmlError(allocator, input.name, "Failed to build skill content");
     }
 
-    // Write the file
+    // Write the file using absolute path with Io.Dir
     const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
         return xmlError(allocator, input.name, "Failed to create skill file");
     };
