@@ -315,6 +315,7 @@ const handleFileClick = (file: api.GitFileChange, staged: boolean) => {
               v-for="file in untrackedFiles"
               :key="'untracked-' + file.path"
               class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+              @click="handleFileClick(file, false)"
             >
               <span class="text-base">❓</span>
               <span class="flex-1 truncate text-left" style="color: var(--semantic-text-muted);">

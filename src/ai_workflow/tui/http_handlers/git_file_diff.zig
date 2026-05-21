@@ -37,18 +37,39 @@ pub fn gitFileDiffHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     // For unstaged: git diff HEAD -- <file>
     var diff_content: []const u8 = "";
     
-    if (std.process.run(allocator, io, .{
-        .argv = if (staged)
-            &.{ "git", "-C", path_param, "diff", "--cached", "--", file_param }
-        else
-            &.{ "git", "-C", path_param, "diff", "HEAD", "--", file_param },
-    })) |result| {
+    // Build argv at runtime to avoid comptime type mismatch
+    const git_arg = if (staged) "diff" else "diff";
+    const staged_arg = if (staged) "--cached" else "HEAD";
+    const argv: [7][]const u8 = .{ "git", "-C", path_param, git_arg, staged_arg, "--", file_param };
+    
+    if (std.process.run(allocator, io, .{ .argv = &argv })) |result| {
         // Git diff returns exit code 0 (no diff) or 1 (has diff)
         if (result.term.exited == 0 or result.term.exited == 1) {
             diff_content = result.stdout;
         }
     } else |_| {
         // Error - leave empty
+    }
+    
+    // For staged files that are newly added (never committed), git diff --cached returns empty
+    // Fall back to reading the working tree file to build a synthetic diff
+    if (staged and diff_content.len == 0) {
+        // Read the file from working tree to show what will be committed
+        const full_file_path = std.fs.path.join(allocator, &.{ path_param, file_param }) catch "";
+        if (full_file_path.len > 0) {
+            defer allocator.free(full_file_path);
+            const file = std.Io.Dir.openFileAbsolute(io, full_file_path, .{}) catch null;
+            if (file) |f| {
+                defer f.close(io);
+                var read_buf: [8192]u8 = undefined;
+                var reader = f.reader(io, &read_buf);
+                const content = reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch "";
+                if (content.len > 0) {
+                    diff_content = buildNewFileDiff(allocator, file_param, content) catch "";
+                    allocator.free(content);
+                }
+            }
+        }
     }
 
     const response = GitFileDiffResponse{
@@ -98,6 +119,51 @@ pub fn gitFileReadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     };
 
     return res.jsonResponse(.{ .status_code = 200, .data = try makeGitFileReadResponse(allocator, response) });
+}
+
+/// Build a synthetic unified diff for a newly staged file (never committed before)
+/// This shows the file as being added from /dev/null to the staged content
+fn buildNewFileDiff(allocator: std.mem.Allocator, file_path: []const u8, staged_content: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    
+    // Count lines in staged content
+    var line_count: usize = 0;
+    for (staged_content) |c| {
+        if (c == '\n') line_count += 1;
+    }
+    if (staged_content.len > 0 and staged_content[staged_content.len - 1] != '\n') {
+        line_count += 1;
+    }
+    
+    // Build the diff header
+    try buf.appendSlice(allocator, "diff --git a/");
+    try buf.appendSlice(allocator, file_path);
+    try buf.appendSlice(allocator, " b/");
+    try buf.appendSlice(allocator, file_path);
+    try buf.appendSlice(allocator, "\nnew file mode");
+    try buf.appendSlice(allocator, "\n--- /dev/null\n+++ b/");
+    try buf.appendSlice(allocator, file_path);
+    try buf.appendSlice(allocator, "\n@@ -0,0 +1,");
+    try buf.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{}", .{line_count}));
+    try buf.appendSlice(allocator, " @@\n");
+    
+    // Append each line with + prefix
+    var start: usize = 0;
+    while (std.mem.indexOfScalar(u8, staged_content[start..], '\n')) |idx| {
+        try buf.appendSlice(allocator, "+");
+        try buf.appendSlice(allocator, staged_content[start .. start + idx]);
+        try buf.append(allocator, '\n');
+        start += idx + 1;
+    }
+    // Handle last line without newline
+    if (start < staged_content.len) {
+        try buf.appendSlice(allocator, "+");
+        try buf.appendSlice(allocator, staged_content[start..]);
+        try buf.append(allocator, '\n');
+    }
+    
+    return try buf.toOwnedSlice(allocator);
 }
 
 /// Custom JSON serialization for GitFileDiffResponse
