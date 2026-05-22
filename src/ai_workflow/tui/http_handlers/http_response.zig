@@ -88,6 +88,13 @@ pub const TaskUpdateRequest = struct {
     session_id: ?[]const u8 = null,
 };
 
+pub const GitStageResponse = struct {
+    success: bool,
+    message: []const u8,
+    staged_files: []const []const u8,
+    failed_files: []const []const u8 = &.{},
+};
+
 pub const WorkerInfo = struct {
     id: []const u8,
     session_id: []const u8,
@@ -287,5 +294,9 @@ pub fn makeGitStatusErrorResponse(allocator: std.mem.Allocator, message: []const
     const response = GitStatusErrorResponse{
         .@"error" = message,
     };
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+pub fn makeGitStageResponse(allocator: std.mem.Allocator, response: GitStageResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }

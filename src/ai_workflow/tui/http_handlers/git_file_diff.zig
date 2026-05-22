@@ -33,28 +33,30 @@ pub fn gitFileDiffHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     const staged = std.mem.eql(u8, staged_param, "true");
 
     // Use git diff command to get proper diff output
-    // For staged: git diff --cached -- <file>
-    // For unstaged: git diff HEAD -- <file>
+    // For staged: git diff --cached -- <file> (staged vs HEAD)
+    // For unstaged: git diff -- <file> (working tree vs staged area)
     var diff_content: []const u8 = "";
     
-    // Build argv at runtime to avoid comptime type mismatch
-    const git_arg = if (staged) "diff" else "diff";
-    const staged_arg = if (staged) "--cached" else "HEAD";
-    const argv: [7][]const u8 = .{ "git", "-C", path_param, git_arg, staged_arg, "--", file_param };
-    
-    if (std.process.run(allocator, io, .{ .argv = &argv })) |result| {
-        // Git diff returns exit code 0 (no diff) or 1 (has diff)
-        if (result.term.exited == 0 or result.term.exited == 1) {
-            diff_content = result.stdout;
-        }
-    } else |_| {
-        // Error - leave empty
+    if (staged) {
+        const argv: [7][]const u8 = .{ "git", "-C", path_param, "diff", "--cached", "--", file_param };
+        if (std.process.run(allocator, io, .{ .argv = &argv })) |result| {
+            if (result.term.exited == 0 or result.term.exited == 1) {
+                diff_content = result.stdout;
+            }
+        } else |_| {}
+    } else {
+        const argv: [6][]const u8 = .{ "git", "-C", path_param, "diff", "--", file_param };
+        if (std.process.run(allocator, io, .{ .argv = &argv })) |result| {
+            if (result.term.exited == 0 or result.term.exited == 1) {
+                diff_content = result.stdout;
+            }
+        } else |_| {}
     }
     
-    // For staged files that are newly added (never committed), git diff --cached returns empty
+    // For files that are newly added (never committed), git diff returns empty
     // Fall back to reading the working tree file to build a synthetic diff
-    if (staged and diff_content.len == 0) {
-        // Read the file from working tree to show what will be committed
+    // This handles both staged=true (new staged file) and staged=false (new unstaged file)
+    if (diff_content.len == 0) {
         const full_file_path = std.fs.path.join(allocator, &.{ path_param, file_param }) catch "";
         if (full_file_path.len > 0) {
             defer allocator.free(full_file_path);

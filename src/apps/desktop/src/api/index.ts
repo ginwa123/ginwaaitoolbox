@@ -1047,3 +1047,35 @@ export async function readGitFile(
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json()
 }
+
+// Git Stage/Unstage API
+export interface GitStageResponse {
+  success: boolean
+  message: string
+  staged_files: string[]
+  failed_files: string[]
+}
+
+export async function stageGitFiles(
+  cwd: string,
+  files: string[],
+): Promise<GitStageResponse> {
+  const response = await fetch(
+    `${API_BASE}/git/stage?path=${encodeURIComponent(cwd)}&files=${encodeURIComponent(files.join(','))}`,
+    { method: 'POST' },
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+export async function unstageGitFiles(
+  cwd: string,
+  files: string[],
+): Promise<GitStageResponse> {
+  const response = await fetch(
+    `${API_BASE}/git/unstage?path=${encodeURIComponent(cwd)}&files=${encodeURIComponent(files.join(','))}`,
+    { method: 'POST' },
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}

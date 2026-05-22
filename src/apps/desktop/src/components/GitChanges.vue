@@ -23,6 +23,18 @@ const unstagedFiles = ref<api.GitFileChange[]>([])
 const untrackedFiles = ref<api.GitFileChange[]>([])
 const isLoadingGit = ref(false)
 
+// Context menu state
+const contextMenu = ref<{ visible: boolean; x: number; y: number; file: api.GitFileChange | null; staged: boolean }>({
+  visible: false,
+  x: 0,
+  y: 0,
+  file: null,
+  staged: false,
+})
+
+// Action loading state
+const isStaging = ref(false)
+
 // Get status character description
 const getStatusIcon = (status: string): string => {
   const icons: Record<string, string> = {
@@ -124,6 +136,93 @@ watch(() => props.cwd, (newCwd) => {
 // Refresh git status
 const refreshGitStatus = () => {
   loadGitStatus()
+}
+
+// Context menu handlers
+const showContextMenu = (event: MouseEvent, file: api.GitFileChange, staged: boolean) => {
+  event.preventDefault()
+  contextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    file,
+    staged,
+  }
+}
+
+const hideContextMenu = () => {
+  contextMenu.value.visible = false
+}
+
+// Close context menu on click outside
+onMounted(() => {
+  document.addEventListener('click', hideContextMenu)
+})
+
+// Stage file (move from unstaged to staged)
+const stageFile = async (file: api.GitFileChange) => {
+  if (!props.cwd || isStaging.value) return
+  isStaging.value = true
+  hideContextMenu()
+  try {
+    await api.stageGitFiles(props.cwd, [file.path])
+    await loadGitStatus()
+  } catch (err) {
+    console.error('Failed to stage file:', err)
+  } finally {
+    isStaging.value = false
+  }
+}
+
+// Unstage file (move from staged to unstaged)
+const unstageFile = async (file: api.GitFileChange) => {
+  if (!props.cwd || isStaging.value) return
+  isStaging.value = true
+  hideContextMenu()
+  try {
+    await api.unstageGitFiles(props.cwd, [file.path])
+    await loadGitStatus()
+  } catch (err) {
+    console.error('Failed to unstage file:', err)
+  } finally {
+    isStaging.value = false
+  }
+}
+
+// Stage all unstaged files
+const stageAllFiles = async () => {
+  if (!props.cwd || isStaging.value) return
+  isStaging.value = true
+  hideContextMenu()
+  try {
+    const files = unstagedFiles.value.map(f => f.path)
+    if (files.length > 0) {
+      await api.stageGitFiles(props.cwd, files)
+      await loadGitStatus()
+    }
+  } catch (err) {
+    console.error('Failed to stage all files:', err)
+  } finally {
+    isStaging.value = false
+  }
+}
+
+// Unstage all staged files
+const unstageAllFiles = async () => {
+  if (!props.cwd || isStaging.value) return
+  isStaging.value = true
+  hideContextMenu()
+  try {
+    const files = stagedFiles.value.map(f => f.path)
+    if (files.length > 0) {
+      await api.unstageGitFiles(props.cwd, files)
+      await loadGitStatus()
+    }
+  } catch (err) {
+    console.error('Failed to unstage all files:', err)
+  } finally {
+    isStaging.value = false
+  }
 }
 
 // Compute header info
@@ -241,84 +340,215 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           <!-- Staged Changes -->
           <div v-if="stagedFiles.length > 0" class="py-1">
             <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide flex items-center justify-between"
               style="color: var(--color-green);"
             >
-              Staged Changes ({{ stagedFiles.length }})
+              <span>Staged ({{ stagedFiles.length }})</span>
+              <button
+                @click="unstageAllFiles"
+                :disabled="isStaging"
+                class="px-1.5 py-0.5 rounded text-xs transition-all hover:opacity-100 disabled:opacity-50"
+                style="background-color: rgba(34, 197, 94, 0.2); color: var(--color-green);"
+                title="Unstage All"
+              >
+                ↩ Unstage All
+              </button>
             </div>
-            <button
+            <div
               v-for="file in stagedFiles"
               :key="'staged-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-white/5 group"
+              @contextmenu="showContextMenu($event, file, true)"
               @click="emit('file-click', file, true)"
             >
               <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
-              <span class="flex-1 truncate text-left" style="color: var(--semantic-text);">
+              <span class="flex-1 truncate" style="color: var(--semantic-text);">
                 {{ file.path }}
               </span>
+              <button
+                @click.stop="unstageFile(file)"
+                :disabled="isStaging"
+                class="p-1 rounded transition-opacity hover:bg-white/10"
+                style="opacity: 0.5;"
+                :style="{ opacity: isStaging ? 0.3 : 0.5 }"
+                title="Unstage"
+              >
+                <svg class="w-4 h-4" style="color: var(--color-orange);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                </svg>
+              </button>
               <span
                 class="text-xs px-1.5 py-0.5 rounded"
                 style="background-color: rgba(34, 197, 94, 0.2); color: var(--color-green);"
               >
                 {{ getDisplayStatus(file).text }}
               </span>
-            </button>
+            </div>
           </div>
 
           <!-- Unstaged Changes -->
           <div v-if="unstagedFiles.length > 0" class="py-1">
             <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide flex items-center justify-between"
               style="color: var(--color-orange);"
             >
-              Changes ({{ unstagedFiles.length }})
+              <span>Changes ({{ unstagedFiles.length }})</span>
+              <button
+                @click="stageAllFiles"
+                :disabled="isStaging"
+                class="px-1.5 py-0.5 rounded text-xs transition-all hover:opacity-100 disabled:opacity-50"
+                style="background-color: rgba(245, 158, 11, 0.2); color: var(--color-orange);"
+                title="Stage All"
+              >
+                ↪ Stage All
+              </button>
             </div>
-            <button
+            <div
               v-for="file in unstagedFiles"
               :key="'unstaged-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-white/5 group"
+              @contextmenu="showContextMenu($event, file, false)"
               @click="emit('file-click', file, false)"
             >
               <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
-              <span class="flex-1 truncate text-left" style="color: var(--semantic-text);">
+              <span class="flex-1 truncate" style="color: var(--semantic-text);">
                 {{ file.path }}
               </span>
+              <button
+                @click.stop="stageFile(file)"
+                :disabled="isStaging"
+                class="p-1 rounded transition-opacity hover:bg-white/10"
+                :style="{ opacity: isStaging ? 0.3 : 0.5 }"
+                title="Stage"
+              >
+                <svg class="w-4 h-4" style="color: var(--color-green);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5l-7 7 7 7M18 5l-7 7 7 7" />
+                </svg>
+              </button>
               <span
                 class="text-xs px-1.5 py-0.5 rounded"
                 style="background-color: rgba(245, 158, 11, 0.2); color: var(--color-orange);"
               >
                 {{ getDisplayStatus(file).text }}
               </span>
-            </button>
+            </div>
           </div>
 
           <!-- Untracked Files -->
           <div v-if="untrackedFiles.length > 0" class="py-1">
             <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide flex items-center justify-between"
               style="color: var(--semantic-text-dim);"
             >
-              Untracked ({{ untrackedFiles.length }})
+              <span>Untracked ({{ untrackedFiles.length }})</span>
+              <button
+                @click="stageAllFiles"
+                :disabled="isStaging"
+                class="px-1.5 py-0.5 rounded text-xs transition-all hover:opacity-100 disabled:opacity-50"
+                style="background-color: rgba(156, 163, 175, 0.2); color: var(--semantic-text-dim);"
+                title="Stage All"
+              >
+                ↪ Stage All
+              </button>
             </div>
-            <button
+            <div
               v-for="file in untrackedFiles"
               :key="'untracked-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-white/5 group"
+              @contextmenu="showContextMenu($event, file, false)"
             >
               <span class="text-base">❓</span>
-              <span class="flex-1 truncate text-left" style="color: var(--semantic-text-muted);">
+              <span class="flex-1 truncate" style="color: var(--semantic-text-muted);">
                 {{ file.path }}
               </span>
+              <button
+                @click.stop="stageFile(file)"
+                :disabled="isStaging"
+                class="p-1 rounded transition-opacity hover:bg-white/10"
+                :style="{ opacity: isStaging ? 0.3 : 0.5 }"
+                title="Stage"
+              >
+                <svg class="w-4 h-4" style="color: var(--color-green);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5l-7 7 7 7M18 5l-7 7 7 7" />
+                </svg>
+              </button>
               <span
                 class="text-xs px-1.5 py-0.5 rounded"
                 style="background-color: rgba(156, 163, 175, 0.2); color: var(--semantic-text-dim);"
               >
                 Untracked
               </span>
-            </button>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- Context Menu -->
+    <Teleport to="body">
+      <div
+        v-if="contextMenu.visible"
+        class="fixed z-50 py-1 rounded-md shadow-lg"
+        :style="{
+          left: contextMenu.x + 'px',
+          top: contextMenu.y + 'px',
+          backgroundColor: 'var(--semantic-sidebar-bg)',
+          border: '1px solid var(--color-border)',
+        }"
+        @click.stop
+      >
+        <template v-if="contextMenu.file">
+          <!-- Stage option for unstaged/untracked files -->
+          <button
+            v-if="!contextMenu.staged"
+            @click="stageFile(contextMenu.file!)"
+            class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center gap-2"
+            style="color: var(--semantic-text);"
+          >
+            <svg class="w-4 h-4" style="color: var(--color-green);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5l-7 7 7 7M18 5l-7 7 7 7" />
+            </svg>
+            Stage File
+          </button>
+          <!-- Unstage option for staged files -->
+          <button
+            v-if="contextMenu.staged"
+            @click="unstageFile(contextMenu.file!)"
+            class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center gap-2"
+            style="color: var(--semantic-text);"
+          >
+            <svg class="w-4 h-4" style="color: var(--color-orange);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+            </svg>
+            Unstage File
+          </button>
+          <!-- Separator -->
+          <div class="h-px my-1" style="background-color: var(--color-border);" />
+          <!-- Stage All / Unstage All -->
+          <button
+            v-if="!contextMenu.staged && unstagedFiles.length > 0"
+            @click="stageAllFiles"
+            class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center gap-2"
+            style="color: var(--semantic-text);"
+          >
+            <svg class="w-4 h-4" style="color: var(--color-green);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+            Stage All ({{ unstagedFiles.length }})
+          </button>
+          <button
+            v-if="contextMenu.staged && stagedFiles.length > 0"
+            @click="unstageAllFiles"
+            class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center gap-2"
+            style="color: var(--semantic-text);"
+          >
+            <svg class="w-4 h-4" style="color: var(--color-orange);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+            </svg>
+            Unstage All ({{ stagedFiles.length }})
+          </button>
+        </template>
+      </div>
+    </Teleport>
   </div>
 </template>
