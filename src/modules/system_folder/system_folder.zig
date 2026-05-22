@@ -140,9 +140,9 @@ pub const SystemFolder = struct {
                     continue;
                 };
 
-                // Check if path is gitignored
+                // Check if path is gitignored (use -C to set working directory)
                 const git_result = std.process.run(allocator, io, .{
-                    .argv = &.{ "git", "check-ignore", full_path },
+                    .argv = &.{ "git", "-C", dir_path, "check-ignore", name },
                 }) catch continue;
                 if (git_result.term.exited == 0) {
                     // Path is gitignored, skip it

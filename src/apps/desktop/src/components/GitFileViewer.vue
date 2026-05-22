@@ -30,6 +30,10 @@ const wordWrap = ref(false)
 const showMiniChat = ref(false)
 const miniChatPosition = ref({ x: 0, y: 0 })
 const miniChatContent = ref('')
+const miniChatFilePath = ref('')
+const miniChatFileName = ref('')
+const miniChatStartLine = ref(0)
+const miniChatEndLine = ref(0)
 
 // Stats
 const stats = ref({ added: 0, removed: 0 })
@@ -63,9 +67,21 @@ const openMiniChat = (event: MouseEvent, line: DiffLine) => {
   const endIdx = Math.min(diffLines.value.length, lineIdx + 4)
   
   const contextLines = diffLines.value.slice(startIdx, endIdx)
+  
+  // Guard: ensure contextLines is not empty
+  if (contextLines.length === 0) return
+  
+  // Store file path and line numbers for review header
+  miniChatFilePath.value = props.filePath
+  miniChatFileName.value = props.fileName
+  miniChatStartLine.value = contextLines[0]!.newLineNum || contextLines[0]!.oldLineNum || 0
+  miniChatEndLine.value = contextLines[contextLines.length - 1]!.newLineNum || contextLines[contextLines.length - 1]!.oldLineNum || 0
+  
+  // Build content with line numbers
   miniChatContent.value = contextLines.map(l => {
     const prefix = l.type === 'add' ? '+' : l.type === 'remove' ? '-' : ' '
-    return prefix + l.content
+    const lineNum = l.newLineNum || l.oldLineNum || ''
+    return `${lineNum} ${prefix}${l.content}`
   }).join('\n')
   
   console.log('[GitFileViewer] showMiniChat set to true')
@@ -75,10 +91,20 @@ const openMiniChat = (event: MouseEvent, line: DiffLine) => {
 const closeMiniChat = () => {
   showMiniChat.value = false
   miniChatContent.value = ''
+  miniChatFilePath.value = ''
+  miniChatFileName.value = ''
+  miniChatStartLine.value = 0
+  miniChatEndLine.value = 0
 }
 
 const submitMiniChat = (message: string) => {
-  emit('submitReview', message)
+  // Build review message with code context, file path, and line numbers
+  const lineRange = miniChatStartLine.value === miniChatEndLine.value
+    ? `Line ${miniChatStartLine.value}`
+    : `Lines ${miniChatStartLine.value}-${miniChatEndLine.value}`
+  
+  const reviewWithContext = `## Code Review\n**File:** \`${miniChatFilePath.value}\`\n**${lineRange}**\n\n\`\`\`\n${miniChatContent.value}\n\`\`\`\n\n## Review Comment\n\n${message}`
+  emit('submitReview', reviewWithContext)
   closeMiniChat()
 }
 

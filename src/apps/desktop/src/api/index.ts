@@ -1,6 +1,7 @@
 // API Service - Centralized API calls for desktop backend
 // All components should use this file instead of making direct fetch calls
 
+
 export const API_BASE = "/api";
 
 // Types matching backend responses
@@ -549,6 +550,27 @@ export async function deleteChat(id: string): Promise<{ success: boolean }> {
   const response = await fetch(`${API_BASE}/chats/${id}`, { method: "DELETE" });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
+}
+
+// Session API - Fetch session info including cwd
+export interface Session {
+  sessionId: string
+  cwd: string
+  createdAt: string
+  agent: string
+  sessionName: string
+}
+
+export async function getSession(sessionId: string): Promise<Session | null> {
+  try {
+    const response = await fetch(`${API_BASE}/session/${sessionId}`)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const text = await response.text()
+    return JSON.parse(text)
+  } catch (error) {
+    console.error('Failed to get session:', error)
+    return null
+  }
 }
 
 // Compact chat session history
