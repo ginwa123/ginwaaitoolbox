@@ -283,6 +283,7 @@ export async function sendChatMessage(
   sessionId: string,
   message: string,
   cwdSession: string,
+  imageUrls?: string[],
 ): Promise<{ status: string }> {
   let body: string;
 
@@ -293,6 +294,7 @@ export async function sendChatMessage(
       queue_message: message,
       allowed_tools: "all",
       cwd_session: cwdSession,
+      image_urls: imageUrls || [],
     });
   } catch (serializeError) {
     console.error("Failed to serialize request body:", serializeError);

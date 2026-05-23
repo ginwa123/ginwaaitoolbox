@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, computed } from 'vue'
 import * as api from '../api'
+import FilePreview from './FilePreview.vue'
 
 export interface QueuedMessage {
   id: string
   message: string
+}
+
+export interface PreviewFile {
+  file: File
+  previewUrl: string
 }
 
 const props = defineProps<{
@@ -17,7 +23,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'submit': [message: string]
+  'submit': [message: string, files?: File[]]
 }>()
 
 interface FileEntry {
@@ -44,6 +50,48 @@ if (props.initialMessage) {
   inputText.value = props.initialMessage
 }
 
+// Image preview state
+const previewFiles = ref<PreviewFile[]>([])
+
+const isImageFile = (file: File): boolean => {
+  return file.type.startsWith('image/')
+}
+
+// Convert File to base64 data URL
+const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+// Send message with files converted to base64
+const sendMessageWithFiles = async () => {
+  if (!inputText.value.trim() && previewFiles.value.length === 0) return
+  
+  const message = inputText.value
+  const files = previewFiles.value.map(p => p.file)
+  
+  // Clear state before emit so parent can process
+  inputText.value = ''
+  showFilePicker.value = false
+  previewFiles.value.forEach(item => {
+    if (item.previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(item.previewUrl)
+    }
+  })
+  previewFiles.value = []
+  
+  emit('submit', message, files)
+  
+  nextTick(() => {
+    const textarea = document.querySelector('.file-input-wrapper textarea') as HTMLTextAreaElement
+    if (textarea) textarea.style.height = '48px'
+  })
+}
+
 // Watch for changes to initialMessage (e.g., when selecting diff lines)
 watch(() => props.initialMessage, (newVal) => {
   if (newVal) {
@@ -62,24 +110,17 @@ const handleNativeFileSelect = (event: Event) => {
   const files = target.files
   if (!files || files.length === 0) return
   
-  const file = files[0]
-  if (!file) return
-  
-  // Insert file path at cursor position
-  const text = inputText.value
-  const pos = cursorPos.value
-  const textBeforeCursor = text.slice(0, pos)
-  const textAfterCursor = text.slice(pos)
-  
-  // Use the file path - try to make it relative to cwd if possible
-  let filePath = file.name
-  if (file.webkitRelativePath) {
-    filePath = file.webkitRelativePath
+  for (const file of files) {
+    if (!file) continue
+    
+    // Create preview for image files
+    if (isImageFile(file)) {
+      const previewUrl = URL.createObjectURL(file)
+      previewFiles.value.push({ file, previewUrl })
+    }
   }
   
-  inputText.value = textBeforeCursor + filePath + textAfterCursor
-  
-  // Reset the input so same file can be selected again
+  // Reset the input so same files can be selected again
   target.value = ''
 }
 
@@ -277,15 +318,8 @@ const scrollSelectedIntoView = () => {
 }
 
 const sendMessage = () => {
-  if (!inputText.value.trim()) return
-  const message = inputText.value
-  inputText.value = ''
-  showFilePicker.value = false
-  emit('submit', message)
-  nextTick(() => {
-    const textarea = document.querySelector('.file-input-wrapper textarea') as HTMLTextAreaElement
-    if (textarea) textarea.style.height = '48px'
-  })
+  // Use sendMessageWithFiles for full functionality with base64 encoding
+  sendMessageWithFiles()
 }
 </script>
 
@@ -340,6 +374,9 @@ const sendMessage = () => {
         {{ filteredFiles.length }} of {{ fileList.length }} files shown
       </div>
     </div>
+
+    <!-- Image preview list -->
+    <FilePreview v-model="previewFiles" max-height="120px" />
 
     <!-- Input form -->
     <form @submit.prevent="sendMessage" class="flex gap-3 items-end">

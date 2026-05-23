@@ -701,16 +701,29 @@ watch(
 
 // ─── Send Message ─────────────────────────────────────────────────────────────
 
-const handleFileInputSubmit = async (userMessage: string) => {
+const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
   await nextTick()
   scrollToBottom(true)
-
 
   // Handle pending session - create real session first
   let currentSessionId = sessionId.value
 
+  // Convert files to base64 image_urls
+  let imageUrls: string[] = []
+  if (files && files.length > 0) {
+    const fileToBase64 = (file: File): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+    }
+    imageUrls = await Promise.all(files.map(f => fileToBase64(f)))
+  }
+
   try {
-    await api.sendChatMessage(currentSessionId, userMessage, cwd.value)
+    await api.sendChatMessage(currentSessionId, userMessage, cwd.value, imageUrls)
   } catch (err) {
     console.error('Failed to send message:', err)
     messages.value.push({
@@ -899,7 +912,7 @@ const compactSession = async () => {
       <!-- Input -->
       <div class="p-4" style="border-top: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);">
         <div class="max-w-4xl mx-auto">
-          <FileInput :cwd="cwd" :queuedMessages="queuedMessages" :isLoading="isLoading" :isLLMProcessing="isLLMProcessing" @submit="handleFileInputSubmit" />
+          <FileInput :cwd="cwd" :queuedMessages="queuedMessages" :isLoading="isLoading" :isLLMProcessing="isLLMProcessing" @submit="handleFileInputSubmit" @files-selected="handleFileInputSubmit" />
           <!-- Status bar: compact, tokens, git branch below input -->
           <div class="flex items-center gap-2 mt-3">
             <!-- Compact button -->
