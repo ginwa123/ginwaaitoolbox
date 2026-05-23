@@ -199,6 +199,7 @@ export interface Message {
   tool_name?: string;
   diffview_before?: string;
   diffview_after?: string;
+  image_url?: string;
 }
 
 // All chat endpoints go through Zig backend at /api/llm/*
@@ -246,6 +247,7 @@ export async function getChatHistory(
           tool_name?: string;
           diffview_before?: string;
           diffview_after?: string;
+          image_url?: string;
         }) => ({
           ...msg,
           content: msg.content,
@@ -253,6 +255,7 @@ export async function getChatHistory(
           tool_name: msg.tool_name,
           diffview_before: msg.diffview_before,
           diffview_after: msg.diffview_after,
+          image_url: msg.image_url,
         }),
       ),
       has_more: data.has_more,

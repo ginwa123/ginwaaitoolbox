@@ -125,6 +125,7 @@ pub const SessionMessage = struct {
     reasoning_content: []const u8,
     diffview_before: []const u8 = "",
     diffview_after: []const u8 = "",
+    image_url: []const u8 = "",
 };
 
 pub const SessionMessagesResponse = struct {

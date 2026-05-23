@@ -56,6 +56,7 @@ interface Message {
   tool_name?: string
   diffview_before?: string
   diffview_after?: string
+  image_url?: string
 }
 
 // Escape HTML to prevent XSS
@@ -815,6 +816,9 @@ const compactSession = async () => {
                   : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
                   ">
                 <template v-if="group.role === 'user'">
+                  <div v-if="group.messages[0]?.image_url" class="mb-2">
+                    <img :src="group.messages[0]!.image_url" alt="Attached image" class="max-w-full rounded-lg max-h-64" />
+                  </div>
                   {{ group.messages[0]!.content }}
                 </template>
                 <template v-else-if="group.role === 'tool'">

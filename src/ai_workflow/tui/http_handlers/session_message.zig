@@ -53,6 +53,18 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
     // Convert llm_history.SessionMessageResponse to http_response.SessionMessagesResponse
     var messages: []http_response.SessionMessage = try allocator.alloc(http_response.SessionMessage, msg_response.messages.len);
     for (msg_response.messages, 0..) |msg, idx| {
+        // Join multiple image URLs into a pipe-separated string
+        var image_url_str: []u8 = &[_]u8{};
+        if (msg.image_urls) |urls| {
+            var combined = std.ArrayList(u8).empty;
+            errdefer combined.deinit(allocator);
+            for (urls, 0..) |url, i| {
+                if (i > 0) try combined.append(allocator, '|');
+                try combined.appendSlice(allocator, url);
+            }
+            image_url_str = try combined.toOwnedSlice(allocator);
+        }
+
         messages[idx] = http_response.SessionMessage{
             .id = msg.id,
             .session_id = msg.session_id,
@@ -66,6 +78,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
             .reasoning_content = msg.reasoning_content,
             .diffview_before = msg.diffview_before orelse "",
             .diffview_after = msg.diffview_after orelse "",
+            .image_url = image_url_str,
         };
     }
 
