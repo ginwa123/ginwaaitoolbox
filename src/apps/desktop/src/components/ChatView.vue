@@ -276,6 +276,17 @@ const maxCapacityTotalTokens = ref(200000)
 // Track which tool items are expanded (by index)
 const expandedToolIds = ref<Set<string>>(new Set())
 
+// Image preview state
+const previewImageUrl = ref<string | null>(null)
+
+const openImagePreview = (url: string) => {
+  previewImageUrl.value = url
+}
+
+const closeImagePreview = () => {
+  previewImageUrl.value = null
+}
+
 // Toggle expanded state for a tool item
 const toggleToolExpanded = (groupIndex: number, msgIndex: number) => {
   const key = `${groupIndex}-${msgIndex}`
@@ -407,6 +418,7 @@ const loadChatHistory = async (loadMore = false) => {
       tool_name: msg.tool_name,
       diffview_before: msg.diffview_before,
       diffview_after: msg.diffview_after,
+      image_url: msg.image_url,
     }))
 
     if (loadMore) {
@@ -830,7 +842,7 @@ const compactSession = async () => {
                   ">
                 <template v-if="group.role === 'user'">
                   <div v-if="group.messages[0]?.image_url" class="mb-2">
-                    <img :src="group.messages[0]!.image_url" alt="Attached image" class="max-w-full rounded-lg max-h-64" />
+                    <img :src="group.messages[0]!.image_url" alt="Attached image" class="max-w-full rounded-lg max-h-64 cursor-pointer hover:opacity-90" @click="openImagePreview(group.messages[0]!.image_url!)" />
                   </div>
                   {{ group.messages[0]!.content }}
                 </template>
@@ -956,6 +968,20 @@ const compactSession = async () => {
         </div>
       </div>
     </div>
+
+    <!-- Image Preview Popup -->
+    <Teleport to="body">
+      <div v-if="previewImageUrl" class="image-preview-overlay" @click="closeImagePreview">
+        <div class="image-preview-content" @click.stop>
+          <button type="button" class="image-preview-close" @click="closeImagePreview">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+          <img :src="previewImageUrl" alt="Preview" class="image-preview-img" />
+        </div>
+      </div>
+    </Teleport>
 
   </div>
 </template>
@@ -1098,5 +1124,53 @@ const compactSession = async () => {
 
 :deep(.markdown-content pre:hover .code-copy-btn) {
   opacity: 1;
+}
+
+/* Image preview popup */
+.image-preview-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 20px;
+}
+
+.image-preview-content {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.image-preview-close {
+  position: absolute;
+  top: -40px;
+  right: 0;
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  padding: 8px;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.image-preview-close:hover {
+  opacity: 1;
+}
+
+.image-preview-img {
+  max-width: 100%;
+  max-height: calc(90vh - 60px);
+  object-fit: contain;
+  border-radius: 8px;
 }
 </style>

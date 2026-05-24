@@ -23,6 +23,6 @@ const std = @import("std");
 
 pub fn isDoCompact(token_count: u32, max_capicity_token: u32) bool {
     // auto compact 80% of tokens
-    const threshold = max_capicity_token * 6 / 10; // 60%
+    const threshold = max_capicity_token * 8 / 10; // 80%
     return token_count >= threshold;
 }
