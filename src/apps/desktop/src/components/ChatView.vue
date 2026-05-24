@@ -56,7 +56,7 @@ interface Message {
   tool_name?: string
   diffview_before?: string
   diffview_after?: string
-  image_url?: string
+  image_urls?: string[]
 }
 
 // Escape HTML to prevent XSS
@@ -418,7 +418,7 @@ const loadChatHistory = async (loadMore = false) => {
       tool_name: msg.tool_name,
       diffview_before: msg.diffview_before,
       diffview_after: msg.diffview_after,
-      image_url: msg.image_url,
+      image_urls: msg.image_url ? msg.image_url.split('|') : undefined,
     }))
 
     if (loadMore) {
@@ -841,8 +841,10 @@ const compactSession = async () => {
                   : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
                   ">
                 <template v-if="group.role === 'user'">
-                  <div v-if="group.messages[0]?.image_url" class="mb-2">
-                    <img :src="group.messages[0]!.image_url" alt="Attached image" class="max-w-full rounded-lg max-h-64 cursor-pointer hover:opacity-90" @click="openImagePreview(group.messages[0]!.image_url!)" />
+                  <div v-if="group.messages[0]?.image_urls && group.messages[0]!.image_urls!.length > 0" class="mb-2">
+                    <div class="flex flex-wrap gap-2">
+                      <img v-for="(imgUrl, imgIdx) in group.messages[0]!.image_urls" :key="imgIdx" :src="imgUrl" alt="Attached image" class="max-w-full rounded-lg max-h-64 cursor-pointer hover:opacity-90" @click="openImagePreview(imgUrl)" />
+                    </div>
                   </div>
                   {{ group.messages[0]!.content }}
                 </template>
