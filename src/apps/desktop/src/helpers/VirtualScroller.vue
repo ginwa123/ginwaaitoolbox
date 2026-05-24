@@ -1,373 +1,278 @@
 <script setup lang="ts" generic="T">
-/**
- * VirtualScroller - Agnostic Virtual Scrolling Component (Variable Height)
- * 
- * Features:
- * - No fixed item height required
- * - Measures actual item heights after render
- * - Uses top/bottom spacers for accurate scrollbar
- * - Slot-based rendering for full flexibility
- * - Supports infinite scroll via onLoadMore callback
- * - Supports loading more at TOP (for chat history pagination)
- * 
- * Usage:
- * <VirtualScroller
- *   :items="myItems"
- *   :buffer="5"
- *   @load-more="fetchMore"
- * >
- *   <template #default="{ item, index }">
- *     <div class="chat-item">{{ item.name }}</div>
- *   </template>
- * </VirtualScroller>
- */
-
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 
-// Props
-const props = withDefaults(defineProps<{
-  items: T[]
-  totalCount?: number       // Total items available (from API). If not provided, assumes unlimited.
-  buffer?: number           // Extra items to render above/below visible area
-  defaultItemHeight?: number // Default height if not measured (pixels)
-  loadMoreThreshold?: number
-  loadMoreAtTop?: boolean   // Emit loadMore when scrolled near TOP (for chat history)
-}>(), {
-  totalCount: 0,            // 0 means unknown/unlimited
-  buffer: 5,
-  defaultItemHeight: 100,
-  loadMoreThreshold: 200,
-  loadMoreAtTop: false,
-})
+const props = withDefaults(
+  defineProps<{
+    items: T[]
+    totalCount?: number
+    buffer?: number
+    defaultItemHeight?: number
+    loadMoreThreshold?: number
+    loadMoreAtTop?: boolean
+  }>(),
+  {
+    totalCount: 0,
+    buffer: 5,
+    defaultItemHeight: 100,
+    loadMoreThreshold: 200,
+    loadMoreAtTop: false,
+  },
+)
 
 const emit = defineEmits<{
   loadMore: []
   scroll: [scrollTop: number, direction: 'up' | 'down']
 }>()
 
-// Refs
 const containerRef = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const lastScrollTop = ref(0)
 const containerHeight = ref(0)
 const itemHeights = ref<Map<number, number>>(new Map())
-const accumulatedHeights = ref<number[]>([0]) // Cumulative height at each item index
-const isPreservingScroll = ref(false)  // Prevents scroll resets during preserveScrollPosition
+const accumulatedHeights = ref<number[]>([0])
+const isPreservingScroll = ref(false)
+const forceRenderUpTo = ref(-1)
 
-// Update accumulated heights when items or their heights change
+let _anchorOffsetTopBefore = 0
+let _pendingNewItemsCount = 0
+
 const updateAccumulatedHeights = () => {
-  const heights: number[] = [0]
+  const h: number[] = [0]
   let sum = 0
   for (let i = 0; i < props.items.length; i++) {
-    const height = itemHeights.value.get(i) ?? props.defaultItemHeight
-    sum += height
-    heights.push(sum)
+    sum += itemHeights.value.get(i) ?? props.defaultItemHeight
+    h.push(sum)
   }
-  accumulatedHeights.value = heights
+  accumulatedHeights.value = h
 }
 
-// Calculate total height - ONLY use accumulated heights (actual measured heights)
-// Do NOT use totalCount for height calculation - it causes scroll jumping
-// because items have variable heights (user messages, assistant messages, tool calls).
-// totalCount is only used to know IF there are more items to load, not for scrollbar size.
-const totalHeight = computed(() => {
-  // Always use accumulated heights for accurate scrollbar
-  // This ensures scrollbar is proportional to actual content height
-  return accumulatedHeights.value[props.items.length] ?? 0
-})
+watch(() => props.items.length, updateAccumulatedHeights)
 
-// Watch for item count changes
-watch(() => props.items.length, () => {
-  updateAccumulatedHeights()
-})
+let heightDebounce: ReturnType<typeof setTimeout> | null = null
+watch(
+  itemHeights,
+  () => {
+    if (heightDebounce) clearTimeout(heightDebounce)
+    heightDebounce = setTimeout(updateAccumulatedHeights, 50)
+  },
+  { deep: true },
+)
 
-// Watch for item heights changes with debounce to prevent flicker during scrolling
-let heightUpdateTimeout: ReturnType<typeof setTimeout> | null = null
-watch(itemHeights, () => {
-  if (heightUpdateTimeout) {
-    clearTimeout(heightUpdateTimeout)
-  }
-  heightUpdateTimeout = setTimeout(() => {
-    updateAccumulatedHeights()
-  }, 50)
-}, { deep: true })
-
-// Find the first visible item index using binary search
 const findStartIndex = (): number => {
-  const heights = accumulatedHeights.value
-  if (heights.length <= 1) return 0
-  
-  let low = 0
-  let high = heights.length - 1
-  
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2)
-    const midHeight = heights[mid]
-    if (midHeight !== undefined && midHeight <= scrollTop.value) {
-      low = mid + 1
-    } else {
-      high = mid
-    }
+  const h = accumulatedHeights.value
+  if (h.length <= 1) return 0
+  let lo = 0,
+    hi = h.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if ((h[mid] ?? 0) <= scrollTop.value) lo = mid + 1
+    else hi = mid
   }
-  
-  return Math.max(0, low - 1)
+  return Math.max(0, lo - 1)
 }
 
-// Calculate visible range
 const visibleRange = computed(() => {
-  if (props.items.length === 0) return { start: 0, end: 0, topSpacer: 0, bottomSpacer: 0 }
-  
+  const len = props.items.length
+  if (len === 0) return { start: 0, end: 0, topSpacer: 0, bottomSpacer: 0 }
+
   const startIndex = findStartIndex()
-  
-  // Find end index by accumulating heights
-  const startHeight = accumulatedHeights.value[startIndex] ?? 0
-  let accumulated = startHeight
+  const viewBottom = scrollTop.value + containerHeight.value
+  let acc = accumulatedHeights.value[startIndex] ?? 0
   let endIndex = startIndex
-  const viewHeight = scrollTop.value + containerHeight.value
-  
-  while (endIndex < props.items.length && accumulated < viewHeight + 200) {
-    const height = itemHeights.value.get(endIndex) ?? props.defaultItemHeight
-    accumulated += height
+  while (endIndex < len && acc < viewBottom + 200) {
+    acc += itemHeights.value.get(endIndex) ?? props.defaultItemHeight
     endIndex++
   }
-  
-  // Apply buffer
-  const start = Math.max(0, startIndex - props.buffer)
-  const end = Math.min(props.items.length, endIndex + props.buffer)
-  
-  // Calculate spacers
+
+  let start = Math.max(0, startIndex - props.buffer)
+  let end = Math.min(len, endIndex + props.buffer)
+
+  if (forceRenderUpTo.value >= 0) {
+    start = 0
+    end = Math.max(end, forceRenderUpTo.value + 1)
+  }
+
   const topSpacer = accumulatedHeights.value[start] ?? 0
-  const bottomSpacer = (accumulatedHeights.value[props.items.length] ?? 0) - (accumulatedHeights.value[end] ?? 0)
-  
+  const bottomSpacer = (accumulatedHeights.value[len] ?? 0) - (accumulatedHeights.value[end] ?? 0)
   return { start, end, topSpacer, bottomSpacer }
 })
 
-// The items to actually render
 const visibleItems = computed(() => {
-  const range = visibleRange.value
-  const items: { item: T; index: number }[] = []
-  for (let i = range.start; i < range.end; i++) {
+  const { start, end } = visibleRange.value
+  const result: { item: T; index: number }[] = []
+  for (let i = start; i < end; i++) {
     const item = props.items[i]
-    if (item !== undefined) {
-      items.push({ item, index: i })
-    }
+    if (item !== undefined) result.push({ item, index: i })
   }
-  return items
+  return result
 })
 
-// Scroll info
 const scrollInfo = computed(() => ({
   scrollTop: scrollTop.value,
   visibleStart: visibleRange.value.start,
   visibleEnd: visibleRange.value.end,
   totalItems: props.items.length,
-  direction: scrollTop.value > lastScrollTop.value ? 'down' as const : 'up' as const,
+  direction: scrollTop.value > lastScrollTop.value ? ('down' as const) : ('up' as const),
 }))
 
-// Measure item heights after render
 const measureItems = () => {
   if (!containerRef.value) return
-  
-  const contentEl = containerRef.value.querySelector('.virtual-scroller-content')
-  if (!contentEl) return
-  
-  const itemEls = contentEl.children
-  for (let i = 0; i < itemEls.length; i++) {
-    const el = itemEls[i] as HTMLElement
+  const content = containerRef.value.querySelector('.virtual-scroller-content')
+  if (!content) return
+  let changed = false
+  const children = content.children
+  for (let i = 0; i < children.length; i++) {
+    const el = children[i] as HTMLElement
     const realIndex = visibleRange.value.start + i
-    const height = el.offsetHeight
-    if (height > 0) {
-      const existingHeight = itemHeights.value.get(realIndex)
-      if (existingHeight !== height) {
-        itemHeights.value.set(realIndex, height)
-        updateAccumulatedHeights()
-      }
+    const h = el.offsetHeight
+    if (h > 0 && itemHeights.value.get(realIndex) !== h) {
+      itemHeights.value.set(realIndex, h)
+      changed = true
     }
   }
+  if (changed) updateAccumulatedHeights()
 }
 
-// Methods
-let loadMoreTimeout: ReturnType<typeof setTimeout> | null = null
-let measureTimeout: ReturnType<typeof setTimeout> | null = null
+let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null
+let measureDebounce: ReturnType<typeof setTimeout> | null = null
 
 const onScroll = (e: Event) => {
   const target = e.target as HTMLElement
-  const newScrollTop = target.scrollTop
-  const direction = newScrollTop > lastScrollTop.value ? 'down' : 'up'
-  
-  scrollTop.value = newScrollTop
-  lastScrollTop.value = newScrollTop
+  const st = target.scrollTop
+  const dir = st > lastScrollTop.value ? 'down' : 'up'
+  scrollTop.value = st
+  lastScrollTop.value = st
+  emit('scroll', st, dir as 'up' | 'down')
 
-  emit('scroll', newScrollTop, direction)
-
-  // Infinite scroll detection with debounce
-  if (loadMoreTimeout) {
-    clearTimeout(loadMoreTimeout)
-  }
-  
-  const triggerLoadMore = () => {
-    // Only trigger if we know there are more items (totalCount > items.length)
-    // or totalCount is 0 (unknown/unlimited)
+  if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
+  loadMoreDebounce = setTimeout(() => {
+    if (isPreservingScroll.value) return
     const hasMore = props.totalCount === 0 || props.items.length < props.totalCount
-    
-    if (!hasMore) return  // Don't trigger if we've loaded everything
-    
+    if (!hasMore) return
     if (props.loadMoreAtTop) {
-      if (newScrollTop < props.loadMoreThreshold && props.items.length > 0) {
-        emit('loadMore')
-      }
+      if (st < props.loadMoreThreshold && props.items.length > 0) emit('loadMore')
     } else {
-      const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight
-      if (scrollBottom < props.loadMoreThreshold && props.items.length > 0) {
-        emit('loadMore')
-      }
+      const bottom = target.scrollHeight - st - target.clientHeight
+      if (bottom < props.loadMoreThreshold && props.items.length > 0) emit('loadMore')
     }
-  }
-  
-  loadMoreTimeout = setTimeout(triggerLoadMore, 200)
-  
-  // Debounce item measurement
-  if (measureTimeout) {
-    clearTimeout(measureTimeout)
-  }
-  measureTimeout = setTimeout(measureItems, 50)
+  }, 200)
+
+  if (measureDebounce) clearTimeout(measureDebounce)
+  measureDebounce = setTimeout(measureItems, 50)
 }
 
-const scrollToIndex = async (index: number, behavior: ScrollBehavior = 'auto') => {
-  if (!containerRef.value) return
-  
-  const targetScrollTop = accumulatedHeights.value[index] ?? (index * props.defaultItemHeight)
-  
-  containerRef.value.scrollTo({
-    top: targetScrollTop,
-    behavior,
-  })
-}
-
-const scrollToTop = (behavior: ScrollBehavior = 'auto') => {
-  if (containerRef.value) {
-    containerRef.value.scrollTo({ top: 0, behavior })
-  }
-}
-
-const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
-  if (containerRef.value) {
-    console.log('[VirtualScroller scrollToBottom] scrollHeight:', containerRef.value.scrollHeight, 'clientHeight:', containerHeight.value)
-    const maxScroll = containerRef.value.scrollHeight - containerHeight.value
-    console.log('[VirtualScroller scrollToBottom] maxScroll:', maxScroll, 'behavior:', behavior)
-    containerRef.value.scrollTo({
-      top: Math.max(0, maxScroll),
-      behavior,
-    })
-  }
-}
-
-// Preserve scroll position when prepending items (for chat history)
-// This adjusts scrollTop to account for the new items added at the top
-const preserveScrollPosition = (newItemsCount: number) => {
+/**
+ * PHASE 1 — call BEFORE mutating items array.
+ * Reads anchor (old item[0]) offsetTop while it is still in the DOM.
+ */
+const beginPreserve = (newItemsCount: number) => {
   if (!containerRef.value || newItemsCount <= 0) return
-  
-  console.log('[preserveScrollPosition] START - newItemsCount:', newItemsCount, 'scrollTop:', scrollTop.value)
-  
-  // Set flag to prevent watchers from triggering scrollToBottom
   isPreservingScroll.value = true
-  
-  // PROBLEM: Doing two adjustments causes a visible "jump"
-  // SOLUTION: Wait for items to render, measure them, then do ONE adjustment
-  
-  // First, let Vue render the new items
-  nextTick(() => {
-    nextTick(() => {
-      console.log('[preserveScrollPosition] PASS - measuring items after render')
-      
-      // Now measure ALL visible items
-      measureItems()
-      
-      // Calculate height of NEW items (indices 0 to newItemsCount-1)
-      let newItemsHeight = 0
-      for (let i = 0; i < newItemsCount; i++) {
-        const measuredHeight = itemHeights.value.get(i)
-        newItemsHeight += measuredHeight ?? props.defaultItemHeight
-        console.log('[preserveScrollPosition] Item', i, 'height:', measuredHeight ?? 'default')
-      }
-      
-      console.log('[preserveScrollPosition] New items total height:', newItemsHeight)
-      
-      // Do ONE adjustment - scroll down by the height of new items
-      const newScrollTop = scrollTop.value + newItemsHeight
-      containerRef.value!.scrollTop = newScrollTop
-      lastScrollTop.value = newScrollTop
-      scrollTop.value = newScrollTop
-      
-      console.log('[preserveScrollPosition] Adjusted scrollTop:', newScrollTop)
-      
-      // Update accumulated heights
-      updateAccumulatedHeights()
-      
-      isPreservingScroll.value = false
-      console.log('[preserveScrollPosition] END')
-    })
-  })
+  _pendingNewItemsCount = newItemsCount
+
+  const content = containerRef.value.querySelector('.virtual-scroller-content')
+  const anchorEl = content
+    ? (content.querySelector('[data-vs-index="0"]') as HTMLElement | null)
+    : null
+
+  _anchorOffsetTopBefore = anchorEl ? anchorEl.offsetTop : 0
+  console.log('[beginPreserve] anchorEl found:', !!anchorEl, 'offsetTop:', _anchorOffsetTopBefore)
 }
 
-// Scroll to a specific item by index while preserving relative position in viewport
-const scrollToItem = (targetIndex: number, behavior: ScrollBehavior = 'auto') => {
+/**
+ * PHASE 2 — call AFTER items array has been mutated.
+ * Expands render window, waits for layout, sets scrollTop once accurately.
+ */
+const endPreserve = async () => {
+  if (!containerRef.value || _pendingNewItemsCount <= 0) {
+    isPreservingScroll.value = false
+    return
+  }
+
+  const n = _pendingNewItemsCount
+  forceRenderUpTo.value = n - 1
+
+  await nextTick()
+  await new Promise<void>((r) => requestAnimationFrame(() => r()))
+  await new Promise<void>((r) => requestAnimationFrame(() => r()))
+
+  measureItems()
+  updateAccumulatedHeights()
+
+  // Try to find anchor at its new index
+  const content = containerRef.value!.querySelector('.virtual-scroller-content')
+  const anchorEl = content
+    ? (content.querySelector(`[data-vs-index="${n}"]`) as HTMLElement | null)
+    : null
+
+  if (anchorEl) {
+    const newST = anchorEl.offsetTop
+    console.log('[endPreserve] strategy A — anchorEl.offsetTop:', newST)
+    containerRef.value!.scrollTop = newST
+    scrollTop.value = newST
+    lastScrollTop.value = newST
+  } else {
+    // Fallback: sum measured heights of new items
+    let sum = 0
+    for (let i = 0; i < n; i++) sum += itemHeights.value.get(i) ?? props.defaultItemHeight
+    console.log('[endPreserve] strategy B — sum:', sum)
+    containerRef.value!.scrollTop = sum
+    scrollTop.value = sum
+    lastScrollTop.value = sum
+  }
+
+  forceRenderUpTo.value = -1
+  isPreservingScroll.value = false
+  _pendingNewItemsCount = 0
+  console.log('[endPreserve] END scrollTop:', containerRef.value!.scrollTop)
+}
+
+const scrollToIndex = (index: number, behavior: ScrollBehavior = 'auto') => {
   if (!containerRef.value) return
-  
-  // Get the accumulated height up to the target index
-  const targetScrollTop = accumulatedHeights.value[targetIndex] ?? (targetIndex * props.defaultItemHeight)
-  
   containerRef.value.scrollTo({
-    top: targetScrollTop,
+    top: accumulatedHeights.value[index] ?? index * props.defaultItemHeight,
     behavior,
   })
 }
+const scrollToTop = (behavior: ScrollBehavior = 'auto') =>
+  containerRef.value?.scrollTo({ top: 0, behavior })
+const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+  if (!containerRef.value) return
+  containerRef.value.scrollTo({
+    top: Math.max(0, containerRef.value.scrollHeight - containerHeight.value),
+    behavior,
+  })
+}
+const scrollToItem = (index: number, behavior: ScrollBehavior = 'auto') =>
+  scrollToIndex(index, behavior)
 
-// Resize observer
-let resizeObserver: ResizeObserver | null = null
-
-const updateContainerHeight = () => {
+let ro: ResizeObserver | null = null
+onMounted(() => {
   if (containerRef.value) {
     containerHeight.value = containerRef.value.clientHeight
-  }
-}
-
-onMounted(() => {
-  updateContainerHeight()
-  
-  if (containerRef.value) {
-    resizeObserver = new ResizeObserver(() => {
-      updateContainerHeight()
-      // Re-measure items after container resize
-      nextTick(() => {
-        setTimeout(measureItems, 50)
-      })
+    ro = new ResizeObserver(() => {
+      if (containerRef.value) containerHeight.value = containerRef.value.clientHeight
+      nextTick(() => setTimeout(measureItems, 50))
     })
-    resizeObserver.observe(containerRef.value)
+    ro.observe(containerRef.value)
   }
-  
-  // Initial measure after items render
-  nextTick(() => {
-    setTimeout(measureItems, 100)
-  })
+  nextTick(() => setTimeout(measureItems, 100))
 })
-
 onUnmounted(() => {
-  if (resizeObserver) {
-    resizeObserver.disconnect()
-  }
+  ro?.disconnect()
+  if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
+  if (measureDebounce) clearTimeout(measureDebounce)
+  if (heightDebounce) clearTimeout(heightDebounce)
 })
 
-// Note: We DON'T watch visibleItems here as it causes high CPU during scrolling
-// Item heights are measured via onScroll debounce instead
-
-// Expose methods for parent
 defineExpose({
   scrollToIndex,
   scrollToTop,
   scrollToBottom,
-  preserveScrollPosition,
   scrollToItem,
+  beginPreserve,
+  endPreserve,
+  preserveScrollPosition: endPreserve, // legacy alias
   scrollInfo,
   containerRef,
   isPreservingScroll,
@@ -375,26 +280,14 @@ defineExpose({
 </script>
 
 <template>
-  <div
-    ref="containerRef"
-    class="virtual-scroller"
-    @scroll="onScroll"
-  >
-    <!-- Top spacer to maintain scroll position -->
-    <div class="virtual-scroller-spacer" :style="{ height: visibleRange.topSpacer + 'px' }"></div>
-    
-    <!-- Visible items -->
+  <div ref="containerRef" class="virtual-scroller" @scroll="onScroll">
+    <div class="virtual-scroller-spacer" :style="{ height: visibleRange.topSpacer + 'px' }" />
     <div class="virtual-scroller-content">
-      <div
-        v-for="{ item, index } in visibleItems"
-        :key="index"
-      >
+      <div v-for="{ item, index } in visibleItems" :key="index" :data-vs-index="index">
         <slot :item="item" :index="index" />
       </div>
     </div>
-    
-    <!-- Bottom spacer to maintain scroll position -->
-    <div class="virtual-scroller-spacer" :style="{ height: visibleRange.bottomSpacer + 'px' }"></div>
+    <div class="virtual-scroller-spacer" :style="{ height: visibleRange.bottomSpacer + 'px' }" />
   </div>
 </template>
 
@@ -403,7 +296,6 @@ defineExpose({
   overflow-y: auto;
   height: 100%;
 }
-
 .virtual-scroller-content {
   display: flex;
   flex-direction: column;

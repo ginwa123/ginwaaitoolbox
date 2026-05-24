@@ -122,17 +122,18 @@ const closeGitViewer = () => {
   }
 }
 
-const handleSubmitReview = (message: string) => {
+const handleSubmitReview = async (message: string) => {
   console.log('[AppLayout] Code review submitted:', message)
   // Navigate to chat view with the review message
   if (activeChatId.value.startsWith('chat-')) {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
     // Send the review message to the active chat session
-    api.sendChatMessage(sessionId, message, rightSidebarCwd.value).then(() => {
+    try {
+      await api.sendChatMessage(sessionId, message, rightSidebarCwd.value)
       console.log('[AppLayout] Review message sent successfully')
-    }).catch((err) => {
+    } catch (err) {
       console.error('[AppLayout] Failed to send review message:', err)
-    })
+    }
   }
   // Close the git viewer after submitting
   closeGitViewer()

@@ -1,102 +1,22 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { getNalarConfig, saveNalarConfig } from '../api'
-import SkillList from './SkillList.vue'
-import SkillDetail from './SkillDetail.vue'
+import NalarSettings from './NalarSettings.vue'
+import SkillsSettings from './SkillsSettings.vue'
 
 const router = useRouter()
 
 // Settings sidebar state
 const activeSettingsTab = ref('nalar')
 
-// Skills tab state
-const selectedSkillName = ref<string | null>(null)
-const skillListRef = ref<InstanceType<typeof SkillList> | null>(null)
-
-// Settings state
-const apiEndpoint = ref('')
-const apiKey = ref('')
-const model = ref('')
-const temperature = ref(0.7)
-const maxTokens = ref('')
-const systemPrompt = ref('')
-
 // Notification state
 const notification = ref<{ message: string; type: 'success' | 'error' } | null>(null)
-
-onMounted(async () => {
-  // Load from localStorage as fallback
-  apiEndpoint.value = localStorage.getItem('settings-api-endpoint') || ''
-  apiKey.value = localStorage.getItem('settings-api-key') || ''
-  model.value = localStorage.getItem('settings-model') || ''
-  temperature.value = parseFloat(localStorage.getItem('settings-temperature') || '0.7')
-  maxTokens.value = localStorage.getItem('settings-max-tokens') || ''
-  systemPrompt.value = localStorage.getItem('settings-system-prompt') || ''
-  
-  // Try to load from nalar.json via API
-  try {
-    const data = await getNalarConfig()
-    if (data) {
-      apiEndpoint.value = data.api_endpoint || ''
-      apiKey.value = data.api_key || ''
-      model.value = data.model || ''
-      temperature.value = data.temperature ?? 0.7
-      maxTokens.value = data.max_tokens?.toString() || ''
-      systemPrompt.value = data.system_prompt || ''
-    }
-  } catch {
-    // Use localStorage fallback
-  }
-})
 
 const showNotification = (message: string, type: 'success' | 'error') => {
   notification.value = { message, type }
   setTimeout(() => {
     notification.value = null
   }, 3000)
-}
-
-const saveSettings = async () => {
-  // Save to nalar.json via API
-  const settings = {
-    api_endpoint: apiEndpoint.value,
-    api_key: apiKey.value,
-    model: model.value,
-    temperature: temperature.value,
-    max_tokens: maxTokens.value,
-    system_prompt: systemPrompt.value
-  }
-  
-  try {
-    await saveNalarConfig(settings)
-    showNotification('Settings saved to nalar.json!', 'success')
-  } catch {
-    // Fallback to localStorage if API not available
-    localStorage.setItem('settings-api-endpoint', apiEndpoint.value)
-    localStorage.setItem('settings-api-key', apiKey.value)
-    localStorage.setItem('settings-model', model.value)
-    localStorage.setItem('settings-temperature', temperature.value.toString())
-    localStorage.setItem('settings-max-tokens', maxTokens.value)
-    localStorage.setItem('settings-system-prompt', systemPrompt.value)
-    showNotification('Settings saved!', 'success')
-  }
-}
-
-const resetSettings = () => {
-  apiEndpoint.value = ''
-  apiKey.value = ''
-  model.value = ''
-  temperature.value = 0.7
-  maxTokens.value = ''
-  systemPrompt.value = ''
-  localStorage.removeItem('settings-api-endpoint')
-  localStorage.removeItem('settings-api-key')
-  localStorage.removeItem('settings-model')
-  localStorage.removeItem('settings-temperature')
-  localStorage.removeItem('settings-max-tokens')
-  localStorage.removeItem('settings-system-prompt')
-  showNotification('Settings reset to defaults', 'success')
 }
 
 const emit = defineEmits<{
@@ -111,18 +31,8 @@ const setSettingsTab = (tab: string) => {
   activeSettingsTab.value = tab
 }
 
-const handleSelectSkill = (skillName: string) => {
-  selectedSkillName.value = skillName
-}
-
-const handleSkillDeleted = (_skillName: string) => {
-  selectedSkillName.value = null
-  skillListRef.value?.refresh()
-  showNotification('Skill deleted successfully', 'success')
-}
-
-const handleSkillError = (message: string) => {
-  showNotification(message, 'error')
+const handleNotification = (message: string, type: 'success' | 'error') => {
+  showNotification(message, type)
 }
 </script>
 
@@ -185,198 +95,12 @@ const handleSkillError = (message: string) => {
     <main class="flex-1 flex flex-col overflow-hidden">
       <!-- Nalar Tab Content -->
       <div v-if="activeSettingsTab === 'nalar'" class="flex-1 overflow-y-auto p-6">
-        <div class="max-w-2xl mx-auto space-y-6">
-          <!-- API Configuration Section -->
-          <div
-            class="rounded-xl p-6"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-          >
-            <h2
-              class="text-base font-semibold mb-4"
-              style="color: var(--semantic-text);"
-            >Nalar Configuration</h2>
-
-            <div class="space-y-4">
-              <!-- API Endpoint -->
-              <div>
-                <label
-                  class="block text-sm font-medium mb-2"
-                  style="color: var(--semantic-text-muted);"
-                >API Endpoint</label>
-                <input
-                  v-model="apiEndpoint"
-                  type="text"
-                  placeholder="https://api.example.com/v1"
-                  class="w-full px-4 py-2.5 rounded-lg border text-sm"
-                  style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
-                />
-              </div>
-
-              <!-- API Key -->
-              <div>
-                <label
-                  class="block text-sm font-medium mb-2"
-                  style="color: var(--semantic-text-muted);"
-                >API Key</label>
-                <input
-                  v-model="apiKey"
-                  type="password"
-                  placeholder="sk-..."
-                  class="w-full px-4 py-2.5 rounded-lg border text-sm"
-                  style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
-                />
-              </div>
-
-              <!-- Model -->
-              <div>
-                <label
-                  class="block text-sm font-medium mb-2"
-                  style="color: var(--semantic-text-muted);"
-                >Model</label>
-                <input
-                  v-model="model"
-                  type="text"
-                  placeholder="gpt-4o-mini"
-                  class="w-full px-4 py-2.5 rounded-lg border text-sm"
-                  style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
-                />
-              </div>
-            </div>
-          </div>
-
-          <!-- Model Parameters Section -->
-          <div
-            class="rounded-xl p-6"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-          >
-            <h2
-              class="text-base font-semibold mb-4"
-              style="color: var(--semantic-text);"
-            >Model Parameters</h2>
-
-            <div class="space-y-4">
-              <!-- Temperature -->
-              <div>
-                <label
-                  class="block text-sm font-medium mb-2"
-                  style="color: var(--semantic-text-muted);"
-                >
-                  Temperature: {{ temperature.toFixed(1) }}
-                </label>
-                <input
-                  v-model.number="temperature"
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  class="w-full"
-                />
-                <div class="flex justify-between text-xs mt-1" style="color: var(--semantic-text-dim);">
-                  <span>Precise</span>
-                  <span>Creative</span>
-                </div>
-              </div>
-
-              <!-- Max Tokens -->
-              <div>
-                <label
-                  class="block text-sm font-medium mb-2"
-                  style="color: var(--semantic-text-muted);"
-                >Max Tokens</label>
-                <input
-                  v-model="maxTokens"
-                  type="number"
-                  placeholder="4096"
-                  class="w-full px-4 py-2.5 rounded-lg border text-sm"
-                  style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
-                />
-              </div>
-            </div>
-          </div>
-
-          <!-- System Prompt Section -->
-          <div
-            class="rounded-xl p-6"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-          >
-            <h2
-              class="text-base font-semibold mb-4"
-              style="color: var(--semantic-text);"
-            >System Prompt</h2>
-
-            <textarea
-              v-model="systemPrompt"
-              placeholder="Enter system prompt for the AI..."
-              rows="6"
-              class="w-full px-4 py-2.5 rounded-lg border text-sm resize-none"
-              style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
-            />
-          </div>
-
-          <!-- Actions -->
-          <div class="flex gap-3">
-            <button
-              @click="saveSettings"
-              class="px-6 py-2.5 rounded-lg font-medium text-sm transition-colors duration-200"
-              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: white;"
-            >
-              Save Settings
-            </button>
-            <button
-              @click="resetSettings"
-              class="px-6 py-2.5 rounded-lg font-medium text-sm transition-colors duration-200"
-              style="background-color: var(--semantic-card-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
-            >
-              Reset to Defaults
-            </button>
-          </div>
-        </div>
+        <NalarSettings @notification="handleNotification" />
       </div>
 
       <!-- Skills Tab Content -->
-      <div v-else-if="activeSettingsTab === 'skills'" class="flex-1 flex overflow-hidden p-6 gap-6">
-        <!-- Skill List Panel -->
-        <div class="w-80 shrink-0 flex flex-col overflow-hidden">
-          <div
-            class="rounded-xl p-6 flex-1 flex flex-col overflow-hidden"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-          >
-            <h2
-              class="text-base font-semibold mb-4 shrink-0"
-              style="color: var(--semantic-text);"
-            >Skills</h2>
-            <p class="text-sm mb-4 shrink-0" style="color: var(--semantic-text-muted);">
-              Available AI capabilities and workflows.
-            </p>
-            <div class="flex-1 overflow-y-auto min-h-0">
-              <SkillList 
-                ref="skillListRef"
-                :selected-skill-name="selectedSkillName"
-                @select-skill="handleSelectSkill"
-              />
-            </div>
-          </div>
-        </div>
-
-        <!-- Skill Detail Panel -->
-        <div class="flex-1 flex flex-col overflow-hidden">
-          <div
-            class="rounded-xl flex-1 flex flex-col overflow-hidden"
-            style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-          >
-            <h2
-              class="text-base font-semibold p-4 shrink-0"
-              style="color: var(--semantic-text); border-bottom: 1px solid var(--color-border);"
-            >Skill Detail</h2>
-            <div class="flex-1 overflow-hidden">
-              <SkillDetail 
-                :skill-name="selectedSkillName"
-                @skill-deleted="handleSkillDeleted"
-                @error="handleSkillError"
-              />
-            </div>
-          </div>
-        </div>
+      <div v-else-if="activeSettingsTab === 'skills'" class="flex-1 overflow-y-auto p-6">
+        <SkillsSettings @notification="handleNotification" />
       </div>
     </main>
 
