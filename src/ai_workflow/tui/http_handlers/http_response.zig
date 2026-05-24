@@ -135,6 +135,7 @@ pub const SessionMessagesResponse = struct {
     cwd: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
+    total: ?u32 = null,  // Total count of messages for VirtualScroller
 };
 
 pub fn makeSessionMessagesResponse(allocator: std.mem.Allocator, response: SessionMessagesResponse) ![]u8 {

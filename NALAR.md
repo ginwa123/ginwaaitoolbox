@@ -251,6 +251,13 @@ When the LLM is processing (detected via `isLLMProcessing` from App.vue), the ac
 | SkillList | `components/SkillList.vue` | Reusable skills list with loading/error/empty states. Fetches from `/api/skills` endpoint. |
 | response-path-api-skills | `.nalar/skills/response-path-api-skills/SKILL.MD` | Documents GET /api/skills endpoint response format and usage |
 | SettingsView | `components/SettingsView.vue` | Settings page with tabs for Model, API, and Skills configuration |
+| VirtualScroller | `helpers/VirtualScroller.vue` | Agnostic virtual scrolling component. Variable-height items supported via measurement. Shows visible items + buffer, uses spacers for scrollbar accuracy. Import from `helpers/index.ts`. Props: `items`, `totalCount` (total available items), `defaultItemHeight` (default: 100), `buffer`, `loadMoreThreshold`, `loadMoreAtTop` (for chat history at top). Emits: `loadMore`, `scroll`. Exposes: `scrollToIndex()`, `scrollToTop()`, `scrollToBottom()`, `preserveScrollPosition()`. |
+
+## Helper Modules
+
+| Module | File | Purpose |
+|--------|------|---------|
+| VirtualScroller | `helpers/VirtualScroller.vue` | Agnostic virtual scroll for performance with large lists. See Desktop Components above. |
 
 ## Language & Environment Facts
 

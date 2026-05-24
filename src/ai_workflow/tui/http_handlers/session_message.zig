@@ -89,6 +89,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
         .cwd = msg_response.cwd,
         .max_total_tokens = msg_response.max_total_tokens,
         .max_capacity_total_tokens = msg_response.max_capacity_total_tokens,
+        .total = msg_response.total_count,
     };
 
     return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeSessionMessagesResponse(allocator, http_resp) });

@@ -400,6 +400,7 @@ pub const SessionMessageResponse = struct {
     cwd: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
+    total_count: ?u32 = null,  // Total count of messages in session (for VirtualScroller)
 };
 
 /// Sort direction
@@ -544,6 +545,9 @@ pub fn getSessionMessagesSorted(
     // Return only limit messages if has_more
     const result_messages = if (has_more) messages.items[0..limit] else messages.items;
 
+    // Get total count of messages for this session
+    const total_count = getTotalMessageCountForSession(db, session_id);
+
     return SessionMessageResponse{
         .messages = result_messages,
         .has_more = has_more,
@@ -551,7 +555,26 @@ pub fn getSessionMessagesSorted(
         .cwd = cwd,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
         .max_capacity_total_tokens = getMaxCapacityTotalTokensForSession(allocator, db, session_id),
+        .total_count = total_count,
     };
+}
+
+/// Get the total count of messages for a session
+fn getTotalMessageCountForSession(
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ?u32 {
+    const sql = "SELECT COUNT(*) FROM llm_history WHERE session_id = ?";
+
+    var rows = db.query(std.heap.page_allocator, sql, &.{session_id}) catch return null;
+    defer rows.deinit();
+
+    const row = rows.next() catch return null;
+    if (row) |r| {
+        const count = std.fmt.parseInt(u32, r.values[0], 10) catch return null;
+        return count;
+    }
+    return null;
 }
 
 /// Get the maximum total_tokens for a session (from messages with is_feed_to_llm = 1)

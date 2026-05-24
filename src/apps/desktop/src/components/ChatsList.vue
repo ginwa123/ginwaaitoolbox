@@ -3,6 +3,7 @@ import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from '
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../stores/navigation'
 import { useSidebarStore } from '../stores/sidebar'
+import { VirtualScroller } from '../helpers'
 import * as api from '../api'
 
 const router = useRouter()
@@ -31,6 +32,7 @@ const navItems = ref<{ id: string; name: string; active?: boolean; processing?: 
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
+const chatsTotal = ref(0)
 
 // Chats resize handling
 const isChatsResizing = ref(false)
@@ -39,6 +41,9 @@ const chatsResizeStartPx = ref(0)
 
 // SSE connection for session events
 const sessionsEventSource = ref<EventSource | null>(null)
+
+// Virtual scroller ref
+const virtualScrollerRef = ref<any>(null)
 
 // Get computed chats height in pixels from percentage
 const getChatsHeightPx = (): number => {
@@ -106,21 +111,13 @@ watch(
   { deep: true },
 )
 
-const handleChatsScroll = (e: Event) => {
-  const target = e.target as HTMLElement
-  const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight
-  if (scrollBottom < 100 && chatsHasMore.value && !chatsLoading.value) {
-    loadMoreChats()
-  }
-}
-
 // Public methods for parent to call
 const loadChats = async () => {
   chatsLoading.value = true
   chatsNextCursor.value = null
   try {
     console.log('[ChatsList] loadChats called, fetching from API...')
-    const data = await api.getChats('created_at', chatsSortDirection.value, 20)
+    const data = await api.getChats('created_at', chatsSortDirection.value, 30)
     console.log('[ChatsList] API returned:', data)
     const savedSessionId = navigationStore.sessionId
     const sessions = data.sessions || []
@@ -133,6 +130,7 @@ const loadChats = async () => {
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
     chatsNextCursor.value = data.next_cursor
+    chatsTotal.value = data.total
 
     // If we found and activated a saved chat, restore it in AppLayout
     const activeItem = navItems.value.find((item) => item.active)
@@ -375,6 +373,7 @@ defineExpose({
       chatItem.id = newId
     }
   },
+  virtualScrollerRef,
 })
 </script>
 
@@ -429,12 +428,17 @@ defineExpose({
 
     <!-- Chat List -->
     <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col">
-      <ul
-        ref="chatsContainerRef"
-        @scroll="handleChatsScroll"
-        class="flex-1 overflow-y-auto space-y-0.5 min-h-0"
+      <VirtualScroller
+        ref="virtualScrollerRef"
+        :totalCount="chatsTotal"
+        :items="navItems"
+        :default-item-height="48"
+        :buffer="5"
+        :load-more-threshold="200"
+        @load-more="loadMoreChats"
+        class="flex-1 min-h-0"
       >
-        <li v-for="item in navItems" :key="item.id" class="group/chat">
+        <template #default="{ item }">
           <button
             @click="setActive(item.id)"
             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150"
@@ -470,20 +474,13 @@ defineExpose({
               </svg>
             </button>
           </button>
-        </li>
-        <li v-if="chatsLoading" class="py-2 text-center">
-          <span class="text-xs" style="color: var(--semantic-text-dim)">Loading...</span>
-        </li>
-        <li v-else-if="chatsHasMore">
-          <button
-            @click="loadMoreChats"
-            class="w-full py-2 text-xs hover:opacity-70"
-            style="color: var(--color-violet)"
-          >
-            Load more
-          </button>
-        </li>
-      </ul>
+        </template>
+      </VirtualScroller>
+
+      <!-- Loading indicator -->
+      <div v-if="chatsLoading" class="py-2 text-center shrink-0">
+        <span class="text-xs" style="color: var(--semantic-text-dim)">Loading...</span>
+      </div>
 
       <!-- Drag Resize Handle -->
       <div

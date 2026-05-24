@@ -222,6 +222,7 @@ export async function getChatHistory(
   cwd?: string;
   max_total_tokens?: number;
   max_capacity_total_tokens?: number;
+  total_count?: number;
 }> {
   try {
     const params = new URLSearchParams({
@@ -263,6 +264,7 @@ export async function getChatHistory(
       cwd: data.cwd,
       max_total_tokens: data.max_total_tokens,
       max_capacity_total_tokens: data.max_capacity_total_tokens,
+      total_count: data.total_count,
     };
   } catch (error) {
     // Return empty messages when LLM backend unavailable
@@ -274,6 +276,7 @@ export async function getChatHistory(
       cwd: undefined,
       max_total_tokens: undefined,
       max_capacity_total_tokens: undefined,
+      total_count: undefined,
     };
   }
 }
@@ -476,6 +479,7 @@ export async function getChats(
   sessions: Chat[];
   has_more: boolean;
   next_cursor: string | null;
+  total: number
 }> {
   try {
     const params = new URLSearchParams({
@@ -520,10 +524,11 @@ export async function getChats(
       sessions: data.sessions || [],
       has_more: data.has_more || false,
       next_cursor: data.next_cursor || null,
+      total: data.total || 0,
     };
   } catch (error) {
     // Return empty sessions when LLM backend unavailable
-    return { sessions: [], has_more: false, next_cursor: null };
+    return { sessions: [], has_more: false, next_cursor: null, total: 0 };
   }
 }
 
