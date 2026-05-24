@@ -1422,11 +1422,16 @@ pub fn queueMessage(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
     message: []const u8,
+    image_url: []const u8,
 ) !void {
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds});
     defer allocator.free(id);
-    const sql = "INSERT INTO session_queue_messages (id, session_id, message) VALUES (?, ?, ?)";
-    try db.exec(allocator, sql, &.{ id, session_id, message });
+    
+    const sql = "INSERT INTO session_queue_messages (id, session_id, message, image_url) VALUES (?, ?, ?, ?)";
+    const copy_image_url = try allocator.dupe(u8, image_url);
+    defer allocator.free(copy_image_url);
+    
+    try db.exec(allocator, sql, &.{ id, session_id, message, copy_image_url });
 
     // Emit SSE event to notify connected clients
     const di = tree1.getSingleton() catch return;
@@ -1440,6 +1445,7 @@ pub fn queueMessage(
         .id = id,
         .message = message,
         .session_id = session_id,
+        .image_url = image_url,
     };
     try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
         .whitespace = .indent_4,
@@ -1458,26 +1464,36 @@ pub fn queueMessage(
     event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
 }
 
+/// Struct to hold queued message data including image_url
+pub const QueuedMessage = struct {
+    message: []const u8,
+    image_url: []const u8,
+};
+
 /// Returns null if no messages queued
 /// Caller must free the returned slice
 pub fn getQueueMessages(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
-) !?std.ArrayList([]const u8) {
-    const select_sql = "SELECT message FROM session_queue_messages WHERE session_id = ? ORDER BY created_at ASC";
+) !?std.ArrayList(QueuedMessage) {
+    const select_sql = "SELECT message, image_url FROM session_queue_messages WHERE session_id = ? ORDER BY created_at ASC";
     var rows = try db.query(allocator, select_sql, &.{session_id});
     defer rows.deinit();
 
-    var messages = std.ArrayList([]const u8).empty;
+    var messages = std.ArrayList(QueuedMessage).empty;
     errdefer {
-        for (messages.items) |msg| allocator.free(msg);
+        for (messages.items) |msg| {
+            allocator.free(msg.message);
+            allocator.free(msg.image_url);
+        }
         messages.deinit(allocator);
     }
 
     while (try rows.next()) |row| {
         const msg = try allocator.dupe(u8, row.values[0]);
-        try messages.append(allocator, msg);
+        const image_url = try allocator.dupe(u8, row.values[1]);
+        try messages.append(allocator, .{ .message = msg, .image_url = image_url });
     }
 
     if (messages.items.len == 0) {

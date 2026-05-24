@@ -12,6 +12,7 @@ pub const BashInput = struct {
     stdin_data: ?[]const u8 = null, // optional stdin input, null = close stdin
     background: bool = false, // run in background using nohup
     max_lines: ?usize = 1000, // default 1000 lines per output stream
+    do_encoding: bool = false, // encode URLs in double quotes (for curl, wget, etc.)
 };
 
 pub const BashResult = struct {

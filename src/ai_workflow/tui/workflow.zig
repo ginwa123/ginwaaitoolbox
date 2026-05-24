@@ -64,6 +64,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     // const copy_body = try parent_allocator.dupe(u8, params.body);
     const copy_allowed_tools = try parent_allocator.dupe(u8, params.allowed_tools);
     const copy_is_sub_agent = params.is_sub_agent;
+    const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
 
     var is_have_queue_message = false;
 
@@ -87,7 +88,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     // Check if session is already running (exists in worker table)
     if (llm_history.isSessionRunning(db, copy_session_id) and active_loops.contains(io, copy_session_id)) {
         // Session is already running, queue the message
-        llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message) catch {
+        llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls) catch {
             logger.warnFmt("Failed to queue message for session {s}", .{copy_session_id});
         };
         logger.debugFmt("WORKFLOW: queued message for session {s}", .{copy_session_id});
@@ -102,7 +103,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     };
 
     // Queue the initial message
-    llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message) catch {
+    llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls) catch {
         logger.warnFmt("Failed to queue initial message for session {s}", .{copy_session_id});
     };
 
@@ -138,12 +139,32 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         // Get queued messages from DB
         var queued_messages = try llm_history.getQueueMessages(allocator, db, copy_session_id);
         if (queued_messages) |*messages| {
-            for (messages.items) |msg| {
-                // Check if message contains base64 images (support for multiple)
-                const image_urls = helpers.image.extractBase64ImageUrls(msg, allocator) catch |err| blk: {
-                    logger.warnFmt("Failed to extract image URLs: {s}", .{@errorName(err)});
-                    break :blk null;
-                };
+            for (messages.items) |queued| {
+                // Use image_url from database if present, otherwise try to extract from message
+                var image_urls: ?[][]const u8 = null;
+                if (queued.image_url.len > 0) {
+                    // Split by pipe separator
+                    var parts = std.mem.splitScalar(u8, queued.image_url, '|');
+                    var urls = std.ArrayList([]const u8).empty;
+                    defer {
+                        for (urls.items) |u| allocator.free(u);
+                        urls.deinit(allocator);
+                    }
+                    while (parts.next()) |part| {
+                        if (part.len > 0) {
+                            try urls.append(allocator, try allocator.dupe(u8, part));
+                        }
+                    }
+                    if (urls.items.len > 0) {
+                        image_urls = try urls.toOwnedSlice(allocator);
+                    }
+                } else {
+                    // Fallback: try to extract from message content
+                    image_urls = helpers.image.extractBase64ImageUrls(queued.message, allocator) catch |err| blk: {
+                        logger.warnFmt("Failed to extract image URLs: {s}", .{@errorName(err)});
+                        break :blk null;
+                    };
+                }
                 defer {
                     if (image_urls) |urls| {
                         for (urls) |url| allocator.free(url);
@@ -155,7 +176,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .session_id = copy_session_id,
                     .model = config.model,
                     .cwd = copy_cwd,
-                    .content = msg,
+                    .content = queued.message,
                     .reasoning_content = null,
                     .role = agent.Role.user.to_str(),
                     .finish_reason = "null",
@@ -179,7 +200,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .session_id = copy_session_id,
                     .model = config.model,
                     .cwd = copy_cwd,
-                    .content = msg,
+                    .content = queued.message,
                     .reasoning_content = null,
                     .role = agent.Role.user.to_str(),
                     .finish_reason = "null",
@@ -195,7 +216,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .is_output = false,
                 }) catch {};
 
-                _ = try llm_history.deleteQueuedMessage(allocator, db, copy_session_id, msg);
+                _ = try llm_history.deleteQueuedMessage(allocator, db, copy_session_id, queued.message);
             }
         }
 
@@ -823,4 +844,5 @@ pub const RunParamsNew = struct {
     body: []const u8,
     allowed_tools: []const u8,
     is_sub_agent: bool = false,
+    image_urls: []const u8 = "",
 };

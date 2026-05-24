@@ -152,7 +152,9 @@ pub fn makeSystemFolderErrorResponse(allocator: std.mem.Allocator, message: []co
 }
 
 pub fn makeSessionCreateResponse(allocator: std.mem.Allocator, response: SessionCreateResponse) ![]u8 {
-    return std.json.Stringify.valueAlloc(allocator, response, .{});
+    return std.json.Stringify.valueAlloc(allocator, response, .{
+
+    });
 }
 
 pub fn makeWorkerResponse(allocator: std.mem.Allocator, response: WorkerResponse) ![]u8 {

@@ -973,7 +973,7 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "lsp_hover", .exec = execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool },
 
     // === WEB SEARCH TOOLS ===
-    .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool },
+    // .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool },
 
     // === FILE SEARCH TOOLS ===
     .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool },

@@ -287,6 +287,9 @@ export async function sendChatMessage(
 ): Promise<{ status: string }> {
   let body: string;
 
+  // Join image URLs with pipe separator (same format as other parts of the system)
+  const imageUrlsStr = imageUrls?.join("|") || "";
+
   // Step 1: Safely serialize — catch any JSON.stringify failures
   try {
     body = JSON.stringify({
@@ -294,7 +297,7 @@ export async function sendChatMessage(
       queue_message: message,
       allowed_tools: "all",
       cwd_session: cwdSession,
-      image_urls: imageUrls || [],
+      image_urls: imageUrlsStr,
     });
   } catch (serializeError) {
     console.error("Failed to serialize request body:", serializeError);

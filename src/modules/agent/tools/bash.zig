@@ -54,15 +54,60 @@ fn isForbiddenCommand(command: []const u8) bool {
     return false;
 }
 
+/// Encode special characters in URLs within double quotes
+/// Converts: curl -sI "http://host/path?query=val&sig=xyz"
+///      to: curl -sI 'http://host/path?query=val&sig=xyz'
+/// This prevents bash from interpreting ?, &, etc.
+fn encode_command_urls(allocator: std.mem.Allocator, command: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < command.len) {
+        // Look for " followed by http:// or https://
+        if (command[i] == '"' and i + 7 < command.len) {
+            const rest = command[i + 1 ..];
+            if (std.mem.startsWith(u8, rest, "http://") or std.mem.startsWith(u8, rest, "https://")) {
+                // Found a URL in double quotes - find the closing quote
+                try result.append(allocator, '\'');
+                i += 1; // skip opening "
+
+                // Copy until closing quote
+                while (i < command.len and command[i] != '"') {
+                    try result.append(allocator, command[i]);
+                    i += 1;
+                }
+
+                if (i < command.len and command[i] == '"') {
+                    try result.append(allocator, '\'');
+                    i += 1; // skip closing "
+                }
+                continue;
+            }
+        }
+        try result.append(allocator, command[i]);
+        i += 1;
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) !BashOutput {
+    // --- URL encoding if requested ---
+    const command = if (input.do_encoding)
+        try encode_command_urls(allocator, input.command)
+    else
+        try allocator.dupe(u8, input.command);
+    defer if (input.do_encoding) allocator.free(command);
+
     // --- Forbidden pattern check ---
-    if (isForbiddenCommand(input.command)) {
+    if (isForbiddenCommand(command)) {
         return error.CommandForbidden;
     }
 
     // --- Self-kill protection check ---
     const self_pid = selfkill.get_self_pid();
-    if (try selfkill.detect_self_kill(allocator, input.command, self_pid)) |warning| {
+    if (try selfkill.detect_self_kill(allocator, command, self_pid)) |warning| {
         // Log the warning
         std.log.warn("Self-kill detected: {s}", .{warning});
 
@@ -74,7 +119,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
             "===========================\n", .{ warning, self_pid });
         errdefer allocator.free(stderr_msg);
 
-        const command_copy = try allocator.dupe(u8, input.command);
+        const command_copy = try allocator.dupe(u8, command);
         errdefer allocator.free(command_copy);
 
         return BashOutput{
@@ -103,7 +148,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         const bg_command = try std.fmt.allocPrint(
             allocator,
             "nohup {s} > {s} 2>&1 & echo $!",
-            .{ input.command, log_path },
+            .{ command, log_path },
         );
         defer allocator.free(bg_command);
 
@@ -133,12 +178,12 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         errdefer allocator.free(stderr_msg);
 
         // Allocate command on heap to avoid dangling pointer to stack buffer
-        const command_copy = if (input.command.len > 50) blk: {
+        const command_copy = if (command.len > 50) blk: {
             const cmd = try allocator.alloc(u8, 53);
-            @memcpy(cmd[0..50], input.command[0..50]);
+            @memcpy(cmd[0..50], command[0..50]);
             @memcpy(cmd[50..53], "...");
             break :blk cmd;
-        } else try allocator.dupe(u8, input.command);
+        } else try allocator.dupe(u8, command);
         errdefer allocator.free(command_copy);
 
         // Return with the allocated strings
@@ -160,7 +205,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const timeout_sec = input.timeout orelse 30;
 
     var child = try std.process.spawn(io, .{
-        .argv = &.{ "bash", "-c", input.command },
+        .argv = &.{ "bash", "-c", command },
         .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
         .stdin = if (input.stdin_data != null) .pipe else .close,
         .stdout = .pipe,
@@ -406,12 +451,12 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const was_truncated = stdout_truncation_needed or stderr_truncation_needed or (stdout_data.items.len >= max_output or stderr_data.items.len >= max_output);
 
     // Allocate command on heap to avoid dangling pointer to stack buffer
-    const command_copy = if (input.command.len > 50) blk: {
+    const command_copy = if (command.len > 50) blk: {
         const cmd = try allocator.alloc(u8, 53);
-        @memcpy(cmd[0..50], input.command[0..50]);
+        @memcpy(cmd[0..50], command[0..50]);
         @memcpy(cmd[50..53], "...");
         break :blk cmd;
-    } else try allocator.dupe(u8, input.command);
+    } else try allocator.dupe(u8, command);
     errdefer allocator.free(command_copy);
 
     // Return structured BashOutput instead of XML string
@@ -537,6 +582,15 @@ pub const bash_tool = AgentTool{
                     .name = "max_lines",
                     .type = "number",
                     .description = "Maximum number of lines to capture from stdout/stderr. Default: 1000. Output exceeding this limit is truncated and stdout_lines/stderr_lines will report the true total.",
+                },
+                .{
+                    .name = "do_encoding",
+                    .type = "boolean",
+                    .description =
+                    \\Encode URLs in double quotes by converting to single quotes.
+                    \\Use this for curl/wget commands with URLs containing ? and & characters.
+                    \\Example: curl -sI "https://host/path?query=val&sig=xyz" will become curl -sI 'https://host/path?query=val&sig=xyz'
+                    ,
                 },
             },
             .required = &.{ "command", "cwd" },

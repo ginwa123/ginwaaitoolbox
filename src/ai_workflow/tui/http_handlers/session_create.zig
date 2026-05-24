@@ -42,6 +42,7 @@ pub const RequestSession = struct {
     cwd_session: []const u8 = "",
     allowed_tools: []const u8 = "",
     body_message: []const u8 = "",
+    image_urls: []const u8 = "",
 };
 
 pub const ResponseSession = struct {
@@ -64,7 +65,9 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
 
     std.debug.print("DEBUG_HANDLER: req.body.len={}, body_start_20={}\n", .{req.body.len, req.body.len});
 
-    const parsed = std.json.parseFromSliceLeaky(RequestSession, allocator, req.body, .{}) catch |err| {
+    const parsed = std.json.parseFromSliceLeaky(RequestSession, allocator, req.body, .{
+        .ignore_unknown_fields = true,
+    }) catch |err| {
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
@@ -126,7 +129,10 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
             environment.get("TMPDIR") orelse "/tmp";
     }
 
-    try insertWorker(local, sqlite_db, parsed);
+    var image_urls: []const u8 = "";
+    if (parsed.image_urls.len > 0) image_urls = parsed.image_urls;
+
+    try insertWorker(local, sqlite_db, parsed, image_urls);
 
     // --- Heap-allocate data for the async task (task owns these, frees them) ---
     const thread_session_id = try di.allocator.dupe(u8, session_id);
@@ -134,6 +140,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
     const thread_effective_cwd = try di.allocator.dupe(u8, effective_cwd);
     const thread_body_message = try di.allocator.dupe(u8, body_message);
     const thread_allowed_tools = try di.allocator.dupe(u8, allowed_tools);
+    const thread_image_urls = try di.allocator.dupe(u8, image_urls);
 
     // If concurrent() fails, we must free the heap data ourselves
     errdefer {
@@ -142,6 +149,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
         di.allocator.free(thread_effective_cwd);
         di.allocator.free(thread_body_message);
         di.allocator.free(thread_allowed_tools);
+        di.allocator.free(thread_image_urls);
     }
 
     try di.group_emit_session_create.concurrent(
@@ -154,6 +162,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                 cwd: []u8,
                 bmsg: []u8,
                 atools: []u8,
+                iurls: []u8,
             ) void {
                 // Task owns these slices — free them when done
                 defer di_inner.allocator.free(sid);
@@ -161,6 +170,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                 defer di_inner.allocator.free(cwd);
                 defer di_inner.allocator.free(bmsg);
                 defer di_inner.allocator.free(atools);
+                defer di_inner.allocator.free(iurls);
 
                 const event_bus = di_inner.event_bus;
                 event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{
@@ -171,10 +181,11 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                     .body = bmsg,
                     .allowed_tools = atools,
                     .is_sub_agent = false,
+                    .image_urls = iurls,
                 });
             }
         }.run,
-        .{ di, thread_session_id, thread_queue_message, thread_effective_cwd, thread_body_message, thread_allowed_tools },
+        .{ di, thread_session_id, thread_queue_message, thread_effective_cwd, thread_body_message, thread_allowed_tools, thread_image_urls },
     );
 
     // ResponseSession.id must also outlive this function (caller may hold it)
@@ -188,7 +199,9 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
     };
 }
 
-fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBackend, parsed: RequestSession) !void {
+fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBackend, parsed: RequestSession, image_urls: []const u8) !void {
+
+    _ = image_urls;
     const session_id = parsed.session_id;
     const session_name = parsed.session_name;
     const effective_cwd = parsed.cwd_session;
