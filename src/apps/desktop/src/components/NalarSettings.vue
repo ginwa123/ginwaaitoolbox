@@ -10,6 +10,7 @@ const emit = defineEmits<{
 const apiEndpoint = ref('')
 const apiKey = ref('')
 const model = ref('')
+const urlStyle = ref('openai')
 const temperature = ref(0.7)
 const maxTokens = ref('')
 const systemPrompt = ref('')
@@ -26,6 +27,7 @@ interface Profile {
   base_url: string
   thinking: string
   temperature: string
+  url_style: string
   api_key: string
 }
 
@@ -35,6 +37,7 @@ const emptyProfile = (): Profile => ({
   base_url: '',
   thinking: 'auto',
   temperature: 'auto',
+  url_style: 'openai',
   api_key: ''
 })
 
@@ -60,6 +63,7 @@ onMounted(async () => {
       apiEndpoint.value = data.api_endpoint || ''
       apiKey.value = data.api_key || ''
       model.value = data.model || ''
+      urlStyle.value = data.url_style || 'openai'
       temperature.value = data.temperature ?? 0.7
       maxTokens.value = data.max_tokens?.toString() || ''
       systemPrompt.value = data.system_prompt || ''
@@ -74,6 +78,7 @@ onMounted(async () => {
             base_url: parseJsonValue((profile as any).base_url),
             thinking: parseJsonValue((profile as any).thinking),
             temperature: parseJsonValue((profile as any).temperature),
+            url_style: parseJsonValue((profile as any).url_style) || 'openai',
             api_key: parseJsonValue((profile as any).api_key)
           })
         }
@@ -92,6 +97,7 @@ const saveSettings = async () => {
     api_endpoint: apiEndpoint.value,
     api_key: apiKey.value,
     model: model.value,
+    url_style: urlStyle.value,
     temperature: temperature.value,
     max_tokens: maxTokens.value ? parseInt(maxTokens.value) : null,
     system_prompt: systemPrompt.value
@@ -108,6 +114,7 @@ const saveSettings = async () => {
       base_url: profile.base_url,
       thinking: profile.thinking,
       temperature: profile.temperature,
+      url_style: profile.url_style,
       api_key: profile.api_key
     })
   }
@@ -152,6 +159,7 @@ const resetSettings = () => {
   apiEndpoint.value = ''
   apiKey.value = ''
   model.value = ''
+  urlStyle.value = 'openai'
   temperature.value = 0.7
   maxTokens.value = ''
   systemPrompt.value = ''
@@ -160,6 +168,7 @@ const resetSettings = () => {
   localStorage.removeItem('settings-api-endpoint')
   localStorage.removeItem('settings-api-key')
   localStorage.removeItem('settings-model')
+  localStorage.removeItem('settings-url-style')
   localStorage.removeItem('settings-temperature')
   localStorage.removeItem('settings-max-tokens')
   localStorage.removeItem('settings-system-prompt')
@@ -267,6 +276,22 @@ defineExpose({ saveSettings, resetSettings })
             class="w-full px-4 py-2.5 rounded-lg border text-sm"
             style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
           />
+        </div>
+
+        <!-- URL Style -->
+        <div>
+          <label
+            class="block text-sm font-medium mb-2"
+            style="color: var(--semantic-text-muted);"
+          >URL Style</label>
+          <select
+            v-model="urlStyle"
+            class="w-full px-4 py-2.5 rounded-lg border text-sm"
+            style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
+          >
+            <option value="openai">OpenAI (e.g. /v1/chat/completions)</option>
+            <option value="anthropic">Anthropic (e.g. /v1/messages)</option>
+          </select>
         </div>
       </div>
     </div>
@@ -489,6 +514,17 @@ defineExpose({ saveSettings, resetSettings })
                 <option value="0">0 - Precise</option>
                 <option value="0.5">0.5</option>
                 <option value="1">1 - Balanced</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-2" style="color: var(--semantic-text-muted);">URL Style</label>
+              <select
+                v-model="editingProfile.url_style"
+                class="w-full px-4 py-2.5 rounded-lg border text-sm"
+                style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
+              >
+                <option value="openai">OpenAI (e.g. /v1/chat/completions)</option>
+                <option value="anthropic">Anthropic (e.g. /v1/messages)</option>
               </select>
             </div>
             <div>

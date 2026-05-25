@@ -1007,6 +1007,7 @@ export interface NalarProfile {
   base_url?: string
   thinking?: string
   temperature?: string
+  url_style?: string
   api_key?: string
 }
 
@@ -1014,6 +1015,7 @@ export interface NalarConfig {
   api_endpoint?: string
   api_key?: string
   model?: string
+  url_style?: string
   temperature?: number
   max_tokens?: string
   system_prompt?: string

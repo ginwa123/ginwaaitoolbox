@@ -194,6 +194,7 @@ pub const NalarConfigResponse = struct {
     api_endpoint: []const u8,
     api_key: []const u8,
     model: []const u8,
+    url_style: []const u8,
     temperature: f64,
     max_tokens: ?usize,
     system_prompt: []const u8,

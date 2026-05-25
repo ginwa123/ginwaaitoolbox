@@ -12,6 +12,7 @@ pub const LlmConfig = struct {
     mcpServers_parsed: ?json.Parsed(json.Value),
     /// Parsed profiles from profiles_models
     profiles_models: ProfilesMap,
+    url_style: []const u8,
 
     pub const LoadError = error{
         ConfigFileNotFound,
@@ -30,6 +31,7 @@ pub const LlmConfig = struct {
         thinking: []const u8 = "auto",
         temperature: []const u8 = "auto",
         api_key: []const u8 = "",
+        url_style: []const u8 = "openai",
     };
 
     const ProfileJson = struct {
@@ -38,12 +40,14 @@ pub const LlmConfig = struct {
         thinking: []const u8 = "auto",
         temperature: []const u8 = "auto",
         api_key: []const u8 = "",
+        url_style: []const u8 = "openai",
     };
 
     const LlmConfigJson = struct {
         api_key: []const u8 = "",
         model: []const u8 = "",
         base_url: []const u8 = "",
+        url_style: []const u8 = "openai",
         model_compaction_size_kb: usize = 100,
         mcpServers: ?std.json.Value = null,
         /// Profiles - parsed as json.Value then converted to map
@@ -96,6 +100,7 @@ pub const LlmConfig = struct {
             .api_key = try allocator.dupe(u8, config_json.api_key),
             .model = try allocator.dupe(u8, config_json.model),
             .base_url = try allocator.dupe(u8, config_json.base_url),
+            .url_style = try allocator.dupe(u8, config_json.url_style),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
             .mcpServers_parsed = null,
             .profiles_models = ProfilesMap.init(allocator),
@@ -104,6 +109,7 @@ pub const LlmConfig = struct {
             allocator.free(config.api_key);
             allocator.free(config.model);
             allocator.free(config.base_url);
+            allocator.free(config.url_style);
             freeProfilesMap(&config.profiles_models, allocator);
             if (config.mcpServers_parsed) |*p| p.deinit();
         }
@@ -160,6 +166,7 @@ pub const LlmConfig = struct {
             allocator.free(entry.value_ptr.thinking);
             allocator.free(entry.value_ptr.temperature);
             allocator.free(entry.value_ptr.api_key);
+            allocator.free(entry.value_ptr.url_style);
         }
         map.deinit();
     }
@@ -183,6 +190,9 @@ pub const LlmConfig = struct {
         const temperature = try alloc.dupe(u8, profile.temperature);
         errdefer alloc.free(temperature);
 
+        const url_style = try alloc.dupe(u8, profile.url_style);
+        errdefer alloc.free(url_style);
+
         const api_key = try alloc.dupe(u8, profile.api_key);
         errdefer alloc.free(api_key);
 
@@ -192,6 +202,7 @@ pub const LlmConfig = struct {
             .thinking = thinking,
             .temperature = temperature,
             .api_key = api_key,
+            .url_style = url_style,
         });
     }
 
@@ -199,6 +210,7 @@ pub const LlmConfig = struct {
         self.allocator.free(self.api_key);
         self.allocator.free(self.model);
         self.allocator.free(self.base_url);
+        self.allocator.free(self.url_style);
 
         freeProfilesMap(&self.profiles_models, self.allocator);
 
@@ -213,6 +225,7 @@ pub const LlmConfig = struct {
             .api_key = try self.allocator.dupe(u8, self.api_key),
             .model = try self.allocator.dupe(u8, self.model),
             .base_url = try self.allocator.dupe(u8, self.base_url),
+            .url_style = try self.allocator.dupe(u8, self.url_style),
             .model_compaction_size_kb = self.model_compaction_size_kb,
             .mcpServers_parsed = null,
             .profiles_models = ProfilesMap.init(self.allocator),
@@ -221,6 +234,7 @@ pub const LlmConfig = struct {
             self.allocator.free(config.api_key);
             self.allocator.free(config.model);
             self.allocator.free(config.base_url);
+            self.allocator.free(config.url_style);
             freeProfilesMap(&config.profiles_models, self.allocator);
             if (config.mcpServers_parsed) |*p| p.deinit();
         }
@@ -251,6 +265,7 @@ pub const LlmConfig = struct {
                     .thinking = entry.value_ptr.thinking,
                     .temperature = entry.value_ptr.temperature,
                     .api_key = entry.value_ptr.api_key,
+                    .url_style = entry.value_ptr.url_style,
                 },
                 self.allocator,
             );

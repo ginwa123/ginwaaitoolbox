@@ -123,6 +123,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                     try profile_obj.put(allocator, "base_url", if (profile_change.base_url.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.base_url) } else json.Value{ .string = "" });
                     try profile_obj.put(allocator, "thinking", json.Value{ .string = try allocator.dupe(u8, profile_change.thinking) });
                     try profile_obj.put(allocator, "temperature", json.Value{ .string = try allocator.dupe(u8, profile_change.temperature) });
+                    try profile_obj.put(allocator, "url_style", json.Value{ .string = try allocator.dupe(u8, profile_change.url_style) });
                     try profile_obj.put(allocator, "api_key", if (profile_change.api_key.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.api_key) } else json.Value{ .string = "" });
                     const profile_value = json.Value{ .object = profile_obj };
                     try profiles_obj.put(allocator, try allocator.dupe(u8, profile_change.name), profile_value);
@@ -180,6 +181,7 @@ const ProfileChange = struct {
     base_url: []const u8 = "",
     thinking: []const u8 = "auto",
     temperature: []const u8 = "auto",
+    url_style: []const u8 = "openai",
     api_key: []const u8 = "",
 };
 
@@ -187,6 +189,7 @@ const ConfigJson = struct {
     api_key: []const u8 = "",
     model: []const u8 = "",
     base_url: []const u8 = "",
+    url_style: []const u8 = "openai",
     max_tokens: ?usize = null,
     system_prompt: []const u8 = "",
     profiles_models: ?json.Value = null,

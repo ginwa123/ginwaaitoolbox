@@ -296,6 +296,202 @@ const JsonRequest = struct {
     }
 };
 
+/// Anthropic content block - can be text, tool_use, or tool_result
+const AnthropicContentBlock = struct {
+    text: ?[]const u8 = null,
+    tool_use: ?AnthropicToolUse = null,
+    tool_result: ?AnthropicToolResult = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        if (self.text) |t| {
+            try stringify.objectField("type");
+            try stringify.write("text");
+            try stringify.objectField("text");
+            try stringify.write(t);
+        } else if (self.tool_use) |tu| {
+            try stringify.objectField("type");
+            try stringify.write("tool_use");
+            try stringify.objectField("id");
+            try stringify.write(tu.id);
+            try stringify.objectField("name");
+            try stringify.write(tu.name);
+            try stringify.objectField("input");
+            try stringify.write(tu.input);
+        } else if (self.tool_result) |tr| {
+            try stringify.objectField("type");
+            try stringify.write("tool_result");
+            try stringify.objectField("tool_use_id");
+            try stringify.write(tr.tool_use_id);
+            try stringify.objectField("content");
+            try stringify.write(tr.content);
+        }
+        try stringify.endObject();
+    }
+};
+
+/// Tool use content block
+const AnthropicToolUse = struct {
+    id: []const u8,
+    name: []const u8,
+    input: std.json.Value,
+};
+
+/// Tool result content block
+const AnthropicToolResult = struct {
+    tool_use_id: []const u8,
+    content: []const u8,
+};
+
+/// Union content for a message (single block or array of blocks)
+const AnthropicMessageContent = union(enum) {
+    single: struct {
+        text: []const u8 = "",
+    },
+    array: []const AnthropicContentBlock,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        switch (self) {
+            .single => |s| {
+                // For simple text content, just write the string
+                try stringify.write(s.text);
+            },
+            .array => |arr| {
+                try stringify.write(arr);
+            },
+        }
+    }
+};
+
+/// Anthropic message with role and content
+const AnthropicMessage = struct {
+    role: []const u8,
+    content: AnthropicMessageContent,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("role");
+        try stringify.write(self.role);
+        try stringify.objectField("content");
+        try stringify.write(self.content);
+        try stringify.endObject();
+    }
+};
+
+/// Anthropic thinking configuration
+const AnthropicThinking = struct {
+    type: []const u8 = "enabled",
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write(self.type);
+        try stringify.endObject();
+    }
+};
+
+/// Anthropic tool input schema
+const AnthropicToolInputSchema = struct {
+    properties: []const ToolProperty,
+    required: []const []const u8,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write("object");
+        try stringify.objectField("properties");
+        try stringify.beginObject();
+        for (self.properties) |prop| {
+            try stringify.objectField(prop.name);
+            try stringify.beginObject();
+            try stringify.objectField("type");
+            try stringify.write(prop.type);
+            try stringify.objectField("description");
+            try stringify.write(prop.description);
+            try stringify.endObject();
+        }
+        try stringify.endObject();
+        try stringify.objectField("required");
+        try stringify.write(self.required);
+        try stringify.endObject();
+    }
+};
+
+/// Anthropic tool definition
+const AnthropicTool = struct {
+    name: []const u8,
+    description: []const u8,
+    input_schema: AnthropicToolInputSchema,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("name");
+        try stringify.write(self.name);
+        try stringify.objectField("description");
+        try stringify.write(self.description);
+        try stringify.objectField("input_schema");
+        try stringify.write(self.input_schema);
+        try stringify.endObject();
+    }
+};
+
+/// Anthropic request with custom serialization
+const AnthropicRequest = struct {
+    model: []const u8,
+    messages: []const AnthropicMessage,
+    max_tokens: usize,
+    stream: bool,
+    tools: ?[]const AnthropicTool = null,
+    thinking: ?AnthropicThinking = null,
+    temperature: ?f32 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+
+        // model
+        try stringify.objectField("model");
+        try stringify.write(self.model);
+
+        // messages
+        try stringify.objectField("messages");
+        try stringify.write(self.messages);
+
+        // max_tokens (required by Anthropic)
+        try stringify.objectField("max_tokens");
+        try stringify.write(self.max_tokens);
+
+        // temperature (optional)
+        if (self.temperature) |t| {
+            try stringify.objectField("temperature");
+            try stringify.write(t);
+        }
+
+        // thinking config (optional, only when enabled)
+        if (self.thinking) |th| {
+            try stringify.objectField("thinking");
+            try stringify.write(th);
+        }
+
+        // tools (optional)
+        if (self.tools) |t| {
+            try stringify.objectField("tools");
+            try stringify.write(t);
+        }
+
+        // stream (only when true)
+        if (self.stream) {
+            try stringify.objectField("stream");
+            try stringify.write(true);
+
+            // stream_options with include_usage=true
+            try stringify.objectField("stream_options");
+            try stringify.write(.{ .include_usage = true });
+        }
+
+        try stringify.endObject();
+    }
+};
+
 pub const AgentResponse = struct {
     choices: []Choice,
 };
@@ -568,6 +764,7 @@ pub const AgentCall = struct {
     messages: []const AgentMessage,
     temperature: ?f32 = null,
     max_tokens: ?usize = null,
+    url_style: []const u8 = "openai",
 };
 
 pub const HttpOptions = struct {
@@ -612,6 +809,7 @@ pub const Agent = struct {
     thinkingEnabled: bool = true,
     allocator: std.mem.Allocator,
     httpOptions: HttpOptions = .{},
+    UrlStyle: []const u8 = "openai",
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !Agent {
         return Agent{ .allocator = allocator, .httpClient = std.http.Client{ .allocator = allocator, .io = io } };
@@ -671,7 +869,132 @@ pub const Agent = struct {
         self.log_fmt(.debug, "HTTP {s} {s} (body: {} bytes)", .{ method, url, body_len });
     }
 
-    pub fn build_json_request(self: Agent, params: AgentCall, stream: bool) ![]u8 {
+    pub fn buildJsonAnthropicRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
+        const allocator = self.allocator;
+
+        // Use arena allocator for temporary allocations
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        // Log input stats
+        var total_content_size: usize = 0;
+        for (params.messages) |msg| {
+            if (msg.content) |c| total_content_size += c.len;
+        }
+        self.log_fmt(.debug, "ANTHROPIC_STATS: tools={d}, content={d}", .{
+            params.tools.len, total_content_size,
+        });
+
+        // Convert messages - Anthropic uses different structure
+        // For assistant messages with tool_calls, we need to convert to tool_use content blocks
+        // For user messages with tool_call_id, we need to convert to tool_result content blocks
+        const json_messages = try arena_alloc.alloc(AnthropicMessage, params.messages.len);
+        for (params.messages, 0..) |msg, i| {
+            if (msg.role == .assistant and msg.tool_calls != null) {
+                // Assistant message with tool calls -> content array with text (optional reasoning) + tool_use blocks
+                var content_blocks: []AnthropicContentBlock = &.{};
+                defer arena_alloc.free(content_blocks);
+
+                // Add reasoning content as text block if present
+                if (msg.reasoning_content) |rc| {
+                    content_blocks = try arena_alloc.realloc(content_blocks, content_blocks.len + 1);
+                    content_blocks[content_blocks.len - 1] = .{ .text = rc };
+                }
+
+                // Add tool_use blocks for each tool call
+                for (msg.tool_calls.?) |tc| {
+                    // Parse the arguments JSON to get the input object
+                    const input_value = blk: {
+                        const parsed = std.json.parseFromSlice(std.json.Value, arena_alloc, tc.function.arguments, .{}) catch {
+                            break :blk std.json.Value{ .null = {} };
+                        };
+                        break :blk parsed.value;
+                    };
+                    content_blocks = try arena_alloc.realloc(content_blocks, content_blocks.len + 1);
+                    content_blocks[content_blocks.len - 1] = .{
+                        .tool_use = .{
+                            .id = tc.id,
+                            .name = tc.function.name,
+                            .input = input_value,
+                        },
+                    };
+                }
+
+                json_messages[i] = .{
+                    .role = "assistant",
+                    .content = .{
+                        .array = content_blocks,
+                    },
+                };
+            } else if (msg.role == .tool) {
+                // Tool result message -> tool_result content block
+                var tool_content: []AnthropicContentBlock = try arena_alloc.alloc(AnthropicContentBlock, 1);
+                tool_content[0] = .{
+                    .tool_result = .{
+                        .tool_use_id = msg.tool_call_id orelse "",
+                        .content = msg.content orelse "",
+                    },
+                };
+                json_messages[i] = .{
+                    .role = "user",
+                    .content = .{
+                        .array = tool_content,
+                    },
+                };
+            } else {
+                // Regular message (user/system/assistant with content)
+                json_messages[i] = .{
+                    .role = msg.role.to_str(),
+                    .content = .{
+                        .single = .{
+                            .text = msg.content orelse "",
+                        },
+                    },
+                };
+            }
+        }
+
+        // Convert tools to Anthropic format
+        var json_tools: ?[]AnthropicTool = null;
+        if (params.tools.len > 0) {
+            const tool_slice = try arena_alloc.alloc(AnthropicTool, params.tools.len);
+            for (params.tools, 0..) |tool, i| {
+                const props = tool.function.parameters.properties;
+                const json_props = try arena_alloc.alloc(ToolProperty, props.len);
+                for (props, 0..) |prop, j| {
+                    json_props[j] = prop;
+                }
+                tool_slice[i] = .{
+                    .name = tool.function.name,
+                    .description = tool.function.description,
+                    .input_schema = .{
+                        .properties = json_props,
+                        .required = tool.function.parameters.required,
+                    },
+                };
+            }
+            json_tools = tool_slice;
+        }
+
+        // Build request
+        const json_request = AnthropicRequest{
+            .model = self.model,
+            .messages = json_messages,
+            .max_tokens = params.max_tokens orelse self.maxTokens,
+            .stream = stream,
+            .tools = json_tools,
+            .thinking = if (self.thinkingEnabled) .{ .type = "enabled" } else null,
+            .temperature = params.temperature,
+        };
+
+        // Serialize to JSON
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        try aw.writer.print("{f}", .{std.json.fmt(json_request, .{})});
+        return aw.toOwnedSlice();
+    }
+
+    pub fn buildJsonOpenAIRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
         const allocator = self.allocator;
 
         // Use arena allocator for temporary conversions
@@ -985,19 +1308,35 @@ pub const Agent = struct {
     ) CallError!CallResponse {
         self.log_fmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{ self.model, params.messages.len, params.tools.len });
 
+        var json_body: []u8 = undefined;
         // Build request
-        const json_body = self.build_json_request(params, true) catch |err| {
-            self.log_error("buildJsonRequest", err, null);
-            // Log more detail for memory errors
-            const err_name = @errorName(err);
-            if (std.mem.eql(u8, err_name, "OutOfMemory")) {
-                self.log_fmt(.err, "OUT_OF_MEMORY: messages={d}, tools={d}", .{
-                    params.messages.len,
-                    params.tools.len,
-                });
-            }
-            return error.BuildRequestFailed;
-        };
+        if (std.mem.eql(u8, self.UrlStyle, "openai")) {
+            json_body = self.buildJsonOpenAIRequest(params, true) catch |err| {
+                self.log_error("buildJsonRequest", err, null);
+                // Log more detail for memory errors
+                const err_name = @errorName(err);
+                if (std.mem.eql(u8, err_name, "OutOfMemory")) {
+                    self.log_fmt(.err, "OUT_OF_MEMORY: messages={d}, tools={d}", .{
+                        params.messages.len,
+                        params.tools.len,
+                    });
+                }
+                return error.BuildRequestFailed;
+            };
+        } else {
+            // Anthropic style
+            json_body = self.buildJsonAnthropicRequest(params, true) catch |err| {
+                self.log_error("buildJsonAnthropicRequest", err, null);
+                const err_name = @errorName(err);
+                if (std.mem.eql(u8, err_name, "OutOfMemory")) {
+                    self.log_fmt(.err, "OUT_OF_MEMORY: messages={d}, tools={d}", .{
+                        params.messages.len,
+                        params.tools.len,
+                    });
+                }
+                return error.BuildRequestFailed;
+            };
+        }
         defer self.allocator.free(json_body);
 
         // Estimate tokens: ~4 chars per token (rough approximation for debugging)
@@ -1009,7 +1348,12 @@ pub const Agent = struct {
         const json_ellipsis = if (json_body.len > 500) "..." else "";
         self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
-        const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, "/chat/completions" }) catch |err| {
+        // Determine endpoint based on url_style
+        const endpoint = if (std.mem.eql(u8, self.UrlStyle, "anthropic"))
+            "/messages"
+        else
+            "/chat/completions";
+        const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, endpoint }) catch |err| {
             self.log_error("concat URI", err, null);
             return error.OutOfMemory;
         };
@@ -1020,6 +1364,7 @@ pub const Agent = struct {
             return error.InvalidUri;
         };
 
+        // Build auth header (both OpenAI and Anthropic use Bearer token)
         const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
             self.log_error("concat auth", err, null);
             return error.OutOfMemory;
