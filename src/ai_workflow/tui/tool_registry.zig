@@ -17,6 +17,7 @@ const text_replace_mod = nalar_mod.text_replace_tool;
 const write_file_mod = nalar_mod.write_file;
 const list_skills_mod = nalar_mod.list_skills_tool;
 const get_skill_mod = nalar_mod.get_skill_tool;
+const view_skill_mod = nalar_mod.view_skill_tool;
 const remove_skill_mod = nalar_mod.remove_skill_tool;
 const list_agents_mod = nalar_mod.list_agents;
 const add_skill_mod = nalar_mod.add_skill;
@@ -327,6 +328,25 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     }
 
     return ToolExecResult{ .output = output };
+}
+
+pub fn execViewSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        view_skill_mod.ViewSkillInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch {
+        const output = "<skill_name></skill_name><description></description><found>false</found><error>Failed to parse view_skill arguments</error>";
+        return ToolExecResult{ .output = output };
+    };
+    defer parsed.deinit();
+
+    const output = view_skill_mod.execute_view_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch {
+        return ToolExecResult{ .output = "<skill_name></skill_name><description></description><found>false</found><error>Failed to view skill</error>" };
+    };
+
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -951,6 +971,7 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 
     // === SKILL MANAGEMENT ===
     .{ .name = "list_skills", .exec = execListSkills, .tool_def = list_skills_mod.list_skills_tool },
+    .{ .name = "view_skill", .exec = execViewSkill, .tool_def = view_skill_mod.view_skill_tool },
     .{ .name = "get_skill", .exec = execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .auto_save_skill = true },
     .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool },
 
@@ -997,6 +1018,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         spawn_sub_agent_tool.spawn_sub_agent_tool,
         update_activity_mod.update_activity_tool,
         list_skills_mod.list_skills_tool,
+        view_skill_mod.view_skill_tool,
         get_skill_mod.get_skill_tool,
         remove_skill_mod.remove_skill_tool,
         add_skill_mod.add_skill_tool,
