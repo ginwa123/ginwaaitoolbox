@@ -374,7 +374,6 @@ pub const AgentMessage = struct {
     }
 };
 
-
 /// Token usage information from the API
 pub const Usage = struct {
     prompt_tokens: usize = 0,
@@ -702,10 +701,16 @@ pub const Agent = struct {
                 const tc_slice = try arena_alloc.alloc(JsonToolCall, tcs.len);
                 for (tcs, 0..) |tc, j| {
                     // Normalize: empty/missing arguments → "{}" (valid JSON object)
-                    const normalized_args = if (tc.function.arguments.len > 0)
-                        tc.function.arguments
-                    else
-                        "{}";
+                    const normalized_args = blk: {
+                        const raw = tc.function.arguments;
+                        if (raw.len == 0) break :blk "{}";
+                        // Validate it's parseable JSON
+                        const parsed = std.json.parseFromSlice(std.json.Value, arena_alloc, raw, .{}) catch {
+                            break :blk "{}";
+                        };
+                        parsed.deinit();
+                        break :blk raw;
+                    };
                     tc_slice[j] = .{
                         .id = tc.id,
                         .type = tc.type,
@@ -717,7 +722,7 @@ pub const Agent = struct {
                 }
                 json_tool_calls = tc_slice;
             }
-            
+
             // Convert content_parts if present (for multimodal/vision support)
             var json_content_parts: ?[]const ContentPart = null;
             if (msg.content_parts) |parts| {
@@ -731,7 +736,7 @@ pub const Agent = struct {
                 }
                 json_content_parts = parts_copy;
             }
-            
+
             json_messages[i] = .{
                 .role = msg.role.to_str(),
                 .content = msg.content,
@@ -1229,7 +1234,7 @@ pub const Agent = struct {
 
             const bytes_read: usize = @intCast(n);
             total_bytes_read += bytes_read;
-            self.log_fmt(.info, "[STREAM] read {} bytes (total={})", .{bytes_read, total_bytes_read});
+            self.log_fmt(.info, "[STREAM] read {} bytes (total={})", .{ bytes_read, total_bytes_read });
 
             // Add small yield to prevent tight CPU spinning during streaming
             if (bytes_read < 64) {

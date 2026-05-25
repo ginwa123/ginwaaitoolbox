@@ -196,7 +196,9 @@ pub const NalarConfigResponse = struct {
     model: []const u8,
     temperature: f64,
     max_tokens: ?usize,
-    system_prompt: []const u8
+    system_prompt: []const u8,
+    profiles: ?std.json.Value = null,
+    active_profile: ?[]const u8 = null,
 };
 
 pub fn makeNalarConfigResponse(allocator: std.mem.Allocator, response: NalarConfigResponse) ![]u8 {
@@ -302,5 +304,30 @@ pub fn makeGitStatusErrorResponse(allocator: std.mem.Allocator, message: []const
 }
 
 pub fn makeGitStageResponse(allocator: std.mem.Allocator, response: GitStageResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+// Profile types
+pub const LlmProfileResponse = struct {
+    name: []const u8,
+    model: []const u8,
+    base_url: []const u8,
+    thinking: []const u8,
+    temperature: []const u8,
+    api_key: []const u8,
+};
+
+pub const ProfilesListResponse = struct {
+    profiles: []const LlmProfileResponse,
+    count: u32,
+    active_profile: ?[]const u8 = null,
+};
+
+pub fn makeProfilesListResponse(allocator: std.mem.Allocator, profiles: []const LlmProfileResponse, active_profile: ?[]const u8) ![]u8 {
+    const response = ProfilesListResponse{
+        .profiles = profiles,
+        .count = @intCast(profiles.len),
+        .active_profile = active_profile,
+    };
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }

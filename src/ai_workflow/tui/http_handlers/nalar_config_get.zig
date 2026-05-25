@@ -76,6 +76,8 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .temperature = parseTemperatureOrAuto(cfg.temperature),
             .max_tokens = cfg.max_tokens,
             .system_prompt = cfg.system_prompt,
+            .profiles = cfg.profiles_models,
+            .active_profile = cfg.active_profile,
         }),
     });
 }
@@ -89,6 +91,8 @@ const ConfigJson = struct {
     temperature: json.Value = .null,
     thinking: json.Value = .null,
     mcpServers: ?json.Value = null,
+    profiles_models: ?json.Value = null,
+    active_profile: ?[]const u8 = null,
 };
 
 fn parseTemperatureOrAuto(value: json.Value) f64 {

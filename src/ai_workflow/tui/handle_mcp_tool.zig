@@ -60,12 +60,12 @@ pub fn handle_mcp_tool_run(
     logger.infoFmt("[MCP] Parsed - server: '{s}', tool: '{s}'", .{ server_name, actual_tool_name });
 
     // Get MCP server config
-    if (config.mcpServers == null) {
+    if (config.mcpServers() == null) {
         logger.warnFmt("[MCP] No MCP servers configured", .{});
         return error.NoMCPServers;
     }
 
-    const mcp_servers = switch (config.mcpServers.?) {
+    const mcp_servers = switch (config.mcpServers().?) {
         .object => |obj| obj,
         else => {
             return error.InvalidMCPServersConfig;

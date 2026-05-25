@@ -48,11 +48,18 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
                                 if (a.string.len > 0) args_raw = a.string;
                             }
                         }
+                        const safe_args = blk: {
+                            if (args_raw.len == 0) break :blk "{}";
+                            _ = std.json.parseFromSlice(std.json.Value, allocator, args_raw, .{}) catch {
+                                break :blk "{}";
+                            };
+                            break :blk args_raw;
+                        };
                         calls[i] = .{
                             .id = try allocator.dupe(u8, id_raw),
                             .function = .{
                                 .name = try allocator.dupe(u8, name_raw),
-                                .arguments = try allocator.dupe(u8, args_raw),
+                                .arguments = try allocator.dupe(u8, safe_args),
                             },
                         };
                     } else {
@@ -102,9 +109,7 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
                 part_idx += 1;
             }
             content_parts = parts;
-        } else {
-
-        }
+        } else {}
 
         const agentMessage = agent.AgentMessage{
             .role = role,
@@ -118,4 +123,3 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
 
     return messages.toOwnedSlice(allocator);
 }
-

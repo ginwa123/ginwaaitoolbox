@@ -194,7 +194,7 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAg
 
 /// Check if a tool name is an MCP tool (format: mcp_serverName_toolName)
 fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
-    if (config.mcpServers == null) return false;
+    if (config.mcpServers() == null) return false;
 
     // MCP tool names have format: mcp_{serverName}_{toolName}
     // e.g., mcp_context7_query-docs
@@ -205,7 +205,7 @@ fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
     const underscore_idx = std.mem.indexOf(u8, after_mcp, "_") orelse return false;
     const server_name = after_mcp[0..underscore_idx];
 
-    const mcp_servers = switch (config.mcpServers.?) {
+    const mcp_servers = switch (config.mcpServers().?) {
         .object => |obj| obj,
         else => return false,
     };

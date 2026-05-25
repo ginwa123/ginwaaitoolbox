@@ -1,4 +1,5 @@
 const std = @import("std");
+const json = std.json;
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
@@ -59,7 +60,6 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 
     // Read existing config if it exists
     var existing_content: ?[]u8 = null;
-    defer if (existing_content) |c| allocator.free(c);
 
     const file = std.Io.Dir.openFileAbsolute(io, config_path, .{}) catch null;
     if (file) |f| {
@@ -75,7 +75,6 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         const parsed = try std.json.parseFromSlice(ConfigJson, allocator, content, .{
             .ignore_unknown_fields = true,
         });
-        defer parsed.deinit();
         config_json = parsed.value;
     }
 
@@ -96,6 +95,52 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         config_json.system_prompt = try allocator.dupe(u8, input.value.system_prompt);
     }
 
+    // Handle profiles - add, update, or delete
+    if (input.value.profiles) |profiles| {
+        // Create new profiles object
+        var profiles_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+
+        // Copy existing profiles first (deep copy to avoid freed memory from parsed deinit)
+        if (config_json.profiles_models) |existing| {
+            var iter = existing.object.iterator();
+            while (iter.next()) |entry| {
+                const key = try allocator.dupe(u8, entry.key_ptr.*);
+                // Deep copy the value to avoid freed memory
+                const copied_value = try deepCopyJsonValue(allocator, entry.value_ptr.*);
+                try profiles_obj.put(allocator, key, copied_value);
+            }
+        }
+
+        // Apply profile changes
+        for (profiles) |profile_change| {
+            const action = profile_change.action;
+            if (action.len > 0) {
+                if (std.mem.eql(u8, action, "delete")) {
+                    _ = profiles_obj.swapRemove(profile_change.name);
+                } else if (std.mem.eql(u8, action, "add") or std.mem.eql(u8, action, "update")) {
+                    var profile_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+                    try profile_obj.put(allocator, "model", if (profile_change.model.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.model) } else json.Value{ .string = "" });
+                    try profile_obj.put(allocator, "base_url", if (profile_change.base_url.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.base_url) } else json.Value{ .string = "" });
+                    try profile_obj.put(allocator, "thinking", json.Value{ .string = try allocator.dupe(u8, profile_change.thinking) });
+                    try profile_obj.put(allocator, "temperature", json.Value{ .string = try allocator.dupe(u8, profile_change.temperature) });
+                    try profile_obj.put(allocator, "api_key", if (profile_change.api_key.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.api_key) } else json.Value{ .string = "" });
+                    const profile_value = json.Value{ .object = profile_obj };
+                    try profiles_obj.put(allocator, try allocator.dupe(u8, profile_change.name), profile_value);
+                }
+            }
+        }
+        config_json.profiles_models = json.Value{ .object = profiles_obj };
+    }
+
+    // Handle active profile
+    if (input.value.active_profile) |ap| {
+        if (ap.len > 0) {
+            config_json.active_profile = try allocator.dupe(u8, ap);
+        } else {
+            config_json.active_profile = null;
+        }
+    }
+
     // Write config
     const config_str = try std.json.Stringify.valueAlloc(allocator, config_json, .{
         .whitespace = .indent_tab,
@@ -109,6 +154,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     var write_buffer: [4096]u8 = undefined;
     var writer = write_file.writer(io, &write_buffer);
     try writer.interface.writeAll(config_str);
+    try writer.flush();
 
     return res.jsonResponse(.{
         .status_code = 200,
@@ -123,6 +169,18 @@ const ConfigInput = struct {
     temperature: f64 = 0.7,
     max_tokens: ?usize = null,
     system_prompt: []const u8 = "",
+    profiles: ?[]const ProfileChange = null,
+    active_profile: ?[]const u8 = null,
+};
+
+const ProfileChange = struct {
+    name: []const u8,
+    action: []const u8, // "add", "update", "delete"
+    model: []const u8 = "",
+    base_url: []const u8 = "",
+    thinking: []const u8 = "auto",
+    temperature: []const u8 = "auto",
+    api_key: []const u8 = "",
 };
 
 const ConfigJson = struct {
@@ -131,4 +189,35 @@ const ConfigJson = struct {
     base_url: []const u8 = "",
     max_tokens: ?usize = null,
     system_prompt: []const u8 = "",
+    profiles_models: ?json.Value = null,
+    active_profile: ?[]const u8 = null,
 };
+
+/// Deep copy a json.Value to avoid use-after-free from parsed.deinit()
+fn deepCopyJsonValue(allocator: std.mem.Allocator, value: json.Value) error{OutOfMemory}!json.Value {
+    switch (value) {
+        .null => return json.Value{ .null = {} },
+        .bool => |b| return json.Value{ .bool = b },
+        .integer => |i| return json.Value{ .integer = i },
+        .float => |f| return json.Value{ .float = f },
+        .number_string => |s| return json.Value{ .number_string = try allocator.dupe(u8, s) },
+        .string => |s| return json.Value{ .string = try allocator.dupe(u8, s) },
+        .array => |arr| {
+            var new_arr = json.Array.init(allocator);
+            for (arr.items) |item| {
+                try new_arr.append(try deepCopyJsonValue(allocator, item));
+            }
+            return json.Value{ .array = new_arr };
+        },
+        .object => |obj| {
+            var new_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+            var iter = obj.iterator();
+            while (iter.next()) |entry| {
+                const key = try allocator.dupe(u8, entry.key_ptr.*);
+                const copied_value = try deepCopyJsonValue(allocator, entry.value_ptr.*);
+                try new_obj.put(allocator, key, copied_value);
+            }
+            return json.Value{ .object = new_obj };
+        },
+    }
+}

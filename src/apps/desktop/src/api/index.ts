@@ -1002,6 +1002,14 @@ export async function getQueuedMessages(sessionId: string): Promise<{
 }
 
 // Nalar Config API
+export interface NalarProfile {
+  model?: string
+  base_url?: string
+  thinking?: string
+  temperature?: string
+  api_key?: string
+}
+
 export interface NalarConfig {
   api_endpoint?: string
   api_key?: string
@@ -1009,6 +1017,8 @@ export interface NalarConfig {
   temperature?: number
   max_tokens?: string
   system_prompt?: string
+  profiles?: Record<string, NalarProfile>
+  active_profile?: string
 }
 
 export async function getNalarConfig(): Promise<NalarConfig> {

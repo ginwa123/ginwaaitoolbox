@@ -124,8 +124,7 @@ const handleNativeFileSelect = (event: Event) => {
   target.value = ''
 }
 
-const MAX_DEPTH = 5
-const MAX_FILES = 500
+
 
 const queuedMessagesList = computed(() => props.queuedMessages ?? [])
 const hasQueuedMessages = computed(() => queuedMessagesList.value.length > 0)
@@ -152,7 +151,7 @@ const loadAllFiles = async (rootPath: string) => {
   const results: FileEntry[] = []
 
   const scanDir = async (dirPath: string, depth: number) => {
-    if (depth > MAX_DEPTH || results.length >= MAX_FILES) return
+
 
     try {
       const response = await fetch(
@@ -163,7 +162,7 @@ const loadAllFiles = async (rootPath: string) => {
       const entries = data.entries || []
 
       for (const entry of entries) {
-        if (results.length >= MAX_FILES) break
+
 
         // Skip hidden files/folders (starting with .)
         if (entry.name.startsWith('.')) continue
@@ -207,11 +206,27 @@ const loadAllFiles = async (rootPath: string) => {
 }
 
 const filteredFiles = computed(() => {
-  if (!fileQuery.value) return fileList.value.slice(0, 50)
+  if (!fileQuery.value) return fileList.value
   const q = fileQuery.value.toLowerCase()
+
+  // Smart word matching: support "out of order" characters
+  // e.g., "comp" matches "components", "tst" matches "test"
+  const matchesOutOfOrder = (path: string, query: string): boolean => {
+    const lowerPath = path.toLowerCase()
+    let pathIdx = 0
+    let queryIdx = 0
+
+    while (queryIdx < query.length && pathIdx < lowerPath.length) {
+      if (lowerPath[pathIdx] === query[queryIdx]) {
+        queryIdx++
+      }
+      pathIdx++
+    }
+    return queryIdx === query.length
+  }
+
   return fileList.value
-    .filter(f => f.path.toLowerCase().includes(q))
-    .slice(0, 50)
+    .filter(f => matchesOutOfOrder(f.path, q))
 })
 
 const detectAtTrigger = () => {
