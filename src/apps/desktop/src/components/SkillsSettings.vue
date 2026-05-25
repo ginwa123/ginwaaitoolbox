@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import SkillList from './SkillList.vue'
+import SkillList from './tool_outputs/SkillList.vue'
 import SkillDetail from './SkillDetail.vue'
 
 const emit = defineEmits<{

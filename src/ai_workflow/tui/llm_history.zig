@@ -1363,9 +1363,29 @@ pub fn deleteAllWorkers(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend)
     try db.exec(allocator, sql, &.{});
 }
 
+/// Delete a worker by session_id
+pub fn deleteWorkerBySessionId(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !void {
+    const sql = "DELETE FROM worker WHERE session_id = ?";
+    try db.exec(allocator, sql, &.{session_id});
+}
+
 pub fn deleteAllQueuedMessages(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !void {
     const sql = "DELETE FROM session_queue_messages";
     try db.exec(allocator, sql, &.{});
+}
+
+/// Delete all queued messages for a session
+pub fn deleteQueuedMessagesBySessionId(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !void {
+    const sql = "DELETE FROM session_queue_messages WHERE session_id = ?";
+    try db.exec(allocator, sql, &.{session_id});
 }
 
 /// Get a worker by session_id

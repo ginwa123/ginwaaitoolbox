@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getSkills, type Skill } from '../api'
+import { getSkills, type Skill } from '../../api'
 
 const props = defineProps<{
   selectedSkillName: string | null

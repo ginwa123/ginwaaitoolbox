@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import FolderExplorer from './FolderExplorer.vue'
+import RightSideBarSkillList from './RightSideBarSkillList.vue'
 import * as api from '../api'
 
 const props = defineProps<{
@@ -9,10 +10,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'file-click': [file: api.GitFileChange, staged: boolean]
+  'skill-click': [skill: api.Skill]
 }>()
 
 // Tab state
-const activeTab = ref<'explorer' | 'git'>('explorer')
+const activeTab = ref<'explorer' | 'git' | 'skills'>('explorer')
 
 // Git state
 const isGitRepo = ref(false)
@@ -130,6 +132,11 @@ const refreshGitStatus = () => {
 const handleFileClick = (file: api.GitFileChange, staged: boolean) => {
   emit('file-click', file, staged)
 }
+
+// Handle skill click
+const handleSkillClick = (skill: api.Skill) => {
+  emit('skill-click', skill)
+}
 </script>
 
 <template>
@@ -172,6 +179,17 @@ const handleFileClick = (file: api.GitFileChange, staged: boolean) => {
           >
             {{ changesCount }}
           </span>
+        </button>
+        <button
+          @click="activeTab = 'skills'"
+          class="flex-1 h-full px-3 text-sm font-medium transition-colors flex items-center justify-center gap-1"
+          :style="{
+            color: activeTab === 'skills' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
+            backgroundColor: activeTab === 'skills' ? 'var(--semantic-active-bg)' : 'transparent',
+            borderBottom: activeTab === 'skills' ? '2px solid var(--color-violet)' : '2px solid transparent'
+          }"
+        >
+          🧠 Skills
         </button>
       </div>
     </div>
@@ -330,6 +348,14 @@ const handleFileClick = (file: api.GitFileChange, staged: boolean) => {
             </button>
           </div>
         </div>
+      </div>
+
+      <!-- Skills tab -->
+      <div v-else-if="activeTab === 'skills'" class="h-full">
+        <RightSideBarSkillList 
+          :cwd="cwd" 
+          @skill-click="handleSkillClick" 
+        />
       </div>
     </div>
   </div>

@@ -30,17 +30,78 @@ pub const CallbackAiWorkerFlow = struct {
         const di = nalar_mod.getSingleton() catch return;
         const logger = di.logger;
         const allocator = di.allocator;
-        const sqlite_db = di.db;
+        const db = di.db;
+        const io = di.io;
+        const session_id = data.session_id;
+        const config = di.llm_config;
+        const cwd = data.cwd;
+
         runAgenticMultiStepnew(di, data) catch |err| {
             logger.errFmt("runAgenticMultiStepnew failed: {s}", .{@errorName(err)});
-            // delete all workers this is temporrary
-            llm_history.deleteAllWorkers(allocator, sqlite_db) catch |error_sqlite| {
-                logger.errFmt("Failed to delete all workers: {s}", .{@errorName(error_sqlite)});
+            llm_history.deleteWorkerBySessionId(allocator, db, session_id) catch |error_sqlite| {
+                logger.errFmt("Failed to delete worker: {s}", .{@errorName(error_sqlite)});
             };
 
-            llm_history.deleteAllQueuedMessages(allocator, sqlite_db) catch |error_sqlite| {
+            llm_history.deleteQueuedMessagesBySessionId(allocator, db, session_id) catch |error_sqlite| {
                 logger.errFmt("Failed to delete all queued messages: {s}", .{@errorName(error_sqlite)});
             };
+
+            const initial_agent_state = llm_history.get_current_agent_by_session_id(
+                allocator,
+                db,
+                session_id,
+            ) catch |err_agent_state| {
+                logger.errFmt("Failed to get current agent state: {s}", .{@errorName(err_agent_state)});
+                return;
+            };
+            const initial_agent = initial_agent_state.agent;
+
+            const error_message = std.fmt.allocPrint(allocator, "{s} {s} {s}\n", .{ "Theres a error ", @errorName(err), "ignore this instruction" }) catch |err_fmt| {
+                logger.errFmt("Failed to format error message: {s}", .{@errorName(err_fmt)});
+                return;
+            };
+            _ = llm_history.saveMessage(allocator, io, db, .{
+                .session_id = session_id,
+                .model = config.model,
+                .cwd = cwd,
+                .content = error_message,
+                .reasoning_content = null,
+                .role = agent.Role.user.to_str(),
+                .finish_reason = "null",
+                .tool_calls = null,
+                .tool_call_id = null,
+                .agent_name = initial_agent,
+                .loop_index = 0,
+                .temperature = initial_agent_state.temperature,
+                .is_thinking = initial_agent_state.is_thinking,
+                .prompt_tokens = 0,
+                .completion_tokens = 0,
+                .total_tokens = 0,
+                .parent_id = session_id,
+                .parent_session_id = session_id,
+                .is_input = true,
+                .is_output = false,
+            }) catch {};
+
+            on_event_sent.onEventSendLLMHistory(allocator, .{
+                .session_id = session_id,
+                .model = config.model,
+                .cwd = cwd,
+                .content = error_message,
+                .reasoning_content = null,
+                .role = agent.Role.user.to_str(),
+                .finish_reason = "null",
+                .tool_calls = null,
+                .tool_call_id = null,
+                .agent_name = initial_agent,
+                .loop_index = 0,
+                .temperature = initial_agent_state.temperature,
+                .is_thinking = initial_agent_state.is_thinking,
+                .parent_id = session_id,
+                .parent_session_id = session_id,
+                .is_input = true,
+                .is_output = false,
+            }) catch {};
         };
     }
 };
