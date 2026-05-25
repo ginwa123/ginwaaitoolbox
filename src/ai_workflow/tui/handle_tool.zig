@@ -5,7 +5,6 @@ const logger_mod = nalar.logger;
 const sqlite = nalar.sqlite;
 const config_mod = nalar.config;
 const tool_registry = @import("tool_registry.zig");
-const SubAgentToolExec = tool_registry.SubAgentToolExec;
 const llm_history = @import("llm_history.zig");
 const on_event_sent = @import("on_event_sent.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
@@ -159,12 +158,7 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 
 /// Dispatch tool execution from registry entry
 /// Calls exec directly and handles auto-save via registry flags
-fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: SubAgentToolExec) !ToolResult {
-    std.debug.print("DEBUG dispatchFromRegistry: tool='{s}', args_len={}\n", .{ tool_call.function.name, tool_call.function.arguments.len });
-    if (std.mem.eql(u8, tool_call.function.name, "spawn_sub_agent")) {
-        std.debug.print("DEBUG: spawn_sub_agent detected!\n", .{});
-    }
-    // Standard tools: call exec directly and wrap result
+fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tool_registry.ToolExecFunc) !ToolResult {
     const ctx_local = tool_registry.ToolExecContext{
         .allocator = ctx.allocator,
         .io = ctx.io,

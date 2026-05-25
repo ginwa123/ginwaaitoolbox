@@ -23,7 +23,7 @@ pub const ReadFileOptions = struct {
     limit: ?usize = null, // max number of lines to return
 };
 
-pub fn read_file(
+pub fn readFile(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,

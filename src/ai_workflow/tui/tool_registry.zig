@@ -86,9 +86,6 @@ pub const SubAgentToolResult = ToolExecResult;
 /// Takes full context to enable tools like set_agent_properties and spawn_sub_agent
 pub const ToolExecFunc = *const fn (ctx: ToolExecContext, tc: agent.ToolCall) anyerror!ToolExecResult;
 
-/// Legacy alias for backward compatibility
-pub const SubAgentToolExec = ToolExecFunc;
-
 pub const SkillSaveInfo = struct {
     name: []const u8,
     content: []const u8,
@@ -195,7 +192,7 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         .limit = parsed.value.limit,
     };
 
-    const read_result = try read_file_mod.read_file(ctx.allocator, ctx.io, parsed.value.path, read_opts);
+    const read_result = try read_file_mod.readFile(ctx.allocator, ctx.io, parsed.value.path, read_opts);
     defer read_result.deinit(ctx.allocator);
 
     // Single allocation: combines path and content into XML result
@@ -204,31 +201,12 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 }
 
 pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    // Check for empty arguments first
-    if (tc.function.arguments.len == 0) {
-        const output = text_replace_mod.xmlError(
-            ctx.allocator,
-            "text_replace failed: Missing arguments (empty JSON)",
-            "",
-            "",
-            "",
-        );
-        return ToolExecResult{ .output = output };
-    }
-
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         text_replace_mod.TextReplaceInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch |err| {
-        const err_msg: []const u8 = switch (err) {
-            error.UnexpectedEndOfInput => "text_replace failed: UnexpectedEndOfInput - arguments may be incomplete or malformed",
-            else => "text_replace failed: Invalid JSON arguments",
-        };
-        const output = text_replace_mod.xmlError(ctx.allocator, err_msg, "", "", "");
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const result = text_replace_mod.executeTextReplace(
@@ -260,7 +238,7 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    const write_result = write_file_mod.write_file(ctx.allocator, ctx.io, parsed.value) catch |err| {
+    const write_result = write_file_mod.writeFile(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const output = write_file_mod.toXmlError(ctx.allocator, err, parsed.value.path);
         return ToolExecResult{ .output = output };
     };
@@ -280,15 +258,12 @@ pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
 }
 
 pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         get_skill_mod.GetSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to parse get_skill arguments</error>";
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const output = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch {
@@ -331,15 +306,12 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 }
 
 pub fn execViewSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         view_skill_mod.ViewSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = "<skill_name></skill_name><description></description><found>false</found><error>Failed to parse view_skill arguments</error>";
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const output = view_skill_mod.execute_view_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch {
@@ -350,15 +322,12 @@ pub fn execViewSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 }
 
 pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         remove_skill_mod.RemoveSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = remove_skill_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse remove_skill arguments");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
+    );
     defer parsed.deinit();
 
     const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch {
@@ -369,15 +338,12 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
 }
 
 pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         add_skill_mod.AddSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = add_skill_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse add_skill arguments");
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, parsed.value);
@@ -385,15 +351,12 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 }
 
 pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         edit_skill_mod.EditSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = edit_skill_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse edit_skill arguments");
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch {
@@ -423,15 +386,12 @@ pub fn execAddAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 }
 
 pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         remove_agent_mod.RemoveAgentInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = remove_agent_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse remove_agent arguments");
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const output = remove_agent_mod.execute_remove_agent_to_string(ctx.allocator, parsed.value) catch {
@@ -442,15 +402,12 @@ pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
 }
 
 pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         remove_file_mod.RemoveFileInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = remove_file_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse remove_file arguments");
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const output = remove_file_mod.executeRemoveFileToString(ctx.allocator, ctx.io, parsed.value) catch {
@@ -471,15 +428,12 @@ pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
 }
 
 pub fn execChangeAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         change_agent_mod.ChangeAgentInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = change_agent_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse change_agent arguments");
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const output = change_agent_mod.execute_change_agent_to_string(ctx.allocator, ctx.io, ctx.environment, parsed.value) catch {
@@ -490,15 +444,12 @@ pub fn execChangeAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
 }
 
 pub fn execLspDefinition(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         lsp_definition_mod.LspDefinitionInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch |err| {
-        const output = lsp_definition_mod.xmlError(ctx.allocator, std.fmt.allocPrint(ctx.allocator, "Failed to parse lsp_definition arguments: {s}", .{@errorName(err)}) catch "Unknown error");
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     const result = lsp_definition_mod.execute_lsp_definition(ctx.allocator, ctx.io, ctx.environment, parsed.value) catch |err| {
@@ -565,16 +516,12 @@ fn handleSetAgentProperties(
 pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     ctx.logger.debugFmt("[update_activity] Starting for session {s}", .{ctx.session_id});
 
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         update_activity_mod.UpdateActivityInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        ctx.logger.errFmt("[update_activity] Failed to parse arguments for session {s}", .{ctx.session_id});
-        const output = update_activity_mod.xmlError(ctx.allocator, "Failed to parse update_activity arguments");
-        return ToolExecResult{ .output = output };
-    };
+    );
     defer parsed.deinit();
 
     // Use session_id directly as worker_id (matches how worker is registered)
@@ -954,7 +901,7 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 /// Metadata for each tool in the unified registry
 pub const ToolInfo = struct {
     name: []const u8,
-    exec: SubAgentToolExec,
+    exec: ToolExecFunc,
     tool_def: tool_models.AgentTool,
     auto_save_skill: bool = false,
     auto_save_agent: bool = false,
@@ -1061,31 +1008,3 @@ pub fn getToolNames() []const []const u8 {
     return &names;
 }
 
-// ============================================================================
-// AUTO-SAVE PARSING HELPERS
-// ============================================================================
-
-pub fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content: []const u8 } {
-    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
-
-    const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
-    const name_begin = name_start + "<skill_name>".len;
-    const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
-    const skill_name = result[name_begin .. name_begin + name_end];
-
-    const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
-    const content_begin = content_start + "<content>".len;
-    const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
-    const skill_content = result[content_begin .. content_begin + content_end];
-
-    return .{ .name = skill_name, .content = skill_content };
-}
-
-pub fn parseAgentFromResult(result: []const u8) ?[]const u8 {
-    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
-
-    const name_start = std.mem.indexOf(u8, result, "<agent_name>") orelse return null;
-    const name_begin = name_start + "<agent_name>".len;
-    const name_end = std.mem.indexOf(u8, result[name_begin..], "</agent_name>") orelse return null;
-    return result[name_begin .. name_begin + name_end];
-}

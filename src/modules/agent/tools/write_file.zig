@@ -19,7 +19,7 @@ pub const WriteFileResult = struct {
     }
 };
 
-pub fn write_file(
+pub fn writeFile(
     allocator: std.mem.Allocator,
     io: std.Io,
     input: WriteFileInput,
