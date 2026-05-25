@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
 import RightSidebar from './RightSidebar.vue'
 import GitFileViewer from './GitFileViewer.vue'
+import SkillDetail from './SkillDetail.vue'
 import ChatView from './ChatView.vue'
 import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
@@ -122,6 +123,36 @@ const closeGitViewer = () => {
   }
 }
 
+// Skill viewer state
+const skillViewerSkill = ref<api.Skill | null>(null)
+
+const handleRightSidebarSkillClick = (skill: api.Skill) => {
+  console.log('RightSidebar skill click:', skill.name)
+  skillViewerSkill.value = skill
+
+  // Navigate to skill view
+  router.replace({
+    path: '/app',
+    query: {
+      view: 'skill',
+      skill: skill.name,
+    },
+  })
+}
+
+const closeSkillViewer = () => {
+  skillViewerSkill.value = null
+  // Navigate back to previous view based on state
+  if (activeTask.value) {
+    router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
+  } else if (activeChatId.value.startsWith('chat-')) {
+    const sessionId = activeChatId.value.replace(/^chat-/, '')
+    router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
+  } else {
+    router.replace({ path: '/app', query: { view: 'chat' } })
+  }
+}
+
 const handleSubmitReview = async (message: string) => {
   console.log('[AppLayout] Code review submitted:', message)
   // Navigate to chat view with the review message
@@ -170,6 +201,8 @@ const currentView = computed(() => {
   if (path === '/app/settings') return 'settings'
   // gitfile view takes priority when gitViewerFile is set
   if (route.query.view === 'gitfile' && gitViewerFile.value) return 'gitfile'
+  // skill view takes priority when skillViewerSkill is set
+  if (route.query.view === 'skill' && skillViewerSkill.value) return 'skill'
   return (route.query.view as string) || 'chat'
 })
 
@@ -220,10 +253,21 @@ watch(
           gitViewerStaged.value = staged
         }
       }
+    } else if (view === 'skill') {
+      // Restore skill viewer state from URL
+      const skillName = query.skill as string
+      if (skillName) {
+        skillViewerSkill.value = {
+          name: skillName,
+          description: '',
+        }
+      }
     } else {
       // Clear git viewer when not in gitfile view
       gitViewerFile.value = null
       gitViewerStaged.value = false
+      // Clear skill viewer when not in skill view
+      skillViewerSkill.value = null
 
       if (view === 'chat' && sessionId) {
         if (activeChatId.value !== `chat-${sessionId}`) {
@@ -263,6 +307,42 @@ watch(
         @close="closeGitViewer"
         @submit-review="handleSubmitReview"
       />
+
+      <!-- Skill Detail Viewer (shown when view is skill) -->
+      <div
+        v-if="currentView === 'skill' && skillViewerSkill"
+        class="flex-1 flex flex-col overflow-hidden"
+        style="background-color: var(--semantic-content-bg);"
+      >
+        <!-- Header -->
+        <div
+          class="h-14 flex items-center justify-between px-4 shrink-0"
+          style="border-bottom: 1px solid var(--color-border);"
+        >
+          <div class="flex items-center gap-3">
+            <button
+              @click="closeSkillViewer"
+              class="p-2 rounded-lg hover:opacity-70 transition-opacity"
+              title="Back"
+            >
+              <svg class="w-5 h-5" style="color: var(--semantic-text);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
+              🧠 {{ skillViewerSkill.name }}
+            </h2>
+          </div>
+        </div>
+        <!-- Skill Detail Content -->
+        <div class="flex-1 overflow-hidden">
+          <SkillDetail
+            :skill-name="skillViewerSkill.name"
+            @skill-deleted="closeSkillViewer"
+            @error="(msg) => console.error('Skill error:', msg)"
+          />
+        </div>
+      </div>
 
       <!-- Task view takes priority -->
       <ChatView
@@ -377,6 +457,7 @@ watch(
       v-if="rightSidebarCwd"
       :cwd="rightSidebarCwd"
       @file-click="handleRightSidebarFileClick"
+      @skill-click="handleRightSidebarSkillClick"
     />
   </div>
 </template>

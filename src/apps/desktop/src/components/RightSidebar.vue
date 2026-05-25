@@ -133,7 +133,7 @@ const handleFileClick = (file: api.GitFileChange, staged: boolean) => {
   emit('file-click', file, staged)
 }
 
-// Handle skill click
+// Handle skill click - emit to parent (AppLayout handles fullscreen view)
 const handleSkillClick = (skill: api.Skill) => {
   emit('skill-click', skill)
 }
