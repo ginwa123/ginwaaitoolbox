@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
 import RightSidebar from './RightSidebar.vue'
@@ -8,6 +8,7 @@ import SkillDetail from './SkillDetail.vue'
 import ChatView from './ChatView.vue'
 import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
+import CodeEditor from './CodeEditor.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import * as api from '../api'
@@ -91,10 +92,20 @@ const closeSettings = () => {
 }
 
 const handleRightSidebarFileClick = (file: api.GitFileChange, staged: boolean) => {
-  console.log('RightSidebar file click:', file.path, 'staged:', staged)
-  // Store file info and navigate to gitfile view
+  console.log('[handleRightSidebarFileClick] file:', file.path, 'staged:', staged)
+  // Clear other overlays to prevent priority conflicts
+  skillViewerSkill.value = null
+  codeEditorFile.value = null
+  codeEditorContent.value = ''
+  codeEditorError.value = null
+
+  // Store file info first (synchronously)
   gitViewerFile.value = file
   gitViewerStaged.value = staged
+  console.log(
+    '[handleRightSidebarFileClick] gitViewerFile.value after set:',
+    gitViewerFile.value?.path,
+  )
 
   // Encode the file path for URL (base64 to handle special chars)
   const encodedPath = btoa(file.path)
@@ -127,8 +138,19 @@ const closeGitViewer = () => {
 const skillViewerSkill = ref<api.Skill | null>(null)
 
 const handleRightSidebarSkillClick = (skill: api.Skill) => {
-  console.log('RightSidebar skill click:', skill.name)
+  console.log('[handleRightSidebarSkillClick] skill:', skill.name)
+  // Clear other overlays to prevent priority conflicts
+  gitViewerFile.value = null
+  gitViewerStaged.value = false
   skillViewerSkill.value = skill
+  console.log(
+    '[handleRightSidebarSkillClick] skillViewerSkill.value after set:',
+    skillViewerSkill.value?.name,
+  )
+
+  console.log('[handleRightSidebarSkillClick] current route:', route.fullPath)
+  console.log('[handleRightSidebarSkillClick] activeChatId:', activeChatId.value)
+  console.log('[handleRightSidebarSkillClick] activeTask:', activeTask.value)
 
   // Navigate to skill view
   router.replace({
@@ -138,6 +160,19 @@ const handleRightSidebarSkillClick = (skill: api.Skill) => {
       skill: skill.name,
     },
   })
+
+  // Check state after route change
+  setTimeout(() => {
+    console.log(
+      '[handleRightSidebarSkillClick] AFTER route change - skillViewerSkill:',
+      skillViewerSkill.value?.name,
+    )
+    console.log('[handleRightSidebarSkillClick] AFTER route change - route:', route.fullPath)
+    console.log(
+      '[handleRightSidebarSkillClick] AFTER route change - currentView:',
+      currentView.value,
+    )
+  }, 100)
 }
 
 const closeSkillViewer = () => {
@@ -150,6 +185,99 @@ const closeSkillViewer = () => {
     router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
   } else {
     router.replace({ path: '/app', query: { view: 'chat' } })
+  }
+}
+
+// Code editor state
+const codeEditorFile = ref<api.FolderEntry | null>(null)
+const codeEditorContent = ref<string>('')
+const codeEditorLoading = ref(false)
+const codeEditorError = ref<string | null>(null)
+
+const handleCodeEditorFileClick = async (file: api.FolderEntry) => {
+  console.log('[handleCodeEditorFileClick] file:', file.name, file.path)
+  if (!rightSidebarCwd.value) return
+
+  // Clear other overlays to prevent priority conflicts
+  gitViewerFile.value = null
+  gitViewerStaged.value = false
+  skillViewerSkill.value = null
+
+  codeEditorFile.value = file
+  codeEditorLoading.value = true
+  codeEditorError.value = null
+  codeEditorContent.value = ''
+
+  try {
+    const response = await api.readFileContent(rightSidebarCwd.value, file.path)
+    codeEditorContent.value = response.content
+    console.log(
+      '[handleCodeEditorFileClick] codeEditorFile.value after set:',
+      codeEditorFile.value?.path,
+    )
+    // Navigate to code-editor view
+    // Encode the file path for URL (base64 to handle special chars)
+    const encodedPath = btoa(file.path)
+    router.replace({
+      path: '/app',
+      query: {
+        view: 'code-editor',
+        file: encodedPath,
+        cwd: rightSidebarCwd.value,
+      },
+    })
+  } catch (err) {
+    console.error('Failed to read file:', err)
+    codeEditorError.value = 'Failed to read file'
+    codeEditorContent.value = ''
+  } finally {
+    codeEditorLoading.value = false
+  }
+}
+
+const closeCodeEditor = () => {
+  codeEditorFile.value = null
+  codeEditorContent.value = ''
+  codeEditorError.value = null
+  // Navigate back to previous view
+  if (activeTask.value) {
+    router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
+  } else if (activeChatId.value.startsWith('chat-')) {
+    const sessionId = activeChatId.value.replace(/^chat-/, '')
+    router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
+  } else {
+    router.replace({ path: '/app', query: { view: 'chat' } })
+  }
+}
+
+const loadCodeEditorContent = async () => {
+  if (!codeEditorFile.value || !rightSidebarCwd.value) return
+
+  codeEditorLoading.value = true
+  codeEditorError.value = null
+
+  try {
+    const response = await api.readFileContent(rightSidebarCwd.value, codeEditorFile.value.path)
+    codeEditorContent.value = response.content
+  } catch (err) {
+    console.error('Failed to read file:', err)
+    codeEditorError.value = 'Failed to read file'
+    codeEditorContent.value = ''
+  } finally {
+    codeEditorLoading.value = false
+  }
+}
+
+const handleCodeEditorSave = async (content: string) => {
+  if (!rightSidebarCwd.value || !codeEditorFile.value) return
+
+  try {
+    await api.writeFileContent(rightSidebarCwd.value, codeEditorFile.value.path, content)
+    codeEditorContent.value = content
+    console.log('File saved successfully')
+  } catch (err) {
+    console.error('Failed to save file:', err)
+    codeEditorError.value = 'Failed to save file'
   }
 }
 
@@ -185,7 +313,7 @@ const fetchChatSessionCwd = async (sessionId: string) => {
       chatSessionCwd.value = session.cwd
       return
     }
-    
+
     // Fallback: get cwd from session messages
     const historyData = await api.getChatHistory(sessionId, 1)
     if (historyData.cwd) {
@@ -199,11 +327,23 @@ const fetchChatSessionCwd = async (sessionId: string) => {
 const currentView = computed(() => {
   const path = route.path
   if (path === '/app/settings') return 'settings'
-  // gitfile view takes priority when gitViewerFile is set
-  if (route.query.view === 'gitfile' && gitViewerFile.value) return 'gitfile'
-  // skill view takes priority when skillViewerSkill is set
-  if (route.query.view === 'skill' && skillViewerSkill.value) return 'skill'
-  return (route.query.view as string) || 'chat'
+  // gitfile view - check only the ref (set synchronously before navigation)
+  if (gitViewerFile.value) {
+    console.log('[currentView] returning gitfile, gitViewerFile:', gitViewerFile.value.path)
+    return 'gitfile'
+  }
+  // skill view - check only the ref
+  if (skillViewerSkill.value) {
+    console.log('[currentView] returning skill, skillViewerSkill:', skillViewerSkill.value.name)
+    return 'skill'
+  }
+  console.log('[currentView] skillViewerSkill is null, checking route')
+  // code-editor view - check only the ref
+  if (codeEditorFile.value) return 'code-editor'
+
+  const view = (route.query.view as string) || 'chat'
+  console.log('[currentView] returning route view:', view)
+  return view
 })
 
 const activeTask = computed(() => workspacesStore.activeTask)
@@ -262,12 +402,39 @@ watch(
           description: '',
         }
       }
+    } else if (view === 'code-editor') {
+      // Restore code editor state from URL
+      const filePath = query.file as string
+      const cwd = query.cwd as string
+
+      if (filePath) {
+        // Decode the file path
+        try {
+          const decodedPath = atob(filePath)
+          codeEditorFile.value = {
+            path: decodedPath,
+            name: decodedPath.split('/').pop() || decodedPath,
+            is_directory: false,
+            is_symlink: false,
+          }
+          codeEditorContent.value = ''
+          codeEditorError.value = null
+          // Fetch file content
+          loadCodeEditorContent()
+        } catch {
+          codeEditorFile.value = null
+        }
+      }
     } else {
       // Clear git viewer when not in gitfile view
       gitViewerFile.value = null
       gitViewerStaged.value = false
       // Clear skill viewer when not in skill view
       skillViewerSkill.value = null
+      // Clear code editor when not in code-editor view
+      codeEditorFile.value = null
+      codeEditorContent.value = ''
+      codeEditorError.value = null
 
       if (view === 'chat' && sessionId) {
         if (activeChatId.value !== `chat-${sessionId}`) {
@@ -296,10 +463,12 @@ watch(
       @toggle-collapse="toggleSidebar"
       @resize="handleSidebarResize"
     />
-    <main class="flex-1 flex flex-col overflow-hidden">
+    <main class="flex-1 flex flex-col overflow-hidden relative">
       <!-- Git File Viewer (shown when view is gitfile) -->
       <GitFileViewer
         v-if="currentView === 'gitfile' && gitViewerFile && rightSidebarCwd"
+        class="absolute inset-0"
+        style="z-index: 10;"
         :cwd="rightSidebarCwd"
         :file-path="gitViewerFile.path"
         :file-name="gitViewerFile.path.split('/').pop() || gitViewerFile.path"
@@ -311,13 +480,13 @@ watch(
       <!-- Skill Detail Viewer (shown when view is skill) -->
       <div
         v-if="currentView === 'skill' && skillViewerSkill"
-        class="flex-1 flex flex-col overflow-hidden"
-        style="background-color: var(--semantic-content-bg);"
+        class="flex-1 flex flex-col overflow-hidden absolute inset-0"
+        style="background-color: var(--semantic-content-bg); z-index: 10;"
       >
         <!-- Header -->
         <div
           class="h-14 flex items-center justify-between px-4 shrink-0"
-          style="border-bottom: 1px solid var(--color-border);"
+          style="border-bottom: 1px solid var(--color-border)"
         >
           <div class="flex items-center gap-3">
             <button
@@ -325,23 +494,89 @@ watch(
               class="p-2 rounded-lg hover:opacity-70 transition-opacity"
               title="Back"
             >
-              <svg class="w-5 h-5" style="color: var(--semantic-text);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+              <svg
+                class="w-5 h-5"
+                style="color: var(--semantic-text)"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M15 19l-7-7 7-7"
+                />
               </svg>
             </button>
-            <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
-              🧠 {{ skillViewerSkill.name }}
+            <h2 class="text-base font-semibold" style="color: var(--semantic-text)">
+              🧠 {{ skillViewerSkill?.name }}
             </h2>
           </div>
         </div>
         <!-- Skill Detail Content -->
         <div class="flex-1 overflow-hidden">
           <SkillDetail
-            :skill-name="skillViewerSkill.name"
+            :skill-name="skillViewerSkill?.name"
             @skill-deleted="closeSkillViewer"
             @error="(msg) => console.error('Skill error:', msg)"
           />
         </div>
+      </div>
+
+      <!-- Code Editor (shown when view is code-editor) -->
+      <div
+        v-if="currentView === 'code-editor' && codeEditorFile"
+        class="flex-1 flex flex-col overflow-hidden absolute inset-0"
+        style="background-color: var(--semantic-content-bg); z-index: 10;"
+      >
+        <!-- Loading state -->
+        <div v-if="codeEditorLoading" class="flex-1 flex items-center justify-center">
+          <svg
+            class="animate-spin w-8 h-8"
+            style="color: var(--color-aqua)"
+            viewBox="0 0 24 24"
+            fill="none"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+            />
+          </svg>
+        </div>
+
+        <!-- Error state -->
+        <div v-else-if="codeEditorError" class="flex-1 flex flex-col items-center justify-center">
+          <span class="text-2xl mb-2">⚠️</span>
+          <p class="text-sm" style="color: var(--semantic-text-dim)">{{ codeEditorError }}</p>
+          <button
+            @click="closeCodeEditor"
+            class="mt-4 px-4 py-2 rounded-lg text-sm"
+            style="background-color: var(--color-border); color: var(--semantic-text)"
+          >
+            Close
+          </button>
+        </div>
+
+        <!-- Code Editor -->
+        <CodeEditor
+          v-else
+          :file-path="codeEditorFile.path"
+          :file-name="codeEditorFile.name"
+          :content="codeEditorContent"
+          :cwd="rightSidebarCwd"
+          @close="closeCodeEditor"
+          @save="handleCodeEditorSave"
+        />
       </div>
 
       <!-- Task view takes priority -->
@@ -458,6 +693,7 @@ watch(
       :cwd="rightSidebarCwd"
       @file-click="handleRightSidebarFileClick"
       @skill-click="handleRightSidebarSkillClick"
+      @code-editor-file-click="handleCodeEditorFileClick"
     />
   </div>
 </template>

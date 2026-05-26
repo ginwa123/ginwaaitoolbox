@@ -7,6 +7,10 @@ const props = defineProps<{
   name?: string
 }>()
 
+const emit = defineEmits<{
+  'file-click': [file: FolderEntry]
+}>()
+
 // Compute header info from props or fall back to path
 const headerName = computed(() => props.name || (props.cwd ? props.cwd.split('/').pop() || props.cwd : null))
 
@@ -102,11 +106,19 @@ const flattenedEntries = computed(() => {
   return result
 })
 
-// Open folder on click (for files) or toggle (for folders)
-const handleClick = (entry: FolderEntry) => {
+// Emit event when file is clicked (for opening in editor)
+const handleFileClick = (entry: FolderEntry) => {
   if (entry.is_directory) {
     toggleFolder(entry)
+  } else {
+    // Emit file click event for non-directory files
+    emit('file-click', entry)
   }
+}
+
+// Open folder on click (for files) or toggle (for folders)
+const handleClick = (entry: FolderEntry) => {
+  handleFileClick(entry)
 }
 </script>
 

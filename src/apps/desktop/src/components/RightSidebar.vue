@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import FolderExplorer from './FolderExplorer.vue'
 import RightSideBarSkillList from './RightSideBarSkillList.vue'
+import type { FolderEntry } from '../api'
 import * as api from '../api'
 
 const props = defineProps<{
@@ -11,6 +12,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'file-click': [file: api.GitFileChange, staged: boolean]
   'skill-click': [skill: api.Skill]
+  'code-editor-file-click': [file: FolderEntry]
 }>()
 
 // Tab state
@@ -133,8 +135,17 @@ const handleFileClick = (file: api.GitFileChange, staged: boolean) => {
   emit('file-click', file, staged)
 }
 
+// Handle file click from explorer (open in CodeEditor in AppLayout)
+const handleExplorerFileClick = (file: FolderEntry) => {
+  console.log('[RightSidebar] handleExplorerFileClick called for:', file.name, file.path)
+  // Only emit for non-directory files (directories are handled in FolderExplorer)
+  console.log('[RightSidebar] emitting code-editor-file-click for:', file.name)
+  emit('code-editor-file-click', file)
+}
+
 // Handle skill click - emit to parent (AppLayout handles fullscreen view)
 const handleSkillClick = (skill: api.Skill) => {
+  console.log('[RightSidebar] handleSkillClick called for:', skill.name)
   emit('skill-click', skill)
 }
 </script>
@@ -198,7 +209,10 @@ const handleSkillClick = (skill: api.Skill) => {
     <div class="flex-1 overflow-y-auto">
       <!-- Explorer tab -->
       <div v-if="activeTab === 'explorer'" class="h-full">
-        <FolderExplorer :cwd="cwd" />
+        <FolderExplorer
+          :cwd="cwd"
+          @file-click="handleExplorerFileClick"
+        />
       </div>
 
       <!-- Git tab -->

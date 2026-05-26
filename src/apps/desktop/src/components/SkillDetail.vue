@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { getSkillDetail, deleteSkill, type SkillDetail } from '../api'
 
 const props = defineProps<{
   skillName: string | null
 }>()
+
+onMounted(() => {
+  console.log('[SkillDetail] MOUNTED! skillName prop:', props.skillName)
+})
 
 const emit = defineEmits<{
   skillDeleted: [skillName: string]
@@ -19,6 +23,9 @@ const showDeleteConfirm = ref(false)
 
 // Load skill detail when skillName changes
 watch(() => props.skillName, async (newName) => {
+  console.log('[SkillDetail] skillName prop changed to:', newName)
+  console.log('[SkillDetail] current skillDetail.value:', skillDetail.value?.name)
+
   if (!newName) {
     skillDetail.value = null
     error.value = null
@@ -28,19 +35,27 @@ watch(() => props.skillName, async (newName) => {
 
   isLoading.value = true
   error.value = null
-  
+
   try {
+    console.log('[SkillDetail] calling getSkillDetail with:', newName)
     const result = await getSkillDetail(newName)
+    console.log('[SkillDetail] getSkillDetail result:', result)
     if (result.error_message) {
+      console.log('[SkillDetail] got error_message:', result.error_message)
       error.value = result.error_message
       skillDetail.value = null
     } else if (result.skill) {
+      console.log('[SkillDetail] got skill:', result.skill.name)
       skillDetail.value = result.skill
+    } else {
+      console.log('[SkillDetail] result has neither skill nor error_message')
     }
   } catch (err) {
+    console.log('[SkillDetail] catch error:', err)
     error.value = err instanceof Error ? err.message : 'Failed to load skill details'
     skillDetail.value = null
   } finally {
+    console.log('[SkillDetail] isLoading set to false, skillDetail.value:', skillDetail.value?.name)
     isLoading.value = false
   }
 }, { immediate: true })
@@ -55,13 +70,13 @@ const cancelDelete = () => {
 
 const handleDelete = async () => {
   if (!skillDetail.value) return
-  
+
   isDeleting.value = true
   try {
     const result = await deleteSkill(skillDetail.value.name, {
       is_global: skillDetail.value.is_global,
     })
-    
+
     if (result.success) {
       showDeleteConfirm.value = false
       emit('skillDeleted', skillDetail.value.name)
@@ -125,7 +140,7 @@ defineExpose({})
         <p class="text-sm" style="color: var(--semantic-text-muted);">
           {{ skillDetail.description }}
         </p>
-        <div 
+        <div
           v-if="skillDetail.path"
           class="text-xs mt-2 p-2 rounded truncate"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text-dim);"
@@ -140,19 +155,19 @@ defineExpose({})
         <h4 class="text-sm font-medium mb-2 shrink-0" style="color: var(--semantic-text);">
           Content
         </h4>
-        <pre 
+        <pre
           class="text-xs p-4 rounded whitespace-pre-wrap"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text-muted);"
         >{{ skillDetail.content }}</pre>
       </div>
 
       <!-- Delete Confirmation Modal -->
-      <div 
+      <div
         v-if="showDeleteConfirm"
         class="absolute inset-0 flex items-center justify-center z-10"
         style="background-color: rgba(0,0,0,0.5);"
       >
-        <div 
+        <div
           class="rounded-xl p-6 max-w-sm mx-4"
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
         >
