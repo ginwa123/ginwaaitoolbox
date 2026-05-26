@@ -2,6 +2,7 @@ const std = @import("std");
 const nalar_mod = @import("nalarcore");
 const models = @import("models.zig");
 const ai_workflow = @import("workflow.zig");
+const helpers = nalar_mod.helpers;
 const agent = nalar_mod.agent;
 const tool_models = nalar_mod.tool_models;
 const sqlite = nalar_mod.sqlite;
@@ -201,11 +202,14 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 }
 
 pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    // const sanitized_args = try helpers.sanitize.sanitizeJsonString(ctx.allocator, tc.function.arguments);
+    // defer ctx.allocator.free(sanitized_args);
+
     const parsed = try std.json.parseFromSlice(
         text_replace_mod.TextReplaceInput,
         ctx.allocator,
         tc.function.arguments,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
 
@@ -330,7 +334,7 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     );
     defer parsed.deinit();
 
-    const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch {
+    const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch {
         const out = remove_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Unknown error");
         return ToolExecResult{ .output = out };
     };
@@ -346,7 +350,7 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, parsed.value);
+    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value);
     return ToolExecResult{ .output = output };
 }
 
@@ -359,7 +363,7 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch {
+    const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch {
         const out = edit_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Failed to edit skill");
         return ToolExecResult{ .output = out };
     };
@@ -922,7 +926,6 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "get_skill", .exec = execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .auto_save_skill = true },
     .{ .name = "remove_skill", .exec = execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool },
 
-    // === SKILL/AGENT CREATION ===
     .{ .name = "add_skill", .exec = execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
     .{ .name = "edit_skill", .exec = execEditSkill, .tool_def = edit_skill_mod.edit_skill_tool },
 
@@ -1007,4 +1010,3 @@ pub fn getToolNames() []const []const u8 {
     };
     return &names;
 }
-

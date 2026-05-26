@@ -57,25 +57,19 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
             }, .{}) });
         }
 
-        const skill_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ global_path.?, name });
-        defer allocator.free(skill_dir_path);
-
-        // Check if the skill directory exists
-        const dir_exists = blk: {
-            std.Io.Dir.cwd().access(io, skill_dir_path, .{}) catch break :blk false;
-            break :blk true;
-        };
-
-        if (!dir_exists) {
+        // Find the skill folder by skill name (from YAML, not folder name)
+        const skill_dir_path = try findSkillFolderByName(allocator, io, global_path.?, name);
+        if (skill_dir_path == null) {
             return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found in global directory", .{name}),
             }, .{}) });
         }
+        defer allocator.free(skill_dir_path.?);
 
         // Delete the skill directory recursively
-        std.Io.Dir.cwd().deleteTree(io, skill_dir_path) catch {
+        std.Io.Dir.cwd().deleteTree(io, skill_dir_path.?) catch {
             return res.jsonResponse(.{ .status_code = 500, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
@@ -109,25 +103,19 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
             }, .{}) });
         }
 
-        const skill_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ local_path.?, name });
-        defer allocator.free(skill_dir_path);
-
-        // Check if the skill directory exists
-        const dir_exists = blk: {
-            std.Io.Dir.cwd().access(io, skill_dir_path, .{}) catch break :blk false;
-            break :blk true;
-        };
-
-        if (!dir_exists) {
+        // Find the skill folder by skill name (from YAML, not folder name)
+        const skill_dir_path = try findSkillFolderByName(allocator, io, local_path.?, name);
+        if (skill_dir_path == null) {
             return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
                 .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found in local directory", .{name}),
             }, .{}) });
         }
+        defer allocator.free(skill_dir_path.?);
 
         // Delete the skill directory recursively
-        std.Io.Dir.cwd().deleteTree(io, skill_dir_path) catch {
+        std.Io.Dir.cwd().deleteTree(io, skill_dir_path.?) catch {
             return res.jsonResponse(.{ .status_code = 500, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
                 .success = false,
                 .skill_name = name,
@@ -141,4 +129,38 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
             .deleted_from = local_path,
         }, .{}) });
     }
+}
+
+/// Find the folder path for a skill by its name from YAML frontmatter
+/// Returns allocated path string if found, null if not found
+fn findSkillFolderByName(allocator: std.mem.Allocator, io: std.Io, skills_dir: []const u8, skill_name: []const u8) !?[]u8 {
+    var dir = std.Io.Dir.cwd().openDir(io, skills_dir, .{ .iterate = true }) catch {
+        return null;
+    };
+    defer std.Io.Dir.close(dir, io);
+
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+
+        const skill_file_path = std.fs.path.join(allocator, &[_][]const u8{ skills_dir, entry.name, "SKILL.MD" }) catch continue;
+        defer allocator.free(skill_file_path);
+
+        const content = std.Io.Dir.cwd().readFileAlloc(io, skill_file_path, allocator, std.Io.Limit.limited(100 * 1024)) catch {
+            continue;
+        };
+        defer allocator.free(content);
+
+        if (content.len == 0) continue;
+
+        if (skill_mod.parseYamlFrontmatter(allocator, content)) |parsed| {
+            if (std.mem.eql(u8, parsed.name, skill_name)) {
+                // Return the folder path, not the SKILL.MD path
+                const folder_path = std.fs.path.join(allocator, &[_][]const u8{ skills_dir, entry.name }) catch continue;
+                return folder_path;
+            }
+        }
+    }
+
+    return null;
 }

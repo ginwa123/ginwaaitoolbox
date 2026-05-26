@@ -4,6 +4,7 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
+const skills = @import("skills.zig");
 
 /// Input structure for edit_skill tool
 pub const EditSkillInput = struct {
@@ -13,6 +14,9 @@ pub const EditSkillInput = struct {
     description: ?[]const u8 = null,
     /// New skill content (optional - omit to keep existing)
     content: ?[]const u8 = null,
+    /// If true, edit in global skills directory (~/.config/nalar/skills/)
+    /// If false, edit in local skills directory (.nalar/skills/)
+    is_global: bool = false,
 };
 
 /// Tool definition for edit_skill
@@ -39,6 +43,11 @@ pub const edit_skill_tool = AgentTool{
                     .type = "string",
                     .description = "New skill content/markdown body that will be loaded when the skill is invoked",
                 },
+                .{
+                    .name = "is_global",
+                    .type = "boolean",
+                    .description = "If true, edit in global skills directory (~/.config/nalar/skills/). If false, edit in local directory (.nalar/skills/). Default: false",
+                },
             },
             .required = &.{ "skill_name" },
         },
@@ -46,10 +55,10 @@ pub const edit_skill_tool = AgentTool{
 };
 
 /// Execute the edit_skill tool
-/// Updates an existing skill file at .nalar/skills/<skill_name>/SKILL.MD
+/// Updates an existing skill file at .nalar/skills/<skill_name>/SKILL.MD or global ~/.config/nalar/skills/<skill_name>/SKILL.MD
 /// Returns an XML string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, input: EditSkillInput) ![]const u8 {
+pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, environment: ?*const std.process.Environ.Map, input: EditSkillInput) ![]const u8 {
     // Validate input
     if (input.skill_name.len == 0) {
         return errorToXml(allocator, input.skill_name, "Skill name cannot be empty");
@@ -60,9 +69,28 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
         return errorToXml(allocator, input.skill_name, "At least one of description or content must be provided");
     }
 
-    // Use cwd from context (already absolute path from session)
+    // Determine skills directory based on is_global flag
+    const skills_dir: []const u8 = if (input.is_global)
+        blk: {
+            if (environment) |env| {
+                const path = skills.get_global_skills_path_from_env(allocator, env) orelse {
+                    return errorToXml(allocator, input.skill_name, "Failed to get global skills path");
+                };
+                break :blk path;
+            } else {
+                return errorToXml(allocator, input.skill_name, "Environment not available for global skills");
+            }
+        }
+    else
+        try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
+    if (input.is_global) {
+        // path was allocated by get_global_skills_path_from_env - keep it
+    } else {
+        defer allocator.free(skills_dir);
+    }
+
     // Build path to skill file
-    const skill_file = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills", input.skill_name, "SKILL.MD" });
+    const skill_file = try std.fs.path.join(allocator, &[_][]const u8{ skills_dir, input.skill_name, "SKILL.MD" });
     defer allocator.free(skill_file);
 
     // Check if the skill file exists
@@ -74,11 +102,13 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
     };
 
     if (!file_exists) {
-        return errorToXml(allocator, input.skill_name, "Skill file not found in .nalar/skills/");
+        if (input.is_global) allocator.free(skills_dir);
+        return errorToXml(allocator, input.skill_name, "Skill file not found");
     }
 
     // Read existing skill content
     const existing_content = std.Io.Dir.cwd().readFileAlloc(io, skill_file, allocator, std.Io.Limit.limited(1024 * 1024)) catch {
+        if (input.is_global) allocator.free(skills_dir);
         return errorToXml(allocator, input.skill_name, "Failed to read existing skill file");
     };
     defer allocator.free(existing_content);
@@ -100,15 +130,18 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
 
     // Write the updated file
     const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
+        if (input.is_global) allocator.free(skills_dir);
         return errorToXml(allocator, input.skill_name, "Failed to create skill file for writing");
     };
     defer std.Io.File.close(file, io);
 
     std.Io.File.writeStreamingAll(file, io, updated_content) catch {
+        if (input.is_global) allocator.free(skills_dir);
         return errorToXml(allocator, input.skill_name, "Failed to write skill file");
     };
 
     // Return success XML
+    if (input.is_global) allocator.free(skills_dir);
     return try successToXml(allocator, input.skill_name, skill_file);
 }
 

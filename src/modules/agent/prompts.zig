@@ -4,6 +4,7 @@ const list_skills = @import("tools/list_skills.zig");
 const agents = @import("tools/agents.zig");
 const prompts = @import("prompts/prompts.zig");
 const tool_models = @import("nalarcore").tool_models;
+const memory_prompts = @import("prompts/memory.zig");
 
 /// Get the current operating system as a human-readable string
 fn getCurrentOs() []const u8 {
@@ -149,6 +150,10 @@ pub fn build_agent_prompt(
     tools: []const tool_models.AgentTool,
     activity_info: []const u8,
 ) ![]const u8 {
+    _ = io;
+    _ = tools;
+    _ = treeDir;
+
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
@@ -169,6 +174,9 @@ pub fn build_agent_prompt(
     // 2. ✅ Agent directive EARLY - agent needs context before anything else
     try appendSection(allocator, &result, Agent);
 
+    // 3. Skills system prompt -> self learning skills
+    try appendSection(allocator, &result, memory_prompts.skills_system_prompt);
+
     // 3. Core execution guidelines
     try appendSection(allocator, &result, ThinkBeforeCoding);
     try appendSection(allocator, &result, SimplicityFirst);
@@ -183,11 +191,11 @@ pub fn build_agent_prompt(
     try appendSection(allocator, &result, DeepResearch);
     try appendSection(allocator, &result, QualityGates);
     try appendSection(allocator, &result, ErrorRecovery);
-    try appendSection(allocator, &result, ToolChaining);
+    // try appendSection(allocator, &result, ToolChaining);
     try appendSection(allocator, &result, ContextAwareness);
     try appendSection(allocator, &result, ProactiveLearning);
     try appendSection(allocator, &result, DecisionFramework);
-    try appendSection(allocator, &result, AggressiveDelegation);
+    // try appendSection(allocator, &result, AggressiveDelegation);
     try appendSection(allocator, &result, IterationMindset);
     try appendSection(allocator, &result, SafetyFirst);
 
@@ -198,98 +206,37 @@ pub fn build_agent_prompt(
     try appendSection(allocator, &result, UpdateActivityRule);
 
     // 7. CONSOLIDATED: Parallel work rules (single source of truth)
-    try appendSection(allocator, &result, ParallelWork);
+    // try appendSection(allocator, &result, ParallelWork);
 
     // 8. Tool-First Approach + Research triggers
-    try appendSection(allocator, &result, Research);
-    try appendSection(allocator, &result, ResearchTriggers);
-    try appendSection(allocator, &result, DynamicAdaptation);
+    // try appendSection(allocator, &result, Research);
+    // try appendSection(allocator, &result, ResearchTriggers);
+    // try appendSection(allocator, &result, DynamicAdaptation);
 
     // 9. Dynamic Properties - only if set_agent_properties tool is available
-    const has_set_agent_properties = for (tools) |tool| {
-        if (std.mem.eql(u8, tool.function.name, "set_agent_properties")) {
-            break true;
-        }
-    } else false;
-    if (has_set_agent_properties) {
-        try appendSection(allocator, &result, DynamicProperties);
-    }
+    // const has_set_agent_properties = for (tools) |tool| {
+    //     if (std.mem.eql(u8, tool.function.name, "set_agent_properties")) {
+    //         break true;
+    //     }
+    // } else false;
+    // if (has_set_agent_properties) {
+    //     try appendSection(allocator, &result, DynamicProperties);
+    // }
 
     // 10. Classification + Plan + TDD + Execution
-    try appendSection(allocator, &result, Classification);
-    try appendSection(allocator, &result, PlanBlock);
-    try appendSection(allocator, &result, TDD);
-    try appendSection(allocator, &result, Execution);
-    try appendSection(allocator, &result, Escalation);
+    // try appendSection(allocator, &result, Classification);
+    // try appendSection(allocator, &result, PlanBlock);
+    // try appendSection(allocator, &result, TDD);
+    // try appendSection(allocator, &result, Execution);
+    // try appendSection(allocator, &result, Escalation);
 
     // 11. Skills + Memory section (agent knows context by now)
-    try appendSection(allocator, &result, SkillsUsage);
-    try appendSection(allocator, &result, SkillsTriggers);
-    try appendSection(allocator, &result, MemoryPrompt);
+    // try appendSection(allocator, &result, SkillsUsage);
+    // try appendSection(allocator, &result, SkillsTriggers);
+    // try appendSection(allocator, &result, MemoryPrompt);
     try appendSection(allocator, &result, NalarMdAutoUpdate);
     try appendSection(allocator, &result, GitPrompt);
-    try appendSection(allocator, &result, ProceduralMemory);
-
-    // 12. Skills list (dynamic from file system)
-    // try result.appendSlice(allocator, "\n\n<available_skills>\n");
-    // {
-    //     const skills_json = try list_skills.execute_list_skills(allocator, io, null, null);
-    //     defer allocator.free(skills_json);
-    //
-    //     const parsed = std.json.parseFromSlice(std.json.Value, allocator, skills_json, .{}) catch {
-    //         try result.appendSlice(allocator, "Error: Could not parse skills list.\n");
-    //         try result.appendSlice(allocator, "</available_skills>");
-    //         return result.toOwnedSlice(allocator);
-    //     };
-    //     defer parsed.deinit();
-    //
-    //     const skills_value = parsed.value.object.get("global_skills") orelse {
-    //         try result.appendSlice(allocator, "No skills available.\n");
-    //         try result.appendSlice(allocator, "</available_skills>");
-    //         return result.toOwnedSlice(allocator);
-    //     };
-    //
-    //     if (skills_value != .array) {
-    //         try result.appendSlice(allocator, "Error: Invalid skills format.\n");
-    //         try result.appendSlice(allocator, "</available_skills>");
-    //         return result.toOwnedSlice(allocator);
-    //     }
-    //
-    //     const skills_array = skills_value.array;
-    //     if (skills_array.items.len == 0) {
-    //         try result.appendSlice(allocator, "No skills available.\n");
-    //     } else {
-    //         for (skills_array.items) |skill| {
-    //             const name = skill.object.get("name") orelse continue;
-    //             const description = skill.object.get("description") orelse continue;
-    //             if (name == .string and description == .string) {
-    //                 try result.appendSlice(allocator, "- **");
-    //                 try result.appendSlice(allocator, name.string);
-    //                 try result.appendSlice(allocator, "**: ");
-    //                 try result.appendSlice(allocator, description.string);
-    //                 try result.appendSlice(allocator, "\n");
-    //             }
-    //         }
-    //     }
-    //
-    //     // Add local skills
-    //     const local_skills_value = parsed.value.object.get("local_skills") orelse null;
-    //     if (local_skills_value != null and local_skills_value.? == .array and local_skills_value.?.array.items.len > 0) {
-    //         try result.appendSlice(allocator, "\n--- Local Skills ---\n");
-    //         for (local_skills_value.?.array.items) |skill| {
-    //             const name = skill.object.get("name") orelse continue;
-    //             const description = skill.object.get("description") orelse continue;
-    //             if (name == .string and description == .string) {
-    //                 try result.appendSlice(allocator, "- **");
-    //                 try result.appendSlice(allocator, name.string);
-    //                 try result.appendSlice(allocator, "**: ");
-    //                 try result.appendSlice(allocator, description.string);
-    //                 try result.appendSlice(allocator, "\n");
-    //             }
-    //         }
-    //     }
-    // }
-    try result.appendSlice(allocator, "\nCall `get_skill(\"skill_name\")` to load full skill content.\n</available_skills>");
+    // try appendSection(allocator, &result, ProceduralMemory);
 
     // 13. Custom skills content + Memory markdown
     if (skillsContent.len > 0) {
@@ -302,7 +249,7 @@ pub fn build_agent_prompt(
     }
 
     // 14. Dynamic tool listing
-   // try appendToolListing(allocator, &result, tools);
+    // try appendToolListing(allocator, &result, tools);
 
     // 15. File editing rules - CRITICAL, follow the workflow!
     try appendSection(allocator, &result, FileEditingRules);
@@ -314,28 +261,28 @@ pub fn build_agent_prompt(
     try appendSection(allocator, &result, SpecializationTable);
 
     // 18. Dynamic agents list
-    {
-        const agents_list = agents.listAgents(allocator, io);
-        defer agents.freeAgentsList(allocator, agents_list);
-
-        if (agents_list.len > 0) {
-            try result.appendSlice(allocator, "\n\n## Available Dynamic Agents\n\n");
-            for (agents_list) |info| {
-                try result.appendSlice(allocator, "- **");
-                try result.appendSlice(allocator, info.name);
-                try result.appendSlice(allocator, "**: ");
-                try result.appendSlice(allocator, info.description);
-                try result.appendSlice(allocator, "\n");
-            }
-        }
-    }
+    // {
+    //     const agents_list = agents.listAgents(allocator, io);
+    //     defer agents.freeAgentsList(allocator, agents_list);
+    //
+    //     if (agents_list.len > 0) {
+    //         try result.appendSlice(allocator, "\n\n## Available Dynamic Agents\n\n");
+    //         for (agents_list) |info| {
+    //             try result.appendSlice(allocator, "- **");
+    //             try result.appendSlice(allocator, info.name);
+    //             try result.appendSlice(allocator, "**: ");
+    //             try result.appendSlice(allocator, info.description);
+    //             try result.appendSlice(allocator, "\n");
+    //         }
+    //     }
+    // }
 
     // 19. Working directory context
     if (cwd.len > 0) {
         try result.appendSlice(allocator, "\n\n**Current working directory:** ");
         try result.appendSlice(allocator, cwd);
-        try result.appendSlice(allocator, "\n\n**Tree Directory:**\n");
-        try result.appendSlice(allocator, treeDir);
+        // try result.appendSlice(allocator, "\n\n**Tree Directory:**\n");
+        // try result.appendSlice(allocator, treeDir);
     }
 
     // 20. OS info

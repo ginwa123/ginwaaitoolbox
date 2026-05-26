@@ -4,6 +4,7 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
+const skills = @import("skills.zig");
 
 /// Input structure for add_skill tool
 pub const AddSkillInput = struct {
@@ -13,8 +14,11 @@ pub const AddSkillInput = struct {
     description: []const u8,
     /// Skill body content (required)
     content: []const u8,
-    /// Auto-create .nalar/skills directory if needed (default: true)
+    /// Auto-create skills directory if needed (default: true)
     create_with_dir: bool = true,
+    /// If true, save to global skills directory (~/.config/nalar/skills/)
+    /// If false, save to local skills directory (.nalar/skills/)
+    is_global: bool = false,
 };
 
 /// Tool definition for add_skill
@@ -41,6 +45,11 @@ pub const add_skill_tool = AgentTool{
                     .type = "string",
                     .description = "The full skill content/markdown body that will be loaded when the skill is invoked",
                 },
+                .{
+                    .name = "is_global",
+                    .type = "boolean",
+                    .description = "If true, save to global skills directory (~/.config/nalar/skills/). If false, save to local directory (.nalar/skills/). Default: false",
+                },
             },
             .required = &.{ "name", "description", "content" },
         },
@@ -48,27 +57,45 @@ pub const add_skill_tool = AgentTool{
 };
 
 /// Execute the add_skill tool
-/// Creates a new skill file at .nalar/skills/<name>/SKILL.MD
+/// Creates a new skill file at .nalar/skills/<name>/SKILL.MD or global ~/.config/nalar/skills/<name>/SKILL.MD
 /// Returns an XML string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, input: AddSkillInput) []const u8 {
+pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, environment: ?*const std.process.Environ.Map, input: AddSkillInput) []const u8 {
     // Validate input
     if (input.name.len == 0) return errorToXml(allocator, input.name, "Skill name cannot be empty");
     if (input.description.len == 0) return errorToXml(allocator, input.name, "Description cannot be empty");
     if (input.content.len == 0) return errorToXml(allocator, input.name, "Content cannot be empty");
 
-    // Use cwd from context (already absolute path from session)
-    const skills_dir = std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" }) catch {
-        return xmlError(allocator, input.name, "Failed to build skills directory path");
-    };
-    defer allocator.free(skills_dir);
+    // Determine skills directory based on is_global flag
+    const skills_dir: []const u8 = if (input.is_global)
+        blk: {
+            if (environment) |env| {
+                const path = skills.get_global_skills_path_from_env(allocator, env) orelse {
+                    return xmlError(allocator, input.name, "Failed to get global skills path");
+                };
+                break :blk path;
+            } else {
+                return xmlError(allocator, input.name, "Environment not available for global skills");
+            }
+        }
+    else
+        std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" }) catch {
+            return xmlError(allocator, input.name, "Failed to build skills directory path");
+        };
+    if (input.is_global) {
+        // path was allocated by get_global_skills_path_from_env - keep it
+    } else {
+        defer allocator.free(skills_dir);
+    }
 
     const skill_dir = std.fs.path.join(allocator, &[_][]const u8{ skills_dir, input.name }) catch {
+        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to build skill directory path");
     };
     defer allocator.free(skill_dir);
 
     const skill_file = std.fs.path.join(allocator, &[_][]const u8{ skill_dir, "SKILL.MD" }) catch {
+        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to build skill file path");
     };
     defer allocator.free(skill_file);
@@ -77,6 +104,7 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
     if (input.create_with_dir) {
         const cwd_dir = std.Io.Dir.cwd();
         cwd_dir.createDirPath(io, skill_dir) catch {
+            if (input.is_global) allocator.free(skills_dir);
             return xmlError(allocator, input.name, "Failed to create skill directory");
         };
     }
@@ -85,20 +113,24 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
     const file_content = buildSkillContent(allocator, input);
     defer allocator.free(file_content);
     if (file_content.len == 0) {
+        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to build skill content");
     }
 
     // Write the file using absolute path with Io.Dir
     const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
+        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to create skill file");
     };
     defer std.Io.File.close(file, io);
 
     std.Io.File.writeStreamingAll(file, io, file_content) catch {
+        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to write skill file");
     };
 
     // Return success XML
+    if (input.is_global) allocator.free(skills_dir);
     return successToXml(allocator, input.name, skill_file);
 }
 

@@ -60,6 +60,7 @@ pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
 }
 
 /// Find a skill by name in the given directory
+/// Searches by skill name from YAML frontmatter, not folder name
 /// Returns SkillDetail with allocated strings, or null if not found
 fn findSkillByName(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8, skill_name: []const u8) !?SkillDetail {
     // Open the skills directory
@@ -71,9 +72,6 @@ fn findSkillByName(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u
     var iter = dir.iterate();
     while (iter.next(io) catch null) |entry| {
         if (entry.kind != .directory) continue;
-
-        // Check if this folder matches the skill name
-        if (!std.mem.eql(u8, entry.name, skill_name)) continue;
 
         // Build path to SKILL.MD
         const skill_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name, "SKILL.MD" }) catch continue;
@@ -89,7 +87,9 @@ fn findSkillByName(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u
 
         // Parse YAML frontmatter
         if (skill_mod.parseYamlFrontmatter(allocator, content)) |parsed| {
-            // The content from parseYamlFrontmatter has already extracted name/description
+            // Check if this skill's name matches (not folder name)
+            if (!std.mem.eql(u8, parsed.name, skill_name)) continue;
+
             // We return the full content including frontmatter
             const path_copy = try allocator.dupe(u8, skill_file_path);
             errdefer allocator.free(path_copy);

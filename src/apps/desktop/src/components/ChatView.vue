@@ -14,6 +14,11 @@ import Glob from './Glob.vue'
 import TextReplace from './tool_outputs/TextReplace.vue'
 import Bash from './Bash.vue'
 import GetSkill from './GetSkill.vue'
+import ViewSkill from './tool_outputs/ViewSkill.vue'
+import ListSkills from './tool_outputs/ListSkills.vue'
+import AddSkill from './tool_outputs/AddSkill.vue'
+import EditSkill from './tool_outputs/EditSkill.vue'
+import RemoveSkill from './tool_outputs/RemoveSkill.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -190,7 +195,7 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
         return `<span class="tool-inline">${tool_name} → "${query || 'unknown'}"</span>`;
       }
 
-      if (tool_name === 'list_skills' || tool_name === 'get_skill' || tool_name === 'add_skill' || tool_name === 'edit_skill') {
+      if (tool_name === 'list_skills' || tool_name === 'get_skill' || tool_name === 'add_skill' || tool_name === 'edit_skill' || tool_name === 'view_skill') {
         return `<span class="tool-inline">${tool_name}</span>`;
       }
 
@@ -875,6 +880,21 @@ const compactSession = async () => {
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- GetSkill component for get_skill tool -->
                       <GetSkill v-else-if="msg.tool_name === 'get_skill'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- ViewSkill component for view_skill tool -->
+                      <ViewSkill v-else-if="msg.tool_name === 'view_skill'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- ListSkills component for list_skills tool -->
+                      <ListSkills v-else-if="msg.tool_name === 'list_skills'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- AddSkill component for add_skill tool -->
+                      <AddSkill v-else-if="msg.tool_name === 'add_skill'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- EditSkill component for edit_skill tool -->
+                      <EditSkill v-else-if="msg.tool_name === 'edit_skill'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- RemoveSkill component for remove_skill tool -->
+                      <RemoveSkill v-else-if="msg.tool_name === 'remove_skill'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- Default tool rendering for other tools -->
                       <div v-else class="tool-expandable">

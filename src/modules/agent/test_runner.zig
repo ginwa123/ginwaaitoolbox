@@ -9,5 +9,7 @@ test {
     _ = @import("tools/list_skills_test.zig");
     _ = @import("tools/glob_test.zig");
     _ = @import("tools/add_skill_test.zig");
+    _ = @import("tools/edit_skill_test.zig");
+    _ = @import("tools/remove_skill_test.zig");
     _ = @import("tools/view_skill_test.zig");
 }

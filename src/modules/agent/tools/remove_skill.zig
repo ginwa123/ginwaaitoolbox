@@ -10,6 +10,9 @@ const skills = @import("skills.zig");
 pub const RemoveSkillInput = struct {
     skill_name: []const u8,
     session_id: []const u8,
+    /// If true, remove from global skills directory (~/.config/nalar/skills/)
+    /// If false, remove from local skills directory (.nalar/skills/)
+    is_global: bool = false,
 };
 
 /// Result structure for remove_skill tool
@@ -56,6 +59,11 @@ pub const remove_skill_tool = AgentTool{
                     .type = "string",
                     .description = "The session ID (unused, kept for compatibility)",
                 },
+                .{
+                    .name = "is_global",
+                    .type = "boolean",
+                    .description = "If true, remove from global skills directory (~/.config/nalar/skills/). If false, remove from local directory (.nalar/skills/). Default: false",
+                },
             },
             .required = &.{ "skill_name", "session_id" },
         },
@@ -63,12 +71,14 @@ pub const remove_skill_tool = AgentTool{
 };
 
 /// Execute the remove_skill tool - removes from session AND deletes file
+/// Deletes skill file at .nalar/skills/<skill_name>/ or global ~/.config/nalar/skills/<skill_name>/
 /// Returns an XML string with result
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn execute_remove_skill_to_string(
     allocator: std.mem.Allocator,
     io: std.Io,
     cwd: []const u8,
+    environment: ?*const std.process.Environ.Map,
     input: RemoveSkillInput,
 ) ![]const u8 {
     // Validate input
@@ -81,10 +91,33 @@ pub fn execute_remove_skill_to_string(
         return result;
     }
 
-    // Use cwd from context (already absolute path from session)
-    // Build path to skill directory: .nalar/skills/<skill_name>/
-    const skill_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills", input.skill_name });
-    defer allocator.free(skill_dir_path);
+    // Determine skills directory based on is_global flag
+    const skills_dir: []const u8 = if (input.is_global)
+        blk: {
+            if (environment) |env| {
+                const path = skills.get_global_skills_path_from_env(allocator, env) orelse {
+                    const result = try std.fmt.allocPrint(allocator,
+                        \\<skill_name>{s}</skill_name>
+                        \\<removed>false</removed>
+                        \\<error>Failed to get global skills path</error>
+                    , .{input.skill_name});
+                    return result;
+                };
+                break :blk path;
+            } else {
+                const result = try std.fmt.allocPrint(allocator,
+                    \\<skill_name>{s}</skill_name>
+                    \\<removed>false</removed>
+                    \\<error>Environment not available for global skills</error>
+                , .{input.skill_name});
+                return result;
+            }
+        }
+    else
+        try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
+
+    // Build path to skill directory
+    const skill_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ skills_dir, input.skill_name });
 
     // Check if the skill directory exists
     const dir_exists = blk: {
@@ -99,8 +132,10 @@ pub fn execute_remove_skill_to_string(
         const result = try std.fmt.allocPrint(allocator,
             \\<skill_name>{s}</skill_name>
             \\<removed>false</removed>
-            \\<error>Skill directory not found in .nalar/skills/</error>
+            \\<error>Skill directory not found</error>
         , .{input.skill_name});
+        if (input.is_global) allocator.free(skills_dir);
+        allocator.free(skill_dir_path);
         return result;
     }
 
@@ -111,6 +146,8 @@ pub fn execute_remove_skill_to_string(
             \\<removed>false</removed>
             \\<error>Failed to delete skill directory</error>
         , .{input.skill_name});
+        if (input.is_global) allocator.free(skills_dir);
+        allocator.free(skill_dir_path);
         return result;
     };
 
@@ -120,6 +157,10 @@ pub fn execute_remove_skill_to_string(
         \\<removed>true</removed>
         \\<path>{s}</path>
     , .{ input.skill_name, skill_dir_path });
+
+    // Clean up allocated memory
+    if (input.is_global) allocator.free(skills_dir);
+    allocator.free(skill_dir_path);
 
     return result;
 }

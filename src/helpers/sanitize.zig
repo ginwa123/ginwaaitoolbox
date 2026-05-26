@@ -11,26 +11,24 @@ pub fn sanitizeUtf8(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 
         // ASCII (0x00-0x7F) - valid
         if (b < 0x80) {
-            try result.append(allocator,b);
+            try result.append(allocator, b);
             i += 1;
             continue;
         }
 
         // Determine expected sequence length and validate
-        const seq_len: usize = if (b & 0xE0 == 0xC0) 2  // 0x80-0xBF follow bytes
-        else if (b & 0xF0 == 0xE0) 3
-        else if (b & 0xF8 == 0xF0) 4
-        else {
-            // Invalid start byte - replacement character U+FFFD (EF BF BD)
-            try result.appendSlice(allocator,&[_]u8{ 0xEF, 0xBF, 0xBD });
-            i += 1;
-            continue;
-        };
+        const seq_len: usize = if (b & 0xE0 == 0xC0) 2 // 0x80-0xBF follow bytes
+            else if (b & 0xF0 == 0xE0) 3 else if (b & 0xF8 == 0xF0) 4 else {
+                // Invalid start byte - replacement character U+FFFD (EF BF BD)
+                try result.appendSlice(allocator, &[_]u8{ 0xEF, 0xBF, 0xBD });
+                i += 1;
+                continue;
+            };
 
         // Check if we have enough bytes
         if (i + seq_len > input.len) {
             // Incomplete sequence - replacement character U+FFFD (EF BF BD)
-            try result.appendSlice(allocator,&[_]u8{ 0xEF, 0xBF, 0xBD });
+            try result.appendSlice(allocator, &[_]u8{ 0xEF, 0xBF, 0xBD });
             i += 1;
             continue;
         }
@@ -46,16 +44,53 @@ pub fn sanitizeUtf8(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 
         if (valid) {
             // Valid UTF-8 sequence
-            try result.appendSlice(allocator,input[i..i + seq_len]);
+            try result.appendSlice(allocator, input[i .. i + seq_len]);
         } else {
             // Invalid sequence - replacement character U+FFFD (EF BF BD)
-            try result.appendSlice(allocator,&[_]u8{ 0xEF, 0xBF, 0xBD });
+            try result.appendSlice(allocator, &[_]u8{ 0xEF, 0xBF, 0xBD });
         }
 
         i += seq_len;
     }
 
     return result.toOwnedSlice(allocator);
+}
+
+/// Sanitize a JSON string by escaping problematic characters
+/// Returns allocated slice — caller must free
+pub fn sanitizeJsonString(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < input.len) : (i += 1) {
+        switch (input[i]) {
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\\' => {
+                // Already escaped? peek ahead
+                if (i + 1 < input.len and (input[i + 1] == 'n' or
+                    input[i + 1] == 'r' or
+                    input[i + 1] == 't' or
+                    input[i + 1] == '"' or
+                    input[i + 1] == '\\'))
+                {
+                    // Valid escape sequence — keep as-is
+                    try out.append(allocator, '\\');
+                    try out.append(allocator, input[i + 1]);
+                    i += 1;
+                } else {
+                    // Bare backslash — escape it
+                    try out.appendSlice(allocator, "\\\\");
+                }
+            },
+            else => try out.append(allocator, input[i]),
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
 }
 
 test "sanitizeUtf8 valid ASCII" {
