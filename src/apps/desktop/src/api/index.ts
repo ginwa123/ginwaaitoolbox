@@ -1073,6 +1073,40 @@ export async function readGitFile(
   return response.json()
 }
 
+// Read file content API (for CodeEditor)
+export interface ReadFileResponse {
+  content: string
+  encoding: string
+}
+
+export async function readFileContent(cwd: string, filePath: string): Promise<ReadFileResponse> {
+  const response = await fetch(
+    `${API_BASE}/system/folder?path=${encodeURIComponent(cwd)}&action=read&file=${encodeURIComponent(filePath)}`,
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+// Write file content API (for CodeEditor save)
+export async function writeFileContent(
+  cwd: string,
+  filePath: string,
+  content: string,
+): Promise<{ success: boolean; message?: string }> {
+  const response = await fetch(`${API_BASE}/system/folder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'write',
+      path: cwd,
+      file: filePath,
+      content,
+    }),
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
 // Git Stage/Unstage API
 export interface GitStageResponse {
   success: boolean

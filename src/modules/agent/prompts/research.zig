@@ -16,8 +16,8 @@ pub const Research =
     \\- Understanding a symbol? → Use `lsp_definition`, `lsp_hover`, `lsp_references`
     \\- Finding files? → Use bash with `fd` (faster than find)
     \\- Searching patterns? → Use bash with `rg` (ripgrep, faster than grep)
-    \\- **Need knowledge from the web?** → Use `web_search` ⭐ (searches google.com)
-    \\- Need docs? → Use `mcp_context7_*` tools for latest examples
+    \\- **Need knowledge from the web?** → Use CloakBrowser ⭐ (stealth Chromium, bypasses anti-bot)
+    \\- Need docs? → Use CloakBrowser for latest examples
     \\**Never write code you haven't verified with tools first.**
 ;
 
@@ -108,11 +108,11 @@ pub const ResearchTriggers =
     \\- **Understanding types/functions?** → `lsp_definition`, `lsp_hover`, `lsp_references`
     \\- **Finding files?** → bash with `fd` — faster than find
     \\- **Searching text?** → bash with `rg` — faster than grep
-    \\- **Need knowledge from the web?** → `web_search` ⭐ (searches google.com)
-    \\- **Unknown library/API?** → `web_search` or `mcp_context7_*` for latest docs + examples
-    \\- **New language feature?** → look it up with `web_search` or `mcp_context7_*`
-    \\- **Best practices uncertain?** → find current recommendations with `web_search`
-    \\- **Error unfamiliar?** → research error + solution with `web_search`
+    \\- **Need knowledge from the web?** → CloakBrowser ⭐ (stealth Chromium, bypasses anti-bot)
+    \\- **Unknown library/API?** → CloakBrowser for latest docs + examples
+    \\- **New language feature?** → look it up with CloakBrowser
+    \\- **Best practices uncertain?** → find current recommendations with CloakBrowser
+    \\- **Error unfamiliar?** → research error + solution with CloakBrowser
     \\- **About to write code from memory?** → STOP → use tools → verify → write
     \\- **Navigating codebase?** → `lsp_workspace_symbol`, bash with `fd`/`rg`
 ;
@@ -184,16 +184,13 @@ pub const AvailableTools =
     \\- `lsp_workspace_symbol` — search symbols project-wide
     \\- `lsp_document_symbol` — get all symbols in file
     \\
-    \\**🌐 WEB SEARCH (PRIMARY RESEARCH):** ⭐
-    \\- `web_search` — Search google.com for ANY knowledge/libraries/answers
-    \\  - Example: `web_search({query: "Zig programming language best practices"})`
-    \\  - Automatically opens Google search and returns results
-    \\  - Use this FIRST when you need to look something up online
-    \\  - Supports: open, snapshot, get, click, fill, press for advanced browsing
-    \\
-    \\**Library Documentation:**
-    \\- `mcp_context7_resolve-library-id` — find library IDs
-    \\- `mcp_context7_query-docs` — query library docs with examples
+    \\**🌐 WEB RESEARCH (PRIMARY):** ⭐
+    \\- CloakBrowser — stealth Chromium that bypasses anti-bot detection
+    \\- Achieves reCAPTCHA v3 score of 0.9 (vs 0.1 for stock browser)
+    \\- Supports: open, snapshot, get, click, fill, press for interactive browsing
+    \\  - Example: `web_browse({url: "https://docs.example.com", action: "snapshot"})`
+    \\- **Always use OS temp directory for browser profile data**
+    \\- **Script location:** Save scripts anywhere in project (e.g., `scripts/automation.mjs`)
     \\
     \\**Execution & Delegation:**
     \\- `bash` — **ONLY for running commands** (zig build, npm install, cargo build, etc.)
@@ -211,7 +208,7 @@ pub const AvailableTools =
     \\- **Searching text?** → bash with `rg` (**NEVER bash `grep`**)**
     \\- **Directory structure?** → bash with `tree` | head
     \\- **Navigating code?** → LSP tools (**NEVER manual search**)**
-    \\- **Knowledge/info from web?** → `web_search` ⭐ (**searches google.com**)**
+    \\- **Knowledge/info from web?** → CloakBrowser ⭐ (stealth Chromium, bypasses anti-bot)
     \\- **2+ tasks in parallel?** → `spawn_sub_agent` (**NOT sequential!**)**
     \\- **Running commands?** → `bash` (**ONLY allowed for commands, not files!**)**
 ;

@@ -27,6 +27,7 @@ fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
 /// GET /api/system/folder
 /// GET /api/system/folder?path=/some/relative/path
 /// GET /api/system/folder?path=/some/relative/path&action=list
+/// GET /api/system/folder?path=/some/relative/path&action=read&file=filename.txt
 pub fn system_folder_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
@@ -113,6 +114,38 @@ pub fn system_folder_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         }
     }
 
+    // Handle read/write actions - read file content
+    const do_read_write = std.mem.eql(u8, action orelse "", "read") or std.mem.eql(u8, action orelse "", "write");
+    if (do_read_write) {
+        const file_name = req.query.get("file") orelse "";
+        
+        // If file_name is an absolute path, use it directly
+        // Otherwise, join with target_path
+        const full_path: []u8 = if (std.mem.startsWith(u8, file_name, "/"))
+            allocator.dupe(u8, file_name) catch return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) })
+        else
+            std.fs.path.join(allocator, &.{ target_path, file_name }) catch return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to build path" }) });
+        defer allocator.free(full_path);
+
+        // Read file using std.Io.Dir.openFileAbsolute
+        const file = std.Io.Dir.openFileAbsolute(ctx.io, full_path, .{}) catch return res.jsonResponse( .{ .status_code = 403, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Cannot open file" }) });
+        defer file.close(ctx.io);
+
+        var read_buf: [8192]u8 = undefined;
+        var reader = file.reader(ctx.io, &read_buf);
+        const file_content_init = reader.interface.allocRemaining(allocator, .limited(1024 * 1024 * 10)) catch return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to read file" }) });
+        defer allocator.free(file_content_init);
+
+        // Escape content for JSON
+        const escaped_content = jsonEscape(allocator, file_content_init) catch file_content_init;
+        defer allocator.free(escaped_content);
+
+        // Return as JSON with plain text content
+        return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
+            "{{\"content\":\"{s}\",\"encoding\":\"utf-8\"}}",
+            .{ escaped_content }) });
+    }
+
     if (parent_relative) |pr| {
         return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
             "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"parent\":\"{s}\"}}",
@@ -123,3 +156,4 @@ pub fn system_folder_handler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .{ relative, target_path, home }) });
     }
 }
+

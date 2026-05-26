@@ -67,13 +67,21 @@ The new TUI (`nalar-new-tui`) is built using the **ZigZag** framework (https://g
 
 ## Research Rule
 
-> **MANDATORY: Use Context7 for library/module research!**
+> **MANDATORY: Use CloakBrowser for research!**
 
-When needing **latest documentation, examples, or best practices** for any library or technology:
-1. `mcp_context7_resolve-library-id` — Find the library ID (e.g., `/mongodb/mongoose`)
-2. `mcp_context7_query-docs` — Query specific questions with examples
+When needing **latest documentation, examples, or best practices** for any library or technology, use CloakBrowser (https://github.com/v各级/CloakBrowser) — a stealth Chromium browser that bypasses anti-bot detection.
 
-**Never guess library APIs — research them first! If Context7 lacks results, use web search.**
+**CloakBrowser advantages:**
+- Bypasses Cloudflare Turnstile, reCAPTCHA v3, FingerprintJS, etc.
+- Uses real Chromium with 58 source-level patches
+- Achieves reCAPTCHA v3 score of 0.9 (vs 0.1 for stock browser)
+- Supports headless mode, proxy, humanize interactions
+
+**Important: Always use OS temp directory for browser profile data:**
+- Linux/macOS: `os.tmpdir()` or `/tmp/cloakbrowser`
+- Windows: `os.tmpdir()` or `C:\Users\<user>\AppData\Local\Temp\`
+
+**Example script location:** Save CloakBrowser scripts anywhere in your project (e.g., `scripts/automation.mjs`). Browser profiles go in OS temp.
 
 ## Build System
 

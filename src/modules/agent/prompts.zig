@@ -5,6 +5,7 @@ const agents = @import("tools/agents.zig");
 const prompts = @import("prompts/prompts.zig");
 const tool_models = @import("nalarcore").tool_models;
 const memory_prompts = @import("prompts/memory.zig");
+const browsing = @import("prompts/browsing.zig");
 
 /// Get the current operating system as a human-readable string
 fn getCurrentOs() []const u8 {
@@ -58,6 +59,7 @@ pub const GoalDrivenExecution = prompts.GoalDrivenExecution;
 pub const SuccessCriteria = prompts.SuccessCriteria;
 pub const AntiPatterns = prompts.AntiPatterns;
 pub const GuidelinesSummary = prompts.GuidelinesSummary;
+pub const CloakBrowserPrompt = browsing.CloakBrowserPrompt;
 
 // Agentic Coding enhancements
 pub const AutonomousBehavior = prompts.AutonomousBehavior;
@@ -198,6 +200,7 @@ pub fn build_agent_prompt(
     // try appendSection(allocator, &result, AggressiveDelegation);
     try appendSection(allocator, &result, IterationMindset);
     try appendSection(allocator, &result, SafetyFirst);
+    try appendSection(allocator, &result, CloakBrowserPrompt);
 
     // 5. Response formatting - markdown and thinking
     try appendSection(allocator, &result, ResponseFormatting);
