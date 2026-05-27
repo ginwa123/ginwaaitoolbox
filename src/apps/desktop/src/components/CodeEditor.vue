@@ -133,19 +133,39 @@ const detectedLanguage = ref(props.language || detectLanguage(props.fileName))
 onMounted(() => {
   if (!editorContainer.value) return
 
-  // Configure editor theme to match app
+  // Configure editor theme to match Kanagawa Dragon theme
   monaco.editor.defineTheme('nalar-dark', {
     base: 'vs-dark',
     inherit: true,
-    rules: [],
+    rules: [
+      { token: 'comment', foreground: '7a8382', fontStyle: 'italic' },
+      { token: 'keyword', foreground: '8992a7' },
+      { token: 'string', foreground: '87a987' },
+      { token: 'number', foreground: 'c4b28a' },
+      { token: 'type', foreground: '8ba4b0' },
+      { token: 'function', foreground: '8ea4a2' },
+      { token: 'variable', foreground: 'c5c9c5' },
+    ],
     colors: {
-      'editor.background': '#1a1a2e',
-      'editor.foreground': '#e0e0e0',
-      'editor.lineHighlightBackground': '#252540',
-      'editorCursor.foreground': '#00d9ff',
-      'editor.selectionBackground': '#3d3d6b',
-      'editorLineNumber.foreground': '#6b6b8b',
-      'editorLineNumber.activeForeground': '#00d9ff',
+      'editor.background': '#181616',
+      'editor.foreground': '#c5c9c5',
+      'editor.lineHighlightBackground': '#1D1C19',
+      'editorCursor.foreground': '#8ea4a2',
+      'editor.selectionBackground': '#282727',
+      'editorLineNumber.foreground': '#7a8382',
+      'editorLineNumber.activeForeground': '#8992a7',
+      'editor.inactiveSelectionBackground': '#282727',
+      'editorIndentGuide.background': '#282727',
+      'editorIndentGuide.activeBackground': '#393836',
+      'editor.wordHighlightBackground': '#282727',
+      'editor.wordHighlightStrongBackground': '#12120f',
+      'editorBracketMatch.background': '#282727',
+      'editorBracketMatch.border': '#8992a7',
+      'scrollbar.shadow': '#12120f',
+      'scrollbarSlider.background': '#28272780',
+      'scrollbarSlider.hoverBackground': '#39383680',
+      'scrollbarSlider.activeBackground': '#8992a780',
+      'minimap.background': '#181616',
     },
   })
 
@@ -239,7 +259,7 @@ const handleReadOnlyToggle = () => {
     <!-- Header -->
     <div
       class="h-12 flex items-center justify-between px-4 shrink-0"
-      style="background-color: var(--semantic-sidebar-bg); border-bottom: 1px solid var(--color-border);"
+      style="background-color: var(--color-bg-m2); border-bottom: 1px solid var(--color-border);"
     >
       <div class="flex items-center gap-3">
         <button
@@ -286,7 +306,7 @@ const handleReadOnlyToggle = () => {
           v-if="!isModified"
           @click="handleReadOnlyToggle"
           class="p-2 rounded-lg hover:opacity-70 transition-opacity"
-          :title="props.readonly ? ' Enable editing' : 'Make readonly'"
+          :title="props.readonly ? 'Enable editing' : 'Make readonly'"
         >
           <svg class="w-4 h-4" style="color: var(--semantic-text-dim);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -299,7 +319,7 @@ const handleReadOnlyToggle = () => {
           v-if="isModified && !props.readonly"
           @click="handleSave"
           class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors hover:opacity-90"
-          style="background-color: var(--color-green); color: white;"
+          style="background-color: var(--color-green); color: var(--color-bg);"
           title="Save (Ctrl+S)"
         >
           Save
@@ -326,7 +346,7 @@ const handleReadOnlyToggle = () => {
     <div
       v-if="props.cwd || filePath"
       class="h-6 flex items-center px-3 shrink-0 text-xs truncate"
-      style="background-color: var(--semantic-sidebar-bg); border-top: 1px solid var(--color-border); color: var(--semantic-text-dim);"
+      style="background-color: var(--color-bg-m2); border-top: 1px solid var(--color-border); color: var(--semantic-text-dim);"
       :title="cwd ? `${cwd}/${filePath}` : filePath"
     >
       {{ cwd ? `${cwd}/${filePath}` : filePath }}
@@ -336,7 +356,7 @@ const handleReadOnlyToggle = () => {
 
 <style scoped>
 .code-editor-container {
-  background-color: #1a1a2e;
+  background-color: var(--semantic-content-bg);
 }
 
 .code-editor-container :deep(.monaco-editor) {
@@ -344,6 +364,10 @@ const handleReadOnlyToggle = () => {
 }
 
 .code-editor-container :deep(.monaco-editor .margin) {
-  background-color: #1a1a2e;
+  background-color: var(--semantic-content-bg);
+}
+
+.code-editor-container :deep(.minimap) {
+  background-color: var(--semantic-sidebar-bg) !important;
 }
 </style>

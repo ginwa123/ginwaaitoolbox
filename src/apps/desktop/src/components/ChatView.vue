@@ -19,6 +19,7 @@ import ListSkills from './tool_outputs/ListSkills.vue'
 import AddSkill from './tool_outputs/AddSkill.vue'
 import EditSkill from './tool_outputs/EditSkill.vue'
 import RemoveSkill from './tool_outputs/RemoveSkill.vue'
+import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
@@ -200,9 +201,13 @@ const renderResponse = (content: string, role: string, tool_name: string | undef
       }
 
       if (tool_name === 'spawn_sub_agent') {
-        const mathCount = content.match(/<count>(\d+)<\/count>/);
-        const count = mathCount ? mathCount[1] : null;
-        return `<span class="tool-inline">${tool_name} → ${count || '0'} agents spawned</span>`;
+        // Parse agent count and summary from XML
+        const agentMatches = content.match(/<agent name="([^"]*)" success="([^"]*)">/g);
+        const agentCount = agentMatches ? agentMatches.length : 0;
+        const summaryMatch = content.match(/<summary succeeded="(\d+)" failed="(\d+)" \/>/);
+        const succeeded = summaryMatch ? summaryMatch[1] : '0';
+        const failed = summaryMatch ? summaryMatch[2] : '0';
+        return `<span class="tool-inline">${tool_name} → ${agentCount} agents (${succeeded} succeeded, ${failed} failed)</span>`;
       }
 
       /// Default tool badge for other tools
@@ -895,6 +900,9 @@ const compactSession = async () => {
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- RemoveSkill component for remove_skill tool -->
                       <RemoveSkill v-else-if="msg.tool_name === 'remove_skill'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- SpawnSubAgent component for spawn_sub_agent tool -->
+                      <SpawnSubAgent v-else-if="msg.tool_name === 'spawn_sub_agent'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- Default tool rendering for other tools -->
                       <div v-else class="tool-expandable">

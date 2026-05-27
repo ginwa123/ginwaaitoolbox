@@ -577,6 +577,7 @@ const ThreadResult = struct {
     name: []const u8,
     response: ?[]const u8 = null,
     error_message: ?[]const u8 = null,
+    session_id: []const u8 = "",
 };
 
 // spawn_sub_agent implementation - uses workflow.zig logic
@@ -608,7 +609,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         .mutex = std.Io.Mutex.init,
     };
     for (shared_results.results, 0..) |*r, i| {
-        r.* = .{ .success = false, .name = parsed.sub_agents[i].name, .response = null, .error_message = null };
+        r.* = .{ .success = false, .name = parsed.sub_agents[i].name, .response = null, .error_message = null, .session_id = "" };
     }
     defer {
         ctx.allocator.free(shared_results.results);
@@ -661,6 +662,9 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     for (shared_results.results) |result| {
         const success = if (result.success) "true" else "false";
         try w.print("<agent name=\"{s}\" success=\"{s}\">\n", .{ result.name, success });
+        if (result.session_id.len > 0) {
+            try w.print("<session_id>{s}</session_id>\n", .{result.session_id});
+        }
         if (result.success) {
             if (result.response) |resp| {
                 try w.print("<response>{s}</response>\n", .{resp});
@@ -706,6 +710,17 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     };
     defer sub_agent_allocator.free(sess_id);
     args_ptr.logger.debugFmt("Session ID created: '{s}'", .{sess_id});
+
+    // Store session_id in shared results immediately after creation
+    {
+        const session_id_copy = args_ptr.allocator.dupe(u8, sess_id) catch {
+            const err_msg = args_ptr.allocator.dupe(u8, "Failed to copy session_id") catch "Failed to allocate";
+            args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+            args_ptr.logger.errFmt("Failed to copy session_id for '{s}'", .{args_ptr.agent_name});
+            return;
+        };
+        args_ptr.shared_results.results[args_ptr.thread_idx].session_id = session_id_copy;
+    }
 
     const di = nalar_mod.getSingleton() catch unreachable;
 
