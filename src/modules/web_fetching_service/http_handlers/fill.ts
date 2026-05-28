@@ -1,5 +1,5 @@
 import { jsonResponse } from "./helpers";
-import { pageSessions } from "./shared";
+import { pageSessions, updatePageActivity } from "./shared";
 
 export async function fillInputPost(
   page_id: string,
@@ -131,6 +131,9 @@ export async function fillInputPost(
     const title = await page.title();
     const url = page.url();
 
+    // Update page activity
+    updatePageActivity(page_id);
+
     return jsonResponse({
       success: true,
       page_id,
@@ -174,7 +177,8 @@ export async function pressKeyPost(
     if (ref) {
       // Press key on specific element
       await page.evaluate(
-        (targetRef: string, pressKey: string) => {
+        (args: { targetRef: string; pressKey: string }) => {
+          const { targetRef, pressKey } = args;
           const element = document.querySelector(
             `[data-ref="${targetRef}"], [ref="${targetRef}"]`,
           ) as HTMLElement | null;
@@ -186,8 +190,7 @@ export async function pressKeyPost(
             element.dispatchEvent(new KeyboardEvent("keypress", { key: pressKey, bubbles: true }));
           }
         },
-        ref,
-        key,
+        { targetRef: ref, pressKey: key },
       );
     } else {
       // Press key globally on page
@@ -196,6 +199,9 @@ export async function pressKeyPost(
 
     const title = await page.title();
     const url = page.url();
+
+    // Update page activity
+    updatePageActivity(page_id);
 
     return jsonResponse({
       success: true,

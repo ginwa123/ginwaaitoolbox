@@ -28,21 +28,30 @@ export async function openPagePost(
 
     const page = await browserSession.browser.newPage();
     const response = await page.goto(url, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
       timeout: 30000,
     });
+
+    // Small delay for humanize effect
+    await page.waitForTimeout(500);
 
     const newPageId = generatePageId();
     const pageUrl = page.url();
     const pageTitle = await page.title();
+    const now = new Date();
 
     pageSessions.set(newPageId, {
       id: newPageId,
       page,
       url: pageUrl,
       title: pageTitle,
-      created_at: new Date(),
+      created_at: now,
+      last_activity: now,
+      browser_id,
     });
+
+    // Update browser activity
+    browserSession.last_activity = now;
 
     console.log(`[${browser_id}] Page opened: ${newPageId}`);
 

@@ -389,7 +389,6 @@ When the search tool finds no matches, it returns:
 This follows the same pattern as `glob.zig` and helps agents detect when searches yield no results.
 
 **Implementation:** `src/modules/agent/tools/search.zig`
-
 ## HTTP API Routes
 
 | Method | Endpoint | Purpose |
@@ -597,6 +596,7 @@ http_handlers/
 ├── click.ts       # clickElementPost()
 ├── fill.ts        # fillInputPost(), pressKeyPost()
 ├── close_page.ts  # closePagePost()
+├── cleanup.ts     # startCleanupCron() - auto-close idle sessions
 └── mod.ts         # Barrel export
 ```
 

@@ -1,5 +1,5 @@
 import { jsonResponse } from "./helpers";
-import { pageSessions } from "./shared";
+import { pageSessions, updatePageActivity } from "./shared";
 
 export async function clickElementPost(
   page_id: string,
@@ -69,6 +69,9 @@ export async function clickElementPost(
 
     const title = await page.title();
     const url = page.url();
+
+    // Update page activity
+    updatePageActivity(page_id);
 
     return jsonResponse({
       success: true,

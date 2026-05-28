@@ -498,9 +498,10 @@ pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, pat
 }
 
 pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const u8, old_str: []const u8) []const u8 {
+    _ = old_str;
     const error_msg = switch (result) {
-        error.OldStrNotFound => std.fmt.allocPrint(allocator, "Text '{s}' not found in file '{s}'. Make sure the text exists exactly once in the file.", .{ old_str, path }) catch return "<success>false</success><error>UnknownError</error>",
-        error.OldStrNotUnique => std.fmt.allocPrint(allocator, "Text '{s}' appears multiple times in file '{s}'. Expand old_str to include more context to make it unique.", .{ old_str, path }) catch return "<success>false</success><error>UnknownError</error>",
+        error.OldStrNotFound => std.fmt.allocPrint(allocator, "Make sure the text exists exactly once in the file.", .{}) catch return "<success>false</success><error>UnknownError</error>",
+        error.OldStrNotUnique => std.fmt.allocPrint(allocator, "There are multiple occurrences of the text in the file. Expand old_str to include more context to make it unique.", .{}) catch return "<success>false</success><error>UnknownError</error>",
         error.PathNotFound => std.fmt.allocPrint(allocator, "File '{s}' not found. Check if the path is correct.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
         error.WriteFailed => std.fmt.allocPrint(allocator, "Failed to write to file '{s}'.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
         else => std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(result)}) catch return "<success>false</success><error>UnknownError</error>",
@@ -514,40 +515,22 @@ pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const 
 }
 
 /// Properties for text_replace tool
-const text_replace_props: []const ToolProperty = &.{
-    .{
-        .name = "path",
-        .type = "string",
-        .description = "Absolute path to the file.",
-    },
-    .{
-        .name = "old_str",
-        .type = "string",
-        .description = "The exact text to find (must appear exactly once in the file).",
-    },
-    .{
-        .name = "new_str",
-        .type = "string",
-        .description = "The replacement text (use empty string to delete).",
-    },
-};
-
 pub const text_replace_tool: AgentTool = .{
     .type = "function",
     .function = .{
         .name = "text_replace",
         .description =
-        \\Replace a string in a file with new content.
-        \\
-        \\- old_str must match file content exactly (whitespace included).
-        \\- old_str must appear exactly once — error if not found or ambiguous.
-        \\- If OldStrNotUnique: expand old_str to include surrounding lines for context.
-        \\- new_str can be any length, multiline, or empty (empty = delete).
-        \\- Read the file first to see its current content.
+        \\Replace a string in a file. old_str must match exactly once;
+        \\expand context if ambiguous. new_str can be empty to delete.
+        \\Read the file first to confirm current content.
         ,
         .parameters = .{
             .type = "object",
-            .properties = text_replace_props,
+            .properties = &.{
+                .{ .name = "path", .type = "string", .description = "Absolute path to the file." },
+                .{ .name = "old_str", .type = "string", .description = "Exact text to replace (must appear exactly once)." },
+                .{ .name = "new_str", .type = "string", .description = "Replacement text, or empty string to delete." },
+            },
             .required = &.{ "path", "old_str", "new_str" },
         },
     },

@@ -12,4 +12,5 @@ test {
     _ = @import("tools/edit_skill_test.zig");
     _ = @import("tools/remove_skill_test.zig");
     _ = @import("tools/view_skill_test.zig");
+    _ = @import("tools/cloak_browser_test.zig");
 }

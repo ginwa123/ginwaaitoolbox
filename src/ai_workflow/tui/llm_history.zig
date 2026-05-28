@@ -7,7 +7,7 @@ const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
 const ai_mod = @import("nalarcore").ai_mod;
 
-pub fn mark_message_not_for_llm_run(
+pub fn markMessageNotForLlmRun(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
@@ -1469,11 +1469,11 @@ pub fn queueMessage(
 ) !void {
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds});
     defer allocator.free(id);
-    
+
     const sql = "INSERT INTO session_queue_messages (id, session_id, message, image_url) VALUES (?, ?, ?, ?)";
     const copy_image_url = try allocator.dupe(u8, image_url);
     defer allocator.free(copy_image_url);
-    
+
     try db.exec(allocator, sql, &.{ id, session_id, message, copy_image_url });
 
     // Emit SSE event to notify connected clients

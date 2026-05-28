@@ -1,5 +1,5 @@
 import { jsonResponse } from "./helpers";
-import { pageSessions } from "./shared";
+import { pageSessions, updatePageActivity } from "./shared";
 
 export async function snapshotPagePost(page_id: string): Promise<Response> {
   try {
@@ -68,6 +68,9 @@ export async function snapshotPagePost(page_id: string): Promise<Response> {
 
     const title = await page.title();
     const url = page.url();
+
+    // Update page activity
+    updatePageActivity(page_id);
 
     return jsonResponse({
       success: true,

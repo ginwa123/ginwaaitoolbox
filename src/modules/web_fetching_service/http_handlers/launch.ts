@@ -18,10 +18,12 @@ export async function launchBrowserPost(): Promise<Response> {
       stealthArgs: true,
     });
 
+    const now = new Date();
     browserSessions.set(browserId, {
       id: browserId,
       browser,
-      created_at: new Date(),
+      created_at: now,
+      last_activity: now,
     });
 
     console.log(`[${browserId}] Browser launched`);

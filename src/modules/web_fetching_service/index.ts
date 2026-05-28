@@ -17,6 +17,7 @@ import {
   launchBrowserPost,
   openPagePost,
   snapshotPagePost,
+  startCleanupCron,
 } from "./http_handlers/mod";
 
 async function handleRequest(req: Request): Promise<Response> {
@@ -117,6 +118,9 @@ console.log(`
 ║  Page Close:  POST /page/close/:page_id               ║
 ╚══════════════════════════════════════════════════════╝
 `);
+
+// Start cleanup cron (every 60 seconds)
+startCleanupCron(60 * 1000);
 
 Bun.serve({
   port,

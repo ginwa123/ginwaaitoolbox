@@ -200,7 +200,7 @@ pub fn build_agent_prompt(
     // try appendSection(allocator, &result, AggressiveDelegation);
     try appendSection(allocator, &result, IterationMindset);
     try appendSection(allocator, &result, SafetyFirst);
-    try appendSection(allocator, &result, CloakBrowserPrompt);
+    // try appendSection(allocator, &result, CloakBrowserPrompt);
 
     // 5. Response formatting - markdown and thinking
     try appendSection(allocator, &result, ResponseFormatting);

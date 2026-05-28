@@ -285,6 +285,7 @@ pub const system_folder = @import("modules/system_folder/system_folder.zig");
 pub const update_activity = @import("modules/agent/tools/update_activity.zig");
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");
+pub const cloak_browser = @import("modules/agent/tools/cloak_browser.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const semantic_search = @import("modules/agent/tools/semantic_search.zig");

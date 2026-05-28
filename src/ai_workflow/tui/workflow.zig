@@ -627,8 +627,6 @@ pub fn callCompactAgentNew(
     io: std.Io,
 ) ?[]const u8 {
     _ = cwd;
-    logger.infoFmt("[COMPACTION] Starting callCompactAgent", .{});
-    logger.infoFmt("[COMPACTION] Building compaction messages...", .{});
 
     messages.items[0] = .{ .role = .system, .content = prompt.CompactionAgent };
 
@@ -651,8 +649,21 @@ pub fn callCompactAgentNew(
     defer allocator.free(history_str);
 
     const compact_message = std.fmt.allocPrint(allocator,
-        \\Please provide a concise summary of the following conversation history, in a single paragraph and what to do next.
+        \\You are compacting an AI agent's conversation history to reduce context length.
+        \\Preserve ALL of the following:
+        \\- The original task or goal
+        \\- Key decisions made and why
+        \\- Tool calls and their results (file reads, command outputs, etc.)
+        \\- Current progress and what remains
+        \\- Any errors encountered and how they were resolved
         \\
+        \\Format your response exactly as:
+        \\**Goal:** <one sentence>
+        \\**Progress:** <what has been done>
+        \\**Key findings:** <important outputs, facts, file contents>
+        \\**Next step:** <specific actionable next action>
+        \\
+        \\History to compact:
         \\{s}
         \\
     , .{history_str}) catch |err| {
@@ -663,7 +674,6 @@ pub fn callCompactAgentNew(
 
     messages.items[last_idx] = .{ .role = .user, .content = compact_message };
 
-    logger.infoFmt("[COMPACTION] Initializing compaction agent...", .{});
     var compaction_agent = agent.Agent.init(allocator, io) catch |err| {
         logger.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)});
         return null;
@@ -673,7 +683,6 @@ pub fn callCompactAgentNew(
     compaction_agent.model = model;
     compaction_agent.baseUrl = base_url;
 
-    logger.infoFmt("[COMPACTION] Calling callStreaming...", .{});
     const response = compaction_agent.callStreaming(.{
         .tools = &.{},
         .messages = messages.items,
@@ -683,9 +692,6 @@ pub fn callCompactAgentNew(
         return null;
     };
     defer response.deinit();
-    logger.infoFmt("[COMPACTION] callStreaming succeeded", .{});
-
-    logger.infoFmt("[COMPACTION] Response content null? {}", .{response.content == null});
     const content = response.content orelse {
         logger.errFmt("[COMPACTION] Response content is null", .{});
         return null;
@@ -695,14 +701,10 @@ pub fn callCompactAgentNew(
         return null;
     }
 
-    logger.infoFmt("[COMPACTION] Got response: {} bytes", .{content.len});
-    logger.debugFmt("[COMPACTION] Done: {} messages -> {} bytes", .{ messages.items.len, content.len });
-
     const duplicated = allocator.dupe(u8, content) catch |err| {
         logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
         return null;
     };
-    logger.infoFmt("[COMPACTION] callCompactAgent returning success", .{});
     return duplicated;
 }
 
@@ -723,7 +725,7 @@ pub fn compactMessageInMemoryNew(
     if (total <= 4) return;
 
     // Mark all existing messages in this session as not for LLM (soft-delete)
-    try llm_history.mark_message_not_for_llm_run(allocator, db, session_id);
+    try llm_history.markMessageNotForLlmRun(allocator, db, session_id);
 
     // Build the compacted summary content with XML wrapping
     var summary: std.ArrayList(u8) = .empty;
@@ -734,13 +736,24 @@ pub fn compactMessageInMemoryNew(
     const summary_content = try summary.toOwnedSlice(allocator);
 
     // Save the compacted summary to the database with is_feed_to_llm = 1
-    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
-    defer allocator.free(id);
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000)});
-    defer allocator.free(created_at);
-
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)";
-    try db.exec(allocator, sql, &.{ id, session_id, model, summary_content, "stop", "user", "", "", "Agent", "0", created_at, "1", "0", "" });
+    try llm_history.saveMessage(allocator, io, db, .{
+        .session_id = session_id,
+        .model = model,
+        .cwd = cwd,
+        .content = summary_content,
+        .reasoning_content = null,
+        .role = "user",
+        .finish_reason = "stop",
+        .tool_calls = null,
+        .tool_call_id = null,
+        .tool_name = null,
+        .agent_name = "Agent",
+        .loop_index = 0,
+        .temperature = 0.0,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
 
     // Update the session's cwd in the sessions table
     const copy_cwd = try std.heap.c_allocator.dupe(u8, cwd);

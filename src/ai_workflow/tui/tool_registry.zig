@@ -34,6 +34,7 @@ const lsp_document_symbol_mod = nalar_mod.tools.lsp_document_symbol;
 const lsp_hover_mod = nalar_mod.tools.lsp_hover;
 const set_agent_properties_mod = nalar_mod.set_agent_properties;
 const web_search_mod = nalar_mod.web_search;
+const cloak_browser_mod = nalar_mod.cloak_browser;
 const update_activity_mod = nalar_mod.update_activity;
 const glob_tool_mod = nalar_mod.glob_tool;
 const search_tool_mod = nalar_mod.search_tool;
@@ -824,6 +825,26 @@ pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     return ToolExecResult{ .output = output };
 }
 
+pub fn execCloakBrowser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = try std.json.parseFromSlice(
+        cloak_browser_mod.CloakBrowserInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const result = try cloak_browser_mod.execute_cloak_browser(ctx.allocator, ctx.io, parsed.value);
+
+    if (result.success) {
+        const output = try cloak_browser_mod.toXMLSuccess(ctx.allocator, result);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    } else {
+        const output = try cloak_browser_mod.toXMLError(ctx.allocator, result, parsed.value.action);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+}
+
 pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const args = tc.function.arguments;
     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
@@ -960,6 +981,7 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 
     // === WEB SEARCH TOOLS ===
     // .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool },
+    .{ .name = "cloak_browser", .exec = execCloakBrowser, .tool_def = cloak_browser_mod.cloak_browser_tool },
 
     // === FILE SEARCH TOOLS ===
     .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool },
@@ -995,6 +1017,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         remove_file_mod.remove_file_tool,
         glob_tool_mod.glob_tool,
         search_tool_mod.search_tool,
+        cloak_browser_mod.cloak_browser_tool,
     };
     return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
 }
