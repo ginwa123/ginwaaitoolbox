@@ -1,0 +1,28 @@
+{
+  "name": "web_fetching_service",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run check && bun run index.ts",
+    "dev": "bun --watch index.ts",
+    "build": "bun build index.ts --target=bun --external=playwright-core --external=cloakbrowser --outdir=dist",
+    "start:dist": "bun run dist/index.js",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "biome format --write .",
+    "check": "biome check ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.16",
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "chromium-bidi": "^16.0.1",
+    "cloakbrowser": "^0.3.31",
+    "playwright-core": "^1.60.0"
+  }
+}

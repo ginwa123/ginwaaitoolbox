@@ -19,6 +19,7 @@ import ListSkills from './tool_outputs/ListSkills.vue'
 import AddSkill from './tool_outputs/AddSkill.vue'
 import EditSkill from './tool_outputs/EditSkill.vue'
 import RemoveSkill from './tool_outputs/RemoveSkill.vue'
+import RemoveFile from './tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 
@@ -900,6 +901,9 @@ const compactSession = async () => {
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- RemoveSkill component for remove_skill tool -->
                       <RemoveSkill v-else-if="msg.tool_name === 'remove_skill'" :content="msg.content"
+                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
+                      <!-- RemoveFile component for remove_file tool -->
+                      <RemoveFile v-else-if="msg.tool_name === 'remove_file'" :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)" />
                       <!-- SpawnSubAgent component for spawn_sub_agent tool -->
                       <SpawnSubAgent v-else-if="msg.tool_name === 'spawn_sub_agent'" :content="msg.content"

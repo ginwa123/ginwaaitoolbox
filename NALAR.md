@@ -576,6 +576,83 @@ zig build test:desktop      # Run desktop Bun tests
 
 ---
 
+## Web Fetching Service (CloakBrowser API)
+
+**Location:** `src/modules/web_fetching_service/`
+**Run:** `bun run src/modules/web_fetching_service/index.ts <port>`
+
+Anti-bot bypass scraping service using CloakBrowser (stealth Chromium).
+
+### File Structure
+
+```
+http_handlers/
+├── shared.ts      # Types (BrowserSession, PageSession) + session stores
+├── helpers.ts     # Utilities (jsonResponse, generateBrowserId, etc.)
+├── health.ts      # healthGet()
+├── launch.ts      # launchBrowserPost()
+├── close.ts       # closeBrowserPost()
+├── page.ts        # openPagePost()
+├── snapshot.ts    # snapshotPagePost()
+├── click.ts       # clickElementPost()
+├── fill.ts        # fillInputPost(), pressKeyPost()
+├── close_page.ts  # closePagePost()
+└── mod.ts         # Barrel export
+```
+
+### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
+| POST | `/launch` | Launch browser → returns `browser_id` |
+| POST | `/close/:browser_id` | Close browser |
+| POST | `/page` | Open page `{browser_id, url}` → returns `page_id` |
+| POST | `/snapshot` | Get accessibility tree `{page_id}` → returns `{tree: [{ref, text, href?}]}` |
+| POST | `/click` | Click element by ref `{page_id, ref}` |
+| POST | `/fill` | Fill input `{page_id, ref, text}` |
+| POST | `/press` | Press key `{page_id, ref?, key}` |
+| POST | `/page/close/:page_id` | Close page |
+
+### Usage
+
+```bash
+# Launch browser
+curl -X POST http://localhost:3000/launch
+# {"success":true,"browser_id":"browser_xxx"}
+
+# Open page (provide browser_id + url)
+curl -X POST http://localhost:3000/page \
+  -H "Content-Type: application/json" \
+  -d '{"browser_id": "browser_xxx", "url": "https://example.com"}'
+# {"success":true,"browser_id":"...","page_id":"page_xxx","url":"...","title":"...","status":200}
+
+# Get accessibility tree (returns refs like e1, e2, e3)
+curl -X POST http://localhost:3000/snapshot \
+  -d '{"page_id": "page_xxx"}'
+# {"success":true,"page_id":"...","url":"...","title":"...","tree":[{"ref":"e1","text":"Sign In","href":"..."}]}
+
+# Click element by ref
+curl -X POST http://localhost:3000/click \
+  -d '{"page_id": "page_xxx", "ref": "e1"}'
+
+# Fill input with text
+curl -X POST http://localhost:3000/fill \
+  -d '{"page_id": "page_xxx", "ref": "e1", "text": "search query"}'
+
+# Press keyboard key
+curl -X POST http://localhost:3000/press \
+  -d '{"page_id": "page_xxx", "key": "Enter"}'
+
+# Close page
+curl -X POST http://localhost:3000/page/close/page_xxx
+
+# Close browser
+curl -X POST http://localhost:3000/close/browser_xxx
+```
+
+---
+
 ## ⚡ Self-Review Checklist (AFTER EVERY TASK)
 
 1. ✅ TASK COMPLETED — Did I actually solve the user's request?

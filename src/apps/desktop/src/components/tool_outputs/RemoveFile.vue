@@ -1,0 +1,94 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+
+const props = defineProps<{
+  content: string
+  expanded?: boolean
+}>()
+
+const isExpanded = ref(props.expanded ?? false)
+
+// Parse file path from <path>...</path>
+const filePath = computed(() => {
+  const match = props.content.match(/<path>(.*?)<\/path>/)
+  return match ? match[1] : null
+})
+
+// Parse deleted status
+const isDeleted = computed(() => {
+  const match = props.content.match(/<deleted>([\s\S]*?)<\/deleted>/)
+  if (!match || !match[1]) return false
+  return match[1].trim() === 'true'
+})
+
+// Parse error message if any
+const errorMessage = computed(() => {
+  const match = props.content.match(/<error>(.*?)<\/error>/)
+  if (!match || !match[1]) return null
+  return match[1].trim()
+})
+
+// Parse recursive flag if present
+const isRecursive = computed(() => {
+  const match = props.content.match(/<recursive>([\s\S]*?)<\/recursive>/)
+  if (!match || !match[1]) return false
+  return match[1].trim() === 'true'
+})
+
+// Status indicator (success/failure)
+const statusIndicator = computed(() => isDeleted.value ? '✓' : '✗')
+
+const toggle = () => {
+  if (errorMessage.value) {
+    isExpanded.value = !isExpanded.value
+  }
+}
+
+const copyPath = async (e: Event) => {
+  e.stopPropagation()
+  if (filePath.value) {
+    await navigator.clipboard.writeText(filePath.value)
+  }
+}
+</script>
+
+<template>
+  <div 
+    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
+    :class="{ 'border-red-500/50 opacity-80': !isDeleted }"
+  >
+    <!-- Header -->
+    <div 
+      class="group flex items-center gap-1 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
+      :class="{ 'cursor-default': isDeleted && !errorMessage }"
+      @click="toggle"
+      role="button"
+      tabindex="0"
+    >
+      <span class="text-[var(--color-violet)] font-semibold text-xs">remove_file</span>
+      <span v-if="isRecursive" class="text-[var(--color-orange)] text-xs">(recursive)</span>
+      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="filePath || ''">{{ filePath || 'unknown' }}</span>
+      <span class="text-xs font-semibold" :class="isDeleted ? 'text-green-500' : 'text-red-500'">
+        {{ statusIndicator }}
+      </span>
+      <button 
+        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+        @click="copyPath" 
+        title="Copy path"
+      >
+        ⎘
+      </button>
+      <span v-if="errorMessage" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+        {{ isExpanded ? '−' : '+' }}
+      </span>
+    </div>
+
+    <!-- Expanded content -->
+    <div v-if="isExpanded && errorMessage" class="border-t border-[var(--color-border)] bg-black/[0.02]">
+      <div class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
+        <span class="font-semibold shrink-0">Error:</span>
+        <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
+      </div>
+    </div>
+  </div>
+</template>
