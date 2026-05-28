@@ -5,8 +5,8 @@ const gserverz = nalar_core.gserverz;
 
 /// Git file change structure
 pub const GitFileChange = struct {
-    index_status: []const u8,  // Status in staging area
-    worktree_status: []const u8,  // Status in working tree
+    index_status: []const u8,  // Status in staging area (1 char: 'M', 'A', 'D', '?', ' ', etc.)
+    worktree_status: []const u8,  // Status in working tree (1 char: 'M', 'D', '?', ' ', etc.)
     path: []const u8
 };
 
@@ -21,6 +21,7 @@ pub const GitChangesResponse = struct {
 };
 
 /// Parse git status --porcelain output and separate staged/unstaged files
+/// Note: This function allocates copies of status chars and paths
 fn parseGitStatus(allocator: std.mem.Allocator, output: []const u8) GitChangesResponse {
     var staged_files = std.ArrayList(GitFileChange).empty;
     var modified_files = std.ArrayList(GitFileChange).empty;
@@ -32,27 +33,45 @@ fn parseGitStatus(allocator: std.mem.Allocator, output: []const u8) GitChangesRe
         const end = std.mem.indexOfScalar(u8, output[start..], '\n') orelse output.len;
         const line = output[start..start+end];
         
-        if (line.len >= 3) {
+        if (line.len >= 4) {
+            // Git porcelain format: XY<space><path>
+            // X = index status (1 char at position 0)
+            // Y = worktree status (1 char at position 1)
+            // space at position 2
+            // path starts at position 3
             const indexStatus = line[0..1];
             const worktreeStatus = line[1..2];
             const path = line[3..];
             
-            const change = GitFileChange{
-                .index_status = indexStatus,
-                .worktree_status = worktreeStatus,
-                .path = path
+            // Allocate copies since output buffer will be freed
+            const indexStatusCopy = allocator.dupe(u8, indexStatus) catch continue;
+            const worktreeStatusCopy = allocator.dupe(u8, worktreeStatus) catch {
+                allocator.free(indexStatusCopy);
+                continue;
+            };
+            const pathCopy = allocator.dupe(u8, path) catch {
+                allocator.free(indexStatusCopy);
+                allocator.free(worktreeStatusCopy);
+                continue;
             };
             
-            // Untracked files start with '??'
-            if (std.mem.eql(u8, indexStatus, "??")) {
+            const change = GitFileChange{
+                .index_status = indexStatusCopy,
+                .worktree_status = worktreeStatusCopy,
+                .path = pathCopy
+            };
+            
+            // Untracked files have "??" as their status (both X and Y are '?')
+            if (std.mem.eql(u8, indexStatus, "?") and std.mem.eql(u8, worktreeStatus, "?")) {
                 untracked_files.append(allocator, change) catch {};
             }
-            // Staged changes have non-space in first position
+            // Staged changes have non-space in index position (X != ' ')
             else if (!std.mem.eql(u8, indexStatus, " ")) {
                 staged_files.append(allocator, change) catch {};
             }
-            // Modified files in worktree (not staged)
-            if (!std.mem.eql(u8, worktreeStatus, " ") and !std.mem.eql(u8, indexStatus, "??")) {
+            // Modified files in worktree (Y != ' ' and not untracked)
+            if (!std.mem.eql(u8, worktreeStatus, " ") and 
+                !(std.mem.eql(u8, indexStatus, "?") and std.mem.eql(u8, worktreeStatus, "?"))) {
                 modified_files.append(allocator, change) catch {};
             }
         }
@@ -67,6 +86,56 @@ fn parseGitStatus(allocator: std.mem.Allocator, output: []const u8) GitChangesRe
         .untracked_files = untracked_files.toOwnedSlice(allocator) catch &.{},
         .has_changes = staged_files.items.len > 0 or modified_files.items.len > 0 or untracked_files.items.len > 0
     };
+}
+
+/// Expand untracked directories to show individual files inside them
+/// Like VS Code Git, lazygit, or fzf-lua git
+fn expandUntrackedDirectories(allocator: std.mem.Allocator, io: std.Io, untracked_dirs: []const []const u8, path_param: []const u8) ![][]const u8 {
+    var all_files = std.ArrayList([]const u8).empty;
+    defer {
+        for (all_files.items) |item| allocator.free(item);
+        all_files.deinit(allocator);
+    }
+
+    for (untracked_dirs) |dir| {
+        // Skip if not a directory (doesn't end with /)
+        if (dir.len == 0 or dir[dir.len - 1] != '/') {
+            const copy = try allocator.dupe(u8, dir);
+            try all_files.append(allocator, copy);
+            continue;
+        }
+
+        // Get files inside this untracked directory
+        // Use git ls-files --others --exclude-standard <dir>
+        const result = std.process.run(allocator, io, .{
+            .argv = &.{ "git", "-C", path_param, "ls-files", "--others", "--exclude-standard", dir },
+        }) catch continue;
+
+        if (result.term.exited != 0) continue;
+
+        // Parse the output - each line is a file path
+        var file_start: usize = 0;
+        const stdout = std.mem.trim(u8, result.stdout, " \n\r");
+        
+        while (file_start < stdout.len) {
+            const remaining = stdout.len - file_start;
+            const line_end = std.mem.indexOfScalar(u8, stdout[file_start..], '\n') orelse remaining;
+            const actual_end = file_start + line_end;
+            
+            if (actual_end > stdout.len) break;
+            
+            const file_path = stdout[file_start..actual_end];
+            
+            if (file_path.len > 0) {
+                const copy = try allocator.dupe(u8, file_path);
+                try all_files.append(allocator, copy);
+            }
+            
+            file_start = actual_end + 1;
+        }
+    }
+
+    return try all_files.toOwnedSlice(allocator);
 }
 
 /// Git changes endpoint - returns staged, unstaged, and untracked files
@@ -120,6 +189,59 @@ pub fn gitChangesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
     var response = parseGitStatus(allocator, status_result.stdout);
     response.is_git_repo = true;
     response.branch = branch_name;
+
+    // Expand untracked directories to show individual files (like VS Code Git, lazygit)
+    if (response.untracked_files.len > 0) {
+        // Collect directory paths (those ending with /)
+        var dirs = std.ArrayList([]const u8).empty;
+        defer {
+            for (dirs.items) |d| allocator.free(d);
+            dirs.deinit(allocator);
+        }
+        
+        for (response.untracked_files) |file| {
+            if (file.path.len > 0 and file.path[file.path.len - 1] == '/') {
+                const copy = try allocator.dupe(u8, file.path);
+                try dirs.append(allocator, copy);
+            }
+        }
+
+        // If we have directories, expand them
+        if (dirs.items.len > 0) {
+            const expanded_files = try expandUntrackedDirectories(allocator, io, dirs.items, path_param);
+            
+            // Free the dir strings (they're no longer needed)
+            for (dirs.items) |d| allocator.free(d);
+            
+            // Free old untracked files
+            for (response.untracked_files) |f| {
+                allocator.free(f.index_status);
+                allocator.free(f.worktree_status);
+                allocator.free(f.path);
+            }
+            allocator.free(response.untracked_files);
+            
+            // Build new untracked files list with expanded files
+            var new_untracked = std.ArrayList(GitFileChange).empty;
+            defer new_untracked.deinit(allocator);
+            
+            for (expanded_files) |file_path| {
+                const change = GitFileChange{
+                    .index_status = try allocator.dupe(u8, "?"),
+                    .worktree_status = try allocator.dupe(u8, "?"),
+                    .path = file_path,  // already allocated by expandUntrackedDirectories
+                };
+                try new_untracked.append(allocator, change);
+            }
+            
+            response.untracked_files = try new_untracked.toOwnedSlice(allocator);
+            
+            // Recalculate has_changes
+            response.has_changes = response.staged_files.len > 0 or 
+                                   response.modified_files.len > 0 or 
+                                   response.untracked_files.len > 0;
+        }
+    }
 
     return res.jsonResponse(.{ .status_code = 200, .data = try makeGitChangesResponse(allocator, response) });
 }
