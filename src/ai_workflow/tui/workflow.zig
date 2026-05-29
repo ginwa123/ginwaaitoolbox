@@ -83,6 +83,12 @@ pub const CallbackAiWorkerFlow = struct {
                 .is_output = false,
             }) catch {};
 
+            const session_skills_err = llm_history.getSessionSkills(allocator, db, session_id) catch null;
+            defer if (session_skills_err) |s| for (s) |*skill| {
+                allocator.free(skill.skill_name);
+                allocator.free(skill.content);
+            };
+
             on_event_sent.onEventSendLLMHistory(allocator, .{
                 .session_id = session_id,
                 .model = config.model,
@@ -101,6 +107,7 @@ pub const CallbackAiWorkerFlow = struct {
                 .parent_session_id = session_id,
                 .is_input = true,
                 .is_output = false,
+                .session_skills = session_skills_err,
             }) catch {};
         };
     }
@@ -261,6 +268,12 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .image_urls = image_urls,
                 });
 
+                const session_skills_queued = llm_history.getSessionSkills(parent_allocator, db, copy_session_id) catch null;
+                defer if (session_skills_queued) |s| for (s) |*skill| {
+                    parent_allocator.free(skill.skill_name);
+                    parent_allocator.free(skill.content);
+                };
+
                 on_event_sent.onEventSendLLMHistory(allocator, .{
                     .session_id = copy_session_id,
                     .model = config.model,
@@ -279,6 +292,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .parent_session_id = copy_parent_session_id,
                     .is_input = true,
                     .is_output = false,
+                    .session_skills = session_skills_queued,
                 }) catch {};
 
                 _ = try llm_history.deleteQueuedMessage(allocator, db, copy_session_id, queued.message);
@@ -382,6 +396,12 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                 // Send SSE event directly with the agent's response content
                 // Don't use getLatestMessage as it might return wrong message if timestamps collide
+                const session_skills_dynamic = llm_history.getSessionSkills(allocator, db, copy_session_id) catch null;
+                defer if (session_skills_dynamic) |s| for (s) |*skill| {
+                    allocator.free(skill.skill_name);
+                    allocator.free(skill.content);
+                };
+
                 _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
                     .session_id = copy_session_id,
                     .model = config.model,
@@ -402,6 +422,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .parent_session_id = copy_parent_session_id,
                     .parent_id = copy_parent_session_id,
                     .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
+                    .session_skills = session_skills_dynamic,
                 });
 
                 const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
@@ -445,6 +466,12 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                     // Send SSE event directly with the agent's response content
                     // Don't use getLatestMessage as it might return wrong message if timestamps collide
+                    const session_skills_assistant = llm_history.getSessionSkills(allocator, db, copy_session_id) catch null;
+                    defer if (session_skills_assistant) |s| for (s) |*skill| {
+                        allocator.free(skill.skill_name);
+                        allocator.free(skill.content);
+                    };
+
                     _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
                         .session_id = copy_session_id,
                         .model = config.model,
@@ -465,6 +492,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                         .parent_session_id = copy_parent_session_id,
                         .parent_id = copy_parent_session_id,
                         .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
+                        .session_skills = session_skills_assistant,
                     });
 
                     const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
@@ -477,6 +505,13 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
             } else {
                 retry_count += 1;
                 logger.errFmt("Error calling agent: maybe streaming failed", .{});
+
+                const session_skills_retry = llm_history.getSessionSkills(allocator, db, copy_session_id) catch null;
+                defer if (session_skills_retry) |s| for (s) |*skill| {
+                    allocator.free(skill.skill_name);
+                    allocator.free(skill.content);
+                };
+
                 on_event_sent.onEventSendLLMHistory(allocator, .{
                     .session_id = copy_session_id,
                     .model = config.model,
@@ -496,6 +531,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .is_output = false,
                     .parent_session_id = copy_parent_session_id,
                     .parent_id = copy_parent_session_id,
+                    .session_skills = session_skills_retry,
                 }) catch {};
                 break;
             }

@@ -433,6 +433,7 @@ pub const SessionMessageResponse = struct {
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
     total_count: ?u32 = null, // Total count of messages in session (for VirtualScroller)
+    skills: ?[]const SkillInfo = null, // Skills loaded for this session
 };
 
 /// Sort direction
@@ -581,6 +582,9 @@ pub fn getSessionMessagesSorted(
     // Get total count of messages for this session
     const total_count = getTotalMessageCountForSession(db, session_id);
 
+    // Get skills loaded for this session
+    const session_skills = getSessionSkills(allocator, db, session_id) catch null;
+
     return SessionMessageResponse{
         .messages = result_messages,
         .has_more = has_more,
@@ -589,6 +593,7 @@ pub fn getSessionMessagesSorted(
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
         .max_capacity_total_tokens = getMaxCapacityTotalTokensForSession(allocator, db, session_id),
         .total_count = total_count,
+        .skills = session_skills,
     };
 }
 
@@ -1863,6 +1868,52 @@ pub fn saveSkill(
     const sql = "INSERT OR REPLACE INTO session_skills (session_id, skill_name, content, loaded_at) VALUES (?, ?, ?, strftime('%s', 'now'))";
     try db.exec(allocator, sql, &.{ session_id, skill_name, content });
     logger.debugFmt("Skill '{s}' saved to database for session {s}", .{ skill_name, session_id });
+}
+
+/// Skill info for session_skills table
+pub const SkillInfo = struct {
+    skill_name: []u8,
+    content: []u8,
+    loaded_at: ?i64 = null,
+
+    pub fn deinit(self: SkillInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.skill_name);
+        allocator.free(self.content);
+    }
+};
+
+/// Get all skills loaded for a session
+pub fn getSessionSkills(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]SkillInfo {
+    if (session_id.len == 0) return &.{};
+
+    const sql = "SELECT skill_name, content, loaded_at FROM session_skills WHERE session_id = ?";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    var skills = std.ArrayList(SkillInfo).empty;
+    errdefer {
+        for (skills.items) |*s| s.deinit(allocator);
+        skills.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const skill_name = row.values[0];
+        const content = row.values[1];
+        const loaded_at = if (row.values[2].len > 0) std.fmt.parseInt(i64, row.values[2], 10) catch null else null;
+
+        try skills.append(allocator, .{
+            .skill_name = try allocator.dupe(u8, skill_name),
+            .content = try allocator.dupe(u8, content),
+            .loaded_at = loaded_at,
+        });
+        row.deinit(allocator);
+    }
+
+    return try skills.toOwnedSlice(allocator);
 }
 
 // =============================================================================

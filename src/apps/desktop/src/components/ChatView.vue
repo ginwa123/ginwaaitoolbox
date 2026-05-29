@@ -21,6 +21,7 @@ import EditSkill from './tool_outputs/EditSkill.vue'
 import RemoveSkill from './tool_outputs/RemoveSkill.vue'
 import RemoveFile from './tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
+import SkillsPopup from './SkillsPopup.vue'
 
 const props = defineProps<{
   chatId: string
@@ -278,6 +279,10 @@ const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
 
+// Session skills state
+const sessionSkills = ref<api.SkillInfo[]>([])
+const showSkillsPopup = ref(false)
+
 // Track which tool items are expanded (by index)
 const expandedToolIds = ref<Set<string>>(new Set())
 
@@ -413,6 +418,8 @@ const loadChatHistory = async (loadMore = false) => {
       if (data.max_capacity_total_tokens !== undefined) {
         maxCapacityTotalTokens.value = data.max_capacity_total_tokens
       }
+      // Update session skills from response
+      sessionSkills.value = data.skills || []
     }
 
     const newMessages = (data.messages || []).map((msg) => ({
@@ -1173,10 +1180,35 @@ const compactSession = async () => {
               <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
               <span v-else style="color: var(--color-green)">✓</span>
             </div>
+            <!-- Session skills display -->
+            <button
+              v-if="sessionSkills && sessionSkills.length > 0"
+              @click="showSkillsPopup = true"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-200 hover:scale-105"
+              style="
+                background-color: var(--semantic-card-bg);
+                border: 1px solid var(--color-border);
+                cursor: pointer;
+              "
+              :title="'Loaded skills: ' + sessionSkills.map(s => s.skill_name).join(', ')"
+            >
+              <span>🧠</span>
+              <span style="color: var(--semantic-text)">{{ sessionSkills.length }}</span>
+              <span style="color: var(--semantic-text-dim)">skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span>
+            </button>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- Skills Popup Modal -->
+    <SkillsPopup
+      :show="showSkillsPopup"
+      :skills="sessionSkills"
+      :session-cwd="cwd"
+      @close="showSkillsPopup = false"
+      @skill-click="(skill) => { console.log('Skill clicked:', skill); showSkillsPopup = false }"
+    />
 
     <!-- Image Preview Popup -->
     <Teleport to="body">

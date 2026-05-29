@@ -5,6 +5,7 @@ const sqlite = tree1_mod.sqlite;
 const logger = @import("nalarcore").logger;
 const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
+const llm_history = @import("llm_history.zig");
 
 // ============================================================================
 // Session-to-Client ID mapping for SSE event bus integration
@@ -45,6 +46,7 @@ pub const OnEventInputLLMHistory = struct {
     total_tokens: ?u32 = null,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
+    session_skills: ?[]const llm_history.SkillInfo = null,
 };
 
 /// JSON event payload structure for SSE
@@ -72,6 +74,14 @@ pub const SseEventLLMHistory = struct {
     total_tokens: ?u32 = null,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
+    session_skills: ?[]const SkillInfo = null,
+};
+
+/// Skill info for SSE payload
+pub const SkillInfo = struct {
+    skill_name: []const u8,
+    content: []const u8,
+    loaded_at: ?i64 = null,
 };
 
 /// JSON representation of a tool call
@@ -151,6 +161,22 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         tool_calls_json = try tool_calls_owned.toOwnedSlice(allocator);
     }
 
+    // Convert llm_history.SkillInfo to local SkillInfo for SSE payload
+    var session_skills_json: ?[]const SkillInfo = null;
+    var session_skills_owned: std.ArrayList(SkillInfo) = .empty;
+    defer if (session_skills_json == null) session_skills_owned.deinit(allocator);
+
+    if (input.session_skills) |skills| {
+        for (skills) |skill| {
+            try session_skills_owned.append(allocator, .{
+                .skill_name = skill.skill_name,
+                .content = skill.content,
+                .loaded_at = skill.loaded_at,
+            });
+        }
+        session_skills_json = try session_skills_owned.toOwnedSlice(allocator);
+    }
+
     const payload = SseEventLLMHistory{
         .index = input.index,
         .content = input.content orelse "",
@@ -174,6 +200,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         .total_tokens = input.total_tokens,
         .diffview_before = input.diffview_before,
         .diffview_after = input.diffview_after,
+        .session_skills = session_skills_json,
     };
 
     var buf: std.ArrayList(u8) = .empty;

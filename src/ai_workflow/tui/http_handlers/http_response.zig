@@ -1,4 +1,5 @@
 const std = @import("std");
+const llm_history = @import("../llm_history.zig");
 
 pub const WorkspaceResponse = struct {
     id: []const u8,
@@ -137,6 +138,7 @@ pub const SessionMessagesResponse = struct {
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
     total: ?u32 = null,  // Total count of messages for VirtualScroller
+    skills: ?[]const llm_history.SkillInfo = null, // Skills loaded for this session
 };
 
 pub fn makeSessionMessagesResponse(allocator: std.mem.Allocator, response: SessionMessagesResponse) ![]u8 {

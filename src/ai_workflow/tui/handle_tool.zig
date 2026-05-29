@@ -539,6 +539,13 @@ fn sendSSEForLatestMessage(
     };
     if (latestMessage) |msg| {
         std.debug.print("SSE_DEBUG: sending SSE for session {s}, content='{s}'\n", .{ session_id, if (msg.response_content.len > 50) msg.response_content[0..50] else msg.response_content });
+
+        const session_skills_tool = llm_history.getSessionSkills(allocator, db, session_id) catch null;
+        defer if (session_skills_tool) |s| for (s) |*skill| {
+            allocator.free(skill.skill_name);
+            allocator.free(skill.content);
+        };
+
         onEventSendLLMHistory(allocator, .{
             .session_id = msg.session_id,
             .model = msg.model,
@@ -561,6 +568,7 @@ fn sendSSEForLatestMessage(
             .diffview_before = msg.diffview_before,
             .diffview_after = msg.diffview_after,
             .total_tokens = msg.total_tokens,
+            .session_skills = session_skills_tool,
         }) catch |err| {
             std.debug.print("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         };

@@ -188,6 +188,12 @@ export interface Message {
   image_url?: string
 }
 
+export interface SkillInfo {
+  skill_name: string
+  content: string
+  loaded_at?: number
+}
+
 // All chat endpoints go through Zig backend at /api/llm/*
 // Zig backend internally calls LLM backend
 
@@ -209,6 +215,7 @@ export async function getChatHistory(
   max_total_tokens?: number
   max_capacity_total_tokens?: number
   total_count?: number
+  skills?: SkillInfo[]
 }> {
   try {
     const params = new URLSearchParams({
@@ -249,6 +256,7 @@ export async function getChatHistory(
       max_total_tokens: data.max_total_tokens,
       max_capacity_total_tokens: data.max_capacity_total_tokens,
       total_count: data.total_count,
+      skills: data.skills,
     }
   } catch (error) {
     // Return empty messages when LLM backend unavailable

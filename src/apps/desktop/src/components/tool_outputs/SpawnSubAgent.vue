@@ -23,9 +23,9 @@ const agents = computed((): AgentResult[] => {
   let match
 
   while ((match = agentRegex.exec(props.content)) !== null) {
-    const name = match[1]
+    const name = match[1] ?? ''
     const success = match[2] === 'true'
-    const agentContent = match[3]
+    const agentContent = match[3] ?? ''
 
     // Extract session_id, response or error
     const sessionIdMatch = agentContent.match(/<session_id>([\s\S]*?)<\/session_id>/)
@@ -35,9 +35,9 @@ const agents = computed((): AgentResult[] => {
     results.push({
       name,
       success,
-      sessionId: sessionIdMatch ? sessionIdMatch[1].trim() : null,
-      response: responseMatch ? responseMatch[1].trim() : null,
-      error: errorMatch ? errorMatch[1].trim() : null,
+      sessionId: sessionIdMatch?.[1]?.trim() ?? null,
+      response: responseMatch?.[1]?.trim() ?? null,
+      error: errorMatch?.[1]?.trim() ?? null,
     })
   }
 
@@ -47,7 +47,7 @@ const agents = computed((): AgentResult[] => {
 // Parse summary
 const summary = computed(() => {
   const match = props.content.match(/<summary succeeded="(\d+)" failed="(\d+)" \/>/)
-  if (match) {
+  if (match?.[1] && match?.[2]) {
     return {
       succeeded: parseInt(match[1], 10),
       failed: parseInt(match[2], 10),
