@@ -1,6 +1,4 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const http_client = nalarcore.http_client;
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const Value = std.json.Value;
@@ -41,10 +39,7 @@ pub const CloakBrowserResult = struct {
 pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: CloakBrowserInput) !CloakBrowserResult {
     const api_url = input.api_url orelse "http://localhost:3000";
 
-    var client = http_client.HttpClient.init(allocator, io);
-    defer client.deinit();
-
-    // Build endpoint based on action - some are static, some are heap allocated
+    // Build endpoint based on action
     var endpoint_heap: ?[]const u8 = null;
     var static_endpoint: []const u8 = undefined;
 
@@ -86,10 +81,10 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
     }
 
     const endpoint: []const u8 = if (endpoint_heap) |h| h else static_endpoint;
+    defer if (endpoint_heap) |h| allocator.free(h);
 
-    const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ api_url, endpoint });
-    defer allocator.free(url);
-    if (endpoint_heap) |h| allocator.free(h);
+    const full_url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ api_url, endpoint });
+    defer allocator.free(full_url);
 
     // Build JSON body
     var body_map = std.StringHashMap([]const u8).init(allocator);
@@ -105,27 +100,55 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
     const body = try buildJsonBody(allocator, &body_map);
     defer allocator.free(body);
 
-    const result = client.post(url, body, null) catch |err| {
+    // Perform HTTP POST using std.http.Client
+    var client = std.http.Client{ .allocator = allocator, .io = io };
+    defer client.deinit();
+
+    const uri = std.Uri.parse(full_url) catch |err| {
+        return CloakBrowserResult{
+            .success = false,
+            .err_msg = try std.fmt.allocPrint(allocator, "Invalid URL: {s}", .{@errorName(err)}),
+        };
+    };
+
+    var req = client.request(.POST, uri, .{
+        .version = .@"HTTP/1.1",
+        .headers = .{
+            .content_type = .{ .override = "application/json" },
+        },
+    }) catch |err| {
         return CloakBrowserResult{
             .success = false,
             .err_msg = try std.fmt.allocPrint(allocator, "HTTP request failed: {s}", .{@errorName(err)}),
         };
     };
-    defer allocator.free(result.body);
+    defer req.deinit();
+
+    const body_mut = try allocator.dupe(u8, body);
+    defer allocator.free(body_mut);
+    try req.sendBodyComplete(body_mut);
+
+    var redirect_buffer: [8192]u8 = undefined;
+    var response = try req.receiveHead(&redirect_buffer);
+
+    var transfer_buffer: [64 * 1024]u8 = undefined;
+    const resp_bytes = try response.reader(&transfer_buffer).allocRemaining(allocator, .unlimited);
+    defer allocator.free(resp_bytes);
+
+    const status_code = @intFromEnum(response.head.status);
 
     // DEBUG: Log response body details
-    if (result.body.len < 500) {
-        std.debug.print("DEBUG cloak_browser: url={s}, body={s}, resp_len={d}, resp={s}\n", .{ url, body, result.body.len, result.body });
+    if (resp_bytes.len < 500) {
+        std.debug.print("DEBUG cloak_browser: url={s}, body={s}, status={d}, resp_len={d}, resp={s}\n", .{ full_url, body, status_code, resp_bytes.len, resp_bytes });
     } else {
-        std.debug.print("DEBUG cloak_browser: url={s}, body={s}, resp_len={d}, resp_first_200={s}\n", .{ url, body, result.body.len, result.body[0..200] });
+        std.debug.print("DEBUG cloak_browser: url={s}, body={s}, status={d}, resp_len={d}, resp_first_200={s}\n", .{ full_url, body, status_code, resp_bytes.len, resp_bytes[0..200] });
     }
 
     // Parse JSON response
-    const parsed = std.json.parseFromSlice(Value, allocator, result.body, .{}) catch |err| {
-        // On parse error, dump the full body for debugging
-        std.debug.print("DEBUG cloak_browser: JSON parse error: {s}, body_len={d}\n", .{ @errorName(err), result.body.len });
-        if (result.body.len > 0) {
-            std.debug.print("DEBUG cloak_browser: body_content (first 500)={s}\n", .{result.body[0..@min(500, result.body.len)]});
+    const parsed = std.json.parseFromSlice(Value, allocator, resp_bytes, .{}) catch |err| {
+        std.debug.print("DEBUG cloak_browser: JSON parse error: {s}, body_len={d}\n", .{ @errorName(err), resp_bytes.len });
+        if (resp_bytes.len > 0) {
+            std.debug.print("DEBUG cloak_browser: body_content (first 500)={s}\n", .{resp_bytes[0..@min(500, resp_bytes.len)]});
         }
         return CloakBrowserResult{
             .success = false,
@@ -185,22 +208,23 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
 
 /// Helper to build JSON body from string hashmap
 fn buildJsonBody(allocator: std.mem.Allocator, map: *std.StringHashMap([]const u8)) ![]const u8 {
-    var buf = std.ArrayList(u8).empty;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
     var first = true;
-    try buf.append(allocator, '{');
+    try buf.append(allocator,'{');
 
     var it = map.iterator();
     while (it.next()) |entry| {
-        if (!first) try buf.append(allocator, ',');
-        try buf.appendSlice(allocator, "\"");
-        try buf.appendSlice(allocator, entry.key_ptr.*);
-        try buf.appendSlice(allocator, "\":\"");
-        try buf.appendSlice(allocator, entry.value_ptr.*);
-        try buf.append(allocator, '"');
+        if (!first) try buf.append(allocator,',');
+        try buf.appendSlice(allocator,"\"");
+        try buf.appendSlice(allocator,entry.key_ptr.*);
+        try buf.appendSlice(allocator,"\":\"");
+        try buf.appendSlice(allocator,entry.value_ptr.*);
+        try buf.append(allocator,'"');
         first = false;
     }
 
-    try buf.append(allocator, '}');
+    try buf.append(allocator,'}');
     return try buf.toOwnedSlice(allocator);
 }
 

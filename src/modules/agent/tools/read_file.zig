@@ -87,7 +87,7 @@ pub fn readFile(
     };
 }
 
-pub fn to_xml(allocator: std.mem.Allocator, result: ReadFileResult, path: []const u8) ![]const u8 {
+pub fn toXMLSuccess(allocator: std.mem.Allocator, result: ReadFileResult, path: []const u8) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<path>{s}</path>
         \\<content>{s}</content>

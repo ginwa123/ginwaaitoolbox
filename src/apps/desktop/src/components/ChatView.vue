@@ -118,7 +118,7 @@ const renderResponse = (
       return marked.parse(cleanContent, { async: false }) as string
     }
 
-    if (role === 'tool_calls') {
+    if (role === 'tool_calls') { // is a llm calling tool, or use tool, but no output yet
       if (isThinkingTags(content)) {
         return getThinkingTags(content)
       }
@@ -127,7 +127,7 @@ const renderResponse = (
       return marked.parse(cleanContent, { async: false }) as string
     }
 
-    if (role === 'tool') {
+    if (role === 'tool') { // is a tool response
       if (tool_name === 'read_file') {
         const mathPath = content.match(/<path>(.*?)<\/path>/)
         const path = mathPath ? mathPath[1] : null

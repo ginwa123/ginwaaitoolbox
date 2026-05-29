@@ -198,7 +198,7 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     defer read_result.deinit(ctx.allocator);
 
     // Single allocation: combines path and content into XML result
-    const output = try read_file_mod.to_xml(ctx.allocator, read_result, parsed.value.path);
+    const output = try read_file_mod.toXMLSuccess(ctx.allocator, read_result, parsed.value.path);
     return ToolExecResult{ .output = output };
 }
 
