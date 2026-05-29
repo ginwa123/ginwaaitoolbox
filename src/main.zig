@@ -165,7 +165,6 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/session", ai_mod.http_handlers.sessionListHandler);
     //
     // // try gs.router.get("/api/session/stream", http_handlers.sessionStreamHandler, ctxParent);
-    try gs.router.get("/api/session/:session_id", ai_mod.http_handlers.session_get_handler);
     try gs.router.get("/api/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
     // try gs.router.get("/api/session/exists/:session_id", http_handlers.session_exist_handler, ctxParent);
     // try gs.router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, ctxParent);
@@ -188,7 +187,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
     try gs.router.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
     try gs.router.sse("/api/llm/session/:session_id/queue_messages/stream", ai_mod.http_handlers.queueMessagesStreamHandler);
-    try gs.router.sse("/api/llm/stream/:session_id", ai_mod.http_handlers.streamHandler);
+    try gs.router.sse("/api/llm/stream/:session_id", ai_mod.http_handlers.llmHistorySSE);
     try gs.router.sse("/api/sessions/stream", ai_mod.http_handlers.sessionsStreamHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //

@@ -51,7 +51,7 @@ pub const CallbackAiStream = struct {
 };
 
 /// SSE stream endpoint - establishes persistent connection for real-time events
-pub fn streamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+pub fn llmHistorySSE(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
     const di = try nalar_core.getSingleton();

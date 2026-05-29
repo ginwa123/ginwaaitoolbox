@@ -74,10 +74,16 @@ fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
     return null;
 }
 
-pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, input: SearchInput) !SearchResult {
+pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, input: SearchInput) !SearchResult {
     // Validate head/tail are mutually exclusive
     if (input.head != null and input.tail != null) {
         return error.HeadAndTailMutuallyExclusive;
+    }
+
+    var current_dir = input.cwd;
+
+    if (std.mem.eql(u8, current_dir, "")) {
+        current_dir = cwd;
     }
 
     const max_results = input.max_results orelse 50;
@@ -94,7 +100,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, input: SearchInpu
     const result = try std.process.run(allocator, io, .{
         .argv = argv,
         .stdout_limit = std.Io.Limit.limited(max_output),
-        .cwd = .{ .path = input.cwd },
+        .cwd = .{ .path = current_dir },
     });
 
     defer allocator.free(result.stdout);
@@ -400,10 +406,10 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "cwd",
                     .type = "string",
-                    .description = "Current working directory",
+                    .description = "Current working directory, default is cwd projects selected",
                 },
             },
-            .required = &.{ "pattern", "path", "cwd" },
+            .required = &.{ "pattern", "path" },
         },
     },
 };
