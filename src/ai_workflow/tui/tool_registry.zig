@@ -876,7 +876,7 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    var search_result = search_tool_mod.execute_search(ctx.allocator, ctx.io, parsed.value) catch |err| {
+    var search_result = search_tool_mod.executeSearch(ctx.allocator, ctx.io, parsed.value) catch |err| {
         if (err == error.StdoutStreamTooLong) {
             const output = try ctx.allocator.dupe(u8,
                 \\<warning>Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.</warning>

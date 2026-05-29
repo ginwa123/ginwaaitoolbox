@@ -3,7 +3,7 @@ import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from '
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../stores/navigation'
 import { useSidebarStore } from '../stores/sidebar'
-import { VirtualScroller } from '../helpers'
+import { VirtualScroller, formatRelativeTime } from '../helpers'
 import * as api from '../api'
 
 const router = useRouter()
@@ -28,7 +28,7 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 
 // State
 const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean }[]>([])
+const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string }[]>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
@@ -117,7 +117,7 @@ const loadChats = async () => {
   chatsNextCursor.value = null
   try {
     console.log('[ChatsList] loadChats called, fetching from API...')
-    const data = await api.getChats('created_at', chatsSortDirection.value, 30)
+    const data = await api.getChats('updated_at', chatsSortDirection.value, 30)
     console.log('[ChatsList] API returned:', data)
     const savedSessionId = navigationStore.sessionId
     const sessions = data.sessions || []
@@ -126,6 +126,7 @@ const loadChats = async () => {
       name: session.session_name || 'New Chat',
       active: savedSessionId === session.session_id,
       processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
+      relativeTime: formatRelativeTime(session.updated_at),
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
@@ -157,7 +158,7 @@ const loadMoreChats = async () => {
   chatsLoading.value = true
   try {
     const data = await api.getChats(
-      'created_at',
+      'updated_at',
       chatsSortDirection.value,
       20,
       chatsNextCursor.value,
@@ -167,6 +168,7 @@ const loadMoreChats = async () => {
       name: session.session_name || 'New Chat',
       active: false,
       processing: false,
+      relativeTime: formatRelativeTime(session.updated_at),
     }))
     navItems.value.push(...newItems)
     chatsHasMore.value = data.has_more
@@ -274,6 +276,7 @@ const handleSessionEvent = (event: api.SessionEvent) => {
       name: event.name || 'New Chat',
       active: false,
       processing: false,
+      relativeTime: 'now',
     }
     // Check if already exists (avoid duplicates)
     const existingIndex = navItems.value.findIndex((item) => item.id === event.id)
@@ -298,6 +301,7 @@ const handleSessionEvent = (event: api.SessionEvent) => {
         name: event.name || 'New Chat',
         active: false,
         processing: false,
+        relativeTime: 'now',
       })
     }
   } else if (event.action === 'deleted') {
@@ -458,6 +462,7 @@ defineExpose({
               ></div>
             </span>
             <span class="flex-1 text-left truncate">{{ item.name }}</span>
+            <span class="text-xs opacity-60 shrink-0 ml-2">{{ item.relativeTime || 'now' }}</span>
             <button
               v-if="item.id !== 'chat'"
               @click.stop="confirmDeleteChat(item.id)"

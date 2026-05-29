@@ -26,6 +26,7 @@ pub const SearchInput = struct {
     tail: ?usize = null,
     max_output: ?usize = 1024 * 1024, // default 1MB
     group_by_file: bool = true, // when true, results are grouped by file
+    cwd: []const u8 = "",
 };
 
 pub const SearchResult = struct {
@@ -73,7 +74,7 @@ fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
     return null;
 }
 
-pub fn execute_search(allocator: std.mem.Allocator, io: std.Io, input: SearchInput) !SearchResult {
+pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, input: SearchInput) !SearchResult {
     // Validate head/tail are mutually exclusive
     if (input.head != null and input.tail != null) {
         return error.HeadAndTailMutuallyExclusive;
@@ -93,6 +94,7 @@ pub fn execute_search(allocator: std.mem.Allocator, io: std.Io, input: SearchInp
     const result = try std.process.run(allocator, io, .{
         .argv = argv,
         .stdout_limit = std.Io.Limit.limited(max_output),
+        .cwd = .{ .path = input.cwd },
     });
 
     defer allocator.free(result.stdout);
@@ -395,8 +397,13 @@ pub const search_tool = AgentTool{
                     .type = "number",
                     .description = "Max output size in bytes. Default: 1048576 (1MB). Use larger value if you encounter StdoutStreamTooLong error.",
                 },
+                .{
+                    .name = "cwd",
+                    .type = "string",
+                    .description = "Current working directory",
+                },
             },
-            .required = &.{ "pattern", "path" },
+            .required = &.{ "pattern", "path", "cwd" },
         },
     },
 };

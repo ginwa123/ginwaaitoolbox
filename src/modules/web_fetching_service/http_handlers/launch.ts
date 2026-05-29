@@ -1,13 +1,21 @@
 import { launchPersistentContext } from "cloakbrowser";
-import {
-  generateBrowserId,
-  getTempProfileDir,
-  jsonResponse,
-} from "./helpers";
+import { generateBrowserId, getTempProfileDir, jsonResponse } from "./helpers";
 import { browserSessions } from "./shared";
 
 export async function launchBrowserPost(): Promise<Response> {
   try {
+    if (browserSessions.size > 0) {
+      const existingBrowserId = browserSessions.keys().next().value as
+        | string
+        | undefined;
+
+      return jsonResponse({
+        success: false,
+        message: `Already running a browser + browserid: ${existingBrowserId}`,
+        browserId: existingBrowserId,
+      });
+    }
+
     const browserId = generateBrowserId();
     const profileDir = getTempProfileDir();
 

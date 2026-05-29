@@ -38,7 +38,15 @@ pub const SessionInfo = struct {
 };
 
 /// Sort specification for session list
-pub const SessionSortField = enum { created_at, session_name, agent };
+pub const SessionSortField = enum { created_at, session_name, agent, updated_at };
+pub fn enumFromString(comptime T: type, s: []const u8) !T {
+    inline for (@typeInfo(T).@"enum".fields) |field| {
+        if (std.mem.eql(u8, s, field.name)) {
+            return @enumFromInt(field.value);
+        }
+    }
+    return error.UnknownValue;
+}
 pub const SessionSortDirection = enum { asc, desc };
 
 /// Detailed session info
@@ -50,6 +58,7 @@ pub const SessionDetail = struct {
     session_name: []const u8,
     model: []const u8,
     temperature: f32,
+    updated_at: []const u8,
 
     pub fn deinit(self: *const SessionDetail, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -58,6 +67,7 @@ pub const SessionDetail = struct {
         allocator.free(self.agent);
         allocator.free(self.session_name);
         allocator.free(self.model);
+        allocator.free(self.updated_at);
     }
 };
 
@@ -174,6 +184,7 @@ pub fn getSessionListWithCursor(
         .created_at => try std.fmt.allocPrint(allocator, "s.created_at {s}", .{sort_order}),
         .session_name => try std.fmt.allocPrint(allocator, "COALESCE(s.name, '') {s}", .{sort_order}),
         .agent => try std.fmt.allocPrint(allocator, "COALESCE(h.agent, 'Agent') {s}", .{sort_order}),
+        .updated_at => try std.fmt.allocPrint(allocator, "s.updated_at {s}", .{sort_order}),
     };
     defer allocator.free(order_by);
 
@@ -188,7 +199,9 @@ pub fn getSessionListWithCursor(
     defer allocator.free(where_with_cursor);
 
     const sql_final = try std.fmt.allocPrint(allocator,
-        \\SELECT s.id, s.name, s.status, s.cwd, COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent')
+        \\SELECT s.id, s.name, s.status, s.cwd, COALESCE(s.created_at, ''),
+        \\COALESCE(s.updated_at, ''),
+        \\COALESCE(h.agent, 'Agent')
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -241,6 +254,24 @@ pub fn getSessionListWithCursor(
     };
 }
 
+/// Session list JSON response structure
+pub const SessionListJsonResponse = struct {
+    sessions: []const SessionInfoJson,
+    total: u32,
+    has_more: bool,
+    next_cursor: ?[]const u8 = null,
+};
+
+/// Session info for JSON serialization
+pub const SessionInfoJson = struct {
+    session_id: []const u8,
+    cwd: []const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+    agent: []const u8,
+    session_name: []const u8,
+};
+
 /// Build JSON response for a list of sessions with cursor pagination
 pub fn buildSessionListJson(
     allocator: std.mem.Allocator,
@@ -249,44 +280,29 @@ pub fn buildSessionListJson(
     has_more: bool,
     next_cursor: ?[]const u8,
 ) ![]u8 {
-    var json_sessions = std.ArrayList(u8).empty;
-    errdefer json_sessions.deinit(allocator);
+    // Convert SessionInfo to SessionInfoJson for serialization
+    var json_sessions = std.ArrayList(SessionInfoJson).empty;
+    defer json_sessions.deinit(allocator);
 
-    try json_sessions.appendSlice(allocator, "[");
-    for (sessions, 0..) |sess, i| {
-        if (i > 0) try json_sessions.append(allocator, ',');
-
-        // Build each field with JSON escaping
-        try json_sessions.append(allocator, '{');
-        try json_sessions.appendSlice(allocator, "\"session_id\":");
-        try jsonAppendEscaped(allocator, &json_sessions, sess.session_id);
-        try json_sessions.append(allocator, ',');
-        try json_sessions.appendSlice(allocator, "\"cwd\":");
-        try jsonAppendEscaped(allocator, &json_sessions, sess.cwd);
-        try json_sessions.append(allocator, ',');
-        try json_sessions.appendSlice(allocator, "\"created_at\":");
-        try jsonAppendEscaped(allocator, &json_sessions, sess.created_at);
-        try json_sessions.append(allocator, ',');
-        try json_sessions.appendSlice(allocator, "\"agent\":");
-        try jsonAppendEscaped(allocator, &json_sessions, sess.agent);
-        try json_sessions.append(allocator, ',');
-        try json_sessions.appendSlice(allocator, "\"session_name\":");
-        try jsonAppendEscaped(allocator, &json_sessions, sess.session_name);
-        try json_sessions.append(allocator, '}');
+    for (sessions) |sess| {
+        try json_sessions.append(allocator, .{
+            .session_id = sess.session_id,
+            .cwd = sess.cwd,
+            .created_at = sess.created_at,
+            .updated_at = sess.updated_at,
+            .agent = sess.agent,
+            .session_name = sess.session_name,
+        });
     }
-    try json_sessions.append(allocator, ']');
 
-    // Build has_more and next_cursor JSON
-    const has_more_str = if (has_more) "true" else "false";
-    const next_cursor_json = if (next_cursor) |c|
-        try std.fmt.allocPrint(allocator, ",\"next_cursor\":\"{s}\"", .{c})
-    else
-        "";
-    defer if (next_cursor) |_| allocator.free(next_cursor_json);
+    const response = SessionListJsonResponse{
+        .sessions = json_sessions.items,
+        .total = total,
+        .has_more = has_more,
+        .next_cursor = next_cursor,
+    };
 
-    const result = try std.fmt.allocPrint(allocator, "{{\"sessions\":{s},\"total\":{d},\"has_more\":{s}{s}}}", .{ json_sessions.items, total, has_more_str, next_cursor_json });
-    json_sessions.deinit(allocator);
-    return result;
+    return try std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
 /// Append escaped JSON string (with quotes) to an ArrayList
@@ -311,8 +327,21 @@ pub fn get_session(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?SessionDetail {
-    const sql = "SELECT DISTINCT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, ''), COALESCE(h.model, 'gpt-4'), COALESCE(h.temperature, 0.2) FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE h.session_id = ? GROUP BY h.session_id";
-
+    const sql =
+        \\SELECT DISTINCT
+        \\    h.session_id,
+        \\    COALESCE(s.cwd, ''),
+        \\    s.created_at as created_at,
+        \\    COALESCE(h.agent, 'Agent'),
+        \\    COALESCE(s.name, ''),
+        \\    COALESCE(h.model, 'gpt-4'),
+        \\    COALESCE(h.temperature, 0.2),
+        \\    s.updated_at as updated_at
+        \\FROM llm_history h
+        \\LEFT JOIN sessions s ON h.session_id = s.id
+        \\WHERE h.session_id = ?
+        \\GROUP BY h.session_id
+    ;
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -325,6 +354,7 @@ pub fn get_session(
             .session_name = try allocator.dupe(u8, row.values[4]),
             .model = try allocator.dupe(u8, row.values[5]),
             .temperature = std.fmt.parseFloat(f32, row.values[6]) catch 0.2,
+            .updated_at = try allocator.dupe(u8, row.values[7]),
         };
         row.deinit(allocator);
         return session;
@@ -402,7 +432,7 @@ pub const SessionMessageResponse = struct {
     cwd: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
-    total_count: ?u32 = null,  // Total count of messages in session (for VirtualScroller)
+    total_count: ?u32 = null, // Total count of messages in session (for VirtualScroller)
 };
 
 /// Sort direction
@@ -980,7 +1010,7 @@ pub fn saveMessage(
     // Update the session's cwd in the sessions table
     const copy_cwd = try allocator.dupe(u8, input.cwd);
     defer allocator.free(copy_cwd);
-    try db.exec(allocator, "UPDATE sessions SET cwd = ? WHERE id = ?", &.{ copy_cwd, copy_session_id });
+    try db.exec(allocator, "UPDATE sessions SET cwd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", &.{ copy_cwd, copy_session_id });
 }
 // =============================================================================
 // Get Messages Functions
@@ -2193,4 +2223,9 @@ pub fn freeSessionsForBroadcast(allocator: std.mem.Allocator, sessions: []Sessio
         allocator.free(s.agent);
     }
     allocator.free(sessions);
+}
+
+pub fn updateSessionUpdatedAt(parent_allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !void {
+    const sql = "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(parent_allocator, sql, &.{session_id});
 }

@@ -163,6 +163,10 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         logger.warnFmt("Failed to upsert worker info for {s}", .{copy_session_id});
     };
 
+    llm_history.updateSessionUpdatedAt(parent_allocator, db, copy_session_id) catch {
+        logger.warnFmt("Failed to update session updated at for {s}", .{copy_session_id});
+    };
+
     // Queue the initial message
     llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls) catch {
         logger.warnFmt("Failed to queue initial message for session {s}", .{copy_session_id});

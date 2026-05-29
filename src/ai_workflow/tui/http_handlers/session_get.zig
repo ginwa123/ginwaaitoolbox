@@ -5,6 +5,16 @@ const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 const llm_history = ai_mod.llm_history;
 
+/// Response structure for session get endpoint
+pub const SessionGetResponse = struct {
+    sessionId: []const u8,
+    cwd: []const u8,
+    createdAt: []const u8,
+    updatedAt: []const u8,
+    agent: []const u8,
+    sessionName: []const u8,
+};
+
 /// Get a session by ID
 pub fn session_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
@@ -19,12 +29,18 @@ pub fn session_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     };
 
     if (session) |s| {
-        const response = try std.fmt.allocPrint(allocator, "{{\"sessionId\":\"{s}\",\"cwd\":\"{s}\",\"createdAt\":\"{s}\",\"agent\":\"{s}\",\"sessionName\":\"{s}\"}}", .{ s.session_id, s.cwd, s.created_at, s.agent, s.session_name });
+        const response = try std.json.Stringify.valueAlloc(allocator, SessionGetResponse{
+            .sessionId = s.session_id,
+            .cwd = s.cwd,
+            .createdAt = s.created_at,
+            .updatedAt = s.updated_at,
+            .agent = s.agent,
+            .sessionName = s.session_name,
+        }, .{});
         s.deinit(allocator);
         return res.jsonResponse( .{ .status_code = 200, .data = response });
     } else {
         return res.jsonResponse( .{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Session not found" }) });
     }
-    return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }
 
