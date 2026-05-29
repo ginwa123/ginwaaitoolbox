@@ -47,7 +47,7 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
     // Build endpoint based on action - some are static, some are heap allocated
     var endpoint_heap: ?[]const u8 = null;
     var static_endpoint: []const u8 = undefined;
-    
+
     if (std.mem.eql(u8, input.action, "launch")) {
         static_endpoint = "/launch";
     } else if (std.mem.eql(u8, input.action, "open_page")) {
@@ -84,7 +84,7 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
             .err_msg = try std.fmt.allocPrint(allocator, "Unknown action: {s}", .{input.action}),
         };
     }
-    
+
     const endpoint: []const u8 = if (endpoint_heap) |h| h else static_endpoint;
 
     const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ api_url, endpoint });
@@ -113,8 +113,20 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
     };
     defer allocator.free(result.body);
 
+    // DEBUG: Log response body details
+    if (result.body.len < 500) {
+        std.debug.print("DEBUG cloak_browser: url={s}, body={s}, resp_len={d}, resp={s}\n", .{ url, body, result.body.len, result.body });
+    } else {
+        std.debug.print("DEBUG cloak_browser: url={s}, body={s}, resp_len={d}, resp_first_200={s}\n", .{ url, body, result.body.len, result.body[0..200] });
+    }
+
     // Parse JSON response
     const parsed = std.json.parseFromSlice(Value, allocator, result.body, .{}) catch |err| {
+        // On parse error, dump the full body for debugging
+        std.debug.print("DEBUG cloak_browser: JSON parse error: {s}, body_len={d}\n", .{ @errorName(err), result.body.len });
+        if (result.body.len > 0) {
+            std.debug.print("DEBUG cloak_browser: body_content (first 500)={s}\n", .{result.body[0..@min(500, result.body.len)]});
+        }
         return CloakBrowserResult{
             .success = false,
             .err_msg = try std.fmt.allocPrint(allocator, "JSON parse failed: {s}", .{@errorName(err)}),
@@ -130,7 +142,7 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
     var url_out: ?[]const u8 = null;
     var title: ?[]const u8 = null;
     var status: ?u16 = null;
-    const tree_json: ?[]const u8 = null;
+    var tree_json: ?[]const u8 = null;
     var err_msg: ?[]const u8 = null;
 
     if (obj.get("browser_id")) |v| {
@@ -149,9 +161,11 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
         if (v == .integer) status = @intCast(v.integer);
     }
     if (obj.get("tree")) |v| {
-        // Skip tree serialization for now - dynamic JSON stringify is complex
-        // The tree info will come directly from the HTTP response if needed
-        _ = v;
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        var jws: std.json.Stringify = .{ .writer = &out.writer };
+        try jws.write(v);
+        tree_json = try out.toOwnedSlice();
     }
     if (obj.get("error")) |v| {
         if (v == .string) err_msg = try allocator.dupe(u8, v.string);

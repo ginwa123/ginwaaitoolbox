@@ -504,7 +504,7 @@ const is_sub_agent = std.mem.indexOf(u8, session_id, "subagent") != null;
 
 ## Database Schema Notes
 
-**Latest Migration:** `Migration029AddTimestampsToSessions` — added `created_at` and `updated_at` columns to `sessions` table
+**Latest Migration:** `Migration039AddToolCallIdToLlmHistory` — added `tool_call_id` column to `llm_history` table
 
 **Timestamp Columns (Migration030 & Migration031):**
 - `Migration030AddTimestampsToWorkspaces` (v30) — added `created_at` and `updated_at` to `workspaces` table

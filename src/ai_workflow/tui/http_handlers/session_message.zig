@@ -79,6 +79,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
             .diffview_before = msg.diffview_before orelse "",
             .diffview_after = msg.diffview_after orelse "",
             .image_url = image_url_str,
+            .tool_call_id = msg.tool_call_id orelse "",
         };
     }
 

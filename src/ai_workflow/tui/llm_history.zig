@@ -371,6 +371,7 @@ pub const SessionMessage = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
+    tool_call_id: ?[]const u8 = null,
 
     pub fn deinit(self: *const SessionMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -389,6 +390,7 @@ pub const SessionMessage = struct {
             for (iums) |img| allocator.free(img);
             allocator.free(iums);
         }
+        if (self.tool_call_id) |tci| allocator.free(tci);
     }
 };
 
@@ -453,7 +455,7 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, '')
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
         , .{ cursor_cmp, order_part });
@@ -471,7 +473,7 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, '')
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
         , .{order_part});
@@ -527,6 +529,7 @@ pub fn getSessionMessagesSorted(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
+            .tool_call_id = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);
@@ -911,7 +914,7 @@ pub fn saveMessage(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name, diffview_before, diffview_after, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, tool_call_id, reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name, diffview_before, diffview_after, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     const copy_session_id = try allocator.dupe(u8, input.session_id);
     defer allocator.free(copy_session_id);
@@ -940,6 +943,8 @@ pub fn saveMessage(
     defer allocator.free(copy_parent_id);
     const copy_tool_name = try allocator.dupe(u8, input.tool_name orelse "");
     defer allocator.free(copy_tool_name);
+    const copy_tool_call_id = try allocator.dupe(u8, input.tool_call_id orelse "");
+    defer allocator.free(copy_tool_call_id);
     const prompt_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.prompt_tokens});
     defer allocator.free(prompt_tokens_str);
     const completion_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.completion_tokens});
@@ -968,7 +973,7 @@ pub fn saveMessage(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_reasoning, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -1009,7 +1014,8 @@ pub fn getMessages(
         \\    COALESCE(h.is_output, 0),
         \\    COALESCE(h.diffview_before, ''),
         \\    COALESCE(h.diffview_after, ''),
-        \\    COALESCE(h.image_url, '')
+        \\    COALESCE(h.image_url, ''),
+        \\    COALESCE(h.tool_call_id, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
@@ -1063,6 +1069,7 @@ pub fn getMessages(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
+            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -1097,7 +1104,8 @@ pub fn getLatestMessage(
         \\    COALESCE(h.is_output, 0),
         \\    COALESCE(h.diffview_before, ''),
         \\    COALESCE(h.diffview_after, ''),
-        \\    COALESCE(h.image_url, '')
+        \\    COALESCE(h.image_url, ''),
+        \\    COALESCE(h.tool_call_id, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
@@ -1152,6 +1160,7 @@ pub fn getLatestMessage(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
+            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
         };
         row.deinit(allocator);
         return history;

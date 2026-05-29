@@ -76,13 +76,18 @@ pub const HttpClient = struct {
 
         if (child.stdout) |out| {
             var tmp_buf: [4096]u8 = undefined;
-            // Read into tmp_buf first, then append to avoid aliasing
+            var total_read: usize = 0;
             while (true) {
                 var reader = out.reader(self.io, &tmp_buf);
-                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &tmp_buf) catch 0;
+                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &tmp_buf) catch |err| {
+                    std.log.warn("getWithCurl: read error: {s}, read so far: {d}", .{@errorName(err), total_read});
+                    break;
+                };
                 if (bytes_read == 0) break;
+                total_read += bytes_read;
                 try stdout_list.appendSlice(self.allocator, tmp_buf[0..bytes_read]);
             }
+            std.log.debug("getWithCurl: total bytes read from stdout: {d}", .{total_read});
         }
 
         const stdout = try stdout_list.toOwnedSlice(self.allocator);
@@ -191,8 +196,6 @@ pub const HttpClient = struct {
 
         // Execute curl via bash -c
         // IMPORTANT: Use std.heap.c_allocator for Child to avoid arena corruption
-        // The Child.process internally creates its own arena, and using an arena
-        // wrapped in another arena can cause memory corruption
         var child = try std.process.spawn(self.io, .{
             .argv = &[_][]const u8{ "bash", "-c", shell_cmd },
             .stdin = .ignore,
@@ -200,24 +203,29 @@ pub const HttpClient = struct {
             .stderr = .pipe,
         });
 
-        // Read stdout BEFORE waiting - important for capturing output!
-        // Use a loop to read all data since network responses may arrive in multiple chunks
+        // Read stdout - use dynamic buffer that grows as needed
         var stdout_list: std.ArrayList(u8) = .empty;
         errdefer stdout_list.deinit(self.allocator);
 
+        // Use 16KB initial buffer
+        var buf: []u8 = try self.allocator.alloc(u8, 16384);
+        defer self.allocator.free(buf);
+
         if (child.stdout) |out| {
-            var tmp_buf: [4096]u8 = undefined;
-            // Read into tmp_buf first, then append to avoid aliasing
             while (true) {
-                var reader = out.reader(self.io, &tmp_buf);
-                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, &tmp_buf) catch 0;
+                var reader = out.reader(self.io, buf);
+                const bytes_read = std.Io.Reader.readSliceShort(&reader.interface, buf) catch |err| {
+                    std.log.warn("postWithCurl: read error: {s}", .{@errorName(err)});
+                    break;
+                };
                 if (bytes_read == 0) break;
-                try stdout_list.appendSlice(self.allocator, tmp_buf[0..bytes_read]);
+                try stdout_list.appendSlice(self.allocator, buf[0..bytes_read]);
             }
         }
 
         const stdout = try stdout_list.toOwnedSlice(self.allocator);
 
+        // Wait for process to complete
         const term = child.wait(self.io) catch |err| {
             std.log.warn("Failed to wait for curl process: {s}", .{@errorName(err)});
             return .{
