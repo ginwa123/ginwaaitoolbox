@@ -48,6 +48,7 @@ interface Message {
   image_urls?: string[]
   tool_calls_json?: string
   finish_reason?: string
+  tool_call_id?: string
 }
 
 // Escape HTML to prevent XSS
@@ -361,19 +362,19 @@ const messageGroups = computed((): MessageGroup[] => {
 
 // ─── FIX: Compute tool call names per assistant group ─────────────────────────
 // For each group index, returns the tool names string if the group is an
-// assistant turn that triggered tool calls — either by peeking at the next
-// tool group (most accurate) or by parsing tool_calls_json as a fallback.
+// assistant turn that triggered tool calls BUT the tool outputs are NOT shown.
+// When tool outputs ARE shown (next group is tool), we return null.
 const groupToolNames = computed((): (string | null)[] => {
   return messageGroups.value.map((group, i) => {
     if (group.role !== 'assistant') return null
 
-    // Primary: peek at the next tool group for real names
+    // If next group is a tool group, tool outputs ARE shown → don't show header
     const nextGroup = messageGroups.value[i + 1]
     if (nextGroup?.role === 'tool') {
-      const names = nextGroup.messages.map((m) => m.tool_name).filter(Boolean) as string[]
-      if (names.length > 0) return names.join(', ')
+      return null
     }
 
+    // No next tool group — check if this assistant message triggered tools
     // Fallback: parse tool_calls_json from any message in this group
     for (const msg of group.messages) {
       if (msg.tool_calls_json?.trim()) {
@@ -554,6 +555,8 @@ const connectSse = () => {
           tool_name: event.tool_name,
           diffview_before: event.diffview_before,
           diffview_after: event.diffview_after,
+          finish_reason: event.finish_reason,
+          tool_call_id: event.tool_call_id
         })
         streamingContent.value = ''
         isStreaming.value = false
@@ -1006,17 +1009,23 @@ const compactSession = async () => {
 
                 <!-- ── Assistant ── -->
                 <template v-else-if="group.role === 'assistant'">
-                  <!--
-                    FIX: Show tool_calls header using ALL tool names from the
-                    following tool group (or fallback to tool_calls_json).
-                    Previously only the first message's tool_calls_json was used,
-                    showing just one tool name.
-                  -->
+                  <!-- Show tool_calls header only when tool outputs are NOT shown -->
                   <div v-if="groupToolNames[groupIndex] !== null" class="tool-calls-summary">
-                    <span class="tool-calls-badge">🔧 tool_calls</span>
-                    <span class="tool-names">{{ groupToolNames[groupIndex] || '...' }}</span>
+                    <span class="tool-calls-badge">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                      </svg>
+                      <span class="font-medium">tools</span>
+                    </span>
+                    <div class="tool-names-list">
+                      <span
+                        v-for="(toolName, tIdx) in (groupToolNames[groupIndex] || '').split(',')"
+                        :key="tIdx"
+                        class="tool-name-chip"
+                      >{{ toolName.trim() }}</span>
+                    </div>
                   </div>
-                  <div v-else class="assistant-messages">
+                  <div class="assistant-messages">
                     <div v-for="(msg, idx) in group.messages" :key="idx" class="assistant-item">
                       <!-- eslint-disable-next-line vue/no-v-html -->
                       <span
@@ -1341,6 +1350,49 @@ const compactSession = async () => {
 :deep(.tool-item-border:last-child) {
   border-bottom: none;
   padding-bottom: 0;
+}
+
+/* Tool calls summary - shown only when tool outputs are NOT displayed */
+:deep(.tool-calls-summary) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+  background-color: var(--color-bg-p1);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  border-left: 3px solid var(--color-violet);
+}
+
+:deep(.tool-calls-badge) {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--color-violet);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-family: var(--font-mono);
+}
+
+:deep(.tool-names-list) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+:deep(.tool-name-chip) {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  background-color: var(--color-bg-p2);
+  border: 1px solid var(--color-border-light);
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--color-aqua);
 }
 
 :deep(.tool-inline) {
