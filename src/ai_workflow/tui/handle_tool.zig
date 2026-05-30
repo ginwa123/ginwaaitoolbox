@@ -368,7 +368,7 @@ pub fn handle_tool(
         });
 
         // Send SSE for assistant message
-        try sendSSEForLatestMessage(allocator, db, session_id, cwd, current_agent_for_save, parent_session_id, agent_temperature.*, isThinking.*, true, false);
+        try sendSSEForLatestMessage(allocator, db, session_id, cwd, current_agent_for_save, parent_session_id, agent_temperature.*, isThinking.*, true, false, tc);
 
         // Build context for dispatch
         const ctx = ToolContext{
@@ -518,7 +518,7 @@ fn saveAndSendToolResult(
         allocator.free(allocated);
     }
 
-    try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true);
+    try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true, null);
 }
 
 fn sendSSEForLatestMessage(
@@ -532,6 +532,7 @@ fn sendSSEForLatestMessage(
     is_thinking: bool,
     is_input: bool,
     is_output: bool,
+    tool_calls_json: ?[]agent.ToolCall
 ) !void {
     const latestMessage = getLatestMessage(allocator, db, session_id) catch |err| {
         std.debug.print("SSE_DEBUG: getLatestMessage failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
@@ -554,7 +555,7 @@ fn sendSSEForLatestMessage(
             .reasoning_content = msg.reasoning_content,
             .role = msg.role,
             .finish_reason = msg.finish_reason,
-            .tool_calls = null,
+            .tool_calls_json = tool_calls_json,
             .tool_call_id = msg.id,
             .tool_name = msg.tool_name,
             .agent_name = agent_name,
@@ -569,6 +570,7 @@ fn sendSSEForLatestMessage(
             .diffview_after = msg.diffview_after,
             .total_tokens = msg.total_tokens,
             .session_skills = session_skills_tool,
+
         }) catch |err| {
             std.debug.print("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         };

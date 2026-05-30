@@ -80,6 +80,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
             .diffview_after = msg.diffview_after orelse "",
             .image_url = image_url_str,
             .tool_call_id = msg.tool_call_id orelse "",
+            .tool_calls_json = msg.tool_calls_json orelse "",
         };
     }
 

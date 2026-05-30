@@ -313,6 +313,7 @@ When the LLM is processing (detected via `isLLMProcessing` from App.vue), the ac
 - **Unit tests belong in separate files** — Keep implementation (`.zig`) and tests (`_test.zig`) separate. This improves code organization, makes tests easier to find, and avoids cluttering the implementation with test code. Never inline tests in production code.
 - **Always register new tests in test_runner.zig** — When creating a new `_test.zig` file, immediately add `_ = @import("path/to/test.zig")` to the appropriate test_runner.zig. This ensures tests are included in the test suite and won't be forgotten.
 - **Desktop app: ALWAYS run `bun run build` (NOT `bun run build-only`)** — The desktop app uses TypeScript with strict type checking via `vue-tsc --build`. Running only `bun run build-only` skips type checks and will miss TypeScript errors that cause CI/build failures. Always use `bun run build` to catch type errors before declaring a task complete.
+- **TypeScript interface fields must match API response** — When adding a field like `finish_reason` to the API response and using it in ChatView.vue, the interface in `api/index.ts` must also include that field. Otherwise `vue-tsc --build` will fail with "Property 'X' does not exist on type 'Message'" even if the field exists in the actual API response.
 
 ## Key Tool Conventions
 

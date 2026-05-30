@@ -37,8 +37,6 @@ const emit = defineEmits<{
 // Check if session is pending (needs creation on first message)
 const isPendingSession = computed(() => props.chatId.startsWith('pending-'))
 
-// Active workspace item for FolderExplorer (passed as prop for task view, from store otherwise)
-
 interface Message {
   id: string
   role: 'user' | 'assistant' | 'system' | 'tool'
@@ -48,6 +46,8 @@ interface Message {
   diffview_before?: string
   diffview_after?: string
   image_urls?: string[]
+  tool_calls_json?: string
+  finish_reason?: string
 }
 
 // Escape HTML to prevent XSS
@@ -73,7 +73,7 @@ const setupCodeBlockCopyButtons = () => {
     if (!container) return
     const codeBlocks = container.querySelectorAll('.markdown-content pre')
     codeBlocks.forEach((block) => {
-      if (block.querySelector('.code-copy-btn')) return // Already has copy button
+      if (block.querySelector('.code-copy-btn')) return
       const code = block.querySelector('code')
       if (!code) return
       const content = code.textContent || ''
@@ -95,8 +95,6 @@ const setupCodeBlockCopyButtons = () => {
   })
 }
 
-// Format tool output for display (handles <stdout>, <stderr>, <success>, <error> tags)
-
 // Render markdown content to HTML
 const renderResponse = (
   content: string,
@@ -104,31 +102,21 @@ const renderResponse = (
   tool_name: string | undefined,
   diffviewBefore?: string,
   diffviewAfter?: string,
+  finish_reason?: string,
+  tool_calls_json?: string,
 ): string => {
   content = content.trim()
   if (!content) return ''
   try {
-    // Strip thinking tags before rendering
-
     if (role === 'assistant') {
       if (isThinkingTags(content)) {
         return getThinkingTags(content)
       }
-
       const cleanContent = stripThinkingTags(content)
       return marked.parse(cleanContent, { async: false }) as string
     }
 
-    if (role === 'tool_calls') { // is a llm calling tool, or use tool, but no output yet
-      if (isThinkingTags(content)) {
-        return getThinkingTags(content)
-      }
-
-      const cleanContent = stripThinkingTags(content)
-      return marked.parse(cleanContent, { async: false }) as string
-    }
-
-    if (role === 'tool') { // is a tool response
+    if (role === 'tool') {
       if (tool_name === 'read_file') {
         const mathPath = content.match(/<path>(.*?)<\/path>/)
         const path = mathPath ? mathPath[1] : null
@@ -141,33 +129,27 @@ const renderResponse = (
       }
 
       if (tool_name === 'search') {
-        // Return a simple summary - Search component handles full display
         const fileMatch = content.match(/<file path="([^"]+)" total="(\d+)" count="(\d+)">/)
         if (fileMatch) {
           const matchCount = fileMatch[3]
           return `<span class="tool-inline">search → ${matchCount} matches</span>`
         }
-
         const warningMatch = content.match(/<warning>(.*?)<\/warning>/)
         if (warningMatch) {
           return `<span class="tool-inline">search → ${warningMatch[1]}</span>`
         }
-
         const errorMatch = content.match(/<error>(.*?)<\/error>/)
         return `<span class="tool-inline">search → ${errorMatch?.[1] || 'unknown'}</span>`
       }
 
       if (tool_name === 'glob') {
-        // Return a simple summary - Glob component handles full display
         const patternMatch = content.match(/pattern="([^"]+)"/)
         const totalMatch = content.match(/total="(\d+)"/)
         const returnedMatch = content.match(/returned="(\d+)"/)
         const warningMatch = content.match(/<warning>(.*?)<\/warning>/)
-
         if (warningMatch) {
           return `<span class="tool-inline">glob → ${warningMatch[1]}</span>`
         }
-
         const pattern = patternMatch ? patternMatch[1] : 'unknown'
         const total = totalMatch ? totalMatch[1] : '0'
         const returned = returnedMatch ? returnedMatch[1] : total
@@ -198,7 +180,6 @@ const renderResponse = (
       }
 
       if (tool_name === 'spawn_sub_agent') {
-        // Parse agent count and summary from XML
         const agentMatches = content.match(/<agent name="([^"]*)" success="([^"]*)">/g)
         const agentCount = agentMatches ? agentMatches.length : 0
         const summaryMatch = content.match(/<summary succeeded="(\d+)" failed="(\d+)" \/>/)
@@ -207,11 +188,9 @@ const renderResponse = (
         return `<span class="tool-inline">${tool_name} → ${agentCount} agents (${succeeded} succeeded, ${failed} failed)</span>`
       }
 
-      /// Default tool badge for other tools
       return `<span class="tool-inline">${tool_name || 'tool'} → ${escapeHtml(content)}</span>`
     }
 
-    // Default: return escaped content for unhandled roles
     return escapeHtml(content)
   } catch {
     return escapeHtml(content)
@@ -318,7 +297,6 @@ const checkGitStatus = async () => {
     gitStatus.value = null
     return
   }
-
   try {
     const status = await api.getGitStatus(cwd.value)
     gitStatus.value = status
@@ -329,9 +307,7 @@ const checkGitStatus = async () => {
 }
 
 const startGitStatusPoll = () => {
-  // Check immediately
   checkGitStatus()
-  // Then poll every 30 seconds
   if (gitStatusPollInterval) clearInterval(gitStatusPollInterval)
   gitStatusPollInterval = setInterval(checkGitStatus, 30000)
 }
@@ -346,12 +322,14 @@ const stopGitStatusPoll = () => {
 // Filter out empty messages for display (check stripped content)
 const filteredMessages = computed(() =>
   messages.value.filter((m) => {
+    // Always keep tool_calls messages even if content is only thinking tags
+    if (m.finish_reason === 'tool_calls') return true
     const stripped = stripThinkingTags(m.content)
     return stripped && stripped.trim() !== ''
   }),
 )
 
-// Group consecutive tool messages together for cleaner display
+// Group consecutive messages of the same role together for cleaner display
 interface MessageGroup {
   role: 'user' | 'assistant' | 'tool'
   messages: Message[]
@@ -364,17 +342,14 @@ const messageGroups = computed((): MessageGroup[] => {
   for (const msg of filteredMessages.value) {
     const lastGroup = groups[groups.length - 1]
 
-    // Group consecutive tool messages from the same tool sequence
-    if (msg.role === 'tool' && lastGroup && lastGroup.role === 'tool') {
+    if (lastGroup && lastGroup.role === msg.role) {
       lastGroup.messages.push(msg)
-      // Keep the latest timestamp
       if (msg.timestamp > lastGroup.timestamp) {
         lastGroup.timestamp = msg.timestamp
       }
     } else {
-      // Start a new group
       groups.push({
-        role: msg.role === 'tool' ? 'tool' : (msg.role as 'user' | 'assistant'),
+        role: msg.role as 'user' | 'assistant' | 'tool',
         messages: [msg],
         timestamp: msg.timestamp,
       })
@@ -384,10 +359,46 @@ const messageGroups = computed((): MessageGroup[] => {
   return groups
 })
 
+// ─── FIX: Compute tool call names per assistant group ─────────────────────────
+// For each group index, returns the tool names string if the group is an
+// assistant turn that triggered tool calls — either by peeking at the next
+// tool group (most accurate) or by parsing tool_calls_json as a fallback.
+const groupToolNames = computed((): (string | null)[] => {
+  return messageGroups.value.map((group, i) => {
+    if (group.role !== 'assistant') return null
+
+    // Primary: peek at the next tool group for real names
+    const nextGroup = messageGroups.value[i + 1]
+    if (nextGroup?.role === 'tool') {
+      const names = nextGroup.messages.map((m) => m.tool_name).filter(Boolean) as string[]
+      if (names.length > 0) return names.join(', ')
+    }
+
+    // Fallback: parse tool_calls_json from any message in this group
+    for (const msg of group.messages) {
+      if (msg.tool_calls_json?.trim()) {
+        try {
+          const parsed = JSON.parse(msg.tool_calls_json)
+          // tool_calls_json IS the array directly: [{id, type, function: {name}}]
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed.map((tc: any) => tc.function?.name || tc.name || 'unknown').join(', ')
+          }
+        } catch {}
+      }
+
+      // finish_reason set but tool_calls_json missing/unparseable
+      if (msg.finish_reason === 'tool_calls') {
+        return '...'
+      }
+    }
+
+    return null
+  })
+})
+
 // ─── Chat History ────────────────────────────────────────────────────────────
 
 const loadChatHistory = async (loadMore = false) => {
-  // Skip loading for pending sessions (they have no history yet)
   if (!sessionId.value || isPendingSession.value) return
 
   if (loadMore) {
@@ -405,12 +416,10 @@ const loadChatHistory = async (loadMore = false) => {
       messageCursor.value ?? undefined,
     )
 
-    // Update cwd from response (only on first load)
     if (!loadMore && data.cwd) {
       cwd.value = data.cwd
     }
 
-    // Update token info from response (only on first load)
     if (!loadMore) {
       if (data.max_total_tokens !== undefined) {
         maxTotalTokens.value = data.max_total_tokens
@@ -418,7 +427,6 @@ const loadChatHistory = async (loadMore = false) => {
       if (data.max_capacity_total_tokens !== undefined) {
         maxCapacityTotalTokens.value = data.max_capacity_total_tokens
       }
-      // Update session skills from response
       sessionSkills.value = data.skills || []
     }
 
@@ -426,18 +434,19 @@ const loadChatHistory = async (loadMore = false) => {
       id: msg.id || `msg-${msg.created_at}`,
       role: msg.role as 'user' | 'assistant' | 'system' | 'tool',
       content: msg.content,
-      timestamp: new Date((msg.created_at || 0) * 1000), // Backend sends created_at in seconds
+      timestamp: new Date((msg.created_at || 0) * 1000),
       tool_name: msg.tool_name,
       diffview_before: msg.diffview_before,
       diffview_after: msg.diffview_after,
       image_urls: msg.image_url ? msg.image_url.split('|') : undefined,
+      finish_reason: msg.finish_reason,
+      tool_calls_json: msg.tool_calls_json,
     }))
 
     if (loadMore) {
       const oldHeight = messagesContainer.value?.scrollHeight ?? 0
       messages.value = [...newMessages.slice().reverse(), ...messages.value]
       await nextTick()
-      // Restore scroll position after prepending messages
       if (messagesContainer.value && oldHeight > 0) {
         messagesContainer.value.scrollTop += messagesContainer.value.scrollHeight - oldHeight
       }
@@ -515,35 +524,28 @@ const connectSse = () => {
     (event: api.SseEvent) => {
       console.log('[SSE ChatView] Received event:', event)
 
-      // connected event
       if (event.type === 'connected' && event.session_id) {
         console.log('SSE connected, session:', event.session_id)
         return
       }
 
-      // skip non-message events
       if (event.type !== 'chunk' && event.type !== 'full') {
         return
       }
 
-      // streaming chunk - update UI with incremental content
       if (event.type === 'chunk' && event.content) {
         streamingContent.value = event.content
         updateStreamingMessage()
         return
       }
 
-      // final message
       if (event.type === 'full' && event.finish_reason && event.content) {
-        // replace any streaming placeholder with final message
         messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
-        // Parse role from event - use 'tool' for tool results, 'assistant' for regular responses
         const role =
           (event.role as 'user' | 'assistant' | 'system' | 'tool') ||
           (event.tool_call_id ? 'tool' : 'assistant')
 
-        // Create message using same format as loadChatHistory
         messages.value.push({
           id: event.id || `assistant-${Date.now()}`,
           role: role,
@@ -562,13 +564,9 @@ const connectSse = () => {
           maxTotalTokens.value = event.total_tokens
         }
 
-        if (event.finish_reason == 'stop') {
-        }
-
         return
       }
 
-      // reasoning only
       if (event.reasoning_content && !event.content) {
         console.log('Reasoning:', event.reasoning_content)
       }
@@ -584,19 +582,16 @@ const connectSse = () => {
     },
   )
 
-  // Connect to queue messages SSE
   queueEventSource.value = api.createQueueMessagesSseConnection(
     sessionId.value,
     (event: api.QueueMessageEvent) => {
       console.log('[QueueMessages SSE] Received event:', event)
       if (event.action === 'queued') {
-        // Add new queued message
         queuedMessages.value.push({
           id: event.id ?? `q-${Date.now()}`,
           message: event.message,
         })
       } else if (event.action === 'deleted') {
-        // Remove deleted message
         queuedMessages.value = queuedMessages.value.filter((m) => m.message !== event.message)
       }
     },
@@ -620,7 +615,6 @@ const disconnectSse = () => {
   }
   isStreaming.value = false
   streamingContent.value = ''
-  // remove any pending streaming placeholder
   messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 }
 
@@ -639,22 +633,18 @@ const updateStreamingMessage = () => {
       timestamp: new Date(),
     })
   }
-  // Skip scroll if content is just thinking tags
   const stripped = stripThinkingTags(streamingContent.value)
   if (stripped && stripped.trim() !== '') {
     nextTick(() => scrollToBottom(false))
   }
-  // Setup copy buttons for any code blocks
   nextTick(() => setupCodeBlockCopyButtons())
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 
-// Component is recreated (via key) when chat changes, so just init once
 onMounted(async () => {
   sessionId.value = props.chatId.replace(/^chat-/, '')
 
-  // Initialize cwd from props if provided (for task view)
   if (props.cwd) {
     cwd.value = props.cwd
   }
@@ -665,7 +655,6 @@ onMounted(async () => {
     startGitStatusPoll()
     startProcessingPoll()
 
-    // Fetch initial queue count
     try {
       const result = await api.getQueuedMessages(sessionId.value)
       queuedMessages.value = result.messages
@@ -686,7 +675,6 @@ watch(
   () => nextTick(() => scrollToBottom()),
 )
 
-// Watch for cwd changes to refresh git status
 watch(
   () => cwd.value,
   (newCwd) => {
@@ -698,7 +686,6 @@ watch(
   },
 )
 
-// Watch for session changes to restart processing poll
 watch(
   () => sessionId.value,
   (newSessionId, oldSessionId) => {
@@ -719,10 +706,8 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
   await nextTick()
   scrollToBottom(true)
 
-  // Handle pending session - create real session first
   let currentSessionId = sessionId.value
 
-  // Convert files to base64 image_urls
   let imageUrls: string[] = []
   if (files && files.length > 0) {
     const fileToBase64 = (file: File): Promise<string> => {
@@ -772,7 +757,6 @@ const compactSession = async () => {
   try {
     const result = await api.compactSession(sessionId.value)
     if (result.success) {
-      // Reload chat history after compaction
       await loadChatHistory()
     } else {
       compactError.value = result.message || 'Failed to compact'
@@ -832,7 +816,7 @@ const compactSession = async () => {
 
         <!-- Message List -->
         <div v-else class="max-w-4xl mx-auto px-4 py-6 space-y-4">
-          <!-- Load More Button (when content doesn't overflow) -->
+          <!-- Load More Button -->
           <div v-if="hasMoreMessages" class="flex justify-center pb-2">
             <button
               @click="loadChatHistory(true)"
@@ -876,6 +860,7 @@ const compactSession = async () => {
                     : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
                 "
               >
+                <!-- ── User ── -->
                 <template v-if="group.role === 'user'">
                   <div
                     v-if="
@@ -896,6 +881,8 @@ const compactSession = async () => {
                   </div>
                   {{ group.messages[0]!.content }}
                 </template>
+
+                <!-- ── Tool ── -->
                 <template v-else-if="group.role === 'tool'">
                   <div class="tool-sequence">
                     <div
@@ -904,33 +891,27 @@ const compactSession = async () => {
                       class="tool-item"
                       :class="idx < group.messages.length - 1 ? 'tool-item-border' : ''"
                     >
-                      <!-- ReadFile component for read_file tool -->
                       <ReadFile
                         v-if="msg.tool_name === 'read_file'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- WriteFile component for write_file tool -->
                       <WriteFile
                         v-else-if="msg.tool_name === 'write_file'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- UpdateActivity component for update_activity tool -->
                       <UpdateActivity
                         v-else-if="msg.tool_name === 'update_activity'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- Search component for search tool -->
                       <Search
                         v-else-if="msg.tool_name === 'search'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- Glob component for glob tool -->
                       <Glob v-else-if="msg.tool_name === 'glob'" :content="msg.content" />
-                      <!-- TextReplace component for text_replace tool -->
                       <TextReplace
                         v-else-if="msg.tool_name === 'text_replace'"
                         :content="msg.content"
@@ -938,61 +919,51 @@ const compactSession = async () => {
                         :diffview-before="msg.diffview_before"
                         :diffview-after="msg.diffview_after"
                       />
-                      <!-- Bash component for bash tool -->
                       <Bash
                         v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- GetSkill component for get_skill tool -->
                       <GetSkill
                         v-else-if="msg.tool_name === 'get_skill'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- ViewSkill component for view_skill tool -->
                       <ViewSkill
                         v-else-if="msg.tool_name === 'view_skill'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- ListSkills component for list_skills tool -->
                       <ListSkills
                         v-else-if="msg.tool_name === 'list_skills'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- AddSkill component for add_skill tool -->
                       <AddSkill
                         v-else-if="msg.tool_name === 'add_skill'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- EditSkill component for edit_skill tool -->
                       <EditSkill
                         v-else-if="msg.tool_name === 'edit_skill'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- RemoveSkill component for remove_skill tool -->
                       <RemoveSkill
                         v-else-if="msg.tool_name === 'remove_skill'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- RemoveFile component for remove_file tool -->
                       <RemoveFile
                         v-else-if="msg.tool_name === 'remove_file'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- SpawnSubAgent component for spawn_sub_agent tool -->
                       <SpawnSubAgent
                         v-else-if="msg.tool_name === 'spawn_sub_agent'"
                         :content="msg.content"
                         :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                       />
-                      <!-- Default tool rendering for other tools -->
                       <div v-else class="tool-expandable">
                         <button
                           class="tool-summary"
@@ -1012,6 +983,8 @@ const compactSession = async () => {
                                 msg.tool_name,
                                 msg.diffview_before,
                                 msg.diffview_after,
+                                msg.finish_reason,
+                                msg.tool_calls_json,
                               )
                             "
                           ></span>
@@ -1020,8 +993,6 @@ const compactSession = async () => {
                           v-if="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           class="tool-full-content"
                         >
-                          <!-- <pre class="tool-content-pre">{{ msg.content.trim() }}</pre> -->
-                          <!-- Show diff view when expanded and diff data available -->
                           <DiffView
                             v-if="msg.diffview_before && msg.diffview_after"
                             :before="msg.diffview_before"
@@ -1032,19 +1003,37 @@ const compactSession = async () => {
                     </div>
                   </div>
                 </template>
-                <template v-else>
-                  <!-- eslint-disable-next-line vue/no-v-html -->
-                  <span
-                    v-html="
-                      renderResponse(
-                        group.messages[0]!.content,
-                        group.role,
-                        group.messages[0]!.tool_name,
-                        group.messages[0]!.diffview_before,
-                        group.messages[0]!.diffview_after,
-                      )
-                    "
-                  ></span>
+
+                <!-- ── Assistant ── -->
+                <template v-else-if="group.role === 'assistant'">
+                  <!--
+                    FIX: Show tool_calls header using ALL tool names from the
+                    following tool group (or fallback to tool_calls_json).
+                    Previously only the first message's tool_calls_json was used,
+                    showing just one tool name.
+                  -->
+                  <div v-if="groupToolNames[groupIndex] !== null" class="tool-calls-summary">
+                    <span class="tool-calls-badge">🔧 tool_calls</span>
+                    <span class="tool-names">{{ groupToolNames[groupIndex] || '...' }}</span>
+                  </div>
+                  <div v-else class="assistant-messages">
+                    <div v-for="(msg, idx) in group.messages" :key="idx" class="assistant-item">
+                      <!-- eslint-disable-next-line vue/no-v-html -->
+                      <span
+                        v-html="
+                          renderResponse(
+                            msg.content,
+                            msg.role,
+                            msg.tool_name,
+                            msg.diffview_before,
+                            msg.diffview_after,
+                            msg.finish_reason,
+                            msg.tool_calls_json,
+                          )
+                        "
+                      ></span>
+                    </div>
+                  </div>
                 </template>
               </div>
               <div
@@ -1103,7 +1092,7 @@ const compactSession = async () => {
             @submit="handleFileInputSubmit"
             @files-selected="handleFileInputSubmit"
           />
-          <!-- Status bar: compact, tokens, git branch below input -->
+          <!-- Status bar -->
           <div class="flex items-center gap-2 mt-3">
             <!-- Compact button -->
             <button
@@ -1190,11 +1179,13 @@ const compactSession = async () => {
                 border: 1px solid var(--color-border);
                 cursor: pointer;
               "
-              :title="'Loaded skills: ' + sessionSkills.map(s => s.skill_name).join(', ')"
+              :title="'Loaded skills: ' + sessionSkills.map((s) => s.skill_name).join(', ')"
             >
               <span>🧠</span>
               <span style="color: var(--semantic-text)">{{ sessionSkills.length }}</span>
-              <span style="color: var(--semantic-text-dim)">skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span>
+              <span style="color: var(--semantic-text-dim)"
+                >skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span
+              >
             </button>
           </div>
         </div>
@@ -1207,7 +1198,12 @@ const compactSession = async () => {
       :skills="sessionSkills"
       :session-cwd="cwd"
       @close="showSkillsPopup = false"
-      @skill-click="(skill) => { console.log('Skill clicked:', skill); showSkillsPopup = false }"
+      @skill-click="
+        (skill) => {
+          console.log('Skill clicked:', skill)
+          showSkillsPopup = false
+        }
+      "
     />
 
     <!-- Image Preview Popup -->
@@ -1242,7 +1238,6 @@ const compactSession = async () => {
   opacity: 0;
 }
 
-/* Tool output styles */
 :deep(.tool-output) {
   padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;
@@ -1328,7 +1323,6 @@ const compactSession = async () => {
   overflow-x: hidden;
 }
 
-/* Tool sequence grouping */
 :deep(.tool-sequence) {
   display: flex;
   flex-direction: column;
@@ -1349,7 +1343,6 @@ const compactSession = async () => {
   padding-bottom: 0;
 }
 
-/* Tool inline style */
 :deep(.tool-inline) {
   font-size: 0.8rem;
   color: var(--color-violet);
@@ -1362,7 +1355,6 @@ const compactSession = async () => {
   font-family: monospace;
 }
 
-/* Code block copy button */
 :deep(.markdown-content pre) {
   overflow-x: auto;
 }
@@ -1371,7 +1363,6 @@ const compactSession = async () => {
   opacity: 1;
 }
 
-/* Image preview popup */
 .image-preview-overlay {
   position: fixed;
   top: 0;

@@ -183,9 +183,12 @@ export interface Message {
   content: string
   created_at: number
   tool_name?: string
+  tool_call_id?: string
   diffview_before?: string
   diffview_after?: string
   image_url?: string
+  tool_calls_json?: any
+  finish_reason?: string
 }
 
 export interface SkillInfo {
@@ -240,6 +243,7 @@ export async function getChatHistory(
           diffview_before?: string
           diffview_after?: string
           image_url?: string
+          tool_calls_json?: any
         }) => ({
           ...msg,
           content: msg.content,
@@ -248,6 +252,7 @@ export async function getChatHistory(
           diffview_before: msg.diffview_before,
           diffview_after: msg.diffview_after,
           image_url: msg.image_url,
+          tool_calls_json: msg.tool_calls_json,
         }),
       ),
       has_more: data.has_more,

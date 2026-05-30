@@ -402,6 +402,7 @@ pub const SessionMessage = struct {
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
     tool_call_id: ?[]const u8 = null,
+    tool_calls_json: ?[]const u8 = null,
 
     pub fn deinit(self: *const SessionMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -421,6 +422,7 @@ pub const SessionMessage = struct {
             allocator.free(iums);
         }
         if (self.tool_call_id) |tci| allocator.free(tci);
+        if (self.tool_calls_json) |tcj| allocator.free(tcj);
     }
 };
 
@@ -486,7 +488,7 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, '')
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
         , .{ cursor_cmp, order_part });
@@ -504,7 +506,7 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, '')
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
         , .{order_part});
@@ -561,6 +563,7 @@ pub fn getSessionMessagesSorted(
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
             .tool_call_id = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
+            .tool_calls_json = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);

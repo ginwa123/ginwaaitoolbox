@@ -32,7 +32,7 @@ pub const OnEventInputLLMHistory = struct {
     reasoning_content: ?[]const u8,
     role: ?[]const u8,
     finish_reason: ?[]const u8,
-    tool_calls: ?[]agent.ToolCall,
+    tool_calls_json: ?[]agent.ToolCall,
     tool_call_id: ?[]const u8,
     tool_name: ?[]const u8 = null,
     agent_name: ?[]const u8,
@@ -60,7 +60,7 @@ pub const SseEventLLMHistory = struct {
     reasoning_content: ?[]const u8 = null,
     role: []const u8 = "assistant",
     finish_reason: ?[]const u8 = null,
-    tool_calls: ?[]const ToolCallJson = null,
+    tool_calls_json: ?[]const ToolCallJson = null,
     tool_call_id: ?[]const u8 = null,
     tool_name: ?[]const u8 = null,
     agent_name: ?[]const u8 = null,
@@ -150,7 +150,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
     var tool_calls_owned: std.ArrayList(ToolCallJson) = .empty;
     defer if (tool_calls_json == null) tool_calls_owned.deinit(allocator);
 
-    if (input.tool_calls) |calls| {
+    if (input.tool_calls_json) |calls| {
         for (calls) |call| {
             try tool_calls_owned.append(allocator, .{
                 .id = call.id,
@@ -186,7 +186,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         .reasoning_content = input.reasoning_content,
         .role = input.role orelse "assistant",
         .finish_reason = input.finish_reason,
-        .tool_calls = tool_calls_json,
+        .tool_calls_json = tool_calls_json,
         .tool_call_id = input.tool_call_id,
         .tool_name = input.tool_name,
         .agent_name = input.agent_name,
