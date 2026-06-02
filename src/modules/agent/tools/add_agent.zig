@@ -67,7 +67,11 @@ pub fn executeAddAgentToString(allocator: std.mem.Allocator, input: AddAgentInpu
     const agents_dir = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "agents" });
     defer allocator.free(agents_dir);
 
-    const agent_dir = try std.fs.path.join(allocator, &[_][]const u8{ agents_dir, input.name });
+    // Duplicate name to ensure no aliasing with path.join's internal buffer allocation
+    const name_copy = try allocator.dupe(u8, input.name);
+    defer allocator.free(name_copy);
+
+    const agent_dir = try std.fs.path.join(allocator, &[_][]const u8{ agents_dir, name_copy });
     defer allocator.free(agent_dir);
 
     const agent_file = try std.fs.path.join(allocator, &[_][]const u8{ agent_dir, "AGENT.MD" });
@@ -157,24 +161,32 @@ fn escapeYamlString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
 
 /// Generate success XML response
 fn successToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8) ![]const u8 {
-    return try std.fmt.allocPrint(allocator,
-        \\<agent>
-        \\<name>{s}</name>
-        \\<created>true</created>
-        \\<path>{s}</path>
-        \\</agent>
-    , .{ name, path });
+    // Build XML using ArrayList to avoid issues with null-terminated strings
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, "<agent>\n<name>");
+    try appendXmlContent(allocator, &result, name);
+    try result.appendSlice(allocator, "</name>\n<created>true</created>\n<path>");
+    try appendXmlContent(allocator, &result, path);
+    try result.appendSlice(allocator, "</path>\n</agent>");
+
+    return try result.toOwnedSlice(allocator);
 }
 
 /// Internal error-to-XML helper (doesn't return error)
 fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<agent>
-        \\<name>{s}</name>
-        \\<created>false</created>
-        \\<error>{s}</error>
-        \\</agent>
-    , .{ name, error_msg }) catch "<agent><name></name><created>false</created><error>UnknownError</error></agent>";
+    // Build XML using ArrayList to avoid issues with null-terminated strings
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    result.appendSlice(allocator, "<agent>\n<name>") catch return "";
+    appendXmlContent(allocator, &result, name) catch return "";
+    result.appendSlice(allocator, "</name>\n<created>false</created>\n<error>") catch return "";
+    appendXmlContent(allocator, &result, error_msg) catch return "";
+    result.appendSlice(allocator, "</error>\n</agent>") catch return "";
+
+    return result.toOwnedSlice(allocator) catch "";
 }
 
 /// Generate error XML response
@@ -184,11 +196,27 @@ pub fn xmlError(allocator: std.mem.Allocator, name: []const u8, error_msg: []con
 
 /// Generate error XML response for parse failures (no name available)
 pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<agent>
-        \\<name></name>
-        \\<created>false</created>
-        \\<error>{s}</error>
-        \\</agent>
-    , .{error_msg}) catch "<agent><name></name><created>false</created><error>UnknownError</error></agent>";
+    // Build XML using ArrayList to avoid issues with null-terminated strings
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+
+    result.appendSlice(allocator, "<agent>\n<name></name>\n<created>false</created>\n<error>") catch return "";
+    appendXmlContent(allocator, &result, error_msg) catch return "";
+    result.appendSlice(allocator, "</error>\n</agent>") catch return "";
+
+    return result.toOwnedSlice(allocator) catch "";
+}
+
+/// Append XML-safe content to an ArrayList
+fn appendXmlContent(allocator: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '<' => try result.appendSlice(allocator, "&lt;"),
+            '>' => try result.appendSlice(allocator, "&gt;"),
+            '&' => try result.appendSlice(allocator, "&amp;"),
+            '"' => try result.appendSlice(allocator, "&quot;"),
+            '\'' => try result.appendSlice(allocator, "&apos;"),
+            else => try result.append(allocator, c),
+        }
+    }
 }

@@ -26,7 +26,7 @@ pub const SearchInput = struct {
     tail: ?usize = null,
     max_output: ?usize = 1024 * 1024, // default 1MB
     group_by_file: bool = true, // when true, results are grouped by file
-    cwd: []const u8 = "",
+    cwd: ?[]const u8 = null,
 };
 
 pub const SearchResult = struct {
@@ -80,12 +80,6 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         return error.HeadAndTailMutuallyExclusive;
     }
 
-    var current_dir = input.cwd;
-
-    if (std.mem.eql(u8, current_dir, "")) {
-        current_dir = cwd;
-    }
-
     const max_results = input.max_results orelse 50;
 
     const argv = &[_][]const u8{
@@ -100,7 +94,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     const result = try std.process.run(allocator, io, .{
         .argv = argv,
         .stdout_limit = std.Io.Limit.limited(max_output),
-        .cwd = .{ .path = current_dir },
+        .cwd = .{ .path = input.cwd orelse cwd },
     });
 
     defer allocator.free(result.stdout);

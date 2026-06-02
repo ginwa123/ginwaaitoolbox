@@ -47,14 +47,14 @@ pub fn listAllSkills(
         return error.MissingEnvironment;
     }
     const global_path = skills.get_global_skills_path_from_env(allocator, environment.?);
-    errdefer if (global_path) |p| allocator.free(p);
+    defer if (global_path) |p| allocator.free(p);
 
     // Get local skills path (from cwd or current directory)
     const local_path: ?[]const u8 = if (cwd_param) |cwd|
         skills.get_local_skills_path_for_dir(allocator, cwd)
     else
         skills.get_local_skills_path_from_io(allocator, io);
-    errdefer if (local_path) |p| allocator.free(p);
+    defer if (local_path) |p| allocator.free(p);
 
     // List global skills
     var global_skills: []skills.SkillInfo = &[_]skills.SkillInfo{};

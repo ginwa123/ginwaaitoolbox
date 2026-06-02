@@ -82,20 +82,22 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
         std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" }) catch {
             return xmlError(allocator, input.name, "Failed to build skills directory path");
         };
-    if (input.is_global) {
-        // path was allocated by get_global_skills_path_from_env - keep it
-    } else {
-        defer allocator.free(skills_dir);
-    }
+    // skills_dir is heap-allocated in both branches (global via get_global_skills_path_from_env,
+    // local via path.join). Free it once at the end of the function via a single defer.
+    defer allocator.free(skills_dir);
 
-    const skill_dir = std.fs.path.join(allocator, &[_][]const u8{ skills_dir, input.name }) catch {
-        if (input.is_global) allocator.free(skills_dir);
+    // Duplicate input.name to ensure no aliasing with path.join's internal buffer allocation
+    const name_copy = allocator.dupe(u8, input.name) catch {
+        return xmlError(allocator, input.name, "Failed to allocate memory for skill name");
+    };
+    defer allocator.free(name_copy);
+
+    const skill_dir = std.fs.path.join(allocator, &[_][]const u8{ skills_dir, name_copy }) catch {
         return xmlError(allocator, input.name, "Failed to build skill directory path");
     };
     defer allocator.free(skill_dir);
 
     const skill_file = std.fs.path.join(allocator, &[_][]const u8{ skill_dir, "SKILL.MD" }) catch {
-        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to build skill file path");
     };
     defer allocator.free(skill_file);
@@ -104,7 +106,6 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
     if (input.create_with_dir) {
         const cwd_dir = std.Io.Dir.cwd();
         cwd_dir.createDirPath(io, skill_dir) catch {
-            if (input.is_global) allocator.free(skills_dir);
             return xmlError(allocator, input.name, "Failed to create skill directory");
         };
     }
@@ -113,24 +114,20 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
     const file_content = buildSkillContent(allocator, input);
     defer allocator.free(file_content);
     if (file_content.len == 0) {
-        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to build skill content");
     }
 
     // Write the file using absolute path with Io.Dir
     const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
-        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to create skill file");
     };
     defer std.Io.File.close(file, io);
 
     std.Io.File.writeStreamingAll(file, io, file_content) catch {
-        if (input.is_global) allocator.free(skills_dir);
         return xmlError(allocator, input.name, "Failed to write skill file");
     };
 
     // Return success XML
-    if (input.is_global) allocator.free(skills_dir);
     return successToXml(allocator, input.name, skill_file);
 }
 
@@ -193,24 +190,46 @@ fn escapeYamlString(allocator: std.mem.Allocator, s: []const u8) []const u8 {
 
 /// Generate success XML response
 fn successToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<skill>
-        \\<name>{s}</name>
-        \\<created>true</created>
-        \\<path>{s}</path>
-        \\</skill>
-    , .{ name, path }) catch "<skill><name></name><created>false</created><error>UnknownError</error></skill>";
+    // Build XML using ArrayList to avoid issues with null-terminated strings
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    result.appendSlice(allocator, "<skill>\n<name>") catch return "";
+    appendXmlContent(allocator, &result, name) catch return "";
+    result.appendSlice(allocator, "</name>\n<created>true</created>\n<path>") catch return "";
+    appendXmlContent(allocator, &result, path) catch return "";
+    result.appendSlice(allocator, "</path>\n</skill>") catch return "";
+
+    return result.toOwnedSlice(allocator) catch "";
 }
 
 /// Internal error-to-XML helper (doesn't return error)
 fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<skill>
-        \\<name>{s}</name>
-        \\<created>false</created>
-        \\<error>{s}</error>
-        \\</skill>
-    , .{ name, error_msg }) catch "<skill><name></name><created>false</created><error>UnknownError</error></skill>";
+    // Build XML using ArrayList to avoid issues with null-terminated strings
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    result.appendSlice(allocator, "<skill>\n<name>") catch return "";
+    appendXmlContent(allocator, &result, name) catch return "";
+    result.appendSlice(allocator, "</name>\n<created>false</created>\n<error>") catch return "";
+    appendXmlContent(allocator, &result, error_msg) catch return "";
+    result.appendSlice(allocator, "</error>\n</skill>") catch return "";
+
+    return result.toOwnedSlice(allocator) catch "";
+}
+
+/// Append XML-safe content to an ArrayList
+fn appendXmlContent(allocator: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '<' => try result.appendSlice(allocator, "&lt;"),
+            '>' => try result.appendSlice(allocator, "&gt;"),
+            '&' => try result.appendSlice(allocator, "&amp;"),
+            '"' => try result.appendSlice(allocator, "&quot;"),
+            '\'' => try result.appendSlice(allocator, "&apos;"),
+            else => try result.append(allocator, c),
+        }
+    }
 }
 
 /// Generate error XML response

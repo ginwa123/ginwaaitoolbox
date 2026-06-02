@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import FolderExplorer from './FolderExplorer.vue'
 import RightSideBarSkillList from './RightSideBarSkillList.vue'
 import type { FolderEntry } from '../api'
@@ -7,13 +7,61 @@ import * as api from '../api'
 
 const props = defineProps<{
   cwd?: string
+  width?: number
 }>()
 
 const emit = defineEmits<{
   'file-click': [file: api.GitFileChange, staged: boolean]
   'skill-click': [skill: api.Skill]
   'code-editor-file-click': [file: FolderEntry]
+  'resize': [width: number]
 }>()
+
+// Default and bounds for width
+const MIN_WIDTH = 200
+const MAX_WIDTH = 600
+const DEFAULT_WIDTH = 280
+
+// Local width state
+const localWidth = ref(props.width || DEFAULT_WIDTH)
+
+// Resize handling
+const isResizing = ref(false)
+const resizeStartX = ref(0)
+const resizeStartWidth = ref(0)
+
+const startResize = (e: MouseEvent) => {
+  isResizing.value = true
+  resizeStartX.value = e.clientX
+  resizeStartWidth.value = localWidth.value
+  document.addEventListener('mousemove', onResize)
+  document.addEventListener('mouseup', stopResize)
+  document.body.style.cursor = 'ew-resize'
+  document.body.style.userSelect = 'none'
+}
+
+const onResize = (e: MouseEvent) => {
+  if (!isResizing.value) return
+  const delta = resizeStartX.value - e.clientX
+  const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, resizeStartWidth.value + delta))
+  localWidth.value = newWidth
+}
+
+const stopResize = () => {
+  if (isResizing.value) {
+    isResizing.value = false
+    emit('resize', localWidth.value)
+    document.removeEventListener('mousemove', onResize)
+    document.removeEventListener('mouseup', stopResize)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+}
+
+onUnmounted(() => {
+  document.removeEventListener('mousemove', onResize)
+  document.removeEventListener('mouseup', stopResize)
+})
 
 // Tab state
 const activeTab = ref<'explorer' | 'git' | 'skills'>('explorer')
@@ -152,9 +200,15 @@ const handleSkillClick = (skill: api.Skill) => {
 
 <template>
   <div
-    class="flex flex-col h-full"
-    style="width: 280px; background-color: var(--semantic-sidebar-bg); border-left: 1px solid var(--color-border);"
+    class="flex flex-col h-full relative"
+    :style="{ width: localWidth + 'px', backgroundColor: 'var(--semantic-sidebar-bg)' }"
   >
+    <!-- Resize handle on the left edge -->
+    <div
+      class="absolute top-0 left-0 w-1 h-full cursor-ew-resize hover:bg-color-violet/30 transition-colors z-10"
+      :class="{ 'bg-color-violet/50': isResizing }"
+      @mousedown="startResize"
+    />
     <!-- Header with tabs -->
     <div
       class="h-10 flex items-center shrink-0"

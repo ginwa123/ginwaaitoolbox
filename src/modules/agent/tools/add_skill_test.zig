@@ -88,3 +88,119 @@ test "add_skill - is_global defaults to false" {
     };
     try std.testing.expect(input.is_global == false);
 }
+
+test "add_skill - buildSkillContent with special characters" {
+    const alloc = std.testing.allocator;
+
+    const input = add_skill_mod.AddSkillInput{
+        .name = "test-skill",
+        .description = "Test \"description\" with quotes",
+        .content = "Test content with\\backslash",
+        .is_global = false,
+    };
+
+    const content = add_skill_mod.buildSkillContent(alloc, input);
+    defer alloc.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "name: test-skill") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "description: \"Test \\\"description\\\" with quotes\"") != null);
+}
+
+test "add_skill - executeAddSkillToString validates empty content" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const input = add_skill_mod.AddSkillInput{
+        .name = "test-skill",
+        .description = "Test description",
+        .content = "",  // Empty content should fail
+        .is_global = false,
+    };
+
+    const output = add_skill_mod.executeAddSkillToString(alloc, io, "/tmp", null, input);
+    defer alloc.free(output);
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "<created>false</created>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Content cannot be empty") != null);
+}
+
+test "add_skill - buildSkillContent escapes special characters" {
+    const alloc = std.testing.allocator;
+
+    const input = add_skill_mod.AddSkillInput{
+        .name = "test-skill",
+        .description = "Test \"description\" with quotes and\\backslash",
+        .content = "Test content",
+        .is_global = false,
+    };
+
+    const content = add_skill_mod.buildSkillContent(alloc, input);
+    defer alloc.free(content);
+
+    // Should contain escaped description
+    try std.testing.expect(std.mem.indexOf(u8, content, "\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\\\\") != null);
+}
+
+test "add_skill - local creation (is_global=false) writes to .nalar/skills/<name>/SKILL.MD" {
+    // Regression test for use-after-free bug: when is_global=false, skills_dir
+    // was being freed too early (defer was scoped to the else block), causing
+    // path.join to use a dangling pointer. The file would either not be
+    // created or be created in the wrong place.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const skill_name = "test-local-skill";
+    const tmp_path = "/tmp/nalar-add-skill-test";
+
+    // Clean up any leftover from previous failed runs
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    const input = add_skill_mod.AddSkillInput{
+        .name = skill_name,
+        .description = "Test description for local skill",
+        .content = "# Test skill content\n\nThis is a test.",
+        .create_with_dir = true,
+        .is_global = false,
+    };
+
+    const output = add_skill_mod.executeAddSkillToString(alloc, io, tmp_path, null, input);
+    defer alloc.free(output);
+
+    // Verify the success response
+    try std.testing.expect(std.mem.indexOf(u8, output, "<created>true</created>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, skill_name) != null);
+
+    // Verify the file was actually created at the correct path:
+    // <tmp_path>/.nalar/skills/<skill_name>/SKILL.MD
+    // Check that the directory structure exists (this would fail with the old bug
+    // because createDirPath was called with a freed-and-reused pointer)
+    const dir_check = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", skill_name });
+    defer alloc.free(dir_check);
+    const dir_exists = blk: {
+        std.Io.Dir.cwd().access(io, dir_check, .{}) catch break :blk false;
+        break :blk true;
+    };
+    try std.testing.expect(dir_exists);
+
+    // Check that the SKILL.MD file exists
+    const file_check = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", skill_name, "SKILL.MD" });
+    defer alloc.free(file_check);
+    const file_exists = blk: {
+        std.Io.Dir.cwd().access(io, file_check, .{}) catch break :blk false;
+        break :blk true;
+    };
+    try std.testing.expect(file_exists);
+
+    // Read the file and verify it has the expected content
+    const file_content = try std.Io.Dir.cwd().readFileAlloc(io, file_check, alloc, std.Io.Limit.limited(64 * 1024));
+    defer alloc.free(file_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, file_content, "name: ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, file_content, skill_name) != null);
+    try std.testing.expect(std.mem.indexOf(u8, file_content, "Test description for local skill") != null);
+    try std.testing.expect(std.mem.indexOf(u8, file_content, "Test skill content") != null);
+}

@@ -125,7 +125,7 @@ pub const HttpResponse = struct {
         try buf.appendSlice(self.allocator, " ");
         try buf.appendSlice(self.allocator, self.status_text);
         try buf.appendSlice(self.allocator, "\r\n");
-        try buf.appendSlice(self.allocator, "Server: GinwaServer/1.0\r\n"); // todo change i think
+        try buf.appendSlice(self.allocator, "Server: Server/1.0\r\n"); // todo change i think
         try buf.appendSlice(self.allocator, "Connection: close\r\n");
 
         var it = self.headers.iterator();

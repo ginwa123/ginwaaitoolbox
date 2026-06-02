@@ -565,10 +565,18 @@ export interface Session {
 
 export async function getSession(sessionId: string): Promise<Session | null> {
   try {
-    const response = await fetch(`${API_BASE}/session/${sessionId}`)
+    // Use the same endpoint as getChatHistory - it returns session info including cwd
+    const response = await fetch(`${API_BASE}/llm/session/${sessionId}/messages?limit=1`)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const text = await response.text()
-    return JSON.parse(text)
+    const data = await response.json()
+    // The session info is in the cwd field - construct session object
+    return {
+      sessionId: sessionId,
+      cwd: data.cwd || '',
+      createdAt: '',
+      agent: '',
+      sessionName: data.messages?.[0]?.session_name || '',
+    }
   } catch (error) {
     console.error('Failed to get session:', error)
     return null
@@ -967,6 +975,90 @@ export async function getQueuedMessages(sessionId: string): Promise<{
     throw new Error(`Failed to get queued messages: ${response.statusText}`)
   }
   return response.json()
+}
+
+// Workers SSE event types
+export interface WorkerEvent {
+  action: 'created' | 'updated' | 'deleted'
+  id: string
+  session_id: string
+  working_directory: string
+  last_activity: number
+  last_activity_description: string
+  created_at: string
+}
+
+// Create SSE connection for worker events (global worker list updates)
+export function createWorkersSseConnection(
+  onEvent: (event: WorkerEvent) => void,
+  onError?: (error: Event) => void,
+  onConnected?: () => void,
+): EventSource {
+  console.log('[createWorkersSseConnection] Creating SSE connection for worker events')
+  const eventSource = new EventSource(`${API_BASE}/workers/stream`)
+
+  // Buffer to accumulate multi-line JSON
+  let jsonBuffer = ''
+
+  // Handle named event: "connected"
+  eventSource.addEventListener('connected', (e: MessageEvent) => {
+    try {
+      const data = JSON.parse(e.data)
+      console.log('[WorkersSSE] connected event:', data)
+      onConnected?.()
+    } catch (err) {
+      console.error('Failed to parse connected event:', err)
+    }
+  })
+
+  // Handle default events (data: lines without event: prefix)
+  eventSource.onmessage = (event) => {
+    console.log('[WorkersSSE] onmessage raw:', JSON.stringify(event.data))
+    try {
+      const raw = event.data
+      if (!raw) return
+
+      const trimmed = raw.trim()
+      if (!trimmed) return
+
+      // Accumulate JSON until we have complete object
+      jsonBuffer += trimmed + '\n'
+
+      // Try to find complete JSON object (starts with { and ends with })
+      const jsonStart = jsonBuffer.indexOf('{')
+      const jsonEnd = jsonBuffer.lastIndexOf('}')
+
+      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+        const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
+        try {
+          const data = JSON.parse(jsonStr)
+          console.log('[WorkersSSE] Received data:', data)
+          onEvent(data as WorkerEvent)
+          // Keep anything after the JSON for next event
+          jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
+        } catch (e) {
+          // Not complete yet, keep buffering
+          console.log(
+            '[WorkersSSE] Buffering, not complete JSON yet, buffer length:',
+            jsonBuffer.length,
+          )
+        }
+      }
+    } catch (e) {
+      console.error('WorkersSSE onmessage error:', e)
+    }
+  }
+
+  eventSource.onerror = (error) => {
+    console.error('[WorkersSSE] EventSource onerror:', error)
+    onError?.(error)
+  }
+
+  eventSource.onopen = () => {
+    console.log('[WorkersSSE] EventSource connected')
+  }
+
+  return eventSource
 }
 
 // Nalar Config API

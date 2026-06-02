@@ -11,12 +11,14 @@ import SettingsView from './SettingsView.vue'
 import CodeEditor from './CodeEditor.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
+import { useSidebarStore } from '../stores/sidebar'
 import * as api from '../api'
 
 const router = useRouter()
 const route = useRoute()
 const navigationStore = useNavigationStore()
 const workspacesStore = useWorkspacesStore()
+const sidebarStore = useSidebarStore()
 
 // Ref to Sidebar component
 const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null)
@@ -48,6 +50,10 @@ const handleSidebarResize = (newWidth: number) => {
   navigationStore.setSidebarWidth(newWidth)
 }
 
+const handleRightSidebarResize = (newWidth: number) => {
+  sidebarStore.setRightSidebarWidth(newWidth)
+}
+
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
 
 // Computed refs from store
@@ -55,6 +61,7 @@ const activeChatId = computed(() => navigationStore.activeChatId)
 const activeChatName = computed(() => navigationStore.activeChatName)
 const sidebarCollapsed = computed(() => navigationStore.sidebarCollapsed)
 const sidebarWidth = computed(() => navigationStore.sidebarWidth)
+const rightSidebarWidth = computed(() => sidebarStore.rightSidebarWidth)
 
 const handleUpdateChatId = (oldId: string, newId: string) => {
   if (activeChatId.value === `chat-${oldId}`) {
@@ -362,7 +369,7 @@ const rightSidebarCwd = computed(() => {
 // Watch route query changes to sync with app state
 watch(
   () => route.query,
-  (query) => {
+  async (query) => {
     const sessionId = query.session as string
     const taskId = query.task as string
     const view = query.view as string
@@ -441,7 +448,16 @@ watch(
           navigationStore.setActiveChat(sessionId, navigationStore.activeChatName)
         }
         // Fetch cwd for folder explorer and git
-        fetchChatSessionCwd(sessionId)
+        // Use localStorage cached value if available for immediate use
+        const cachedCwd = localStorage.getItem(`session_cwd_${sessionId}`)
+        if (cachedCwd) {
+          chatSessionCwd.value = cachedCwd
+        }
+        await fetchChatSessionCwd(sessionId)
+        // Cache the cwd for future use
+        if (chatSessionCwd.value) {
+          localStorage.setItem(`session_cwd_${sessionId}`, chatSessionCwd.value)
+        }
       } else if (view === 'task' && taskId) {
         // Task is handled by workspacesStore.setActiveTask already called in onMounted
       } else if (!view || view === 'workspace') {
@@ -451,6 +467,15 @@ watch(
     }
   },
 )
+
+// Watch chatSessionCwd changes and sync to GitFileViewer if needed
+watch(chatSessionCwd, (newCwd) => {
+  // Update localStorage cache when cwd becomes available
+  if (newCwd && activeChatId.value) {
+    const sessionId = activeChatId.value.replace(/^chat-/, '')
+    localStorage.setItem(`session_cwd_${sessionId}`, newCwd)
+  }
+})
 </script>
 
 <template>
@@ -691,9 +716,11 @@ watch(
     <RightSidebar
       v-if="rightSidebarCwd"
       :cwd="rightSidebarCwd"
+      :width="rightSidebarWidth"
       @file-click="handleRightSidebarFileClick"
       @skill-click="handleRightSidebarSkillClick"
       @code-editor-file-click="handleCodeEditorFileClick"
+      @resize="handleRightSidebarResize"
     />
   </div>
 </template>

@@ -24,20 +24,16 @@ pub const RemoveSkillResult = struct {
 
 /// Create XML error output for remove_skill
 pub fn xmlError(allocator: std.mem.Allocator, skill_name: []const u8, err_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<skill_name>{s}</skill_name>
-        \\<removed>false</removed>
-        \\<error>{s}</error>
-    , .{ skill_name, err_msg }) catch "<skill_name></skill_name><removed>false</removed><error>UnknownError</error>";
-}
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
 
-/// Create XML error output for remove_skill when skill_name is empty/missing
-pub fn xmlErrorEmpty(allocator: std.mem.Allocator, err_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<skill_name></skill_name>
-        \\<removed>false</removed>
-        \\<error>{s}</error>
-    , .{err_msg}) catch "<skill_name></skill_name><removed>false</removed><error>UnknownError</error>";
+    result.appendSlice(allocator, "<skill_name>") catch return "";
+    appendXmlContent(allocator, &result, skill_name) catch return "";
+    result.appendSlice(allocator, "</skill_name>\n<removed>false</removed>\n<error>") catch return "";
+    appendXmlContent(allocator, &result, err_msg) catch return "";
+    result.appendSlice(allocator, "</error>") catch return "";
+
+    return result.toOwnedSlice(allocator) catch "";
 }
 
 /// Tool definition for remove_skill
@@ -117,7 +113,13 @@ pub fn execute_remove_skill_to_string(
         try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
 
     // Build path to skill directory
-    const skill_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ skills_dir, input.skill_name });
+    // Duplicate skill_name to ensure no aliasing with path.join's internal buffer allocation
+    const skill_name_copy = try allocator.dupe(u8, input.skill_name);
+    errdefer allocator.free(skill_name_copy);
+
+    const skill_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ skills_dir, skill_name_copy });
+    // skill_name_copy is no longer needed after path.join copies it
+    allocator.free(skill_name_copy);
 
     // Check if the skill directory exists
     const dir_exists = blk: {
@@ -129,38 +131,71 @@ pub fn execute_remove_skill_to_string(
 
     if (!dir_exists) {
         // Skill directory doesn't exist - might be a built-in skill or already removed
-        const result = try std.fmt.allocPrint(allocator,
-            \\<skill_name>{s}</skill_name>
-            \\<removed>false</removed>
-            \\<error>Skill directory not found</error>
-        , .{input.skill_name});
+        var result = std.ArrayList(u8).empty;
+        errdefer result.deinit(allocator);
+
+        try result.appendSlice(allocator, "<skill_name>");
+        try appendXmlContent(allocator, &result, input.skill_name);
+        try result.appendSlice(allocator, "</skill_name>\n<removed>false</removed>\n<error>Skill directory not found</error>");
+
         if (input.is_global) allocator.free(skills_dir);
         allocator.free(skill_dir_path);
-        return result;
+        return try result.toOwnedSlice(allocator);
     }
 
     // Delete the skill directory recursively
     std.Io.Dir.cwd().deleteTree(io, skill_dir_path) catch {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<skill_name>{s}</skill_name>
-            \\<removed>false</removed>
-            \\<error>Failed to delete skill directory</error>
-        , .{input.skill_name});
+        var result = std.ArrayList(u8).empty;
+        errdefer result.deinit(allocator);
+
+        try result.appendSlice(allocator, "<skill_name>");
+        try appendXmlContent(allocator, &result, input.skill_name);
+        try result.appendSlice(allocator, "</skill_name>\n<removed>false</removed>\n<error>Failed to delete skill directory</error>");
+
         if (input.is_global) allocator.free(skills_dir);
         allocator.free(skill_dir_path);
-        return result;
+        return try result.toOwnedSlice(allocator);
     };
 
     // Return success
-    const result = try std.fmt.allocPrint(allocator,
-        \\<skill_name>{s}</skill_name>
-        \\<removed>true</removed>
-        \\<path>{s}</path>
-    , .{ input.skill_name, skill_dir_path });
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, "<skill_name>");
+    try appendXmlContent(allocator, &result, input.skill_name);
+    try result.appendSlice(allocator, "</skill_name>\n<removed>true</removed>\n<path>");
+    try appendXmlContent(allocator, &result, skill_dir_path);
+    try result.appendSlice(allocator, "</path>");
 
     // Clean up allocated memory
     if (input.is_global) allocator.free(skills_dir);
     allocator.free(skill_dir_path);
 
-    return result;
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Generate error XML response for parse failures (no name available)
+pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    result.appendSlice(allocator, "<skill_name></skill_name>\n<removed>false</removed>\n<error>") catch return "";
+    appendXmlContent(allocator, &result, error_msg) catch return "";
+    result.appendSlice(allocator, "</error>") catch return "";
+
+    return result.toOwnedSlice(allocator) catch "";
+}
+
+/// Append XML-safe content to an ArrayList
+fn appendXmlContent(allocator: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '<' => try result.appendSlice(allocator, "&lt;"),
+            '>' => try result.appendSlice(allocator, "&gt;"),
+            '&' => try result.appendSlice(allocator, "&amp;"),
+            '"' => try result.appendSlice(allocator, "&quot;"),
+            '\'' => try result.appendSlice(allocator, "&apos;"),
+            else => try result.append(allocator, c),
+        }
+    }
 }

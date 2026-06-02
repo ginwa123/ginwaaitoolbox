@@ -57,7 +57,11 @@ pub fn execute_remove_agent_to_string(
     };
 
     // Build path to agent directory: .nalar/agents/<name>/
-    const agent_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "agents", input.name });
+    // Duplicate name to ensure no aliasing with path.join's internal buffer allocation
+    const name_copy = try allocator.dupe(u8, input.name);
+    defer allocator.free(name_copy);
+
+    const agent_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "agents", name_copy });
     defer allocator.free(agent_dir_path);
 
     // Check if the agent directory exists
@@ -79,31 +83,56 @@ pub fn execute_remove_agent_to_string(
     };
 
     // Return success
-    const result = try std.fmt.allocPrint(allocator,
-        \\<name>{s}</name>
-        \\<removed>true</removed>
-        \\<path>{s}</path>
-    , .{ input.name, agent_dir_path });
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
 
-    return result;
+    try result.appendSlice(allocator, "<name>");
+    try appendXmlContent(allocator, &result, input.name);
+    try result.appendSlice(allocator, "</name>\n<removed>true</removed>\n<path>");
+    try appendXmlContent(allocator, &result, agent_dir_path);
+    try result.appendSlice(allocator, "</path>");
+
+    return try result.toOwnedSlice(allocator);
 }
 
 /// Generate error XML response
 pub fn xmlError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<name>{s}</name>
-        \\<removed>false</removed>
-        \\<error>{s}</error>
-    , .{ name, error_msg }) catch "<name></name><removed>false</removed><error>UnknownError</error>";
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    result.appendSlice(allocator, "<name>") catch return "";
+    appendXmlContent(allocator, &result, name) catch return "";
+    result.appendSlice(allocator, "</name>\n<removed>false</removed>\n<error>") catch return "";
+    appendXmlContent(allocator, &result, error_msg) catch return "";
+    result.appendSlice(allocator, "</error>") catch return "";
+
+    return result.toOwnedSlice(allocator) catch "";
 }
 
 /// Generate error XML response for parse failures (no name available)
 pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<name></name>
-        \\<removed>false</removed>
-        \\<error>{s}</error>
-    , .{error_msg}) catch "<name></name><removed>false</removed><error>UnknownError</error>";
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    result.appendSlice(allocator, "<name></name>\n<removed>false</removed>\n<error>") catch return "";
+    appendXmlContent(allocator, &result, error_msg) catch return "";
+    result.appendSlice(allocator, "</error>") catch return "";
+
+    return result.toOwnedSlice(allocator) catch "";
+}
+
+/// Append XML-safe content to an ArrayList
+fn appendXmlContent(allocator: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '<' => try result.appendSlice(allocator, "&lt;"),
+            '>' => try result.appendSlice(allocator, "&gt;"),
+            '&' => try result.appendSlice(allocator, "&amp;"),
+            '"' => try result.appendSlice(allocator, "&quot;"),
+            '\'' => try result.appendSlice(allocator, "&apos;"),
+            else => try result.append(allocator, c),
+        }
+    }
 }
 
 /// Internal error-to-XML helper (doesn't return error)

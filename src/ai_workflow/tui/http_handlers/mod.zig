@@ -58,6 +58,7 @@ pub const tasksDeleteHandler = @import("tasks_delete.zig").tasksDeleteHandler;
 pub const worker_get_handler = @import("worker_get.zig").worker_get_handler;
 pub const workerListHandler = @import("worker_list.zig").workerListHandler;
 pub const worker_list_handler = @import("worker_list.zig").workerListHandler;
+pub const workersStreamHandler = @import("worker_sse.zig").workersStreamHandler;
 
 // Skills API handlers
 pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;

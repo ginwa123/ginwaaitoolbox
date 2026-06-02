@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick, computed, type Ref } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../api'
 import { getThinkingTags, isThinkingTags, stripThinkingTags } from '@/helpers'
@@ -201,35 +201,11 @@ const renderResponse = (
 // Session ID extracted from props on mount
 const sessionId = ref('')
 
-// Local LLM processing state - per session
-const isLLMProcessing = ref(false)
-let processingPollInterval: ReturnType<typeof setInterval> | null = null
+// Inject processingState from App.vue (driven by SSE - always up-to-date)
+const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
 
-const checkLLMProcessing = async () => {
-  if (!sessionId.value) {
-    isLLMProcessing.value = false
-    return
-  }
-  try {
-    const { workers } = await api.getWorkers(undefined, 50, sessionId.value)
-    isLLMProcessing.value = workers.length > 0
-  } catch {
-    isLLMProcessing.value = false
-  }
-}
-
-const startProcessingPoll = () => {
-  checkLLMProcessing()
-  if (processingPollInterval) clearInterval(processingPollInterval)
-  processingPollInterval = setInterval(checkLLMProcessing, 2000)
-}
-
-const stopProcessingPoll = () => {
-  if (processingPollInterval) {
-    clearInterval(processingPollInterval)
-    processingPollInterval = null
-  }
-}
+// LLM processing state - derived reactively from App.vue's processingState
+const isLLMProcessing = computed(() => !!processingState.value[sessionId.value])
 
 // Pagination state
 const messageCursor = ref<string | null>(null)
@@ -249,7 +225,6 @@ const messagesContainer = ref<HTMLElement | null>(null)
 
 // State
 const messages = ref<Message[]>([])
-const inputText = ref('')
 const isLoading = ref(false)
 const isLoadingMore = ref(false)
 const error = ref<string | null>(null)
@@ -656,7 +631,6 @@ onMounted(async () => {
     await loadChatHistory()
     connectSse()
     startGitStatusPoll()
-    startProcessingPoll()
 
     try {
       const result = await api.getQueuedMessages(sessionId.value)
@@ -670,7 +644,6 @@ onMounted(async () => {
 onUnmounted(() => {
   disconnectSse()
   stopGitStatusPoll()
-  stopProcessingPoll()
 })
 
 watch(
@@ -685,20 +658,6 @@ watch(
       checkGitStatus()
     } else {
       gitStatus.value = null
-    }
-  },
-)
-
-watch(
-  () => sessionId.value,
-  (newSessionId, oldSessionId) => {
-    if (newSessionId !== oldSessionId) {
-      stopProcessingPoll()
-      if (newSessionId) {
-        startProcessingPoll()
-      } else {
-        isLLMProcessing.value = false
-      }
     }
   },
 )
@@ -740,10 +699,6 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
 const formatTime = (date: Date) => {
   if (!date || isNaN(date.getTime())) return ''
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
-
-const handleShiftEnter = () => {
-  // Allow Shift+Enter to insert newline - default textarea behavior
 }
 
 // ─── Compact ──────────────────────────────────────────────────────────────────

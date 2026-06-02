@@ -32,7 +32,6 @@ pub const DeepResearch =
     \\- Look at tests to understand expected behavior
     \\**Step 2: Research external knowledge**
     \\- Use CloakBrowser for all external research ⭐ (bypasses anti-bot detection)
-    \\- CloakBrowser: https://github.com/v各级/CloakBrowser
     \\- Search for patterns other developers use
     \\**Step 3: Form hypothesis**
     \\- State what you believe the solution is
@@ -152,15 +151,11 @@ pub const ContextAwareness =
     \\- What's already been tried?
     \\- What are the edge cases?
     \\
-    \\**Tool:** Use `tree` and `fd` to understand project structure
-    \\**Tool:** Use `read_file` NALAR.md for project conventions
-    \\**Tool:** Use `lsp_document_symbol` to understand file structure
-    \\
     \\**Rule:** "Start with understanding. Implementation follows."
 ;
 
 pub const ProactiveLearning =
-    \\## 📚 Proactive Learning (Learn Before You Need)
+    \\## Proactive Learning (Learn Before You Need)
     \\
     \\**Don't wait to be told to learn. Anticipate what you'll need.**
     \\
@@ -172,7 +167,6 @@ pub const ProactiveLearning =
     \\**Learning sources:**
     \\- CloakBrowser — all web research (bypasses anti-bot detection)
     \\- `read_file` — existing codebase patterns
-    \\- `lsp_workspace_symbol` — project structure
     \\
     \\**After learning, DOCUMENT it:**
     \\- Update NALAR.md with key facts

@@ -189,7 +189,7 @@ pub fn build_agent_prompt(
     try appendSection(allocator, &result, GuidelinesSummary);
 
     // 4. Agentic Coding enhancements (autonomous, proactive, quality-focused)
-    try appendSection(allocator, &result, AutonomousBehavior);
+    // try appendSection(allocator, &result, AutonomousBehavior);
     try appendSection(allocator, &result, DeepResearch);
     try appendSection(allocator, &result, QualityGates);
     try appendSection(allocator, &result, ErrorRecovery);
@@ -255,13 +255,13 @@ pub fn build_agent_prompt(
     // try appendToolListing(allocator, &result, tools);
 
     // 15. File editing rules - CRITICAL, follow the workflow!
-    try appendSection(allocator, &result, FileEditingRules);
+    // try appendSection(allocator, &result, FileEditingRules);
 
     // 16. Change agent rules
     try appendSection(allocator, &result, ChangeAgent);
 
     // 17. Specialization table
-    try appendSection(allocator, &result, SpecializationTable);
+    // try appendSection(allocator, &result, SpecializationTable);
 
     // 18. Dynamic agents list
     // {

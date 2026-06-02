@@ -6,6 +6,7 @@ const logger_mod = tree1.logger;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
 const ai_mod = @import("nalarcore").ai_mod;
+const on_event_sent = ai_mod.on_event_sent;
 
 pub fn markMessageNotForLlmRun(
     allocator: std.mem.Allocator,
@@ -594,7 +595,10 @@ pub fn getSessionMessagesSorted(
         .next_cursor = next_cursor,
         .cwd = cwd,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
-        .max_capacity_total_tokens = getMaxCapacityTotalTokensForSession(allocator, db, session_id),
+        .max_capacity_total_tokens = if (tree1.getSingleton() catch null) |di|
+            llm_models.getModelTokenCount(di.llm_config.model)
+        else
+            llm_models.getModelTokenCount(""),
         .total_count = total_count,
         .skills = session_skills,
     };
@@ -639,30 +643,6 @@ fn getMaxTotalTokensForSession(
         return max_tokens;
     }
     return 0;
-}
-
-/// Get the max capacity total_tokens based on the session's model
-fn getMaxCapacityTotalTokensForSession(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) u32 {
-    const sql =
-        \\SELECT COALESCE(model, 'MiniMax-M2.7')
-        \\FROM llm_history
-        \\WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL)
-        \\ORDER BY created_at DESC LIMIT 1
-    ;
-
-    var rows = db.query(allocator, sql, &.{session_id}) catch return 200000;
-    defer rows.deinit();
-
-    if (rows.next() catch return 200000) |row| {
-        const model_name = row.values[0];
-        row.deinit(allocator);
-        return llm_models.getModelTokenCount(model_name);
-    }
-    return 200000;
 }
 
 /// Escape JSON special characters for safe string output
@@ -1365,6 +1345,12 @@ pub fn upsertWorker(
     session_id: []const u8,
     working_directory: []const u8,
 ) !void {
+    // Check if worker exists to determine action
+    const check_sql = "SELECT id FROM worker WHERE id = ?";
+    var rows = try db.query(allocator, check_sql, &.{worker_id});
+    defer rows.deinit();
+    const exists = (try rows.next()) != null;
+
     const sql = "INSERT OR REPLACE INTO worker (id, session_id, working_directory, last_activity, last_activity_description) VALUES (?, ?, ?, strftime('%s', 'now'), '')";
     try db.exec(allocator, sql, &.{ worker_id, session_id, working_directory });
 
@@ -1372,6 +1358,21 @@ pub fn upsertWorker(
     // Use INSERT OR IGNORE to handle cases where session might already exist
     const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
     try db.exec(allocator, session_sql, &.{ session_id, session_id });
+
+    // Emit worker event
+    const action = if (exists) "updated" else "created";
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_timestamp: i64 = ts.sec;
+    on_event_sent.onEventSendWorkers(allocator, .{
+        .action = action,
+        .id = worker_id,
+        .session_id = session_id,
+        .working_directory = working_directory,
+        .last_activity = now_timestamp,
+        .last_activity_description = "",
+        .created_at = "",
+    }) catch {};
 }
 
 /// Update worker's last activity timestamp with description
@@ -1383,6 +1384,20 @@ pub fn updateWorkerActivityWithDescription(
 ) !void {
     const sql = "UPDATE worker SET last_activity = strftime('%s', 'now'), last_activity_description = ? WHERE id = ?";
     try db.exec(allocator, sql, &.{ description, worker_id });
+
+    // Emit worker update event
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now_timestamp: i64 = ts.sec;
+    on_event_sent.onEventSendWorkers(allocator, .{
+        .action = "updated",
+        .id = worker_id,
+        .session_id = "",
+        .working_directory = "",
+        .last_activity = now_timestamp,
+        .last_activity_description = description,
+        .created_at = "",
+    }) catch {};
 }
 
 /// Update worker's last activity timestamp
@@ -1403,6 +1418,17 @@ pub fn removeWorker(
 ) !void {
     const sql = "DELETE FROM worker WHERE id = ?";
     try db.exec(allocator, sql, &.{worker_id});
+
+    // Emit worker deleted event
+    on_event_sent.onEventSendWorkers(allocator, .{
+        .action = "deleted",
+        .id = worker_id,
+        .session_id = "",
+        .working_directory = "",
+        .last_activity = 0,
+        .last_activity_description = "",
+        .created_at = "",
+    }) catch {};
 }
 
 pub fn deleteAllWorkers(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !void {
@@ -1410,14 +1436,42 @@ pub fn deleteAllWorkers(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend)
     try db.exec(allocator, sql, &.{});
 }
 
-/// Delete a worker by session_id
+/// Delete a worker by session_id and emit SSE "deleted" event for each affected row
 pub fn deleteWorkerBySessionId(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !void {
-    const sql = "DELETE FROM worker WHERE session_id = ?";
-    try db.exec(allocator, sql, &.{session_id});
+    // Capture affected worker IDs BEFORE deleting so we can emit one event per row
+    const select_sql = "SELECT id FROM worker WHERE session_id = ?";
+    var rows = try db.query(allocator, select_sql, &.{session_id});
+    defer rows.deinit();
+
+    var affected_ids: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (affected_ids.items) |id| allocator.free(id);
+        affected_ids.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        try affected_ids.append(allocator, try allocator.dupe(u8, row.values[0]));
+    }
+
+    const delete_sql = "DELETE FROM worker WHERE session_id = ?";
+    try db.exec(allocator, delete_sql, &.{session_id});
+
+    // Emit one worker deleted event per affected row
+    for (affected_ids.items) |worker_id| {
+        on_event_sent.onEventSendWorkers(allocator, .{
+            .action = "deleted",
+            .id = worker_id,
+            .session_id = "",
+            .working_directory = "",
+            .last_activity = 0,
+            .last_activity_description = "",
+            .created_at = "",
+        }) catch {};
+    }
 }
 
 pub fn deleteAllQueuedMessages(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !void {
@@ -1496,7 +1550,7 @@ pub fn isSessionCancelled(
     return false;
 }
 
-/// Mark session as idle (remove from worker table)
+/// Mark session as idle (remove from worker table) and emit SSE "deleted" event
 pub fn markSessionIdle(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -1504,6 +1558,17 @@ pub fn markSessionIdle(
 ) !void {
     const sql = "DELETE FROM worker WHERE id = ?";
     try db.exec(allocator, sql, &.{session_id});
+
+    // Emit worker deleted event so connected SSE clients can drop the entry
+    on_event_sent.onEventSendWorkers(allocator, .{
+        .action = "deleted",
+        .id = session_id,
+        .session_id = "",
+        .working_directory = "",
+        .last_activity = 0,
+        .last_activity_description = "",
+        .created_at = "",
+    }) catch {};
 }
 
 /// Queue a message for a session and emit SSE event to notify connected clients

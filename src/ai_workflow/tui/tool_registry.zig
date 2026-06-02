@@ -256,7 +256,11 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = tc;
 
-    const output = list_skills_mod.execute_list_skills(ctx.allocator, ctx.io, null, ctx.environment) catch blk: {
+    // Pass ctx.cwd so local skills are looked up in the session's workspace
+    // (the same directory add_skill/edit_skill/remove_skill write to), matching
+    // how those tools are invoked. Passing null here would make list_skills fall
+    // back to the server's OS-level cwd, causing local skills to be invisible.
+    const output = list_skills_mod.execute_list_skills(ctx.allocator, ctx.io, ctx.cwd, ctx.environment) catch blk: {
         break :blk try std.fmt.allocPrint(ctx.allocator, "{{\"error\": \"Failed to list skills\"}}", .{});
     };
     return ToolExecResult{ .output = output, .output_allocated = true };

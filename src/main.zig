@@ -176,6 +176,7 @@ pub fn main(init: std.process.Init) !void {
     //
     // // Worker API
     try gs.router.get("/api/workers", ai_mod.http_handlers.worker_list_handler);
+    try gs.router.sse("/api/workers/stream", ai_mod.http_handlers.workersStreamHandler);
     //
     // // LLM API aliases (desktop app uses /api/llm/*)
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
