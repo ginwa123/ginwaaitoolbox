@@ -1,0 +1,138 @@
+<script setup lang="ts">
+import { ref, watch, nextTick } from 'vue'
+
+const props = defineProps<{
+  show: boolean
+  currentName: string
+}>()
+
+const emit = defineEmits<{
+  close: []
+  rename: [name: string]
+}>()
+
+const name = ref('')
+const nameInput = ref<HTMLInputElement | null>(null)
+
+// Reset value when modal opens, focus input
+watch(() => props.show, async (show) => {
+  if (show) {
+    name.value = props.currentName
+    await nextTick()
+    nameInput.value?.focus()
+    nameInput.value?.select()
+  }
+})
+
+const handleClose = () => {
+  emit('close')
+}
+
+const handleRename = () => {
+  const trimmed = name.value.trim()
+  if (trimmed && trimmed !== props.currentName) {
+    emit('rename', trimmed)
+  }
+  handleClose()
+}
+
+const handleKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Enter' && name.value.trim()) {
+    handleRename()
+  } else if (event.key === 'Escape') {
+    handleClose()
+  }
+}
+</script>
+
+<template>
+  <Teleport to="body">
+    <Transition name="modal">
+      <div
+        v-if="show"
+        class="fixed inset-0 z-50 flex items-center justify-center"
+        @click.self="handleClose"
+        @keydown="handleKeydown"
+      >
+        <!-- Backdrop -->
+        <div
+          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          @click="handleClose"
+        />
+
+        <!-- Modal Content -->
+        <div
+          class="relative w-full max-w-sm mx-4 p-6 rounded-xl shadow-2xl"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+        >
+          <!-- Header -->
+          <h3
+            class="text-lg font-semibold mb-4"
+            style="color: var(--semantic-text);"
+          >
+            Rename Workspace
+          </h3>
+
+          <!-- Name Input -->
+          <div class="mb-6">
+            <label
+              class="block text-xs font-medium mb-2"
+              style="color: var(--semantic-text-dim);"
+            >
+              Workspace Name
+            </label>
+            <input
+              ref="nameInput"
+              v-model="name"
+              type="text"
+              placeholder="Workspace name"
+              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200"
+              style="
+                background-color: var(--semantic-sidebar-bg);
+                border: 1px solid var(--color-border);
+                color: var(--semantic-text);
+              "
+            />
+          </div>
+
+          <!-- Actions -->
+          <div class="flex justify-end gap-3">
+            <button
+              @click="handleClose"
+              class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
+              style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
+            >
+              Cancel
+            </button>
+            <button
+              @click="handleRename"
+              :disabled="!name.trim() || name.trim() === currentName"
+              class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+</template>
+
+<style scoped>
+/* Modal transitions */
+.modal-enter-active,
+.modal-leave-active {
+  transition: all 0.25s ease-out;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+
+.modal-enter-from > div:last-child,
+.modal-leave-to > div:last-child {
+  transform: scale(0.95) translateY(10px);
+}
+</style>

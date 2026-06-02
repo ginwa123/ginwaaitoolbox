@@ -142,6 +142,31 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         }
     }
 
+    // Handle MCP servers: if the input provides an `mcp_servers` map, replace
+    // the existing list wholesale (whole-list replace matches the UI's
+    // add/edit/delete workflow). The input map is deep-copied so the parsed
+    // struct can safely go out of scope.
+    if (input.value.mcp_servers) |servers_value| {
+        switch (servers_value) {
+            .object => |obj| {
+                var new_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+                errdefer new_obj.deinit(allocator);
+                var iter = obj.iterator();
+                while (iter.next()) |entry| {
+                    const key = try allocator.dupe(u8, entry.key_ptr.*);
+                    errdefer allocator.free(key);
+                    const copied_value = try deepCopyJsonValue(allocator, entry.value_ptr.*);
+                    try new_obj.put(allocator, key, copied_value);
+                }
+                config_json.mcp_servers = json.Value{ .object = new_obj };
+            },
+            else => {
+                // Non-object value: silently drop (e.g. user sent `null`).
+                config_json.mcp_servers = null;
+            },
+        }
+    }
+
     // Write config
     const config_str = try std.json.Stringify.valueAlloc(allocator, config_json, .{
         .whitespace = .indent_tab,
@@ -172,6 +197,10 @@ const ConfigInput = struct {
     system_prompt: []const u8 = "",
     profiles: ?[]const ProfileChange = null,
     active_profile: ?[]const u8 = null,
+    /// Whole-list replace for the `mcp_servers` map (snake_case).
+    /// When present, replaces the existing MCP servers entirely.
+    /// When absent, existing MCP servers are preserved.
+    mcp_servers: ?json.Value = null,
 };
 
 const ProfileChange = struct {
@@ -194,6 +223,8 @@ const ConfigJson = struct {
     system_prompt: []const u8 = "",
     profiles_models: ?json.Value = null,
     active_profile: ?[]const u8 = null,
+    /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
+    mcp_servers: ?json.Value = null,
 };
 
 /// Deep copy a json.Value to avoid use-after-free from parsed.deinit()

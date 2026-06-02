@@ -517,6 +517,27 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Rename a workspace
+  async function renameWorkspace(workspaceId: string, newName: string) {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+    const trimmed = newName.trim()
+    if (!trimmed || trimmed === workspace.name) return
+
+    const previousName = workspace.name
+    // Optimistic update
+    workspace.name = trimmed
+
+    // Sync with API
+    try {
+      await api.updateWorkspace(workspaceId, { name: trimmed })
+    } catch (err) {
+      console.error('Failed to rename workspace:', err)
+      // Rollback on error
+      workspace.name = previousName
+    }
+  }
+
   async function removeWorkspace(workspaceId: string) {
     const workspaceIndex = workspaces.value.findIndex((ws) => ws.id === workspaceId)
     if (workspaceIndex === -1) return
@@ -614,6 +635,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addWorkspaceItem,
     removeWorkspaceItem,
     removeWorkspace,
+    renameWorkspace,
     updateWorkspaceItemPath,
     addTask,
     toggleTask,

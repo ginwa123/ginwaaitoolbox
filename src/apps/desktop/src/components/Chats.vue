@@ -14,8 +14,8 @@ const messages = ref<Message[]>([
     id: '1',
     role: 'assistant',
     content: 'Hello! I am your AI coding assistant. How can I help you today?',
-    timestamp: new Date()
-  }
+    timestamp: new Date(),
+  },
 ])
 
 const isAtBottom = ref(true)
@@ -59,11 +59,7 @@ onMounted(() => {
 <template>
   <div class="flex flex-col h-full relative">
     <!-- Messages List - Centered & Constrained -->
-    <div
-      ref="messagesContainer"
-      class="flex-1 overflow-y-auto"
-      @scroll="handleScroll"
-    >
+    <div ref="messagesContainer" class="flex-1 overflow-y-auto" @scroll="handleScroll">
       <div class="max-w-4xl mx-auto px-4 py-6 space-y-4">
         <div
           v-for="message in messages"
@@ -74,9 +70,11 @@ onMounted(() => {
           <!-- Avatar -->
           <div
             class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-sm font-medium"
-            :style="message.role === 'user'
-              ? 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);'
-              : 'background: linear-gradient(135deg, var(--color-green), var(--color-aqua)); color: var(--color-bg);'"
+            :style="
+              message.role === 'user'
+                ? 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);'
+                : 'background: linear-gradient(135deg, var(--color-green), var(--color-aqua)); color: var(--color-bg);'
+            "
           >
             {{ message.role === 'user' ? 'U' : 'AI' }}
             <!-- Streaming indicator -->
@@ -88,22 +86,29 @@ onMounted(() => {
           <!-- Message Bubble -->
           <div class="max-w-[90%]">
             <div
+              v-if="message.content.length > 0"
               class="px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap"
-              :style="message.role === 'user'
-                ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
-                : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'"
+              :style="
+                message.role === 'user'
+                  ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
+                  : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
+              "
             >
               {{ message.content }}
-              <span v-if="message.isStreaming" class="inline-block w-2 h-4 ml-1 animate-pulse" style="background-color: var(--color-violet);"></span>
+              <span
+                v-if="message.isStreaming"
+                class="inline-block w-2 h-4 ml-1 animate-pulse"
+                style="background-color: var(--color-violet)"
+              ></span>
             </div>
             <div
               class="text-xs mt-1 px-1 flex items-center gap-2"
               :class="message.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
             >
-              <span style="color: var(--semantic-text-dim);">
+              <span style="color: var(--semantic-text-dim)">
                 {{ formatTime(message.timestamp) }}
               </span>
-              <span v-if="message.isStreaming" class="text-xs" style="color: var(--color-violet);">
+              <span v-if="message.isStreaming" class="text-xs" style="color: var(--color-violet)">
                 Streaming...
               </span>
             </div>
@@ -118,14 +123,24 @@ onMounted(() => {
         v-if="!isAtBottom && messages.length > 0"
         @click="scrollToBottom(true)"
         class="absolute bottom-24 right-8 p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
-        style="background-color: var(--color-violet); color: var(--color-bg);"
+        style="background-color: var(--color-violet); color: var(--color-bg)"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="w-5 h-5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M19 14l-7 7m0 0l-7-7m7 7V3"
+          />
         </svg>
       </button>
     </Transition>
-
   </div>
 </template>
 

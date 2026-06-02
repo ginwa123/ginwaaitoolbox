@@ -204,6 +204,9 @@ pub const NalarConfigResponse = struct {
     system_prompt: []const u8,
     profiles: ?std.json.Value = null,
     active_profile: ?[]const u8 = null,
+    /// Map of MCP server name to its raw JSON config (`{"url": "...", "headers": {...}}`).
+    /// Sent as-is so the frontend gets full fidelity (header values, etc.).
+    mcp_servers: ?std.json.Value = null,
 };
 
 pub fn makeNalarConfigResponse(allocator: std.mem.Allocator, response: NalarConfigResponse) ![]u8 {

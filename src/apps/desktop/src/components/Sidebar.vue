@@ -7,6 +7,7 @@ import { useSidebarStore } from '../stores/sidebar'
 import WorkspaceList from './WorkspaceList.vue'
 import ChatsList from './ChatsList.vue'
 import WorkspaceModal from './WorkspaceModal.vue'
+import RenameWorkspaceModal from './RenameWorkspaceModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
@@ -69,6 +70,9 @@ const showAddItemDialog = ref(false)
 const addItemTargetWorkspaceId = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
 const deleteConfirmConfig = ref<{ title: string; message: string; onConfirm: () => void } | null>(null)
+const showRenameWorkspaceModal = ref(false)
+const renameTargetWorkspaceId = ref<string | null>(null)
+const renameTargetName = ref('')
 
 // Resize handling
 const isResizing = ref(false)
@@ -277,6 +281,27 @@ const handleCreateWorkspace = (name: string, icon: string) => workspacesStore.ad
 const handleCloseModal = () => showAddWorkspaceModal.value = false
 const handleCloseAddItemDialog = () => { showAddItemDialog.value = false; addItemTargetWorkspaceId.value = null }
 
+const handleRenameWorkspace = (workspaceId: string, currentName: string) => {
+  renameTargetWorkspaceId.value = workspaceId
+  renameTargetName.value = currentName
+  showRenameWorkspaceModal.value = true
+}
+
+const handleConfirmRename = async (newName: string) => {
+  if (renameTargetWorkspaceId.value) {
+    await workspacesStore.renameWorkspace(renameTargetWorkspaceId.value, newName)
+  }
+  showRenameWorkspaceModal.value = false
+  renameTargetWorkspaceId.value = null
+  renameTargetName.value = ''
+}
+
+const handleCloseRenameModal = () => {
+  showRenameWorkspaceModal.value = false
+  renameTargetWorkspaceId.value = null
+  renameTargetName.value = ''
+}
+
 const handleAddTask = async (workspaceId: string, item: WorkspaceItem) => {
   const name = `Task ${new Date().toLocaleTimeString()}`
   const taskId = await workspacesStore.addTask(workspaceId, item.id, name)
@@ -380,6 +405,7 @@ const handleSelectTask = (taskId: string) => {
           @toggle-workspace="handleToggleWorkspace"
           @select-item="handleSelectItem"
           @delete-workspace="handleDeleteWorkspace"
+          @rename-workspace="handleRenameWorkspace"
           @delete-item="handleDeleteItem"
           @request-add-item="handleAddItem"
           @add-workspace="handleAddWorkspace"
@@ -414,6 +440,7 @@ const handleSelectTask = (taskId: string) => {
 
     <!-- Modals -->
     <WorkspaceModal :show="showAddWorkspaceModal" @close="handleCloseModal" @create="handleCreateWorkspace" />
+    <RenameWorkspaceModal :show="showRenameWorkspaceModal" :current-name="renameTargetName" @close="handleCloseRenameModal" @rename="handleConfirmRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
     <ConfirmDialog
       :show="showDeleteConfirm"

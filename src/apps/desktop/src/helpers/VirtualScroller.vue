@@ -3,11 +3,96 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
+    /**
+     * The full list of items to virtualize. The scroller only mounts the
+     * items currently visible in the viewport (plus a small buffer above
+     * and below), so passing thousands of items is fine — the DOM stays
+     * small. Each item is rendered via the default scoped slot, receiving
+     * `{ item, index }` so you can render whatever you need.
+     *
+     * Indexing is significant: the scroller uses the item's index in this
+     * array as its key and as the height-measurement key. **Avoid splicing
+     * items into the middle of the array at runtime** unless you also call
+     * `beginPreserve`/`endPreserve` to keep the visible range stable.
+     * Appending to the end (e.g. chat messages, log lines) and prepending
+     * to the start (e.g. paginated history, with `beginPreserve`/
+     * `endPreserve`) are both well-supported.
+     */
     items: T[]
+    /**
+     * Total number of items that exist on the server / in the source of
+     * truth, if known. Used to decide whether `loadMore` should still
+     * fire when the user nears the edge.
+     *
+     * - Default `0` means "unknown / unbounded" — `loadMore` is allowed
+     *   to fire whenever the user is within `loadMoreThreshold` of the
+     *   load edge. The parent is responsible for stopping it (e.g. by
+     *   checking a `hasMore` flag in its handler).
+     * - Set this to the real total when you know it (e.g. `data.total`
+     *   from your API) to let the scroller stop firing `loadMore` on
+     *   its own once `items.length >= totalCount`.
+     */
     totalCount?: number
+    /**
+     * Number of extra items to render above and below the visible viewport.
+     * A larger buffer means smoother scrolling (fewer "pop in" moments as
+     * the user scrolls) at the cost of more DOM nodes. The default of 5
+     * is a good balance for most text/list UIs. For tall items (chat
+     * bubbles, cards with images) you may want to lower this; for short
+     * uniform items (log lines, search results) you can raise it.
+     */
     buffer?: number
+    /**
+     * Estimated height in pixels for an item whose real height hasn't
+     * been measured yet. The scroller uses this to size the top/bottom
+     * spacers before measurement completes, which affects the initial
+     * `scrollHeight` and therefore the initial scroll position.
+     *
+     * Pick a value close to your **median** real item height:
+     * - Too small → the initial render undershoots `scrollHeight`, so
+     *   after measurement the user appears scrolled up by the difference
+     *   (the spacers grew). Usually fine if you "stick to bottom" — see
+     *   the chat viewer for an example using a MutationObserver on the
+     *   spacers to re-stick after measurement.
+     * - Too large → the initial render overshoots `scrollHeight`; the
+     *   browser clamps `scrollTop` to the real bottom, so the user
+     *   lands correctly but the spacers briefly show extra blank space
+     *   that snaps away.
+     *
+     * Default 100px suits most text rows. Chat bubbles with avatars and
+     * markdown often want 150-250px.
+     */
     defaultItemHeight?: number
+    /**
+     * Distance in pixels from the load edge at which the scroller emits
+     * `loadMore`. If `loadMoreAtTop` is `true` (paginating older items
+     * by prepending), this is measured from the top of the scrollable
+     * area; otherwise from the bottom.
+     *
+     * Default 200px gives the parent a comfortable window to fetch and
+     * prepend the next page before the user actually reaches the edge.
+     * Lower it if your API is very fast and you want to start prepending
+     * later (less wasted work); raise it if your API is slow and you
+     * want to start prepending earlier (smoother scroll).
+     *
+     * The emit is debounced (~200ms) and is suppressed while
+     * `beginPreserve`/`endPreserve` is in flight, so a single
+     * scroll-to-edge gesture won't fire `loadMore` multiple times.
+     */
     loadMoreThreshold?: number
+    /**
+     * If `true`, the scroller emits `loadMore` when the user scrolls
+     * within `loadMoreThreshold` of the **top** — use this when you're
+     * prepending older items (chat history, activity feeds, logs).
+     * `loadMoreAtTop` should be paired with `beginPreserve`/`endPreserve`
+     * in the parent so the user's scroll position doesn't jump when the
+     * new items are inserted at index 0.
+     *
+     * If `false` (the default), the scroller emits `loadMore` when the
+     * user scrolls within `loadMoreThreshold` of the **bottom** — use
+     * this for "load more on demand" patterns where new content is
+     * appended past the visible area.
+     */
     loadMoreAtTop?: boolean
   }>(),
   {

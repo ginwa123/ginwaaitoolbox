@@ -103,6 +103,16 @@ export async function deleteWorkspace(id: string): Promise<{ success: boolean }>
   return response.json()
 }
 
+export async function updateWorkspace(id: string, data: Partial<Workspace>): Promise<Workspace> {
+  const response = await fetch(`${API_BASE}/workspaces/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
 // Task API
 export async function getTasks(workspaceId: string, itemId: string): Promise<{ tasks: Task[] }> {
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks`)
@@ -1082,6 +1092,18 @@ export interface NalarProfile {
   api_key?: string
 }
 
+export interface McpHeader {
+  key: string
+  value: string
+}
+
+export interface McpServer {
+  name: string
+  url: string
+  /** Optional list of HTTP headers to send with MCP requests (e.g. API keys). */
+  headers?: McpHeader[]
+}
+
 export interface NalarConfig {
   api_endpoint?: string
   api_key?: string
@@ -1092,6 +1114,12 @@ export interface NalarConfig {
   system_prompt?: string
   profiles?: Record<string, NalarProfile>
   active_profile?: string
+  /**
+   * Map of MCP server name to its raw JSON config (snake_case).
+   * Each value follows the `{"url": "...", "headers": {...}}` shape used by
+   * the LLM config. Sent verbatim to the backend on save.
+   */
+  mcp_servers?: Record<string, { url: string; headers?: Record<string, string> }>
 }
 
 export async function getNalarConfig(): Promise<NalarConfig> {

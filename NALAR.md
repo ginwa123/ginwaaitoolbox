@@ -105,6 +105,44 @@ zig build install:macos-arm          # macOS aarch64
 
 **Deps:** httpz, libsqlite3, libssl, libcrypto
 
+## MCP Server Config (Config.zig)
+
+The LLM config (`src/modules/config/Config.zig`) supports configuring external MCP servers that the agent can call as tools. Example:
+
+```json
+{
+  "mcp_servers": {
+    "context7": {
+      "url": "https://mcp.context7.com/mcp",
+      "headers": { "CONTEXT7_API_KEY": "YOUR_API_KEY" }
+    }
+  }
+}
+```
+
+**Types (on `LlmConfig`):**
+
+| Type | Purpose |
+|------|---------|
+| `McpServerConfig` | Single server: `url: []const u8` + `headers: McpHeadersMap` |
+| `McpServersMap`   | `StringHashMap(McpServerConfig)` — server name → config |
+| `McpHeadersMap`   | `StringHashMap([]const u8)` — header name → value |
+
+**Accessors (on `*const LlmConfig`):**
+
+| Method | Returns |
+|--------|---------|
+| `mcpServerConfig(name) -> ?McpServerConfig` | Typed config for a named server |
+| `hasMcpServer(name) -> bool` | Whether a server with that name exists |
+| `hasMcpServers() -> bool` | Whether any MCP servers are configured |
+| `mcpServerUrl(name) -> ?[]const u8` | Just the URL for a named server |
+| `mcpServerCount() -> u32` | Number of configured servers |
+| `mcpServers() -> ?json.Value` | **Legacy** raw `json.Value` accessor (backward compat) |
+
+**Field-name compatibility:** Only `mcp_servers` (snake_case) is recognized. The legacy camelCase `mcpServers` field is no longer accepted — any old configs that used it must be renamed.
+
+**Robustness:** Malformed server entries (missing `url`, non-string `url`, non-object bodies) are silently skipped with a warning. Malformed header entries (non-string values) are silently skipped.
+
 ## Module Imports
 
 ```zig
@@ -260,6 +298,7 @@ When the LLM is processing (detected via `isLLMProcessing` from App.vue), the ac
 | GetSkill | `components/GetSkill.vue` | Tool output component for get_skill tool. Displays skill content, load status, error messages, and available skills list. |
 | SkillList | `components/SkillList.vue` | Reusable skills list with loading/error/empty states. Fetches from `/api/skills` endpoint. |
 | RightSideBarSkillList | `components/RightSideBarSkillList.vue` | Skills list for RightSidebar. Displays global + local skills with click handler. Used as "Skills" tab in RightSidebar. Props: `cwd`. Emits: `skill-click` with `api.Skill`. |
+| RenameWorkspaceModal | `components/RenameWorkspaceModal.vue` | Modal for renaming a workspace. Props: `show`, `currentName`. Emits: `close`, `rename[newName]`. Opens pre-filled with current name and auto-selects the text. Save button is disabled when name is empty or unchanged. |
 | response-path-api-skills | `.nalar/skills/response-path-api-skills/SKILL.MD` | Documents GET /api/skills endpoint response format and usage |
 | SettingsView | `components/SettingsView.vue` | Settings page with tabs for Model, API, and Skills configuration |
 | VirtualScroller | `helpers/VirtualScroller.vue` | Agnostic virtual scrolling component. Variable-height items supported via measurement. Shows visible items + buffer, uses spacers for scrollbar accuracy. Import from `helpers/index.ts`. Props: `items`, `totalCount` (total available items), `defaultItemHeight` (default: 100), `buffer`, `loadMoreThreshold`, `loadMoreAtTop` (for chat history at top). Emits: `loadMore`, `scroll`. Exposes: `scrollToIndex()`, `scrollToTop()`, `scrollToBottom()`, `preserveScrollPosition()`. |
@@ -313,6 +352,18 @@ When the LLM is processing (detected via `isLLMProcessing` from App.vue), the ac
 - [add_skill.zig, edit_skill.zig, add_agent.zig, remove_agent.zig, remove_skill.zig] Fixed garbage characters in XML output paths: The `{s}` format specifier expects null-terminated strings, but `path.join` returns non-null-terminated slices. This caused garbage characters to appear after paths in XML output. Fixed by rewriting XML generation functions to use `ArrayList` directly instead of `std.fmt.allocPrint` with `{s}` format.
 - [add_skill.zig, edit_skill.zig] Fixed use-after-free bug for local skills (is_global=false): The `defer allocator.free(skills_dir);` was scoped inside the `else { ... }` block of the `if/else` conditional, so it fired at the end of the `else` block (immediately after the const declaration) instead of at the end of the function. This caused `skills_dir` to be freed BEFORE the subsequent `path.join(allocator, &{ skills_dir, ... })` calls that needed it. Result: file operations (`createDirPath`/`createFileAbsolute` for add_skill, `access`/`readFileAlloc`/`createFileAbsolute` for edit_skill) operated on a freed-and-reused buffer, so local skill files were either not created/updated or were written in the wrong location. Fix: replaced the misplaced `if/else` defer block with a single unconditional `defer allocator.free(skills_dir);` right after the const declaration, and removed all manual `if (input.is_global) allocator.free(skills_dir);` cleanup calls (8 in add_skill, 5 in edit_skill). Also fixed a pre-existing memory leak in `edit_skill.zig` where `updated_content` was never freed in the success path — changed `errdefer allocator.free(updated_content);` to `defer allocator.free(updated_content);`.
 - [tool_registry.zig] Fixed `execListSkills` passing `null` for cwd instead of `ctx.cwd`: This made `list_skills` fall back to the server's OS-level working directory (the directory the `nalar` binary was launched from) rather than the session's workspace, so locally-created skills (via `add_skill`) were invisible to `list_skills`. Fix: changed the call from `execute_list_skills(ctx.allocator, ctx.io, null, ctx.environment)` to `execute_list_skills(ctx.allocator, ctx.io, ctx.cwd, ctx.environment)`, matching how `add_skill`/`edit_skill`/`remove_skill` are invoked. Also fixed an adjacent pre-existing memory leak in `listAllSkills` where `global_path` and `local_path` were allocated with `errdefer` cleanup (only fired on error) — changed both to `defer` so they're freed in the success path too.
+- [Config.zig] Added typed MCP server configuration support: new `McpServerConfig`, `McpServersMap`, and `McpHeadersMap` types, plus accessor methods `mcpServerConfig(name)`, `hasMcpServer(name)`, `hasMcpServers()`, `mcpServerUrl(name)`, and `mcpServerCount()`. The config reads the `mcp_servers` field (snake_case, matches NALAR.md JSON convention). The legacy `mcpServers` camelCase alias has been removed — any old configs that used it must be renamed. The typed map is populated alongside the existing `mcpServers_parsed` raw JSON value so all existing callers (`handle_mcp_tool.zig`, `handle_tool.zig`, `build_messages_for_agent_prompt.zig`, `workflow.zig`) keep working unchanged. Malformed server entries (missing `url`, non-string `url`, non-object bodies) are silently skipped with a warning; malformed header entries (non-string values) are silently skipped. Example config:
+```json
+{
+  "mcp_servers": {
+    "context7": {
+      "url": "https://mcp.context7.com/mcp",
+      "headers": { "CONTEXT7_API_KEY": "YOUR_API_KEY" }
+    }
+  }
+}
+```
+- [ChatView.vue] Hide empty bubbles: Added `hasBubbleContent(group, groupIndex)` method (line 454) that returns false when a group has no visible content. Applied as `v-if` on the bubble `<div>` (line 901). Logic: user role requires images or non-empty content; tool role requires at least one message; assistant role requires a tool-call header or non-empty content in any message. Prevents the "empty bubble" visual artifact when content is empty.
 - [llm_history.zig] Fixed silent worker deletion in SSE stream: `markSessionIdle()` (success path, called from `workflow.zig` defer) and `deleteWorkerBySessionId()` (error path, called from `workflow.zig` callback) both did `DELETE FROM worker` but never emitted a SSE `"deleted"` event. Result: when an LLM workflow finished or errored, the worker row vanished from the DB but the frontend kept showing the chat as "active" forever (or until `nalar` restart triggered `deleteAllWorkers`). Fix: both functions now call `on_event_sent.onEventSendWorkers(..., .action = "deleted", ...)` after the SQL DELETE. `deleteWorkerBySessionId` does a `SELECT id FROM worker WHERE session_id = ?` first to capture affected worker IDs (since one session_id could match multiple workers in edge cases) and emits one event per row. `markSessionIdle` emits a single event using the session_id as the worker id (matches the `id == session_id` convention used by `upsertWorker`). `removeWorker()` was already correct but had no callers — left in place for future use.
 
 ## Lessons Learned
@@ -423,6 +474,7 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | GET | `/api/worker/:session_id/status` | Get worker status |
 | POST | `/api/worker/:session_id/cancel` | Cancel a worker |
 | POST | `/api/workspaces/:workspace_id/items` | Create workspace item |
+| PUT | `/api/workspaces/:id` | Update workspace (currently used for rename — body: `{ name: string }`) |
 | GET | `/api/workspaces/:workspace_id/items` | List workspace items |
 | GET | `/api/workspaces/:workspace_id/items/:item_id` | Get workspace item |
 | PUT | `/api/workspaces/:workspace_id/items/:item_id` | Update workspace item |

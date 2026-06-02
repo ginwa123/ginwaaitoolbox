@@ -2,12 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../api'
-import {
-  getThinkingTags,
-  isThinkingTags,
-  stripThinkingTags,
-  VirtualScroller,
-} from '@/helpers'
+import { getThinkingTags, isThinkingTags, stripThinkingTags, VirtualScroller } from '@/helpers'
 import FileInput from './FileInput.vue'
 import FolderExplorer from './FolderExplorer.vue'
 import DiffView from './tool_outputs/DiffView.vue'
@@ -243,6 +238,66 @@ interface VirtualScrollerExposed {
 }
 const virtualScrollerRef = ref<VirtualScrollerExposed | null>(null)
 
+// MutationObserver that watches the VirtualScroller's spacer elements
+// (the top/bottom spacer divs whose `style.height` is driven by
+// `visibleRange.topSpacer` / `visibleRange.bottomSpacer`). Whenever
+// spacers resize — which happens asynchronously after VirtualScroller
+// measures real item heights (~50-100ms after mount, and again whenever
+// new items scroll into view) — we re-stick to the bottom IF the user
+// was at the bottom. This is "stick-to-bottom" behavior and naturally
+// handles both the initial-load measurement drift and the chain-reaction
+// where measuring one batch of items reveals more items that get measured
+// too. Once the user scrolls up, isAtBottom flips to false and we stop
+// fighting them.
+let spacerRafId: number | null = null
+let lastObservedScrollHeight = 0
+let spacerObserver: MutationObserver | null = null
+
+const onSpacersResized = () => {
+  spacerRafId = null
+  const container = virtualScrollerRef.value?.containerRef.value
+  if (!container) return
+  // Only re-stick if the scrollHeight actually changed (a measurement
+  // update). Style mutations from other causes (none in current
+  // VirtualScroller, but defensive) won't trigger a re-scroll.
+  if (container.scrollHeight === lastObservedScrollHeight) return
+  lastObservedScrollHeight = container.scrollHeight
+  if (!isAtBottom.value) return
+  // Native clamp: `scrollTop = scrollHeight` gets clamped to
+  // `scrollHeight - clientHeight` by the browser, so we always land at
+  // the true bottom even if VirtualScroller's cached `containerHeight`
+  // ref is stale.
+  container.scrollTop = container.scrollHeight
+}
+
+const setupSpacerObserver = () => {
+  const container = virtualScrollerRef.value?.containerRef.value
+  if (!container) return
+  lastObservedScrollHeight = container.scrollHeight
+  spacerObserver = new MutationObserver(() => {
+    if (spacerRafId !== null) cancelAnimationFrame(spacerRafId)
+    spacerRafId = requestAnimationFrame(onSpacersResized)
+  })
+  // Observe the container's direct children only (the two spacers and
+  // the content wrapper). `subtree: false` keeps us from observing every
+  // message bubble's internal style changes, which would be very chatty.
+  // `attributeFilter: ['style']` is the only thing that actually fires
+  // for spacer resize — childList/characterData don't happen for spacers.
+  spacerObserver.observe(container, {
+    attributes: true,
+    attributeFilter: ['style'],
+  })
+}
+
+const teardownSpacerObserver = () => {
+  if (spacerRafId !== null) {
+    cancelAnimationFrame(spacerRafId)
+    spacerRafId = null
+  }
+  spacerObserver?.disconnect()
+  spacerObserver = null
+}
+
 // State
 const messages = ref<Message[]>([])
 const isLoading = ref(false)
@@ -392,6 +447,28 @@ const groupToolNames = computed((): (string | null)[] => {
   })
 })
 
+// ─── Bubble Visibility ────────────────────────────────────────────────────────
+// Check if a message group has any visible content for its bubble.
+// Hides empty bubbles (e.g., a user message with no text and no images,
+// or an assistant message with no content and no tool-call header).
+const hasBubbleContent = (group: MessageGroup, groupIndex: number): boolean => {
+  if (group.role === 'user') {
+    const first = group.messages[0]
+    const hasImages = (first?.image_urls?.length ?? 0) > 0
+    const hasContent = (first?.content?.trim() ?? '').length > 0
+    return hasImages || hasContent
+  }
+  if (group.role === 'tool') {
+    return group.messages.length > 0
+  }
+  if (group.role === 'assistant') {
+    const hasToolHeader = groupToolNames.value[groupIndex] !== null
+    const hasContent = group.messages.some((m) => (m.content?.trim() ?? '').length > 0)
+    return hasToolHeader || hasContent
+  }
+  return true
+}
+
 // ─── Chat History ────────────────────────────────────────────────────────────
 
 const loadChatHistory = async (loadMore = false) => {
@@ -457,6 +534,13 @@ const loadChatHistory = async (loadMore = false) => {
 
     if (!loadMore) {
       await nextTick()
+      // Wait one paint frame so the browser has actually laid out the
+      // VirtualScroller items (nextTick alone only waits for Vue's DOM
+      // update, not for layout/paint). After this, the MutationObserver
+      // set up in onMounted takes over: whenever spacers resize (from
+      // measurement updates) it'll re-stick to the bottom as long as the
+      // user hasn't scrolled up.
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
       scrollToBottom(true)
       setupCodeBlockCopyButtons()
     }
@@ -546,7 +630,7 @@ const connectSse = () => {
           diffview_before: event.diffview_before,
           diffview_after: event.diffview_after,
           finish_reason: event.finish_reason,
-          tool_call_id: event.tool_call_id
+          tool_call_id: event.tool_call_id,
         })
         streamingContent.value = ''
         isStreaming.value = false
@@ -643,6 +727,12 @@ onMounted(async () => {
   }
 
   if (sessionId.value) {
+    // Set up the spacer MutationObserver BEFORE loadChatHistory so we
+    // catch the very first measurement-driven spacer resize. The
+    // VirtualScroller's child component mounts before us (child before
+    // parent in Vue 3), so its containerRef is already populated.
+    setupSpacerObserver()
+
     await loadChatHistory()
     connectSse()
     startGitStatusPoll()
@@ -657,6 +747,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  teardownSpacerObserver()
   disconnectSse()
   stopGitStatusPoll()
 })
@@ -807,13 +898,12 @@ const compactSession = async () => {
                 <!-- Bubble -->
                 <div class="max-w-[90%] min-w-0">
                   <div
+                    v-if="hasBubbleContent(group, groupIndex)"
                     class="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
                     role="button"
                     tabindex="0"
                     :class="
-                      group.role === 'user'
-                        ? 'whitespace-pre-wrap break-words'
-                        : 'markdown-content'
+                      group.role === 'user' ? 'whitespace-pre-wrap break-words' : 'markdown-content'
                     "
                     :style="
                       group.role === 'user'
@@ -825,8 +915,7 @@ const compactSession = async () => {
                     <template v-if="group.role === 'user'">
                       <div
                         v-if="
-                          group.messages[0]?.image_urls &&
-                          group.messages[0]!.image_urls!.length > 0
+                          group.messages[0]?.image_urls && group.messages[0]!.image_urls!.length > 0
                         "
                         class="mb-2"
                       >
@@ -873,10 +962,7 @@ const compactSession = async () => {
                             :content="msg.content"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
-                          <Glob
-                            v-else-if="msg.tool_name === 'glob'"
-                            :content="msg.content"
-                          />
+                          <Glob v-else-if="msg.tool_name === 'glob'" :content="msg.content" />
                           <TextReplace
                             v-else-if="msg.tool_name === 'text_replace'"
                             :content="msg.content"
@@ -972,42 +1058,39 @@ const compactSession = async () => {
                     <!-- ── Assistant ── -->
                     <template v-else-if="group.role === 'assistant'">
                       <!-- Show tool_calls header only when tool outputs are NOT shown -->
-                      <div
-                        v-if="groupToolNames[groupIndex] !== null"
-                        class="tool-calls-summary"
-                      >
-                        <span class="tool-calls-badge">
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            class="w-3.5 h-3.5"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                          >
-                            <path
-                              d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-                            />
-                          </svg>
-                          <span class="font-medium">tools</span>
-                        </span>
-                        <div class="tool-names-list">
-                          <span
-                            v-for="(toolName, tIdx) in (groupToolNames[groupIndex] || '').split(',')"
-                            :key="tIdx"
-                            class="tool-name-chip"
-                            >{{ toolName.trim() }}</span
-                          >
+                      <div v-if="groupToolNames[groupIndex] !== null" >
+                        <div class="tool-calls-summary">
+                          <span class="tool-calls-badge">
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              class="w-3.5 h-3.5"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path
+                                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+                              />
+                            </svg>
+                            <span class="font-medium">tools</span>
+                          </span>
+                          <div class="tool-names-list">
+                            <span
+                              v-for="(toolName, tIdx) in (groupToolNames[groupIndex] || '').split(
+                                ',',
+                              )"
+                              :key="tIdx"
+                              class="tool-name-chip"
+                              >{{ toolName.trim() }}</span
+                            >
+                          </div>
                         </div>
                       </div>
                       <div class="assistant-messages">
-                        <div
-                          v-for="(msg, idx) in group.messages"
-                          :key="idx"
-                          class="assistant-item"
-                        >
+                        <div v-for="(msg, idx) in group.messages" :key="idx" class="assistant-item">
                           <!-- eslint-disable-next-line vue/no-v-html -->
                           <span
                             v-html="

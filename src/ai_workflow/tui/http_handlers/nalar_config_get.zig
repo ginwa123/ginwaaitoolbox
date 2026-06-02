@@ -80,6 +80,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .system_prompt = cfg.system_prompt,
             .profiles = cfg.profiles_models,
             .active_profile = cfg.active_profile,
+            .mcp_servers = cfg.mcp_servers,
         }),
     });
 }
@@ -93,7 +94,9 @@ const ConfigJson = struct {
     system_prompt: []const u8 = "",
     temperature: json.Value = .null,
     thinking: json.Value = .null,
-    mcpServers: ?json.Value = null,
+    /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
+    /// Each value is a `{"url": "...", "headers": {...}}` object.
+    mcp_servers: ?json.Value = null,
     profiles_models: ?json.Value = null,
     active_profile: ?[]const u8 = null,
 };
