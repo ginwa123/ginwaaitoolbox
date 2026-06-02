@@ -2,7 +2,12 @@
 import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../api'
-import { getThinkingTags, isThinkingTags, stripThinkingTags } from '@/helpers'
+import {
+  getThinkingTags,
+  isThinkingTags,
+  stripThinkingTags,
+  VirtualScroller,
+} from '@/helpers'
 import FileInput from './FileInput.vue'
 import FolderExplorer from './FolderExplorer.vue'
 import DiffView from './tool_outputs/DiffView.vue'
@@ -70,7 +75,7 @@ const copyCodeContent = async (codeContent: string) => {
 // Setup copy buttons on code blocks after render
 const setupCodeBlockCopyButtons = () => {
   nextTick(() => {
-    const container = messagesContainer.value
+    const container = virtualScrollerRef.value?.containerRef.value
     if (!container) return
     const codeBlocks = container.querySelectorAll('.markdown-content pre')
     codeBlocks.forEach((block) => {
@@ -221,7 +226,22 @@ const streamingContent = ref('')
 const queuedMessages = ref<api.QueuedMessage[]>([])
 
 // Scroll refs
-const messagesContainer = ref<HTMLElement | null>(null)
+// We declare an explicit interface for the VirtualScroller instance because
+// `InstanceType<typeof VirtualScroller>` doesn't resolve cleanly for a generic
+// Vue SFC component (the compiler infers a function signature that doesn't
+// satisfy Vue's component-ref constructor constraint).
+interface VirtualScrollerExposed {
+  scrollToIndex: (index: number, behavior?: ScrollBehavior) => void
+  scrollToTop: (behavior?: ScrollBehavior) => void
+  scrollToBottom: (behavior?: ScrollBehavior) => void
+  scrollToItem: (index: number, behavior?: ScrollBehavior) => void
+  beginPreserve: (newItemsCount: number) => void
+  endPreserve: () => Promise<void>
+  preserveScrollPosition: () => Promise<void>
+  containerRef: { value: HTMLElement | null }
+  isPreservingScroll: { value: boolean }
+}
+const virtualScrollerRef = ref<VirtualScrollerExposed | null>(null)
 
 // State
 const messages = ref<Message[]>([])
@@ -420,12 +440,14 @@ const loadChatHistory = async (loadMore = false) => {
     }))
 
     if (loadMore) {
-      const oldHeight = messagesContainer.value?.scrollHeight ?? 0
+      // Preserve scroll position when prepending new (older) messages at the top.
+      // beginPreserve must be called BEFORE mutating the array so the anchor
+      // element's offsetTop is captured while it's still in the DOM.
+      const newCount = newMessages.length
+      virtualScrollerRef.value?.beginPreserve(newCount)
       messages.value = [...newMessages.slice().reverse(), ...messages.value]
       await nextTick()
-      if (messagesContainer.value && oldHeight > 0) {
-        messagesContainer.value.scrollTop += messagesContainer.value.scrollHeight - oldHeight
-      }
+      await virtualScrollerRef.value?.endPreserve()
     } else {
       messages.value = newMessages.slice().reverse()
     }
@@ -452,35 +474,28 @@ const loadChatHistory = async (loadMore = false) => {
 
 const scrollToBottom = async (force = false) => {
   await nextTick()
-  if (messagesContainer.value) {
-    const container = messagesContainer.value
+  if (virtualScrollerRef.value) {
     if (force || isAtBottom.value) {
-      container.scrollTop = container.scrollHeight
+      virtualScrollerRef.value.scrollToBottom('auto')
     }
   }
 }
 
-const handleScroll = async () => {
-  if (!messagesContainer.value) return
+// Triggered by VirtualScroller when the user scrolls within `loadMoreThreshold`
+// of the top (because `loadMoreAtTop` is true). Auto-paginates older messages.
+const handleLoadMore = () => {
+  if (!hasMoreMessages.value || isLoadingMore.value || messages.value.length === 0) return
+  loadChatHistory(true)
+}
 
-  const container = messagesContainer.value
+// Track isAtBottom from the VirtualScroller's scroll event so we can decide
+// whether to auto-scroll on new messages and when to show the "scroll to
+// bottom" button.
+const handleVirtualScroll = (_scrollTop: number, _direction: 'up' | 'down') => {
+  const container = virtualScrollerRef.value?.containerRef.value
+  if (!container) return
   const { scrollTop, scrollHeight, clientHeight } = container
-
   isAtBottom.value = scrollHeight - scrollTop - clientHeight < 100
-
-  if (
-    scrollTop < 200 &&
-    !isLoadingMore.value &&
-    hasMoreMessages.value &&
-    messages.value.length > 0
-  ) {
-    await loadChatHistory(true)
-    await nextTick()
-    if (messagesContainer.value) {
-      const newScrollHeight = messagesContainer.value.scrollHeight
-      messagesContainer.value.scrollTop = newScrollHeight - scrollHeight
-    }
-  }
 }
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
@@ -732,17 +747,15 @@ const compactSession = async () => {
   <div class="flex h-full w-full">
     <!-- Main Chat Content -->
     <div class="flex flex-col h-full flex-1 min-w-0">
-      <!-- Messages -->
-      <div
-        ref="messagesContainer"
-        tabindex="0"
-        class="flex-1 overflow-y-auto"
-        @scroll="handleScroll"
-      >
-        <!-- Loading More -->
-        <div v-if="isLoadingMore" class="flex justify-center py-4">
+      <!-- Messages (Virtual Scroll) -->
+      <div class="relative flex-1 min-h-0">
+        <!-- Loading More indicator (floats above the scroller during pagination) -->
+        <div
+          v-if="isLoadingMore"
+          class="absolute top-0 left-0 right-0 flex justify-center py-2 z-10 pointer-events-none"
+        >
           <div
-            class="flex items-center gap-2 px-4 py-2 rounded-full"
+            class="flex items-center gap-2 px-4 py-2 rounded-full shadow-sm"
             style="background-color: var(--semantic-card-bg)"
           >
             <div
@@ -755,7 +768,7 @@ const compactSession = async () => {
 
         <!-- Empty State -->
         <div
-          v-if="!isLoading && messages.length === 0"
+          v-if="!isLoading && messageGroups.length === 0"
           class="flex flex-col items-center justify-center h-full px-4"
         >
           <div
@@ -772,167 +785,230 @@ const compactSession = async () => {
           </p>
         </div>
 
-        <!-- Message List -->
-        <div v-else class="max-w-4xl mx-auto px-4 py-6 space-y-4">
-          <!-- Load More Button -->
-          <div v-if="hasMoreMessages" class="flex justify-center pb-2">
-            <button
-              @click="loadChatHistory(true)"
-              :disabled="isLoadingMore"
-              class="flex items-center gap-2 px-4 py-2 rounded-full text-sm transition-all duration-200 hover:scale-105"
-              :class="isLoadingMore ? 'opacity-50 cursor-not-allowed' : ''"
-              style="
-                background-color: var(--semantic-card-bg);
-                border: 1px solid var(--color-border);
-                color: var(--semantic-text);
-              "
-            >
+        <!-- Virtualized Message List -->
+        <VirtualScroller
+          v-else
+          ref="virtualScrollerRef"
+          :items="messageGroups"
+          :total-count="0"
+          :buffer="3"
+          :default-item-height="200"
+          :load-more-threshold="200"
+          :load-more-at-top="true"
+          @load-more="handleLoadMore"
+          @scroll="handleVirtualScroll"
+        >
+          <template #default="{ item: group, index: groupIndex }">
+            <div class="px-4 max-w-4xl mx-auto" :class="groupIndex === 0 ? 'pt-6' : ''">
               <div
-                v-if="isLoadingMore"
-                class="w-4 h-4 border-2 rounded-full animate-spin"
-                style="border-color: var(--color-violet); border-top-color: transparent"
-              ></div>
-              <span v-else>↑</span>
-              <span>{{ isLoadingMore ? 'Loading...' : 'Load more messages' }}</span>
-            </button>
-          </div>
-
-          <div
-            v-for="(group, groupIndex) in messageGroups"
-            :key="groupIndex"
-            class="flex gap-3"
-            :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
-          >
-            <!-- Bubble -->
-            <div class="max-w-[90%] min-w-0">
-              <div
-                class="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
-                role="button"
-                tabindex="0"
-                :class="
-                  group.role === 'user' ? 'whitespace-pre-wrap break-words' : 'markdown-content'
-                "
-                :style="
-                  group.role === 'user'
-                    ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
-                    : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
-                "
+                class="flex gap-3 pb-4"
+                :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
               >
-                <!-- ── User ── -->
-                <template v-if="group.role === 'user'">
+                <!-- Bubble -->
+                <div class="max-w-[90%] min-w-0">
                   <div
-                    v-if="
-                      group.messages[0]?.image_urls && group.messages[0]!.image_urls!.length > 0
+                    class="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
+                    role="button"
+                    tabindex="0"
+                    :class="
+                      group.role === 'user'
+                        ? 'whitespace-pre-wrap break-words'
+                        : 'markdown-content'
                     "
-                    class="mb-2"
+                    :style="
+                      group.role === 'user'
+                        ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
+                        : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
+                    "
                   >
-                    <div class="flex flex-wrap gap-2">
-                      <img
-                        v-for="(imgUrl, imgIdx) in group.messages[0]!.image_urls"
-                        :key="imgIdx"
-                        :src="imgUrl"
-                        alt="Attached image"
-                        class="max-w-full rounded-lg max-h-64 cursor-pointer hover:opacity-90"
-                        @click="openImagePreview(imgUrl)"
-                      />
-                    </div>
-                  </div>
-                  {{ group.messages[0]!.content }}
-                </template>
+                    <!-- ── User ── -->
+                    <template v-if="group.role === 'user'">
+                      <div
+                        v-if="
+                          group.messages[0]?.image_urls &&
+                          group.messages[0]!.image_urls!.length > 0
+                        "
+                        class="mb-2"
+                      >
+                        <div class="flex flex-wrap gap-2">
+                          <img
+                            v-for="(imgUrl, imgIdx) in group.messages[0]!.image_urls"
+                            :key="imgIdx"
+                            :src="imgUrl"
+                            alt="Attached image"
+                            class="max-w-full rounded-lg max-h-64 cursor-pointer hover:opacity-90"
+                            @click="openImagePreview(imgUrl)"
+                          />
+                        </div>
+                      </div>
+                      {{ group.messages[0]!.content }}
+                    </template>
 
-                <!-- ── Tool ── -->
-                <template v-else-if="group.role === 'tool'">
-                  <div class="tool-sequence">
-                    <div
-                      v-for="(msg, idx) in group.messages"
-                      :key="idx"
-                      class="tool-item"
-                      :class="idx < group.messages.length - 1 ? 'tool-item-border' : ''"
-                    >
-                      <ReadFile
-                        v-if="msg.tool_name === 'read_file'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <WriteFile
-                        v-else-if="msg.tool_name === 'write_file'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <UpdateActivity
-                        v-else-if="msg.tool_name === 'update_activity'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <Search
-                        v-else-if="msg.tool_name === 'search'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <Glob v-else-if="msg.tool_name === 'glob'" :content="msg.content" />
-                      <TextReplace
-                        v-else-if="msg.tool_name === 'text_replace'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                        :diffview-before="msg.diffview_before"
-                        :diffview-after="msg.diffview_after"
-                      />
-                      <Bash
-                        v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <GetSkill
-                        v-else-if="msg.tool_name === 'get_skill'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <ViewSkill
-                        v-else-if="msg.tool_name === 'view_skill'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <ListSkills
-                        v-else-if="msg.tool_name === 'list_skills'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <AddSkill
-                        v-else-if="msg.tool_name === 'add_skill'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <EditSkill
-                        v-else-if="msg.tool_name === 'edit_skill'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <RemoveSkill
-                        v-else-if="msg.tool_name === 'remove_skill'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <RemoveFile
-                        v-else-if="msg.tool_name === 'remove_file'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <SpawnSubAgent
-                        v-else-if="msg.tool_name === 'spawn_sub_agent'"
-                        :content="msg.content"
-                        :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                      />
-                      <div v-else class="tool-expandable">
-                        <button
-                          class="tool-summary"
-                          @click="toggleToolExpanded(groupIndex, idx)"
-                          :style="[
-                            'cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;',
-                            expandedToolIds.has(`${groupIndex}-${idx}`)
-                              ? 'border-bottom: 1px dashed var(--color-border);'
-                              : '',
-                          ]"
+                    <!-- ── Tool ── -->
+                    <template v-else-if="group.role === 'tool'">
+                      <div class="tool-sequence">
+                        <div
+                          v-for="(msg, idx) in group.messages"
+                          :key="idx"
+                          class="tool-item"
+                          :class="idx < group.messages.length - 1 ? 'tool-item-border' : ''"
                         >
+                          <ReadFile
+                            v-if="msg.tool_name === 'read_file'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <WriteFile
+                            v-else-if="msg.tool_name === 'write_file'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <UpdateActivity
+                            v-else-if="msg.tool_name === 'update_activity'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <Search
+                            v-else-if="msg.tool_name === 'search'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <Glob
+                            v-else-if="msg.tool_name === 'glob'"
+                            :content="msg.content"
+                          />
+                          <TextReplace
+                            v-else-if="msg.tool_name === 'text_replace'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :diffview-before="msg.diffview_before"
+                            :diffview-after="msg.diffview_after"
+                          />
+                          <Bash
+                            v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <GetSkill
+                            v-else-if="msg.tool_name === 'get_skill'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <ViewSkill
+                            v-else-if="msg.tool_name === 'view_skill'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <ListSkills
+                            v-else-if="msg.tool_name === 'list_skills'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <AddSkill
+                            v-else-if="msg.tool_name === 'add_skill'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <EditSkill
+                            v-else-if="msg.tool_name === 'edit_skill'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <RemoveSkill
+                            v-else-if="msg.tool_name === 'remove_skill'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <RemoveFile
+                            v-else-if="msg.tool_name === 'remove_file'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <SpawnSubAgent
+                            v-else-if="msg.tool_name === 'spawn_sub_agent'"
+                            :content="msg.content"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <div v-else class="tool-expandable">
+                            <button
+                              class="tool-summary"
+                              @click="toggleToolExpanded(groupIndex, idx)"
+                              :style="[
+                                'cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;',
+                                expandedToolIds.has(`${groupIndex}-${idx}`)
+                                  ? 'border-bottom: 1px dashed var(--color-border);'
+                                  : '',
+                              ]"
+                            >
+                              <span
+                                v-html="
+                                  renderResponse(
+                                    msg.content,
+                                    msg.role,
+                                    msg.tool_name,
+                                    msg.diffview_before,
+                                    msg.diffview_after,
+                                    msg.finish_reason,
+                                    msg.tool_calls_json,
+                                  )
+                                "
+                              ></span>
+                            </button>
+                            <div
+                              v-if="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                              class="tool-full-content"
+                            >
+                              <DiffView
+                                v-if="msg.diffview_before && msg.diffview_after"
+                                :before="msg.diffview_before"
+                                :after="msg.diffview_after"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+
+                    <!-- ── Assistant ── -->
+                    <template v-else-if="group.role === 'assistant'">
+                      <!-- Show tool_calls header only when tool outputs are NOT shown -->
+                      <div
+                        v-if="groupToolNames[groupIndex] !== null"
+                        class="tool-calls-summary"
+                      >
+                        <span class="tool-calls-badge">
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            class="w-3.5 h-3.5"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path
+                              d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+                            />
+                          </svg>
+                          <span class="font-medium">tools</span>
+                        </span>
+                        <div class="tool-names-list">
+                          <span
+                            v-for="(toolName, tIdx) in (groupToolNames[groupIndex] || '').split(',')"
+                            :key="tIdx"
+                            class="tool-name-chip"
+                            >{{ toolName.trim() }}</span
+                          >
+                        </div>
+                      </div>
+                      <div class="assistant-messages">
+                        <div
+                          v-for="(msg, idx) in group.messages"
+                          :key="idx"
+                          class="assistant-item"
+                        >
+                          <!-- eslint-disable-next-line vue/no-v-html -->
                           <span
                             v-html="
                               renderResponse(
@@ -946,78 +1022,28 @@ const compactSession = async () => {
                               )
                             "
                           ></span>
-                        </button>
-                        <div
-                          v-if="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                          class="tool-full-content"
-                        >
-                          <DiffView
-                            v-if="msg.diffview_before && msg.diffview_after"
-                            :before="msg.diffview_before"
-                            :after="msg.diffview_after"
-                          />
                         </div>
                       </div>
-                    </div>
+                    </template>
                   </div>
-                </template>
-
-                <!-- ── Assistant ── -->
-                <template v-else-if="group.role === 'assistant'">
-                  <!-- Show tool_calls header only when tool outputs are NOT shown -->
-                  <div v-if="groupToolNames[groupIndex] !== null" class="tool-calls-summary">
-                    <span class="tool-calls-badge">
-                      <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                      </svg>
-                      <span class="font-medium">tools</span>
-                    </span>
-                    <div class="tool-names-list">
-                      <span
-                        v-for="(toolName, tIdx) in (groupToolNames[groupIndex] || '').split(',')"
-                        :key="tIdx"
-                        class="tool-name-chip"
-                      >{{ toolName.trim() }}</span>
-                    </div>
+                  <div
+                    class="text-xs mt-1 px-1"
+                    :class="group.role === 'user' ? 'text-right' : 'text-left'"
+                    style="color: var(--semantic-text-dim)"
+                  >
+                    {{ formatTime(group.timestamp) }}
                   </div>
-                  <div class="assistant-messages">
-                    <div v-for="(msg, idx) in group.messages" :key="idx" class="assistant-item">
-                      <!-- eslint-disable-next-line vue/no-v-html -->
-                      <span
-                        v-html="
-                          renderResponse(
-                            msg.content,
-                            msg.role,
-                            msg.tool_name,
-                            msg.diffview_before,
-                            msg.diffview_after,
-                            msg.finish_reason,
-                            msg.tool_calls_json,
-                          )
-                        "
-                      ></span>
-                    </div>
-                  </div>
-                </template>
-              </div>
-              <div
-                class="text-xs mt-1 px-1"
-                :class="group.role === 'user' ? 'text-right' : 'text-left'"
-                style="color: var(--semantic-text-dim)"
-              >
-                {{ formatTime(group.timestamp) }}
+                </div>
               </div>
             </div>
-          </div>
-
-          <div ref="bottomMarker"></div>
-        </div>
+          </template>
+        </VirtualScroller>
       </div>
 
       <!-- Scroll to bottom button -->
       <Transition name="fade">
         <button
-          v-if="!isAtBottom && messages.length > 0"
+          v-if="!isAtBottom && messageGroups.length > 0"
           @click="scrollToBottom(true)"
           class="absolute bottom-24 right-8 p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
           style="background-color: var(--color-violet); color: var(--color-bg)"
