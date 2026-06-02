@@ -4,6 +4,7 @@ import { getSkillDetail, deleteSkill, type SkillDetail } from '../api'
 
 const props = defineProps<{
   skillName: string | null
+  cwd?: string
 }>()
 
 onMounted(() => {
@@ -37,8 +38,8 @@ watch(() => props.skillName, async (newName) => {
   error.value = null
 
   try {
-    console.log('[SkillDetail] calling getSkillDetail with:', newName)
-    const result = await getSkillDetail(newName)
+    console.log('[SkillDetail] calling getSkillDetail with:', newName, 'cwd:', props.cwd)
+    const result = await getSkillDetail(newName, props.cwd)
     console.log('[SkillDetail] getSkillDetail result:', result)
     if (result.error_message) {
       console.log('[SkillDetail] got error_message:', result.error_message)

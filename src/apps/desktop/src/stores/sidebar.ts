@@ -5,6 +5,8 @@ const STORAGE_KEY_CHATS_HEIGHT = 'nalar-sidebar-chats-height'
 const STORAGE_KEY_NAV_EXPANDED = 'nalar-sidebar-nav-expanded'
 const STORAGE_KEY_WORKSPACES_EXPANDED = 'nalar-sidebar-workspaces-expanded'
 const STORAGE_KEY_RIGHT_SIDEBAR_WIDTH = 'nalar-right-sidebar-width'
+const STORAGE_KEY_SKILLS_GLOBAL = 'nalar-sidebar-skills-global-expanded'
+const STORAGE_KEY_SKILLS_LOCAL = 'nalar-sidebar-skills-local-expanded'
 const DEFAULT_CHATS_HEIGHT = 40
 const MIN_CHATS_HEIGHT = 10
 const MAX_CHATS_HEIGHT = 80
@@ -98,6 +100,45 @@ export const useSidebarStore = defineStore('sidebar', () => {
     saveWorkspacesExpanded()
   }
 
+  // Load skills section expanded state from localStorage
+  const loadSkillsGlobalExpanded = (): boolean => {
+    const saved = localStorage.getItem(STORAGE_KEY_SKILLS_GLOBAL)
+    if (saved !== null) {
+      return saved === 'true'
+    }
+    return true // Default to expanded
+  }
+
+  // Load local skills section expanded state from localStorage
+  const loadSkillsLocalExpanded = (): boolean => {
+    const saved = localStorage.getItem(STORAGE_KEY_SKILLS_LOCAL)
+    if (saved !== null) {
+      return saved === 'true'
+    }
+    return true // Default to expanded
+  }
+
+  const skillsGlobalExpanded = ref(loadSkillsGlobalExpanded())
+  const skillsLocalExpanded = ref(loadSkillsLocalExpanded())
+
+  const saveSkillsGlobalExpanded = () => {
+    localStorage.setItem(STORAGE_KEY_SKILLS_GLOBAL, String(skillsGlobalExpanded.value))
+  }
+
+  const saveSkillsLocalExpanded = () => {
+    localStorage.setItem(STORAGE_KEY_SKILLS_LOCAL, String(skillsLocalExpanded.value))
+  }
+
+  const toggleSkillsGlobalExpanded = () => {
+    skillsGlobalExpanded.value = !skillsGlobalExpanded.value
+    saveSkillsGlobalExpanded()
+  }
+
+  const toggleSkillsLocalExpanded = () => {
+    skillsLocalExpanded.value = !skillsLocalExpanded.value
+    saveSkillsLocalExpanded()
+  }
+
   return {
     chatsHeight,
     setChatsHeight,
@@ -107,5 +148,9 @@ export const useSidebarStore = defineStore('sidebar', () => {
     toggleWorkspacesExpanded,
     rightSidebarWidth,
     setRightSidebarWidth,
+    skillsGlobalExpanded,
+    skillsLocalExpanded,
+    toggleSkillsGlobalExpanded,
+    toggleSkillsLocalExpanded,
   }
 })

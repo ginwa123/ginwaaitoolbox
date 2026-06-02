@@ -226,6 +226,8 @@ src/
 | `nalar-sidebar-chats-height` | Percentage number | Chats section height in sidebar |
 | `nalar-sidebar-nav-expanded` | `'true'` / `'false'` | Chats section expanded state |
 | `nalar-sidebar-workspaces-expanded` | `'true'` / `'false'` | Workspaces section expanded state |
+| `nalar-sidebar-skills-global-expanded` | `'true'` / `'false'` | Global skills section expanded state in sidebar |
+| `nalar-sidebar-skills-local-expanded` | `'true'` / `'false'` | Local skills section expanded state in sidebar |
 | `nalar-workspace-expanded` | JSON array of IDs | Expanded workspace IDs |
 | `nalar-workspace-item-expanded` | JSON array of IDs | Expanded workspace item IDs (nested folders) |
 | `nalar-workspace-item-tasks-expanded` | JSON array of IDs | Expanded workspace item IDs (tasks list - allows multiple) |
@@ -427,6 +429,8 @@ This follows the same pattern as `glob.zig` and helps agents detect when searche
 | DELETE | `/api/workspaces/:workspace_id/items/:item_id` | Delete workspace item |
 | GET | `/api/skills` | List skills (global + local with optional `cwd` param) |
 | GET | `/api/skills?cwd=/path` | List skills from specific working directory (local skills only) |
+| GET | `/api/skills/:name` | Get skill detail by name (accepts optional `cwd` query param to find local skills) |
+| GET | `/api/skills/:name?cwd=/path` | Get local skill detail from specific working directory |
 | DELETE | `/api/skills?name=X&is_global=true` | Delete global skill by name |
 | DELETE | `/api/skills?name=X&cwd=/path` | Delete local skill by name (requires `cwd` param) |
 | GET | `/api/sessions/client_ids` | Get all session to client IDs mappings (for monitoring) |

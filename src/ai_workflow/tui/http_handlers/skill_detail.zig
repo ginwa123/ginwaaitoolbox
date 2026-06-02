@@ -34,10 +34,21 @@ pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
 
     // Get global and local skills paths
     const global_path = skill_mod.get_global_skills_path_from_env(allocator, environment.?);
-    defer if (global_path) |p| allocator.free(p);
 
-    const local_path = skill_mod.get_local_skills_path_from_io(allocator, ctx.io);
-    defer if (local_path) |p| allocator.free(p);
+    // Resolve local skills path: prefer explicit cwd from query, fall back to io's cwd.
+    // This lets the frontend (which knows the active session's cwd) find local skills
+    // regardless of the nalar server's own working directory.
+    var local_path_alloc: ?[]const u8 = null;
+
+    if (req.query.get("cwd")) |cwd| {
+        if (cwd.len > 0) {
+            local_path_alloc = skill_mod.get_local_skills_path_for_dir(allocator, cwd);
+        }
+    }
+    if (local_path_alloc == null) {
+        local_path_alloc = skill_mod.get_local_skills_path_from_io(allocator, ctx.io);
+    }
+    const local_path = local_path_alloc;
 
     // Try to find the skill in global directory first
     if (global_path) |path| {

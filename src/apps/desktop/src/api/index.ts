@@ -672,19 +672,30 @@ export interface SkillDeleteResponse {
   error_message: string | null
 }
 
-export async function getSkills(): Promise<{
+export async function getSkills(cwd?: string): Promise<{
   global_skills: Skill[]
   local_skills: Skill[]
 }> {
-  const response = await fetch(`${API_BASE}/skills`)
+  const params = new URLSearchParams()
+  if (cwd) {
+    params.set('cwd', cwd)
+  }
+  const query = params.toString() ? `?${params.toString()}` : ''
+  const response = await fetch(`${API_BASE}/skills${query}`)
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json()
 }
 
 export async function getSkillDetail(
   name: string,
+  cwd?: string,
 ): Promise<{ skill: SkillDetail | null; error_message: string | null }> {
-  const response = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`)
+  const params = new URLSearchParams()
+  if (cwd) {
+    params.set('cwd', cwd)
+  }
+  const query = params.toString() ? `?${params.toString()}` : ''
+  const response = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}${query}`)
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json()
 }

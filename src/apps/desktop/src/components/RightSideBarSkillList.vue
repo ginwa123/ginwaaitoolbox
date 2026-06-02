@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { getSkills, type Skill } from '../api'
+import { useSidebarStore } from '../stores/sidebar'
 
 const props = defineProps<{
   cwd?: string
@@ -20,13 +21,16 @@ const error = ref<string | null>(null)
 const hasInput = computed(() => !!props.cwd && props.cwd.trim() !== '')
 const hasSkills = computed(() => globalSkills.value.length > 0 || localSkills.value.length > 0)
 
+// Skills expand/collapse state (persisted in useSidebarStore)
+const sidebarStore = useSidebarStore()
+
 // Load skills
 const loadSkills = async () => {
   isLoading.value = true
   error.value = null
 
   try {
-    const result = await getSkills()
+    const result = await getSkills(props.cwd)
     globalSkills.value = result.global_skills || []
     localSkills.value = result.local_skills || []
   } catch (err) {
@@ -102,51 +106,73 @@ onMounted(() => {
       <div v-else class="py-1">
         <!-- Global Skills -->
         <div v-if="globalSkills.length > 0">
-          <div
-            class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
-            style="color: var(--semantic-text-muted);"
-          >
-            🌐 Global Skills ({{ globalSkills.length }})
-          </div>
           <button
-            v-for="skill in globalSkills"
-            :key="'global-' + skill.name"
-            class="w-full flex flex-col items-start gap-1 px-3 py-2 text-sm transition-colors hover:opacity-80 text-left"
-            @click="handleSkillClick(skill)"
+            type="button"
+            class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors hover:opacity-80 text-left"
+            style="color: var(--semantic-text-muted);"
+            @click="sidebarStore.toggleSkillsGlobalExpanded"
           >
-            <span class="font-medium" style="color: var(--semantic-text);">
-              {{ skill.name }}
-            </span>
-            <span class="text-xs line-clamp-2" style="color: var(--semantic-text-dim);">
-              {{ skill.description }}
-            </span>
+            <span>🌐 Global Skills ({{ globalSkills.length }})</span>
+            <svg
+              class="w-3 h-3 shrink-0 transition-transform duration-200"
+              :class="{ 'rotate-90': sidebarStore.skillsGlobalExpanded }"
+              fill="none" viewBox="0 0 24 24" stroke="currentColor"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
           </button>
+          <div v-show="sidebarStore.skillsGlobalExpanded">
+            <button
+              v-for="skill in globalSkills"
+              :key="'global-' + skill.name"
+              class="w-full flex flex-col items-start gap-1 px-3 py-2 text-sm transition-colors hover:opacity-80 text-left"
+              @click="handleSkillClick(skill)"
+            >
+              <span class="font-medium" style="color: var(--semantic-text);">
+                {{ skill.name }}
+              </span>
+              <span class="text-xs line-clamp-2" style="color: var(--semantic-text-dim);">
+                {{ skill.description }}
+              </span>
+            </button>
+          </div>
         </div>
 
         <!-- Local Skills -->
         <div v-if="localSkills.length > 0" class="mt-2">
-          <div
-            class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
-            style="color: var(--semantic-text-muted);"
-          >
-            📁 Local Skills ({{ localSkills.length }})
-          </div>
           <button
-            v-for="skill in localSkills"
-            :key="'local-' + skill.name"
-            class="w-full flex flex-col items-start gap-1 px-3 py-2 text-sm transition-colors hover:opacity-80 text-left"
-            @click="handleSkillClick(skill)"
+            type="button"
+            class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors hover:opacity-80 text-left"
+            style="color: var(--semantic-text-muted);"
+            @click="sidebarStore.toggleSkillsLocalExpanded"
           >
-            <span class="font-medium" style="color: var(--semantic-text);">
-              {{ skill.name }}
-            </span>
-            <span class="text-xs line-clamp-2" style="color: var(--semantic-text-dim);">
-              {{ skill.description }}
-            </span>
-            <span v-if="skill.path" class="text-xs truncate" style="color: var(--semantic-text-muted);">
-              {{ skill.path }}
-            </span>
+            <span>📁 Local Skills ({{ localSkills.length }})</span>
+            <svg
+              class="w-3 h-3 shrink-0 transition-transform duration-200"
+              :class="{ 'rotate-90': sidebarStore.skillsLocalExpanded }"
+              fill="none" viewBox="0 0 24 24" stroke="currentColor"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
           </button>
+          <div v-show="sidebarStore.skillsLocalExpanded">
+            <button
+              v-for="skill in localSkills"
+              :key="'local-' + skill.name"
+              class="w-full flex flex-col items-start gap-1 px-3 py-2 text-sm transition-colors hover:opacity-80 text-left"
+              @click="handleSkillClick(skill)"
+            >
+              <span class="font-medium" style="color: var(--semantic-text);">
+                {{ skill.name }}
+              </span>
+              <span class="text-xs line-clamp-2" style="color: var(--semantic-text-dim);">
+                {{ skill.description }}
+              </span>
+              <span v-if="skill.path" class="text-xs truncate" style="color: var(--semantic-text-muted);">
+                {{ skill.path }}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

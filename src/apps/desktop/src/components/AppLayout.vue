@@ -543,6 +543,7 @@ watch(chatSessionCwd, (newCwd) => {
         <div class="flex-1 overflow-hidden">
           <SkillDetail
             :skill-name="skillViewerSkill?.name"
+            :cwd="rightSidebarCwd"
             @skill-deleted="closeSkillViewer"
             @error="(msg) => console.error('Skill error:', msg)"
           />
