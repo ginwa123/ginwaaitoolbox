@@ -244,6 +244,15 @@ interface VirtualScrollerExposed {
 }
 const virtualScrollerRef = ref<VirtualScrollerExposed | null>(null)
 
+// Ref to the outer flex wrapper around the VirtualScroller. The logger
+// reads this so it can report "did the layout chain reach the
+// scroller's parent?" — without it, a 0×0 VirtualScroller could mean
+// either "the wrapper isn't sized" (layout bug higher up) or "the
+// wrapper is sized but the scroller isn't" (the `flex flex-col` bug
+// the recent fix addressed). The two cases need different fixes; the
+// logger needs the wrapper's dimensions to tell them apart.
+const messagesWrapperRef = ref<HTMLElement | null>(null)
+
 // MutationObserver that watches the VirtualScroller's spacer elements
 // (the top/bottom spacer divs whose `style.height` is driven by
 // `visibleRange.topSpacer` / `visibleRange.bottomSpacer`). Whenever
@@ -277,15 +286,19 @@ const onSpacersResized = () => {
     chatId: sessionId.value || props.chatId,
     messages: messages.value.length,
     isAtBottom: isAtBottom.value,
+    virtualScrollerRef,
+    wrapperRef: messagesWrapperRef,
   })
   if (!isAtBottom.value) {
     scrollLogger.debug({
       ...ctx,
+      caller: 'onSpacersResized',
       origin: 'programmatic',
       extra: { delta, lastObservedScrollHeight: newScrollHeight, skipped: 'user-scrolled-up' },
     })
     scrollLogger.info({
       ...ctx,
+      caller: 'onSpacersResized',
       reason: 'spacer-resize-skip',
       extra: { delta, lastObservedScrollHeight: newScrollHeight },
     })
@@ -304,6 +317,7 @@ const onSpacersResized = () => {
   container.scrollTop = container.scrollHeight
   scrollLogger.info({
     ...ctx,
+    caller: 'onSpacersResized',
     reason: 'spacer-resize-stick',
     extra: { delta, lastObservedScrollHeight: newScrollHeight },
   })
@@ -585,9 +599,12 @@ const loadChatHistory = async (loadMore = false) => {
         chatId: sessionId.value || props.chatId,
         messages: messages.value.length,
         isAtBottom: isAtBottom.value,
+        virtualScrollerRef,
+        wrapperRef: messagesWrapperRef,
       })
       scrollLogger.info({
         ...beforeCtx,
+        caller: 'loadChatHistory',
         reason: 'load-more-preserve-start',
         extra: { prepending: newCount },
       })
@@ -604,6 +621,8 @@ const loadChatHistory = async (loadMore = false) => {
         chatId: sessionId.value || props.chatId,
         messages: messages.value.length,
         isAtBottom: isAtBottom.value,
+        virtualScrollerRef,
+        wrapperRef: messagesWrapperRef,
       })
       // The interesting deltas: did scrollTop actually return to its
       // pre-preserve position? did scrollHeight grow by ~the new
@@ -612,6 +631,7 @@ const loadChatHistory = async (loadMore = false) => {
       const scrollHeightDelta = afterCtx.scrollHeight - beforeCtx.scrollHeight
       scrollLogger.info({
         ...afterCtx,
+        caller: 'loadChatHistory',
         reason: 'load-more-preserve-end',
         extra: {
           prepending: newCount,
@@ -641,9 +661,12 @@ const loadChatHistory = async (loadMore = false) => {
         chatId: sessionId.value || props.chatId,
         messages: messages.value.length,
         isAtBottom: isAtBottom.value,
+        virtualScrollerRef,
+        wrapperRef: messagesWrapperRef,
       })
       scrollLogger.info({
         ...initialCtx,
+        caller: 'loadChatHistory',
         reason: 'scroll-to-bottom-forced',
         extra: { trigger: 'initial-load' },
       })
@@ -686,6 +709,8 @@ const scrollToBottom = async (force = false, trigger: string = 'unspecified') =>
         chatId: sessionId.value || props.chatId,
         messages: messages.value.length,
         isAtBottom: isAtBottom.value,
+        virtualScrollerRef,
+        wrapperRef: messagesWrapperRef,
       })
       // Mark before the assignment so the resulting scroll event reads
       // origin='programmatic' in handleVirtualScroll.
@@ -693,12 +718,14 @@ const scrollToBottom = async (force = false, trigger: string = 'unspecified') =>
       if (force) {
         scrollLogger.info({
           ...ctx,
+          caller: 'scrollToBottom',
           reason: 'scroll-to-bottom-forced',
           extra: { trigger },
         })
       } else {
         scrollLogger.info({
           ...ctx,
+          caller: 'scrollToBottom',
           reason: 'scroll-to-bottom-conditional',
           extra: { trigger, isAtBottom: isAtBottom.value },
         })
@@ -723,9 +750,12 @@ const handleLoadMore = () => {
     chatId: sessionId.value || props.chatId,
     messages: messages.value.length,
     isAtBottom: isAtBottom.value,
+    virtualScrollerRef,
+    wrapperRef: messagesWrapperRef,
   })
   scrollLogger.info({
     ...ctx,
+    caller: 'handleLoadMore',
     reason: 'load-more-threshold-reached',
     extra: {
       hasMore: hasMoreMessages.value,
@@ -749,11 +779,13 @@ const handleVirtualScroll = (_scrollTop: number, _direction: 'up' | 'down') => {
     chatId: sessionId.value || props.chatId,
     messages: messages.value.length,
     isAtBottom: newIsAtBottom,
+    virtualScrollerRef,
+    wrapperRef: messagesWrapperRef,
   })
   // Per-frame sample: throttled to ~5 Hz in the logger, with a
   // trailing-edge flush so the final position is never lost. In dev
   // you'll see ~5 lines/sec while scrolling. In production it's silent.
-  scrollLogger.debug(ctx)
+  scrollLogger.debug({ ...ctx, caller: 'handleVirtualScroll' })
   // State transitions are loud: this is the most useful line in the
   // whole logger. "User was at bottom, scrolled up 200px" vs
   // "Auto-stick fired, isAtBottom is true again" are the two events
@@ -761,6 +793,7 @@ const handleVirtualScroll = (_scrollTop: number, _direction: 'up' | 'down') => {
   if (newIsAtBottom !== previousIsAtBottom) {
     scrollLogger.info({
       ...ctx,
+      caller: 'handleVirtualScroll',
       reason: newIsAtBottom ? 'reached-bottom' : 'left-bottom',
       extra: {
         previousIsAtBottom,
@@ -1085,7 +1118,7 @@ const compactSession = async () => {
         and the last bubbles overlap the FileInput below. This is the
         "no scroll, bubbles overlap input" bug.
       -->
-      <div class="relative flex-1 min-h-0 flex flex-col">
+      <div ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col">
         <!-- Loading More indicator (floats above the scroller during pagination) -->
         <div
           v-if="isLoadingMore"
