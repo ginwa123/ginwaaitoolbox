@@ -768,7 +768,15 @@ pub const AgentCall = struct {
 };
 
 pub const HttpOptions = struct {
-    read_timeout_ms: u32 = 300_000, // 5 minutes for LLM APIs
+    /// Overall deadline for the entire streaming read (response head + body).
+    /// Triggers `error.StreamTimeout` if exceeded. Default 5 minutes.
+    read_timeout_ms: u32 = 300_000,
+    /// Idle window during streaming: if no new bytes arrive for this long, the stream
+    /// is considered hung and `error.StreamIdleTimeout` is returned.
+    /// Should be << read_timeout_ms. Catches network drops that don't produce a
+    /// TCP RST/FIN promptly (Wi-Fi disconnect, half-open connection, server crash
+    /// without closing the socket). Default 30 seconds.
+    idle_timeout_ms: u32 = 30_000,
     /// Buffer size for reading HTTP response body (dynamic streaming, no hard limit)
     /// This is just an internal read buffer - actual content accumulates in dynamic buffers
     response_buffer_size: usize = 256 * 1024,
@@ -1128,6 +1136,16 @@ pub const Agent = struct {
         WriteFailed,
         OutOfMemory,
         Cancelled,
+        /// Overall read deadline (HttpOptions.read_timeout_ms) was exceeded during streaming.
+        StreamTimeout,
+        /// No new bytes were received for HttpOptions.idle_timeout_ms during streaming.
+        /// Catches network drops that don't produce a TCP RST/FIN promptly (Wi-Fi drop,
+        /// half-open connection, etc.) — the "stuck on disconnect" symptom.
+        StreamIdleTimeout,
+        /// Mid-stream read error from the underlying HTTP transport (e.g. ConnectionResetByPeer).
+        StreamInterrupted,
+        /// Stream ended with 0 chunks and no clean-end signal ([DONE] or state=.closing).
+        StreamEmpty,
     };
 
     /// Parse a single SSE line (format: "data: {...}" or "data: [DONE]")
@@ -1504,6 +1522,14 @@ pub const Agent = struct {
         var stream_ended_cleanly = false;
         var total_bytes_read: usize = 0;
 
+        // Deadline tracking for stream hang detection. Without this, a network drop
+        // (e.g. Wi-Fi disconnect, half-open TCP) leaves readSliceShort returning 0
+        // forever, and the workflow gets stuck waiting for a response that will
+        // never come. See audit/plan: "no read deadline on the streaming body".
+        const stream_read_deadline_ms: i64 = @intCast(self.httpOptions.read_timeout_ms);
+        const stream_idle_deadline_ms: i64 = @intCast(self.httpOptions.idle_timeout_ms);
+        var last_byte_at_ms: i64 = timestampMs(self.httpClient.io);
+
         // Get a reader from bodyReader - this properly handles chunked transfer encoding
         const reader = response.request.reader.bodyReader(transfer_buffer, response.head.transfer_encoding, response.head.content_length);
         self.log_fmt(.info, "[STREAM] bodyReader returned reader, state={s}", .{
@@ -1525,6 +1551,25 @@ pub const Agent = struct {
         defer self.allocator.free(read_buffer);
 
         while (true) {
+            // Deadline check 1: overall stream deadline. Detects "stuck forever" hangs.
+            const overall_elapsed_ms = elapsedMs(self.httpClient.io, stream_start);
+            if (overall_elapsed_ms > stream_read_deadline_ms) {
+                self.log_fmt(.err, "[STREAM] overall deadline exceeded: {}ms > {}ms (chunks={}, bytes={})", .{
+                    overall_elapsed_ms, stream_read_deadline_ms, chunk_count, total_bytes_read,
+                });
+                return error.StreamTimeout;
+            }
+
+            // Deadline check 2: idle window. Detects network drops that don't error
+            // out (TCP keepalive hasn't noticed yet) but also don't deliver data.
+            const idle_elapsed_ms = elapsedMs(self.httpClient.io, last_byte_at_ms);
+            if (idle_elapsed_ms > stream_idle_deadline_ms) {
+                self.log_fmt(.err, "[STREAM] idle for {}ms (no bytes received), total_elapsed={}ms, chunks={}", .{
+                    idle_elapsed_ms, overall_elapsed_ms, chunk_count,
+                });
+                return error.StreamIdleTimeout;
+            }
+
             self.log_msg(.info, "[STREAM] top of loop");
 
             // Check reader state
@@ -1546,39 +1591,42 @@ pub const Agent = struct {
                 },
             });
 
-            // Read using bodyReader's readSliceShort
+            // Read using bodyReader's readSliceShort. Any read error here is a real
+            // transport failure (e.g. ConnectionResetByPeer, ConnectionTimedOut) — we
+            // MUST surface it to the caller instead of swallowing it and returning a
+            // half-populated response. This is the core fix for "stream silently
+            // truncated on network drop".
             const n = reader.readSliceShort(read_buffer[0..]) catch |err| {
-                self.log_fmt(.err, "[STREAM] readSliceShort error: {s}", .{@errorName(err)});
-                break;
+                self.log_fmt(.err, "[STREAM] read error after {}ms: {s} (chunks={}, bytes={})", .{
+                    overall_elapsed_ms, @errorName(err), chunk_count, total_bytes_read,
+                });
+                return error.StreamInterrupted;
             };
             self.log_fmt(.info, "[STREAM] readSliceShort returned n={}", .{n});
 
             if (n == 0) {
-                // Connection closed or no data available
-                self.log_msg(.info, "[STREAM] readSliceShort returned 0, checking for more...");
-                // If state is closing, stream ended
+                // n == 0 = "no data available right now" (EAGAIN-equivalent). It is NOT
+                // a clean stream end on its own. The previous code did a single in-line
+                // retry and then gave up, which masked slow LLMs and half-open
+                // connections. New behavior:
+                //   - If the reader is in .closing state, the server closed the socket
+                //     properly -> clean end, break.
+                //   - Otherwise, sleep briefly and let the top-of-loop deadline checks
+                //     decide whether we're idle for too long.
                 if (response.request.reader.state == .closing) {
                     stream_ended_cleanly = true;
-                    self.log_msg(.info, "[STREAM] State is closing, stream ended");
+                    self.log_msg(.info, "[STREAM] Reader state is closing, stream ended cleanly");
                     break;
                 }
-                // Small sleep and retry
                 std.Io.sleep(self.httpClient.io, .{ .nanoseconds = 50_000 }, .real) catch {};
-                const retry_n = reader.readSliceShort(read_buffer[0..]) catch |err| {
-                    self.log_fmt(.err, "[STREAM] readSliceShort retry error: {s}", .{@errorName(err)});
-                    break;
-                };
-                if (retry_n == 0) {
-                    self.log_msg(.info, "[STREAM] No more data after retry, ending stream");
-                    stream_ended_cleanly = true;
-                    break;
-                }
-                self.log_fmt(.info, "[STREAM] Retry successful, got {} bytes", .{retry_n});
                 continue;
             }
 
             const bytes_read: usize = @intCast(n);
             total_bytes_read += bytes_read;
+            // Reset the idle window: we just got data, so any future silence is
+            // a fresh idle interval, not a continuation of the previous one.
+            last_byte_at_ms = timestampMs(self.httpClient.io);
             self.log_fmt(.info, "[STREAM] read {} bytes (total={})", .{ bytes_read, total_bytes_read });
 
             // Add small yield to prevent tight CPU spinning during streaming
@@ -1619,7 +1667,9 @@ pub const Agent = struct {
             }
         }
 
-        // Process remaining line
+        // Process remaining line (if any) - this is content we received before the
+        // loop ended. We process it first so the aggregator has the full picture
+        // before we decide whether the stream ended cleanly.
         if (line_buffer.items.len > 0) {
             if (self.parse_sse_line(line_buffer.items)) |data| {
                 _ = chunk_arena.reset(.retain_capacity);
@@ -1628,6 +1678,26 @@ pub const Agent = struct {
                     aggregator.process_chunk(chunk) catch {};
                 }
             }
+        }
+
+        // Enforce clean-end semantics. The previous code always sent the done
+        // callback and returned a CallResponse, even when the loop exited via a
+        // silent `break` on read error. That hid network drops from the caller.
+        // New rule: a successful return requires the server to have cleanly
+        // ended the stream (state == .closing, [DONE] marker, or fixed
+        // content_length fully consumed). Otherwise we propagate an error so
+        // the workflow's retry path can take over.
+        if (!stream_ended_cleanly) {
+            if (chunk_count == 0) {
+                self.log_fmt(.err, "[STREAM] stream ended with 0 chunks and no clean-end signal - returning StreamEmpty", .{});
+                return error.StreamEmpty;
+            }
+            self.log_fmt(.err, "[STREAM] stream did not end cleanly after {} chunks ({} bytes, {}ms elapsed) - returning StreamInterrupted", .{
+                chunk_count,
+                total_bytes_read,
+                elapsedMs(self.httpClient.io, stream_start),
+            });
+            return error.StreamInterrupted;
         }
 
         callback(ctx, .{ .done = true });

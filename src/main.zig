@@ -24,8 +24,17 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("Failed to load config: {s}", .{@errorName(err)});
         return err;
     };
-    defer llm_config.deinit();
+    // NOTE: do NOT `defer llm_config.deinit()` here — the value is moved
+    // into the heap-allocated `initial_llm_config_ptr` below. Shutdown
+    // cleanup runs via `nalarcore.freeAllLlmConfigs(ctxParent)` at the end
+    // of `main`.
     try llm_config.validate();
+
+    // Move the initial LlmConfig onto the heap so the `LlmConfigHolder`
+    // can later swap pointers without owning stack memory of `main`.
+    const initial_llm_config_ptr = try allocator.create(nalarcore.config.LlmConfig);
+    errdefer allocator.destroy(initial_llm_config_ptr);
+    initial_llm_config_ptr.* = llm_config;
 
     const db_path = try helpers.db_path.getDbPath(allocator, io, environment);
     defer allocator.free(db_path);
@@ -66,7 +75,7 @@ pub fn main(init: std.process.Init) !void {
         .allocator = allocator,
         .io = io,
         .db = &dbSqlite,
-        .llm_config = &llm_config,
+        .llm_config_holder = .{ .current = initial_llm_config_ptr },
         .logger = global_logger_ptr,
         .environment = environment,
         .active_loops = undefined, // Will be set below after initialization
@@ -239,6 +248,11 @@ pub fn main(init: std.process.Init) !void {
 
     // Clean shutdown after listen() returns (after shutdown endpoint is called)
     gs.sse_manager.stop();
+
+    // Free the live LlmConfig (and any "previous" pointer from a swap that
+    // happened during this session). Must run AFTER `gs.sse_manager.stop()`
+    // and BEFORE `ctxParent` is destroyed, so no reader is still in flight.
+    nalarcore.freeAllLlmConfigs(ctxParent);
 
     // const HttpRoutes = struct {
     //     pub fn setup(http_port: u16, router: anytype) !void {

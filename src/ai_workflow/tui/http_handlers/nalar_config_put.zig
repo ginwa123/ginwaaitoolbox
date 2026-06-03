@@ -182,6 +182,48 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     try writer.interface.writeAll(config_str);
     try writer.flush();
 
+    // === Live-reload ContextIPCTui.llm_config ===
+    // Reload from disk so the running workflow picks up the new API key,
+    // model, base_url, mcp_servers, and profiles without a server restart.
+    // On any failure we still respond 200 (disk is already authoritative)
+    // but log the error and skip the swap so the running config is stable.
+    {
+        const env_for_reload: *std.process.Environ.Map = @constCast(@ptrCast(di.environment orelse environment));
+
+        var new_cfg = config.LlmConfig.init(allocator, io, null, env_for_reload) catch |err| {
+            std.log.err("PUT /api/config/nalar: live reload parse failed: {s}", .{@errorName(err)});
+            return res.jsonResponse(.{
+                .status_code = 200,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Config saved to disk but live reload parse failed" }),
+            });
+        };
+
+        new_cfg.validate() catch |err| {
+            std.log.err("PUT /api/config/nalar: live reload validation failed: {s}", .{@errorName(err)});
+            var mut: *config.LlmConfig = &new_cfg;
+            mut.deinit();
+            return res.jsonResponse(.{
+                .status_code = 200,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Config saved to disk but failed validation" }),
+            });
+        };
+
+        const new_ptr = allocator.create(config.LlmConfig) catch |err| {
+            std.log.err("PUT /api/config/nalar: alloc failed: {s}", .{@errorName(err)});
+            var mut: *config.LlmConfig = &new_cfg;
+            mut.deinit();
+            return res.jsonResponse(.{
+                .status_code = 500,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }),
+            });
+        };
+        new_ptr.* = new_cfg;
+
+        // Atomically swap. Previous-pointer free happens inside setLlmConfig.
+        nalarcore.setLlmConfig(di, new_ptr);
+        std.log.info("PUT /api/config/nalar: live-reloaded llm_config (model={s}, base_url={s})", .{ new_ptr.model, new_ptr.base_url });
+    }
+
     return res.jsonResponse(.{
         .status_code = 200,
         .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Config saved successfully" }),

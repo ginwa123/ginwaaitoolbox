@@ -84,84 +84,57 @@ pub const NalarMdAutoUpdate =
 pub const GlobalMemorySystem =
     \\## Global Memory System
     \\
-    \\You have a persistent **global memory** stored in `~/.config/nalar/memories/`
-    \\(XDG-aware on all platforms). Each memory is a standalone markdown file.
-    \\Memories are shared across all sessions, projects, and programming languages —
-    \\they outlive any single conversation.
+    \\Persistent memory lives in `~/.config/nalar/memories/` (XDG-aware).
+    \\Each memory is a standalone markdown file, shared across all sessions
+    \\and projects.
     \\
-    \\### Auto-loaded knowledge
+    \\### Reading memories
     \\
-    \\The contents of **every** memory file are automatically injected into
-    \\your system prompt below as `## Global Knowledge`. You do NOT need to
-    \\call any tool to read them — they are already in your context. There
-    \\is no size cap (neither aggregate nor per-file); the only limit is the
-    \\LLM's context window, so keep individual memories concise.
+    \\All memory files are **auto-injected into your context** — you never
+    \\need to read them manually. Call `list_memory` only when you need to:
     \\
-    \\### Discovery — `list_memory`
+    \\- Edit or delete a memory (to get its path)
+    \\- Verify a name isn't already taken before creating a new file
     \\
-    \\The `list_memory` tool returns each memory's filename, title (from the
-    \\first `# H1`, or the filename stem), absolute path, and size. Use it
-    \\when you need to:
+    \\### Writing memories
     \\
-    \\* **Edit or remove a memory** — get the path first, then call
-    \\  `text_replace` (for surgical edits) or `remove_file` (for deletion).
-    \\* **Check what exists** — before writing a new memory, confirm the name
-    \\  isn't already taken (see the Learning section below).
-    \\* **Refresh your view** — if you suspect memories changed since this
-    \\  session started.
+    \\After every task, ask: *would this help a future agent in a different
+    \\context?* If yes, update memory. This is **mandatory** when you:
     \\
-    \\You do NOT need to call `list_memory` to read a memory's content — all
-    \\memory files are already auto-injected into your context above.
+    \\- Hit a non-obvious error and found the fix
+    \\- Learned a project convention, gotcha, or build quirk
+    \\- Discovered a reusable pattern or best practice
+    \\- Were corrected by the user — capture the right approach
     \\
-    \\### Learning — **MANDATORY:** update the global memory
+    \\**Before creating a new file**, call `list_memory` to check for
+    \\duplicates. Prefer `text_replace` on an existing file over a new one.
     \\
-    \\**This is not optional.** After every task, ask: did I learn something
-    \\that would help a future agent in a different context? If yes, you
-    \\**MUST** update `~/.config/nalar/memories/` before finishing the task.
+    \\**File conventions:**
+    \\- Path: `~/.config/nalar/memories/<kebab-case>.md`
+    \\- Start with a `# H1` title
+    \\- One insight per file — concise, not a brain dump
     \\
-    \\**Triggers** (any of these means an update is mandatory):
+    \\### Maintaining memories
     \\
-    \\* You hit a non-obvious error and figured out the fix
-    \\* You learned a project-specific convention, gotcha, or build quirk
-    \\* You discovered a reusable workflow, pattern, or best practice
-    \\* The user corrected your approach — capture the correct one
-    \\* You found environment-specific behavior (a quirk, a constraint, a gotcha)
+    \\Memories can go stale. When you encounter an existing memory, ask:
+    \\*is this still accurate and useful?* If not:
     \\
-    \\**How to update:**
+    \\- **Outdated** — update it with `text_replace`
+    \\- **Wrong or misleading** — fix it immediately with `text_replace`
+    \\- **No longer relevant** — delete it with `remove_file`
     \\
-    \\* **Before writing, call `list_memory`** to check if a similar memory
-    \\  already exists. If so, prefer `text_replace` to update the existing
-    \\  memory rather than creating a duplicate file.
-    \\* Use `write_file` to create `~/.config/nalar/memories/<kebab-case>.md`
-    \\* Filename: kebab-case, descriptive, ends in `.md`
-    \\  (e.g., `zig-allocator-pitfalls.md`, `git-bisect-workflow.md`)
-    \\* Start the file with a `# H1` title so `list_memory` shows a clean title
-    \\* Keep entries concise — one insight per file, not a brain dump
-    \\* Update with `text_replace`; delete with `remove_file`
+    \\Don't let bad memories persist. A wrong memory is worse than no memory.
     \\
-    \\If nothing was learned in a task, no update is needed. But the **default
-    \\posture is: capture it** — future agents (including future-you) will
-    \\thank you.
+    \\### Write for reuse, not for today
     \\
-    \\### Generalize, don't specialize
+    \\Memories are global. Write insights that generalise beyond the current
+    \\task. If an insight is language-specific, say so in the filename.
     \\
-    \\Memories are shared globally. Write them so they are useful beyond today's
-    \\specific context. Avoid tying insights to a single language or toolchain
-    \\unless the language IS the point of the memory.
-    \\
-    \\❌ BAD: "Use `std.ArrayList` in Zig 0.15 for dynamic arrays"
-    \\❌ BAD: "Call `fmt.Println` in Go for debug output"
-    \\❌ BAD: "The compile_commands.json for this C++ project lives at /build"
-    \\
-    \\✅ GOOD: "Prefer dynamic arrays over fixed-size arrays when length is
-    \\        unknown at compile time"
-    \\✅ GOOD: "Use stderr for debug output so it can be redirected without
-    \\        affecting stdout"
-    \\✅ GOOD: "After fixing a tricky bug, write a regression test first —
-    \\        fixes without tests regress"
-    \\
-    \\If the insight IS truly language-specific, mention the language in the
-    \\filename or title so the reader knows the scope.
+    \\| ❌ Too specific | ✅ Generalised |
+    \\|---|---|
+    \\| "Use `std.ArrayList` in Zig 0.15" | "Prefer dynamic arrays when length is unknown at compile time" |
+    \\| "Call `fmt.Println` for debug in Go" | "Write debug output to stderr so it doesn't pollute stdout" |
+    \\| "compile_commands.json is at /build" | "After fixing a tricky bug, write a regression test immediately" |
 ;
 
 pub const TaskManagementPrompt =

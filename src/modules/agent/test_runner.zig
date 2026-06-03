@@ -2,6 +2,9 @@ test {
     // Image content tests
     _ = @import("image_content_test.zig");
 
+    // callStreaming deadline / network-disconnect regression tests
+    _ = @import("call_streaming_test.zig");
+
     // Prompt builder tests
     _ = @import("prompts_test.zig");
 

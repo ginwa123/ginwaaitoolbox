@@ -8,7 +8,7 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
 
 test "get_skill_tool - has correct tool definition" {
     try std.testing.expectEqualStrings("get_skill", get_skill.get_skill_tool.function.name);
-    try std.testing.expect(get_skill.get_skill_tool.function.parameters.properties.len == 2);
+    try std.testing.expect(get_skill.get_skill_tool.function.parameters.properties.len == 3);
 }
 
 test "get_skill_tool - required fields are correct" {
@@ -21,6 +21,7 @@ test "GetSkillInput - has correct defaults" {
     const input = get_skill.GetSkillInput{};
     try std.testing.expect(input.skill_name == null);
     try std.testing.expect(input.path == null);
+    try std.testing.expect(input.is_global == false);
 }
 
 test "GetSkillInput - skill_name and path can be set" {
@@ -198,5 +199,132 @@ test "execute_get_skill_to_string - loaded skill output preserves skill name" {
     try std.testing.expect(contains(output, "<loaded>true</loaded>"));
     try std.testing.expect(contains(output, unique_skill_name));
     try std.testing.expect(contains(output, unique_marker));
+    try std.testing.expect(std.mem.indexOfScalar(u8, output, 0xAA) == null);
+}
+
+test "get_skill_tool - schema declares is_global property" {
+    // Find the is_global property in the tool definition. This guards against
+    // the field being accidentally removed from the schema.
+    const props = get_skill.get_skill_tool.function.parameters.properties;
+    var found_is_global = false;
+    for (props) |prop| {
+        if (std.mem.eql(u8, prop.name, "is_global")) {
+            found_is_global = true;
+            try std.testing.expectEqualStrings("boolean", prop.type);
+            break;
+        }
+    }
+    try std.testing.expect(found_is_global);
+}
+
+test "execute_get_skill_to_string - is_global=true finds skill in global path" {
+    // Verifies that when is_global=true, a skill located in the global path
+    // is still discoverable. We point HOME at a temp dir, create a known global
+    // skill, and call execute_get_skill_to_string with is_global=true.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const unique_skill_name = "_regression_is_global_get_skill_test";
+    const unique_marker = "IS_GLOBAL_MARKER_ABCDEF";
+    const tmp_home = "/tmp/nalar-is-global-test-home";
+    const global_skills_dir = "/tmp/nalar-is-global-test-home/.config/nalar/skills";
+
+    const skill_dir_path = try std.fs.path.join(alloc, &[_][]const u8{ global_skills_dir, unique_skill_name });
+    defer alloc.free(skill_dir_path);
+    const skill_file_path = try std.fs.path.join(alloc, &[_][]const u8{ skill_dir_path, "SKILL.MD" });
+    defer alloc.free(skill_file_path);
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, skill_dir_path);
+
+    const skill_content =
+        \\---
+        \\name: _regression_is_global_get_skill_test
+        \\description: "is_global=true behavior test"
+        \\---
+        \\
+        \\# Test content with IS_GLOBAL_MARKER_ABCDEF
+        \\
+    ;
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, skill_file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io, skill_content);
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    // With is_global=true, the global-only skill must be found.
+    const output = try get_skill.execute_get_skill_to_string(
+        alloc,
+        io,
+        .{ .skill_name = unique_skill_name, .is_global = true },
+        &env,
+    );
+    defer alloc.free(output);
+
+    try std.testing.expect(contains(output, "<loaded>true</loaded>"));
+    try std.testing.expect(contains(output, unique_skill_name));
+    try std.testing.expect(contains(output, unique_marker));
+}
+
+test "execute_get_skill_to_string - is_global=true returns not-found for missing global skill" {
+    // With is_global=true, a non-existent skill should produce
+    // <loaded>false</loaded> with available_skills listing only global skills
+    // (local must be excluded from the suggestions list).
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const known_global = "_regression_is_global_known_in_list";
+    const tmp_home = "/tmp/nalar-is-global-list-test-home";
+    const global_skills_dir = "/tmp/nalar-is-global-list-test-home/.config/nalar/skills";
+
+    const skill_dir_path = try std.fs.path.join(alloc, &[_][]const u8{ global_skills_dir, known_global });
+    defer alloc.free(skill_dir_path);
+    const skill_file_path = try std.fs.path.join(alloc, &[_][]const u8{ skill_dir_path, "SKILL.MD" });
+    defer alloc.free(skill_file_path);
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, skill_dir_path);
+
+    const skill_content =
+        \\---
+        \\name: _regression_is_global_known_in_list
+        \\description: "is_global list test"
+        \\---
+        \\
+        \\# body
+        \\
+    ;
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, skill_file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io, skill_content);
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const output = try get_skill.execute_get_skill_to_string(
+        alloc,
+        io,
+        .{ .skill_name = "definitely-not-a-real-skill-zzz", .is_global = true },
+        &env,
+    );
+    defer alloc.free(output);
+
+    try std.testing.expect(contains(output, "<loaded>false</loaded>"));
+    try std.testing.expect(contains(output, "<error>Skill not found</error>"));
+    try std.testing.expect(contains(output, "<available_skills>"));
+    // The known global skill should be in the list (proves global is searched).
+    try std.testing.expect(contains(output, known_global));
+    // No 0xAA bytes - guards against use-after-free regression.
     try std.testing.expect(std.mem.indexOfScalar(u8, output, 0xAA) == null);
 }

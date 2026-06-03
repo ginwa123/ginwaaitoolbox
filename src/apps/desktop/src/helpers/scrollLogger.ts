@@ -34,6 +34,34 @@
 
 export type ScrollOrigin = 'user' | 'programmatic'
 
+/**
+ * Diagnostic snapshot of the scroll container element. Populated on
+ * every log line so a single line can answer "is the container null,
+ * is it hidden, is it 0×0 for some other reason?". Without this, a
+ * 0×0 reading is just three useless zeros — *which one* failed tells
+ * you the bug.
+ *
+ *   null          → container ref was null (component unmounted, ref
+ *                    not populated, or wrong element bound)
+ *   offsetHeight  → 0 with offsetParent set means laid out but
+ *                    collapsed (e.g. all children display:none, or
+ *                    the parent's height chain is broken)
+ *   offsetParent  → null means the element is not rendered (display:
+ *                    none on the element or any ancestor)
+ *   display       → computed `display` value at log time. Captured
+ *                    ONLY when dimensions look suspicious, to avoid
+ *                    the layout-thrash cost on every scroll event.
+ */
+export interface ContainerInfo {
+  null: boolean
+  tag?: string
+  className?: string
+  display?: string
+  visibility?: string
+  offsetHeight: number
+  offsetParent: string | null
+}
+
 export type ScrollReason =
   // Info-level reasons (state transitions / lifecycle events)
   | 'reached-bottom'
@@ -71,6 +99,13 @@ export interface ScrollContext {
   origin: ScrollOrigin
   /** What triggered this log line. */
   reason: ScrollReason
+  /**
+   * Diagnostic snapshot of the scroll container element. Always
+   * present — see `ContainerInfo` for what each field tells you.
+   * Without this, a `scrollHeight: 0` reading is just a useless
+   * zero; with it, you can see *which* check failed.
+   */
+  containerInfo: ContainerInfo
   /** Free-form extras (caller, delta, etc.). */
   extra?: Record<string, unknown>
 }
@@ -140,14 +175,33 @@ const flushPendingDebug = (): void => {
 // ─── Logger factory ───────────────────────────────────────────────────────────
 
 export interface ScrollLogger {
-  /** Throttled per-frame sample. Safe to call on every scroll event. */
-  debug: (ctx: Omit<ScrollContext, 'chatId' | 'reason'>) => void
+  /**
+   * Throttled per-frame sample. Safe to call on every scroll event.
+   * `origin` is optional: omit it to let the logger resolve from the
+   * `markProgrammatic` counter, or pass an explicit value to override.
+   */
+  debug: (ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & { origin?: ScrollOrigin }) => void
   /** State change / lifecycle event. Always logged. */
-  info: (ctx: Omit<ScrollContext, 'chatId' | 'reason'> & { reason: ScrollReason }) => void
+  info: (
+    ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & {
+      reason: ScrollReason
+      origin?: ScrollOrigin
+    },
+  ) => void
   /** Warning — something unexpected but recoverable. */
-  warn: (ctx: Omit<ScrollContext, 'chatId' | 'reason'> & { reason: ScrollReason }) => void
+  warn: (
+    ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & {
+      reason: ScrollReason
+      origin?: ScrollOrigin
+    },
+  ) => void
   /** Error — scroll subsystem failed. */
-  error: (ctx: Omit<ScrollContext, 'chatId' | 'reason'> & { reason: ScrollReason }) => void
+  error: (
+    ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & {
+      reason: ScrollReason
+      origin?: ScrollOrigin
+    },
+  ) => void
   /**
    * Mark the next scroll event(s) as programmatic. Call BEFORE any
    * `container.scrollTop = …` assignment. `count` defaults to 1 because
@@ -181,10 +235,18 @@ export const createScrollLogger = (chatId: string): ScrollLogger => {
   }
 
   const buildContext = (
-    partial: Omit<ScrollContext, 'chatId' | 'reason'>,
+    partial: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & { origin?: ScrollOrigin },
     reason: ScrollReason,
   ): ScrollContext => {
-    const { scrollTop, scrollHeight, clientHeight, messages, isAtBottom, extra } = partial
+    const {
+      scrollTop,
+      scrollHeight,
+      clientHeight,
+      messages,
+      isAtBottom,
+      extra,
+      containerInfo,
+    } = partial
     const distanceFromTop = Math.max(0, scrollTop)
     const distanceFromBottom = Math.max(0, scrollHeight - scrollTop - clientHeight)
     const scrollable = scrollHeight - clientHeight
@@ -201,6 +263,7 @@ export const createScrollLogger = (chatId: string): ScrollLogger => {
       isAtBottom,
       origin: resolveOrigin(partial.origin),
       reason,
+      containerInfo,
       extra,
     }
   }
@@ -243,14 +306,37 @@ const emit = (ctx: ScrollContext, level: 'debug' | 'info' | 'warn' | 'error'): v
   if (level === 'debug' && !import.meta.env.DEV) return
 
   eventCounter += 1
-  const tag = `[scroll#${eventCounter} chat=${ctx.chatId} ${level.toUpperCase()}]`
+  let tag = `[scroll#${eventCounter} chat=${ctx.chatId} ${level.toUpperCase()}]`
+  // Diagnostic markers for suspicious container states. These tell
+  // you *which* check failed in a single glance — without them, a
+  // `scrollHeight: 0` reading is just a useless zero.
+  if (ctx.containerInfo.null) {
+    tag += ' ⚠NO-CONTAINER'
+  } else if (ctx.scrollHeight === 0 && ctx.clientHeight === 0) {
+    tag += ` ⚠ZERO-SIZE(${ctx.containerInfo.tag ?? '?'} d=${ctx.containerInfo.display ?? '?'} oH=${ctx.containerInfo.offsetHeight})`
+  } else if (ctx.scrollHeight === 0) {
+    tag += ` ⚠ZERO-SCROLL-HEIGHT(${ctx.containerInfo.tag ?? '?'} ch=${ctx.clientHeight} d=${ctx.containerInfo.display ?? '?'})`
+  } else if (ctx.clientHeight === 0) {
+    tag += ` ⚠ZERO-CLIENT-HEIGHT(${ctx.containerInfo.tag ?? '?'} sh=${ctx.scrollHeight})`
+  }
   const originMark = ctx.origin === 'programmatic' ? '⚙️' : '👆'
   const isAtBottomMark = ctx.isAtBottom ? '⤵' : '↑'
+  // The "short" label is misleading when the container is 0×0 (which
+  // is the whole point of the markers above). Show a more specific
+  // label so the headline alone tells the story.
+  const positionLabel =
+    ctx.containerInfo.null
+      ? 'no-container'
+      : ctx.scrollHeight === 0
+        ? 'zero-sh'
+        : ctx.scrollPercent === -1
+          ? 'short'
+          : (ctx.scrollPercent * 100).toFixed(1) + '%'
   const line1 =
     `${tag} ${originMark} ${isAtBottomMark} ${ctx.reason} ` +
     `top=${ctx.scrollTop.toFixed(0)} ` +
     `bottom=${ctx.distanceFromBottom.toFixed(0)}px ` +
-    `(${ctx.scrollPercent === -1 ? 'short' : (ctx.scrollPercent * 100).toFixed(1) + '%'}) ` +
+    `(${positionLabel}) ` +
     `msgs=${ctx.messages}`
 
   // Two-line format: first line is the headline (scannable in DevTools'
@@ -269,15 +355,53 @@ const emit = (ctx: ScrollContext, level: 'debug' | 'info' | 'warn' | 'error'): v
 // ─── Helpers exported for callers ─────────────────────────────────────────────
 
 /**
+ * Build the diagnostic `ContainerInfo` block for a container element.
+ *
+ * We deliberately AVOID calling `getComputedStyle` on every scroll
+ * event — it forces a style recalculation, which is expensive at
+ * 60 Hz. We only compute it when the dimensions look suspicious
+ * (`scrollHeight === 0 || clientHeight === 0`), which is the only
+ * time the diagnostic is useful anyway.
+ */
+const buildContainerInfo = (container: HTMLElement | null | undefined): ContainerInfo => {
+  if (!container) return { null: true, offsetHeight: 0, offsetParent: null }
+  const scrollHeight = container.scrollHeight
+  const clientHeight = container.clientHeight
+  const info: ContainerInfo = {
+    null: false,
+    tag: container.tagName,
+    className: container.className,
+    offsetHeight: container.offsetHeight,
+    offsetParent: container.offsetParent ? container.offsetParent.tagName : null,
+  }
+  // Only pay the getComputedStyle cost when dimensions are weird.
+  if (scrollHeight === 0 || clientHeight === 0) {
+    const style = getComputedStyle(container)
+    info.display = style.display
+    info.visibility = style.visibility
+  }
+  return info
+}
+
+/**
  * Build a context object from a container element + the caller's
  * snapshot of state. Use this inside event handlers so the field
  * computation is centralized.
+ *
+ * Important: this function does NOT include `origin` in the returned
+ * object. That's deliberate — the `ScrollLogger` methods own origin
+ * resolution (`resolveOrigin` consults the `markProgrammatic` counter
+ * + the caller's explicit override). If we returned `origin: 'user'`
+ * here, callers who spread `...ctx` into `scrollLogger.info({...})`
+ * would clobber the logger's resolution and every programmatic
+ * scroll would log as `user`. The previous version of this function
+ * had exactly that bug; this is the fix.
  */
 export const buildScrollContext = (
   container: HTMLElement | null | undefined,
   fallback: Pick<ScrollContext, 'chatId' | 'messages' | 'isAtBottom'>,
   partial: Partial<Pick<ScrollContext, 'origin' | 'reason' | 'extra'>> = {},
-): Omit<ScrollContext, 'reason'> & { reason?: ScrollReason } => {
+): Omit<ScrollContext, 'reason' | 'origin'> & { reason?: ScrollReason; origin?: ScrollOrigin } => {
   const scrollTop = container?.scrollTop ?? 0
   const scrollHeight = container?.scrollHeight ?? 0
   const clientHeight = container?.clientHeight ?? 0
@@ -294,8 +418,11 @@ export const buildScrollContext = (
       scrollHeight - clientHeight > 0
         ? Math.min(1, Math.max(0, scrollTop / (scrollHeight - clientHeight)))
         : -1,
-    origin: partial.origin ?? 'user',
+    // `origin` is intentionally omitted — see the doc comment above.
+    // Callers that explicitly want to override (rare) can still pass
+    // it via `partial.origin`, and `ScrollLogger` will honor it.
     reason: partial.reason,
     extra: partial.extra,
+    containerInfo: buildContainerInfo(container),
   }
 }

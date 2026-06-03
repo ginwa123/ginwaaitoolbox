@@ -112,10 +112,12 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
 }
 
 /// Load skill by name from built-in skills
-/// Searches both local (.nalar/skills/) and global (~/.config/nalar/skills/) paths
-fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, environment: ?*const std.process.Environ.Map) ![]const u8 {
-    // Try to parse the skill - now searches both local and global paths
-    if (skills.parse_skill(allocator, io, skill_name, environment)) |content| {
+/// If is_global is true, only the global path (~/.config/nalar/skills/) is searched.
+/// If is_global is false, both local and global paths are searched, local first.
+fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, is_global: bool, environment: ?*const std.process.Environ.Map) ![]const u8 {
+    // Try to parse the skill. When is_global is true, only the global path is
+    // searched; otherwise local is tried first, then global as fallback.
+    if (skills.parse_skill(allocator, io, skill_name, is_global, environment)) |content| {
         defer allocator.free(content);
         // Success - return the skill content
         const result = try std.fmt.allocPrint(allocator,
@@ -125,7 +127,7 @@ fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
         , .{ skill_name, content });
         return result;
     } else {
-        // Skill not found - list available skills from both paths.
+        // Skill not found - list available skills from the searched scope.
         //
         // IMPORTANT: we append each skill's name into `available_str` *while*
         // the source SkillInfo slice is still alive. Previously we copied slice
@@ -137,7 +139,8 @@ fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
         var available_str: std.ArrayList(u8) = .empty;
         defer available_str.deinit(allocator);
 
-        // List global skills
+        // List global skills (always - they're the fallback scope, and when
+        // is_global=true they're the only scope).
         if (environment) |env| {
             if (skills.get_global_skills_path_from_env(allocator, env)) |global_path| {
                 defer allocator.free(global_path);
@@ -151,15 +154,17 @@ fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
             }
         }
 
-        // List local skills
-        if (skills.get_local_skills_path_from_io(allocator, io)) |local_path| {
-            defer allocator.free(local_path);
-            const local_list = skills.list_skills_from_dir_path(allocator, io, local_path);
-            defer skills.free_skills_list(allocator, local_list);
-            for (local_list) |skill| {
-                try available_str.appendSlice(allocator, "<skill>");
-                try available_str.appendSlice(allocator, skill.name);
-                try available_str.appendSlice(allocator, "</skill>");
+        // List local skills only when not in global-only mode.
+        if (!is_global) {
+            if (skills.get_local_skills_path_from_io(allocator, io)) |local_path| {
+                defer allocator.free(local_path);
+                const local_list = skills.list_skills_from_dir_path(allocator, io, local_path);
+                defer skills.free_skills_list(allocator, local_list);
+                for (local_list) |skill| {
+                    try available_str.appendSlice(allocator, "<skill>");
+                    try available_str.appendSlice(allocator, skill.name);
+                    try available_str.appendSlice(allocator, "</skill>");
+                }
             }
         }
 

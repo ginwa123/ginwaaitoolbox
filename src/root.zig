@@ -74,11 +74,28 @@ pub fn setSingleton(ctx: *ContextIPCTui) !void {
     global_ctx = ctx;
 }
 
+/// Holds the live `LlmConfig` pointer plus the previously-installed one so
+/// that in-flight workflows (which captured the old `*const LlmConfig` into a
+/// local) keep dereferencing valid memory until the next swap — or until
+/// shutdown if no further swap happens.
+///
+/// The hot-path read (`getLlmConfig`) is a single aligned pointer load and
+/// is therefore atomic on all supported platforms. The mutex only protects
+/// the swap-and-promote sequence inside `setLlmConfig`.
+pub const LlmConfigHolder = struct {
+    current: *const config.LlmConfig,
+    /// Previous pointer, kept alive until the next swap (or shutdown) so
+    /// any in-flight workflow that captured the old `*const LlmConfig` does
+    /// not dereference freed memory. `null` until the first live reload.
+    previous: ?*const config.LlmConfig = null,
+    lock: std.Io.Mutex = .init,
+};
+
 pub const ContextIPCTui = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     db: *sqlite.SqliteBackend,
-    llm_config: *const config.LlmConfig,
+    llm_config_holder: LlmConfigHolder,
     logger: *logger.Logger,
     environment: ?*const std.process.Environ.Map,
     active_loops: *ai_mod.active_loops,
@@ -94,6 +111,55 @@ pub const ContextIPCTui = struct {
     on_disconnect_lock: std.Io.Mutex = .init,
     group_emit_session_create: std.Io.Group,
 };
+
+/// Hot-path read. Returns the currently-installed `LlmConfig` pointer.
+/// No lock needed — single-word aligned pointer load is atomic on all
+/// supported platforms; the lock only protects the swap-and-promote
+/// sequence in `setLlmConfig`.
+pub fn getLlmConfig(di: *ContextIPCTui) *const config.LlmConfig {
+    return di.llm_config_holder.current;
+}
+
+/// Atomic install. The new pointer must remain valid for the lifetime of
+/// the install (typically: until the next call to `setLlmConfig`, or until
+/// `freeAllLlmConfigs` runs at shutdown).
+///
+/// The previously-current pointer is moved into the `previous` slot, and
+/// the *previous-previous* pointer (if any) is `deinit`-ed and the
+/// allocation freed before this returns. This caps the "pending free"
+/// window at exactly one stale `LlmConfig`.
+pub fn setLlmConfig(
+    di: *ContextIPCTui,
+    new_ptr: *const config.LlmConfig,
+) void {
+    const io = di.io;
+    di.llm_config_holder.lock.lock(io) catch return;
+    defer di.llm_config_holder.lock.unlock(io);
+
+    const pending_previous = di.llm_config_holder.previous;
+    di.llm_config_holder.previous = di.llm_config_holder.current;
+    di.llm_config_holder.current = new_ptr;
+
+    if (pending_previous) |p| freeLlmConfig(di.allocator, p);
+}
+
+/// Free both `current` and `previous` (if any). Called once at shutdown
+/// from `main.zig` after the HTTP server has stopped accepting requests.
+pub fn freeAllLlmConfigs(di: *ContextIPCTui) void {
+    freeLlmConfig(di.allocator, di.llm_config_holder.current);
+    if (di.llm_config_holder.previous) |p| freeLlmConfig(di.allocator, p);
+    di.llm_config_holder.current = undefined;
+    di.llm_config_holder.previous = null;
+}
+
+/// Free a single `LlmConfig`: deinit all owned strings/maps then destroy
+/// the heap allocation. The `const`-cast is safe because we own the
+/// memory — this is the only place we drop the `const`.
+fn freeLlmConfig(allocator: std.mem.Allocator, ptr: *const config.LlmConfig) void {
+    var mut: *config.LlmConfig = @constCast(ptr);
+    mut.deinit();
+    allocator.destroy(mut);
+}
 
 /// Register a session -> client_id mapping (appends to list)
 pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8, is_use_lock: bool) !void {

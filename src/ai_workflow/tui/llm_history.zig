@@ -596,7 +596,7 @@ pub fn getSessionMessagesSorted(
         .cwd = cwd,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
         .max_capacity_total_tokens = if (tree1.getSingleton() catch null) |di|
-            llm_models.getModelTokenCount(di.llm_config.model)
+            llm_models.getModelTokenCount(tree1.getLlmConfig(di).model)
         else
             llm_models.getModelTokenCount(""),
         .total_count = total_count,

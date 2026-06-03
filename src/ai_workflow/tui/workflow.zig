@@ -33,7 +33,7 @@ pub const CallbackAiWorkerFlow = struct {
         const db = di.db;
         const io = di.io;
         const session_id = data.session_id;
-        const config = di.llm_config;
+        const config = nalar_mod.getLlmConfig(di);
         const cwd = data.cwd;
 
         runAgenticMultiStepnew(di, data) catch |err| {
@@ -122,7 +122,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     const logger = di.logger;
     const active_loops = di.active_loops;
     const io = di.io;
-    const config = di.llm_config;
+    const config = nalar_mod.getLlmConfig(di);
     const environment = di.environment;
 
     const copy_parent_session_id = try parent_allocator.dupe(u8, params.parent_session_id);

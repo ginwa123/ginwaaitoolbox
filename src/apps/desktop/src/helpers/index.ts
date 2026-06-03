@@ -7,5 +7,11 @@ export {
   BOTTOM_THRESHOLD,
   markProgrammatic,
 } from "./scrollLogger";
-export type { ScrollContext, ScrollLogger, ScrollOrigin, ScrollReason } from "./scrollLogger";
+export type {
+  ScrollContext,
+  ScrollLogger,
+  ScrollOrigin,
+  ScrollReason,
+  ContainerInfo,
+} from "./scrollLogger";
 

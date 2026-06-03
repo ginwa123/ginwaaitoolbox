@@ -48,13 +48,17 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             };
 
             // Create LlmConfig for the workflow
+            const live_cfg = root_mod.getLlmConfig(ctxTui);
             var llm_cfg = config.LlmConfig{
                 .allocator = allocator,
-                .api_key = ctxTui.llm_config.api_key,
-                .model = ctxTui.llm_config.model,
-                .base_url = ctxTui.llm_config.base_url,
-                .model_compaction_size_kb = ctxTui.llm_config.model_compaction_size_kb,
-                .mcpServers = null,
+                .api_key = live_cfg.api_key,
+                .model = live_cfg.model,
+                .base_url = live_cfg.base_url,
+                .model_compaction_size_kb = live_cfg.model_compaction_size_kb,
+                .mcpServers_parsed = null,
+                .mcp_servers = config.McpServersMap.init(allocator),
+                .profiles_models = config.ProfilesMap.init(allocator),
+                .url_style = live_cfg.url_style,
             };
 
             var workflow = ai_workflow.TUIWorkflow.init(ctxTui.io, sqlite_db, &llm_cfg, ctxTui.logger, null, ctxTui.active_loops);
@@ -84,9 +88,9 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             };
 
             // Call CompactionAgent
-            const compacted_xml = workflow.callCompactAgent(messagesLists.items, allocator, ctxTui.llm_config.api_key, ctxTui.llm_config.model, ctxTui.llm_config.base_url, cwd);
+            const compacted_xml = workflow.callCompactAgent(messagesLists.items, allocator, live_cfg.api_key, live_cfg.model, live_cfg.base_url, cwd);
             if (compacted_xml) |xml| {
-                workflow.compactMessageInMemory(allocator, &messagesLists, xml, session_id, ctxTui.llm_config.model, cwd) catch {
+                workflow.compactMessageInMemory(allocator, &messagesLists, xml, session_id, live_cfg.model, cwd) catch {
                     std.debug.print("[COMPACTION] compactMessageInMemory failed\n", .{});
                     return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"compactMessageInMemory failed\"}}", .{}) });
                 };
