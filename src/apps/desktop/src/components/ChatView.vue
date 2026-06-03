@@ -3,6 +3,12 @@ import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Re
 import { marked } from 'marked'
 import * as api from '../api'
 import { getThinkingTags, isThinkingTags, stripThinkingTags, VirtualScroller } from '@/helpers'
+import {
+  buildScrollContext,
+  createScrollLogger,
+  BOTTOM_THRESHOLD,
+  type ScrollLogger,
+} from '@/helpers'
 import FileInput from './FileInput.vue'
 import FolderExplorer from './FolderExplorer.vue'
 import DiffView from './tool_outputs/DiffView.vue'
@@ -264,18 +270,43 @@ const onSpacersResized = () => {
   if (newScrollHeight === lastObservedScrollHeight) return
   const delta = newScrollHeight - lastObservedScrollHeight
   lastObservedScrollHeight = newScrollHeight
-  console.log(
-    '[onSpacersResized] scrollHeight:', newScrollHeight,
-    'delta:', delta,
-    'isAtBottom:', isAtBottom.value,
-    'scrollTop:', container.scrollTop,
-  )
-  if (!isAtBottom.value) return
+  // Build a context with the *pre-stick* geometry (scrollTop before
+  // we touch it), so the log answers "what was the world like when
+  // this re-stick fired?".
+  const ctx = buildScrollContext(container, {
+    chatId: sessionId.value || props.chatId,
+    messages: messages.value.length,
+    isAtBottom: isAtBottom.value,
+  })
+  if (!isAtBottom.value) {
+    scrollLogger.debug({
+      ...ctx,
+      origin: 'programmatic',
+      extra: { delta, lastObservedScrollHeight: newScrollHeight, skipped: 'user-scrolled-up' },
+    })
+    scrollLogger.info({
+      ...ctx,
+      reason: 'spacer-resize-skip',
+      extra: { delta, lastObservedScrollHeight: newScrollHeight },
+    })
+    return
+  }
+  // We are going to assign scrollTop. Mark the next scroll event as
+  // programmatic BEFORE the assignment so the browser-fired scroll
+  // reads origin='programmatic' in handleVirtualScroll. This is the
+  // critical bit: without it, a stick-to-bottom action looks identical
+  // to a user scroll in the logs.
+  scrollLogger.markProgrammatic()
   // Native clamp: `scrollTop = scrollHeight` gets clamped to
   // `scrollHeight - clientHeight` by the browser, so we always land at
   // the true bottom even if VirtualScroller's cached `containerHeight`
   // ref is stale.
   container.scrollTop = container.scrollHeight
+  scrollLogger.info({
+    ...ctx,
+    reason: 'spacer-resize-stick',
+    extra: { delta, lastObservedScrollHeight: newScrollHeight },
+  })
 }
 
 const setupSpacerObserver = () => {
@@ -316,6 +347,17 @@ const isAtBottom = ref(true)
 const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
+
+// ─── Scroll logger ────────────────────────────────────────────────────────────
+//
+// A dedicated logger for the scroll subsystem. Bound to the active chat
+// so every line is tagged with chatId. Recreated when sessionId changes
+// so the log context is never stale. See helpers/scrollLogger.ts for
+// what fields every line carries and why.
+let scrollLogger: ScrollLogger = createScrollLogger(props.chatId)
+const refreshScrollLogger = () => {
+  scrollLogger = createScrollLogger(sessionId.value || props.chatId)
+}
 
 // Session skills state
 const sessionSkills = ref<api.SkillInfo[]>([])
@@ -539,21 +581,45 @@ const loadChatHistory = async (loadMore = false) => {
       // element's offsetTop is captured while it's still in the DOM.
       const newCount = newMessages.length
       const containerBefore = virtualScrollerRef.value?.containerRef.value
-      console.log(
-        '[loadChatHistory] loadMore — prepending', newCount, 'messages',
-        'scrollTop before:', containerBefore?.scrollTop,
-        'scrollHeight before:', containerBefore?.scrollHeight,
-      )
+      const beforeCtx = buildScrollContext(containerBefore, {
+        chatId: sessionId.value || props.chatId,
+        messages: messages.value.length,
+        isAtBottom: isAtBottom.value,
+      })
+      scrollLogger.info({
+        ...beforeCtx,
+        reason: 'load-more-preserve-start',
+        extra: { prepending: newCount },
+      })
       virtualScrollerRef.value?.beginPreserve(newCount)
       messages.value = [...newMessages.slice().reverse(), ...messages.value]
       await nextTick()
+      // The VirtualScroller's internal scrollTop restoration may fire
+      // a scroll event. Mark it programmatic so the next
+      // handleVirtualScroll knows.
+      scrollLogger.markProgrammatic()
       await virtualScrollerRef.value?.endPreserve()
       const containerAfter = virtualScrollerRef.value?.containerRef.value
-      console.log(
-        '[loadChatHistory] loadMore — done',
-        'scrollTop after:', containerAfter?.scrollTop,
-        'scrollHeight after:', containerAfter?.scrollHeight,
-      )
+      const afterCtx = buildScrollContext(containerAfter, {
+        chatId: sessionId.value || props.chatId,
+        messages: messages.value.length,
+        isAtBottom: isAtBottom.value,
+      })
+      // The interesting deltas: did scrollTop actually return to its
+      // pre-preserve position? did scrollHeight grow by ~the new
+      // messages? did the user-visible position jump (deltaAnchor ≠ 0)?
+      const scrollTopDelta = afterCtx.scrollTop - beforeCtx.scrollTop
+      const scrollHeightDelta = afterCtx.scrollHeight - beforeCtx.scrollHeight
+      scrollLogger.info({
+        ...afterCtx,
+        reason: 'load-more-preserve-end',
+        extra: {
+          prepending: newCount,
+          scrollTopDelta,
+          scrollHeightDelta,
+          restoredOk: Math.abs(scrollTopDelta) < 2,
+        },
+      })
 
       // Re-attach the observer. setupSpacerObserver also re-initializes
       // `lastObservedScrollHeight` from the current `scrollHeight`, so
@@ -570,7 +636,17 @@ const loadChatHistory = async (loadMore = false) => {
     hasMoreMessages.value = data.has_more
 
     if (!loadMore) {
-      console.log('[loadChatHistory] initial load — will scroll to bottom')
+      const initialContainer = virtualScrollerRef.value?.containerRef.value
+      const initialCtx = buildScrollContext(initialContainer, {
+        chatId: sessionId.value || props.chatId,
+        messages: messages.value.length,
+        isAtBottom: isAtBottom.value,
+      })
+      scrollLogger.info({
+        ...initialCtx,
+        reason: 'scroll-to-bottom-forced',
+        extra: { trigger: 'initial-load' },
+      })
       await nextTick()
       // Wait one paint frame so the browser has actually laid out the
       // VirtualScroller items (nextTick alone only waits for Vue's DOM
@@ -579,7 +655,7 @@ const loadChatHistory = async (loadMore = false) => {
       // measurement updates) it'll re-stick to the bottom as long as the
       // user hasn't scrolled up.
       await new Promise<void>((r) => requestAnimationFrame(() => r()))
-      scrollToBottom(true)
+      scrollToBottom(true, 'initial-load')
       setupCodeBlockCopyButtons()
     }
   } catch (err) {
@@ -594,14 +670,32 @@ const loadChatHistory = async (loadMore = false) => {
 
 // ─── Scroll ──────────────────────────────────────────────────────────────────
 
-const scrollToBottom = async (force = false) => {
+const scrollToBottom = async (force = false, trigger: string = 'unspecified') => {
   await nextTick()
   if (virtualScrollerRef.value) {
     if (force || isAtBottom.value) {
-      console.log(
-        '[scrollToBottom] firing — force:', force,
-        'isAtBottom:', isAtBottom.value,
-      )
+      const container = virtualScrollerRef.value.containerRef.value
+      const ctx = buildScrollContext(container, {
+        chatId: sessionId.value || props.chatId,
+        messages: messages.value.length,
+        isAtBottom: isAtBottom.value,
+      })
+      // Mark before the assignment so the resulting scroll event reads
+      // origin='programmatic' in handleVirtualScroll.
+      scrollLogger.markProgrammatic()
+      if (force) {
+        scrollLogger.info({
+          ...ctx,
+          reason: 'scroll-to-bottom-forced',
+          extra: { trigger },
+        })
+      } else {
+        scrollLogger.info({
+          ...ctx,
+          reason: 'scroll-to-bottom-conditional',
+          extra: { trigger, isAtBottom: isAtBottom.value },
+        })
+      }
       virtualScrollerRef.value.scrollToBottom('auto')
     }
   }
@@ -611,6 +705,20 @@ const scrollToBottom = async (force = false) => {
 // of the top (because `loadMoreAtTop` is true). Auto-paginates older messages.
 const handleLoadMore = () => {
   if (!hasMoreMessages.value || isLoadingMore.value || messages.value.length === 0) return
+  const container = virtualScrollerRef.value?.containerRef.value
+  const ctx = buildScrollContext(container, {
+    chatId: sessionId.value || props.chatId,
+    messages: messages.value.length,
+    isAtBottom: isAtBottom.value,
+  })
+  scrollLogger.info({
+    ...ctx,
+    reason: 'load-more-threshold-reached',
+    extra: {
+      hasMore: hasMoreMessages.value,
+      loadMoreThreshold: 200, // mirrors the prop on <VirtualScroller>
+    },
+  })
   loadChatHistory(true)
 }
 
@@ -622,13 +730,32 @@ const handleVirtualScroll = (_scrollTop: number, _direction: 'up' | 'down') => {
   if (!container) return
   const { scrollTop, scrollHeight, clientHeight } = container
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-  const newIsAtBottom = distanceFromBottom < 10
-  console.log(
-    '[handleVirtualScroll] scrollTop:', scrollTop,
-    'scrollHeight:', scrollHeight,
-    'distanceFromBottom:', distanceFromBottom,
-    'isAtBottom:', newIsAtBottom,
-  )
+  const newIsAtBottom = distanceFromBottom < BOTTOM_THRESHOLD
+  const previousIsAtBottom = isAtBottom.value
+  const ctx = buildScrollContext(container, {
+    chatId: sessionId.value || props.chatId,
+    messages: messages.value.length,
+    isAtBottom: newIsAtBottom,
+  })
+  // Per-frame sample: throttled to ~5 Hz in the logger, with a
+  // trailing-edge flush so the final position is never lost. In dev
+  // you'll see ~5 lines/sec while scrolling. In production it's silent.
+  scrollLogger.debug(ctx)
+  // State transitions are loud: this is the most useful line in the
+  // whole logger. "User was at bottom, scrolled up 200px" vs
+  // "Auto-stick fired, isAtBottom is true again" are the two events
+  // that answer every "why did the chat jump?" question.
+  if (newIsAtBottom !== previousIsAtBottom) {
+    scrollLogger.info({
+      ...ctx,
+      reason: newIsAtBottom ? 'reached-bottom' : 'left-bottom',
+      extra: {
+        previousIsAtBottom,
+        distanceFromBottom,
+        threshold: BOTTOM_THRESHOLD,
+      },
+    })
+  }
   // Tight 10px threshold: a chat message is typically 50-100px tall, so
   // reading the last message puts you well outside this window. This
   // prevents SSE chunks, the messages-length watcher, and the spacer
@@ -694,7 +821,8 @@ const connectSse = () => {
         })
         streamingContent.value = ''
         isStreaming.value = false
-        nextTick(() => scrollToBottom(false))
+        scrollLogger.markProgrammatic()
+        nextTick(() => scrollToBottom(false, 'sse-message-complete'))
         setupCodeBlockCopyButtons()
 
         if (event.total_tokens) {
@@ -772,7 +900,8 @@ const updateStreamingMessage = () => {
   }
   const stripped = stripThinkingTags(streamingContent.value)
   if (stripped && stripped.trim() !== '') {
-    nextTick(() => scrollToBottom(false))
+    scrollLogger.markProgrammatic()
+    nextTick(() => scrollToBottom(false, 'sse-chunk'))
   }
   nextTick(() => setupCodeBlockCopyButtons())
 }
@@ -814,7 +943,10 @@ onUnmounted(() => {
 
 watch(
   () => messages.value.length,
-  () => nextTick(() => scrollToBottom()),
+  () => {
+    scrollLogger.markProgrammatic()
+    nextTick(() => scrollToBottom(false, 'messages-length'))
+  },
 )
 
 watch(
@@ -828,11 +960,19 @@ watch(
   },
 )
 
+// Refresh the scroll logger whenever the active chat changes so the
+// chatId tag in every line stays accurate. Runs on initial mount too
+// (sessionId is set in onMounted but the watch is registered before).
+watch(
+  () => sessionId.value,
+  () => refreshScrollLogger(),
+)
+
 // ─── Send Message ─────────────────────────────────────────────────────────────
 
 const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
   await nextTick()
-  scrollToBottom(true)
+  scrollToBottom(true, 'send-message')
 
   let currentSessionId = sessionId.value
 
@@ -1196,7 +1336,7 @@ const compactSession = async () => {
       <Transition name="fade">
         <button
           v-if="!isAtBottom && messageGroups.length > 0"
-          @click="scrollToBottom(true)"
+          @click="scrollToBottom(true, 'user-button-click')"
           class="absolute bottom-24 right-8 p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
           style="background-color: var(--color-violet); color: var(--color-bg)"
         >

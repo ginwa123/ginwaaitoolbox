@@ -52,7 +52,7 @@ const thoughtParts = computed((): ThoughtParts | null => {
   if (!thoughtContent.value) return null
   
   // Match: [YYYY-MM-DD HH:MM] session_XXXX @ /path/to/dir | Action | Details
-  const match = thoughtContent.value.match(/\[([^\]]+)\]\s*([^@]+)@\s*([^\|]+)\|\s*([^\|]+)\|\s*(.*)/)
+  const match = thoughtContent.value.match(/\[([^\]]+)\]\s*([^@]+)@\s*([^|]+)\|\s*([^|]+)\|\s*(.*)/)
   if (!match) return null
   
   return {
