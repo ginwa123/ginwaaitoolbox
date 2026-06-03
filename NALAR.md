@@ -303,11 +303,31 @@ When the LLM is processing (detected via `isLLMProcessing` from App.vue), the ac
 | SettingsView | `components/SettingsView.vue` | Settings page with tabs for Model, API, and Skills configuration |
 | VirtualScroller | `helpers/VirtualScroller.vue` | Agnostic virtual scrolling component. Variable-height items supported via measurement. Shows visible items + buffer, uses spacers for scrollbar accuracy. Import from `helpers/index.ts`. Props: `items`, `totalCount` (total available items), `defaultItemHeight` (default: 100), `buffer`, `loadMoreThreshold`, `loadMoreAtTop` (for chat history at top). Emits: `loadMore`, `scroll`. Exposes: `scrollToIndex()`, `scrollToTop()`, `scrollToBottom()`, `preserveScrollPosition()`. |
 
+## Tool Output "Open in Code Editor" Feature
+
+Tool output components (`components/tool_outputs/TextReplace.vue`, `WriteFile.vue`, `ReadFile.vue`, `RemoveFile.vue`, `Search.vue`) and `components/Glob.vue` now expose an "Open in code editor" button (📝) that opens the referenced file in the existing in-app Monaco CodeEditor.
+
+**Mechanism — Vue 3 `provide`/`inject`:**
+- `AppLayout.vue` provides `openInCodeEditor` via the typed key `OPEN_IN_CODE_EDITOR_KEY` (defined in `composables/useCodeEditor.ts`).
+- The function accepts `{ filePath, fileName?, cwd }`, internally builds a `FolderEntry`, calls `api.readFileContent(cwd, filePath)`, and `router.replace({ query: { view: 'code-editor', file: btoa(path), cwd } })` — reusing the same flow as the right-sidebar file explorer.
+- Tool output components inject via `useInjectOpenInCodeEditor()` and call it from a click handler with `e.stopPropagation()`.
+- Each tool output receives a `cwd?: string` prop (passed down by `ChatView.vue` from its `cwd` ref); the button is hidden via `v-if` when `cwd` or the injected handler is missing (e.g. in tests).
+
+**Why provide/inject instead of emits?** Tool output components are 2 levels deep (ChatView → tool output). Propagating an emit up through ChatView → AppLayout would be painful and require a new prop on ChatView. Provide/inject is a single point of contact.
+
+**Adding the button to a new tool output component:**
+1. Add `cwd?: string` to `defineProps`.
+2. `const openInEditor = useInjectOpenInCodeEditor()`.
+3. Add a `handleOpenInEditor(e)` that calls `openInEditor({ filePath, cwd: props.cwd })` with `e.stopPropagation()`.
+4. Add a `<button v-if="props.cwd && openInEditor && filePath" @click="handleOpenInEditor">📝</button>` next to the existing copy-path button.
+5. Pass `:cwd="cwd"` from `ChatView.vue` to the new component.
+
 ## Helper Modules
 
 | Module | File | Purpose |
 |--------|------|---------|
 | VirtualScroller | `helpers/VirtualScroller.vue` | Agnostic virtual scroll for performance with large lists. See Desktop Components above. |
+| useCodeEditor | `composables/useCodeEditor.ts` | Typed `InjectionKey` + `useInjectOpenInCodeEditor()` helper for the "Open in code editor" feature (see above). |
 
 ## Language & Environment Facts
 

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useInjectOpenInCodeEditor } from '../composables/useCodeEditor'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  cwd?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+const openInEditor = useInjectOpenInCodeEditor()
 
 // Parse glob pattern
 const globPattern = computed(() => {
@@ -67,6 +70,13 @@ const copyPath = async (e: Event, path: string) => {
   e.stopPropagation()
   await navigator.clipboard.writeText(path)
 }
+
+// Open file in code editor
+const handleOpenInEditor = (e: Event, path: string) => {
+  e.stopPropagation()
+  if (!props.cwd || !openInEditor) return
+  openInEditor({ filePath: path, cwd: props.cwd })
+}
 </script>
 
 <template>
@@ -109,6 +119,16 @@ const copyPath = async (e: Event, path: string) => {
       <div v-for="(path, idx) in filePaths" :key="idx" class="gl-file">
         <span class="gl-file-path" :title="path">{{ path }}</span>
         <button class="gl-copy" @click="(e) => copyPath(e, path)" title="Copy path">⎘</button>
+        <button
+          v-if="props.cwd && openInEditor"
+          class="gl-copy"
+          @click="(e) => handleOpenInEditor(e, path)"
+          title="Open in code editor"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+        </button>
       </div>
     </div>
   </div>

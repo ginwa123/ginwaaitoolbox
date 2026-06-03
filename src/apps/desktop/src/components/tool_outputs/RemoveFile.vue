@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  cwd?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+const openInEditor = useInjectOpenInCodeEditor()
 
 // Parse file path from <path>...</path>
 const filePath = computed(() => {
@@ -50,6 +53,14 @@ const copyPath = async (e: Event) => {
     await navigator.clipboard.writeText(filePath.value)
   }
 }
+
+const handleOpenInEditor = (e: Event) => {
+  e.stopPropagation()
+  if (!filePath.value || !props.cwd || !openInEditor) return
+  // File may not exist (remove succeeded) — CodeEditor will show its error
+  // state if so. Still offer the button so users can inspect parent dirs.
+  openInEditor({ filePath: filePath.value, cwd: props.cwd })
+}
 </script>
 
 <template>
@@ -71,12 +82,22 @@ const copyPath = async (e: Event) => {
       <span class="text-xs font-semibold" :class="isDeleted ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
       </span>
-      <button 
+      <button
         class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
-        @click="copyPath" 
+        @click="copyPath"
         title="Copy path"
       >
         ⎘
+      </button>
+      <button
+        v-if="props.cwd && openInEditor && filePath"
+        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 transition-opacity"
+        @click="handleOpenInEditor"
+        title="Open in code editor"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        </svg>
       </button>
       <span v-if="errorMessage" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
         {{ isExpanded ? '−' : '+' }}

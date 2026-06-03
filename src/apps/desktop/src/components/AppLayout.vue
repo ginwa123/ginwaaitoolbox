@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, watch, nextTick, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
 import RightSidebar from './RightSidebar.vue'
@@ -13,6 +13,11 @@ import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import * as api from '../api'
+import {
+  OPEN_IN_CODE_EDITOR_KEY,
+  type OpenInCodeEditorFn,
+  type OpenInCodeEditorOptions,
+} from '../composables/useCodeEditor'
 
 const router = useRouter()
 const route = useRoute()
@@ -201,9 +206,17 @@ const codeEditorContent = ref<string>('')
 const codeEditorLoading = ref(false)
 const codeEditorError = ref<string | null>(null)
 
-const handleCodeEditorFileClick = async (file: api.FolderEntry) => {
-  console.log('[handleCodeEditorFileClick] file:', file.name, file.path)
-  if (!rightSidebarCwd.value) return
+const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOptions) => {
+  console.log('[openInCodeEditor] filePath:', opts.filePath, 'cwd:', opts.cwd)
+  if (!opts.cwd) return
+
+  // Build a FolderEntry-shaped object from the lightweight options
+  const file: api.FolderEntry = {
+    path: opts.filePath,
+    name: opts.fileName || opts.filePath.split('/').pop() || opts.filePath,
+    is_directory: false,
+    is_symlink: false,
+  }
 
   // Clear other overlays to prevent priority conflicts
   gitViewerFile.value = null
@@ -216,10 +229,10 @@ const handleCodeEditorFileClick = async (file: api.FolderEntry) => {
   codeEditorContent.value = ''
 
   try {
-    const response = await api.readFileContent(rightSidebarCwd.value, file.path)
+    const response = await api.readFileContent(opts.cwd, file.path)
     codeEditorContent.value = response.content
     console.log(
-      '[handleCodeEditorFileClick] codeEditorFile.value after set:',
+      '[openInCodeEditor] codeEditorFile.value after set:',
       codeEditorFile.value?.path,
     )
     // Navigate to code-editor view
@@ -230,7 +243,7 @@ const handleCodeEditorFileClick = async (file: api.FolderEntry) => {
       query: {
         view: 'code-editor',
         file: encodedPath,
-        cwd: rightSidebarCwd.value,
+        cwd: opts.cwd,
       },
     })
   } catch (err) {
@@ -241,6 +254,18 @@ const handleCodeEditorFileClick = async (file: api.FolderEntry) => {
     codeEditorLoading.value = false
   }
 }
+
+const handleCodeEditorFileClick = (file: api.FolderEntry) => {
+  if (!rightSidebarCwd.value) return
+  return openInCodeEditor({
+    filePath: file.path,
+    fileName: file.name,
+    cwd: rightSidebarCwd.value,
+  })
+}
+
+// Expose openInCodeEditor to all descendants (tool output components) via inject
+provide<OpenInCodeEditorFn>(OPEN_IN_CODE_EDITOR_KEY, openInCodeEditor)
 
 const closeCodeEditor = () => {
   codeEditorFile.value = null

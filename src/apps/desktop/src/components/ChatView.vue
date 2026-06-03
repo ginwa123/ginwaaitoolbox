@@ -1006,11 +1006,13 @@ const compactSession = async () => {
                             v-if="msg.tool_name === 'read_file'"
                             :content="msg.content"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :cwd="cwd"
                           />
                           <WriteFile
                             v-else-if="msg.tool_name === 'write_file'"
                             :content="msg.content"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :cwd="cwd"
                           />
                           <UpdateActivity
                             v-else-if="msg.tool_name === 'update_activity'"
@@ -1021,14 +1023,20 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'search'"
                             :content="msg.content"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :cwd="cwd"
                           />
-                          <Glob v-else-if="msg.tool_name === 'glob'" :content="msg.content" />
+                          <Glob
+                            v-else-if="msg.tool_name === 'glob'"
+                            :content="msg.content"
+                            :cwd="cwd"
+                          />
                           <TextReplace
                             v-else-if="msg.tool_name === 'text_replace'"
                             :content="msg.content"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :diffview-before="msg.diffview_before"
                             :diffview-after="msg.diffview_after"
+                            :cwd="cwd"
                           />
                           <Bash
                             v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'"
@@ -1069,6 +1077,7 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'remove_file'"
                             :content="msg.content"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :cwd="cwd"
                           />
                           <SpawnSubAgent
                             v-else-if="msg.tool_name === 'spawn_sub_agent'"
