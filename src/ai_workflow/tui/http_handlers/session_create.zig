@@ -43,6 +43,7 @@ pub const RequestSession = struct {
     allowed_tools: []const u8 = "",
     body_message: []const u8 = "",
     image_urls: []const u8 = "",
+    selected_profile_model: []const u8 = "", // NEW: name of profile in LlmConfig.profiles_models
 };
 
 pub const ResponseSession = struct {
@@ -132,6 +133,9 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
     var image_urls: []const u8 = "";
     if (parsed.image_urls.len > 0) image_urls = parsed.image_urls;
 
+    var selected_profile_model: []const u8 = "";
+    if (parsed.selected_profile_model.len > 0) selected_profile_model = parsed.selected_profile_model;
+
     try insertWorker(local, sqlite_db, parsed, image_urls);
 
     // --- Heap-allocate data for the async task (task owns these, frees them) ---
@@ -141,6 +145,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
     const thread_body_message = try di.allocator.dupe(u8, body_message);
     const thread_allowed_tools = try di.allocator.dupe(u8, allowed_tools);
     const thread_image_urls = try di.allocator.dupe(u8, image_urls);
+    const thread_selected_profile_model = try di.allocator.dupe(u8, selected_profile_model);
 
     // If concurrent() fails, we must free the heap data ourselves
     errdefer {
@@ -150,6 +155,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
         di.allocator.free(thread_body_message);
         di.allocator.free(thread_allowed_tools);
         di.allocator.free(thread_image_urls);
+        di.allocator.free(thread_selected_profile_model);
     }
 
     try di.group_emit_session_create.concurrent(
@@ -163,6 +169,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                 bmsg: []u8,
                 atools: []u8,
                 iurls: []u8,
+                spm: []u8, // NEW: selected_profile_model
             ) void {
                 // Task owns these slices — free them when done
                 defer di_inner.allocator.free(sid);
@@ -171,6 +178,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                 defer di_inner.allocator.free(bmsg);
                 defer di_inner.allocator.free(atools);
                 defer di_inner.allocator.free(iurls);
+                defer di_inner.allocator.free(spm); // NEW
 
                 const event_bus = di_inner.event_bus;
                 event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{
@@ -182,10 +190,11 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                     .allowed_tools = atools,
                     .is_sub_agent = false,
                     .image_urls = iurls,
+                    .selected_profile_model = spm, // NEW
                 });
             }
         }.run,
-        .{ di, thread_session_id, thread_queue_message, thread_effective_cwd, thread_body_message, thread_allowed_tools, thread_image_urls },
+        .{ di, thread_session_id, thread_queue_message, thread_effective_cwd, thread_body_message, thread_allowed_tools, thread_image_urls, thread_selected_profile_model },
     );
 
     // ResponseSession.id must also outlive this function (caller may hold it)
@@ -205,15 +214,18 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     const session_id = parsed.session_id;
     const session_name = parsed.session_name;
     const effective_cwd = parsed.cwd_session;
+    const effective_profile = parsed.selected_profile_model;
 
-    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at) VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model) VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)";
     const copy_session_name = try allocator.dupe(u8, session_name);
     defer allocator.free(copy_session_name);
     const copy_cwd = try allocator.dupe(u8, effective_cwd);
     defer allocator.free(copy_cwd);
     const copy_session_id = try allocator.dupe(u8, session_id);
     defer allocator.free(copy_session_id);
-    try sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name, copy_cwd });
+    const copy_profile = if (effective_profile.len > 0) try allocator.dupe(u8, effective_profile) else "";
+    defer if (copy_profile.len > 0) allocator.free(copy_profile);
+    try sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name, copy_cwd, copy_profile });
 
     // Broadcast session created event
     ai_workflow.on_event_sent.onEventSendSessions(allocator, .{
@@ -224,6 +236,6 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
         .cwd = effective_cwd,
         .created_at = "",
         .updated_at = "",
-        .selected_profile_model = "",
+        .selected_profile_model = effective_profile,
     }) catch {};
 }

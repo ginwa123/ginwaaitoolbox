@@ -125,6 +125,46 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     const config = nalar_mod.getLlmConfig(di);
     const environment = di.environment;
 
+    // ─── Resolve the effective LLM profile (selected_profile_model) ──────
+    // Fallback chain:
+    //   1. params.selected_profile_model (from POST body) if non-empty AND profile exists
+    //   2. top-level LlmConfig (the "default" mode)
+    // All four slices borrow from the LlmConfig; they live for the whole workflow run.
+    const effective_api_key: []const u8 = blk: {
+        if (params.selected_profile_model.len > 0) {
+            if (config.getProfile(params.selected_profile_model)) |profile| {
+                if (profile.api_key.len > 0) break :blk profile.api_key;
+            } else {
+                logger.warnFmt("WORKFLOW: selected_profile_model '{s}' not found in LlmConfig.profiles_models, using top-level config", .{params.selected_profile_model});
+            }
+        }
+        break :blk config.api_key;
+    };
+    const effective_model: []const u8 = blk: {
+        if (params.selected_profile_model.len > 0) {
+            if (config.getProfile(params.selected_profile_model)) |profile| {
+                if (profile.model.len > 0) break :blk profile.model;
+            }
+        }
+        break :blk config.model;
+    };
+    const effective_base_url: []const u8 = blk: {
+        if (params.selected_profile_model.len > 0) {
+            if (config.getProfile(params.selected_profile_model)) |profile| {
+                if (profile.base_url.len > 0) break :blk profile.base_url;
+            }
+        }
+        break :blk config.base_url;
+    };
+    const effective_url_style: []const u8 = blk: {
+        if (params.selected_profile_model.len > 0) {
+            if (config.getProfile(params.selected_profile_model)) |profile| {
+                if (profile.url_style.len > 0) break :blk profile.url_style;
+            }
+        }
+        break :blk config.url_style;
+    };
+
     const copy_parent_session_id = try parent_allocator.dupe(u8, params.parent_session_id);
     const copy_session_id = try parent_allocator.dupe(u8, params.session_id);
     const copy_message = try parent_allocator.dupe(u8, params.message);
@@ -342,7 +382,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         };
         loop_counter += 1;
         if (loop_counter == 1) {
-            generateSessionNameNew(db_messages, allocator, config.api_key, config.model, config.base_url, copy_session_id, logger, io, db);
+            generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db);
         }
 
         const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, db_messages, merged_tools);
@@ -355,12 +395,12 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
             defer allocator.free(copy_messages);
             var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
             defer copy_list.deinit(allocator);
-            if (callCompactAgentNew(&copy_list, allocator, config.api_key, config.model, config.base_url, copy_cwd, logger, io)) |compacted_xml| {
-                try compactMessageInMemoryNew(allocator, &messagesLists, compacted_xml, copy_session_id, config.model, copy_cwd, db, io, logger);
+            if (callCompactAgentNew(&copy_list, allocator, effective_api_key, effective_model, effective_base_url, copy_cwd, logger, io)) |compacted_xml| {
+                try compactMessageInMemoryNew(allocator, &messagesLists, compacted_xml, copy_session_id, effective_model, copy_cwd, db, io, logger);
             }
         }
 
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, &messagesLists, agent_temperature, current_max_tokens, isThinking, config.api_key, config.model, config.base_url, copy_session_id, merged_tools) catch |err| {
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, &messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
@@ -633,6 +673,7 @@ fn callDynamicAgentNew(
     api_key: []const u8,
     model: []const u8,
     base_url: []const u8,
+    url_style: []const u8,
     session_id: []const u8,
     tools: []const agent.AgentTool,
 ) !agent.CallResponse {
@@ -640,6 +681,7 @@ fn callDynamicAgentNew(
     dynamic_agent.apiKey = api_key;
     dynamic_agent.model = model;
     dynamic_agent.baseUrl = base_url;
+    dynamic_agent.UrlStyle = url_style;
     const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
     dynamic_agent.thinkingEnabled = isThinking;
     dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
@@ -959,4 +1001,5 @@ pub const RunParamsNew = struct {
     allowed_tools: []const u8,
     is_sub_agent: bool = false,
     image_urls: []const u8 = "",
+    selected_profile_model: []const u8 = "", // NEW
 };
