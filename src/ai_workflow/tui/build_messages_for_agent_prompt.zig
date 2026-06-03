@@ -45,7 +45,12 @@ pub fn buildMessages(
     const activity_info = try buildActivityInfo(allocator, io, db, session_id);
     defer allocator.free(activity_info);
 
-    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, "", skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info);
+    // Resolve environment for the Global Knowledge loader. The singleton
+    // is the single source of truth for the process-level environment map.
+    const di = try tree1_mod.getSingleton();
+    const environment = di.environment;
+
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment);
 
     const systemMessage = agent.AgentMessage{
         .role = .system,

@@ -300,13 +300,18 @@ pub fn load_skills_from_path(allocator: std.mem.Allocator, io: std.Io, path: []c
 }
 
 /// Parse a specific skill from the skills directory by name
-/// Searches BOTH local and global paths
+/// If is_global is true, ONLY the global path (~/.config/nalar/skills/) is searched.
+/// If is_global is false (default), both local (.nalar/skills/) and global paths
+/// are searched, local first.
+/// environment is required when is_global is true (or when global fallback is desired).
 /// Returns allocated string with skill content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, environment: ?*const std.process.Environ.Map) ?[]const u8 {
-    // Try local path first (.nalar/skills/)
-    if (parse_skill_from_path(allocator, io, skill_name)) |content| {
-        return content;
+pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, is_global: bool, environment: ?*const std.process.Environ.Map) ?[]const u8 {
+    // When is_global is false, try local path first (.nalar/skills/)
+    if (!is_global) {
+        if (parse_skill_from_path(allocator, io, skill_name)) |content| {
+            return content;
+        }
     }
 
     // Try global path (~/.config/nalar/skills/) if environment provided

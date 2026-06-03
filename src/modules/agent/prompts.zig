@@ -1,11 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const list_skills = @import("tools/list_skills.zig");
-const agents = @import("tools/agents.zig");
 const prompts = @import("prompts/prompts.zig");
 const tool_models = @import("nalarcore").tool_models;
 const memory_prompts = @import("prompts/memory.zig");
 const browsing = @import("prompts/browsing.zig");
+const memories_mod = @import("nalarcore").memories;
 
 /// Get the current operating system as a human-readable string
 fn getCurrentOs() []const u8 {
@@ -29,7 +28,6 @@ pub const DynamicProperties = prompts.DynamicProperties;
 pub const Agent = prompts.Agent;
 pub const ParallelWork = prompts.ParallelWork;
 pub const Research = prompts.Research;
-pub const DynamicAdaptation = prompts.DynamicAdaptation;
 pub const ResearchTriggers = prompts.ResearchTriggers;
 pub const FileEditingRules = prompts.FileEditingRules;
 pub const ChangeAgent = prompts.ChangeAgent;
@@ -44,6 +42,7 @@ pub const TDD = prompts.TDD;
 pub const MemoryPrompt = prompts.MemoryPrompt;
 pub const NalarMdAutoUpdate = prompts.NalarMdAutoUpdate;
 pub const GitPrompt = prompts.GitPrompt;
+pub const GlobalMemorySystem = prompts.GlobalMemorySystem;
 pub const CompactionAgent = prompts.CompactionAgent;
 pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
 pub const SkillsUsage = prompts.SkillsUsage;
@@ -58,7 +57,6 @@ pub const SurgicalChanges = prompts.SurgicalChanges;
 pub const GoalDrivenExecution = prompts.GoalDrivenExecution;
 pub const SuccessCriteria = prompts.SuccessCriteria;
 pub const AntiPatterns = prompts.AntiPatterns;
-pub const GuidelinesSummary = prompts.GuidelinesSummary;
 pub const CloakBrowserPrompt = browsing.CloakBrowserPrompt;
 
 // Agentic Coding enhancements
@@ -78,14 +76,185 @@ pub const SafetyFirst = prompts.SafetyFirst;
 // PROMPT BUILDERS
 // =============================================================================
 
+/// Append a section to the result with a leading "\n\n" separator.
+/// Skips empty sections.
+const appendSection = struct {
+    fn func(a: std.mem.Allocator, r: *std.ArrayList(u8), section: []const u8) !void {
+        if (section.len > 0) {
+            try r.appendSlice(a, "\n\n");
+            try r.appendSlice(a, section);
+        }
+    }
+}.func;
+
+/// A single prompt section in the main agent's system prompt.
+///
+/// `requires_tool` is an optional gate: if set, the section is only rendered
+/// when a tool with that exact name is present in the runtime tool list.
+/// This lets us ship section content (e.g. `set_agent_properties` guide)
+/// without making it visible to agents that lack the tool.
+const PromptSection = struct {
+    name: []const u8,
+    content: []const u8,
+    requires_tool: ?[]const u8 = null,
+};
+
+/// Single source of truth for which prompt sections the main agent receives.
+///
+/// Order is meaningful: prompts earlier in the array are read first by the
+/// model. The narrative is intentionally structured as:
+///   1. LEAD — Orchestrator narrative (Philosophy B: spawn, delegate, orchestrate)
+///   2. Skills system (so the agent knows about skills before being told workflows)
+///   3. Tooling & research (how to use the tools)
+///   4. Workflow (classify → plan → execute → escalate)
+///   5. SECONDARY — "When you do work yourself" (Philosophy A: careful, surgical)
+///   6. Memory & docs (project state)
+///   7. Response formatting (applies to everything above)
+///
+/// To add/remove/reorder a section, edit this list — that's the only place
+/// that needs to change. (For "I want the DynamicProperties section back
+/// unconditionally" → just remove the `requires_tool` field.)
+const PROMPT_SECTIONS: []const PromptSection = &.{
+    // === LEAD: Orchestrator narrative (Philosophy B) ===
+    .{ .name = "universal_rules", .content = UniversalRules },
+    .{ .name = "prompt_auto_fix", .content = PromptAutoFix },
+    .{ .name = "agent_directive", .content = Agent },
+    .{ .name = "parallel_work", .content = ParallelWork },
+    .{ .name = "autonomous_behavior", .content = AutonomousBehavior },
+    .{ .name = "change_agent", .content = ChangeAgent },
+    .{ .name = "specialization_table", .content = SpecializationTable },
+    .{ .name = "aggressive_delegation", .content = AggressiveDelegation },
+    .{ .name = "tool_chaining", .content = ToolChaining },
+
+    // === Skills system ===
+    .{ .name = "skills_system", .content = memory_prompts.skills_system_prompt },
+    .{ .name = "skills_usage", .content = SkillsUsage },
+    .{ .name = "skills_triggers", .content = SkillsTriggers },
+    .{ .name = "procedural_memory", .content = ProceduralMemory },
+
+    // === Tooling & research ===
+    .{ .name = "research", .content = Research },
+    .{ .name = "research_triggers", .content = ResearchTriggers },
+    .{ .name = "deep_research", .content = DeepResearch },
+    .{ .name = "file_editing", .content = FileEditingRules },
+    .{ .name = "dynamic_properties", .content = DynamicProperties, .requires_tool = "set_agent_properties" },
+    .{ .name = "cloakbrowser", .content = CloakBrowserPrompt, .requires_tool = "browse" },
+
+    // === Workflow: classify → plan → execute → escalate ===
+    .{ .name = "classification", .content = Classification },
+    .{ .name = "plan_block", .content = PlanBlock },
+    .{ .name = "tdd", .content = TDD },
+    .{ .name = "execution", .content = Execution },
+    .{ .name = "escalation", .content = Escalation },
+
+    // === SECONDARY: When you do work yourself (Philosophy A) ===
+    // Demoted behind the orchestrator narrative. These still apply when
+    // the agent (or a sub-agent it spawns) actually writes code, but the
+    // *default* posture is: "delegate this to a sub-agent who will follow
+    // these rules", not "do it yourself and follow these rules."
+    // .{ .name = "think_before_coding", .content = ThinkBeforeCoding },
+    // .{ .name = "simplicity_first", .content = SimplicityFirst },
+    // .{ .name = "surgical_changes", .content = SurgicalChanges },
+    // .{ .name = "goal_driven", .content = GoalDrivenExecution },
+    // .{ .name = "success_criteria", .content = SuccessCriteria },
+    // .{ .name = "anti_patterns", .content = AntiPatterns },
+    // .{ .name = "decision_framework", .content = DecisionFramework },
+    // .{ .name = "quality_gates", .content = QualityGates },
+    // .{ .name = "error_recovery", .content = ErrorRecovery },
+    // .{ .name = "context_awareness", .content = ContextAwareness },
+    // .{ .name = "proactive_learning", .content = ProactiveLearning },
+    // .{ .name = "iteration_mindset", .content = IterationMindset },
+    // .{ .name = "safety_first", .content = SafetyFirst },
+
+    // === Memory & docs ===
+    .{ .name = "memory_prompt", .content = MemoryPrompt },
+    .{ .name = "nalar_md", .content = NalarMdAutoUpdate },
+    .{ .name = "global_memory_system", .content = GlobalMemorySystem, .requires_tool = "list_memory" },
+    .{ .name = "git_prompt", .content = GitPrompt },
+
+    // === Response formatting (last — applies to everything above) ===
+    .{ .name = "response_formatting", .content = ResponseFormatting },
+    .{ .name = "update_activity", .content = UpdateActivityRule },
+};
+
+/// Check if a tool with the given name is present in the runtime tool list.
+fn hasTool(tools: []const tool_models.AgentTool, name: []const u8) bool {
+    for (tools) |tool| {
+        if (std.mem.eql(u8, tool.function.name, name)) return true;
+    }
+    return false;
+}
+
+/// Load the contents of all memory files in `~/.config/nalar/memories/` and
+/// concatenate them as a single markdown blob. Each file is prefixed with a
+/// `### <title>` heading derived from `MemoryInfo.title`.
+///
+/// Returns an empty string (allocated) when:
+///   - environment is null
+///   - the memories folder does not exist
+///   - no `.md` files exist
+///
+/// **No cap — neither aggregate nor per-file.** Every memory that the
+/// `listAllMemories` walk discovers is loaded in full. The de facto limit
+/// is the LLM's context window (e.g. 200K tokens for the default model) —
+/// if total memory content exceeds that, the LLM call will fail and the
+/// user must trim. We trust users to keep their memories reasonable in
+/// size.
+fn loadGlobalKnowledge(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environment: ?*const std.process.Environ.Map,
+) ![]u8 {
+    const env = environment orelse return allocator.dupe(u8, "");
+
+    const list = memories_mod.listAllMemories(allocator, io, env);
+    defer memories_mod.freeMemoriesList(allocator, list);
+
+    if (list.len == 0) return allocator.dupe(u8, "");
+
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    for (list) |mem| {
+        // Read the full file — no per-file cap. Pattern matches read_file.zig
+        // and get_skill.zig which also use maxInt(usize) to mean "read all".
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            mem.path,
+            allocator,
+            std.Io.Limit.limited(std.math.maxInt(usize)),
+        ) catch continue;
+        defer allocator.free(content);
+
+        try result.appendSlice(allocator, "### ");
+        try result.appendSlice(allocator, mem.title);
+        try result.appendSlice(allocator, " (`");
+        try result.appendSlice(allocator, mem.name);
+        try result.appendSlice(allocator, "`)\n\n");
+        try result.appendSlice(allocator, content);
+        try result.appendSlice(allocator, "\n\n");
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 /// Build sub-agent prompt with a focused, minimal set of rules
 /// Sub-agents get a simple, research-focused prompt (NOT the full main agent prompt)
+///
+/// **New parameters (vs. previous version):**
+///   - `io: std.Io` — required to read memory files for the auto-loaded
+///     "Global Knowledge" section.
+///   - `environment: ?*const std.process.Environ.Map` — required to resolve
+///     the global memories path (XDG-aware: $XDG_CONFIG_HOME or $HOME).
+///     When null, the Global Knowledge section is omitted.
 pub fn build_sub_agent_prompt(
     allocator: std.mem.Allocator,
+    io: std.Io,
     cwd: []const u8,
     treeDir: []const u8,
     task_brief: []const u8,
     tools: []const tool_models.AgentTool,
+    environment: ?*const std.process.Environ.Map,
 ) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -122,7 +291,28 @@ pub fn build_sub_agent_prompt(
         try result.appendSlice(allocator, "\n\n");
     }
 
-    // 6. Working directory context
+    // 6. Global Knowledge — auto-loaded from ~/.config/nalar/memories/*.md.
+    //    Each memory becomes a `### <title>` subsection. Total content is
+    //    capped at MAX_GLOBAL_KNOWLEDGE_BYTES to prevent prompt bloat; if
+    //    truncated, a note tells the agent to use `list_memory` to see the rest.
+    const knowledge = try loadGlobalKnowledge(allocator, io, environment);
+    defer allocator.free(knowledge);
+    if (knowledge.len > 0) {
+        try result.appendSlice(allocator, "## Global Knowledge\n\n");
+        try result.appendSlice(allocator,
+            \\The following markdown files are your persistent global memory,
+            \\auto-loaded from `~/.config/nalar/memories/`. Use `list_memory` to
+            \\see metadata (and any files truncated below the budget). Use
+            \\`read_file` to load a specific memory on demand. To update a
+            \\memory, use `write_file` or `text_replace`; to delete, use
+            \\`remove_file`.
+            \\
+        );
+        try result.appendSlice(allocator, knowledge);
+        try result.appendSlice(allocator, "\n\n");
+    }
+
+    // 7. Working directory context
     if (cwd.len > 0) {
         try result.appendSlice(allocator, "**Current working directory:** ");
         try result.appendSlice(allocator, cwd);
@@ -130,7 +320,7 @@ pub fn build_sub_agent_prompt(
         try result.appendSlice(allocator, treeDir);
     }
 
-    // 7. OS info
+    // 8. OS info
     const os_name = getCurrentOs();
     try result.appendSlice(allocator, "\n\n**Operating System:** ");
     try result.appendSlice(allocator, os_name);
@@ -139,217 +329,161 @@ pub fn build_sub_agent_prompt(
     return result.toOwnedSlice(allocator);
 }
 
-/// Build main agent prompt with all components combined
+/// Build main agent prompt with all components combined.
+///
+/// Prompt construction is data-driven via `PROMPT_SECTIONS`. To change
+/// what the agent sees, edit that list — don't touch this function.
+///
+/// Sections are rendered in declaration order. Each section may be
+/// conditionally gated on a tool being present (`requires_tool`).
+///
+/// After the static sections, the function appends dynamic session state:
+/// loaded skills, project memory, global knowledge (memories from
+/// `~/.config/nalar/memories/`), tool listing, active agent configuration,
+/// working directory, OS info, background processes, and active workers.
+///
+/// **Removed parameters (vs. previous version):**
+///   - `io: std.Io` — never used; callers no longer need to thread an `io` instance.
+///   - `treeDir: []const u8` — was a dead parameter (caller always passed `""`).
+/// **Renamed parameters:**
+///   - `agent` → `activeAgentContent` (avoids shadowing the `agents` namespace).
+/// **New parameters:**
+///   - `io: std.Io` — required to read memory files for the auto-loaded
+///     "Global Knowledge" section.
+///   - `environment: ?*const std.process.Environ.Map` — required to resolve
+///     the global memories path (XDG-aware: $XDG_CONFIG_HOME or $HOME).
+///     When null, the Global Knowledge section is omitted.
 pub fn build_agent_prompt(
     allocator: std.mem.Allocator,
     io: std.Io,
     cwd: []const u8,
-    treeDir: []const u8,
     skillsContent: []const u8,
     memoryMd: []const u8,
     backgroundProcessContent: []const u8,
-    agent: []const u8,
+    activeAgentContent: []const u8,
     tools: []const tool_models.AgentTool,
     activity_info: []const u8,
+    environment: ?*const std.process.Environ.Map,
 ) ![]const u8 {
-    _ = io;
-    _ = tools;
-    _ = treeDir;
-
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
-    // Helper to append section with newline separator
-    const appendSection = struct {
-        fn func(a: std.mem.Allocator, r: *std.ArrayList(u8), section: []const u8) !void {
-            if (section.len > 0) {
-                try r.appendSlice(a, "\n\n");
-                try r.appendSlice(a, section);
-            }
+    // === 1. Static sections (data-driven) ===
+    for (PROMPT_SECTIONS) |section| {
+        if (section.requires_tool) |tool_name| {
+            if (!hasTool(tools, tool_name)) continue;
         }
-    }.func;
+        try appendSection(allocator, &result, section.content);
+    }
 
-    // 1. Base rules - safety and universal guidelines
-    try result.appendSlice(allocator, UniversalRules);
-    try appendSection(allocator, &result, PromptAutoFix);
+    // === 2. Dynamic: session-specific content ===
 
-    // 2. ✅ Agent directive EARLY - agent needs context before anything else
-    try appendSection(allocator, &result, Agent);
-
-    // 3. Skills system prompt -> self learning skills
-    try appendSection(allocator, &result, memory_prompts.skills_system_prompt);
-
-    // 3. Core execution guidelines
-    try appendSection(allocator, &result, ThinkBeforeCoding);
-    try appendSection(allocator, &result, SimplicityFirst);
-    try appendSection(allocator, &result, SurgicalChanges);
-    try appendSection(allocator, &result, GoalDrivenExecution);
-    try appendSection(allocator, &result, SuccessCriteria);
-    try appendSection(allocator, &result, AntiPatterns);
-    try appendSection(allocator, &result, GuidelinesSummary);
-
-    // 4. Agentic Coding enhancements (autonomous, proactive, quality-focused)
-    // try appendSection(allocator, &result, AutonomousBehavior);
-    try appendSection(allocator, &result, DeepResearch);
-    try appendSection(allocator, &result, QualityGates);
-    try appendSection(allocator, &result, ErrorRecovery);
-    // try appendSection(allocator, &result, ToolChaining);
-    try appendSection(allocator, &result, ContextAwareness);
-    try appendSection(allocator, &result, ProactiveLearning);
-    try appendSection(allocator, &result, DecisionFramework);
-    // try appendSection(allocator, &result, AggressiveDelegation);
-    try appendSection(allocator, &result, IterationMindset);
-    try appendSection(allocator, &result, SafetyFirst);
-    // try appendSection(allocator, &result, CloakBrowserPrompt);
-
-    // 5. Response formatting - markdown and thinking
-    try appendSection(allocator, &result, ResponseFormatting);
-
-    // 6. MANDATORY: Update activity after every response
-    try appendSection(allocator, &result, UpdateActivityRule);
-
-    // 7. CONSOLIDATED: Parallel work rules (single source of truth)
-    // try appendSection(allocator, &result, ParallelWork);
-
-    // 8. Tool-First Approach + Research triggers
-    // try appendSection(allocator, &result, Research);
-    // try appendSection(allocator, &result, ResearchTriggers);
-    // try appendSection(allocator, &result, DynamicAdaptation);
-
-    // 9. Dynamic Properties - only if set_agent_properties tool is available
-    // const has_set_agent_properties = for (tools) |tool| {
-    //     if (std.mem.eql(u8, tool.function.name, "set_agent_properties")) {
-    //         break true;
-    //     }
-    // } else false;
-    // if (has_set_agent_properties) {
-    //     try appendSection(allocator, &result, DynamicProperties);
-    // }
-
-    // 10. Classification + Plan + TDD + Execution
-    // try appendSection(allocator, &result, Classification);
-    // try appendSection(allocator, &result, PlanBlock);
-    // try appendSection(allocator, &result, TDD);
-    // try appendSection(allocator, &result, Execution);
-    // try appendSection(allocator, &result, Escalation);
-
-    // 11. Skills + Memory section (agent knows context by now)
-    // try appendSection(allocator, &result, SkillsUsage);
-    // try appendSection(allocator, &result, SkillsTriggers);
-    // try appendSection(allocator, &result, MemoryPrompt);
-    try appendSection(allocator, &result, NalarMdAutoUpdate);
-    try appendSection(allocator, &result, GitPrompt);
-    // try appendSection(allocator, &result, ProceduralMemory);
-
-    // 13. Custom skills content + Memory markdown
+    // Skills loaded for this session (from session_skills table).
     if (skillsContent.len > 0) {
-        try result.appendSlice(allocator, "\n\n");
-        try result.appendSlice(allocator, skillsContent);
+        try appendSection(allocator, &result, skillsContent);
     }
+
+    // Project memory (NALAR.md / CLAUDE.md from cwd).
     if (memoryMd.len > 0) {
-        try result.appendSlice(allocator, "\n\n");
-        try result.appendSlice(allocator, memoryMd);
+        try appendSection(allocator, &result, memoryMd);
     }
 
-    // 14. Dynamic tool listing
-    // try appendToolListing(allocator, &result, tools);
+    // Global Knowledge — auto-loaded from ~/.config/nalar/memories/*.md.
+    // Same loader and 50KB budget as build_sub_agent_prompt. The
+    // GlobalMemorySystem static section above already told the model this
+    // content is coming; here is where the actual content gets injected.
+    const knowledge = try loadGlobalKnowledge(allocator, io, environment);
+    defer allocator.free(knowledge);
+    if (knowledge.len > 0) {
+        try result.appendSlice(allocator, "\n\n## Global Knowledge\n\n");
+        try result.appendSlice(allocator,
+            \\The following markdown files are your persistent global memory,
+            \\auto-loaded from `~/.config/nalar/memories/`. Use `list_memory` to
+            \\see metadata (and any files truncated below the budget).
+        );
+        try result.appendSlice(allocator, knowledge);
+    }
 
-    // 15. File editing rules - CRITICAL, follow the workflow!
-    // try appendSection(allocator, &result, FileEditingRules);
+    // Tool listing — gives the model semantic context for each tool
+    // (names + descriptions), not just the JSON schema the API already sends.
+    // Critical for tool selection: without this, the model picks tools based
+    // on name-embedding similarity alone, which is unreliable.
+    try appendToolListing(allocator, &result, tools);
 
-    // 16. Change agent rules
-    try appendSection(allocator, &result, ChangeAgent);
+    // Active specialized agent — frames the session's current agent config.
+    if (activeAgentContent.len > 0) {
+        try result.appendSlice(allocator, "\n\n## Your Active Agent Configuration\n\n");
+        try result.appendSlice(allocator,
+            \\You are currently configured as the following specialized agent.
+            \\Its instructions, capabilities, and constraints apply to you for
+            \\this session. When in doubt, defer to the agent configuration below.
+            \\
+        );
+        try result.appendSlice(allocator, activeAgentContent);
+    }
 
-    // 17. Specialization table
-    // try appendSection(allocator, &result, SpecializationTable);
-
-    // 18. Dynamic agents list
-    // {
-    //     const agents_list = agents.listAgents(allocator, io);
-    //     defer agents.freeAgentsList(allocator, agents_list);
-    //
-    //     if (agents_list.len > 0) {
-    //         try result.appendSlice(allocator, "\n\n## Available Dynamic Agents\n\n");
-    //         for (agents_list) |info| {
-    //             try result.appendSlice(allocator, "- **");
-    //             try result.appendSlice(allocator, info.name);
-    //             try result.appendSlice(allocator, "**: ");
-    //             try result.appendSlice(allocator, info.description);
-    //             try result.appendSlice(allocator, "\n");
-    //         }
-    //     }
-    // }
-
-    // 19. Working directory context
+    // Working directory.
     if (cwd.len > 0) {
         try result.appendSlice(allocator, "\n\n**Current working directory:** ");
         try result.appendSlice(allocator, cwd);
-        // try result.appendSlice(allocator, "\n\n**Tree Directory:**\n");
-        // try result.appendSlice(allocator, treeDir);
     }
 
-    // 20. OS info
+    // OS info.
     const os_name = getCurrentOs();
     try result.appendSlice(allocator, "\n\n**Operating System:** ");
     try result.appendSlice(allocator, os_name);
-    try result.appendSlice(allocator, "\n\n**Important:** Always use OS-specific commands. Check the current OS before running system commands or shell scripts.");
+    try result.appendSlice(allocator,
+        \\**Important:** Always use OS-specific commands. Check the current OS
+        \\before running system commands or shell scripts.
+    );
 
-    // 21. Background process info
+    // Background processes for this session.
     if (backgroundProcessContent.len > 0) {
-        try result.appendSlice(allocator, "\n\n");
-        try result.appendSlice(allocator, backgroundProcessContent);
+        try appendSection(allocator, &result, backgroundProcessContent);
     }
 
-    // 22. Active specialized agent
-    if (agent.len > 0) {
-        try result.appendSlice(allocator, "\n\n## Active Specialized Agent\n\n");
-        try result.appendSlice(allocator, agent);
-    }
-
-    // 23. Active workers/threads info
+    // Other active workers (sub-agents in other sessions/processes).
     if (activity_info.len > 0) {
         try result.appendSlice(allocator, "\n\n## Active Workers\n\n");
         try result.appendSlice(allocator, activity_info);
-        try result.appendSlice(allocator, "\n\n**Note:** These are other agent sessions running in different processes/directories. This information helps you avoid duplicate work or coordinate with other agents if needed. However, each worker operates independently — you have your own separate context and session.");
+        try result.appendSlice(allocator,
+            \\**Note:** These are other agent sessions running in different
+            \\processes/directories. This information helps you avoid duplicate
+            \\work or coordinate with other agents if needed. However, each
+            \\worker operates independently — you have your own separate
+            \\context and session.
+        );
     }
 
     return result.toOwnedSlice(allocator);
 }
 
-/// Append tool listing to the result ArrayList
+/// Append a tool listing to the result ArrayList.
+///
+/// Renders each tool's name and description so the model has semantic
+/// context for tool selection — not just the JSON schema that the API
+/// already sends in the request body. This is the single highest-leverage
+/// piece of prompt content for tool-use accuracy: without it, the model
+/// picks tools based on name-embedding similarity alone, which is unreliable
+/// when tool names are short or ambiguous (e.g. `read_file` vs `text_replace`).
 fn appendToolListing(allocator: std.mem.Allocator, result: *std.ArrayList(u8), tools: []const tool_models.AgentTool) !void {
     if (tools.len == 0) return;
 
     const header = "\n\n## Available Tools\n\nUse these exact tool names in your tool_calls:\n\n";
     try result.appendSlice(allocator, header);
 
-    // Limit total tools to prevent allocation overflow
-    // const max_tools = 20;
-    // const tools_to_process = if (tools.len > max_tools) tools[0..max_tools] else tools;
-
     for (tools) |tool| {
-        std.debug.print("Processing tool: {s}", .{tool.function.name});
-        std.debug.print("Tool description: {s}", .{tool.function.description});
         const name = tool.function.name;
         const desc = tool.function.description;
 
-        // Guard against corrupted/uninitialized slices
-        if (name.len == 0) {
-            std.debug.print("Skipping tool with empty name: {s}", .{name});
-            continue;
-        }
-        if (desc.len == 0) {
-            std.debug.print("Skipping tool with empty description: {s}", .{name});
-            continue;
-        }
-
-        // Skip tools with excessively long names or descriptions to avoid allocation issues
-        // if (tool.function.name.len > 64 or tool.function.description.len > 1024) continue;
+        // Guard against corrupted/uninitialized slices.
+        if (name.len == 0) continue;
+        if (desc.len == 0) continue;
 
         try result.appendSlice(allocator, "- **");
-        try result.appendSlice(allocator, tool.function.name);
+        try result.appendSlice(allocator, name);
         try result.appendSlice(allocator, "**: ");
-        try result.appendSlice(allocator, tool.function.description);
+        try result.appendSlice(allocator, desc);
         try result.appendSlice(allocator, "\n");
     }
 }

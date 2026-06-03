@@ -65,6 +65,9 @@ pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
 pub const skillDetailHandler = @import("skill_detail.zig").skillDetailHandler;
 pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 
+// Memories API handlers
+pub const memoriesListHandler = @import("memories_list.zig").memoriesListHandler;
+
 // Git API handlers
 pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
 pub const gitChangesHandler = @import("git_changes.zig").gitChangesHandler;

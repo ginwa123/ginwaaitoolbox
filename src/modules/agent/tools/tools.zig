@@ -1,6 +1,8 @@
 // Re-export all public tool definitions for convenience
 pub const agents = @import("agents.zig");
 pub const list_agents = @import("list_agents.zig");
+pub const memories = @import("memories.zig");
+pub const list_memory = @import("list_memory.zig");
 pub const change_agent = @import("change_agent.zig");
 pub const lsp_definition = @import("lsp_definition.zig");
 pub const lsp_references = @import("lsp_references.zig");
@@ -15,6 +17,7 @@ pub const add_agent = @import("add_agent.zig");
 pub const semantic_search = @import("semantic_search.zig");
 
 pub const list_agents_tool = list_agents.list_agents_tool;
+pub const list_memory_tool = list_memory.list_memory_tool;
 pub const change_agent_tool = change_agent.change_agent_tool;
 pub const lsp_definition_tool = lsp_definition.lsp_definition_tool;
 pub const lsp_references_tool = lsp_references.lsp_references_tool;

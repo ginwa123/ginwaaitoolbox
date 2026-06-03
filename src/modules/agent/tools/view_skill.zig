@@ -179,10 +179,17 @@ pub fn toXmlError(allocator: std.mem.Allocator, err: anyerror, skill_name: []con
     , .{ escaped_name, escaped_err });
 }
 
-/// Build error response with available skills list
+/// Build error response with available skills list.
+///
+/// IMPORTANT: we append each skill's name into `available_str` *while* the
+/// source SkillInfo slice is still alive. The previous implementation copied
+/// slice headers into an intermediate `all_skills: ArrayList([]const u8)`,
+/// then `defer free_skills_list` freed the backing memory; the subsequent
+/// loop then read 0xAA-filled freed memory (Zig debug allocator's free-fill
+/// pattern) instead of real skill names. See NALAR.md.
 fn buildSkillNotFoundResponse(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, environment: ?*const std.process.Environ.Map) ![]const u8 {
-    var all_skills: std.ArrayList([]const u8) = .empty;
-    defer all_skills.deinit(allocator);
+    var available_str: std.ArrayList(u8) = .empty;
+    defer available_str.deinit(allocator);
 
     // List global skills
     if (environment) |env| {
@@ -191,7 +198,9 @@ fn buildSkillNotFoundResponse(allocator: std.mem.Allocator, io: std.Io, skill_na
             const global_list = skills.list_skills_from_dir_path(allocator, io, global_path);
             defer skills.free_skills_list(allocator, global_list);
             for (global_list) |skill| {
-                all_skills.append(allocator, skill.name) catch break;
+                try available_str.appendSlice(allocator, "<skill>");
+                try available_str.appendSlice(allocator, skill.name);
+                try available_str.appendSlice(allocator, "</skill>");
             }
         }
     }
@@ -202,18 +211,10 @@ fn buildSkillNotFoundResponse(allocator: std.mem.Allocator, io: std.Io, skill_na
         const local_list = skills.list_skills_from_dir_path(allocator, io, local_path);
         defer skills.free_skills_list(allocator, local_list);
         for (local_list) |skill| {
-            all_skills.append(allocator, skill.name) catch break;
+            try available_str.appendSlice(allocator, "<skill>");
+            try available_str.appendSlice(allocator, skill.name);
+            try available_str.appendSlice(allocator, "</skill>");
         }
-    }
-
-    // Build XML string for available skills
-    var available_str: std.ArrayList(u8) = .empty;
-    defer available_str.deinit(allocator);
-
-    for (all_skills.items) |name| {
-        try available_str.appendSlice(allocator, "<skill>");
-        try available_str.appendSlice(allocator, name);
-        try available_str.appendSlice(allocator, "</skill>");
     }
 
     const result = try std.fmt.allocPrint(allocator,

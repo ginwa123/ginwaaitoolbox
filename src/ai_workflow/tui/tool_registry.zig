@@ -17,6 +17,8 @@ const read_file_mod = nalar_mod.read_file;
 const text_replace_mod = nalar_mod.text_replace_tool;
 const write_file_mod = nalar_mod.write_file;
 const list_skills_mod = nalar_mod.list_skills_tool;
+const memories_mod = nalar_mod.memories;
+const list_memory_mod = nalar_mod.list_memory_tool;
 const get_skill_mod = nalar_mod.get_skill_tool;
 const view_skill_mod = nalar_mod.view_skill_tool;
 const remove_skill_mod = nalar_mod.remove_skill_tool;
@@ -262,6 +264,17 @@ pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     // back to the server's OS-level cwd, causing local skills to be invisible.
     const output = list_skills_mod.execute_list_skills(ctx.allocator, ctx.io, ctx.cwd, ctx.environment) catch blk: {
         break :blk try std.fmt.allocPrint(ctx.allocator, "{{\"error\": \"Failed to list skills\"}}", .{});
+    };
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execListMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    _ = tc;
+    // Memories are global only — no cwd involvement. The env comes from ctx
+    // (same path as list_skills); on null we emit an error-tagged XML so the
+    // LLM gets a structured failure instead of a panic.
+    const output = list_memory_mod.execute_list_memory(ctx.allocator, ctx.io, ctx.environment) catch blk: {
+        break :blk try ctx.allocator.dupe(u8, "<memories><error>Failed to list memories</error></memories>");
     };
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
@@ -969,6 +982,9 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "add_skill", .exec = execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
     .{ .name = "edit_skill", .exec = execEditSkill, .tool_def = edit_skill_mod.edit_skill_tool },
 
+    // === MEMORY TOOLS ===
+    .{ .name = "list_memory", .exec = execListMemory, .tool_def = list_memory_mod.list_memory_tool },
+
     // === FILE OPERATIONS ===
     .{ .name = "bash", .exec = execBash, .tool_def = bash_tool_mod.bash_tool },
     .{ .name = "read_file", .exec = execReadFile, .tool_def = read_file_mod.read_file_tool },
@@ -1009,6 +1025,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         spawn_sub_agent_tool.spawn_sub_agent_tool,
         update_activity_mod.update_activity_tool,
         list_skills_mod.list_skills_tool,
+        list_memory_mod.list_memory_tool,
         view_skill_mod.view_skill_tool,
         get_skill_mod.get_skill_tool,
         remove_skill_mod.remove_skill_tool,

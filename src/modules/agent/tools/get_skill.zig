@@ -10,6 +10,10 @@ const skills = @import("skills.zig");
 pub const GetSkillInput = struct {
     skill_name: ?[]const u8 = null,
     path: ?[]const u8 = null,
+    /// If true, only search the global skills directory (~/.config/nalar/skills/).
+    /// If false (default), search local (.nalar/skills/) first, then fall back to global.
+    /// Has no effect when `path` is set (path is always loaded as-is).
+    is_global: bool = false,
 };
 
 /// Result structure for get_skill tool
@@ -27,7 +31,7 @@ pub const get_skill_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "get_skill",
-        .description = "Load a skill's full content on-demand. Use this when you need detailed guidance for a specific capability",
+        .description = "Load a skill's full content on-demand. Use this when you need detailed guidance for a specific capability. By default both local (.nalar/skills/) and global (~/.config/nalar/skills/) directories are searched; pass is_global=true to only search the global directory.",
         .parameters = .{
             .type = "object",
             .properties = &.{
@@ -39,7 +43,12 @@ pub const get_skill_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "Load skill from absolute file path",
+                    .description = "Load skill from absolute file path. When set, is_global has no effect and the file is loaded as-is.",
+                },
+                .{
+                    .name = "is_global",
+                    .type = "boolean",
+                    .description = "If true, only search the global skills directory (~/.config/nalar/skills/). If false (default), search local first, then fall back to global.",
                 },
             },
             .required = &.{},
@@ -58,7 +67,7 @@ pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, io: std.Io, inp
 
     // Otherwise try to parse by skill name
     if (input.skill_name) |skill_name| {
-        return loadSkillByName(allocator, io, skill_name, environment);
+        return loadSkillByName(allocator, io, skill_name, input.is_global, environment);
     }
 
     // No skill_name or path provided
@@ -116,9 +125,17 @@ fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
         , .{ skill_name, content });
         return result;
     } else {
-        // Skill not found - list available skills from both paths
-        var all_skills: std.ArrayList([]const u8) = .empty;
-        defer all_skills.deinit(allocator);
+        // Skill not found - list available skills from both paths.
+        //
+        // IMPORTANT: we append each skill's name into `available_str` *while*
+        // the source SkillInfo slice is still alive. Previously we copied slice
+        // headers into an intermediate `all_skills: ArrayList([]const u8)`, then
+        // `defer free_skills_list` freed the backing memory. The next loop
+        // then read 0xAA-filled freed memory (Zig debug allocator's free-fill
+        // pattern), producing the garbled `<skill>...</skill>` output that
+        // looks like an encoding bug. See NALAR.md.
+        var available_str: std.ArrayList(u8) = .empty;
+        defer available_str.deinit(allocator);
 
         // List global skills
         if (environment) |env| {
@@ -127,7 +144,9 @@ fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
                 const global_list = skills.list_skills_from_dir_path(allocator, io, global_path);
                 defer skills.free_skills_list(allocator, global_list);
                 for (global_list) |skill| {
-                    all_skills.append(allocator, skill.name) catch break;
+                    try available_str.appendSlice(allocator, "<skill>");
+                    try available_str.appendSlice(allocator, skill.name);
+                    try available_str.appendSlice(allocator, "</skill>");
                 }
             }
         }
@@ -138,18 +157,10 @@ fn loadSkillByName(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
             const local_list = skills.list_skills_from_dir_path(allocator, io, local_path);
             defer skills.free_skills_list(allocator, local_list);
             for (local_list) |skill| {
-                all_skills.append(allocator, skill.name) catch break;
+                try available_str.appendSlice(allocator, "<skill>");
+                try available_str.appendSlice(allocator, skill.name);
+                try available_str.appendSlice(allocator, "</skill>");
             }
-        }
-
-        // Build XML string for available skills
-        var available_str: std.ArrayList(u8) = .empty;
-        defer available_str.deinit(allocator);
-
-        for (all_skills.items) |name| {
-            try available_str.appendSlice(allocator, "<skill>");
-            try available_str.appendSlice(allocator, name);
-            try available_str.appendSlice(allocator, "</skill>");
         }
 
         const result = try std.fmt.allocPrint(allocator,

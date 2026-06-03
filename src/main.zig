@@ -198,6 +198,9 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
     try gs.router.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
 
+    // Memories routes
+    try gs.router.get("/api/memories", ai_mod.http_handlers.memoriesListHandler);
+
     // Nalar config routes (reads/writes config.json as nalar.json mapping)
     try gs.router.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
     try gs.router.put("/api/config/nalar", ai_mod.http_handlers.nalarConfigPutHandler);
