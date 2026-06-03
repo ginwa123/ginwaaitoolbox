@@ -171,6 +171,7 @@ pub fn main(init: std.process.Init) !void {
     // // try gs.router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
     // // try gs.router.options("/api/session", http_handlers.corsPreflightHandler, .{});
     try gs.router.post("/api/session", ai_mod.http_handlers.sessionCreateHandler);
+    try gs.router.put("/api/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
     try gs.router.get("/api/session", ai_mod.http_handlers.sessionListHandler);
     //
     // // try gs.router.get("/api/session/stream", http_handlers.sessionStreamHandler, ctxParent);
@@ -189,6 +190,7 @@ pub fn main(init: std.process.Init) !void {
     //
     // // LLM API aliases (desktop app uses /api/llm/*)
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
+    try gs.router.put("/api/llm/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
     try gs.router.post("/api/llm/session/:session/stop", ai_mod.http_handlers.sessionStopHandler);
 
     // try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);

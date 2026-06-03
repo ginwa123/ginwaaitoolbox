@@ -1871,7 +1871,7 @@ pub fn updateSessionSelectedProfileModel(
 ) !void {
     const effective: []const u8 = selected_profile_model orelse "";
     const sql = "UPDATE sessions SET selected_profile_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
-    try db.exec(allocator, sql, .{ effective, id });
+    try db.exec(allocator, sql, &.{ effective, id });
 
     // Re-read and broadcast the updated session
     const session = getSession(allocator, db, id) catch null;
