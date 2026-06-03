@@ -672,6 +672,13 @@ const loadChatHistory = async (loadMore = false) => {
 
 const scrollToBottom = async (force = false, trigger: string = 'unspecified') => {
   await nextTick()
+  // Defense: during `beginPreserve`/`endPreserve`, the VirtualScroller
+  // is adjusting `scrollTop` itself to keep the user's view stable
+  // while older messages are prepended. An external `scrollToBottom`
+  // here fights that adjustment and produces visible jitter. The
+  // preserve window is short (<100ms typically) so suppressing is
+  // safe — the next SSE chunk will trigger a fresh scrollToBottom.
+  if (virtualScrollerRef.value?.isPreservingScroll?.value) return
   if (virtualScrollerRef.value) {
     if (force || isAtBottom.value) {
       const container = virtualScrollerRef.value.containerRef.value
@@ -704,6 +711,12 @@ const scrollToBottom = async (force = false, trigger: string = 'unspecified') =>
 // Triggered by VirtualScroller when the user scrolls within `loadMoreThreshold`
 // of the top (because `loadMoreAtTop` is true). Auto-paginates older messages.
 const handleLoadMore = () => {
+  // Defense: when the LLM is actively processing, the user is watching
+  // the stream, not scrolling up. A spurious `loadMore` here would
+  // prepend older messages and cause visible scroll-position jitter
+  // (the "flicker" reported during SSE streaming). We suppress the
+  // trigger; the user can scroll up again once the stream ends.
+  if (isLLMProcessing.value) return
   if (!hasMoreMessages.value || isLoadingMore.value || messages.value.length === 0) return
   const container = virtualScrollerRef.value?.containerRef.value
   const ctx = buildScrollContext(container, {
@@ -883,6 +896,18 @@ const disconnectSse = () => {
   messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 }
 
+// Coalesce flag for SSE-driven `scrollToBottom` calls. SSE chunks
+// can fire 20+ times/sec, but we only need one scrollToBottom per
+// animation frame. Without this, the console floods with
+// `scroll-to-bottom-conditional` lines and we do redundant geometry
+// reads. The user reads content, not scroll position — one frame
+// (16ms) of lag is imperceptible.
+//
+// Declared at script-setup scope so the flag persists across calls
+// to `updateStreamingMessage` (re-declaring it inside the function
+// would reset it every time, defeating the coalesce).
+let sseScrollPending = false
+
 const updateStreamingMessage = () => {
   console.log('[updateStreamingMessage] streamingContent:', streamingContent.value)
   const existingMsg = messages.value.find(
@@ -900,8 +925,19 @@ const updateStreamingMessage = () => {
   }
   const stripped = stripThinkingTags(streamingContent.value)
   if (stripped && stripped.trim() !== '') {
-    scrollLogger.markProgrammatic()
-    nextTick(() => scrollToBottom(false, 'sse-chunk'))
+    // Coalesce: SSE chunks can fire 20+ times/sec, but we only need
+    // one scrollToBottom per animation frame. Without this, the
+    // console floods with `scroll-to-bottom-conditional` lines and
+    // we do redundant geometry reads. The user reads content, not
+    // scroll position — one frame (16ms) of lag is imperceptible.
+    if (!sseScrollPending) {
+      sseScrollPending = true
+      requestAnimationFrame(() => {
+        sseScrollPending = false
+        scrollLogger.markProgrammatic()
+        scrollToBottom(false, 'sse-chunk')
+      })
+    }
   }
   nextTick(() => setupCodeBlockCopyButtons())
 }
@@ -1039,7 +1075,17 @@ const compactSession = async () => {
     <!-- Main Chat Content -->
     <div class="flex flex-col h-full flex-1 min-w-0">
       <!-- Messages (Virtual Scroll) -->
-      <div class="relative flex-1 min-h-0">
+      <!--
+        The wrapper MUST be a flex container (`flex flex-col`) so the
+        VirtualScroller's own `flex: 1 1 0` (defined in helpers/
+        VirtualScroller.vue) can resolve to a real height. Without
+        `flex` here, the wrapper is a regular block element — the
+        VirtualScroller's `flex: 1 1 0` does nothing, the scroller
+        collapses to 0×0, the messages overflow out of the wrapper,
+        and the last bubbles overlap the FileInput below. This is the
+        "no scroll, bubbles overlap input" bug.
+      -->
+      <div class="relative flex-1 min-h-0 flex flex-col">
         <!-- Loading More indicator (floats above the scroller during pagination) -->
         <div
           v-if="isLoadingMore"

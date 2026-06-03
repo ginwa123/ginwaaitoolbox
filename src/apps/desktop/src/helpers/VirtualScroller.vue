@@ -234,6 +234,16 @@ const onScroll = (e: Event) => {
     if (isPreservingScroll.value) return
     const hasMore = props.totalCount === 0 || props.items.length < props.totalCount
     if (!hasMore) return
+    // Defensive guard: if the container isn't actually scrollable
+    // (scrollHeight ≤ clientHeight, i.e. content fits in viewport),
+    // `st < loadMoreThreshold` is trivially true because `st` is 0
+    // and there's nothing to scroll. Emitting `loadMore` here would
+    // cause the parent to fetch a page and prepend it, which is the
+    // exact "flicker" users see when a chat's container reads as
+    // 0×0 during an SSE stream. The check uses the container's
+    // own dimensions — no parent layout assumptions.
+    const isScrollable = target.scrollHeight > target.clientHeight
+    if (!isScrollable) return
     if (props.loadMoreAtTop) {
       if (st < props.loadMoreThreshold && props.items.length > 0) emit('loadMore')
     } else {
@@ -379,7 +389,26 @@ defineExpose({
 <style scoped>
 .virtual-scroller {
   overflow-y: auto;
-  height: 100%;
+  /*
+   * Use `flex: 1 1 0` instead of `height: 100%` so the scroller
+   * participates in the parent's flex layout properly. `height: 100%`
+   * requires every ancestor to have a *resolved* height, which isn't
+   * guaranteed through a chain of `flex-1` items during the first
+   * paint — the scroller then reads as 0×0, which (1) breaks auto-
+   * scroll, (2) makes the scroller's own loadMore check fire
+   * inappropriately, causing the "flicker" users see during SSE
+   * streaming. `flex: 1 1 0` makes the scroller a proper flex item
+   * that takes all available space without depending on percentage
+   * resolution. `min-height: 0` allows it to shrink below its
+   * content size (the default `min-height: auto` would prevent
+   * shrinking and break the scroll).
+   *
+   * `min-height: 100px` is a safety net: if the scroller is ever
+   * dropped into a non-flex parent, it still has a visible size.
+   */
+  flex: 1 1 0;
+  min-height: 0;
+  min-height: 100px;
 }
 .virtual-scroller-content {
   display: flex;
