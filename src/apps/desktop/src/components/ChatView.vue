@@ -257,11 +257,19 @@ const onSpacersResized = () => {
   spacerRafId = null
   const container = virtualScrollerRef.value?.containerRef.value
   if (!container) return
+  const newScrollHeight = container.scrollHeight
   // Only re-stick if the scrollHeight actually changed (a measurement
   // update). Style mutations from other causes (none in current
   // VirtualScroller, but defensive) won't trigger a re-scroll.
-  if (container.scrollHeight === lastObservedScrollHeight) return
-  lastObservedScrollHeight = container.scrollHeight
+  if (newScrollHeight === lastObservedScrollHeight) return
+  const delta = newScrollHeight - lastObservedScrollHeight
+  lastObservedScrollHeight = newScrollHeight
+  console.log(
+    '[onSpacersResized] scrollHeight:', newScrollHeight,
+    'delta:', delta,
+    'isAtBottom:', isAtBottom.value,
+    'scrollTop:', container.scrollTop,
+  )
   if (!isAtBottom.value) return
   // Native clamp: `scrollTop = scrollHeight` gets clamped to
   // `scrollHeight - clientHeight` by the browser, so we always land at
@@ -517,14 +525,43 @@ const loadChatHistory = async (loadMore = false) => {
     }))
 
     if (loadMore) {
+      // Tear down the spacer MutationObserver for the duration of the
+      // preserve. The user is scrolling *up* to load older history
+      // (not at the bottom), so the stick-to-bottom behavior is
+      // useless here — and its onSpacersResized callback firing on
+      // every spacer resize during the forceRender/measure/anchor
+      // dance is what was causing the visible flicker. Detaching it
+      // eliminates that work entirely for this window.
+      teardownSpacerObserver()
+
       // Preserve scroll position when prepending new (older) messages at the top.
       // beginPreserve must be called BEFORE mutating the array so the anchor
       // element's offsetTop is captured while it's still in the DOM.
       const newCount = newMessages.length
+      const containerBefore = virtualScrollerRef.value?.containerRef.value
+      console.log(
+        '[loadChatHistory] loadMore — prepending', newCount, 'messages',
+        'scrollTop before:', containerBefore?.scrollTop,
+        'scrollHeight before:', containerBefore?.scrollHeight,
+      )
       virtualScrollerRef.value?.beginPreserve(newCount)
       messages.value = [...newMessages.slice().reverse(), ...messages.value]
       await nextTick()
       await virtualScrollerRef.value?.endPreserve()
+      const containerAfter = virtualScrollerRef.value?.containerRef.value
+      console.log(
+        '[loadChatHistory] loadMore — done',
+        'scrollTop after:', containerAfter?.scrollTop,
+        'scrollHeight after:', containerAfter?.scrollHeight,
+      )
+
+      // Re-attach the observer. setupSpacerObserver also re-initializes
+      // `lastObservedScrollHeight` from the current `scrollHeight`, so
+      // the next spacer resize is compared against the post-preserve
+      // state — not the stale pre-preserve value, which would have made
+      // the very first post-preserve spacer resize look like a
+      // "measurement update" and re-trigger the stick path.
+      setupSpacerObserver()
     } else {
       messages.value = newMessages.slice().reverse()
     }
@@ -533,6 +570,7 @@ const loadChatHistory = async (loadMore = false) => {
     hasMoreMessages.value = data.has_more
 
     if (!loadMore) {
+      console.log('[loadChatHistory] initial load — will scroll to bottom')
       await nextTick()
       // Wait one paint frame so the browser has actually laid out the
       // VirtualScroller items (nextTick alone only waits for Vue's DOM
@@ -560,6 +598,10 @@ const scrollToBottom = async (force = false) => {
   await nextTick()
   if (virtualScrollerRef.value) {
     if (force || isAtBottom.value) {
+      console.log(
+        '[scrollToBottom] firing — force:', force,
+        'isAtBottom:', isAtBottom.value,
+      )
       virtualScrollerRef.value.scrollToBottom('auto')
     }
   }
@@ -579,7 +621,25 @@ const handleVirtualScroll = (_scrollTop: number, _direction: 'up' | 'down') => {
   const container = virtualScrollerRef.value?.containerRef.value
   if (!container) return
   const { scrollTop, scrollHeight, clientHeight } = container
-  isAtBottom.value = scrollHeight - scrollTop - clientHeight < 100
+  const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+  const newIsAtBottom = distanceFromBottom < 10
+  console.log(
+    '[handleVirtualScroll] scrollTop:', scrollTop,
+    'scrollHeight:', scrollHeight,
+    'distanceFromBottom:', distanceFromBottom,
+    'isAtBottom:', newIsAtBottom,
+  )
+  // Tight 10px threshold: a chat message is typically 50-100px tall, so
+  // reading the last message puts you well outside this window. This
+  // prevents SSE chunks, the messages-length watcher, and the spacer
+  // MutationObserver from yanking the user back to the bottom while
+  // they're reading history.
+  //
+  // The initial chat load is unaffected — it uses `scrollToBottom(true)`
+  // (force=true), which always scrolls regardless of this flag. So
+  // opening a session still lands at the bottom, but once the user
+  // scrolls up even a few pixels, the auto-scroll disengages.
+  isAtBottom.value = newIsAtBottom
 }
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
