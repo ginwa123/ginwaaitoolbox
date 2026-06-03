@@ -224,5 +224,6 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
         .cwd = effective_cwd,
         .created_at = "",
         .updated_at = "",
+        .selected_profile_model = "",
     }) catch {};
 }

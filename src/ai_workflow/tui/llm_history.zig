@@ -26,6 +26,7 @@ pub const SessionInfo = struct {
     created_at: []const u8,
     updated_at: []const u8,
     agent: []const u8,
+    selected_profile_model: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -35,6 +36,7 @@ pub const SessionInfo = struct {
         allocator.free(self.created_at);
         allocator.free(self.updated_at);
         allocator.free(self.agent);
+        allocator.free(self.selected_profile_model);
     }
 };
 
@@ -81,6 +83,7 @@ pub const SessionBroadcastInfo = struct {
     created_at: []const u8,
     updated_at: []const u8,
     agent: []const u8,
+    selected_profile_model: []const u8,
 };
 
 /// Get a list of sessions from the database
@@ -202,7 +205,8 @@ pub fn getSessionListWithCursor(
     const sql_final = try std.fmt.allocPrint(allocator,
         \\SELECT s.id, s.name, s.status, s.cwd, COALESCE(s.created_at, ''),
         \\COALESCE(s.updated_at, ''),
-        \\COALESCE(h.agent, 'Agent')
+        \\COALESCE(h.agent, 'Agent'),
+        \\COALESCE(s.selected_profile_model, '')
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -228,6 +232,7 @@ pub fn getSessionListWithCursor(
             .created_at = try allocator.dupe(u8, row.values[4]),
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .agent = try allocator.dupe(u8, row.values[6]),
+            .selected_profile_model = try allocator.dupe(u8, row.values[7]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -271,6 +276,7 @@ pub const SessionInfoJson = struct {
     updated_at: []const u8,
     agent: []const u8,
     session_name: []const u8,
+    selected_profile_model: []const u8,
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -293,6 +299,7 @@ pub fn buildSessionListJson(
             .updated_at = sess.updated_at,
             .agent = sess.agent,
             .session_name = sess.session_name,
+            .selected_profile_model = sess.selected_profile_model,
         });
     }
 
@@ -1727,6 +1734,7 @@ pub const SessionTableInfo = struct {
     cwd: []u8,
     created_at: []u8,
     updated_at: []u8,
+    selected_profile_model: []u8,
 
     pub fn deinit(self: SessionTableInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -1735,6 +1743,7 @@ pub const SessionTableInfo = struct {
         allocator.free(self.cwd);
         allocator.free(self.created_at);
         allocator.free(self.updated_at);
+        allocator.free(self.selected_profile_model);
     }
 };
 
@@ -1757,6 +1766,7 @@ pub fn create_session(
         .cwd = "",
         .created_at = "",
         .updated_at = "",
+        .selected_profile_model = "",
     }) catch {};
 
     return SessionTableInfo{
@@ -1765,6 +1775,7 @@ pub fn create_session(
         .status = try allocator.dupe(u8, "active"),
         .created_at = try allocator.dupe(u8, ""),
         .updated_at = try allocator.dupe(u8, ""),
+        .selected_profile_model = try allocator.dupe(u8, ""),
     };
 }
 
@@ -1774,7 +1785,7 @@ pub fn getSession(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?SessionTableInfo {
-    const sql = "SELECT id, name, status, COALESCE(cwd, ''), COALESCE(created_at, ''), COALESCE(updated_at, '') FROM sessions WHERE id = ?";
+    const sql = "SELECT id, name, status, COALESCE(cwd, ''), COALESCE(created_at, ''), COALESCE(updated_at, ''), COALESCE(selected_profile_model, '') FROM sessions WHERE id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -1787,6 +1798,7 @@ pub fn getSession(
             .cwd = try allocator.dupe(u8, row.values[3]),
             .created_at = try allocator.dupe(u8, row.values[4]),
             .updated_at = try allocator.dupe(u8, row.values[5]),
+            .selected_profile_model = try allocator.dupe(u8, row.values[6]),
         };
         row.deinit(allocator);
         return session;
@@ -1817,6 +1829,7 @@ pub fn update_session_status(
             .cwd = s.cwd,
             .created_at = s.created_at,
             .updated_at = s.updated_at,
+            .selected_profile_model = s.selected_profile_model,
         }) catch {};
     }
 }
@@ -1843,6 +1856,36 @@ pub fn updateSessionName(
             .cwd = s.cwd,
             .created_at = s.created_at,
             .updated_at = s.updated_at,
+            .selected_profile_model = s.selected_profile_model,
+        }) catch {};
+    }
+}
+
+/// Update session selected_profile_model (the name of a profile in
+/// LlmConfig.profiles_models). Pass empty string or null to clear.
+pub fn updateSessionSelectedProfileModel(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    selected_profile_model: ?[]const u8,
+) !void {
+    const effective: []const u8 = selected_profile_model orelse "";
+    const sql = "UPDATE sessions SET selected_profile_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(allocator, sql, .{ effective, id });
+
+    // Re-read and broadcast the updated session
+    const session = getSession(allocator, db, id) catch null;
+    if (session) |s| {
+        defer s.deinit(allocator);
+        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+            .action = "updated",
+            .id = s.id,
+            .name = s.name,
+            .status = s.status,
+            .cwd = s.cwd,
+            .created_at = s.created_at,
+            .updated_at = s.updated_at,
+            .selected_profile_model = s.selected_profile_model,
         }) catch {};
     }
 }
@@ -1865,6 +1908,7 @@ pub fn delete_session(
         .cwd = "",
         .created_at = "",
         .updated_at = "",
+        .selected_profile_model = "",
     }) catch {};
 }
 
@@ -1873,7 +1917,7 @@ pub fn list_sessions(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]SessionTableInfo {
-    const sql = "SELECT id, name, status FROM sessions ORDER BY id";
+    const sql = "SELECT id, name, status, COALESCE(selected_profile_model, '') FROM sessions ORDER BY id";
 
     var rows = try db.query(allocator, sql, &.{});
     defer rows.deinit();
@@ -1889,6 +1933,7 @@ pub fn list_sessions(
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
             .status = try allocator.dupe(u8, row.values[2]),
+            .selected_profile_model = try allocator.dupe(u8, row.values[3]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -2306,7 +2351,7 @@ pub fn getSessionsForBroadcast(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]SessionBroadcastInfo {
-    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
+    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.selected_profile_model, '') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
 
     var rows = db.query(allocator, sql, &[_][]const u8{}) catch return &[_]SessionBroadcastInfo{};
     defer rows.deinit();
@@ -2323,6 +2368,7 @@ pub fn getSessionsForBroadcast(
             .created_at = try allocator.dupe(u8, row.values[4]),
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .agent = try allocator.dupe(u8, row.values[6]),
+            .selected_profile_model = try allocator.dupe(u8, row.values[7]),
         };
         try sessions.append(allocator, session);
     }
