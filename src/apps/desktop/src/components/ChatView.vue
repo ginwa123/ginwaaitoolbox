@@ -385,6 +385,29 @@ const isLoadingMore = ref(false)
 const error = ref<string | null>(null)
 const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
+// Whether the VirtualScroller's container is currently scrollable
+// (`scrollHeight > clientHeight`). When the container IS scrollable,
+// the user can scroll to the top to trigger loadMore via the
+// VirtualScroller's `@load-more` event — so the "Load more messages"
+// button hides and avoids UI clutter. When the container is NOT
+// scrollable (the common short-chat case in the screenshot in
+// docs/plans/2026-06-04-chat-lazy-load-button.md), the user has no
+// scroll-driven path, so the button is the only way to reach older
+// messages.
+//
+// Updated by the VirtualScroller via the `@scrollability-change`
+// event (not read through the template ref). The event pattern is
+// used because component-instance proxies do not establish reactive
+// dependencies on inner ref values when accessed through
+// `childRef.value.someRef.value` — a parent `computed` reading
+// that chain would not re-evaluate when the child's value changes.
+// With the event, this is a plain `ref<boolean>` that the template
+// can react to via standard Vue reactivity. Defaults to `false` so
+// the initial-render 0×0 flicker shows the affordance; the
+// VirtualScroller's watch with `immediate: true` fires the event
+// synchronously during setup, overwriting this default with the
+// real value before the first render.
+const scrollerIsScrollable = ref(false)
 const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
@@ -1429,9 +1452,60 @@ const compactSession = async () => {
           </p>
         </div>
 
+        <!--
+          Load more messages button.
+
+          Why this exists: the <VirtualScroller> below only emits @load-more
+          when the user scrolls within `loadMoreThreshold` of the top of a
+          *scrollable* container. When the loaded messages fit in the
+          viewport (a common case for short tool/result chats, see the
+          screenshot in docs/plans/2026-06-04-chat-lazy-load-button.md),
+          the container is not scrollable, the scroll event never fires,
+          and the user has no way to reach older messages.
+
+          This button bypasses the scroll trigger and calls
+          `loadChatHistory(true)` directly. It is hidden while a
+          pagination is already in flight (`isLoadingMore`) so we don't
+          show two spinners, hidden when the initial empty state is
+          rendered (`messageGroups.length === 0`), and hidden when the
+          container IS scrollable (`!scrollerIsScrollable` is false) —
+          in that case the user can scroll to the top to load more, and
+          showing the button would be UI clutter.
+
+          Position: sibling of <VirtualScroller> inside the
+          `messagesWrapperRef` flex container. The wrapper is
+          `position: relative` (see line 1395) and a `flex flex-col`
+          layout; this button is the first child so it sits above the
+          scroller and is not subject to virtualization or the
+          `beginPreserve`/`endPreserve` scroll-restoration dance.
+        -->
+        <div
+          v-if="
+            hasMoreMessages &&
+            !isLoadingMore &&
+            messageGroups.length > 0 &&
+            !scrollerIsScrollable
+          "
+          class="flex justify-center pt-2 pb-1"
+          data-testid="load-more-messages"
+        >
+          <button
+            @click="loadChatHistory(true)"
+            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs
+                   transition-all duration-200 hover:scale-105"
+            style="background-color: var(--semantic-card-bg);
+                   border: 1px solid var(--color-border);
+                   color: var(--semantic-text);"
+            :title="`Load ${PAGE_SIZE} older messages`"
+          >
+            <span>↑</span>
+            <span>Load more messages</span>
+          </button>
+        </div>
+
         <!-- Virtualized Message List -->
         <VirtualScroller
-          v-else
+          v-if="isLoading || messageGroups.length > 0"
           ref="virtualScrollerRef"
           :items="messageGroups"
           :total-count="0"
@@ -1442,6 +1516,7 @@ const compactSession = async () => {
           @load-more="handleLoadMore"
           @load-more-suppressed="handleLoadMoreSuppressed"
           @scroll="handleVirtualScroll"
+          @scrollability-change="scrollerIsScrollable = $event"
         >
           <template #default="{ item: group, index: groupIndex }">
             <div class="px-4 max-w-4xl mx-auto" :class="groupIndex === 0 ? 'pt-6' : ''">
@@ -1685,14 +1760,14 @@ const compactSession = async () => {
                        bubble is hidden, the timestamp would otherwise
                        appear orphaned (this was the "timestamps with no
                        bubble" visual artifact between tool calls). -->
-                  <div
-                    v-if="hasBubbleContent(group, groupIndex)"
-                    class="text-xs mt-1 px-1"
-                    :class="group.role === 'user' ? 'text-right' : 'text-left'"
-                    style="color: var(--semantic-text-dim)"
-                  >
-                    {{ formatTime(group.timestamp) }}
-                  </div>
+                  <!-- <div -->
+                  <!--   v-if="hasBubbleContent(group, groupIndex)" -->
+                  <!--   class="text-xs mt-1 px-1" -->
+                  <!--   :class="group.role === 'user' ? 'text-right' : 'text-left'" -->
+                  <!--   style="color: var(--semantic-text-dim)" -->
+                  <!-- > -->
+                  <!--   {{ formatTime(group.timestamp) }} -->
+                  <!-- </div> -->
                 </div>
               </div>
             </div>

@@ -122,6 +122,21 @@ const emit = defineEmits<{
    */
   loadMoreSuppressed: [guard: string]
   scroll: [scrollTop: number, direction: 'up' | 'down']
+  /**
+   * Fired whenever the scroller's `isScrollable` computed value
+   * CHANGES (not on every re-evaluation — only when the boolean
+   * flips from one value to the other). The parent uses this to
+   * show/hide UI affordances (e.g. a "Load more messages" button)
+   * that only make sense when the user has no other way to reach
+   * older content. The event-based pattern is used instead of
+   * exposing `isScrollable` via the template ref because
+   * component-instance proxies do not establish reactive
+   * dependencies on inner ref values when accessed through
+   * `childRef.value.someRef.value` — the parent would not
+   * re-render on changes. With this event, the parent maintains
+   * a plain `ref<boolean>` that the template can react to.
+   */
+  scrollabilityChange: [scrollable: boolean]
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
@@ -132,6 +147,52 @@ const itemHeights = ref<Map<number, number>>(new Map())
 const accumulatedHeights = ref<number[]>([0])
 const isPreservingScroll = ref(false)
 const forceRenderUpTo = ref(-1)
+
+/**
+ * Whether the container's content currently overflows its visible area
+ * (i.e. `scrollHeight > clientHeight`). Exposed to the parent so it
+ * can decide whether to show UI affordances (e.g. a "Load more"
+ * button) that only make sense when the user can't trigger the
+ * scroll-driven `loadMore` event because the container has no
+ * scrollbar.
+ *
+ * Implemented as a `computed` (not a `ref` populated by a DOM read)
+ * so it stays in sync with the underlying reactive data. The previous
+ * ref-based version read `containerRef.value.scrollHeight` from a
+ * `ResizeObserver` / `measureItems` / mount-time trigger, but those
+ * triggers do NOT fire when the content inside the container grows
+ * (e.g. during streaming, after pagination, or on first item
+ * measurement) — only when the *observed element itself* resizes.
+ * Result: `isScrollable` would get stuck at its initial-mount value
+ * (typically `false` from the 0×0 flicker), and the parent's "Load
+ * more" button would never hide even when the chat became scrollable.
+ * See docs/plans/2026-06-04-chat-lazy-load-button.md §4.3.
+ *
+ * The estimate uses `defaultItemHeight` for unmeasured items, so it
+ * can be slightly off in the milliseconds before `measureItems` runs
+ * — that's a soft UX hint, not a precise measurement, and an
+ * over-estimate is harmless (button hides for a frame, then re-shows
+ * once measurement catches up). An under-estimate could hide the
+ * button when the user needs it; in practice the default of 200px
+ * matches most chat bubbles closely.
+ */
+const isScrollable = computed(() => {
+  const totalContentHeight = accumulatedHeights.value[props.items.length] ?? 0
+  return totalContentHeight > containerHeight.value
+})
+
+// Push the isScrollable value to the parent via an event whenever it
+// changes. `immediate: true` ensures the parent gets the initial
+// value on mount — otherwise the parent's local ref would start at
+// its default (`false`) and the event would only fire on the FIRST
+// actual value change. (Vue 3's `watch` on a computed does fire
+// `immediate` with the current value at setup time, which is what
+// we want here.) This is more reliable than letting the parent read
+// the computed through the template ref — see the
+// `scrollabilityChange` emit doc for the reason.
+watch(isScrollable, (scrollable) => {
+  emit('scrollabilityChange', scrollable)
+}, { immediate: true })
 
 let _anchorOffsetTopBefore = 0
 let _pendingNewItemsCount = 0
@@ -146,7 +207,25 @@ const updateAccumulatedHeights = () => {
   accumulatedHeights.value = h
 }
 
-watch(() => props.items.length, updateAccumulatedHeights)
+// CRITICAL: `{ immediate: true }` is required here. Without it,
+// `updateAccumulatedHeights` only runs when `props.items.length`
+// *changes* — but on initial mount the items are already present
+// (the parent populates them before rendering this child), so the
+// length never "changes" during the watch's lifetime. Result:
+// `accumulatedHeights` stays at the initial `[0]`, the computed
+// `isScrollable` reads `accumulatedHeights[items.length]` which is
+// `undefined ?? 0 = 0`, `0 > containerHeight` is `false`, and the
+// parent's "Load more messages" button shows in scrollable chats
+// (user reported: "i still see a scroll" / button still visible).
+// `immediate: true` makes the watcher run synchronously during
+// setup, populating `accumulatedHeights` with default-height
+// estimates before the first render. After ~150ms (the mount
+// setTimeout + the `itemHeights` deep-watch debounce) the real
+// measurements replace the estimates, and `isScrollable` reflects
+// reality. Symptom was traced via the dev-tools scroll logger
+// showing `clientHeight: 0`-like behavior — the container was
+// fine, `accumulatedHeights` was empty.
+watch(() => props.items.length, updateAccumulatedHeights, { immediate: true })
 
 let heightDebounce: ReturnType<typeof setTimeout> | null = null
 watch(
@@ -412,6 +491,7 @@ defineExpose({
   scrollInfo,
   containerRef,
   isPreservingScroll,
+  isScrollable,
 })
 </script>
 
