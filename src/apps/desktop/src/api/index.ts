@@ -185,6 +185,7 @@ export interface Chat {
   session_id: string
   session_name?: string
   status?: string
+  selected_profile_model?: string
 }
 
 export interface Message {
@@ -294,6 +295,7 @@ export async function sendChatMessage(
   message: string,
   cwdSession: string,
   imageUrls?: string[],
+  selectedProfile?: string,
 ): Promise<{ status: string }> {
   let body: string
 
@@ -308,6 +310,7 @@ export async function sendChatMessage(
       allowed_tools: 'all',
       cwd_session: cwdSession,
       image_urls: imageUrlsStr,
+      selected_profile_model: selectedProfile || '',
     })
   } catch (serializeError) {
     console.error('Failed to serialize request body:', serializeError)
@@ -352,6 +355,28 @@ export async function sendChatMessage(
     console.error('Request failed:', error)
     return { status: 'offline' }
   }
+}
+
+// Update an existing session (selectedProfile, name, etc.)
+export async function updateSession(
+  sessionId: string,
+  updates: { selectedProfile?: string | null; name?: string },
+): Promise<{ id: string; name: string; status: string; selected_profile_model: string }> {
+  const body = JSON.stringify({
+    selected_profile_model: updates.selectedProfile ?? '',
+    name: updates.name ?? '',
+  })
+  const response = await fetch(`${API_BASE}/llm/session/${sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    console.error(`updateSession HTTP ${response.status}: ${text}`)
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
 }
 
 // SSE event types matching the backend
@@ -571,6 +596,7 @@ export interface Session {
   createdAt: string
   agent: string
   sessionName: string
+  selectedProfile?: string
 }
 
 export async function getSession(sessionId: string): Promise<Session | null> {
@@ -824,6 +850,7 @@ export interface SessionEvent {
   cwd: string
   created_at: string
   updated_at: string
+  selected_profile_model?: string
 }
 
 // Create SSE connection for session events (global chat list updates)
