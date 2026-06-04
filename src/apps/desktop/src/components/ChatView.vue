@@ -756,13 +756,24 @@ const handleLoadMore = () => {
   // log exactly which one blocked. Order matters: the LLM
   // processing check is first because that's the most common
   // cause of "I scrolled to the top during streaming and nothing
-  // loaded" — it's a deliberate UX decision, not a bug.
-  if (isLLMProcessing.value) {
+  // loaded" — and the answer is now nuanced.
+  //
+  // We only suppress when the user is BOTH (a) the LLM is
+  // streaming AND (b) the user is still at the bottom of the
+  // chat. That combination means the user is actively watching
+  // the stream, and a prepend would fight the auto-stick (the
+  // stream is at the bottom; prepending shifts everything down).
+  //
+  // If the user has scrolled up to read history DURING streaming,
+  // isAtBottom is false — the auto-stick is already disengaged,
+  // so the prepend won't fight anything, and the user explicitly
+  // wants to see older messages. Allow it.
+  if (isLLMProcessing.value && isAtBottom.value) {
     scrollLogger.info({
       ...ctx,
       caller: 'handleLoadMore',
       reason: 'load-more-suppressed',
-      extra: { guard: 'isLLMProcessing', source: 'ChatView' },
+      extra: { guard: 'isLLMProcessing-atBottom', source: 'ChatView' },
     })
     return
   }
@@ -795,6 +806,8 @@ const handleLoadMore = () => {
   }
 
   // All guards passed — log the threshold reached and fetch.
+  // The extra includes the LLM/scroll state so the log line
+  // answers "was this a streaming-time loadMore?" in one glance.
   scrollLogger.info({
     ...ctx,
     caller: 'handleLoadMore',
@@ -802,6 +815,8 @@ const handleLoadMore = () => {
     extra: {
       hasMore: hasMoreMessages.value,
       loadMoreThreshold: 200, // mirrors the prop on <VirtualScroller>
+      isLLMProcessing: isLLMProcessing.value,
+      isAtBottom: isAtBottom.value,
     },
   })
   loadChatHistory(true)
