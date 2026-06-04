@@ -28,7 +28,7 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 
 // State
 const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string }[]>([])
+const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string }[]>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
@@ -127,6 +127,7 @@ const loadChats = async () => {
       active: savedSessionId === session.session_id,
       processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
       relativeTime: formatRelativeTime(session.updated_at),
+      selected_profile_model: session.selected_profile_model || '',
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
@@ -292,6 +293,7 @@ const handleSessionEvent = (event: api.SessionEvent) => {
         navItems.value[existingIndex] = {
           ...existing,
           name: event.name || existing.name,
+          selected_profile_model: event.selected_profile_model ?? existing.selected_profile_model,
         }
       }
     } else {
@@ -461,7 +463,15 @@ defineExpose({
                 style="border-color: var(--color-yellow); border-top-color: transparent"
               ></div>
             </span>
-            <span class="flex-1 text-left truncate">{{ item.name }}</span>
+            <span class="flex-1 text-left truncate">
+              {{ item.name }}
+              <span
+                v-if="item.selected_profile_model"
+                class="ml-1 text-[10px]"
+                style="color: var(--color-violet);"
+                >🤖 {{ item.selected_profile_model }}</span
+              >
+            </span>
             <span class="text-xs opacity-60 shrink-0 ml-2">{{ item.relativeTime || 'now' }}</span>
             <button
               v-if="item.id !== 'chat'"
