@@ -7,6 +7,7 @@ import {
   buildScrollContext,
   createScrollLogger,
   BOTTOM_THRESHOLD,
+  TOP_THRESHOLD,
   type ScrollLogger,
 } from '@/helpers'
 import FileInput from './FileInput.vue'
@@ -738,13 +739,10 @@ const scrollToBottom = async (force = false, trigger: string = 'unspecified') =>
 // Triggered by VirtualScroller when the user scrolls within `loadMoreThreshold`
 // of the top (because `loadMoreAtTop` is true). Auto-paginates older messages.
 const handleLoadMore = () => {
-  // Defense: when the LLM is actively processing, the user is watching
-  // the stream, not scrolling up. A spurious `loadMore` here would
-  // prepend older messages and cause visible scroll-position jitter
-  // (the "flicker" reported during SSE streaming). We suppress the
-  // trigger; the user can scroll up again once the stream ends.
-  if (isLLMProcessing.value) return
-  if (!hasMoreMessages.value || isLoadingMore.value || messages.value.length === 0) return
+  // Build the context once, up front, so every guard log carries
+  // the same scroller/wrapper/geometry state. The container may
+  // be null (the VirtualScroller was just unmounted, or the ref
+  // never bound) — `buildScrollContext` handles that.
   const container = virtualScrollerRef.value?.containerRef.value
   const ctx = buildScrollContext(container, {
     chatId: sessionId.value || props.chatId,
@@ -753,6 +751,50 @@ const handleLoadMore = () => {
     virtualScrollerRef,
     wrapperRef: messagesWrapperRef,
   })
+
+  // Each guard is its own `if` (not chained with `||`) so we can
+  // log exactly which one blocked. Order matters: the LLM
+  // processing check is first because that's the most common
+  // cause of "I scrolled to the top during streaming and nothing
+  // loaded" — it's a deliberate UX decision, not a bug.
+  if (isLLMProcessing.value) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleLoadMore',
+      reason: 'load-more-suppressed',
+      extra: { guard: 'isLLMProcessing', source: 'ChatView' },
+    })
+    return
+  }
+  if (!hasMoreMessages.value) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleLoadMore',
+      reason: 'load-more-suppressed',
+      extra: { guard: 'no-more-messages', source: 'ChatView' },
+    })
+    return
+  }
+  if (isLoadingMore.value) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleLoadMore',
+      reason: 'load-more-suppressed',
+      extra: { guard: 'already-loading', source: 'ChatView' },
+    })
+    return
+  }
+  if (messages.value.length === 0) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleLoadMore',
+      reason: 'load-more-suppressed',
+      extra: { guard: 'no-messages', source: 'ChatView' },
+    })
+    return
+  }
+
+  // All guards passed — log the threshold reached and fetch.
   scrollLogger.info({
     ...ctx,
     caller: 'handleLoadMore',
@@ -765,15 +807,55 @@ const handleLoadMore = () => {
   loadChatHistory(true)
 }
 
+// Triggered by VirtualScroller when one of ITS internal guards
+// prevented `loadMore` from being emitted — i.e. the user WAS
+// within the load edge but the scroller still chose not to emit
+// (because `isPreservingScroll`, `!hasMore`, `!isScrollable`, or
+// `items.length === 0`). This is the "scroller-side" companion to
+// `handleLoadMore`'s guard logging — together they cover every
+// reason lazy load might not have fired.
+//
+// The `source: 'VirtualScroller'` field in `extra` distinguishes
+// these from ChatView-side suppressions when you're grepping.
+const handleLoadMoreSuppressed = (guard: string) => {
+  const container = virtualScrollerRef.value?.containerRef.value
+  const ctx = buildScrollContext(container, {
+    chatId: sessionId.value || props.chatId,
+    messages: messages.value.length,
+    isAtBottom: isAtBottom.value,
+    virtualScrollerRef,
+    wrapperRef: messagesWrapperRef,
+  })
+  scrollLogger.info({
+    ...ctx,
+    caller: 'handleLoadMoreSuppressed',
+    reason: 'load-more-suppressed',
+    extra: { guard, source: 'VirtualScroller' },
+  })
+}
+
 // Track isAtBottom from the VirtualScroller's scroll event so we can decide
 // whether to auto-scroll on new messages and when to show the "scroll to
 // bottom" button.
+//
+// `previousIsAtTop` is a module-scope (not ref) because it only feeds
+// the logger — nothing else needs to react to it. Storing the
+// "did we just reach the top" transition is what powers the
+// `reached-top` / `left-top` log lines, which are the answer to
+// "user scrolled to the top of the chat — why didn't lazy load
+// fire?" If the `reached-top` line is followed by silence (no
+// `load-more-threshold-reached` and no `load-more-suppressed`),
+// the loadMore event was never fired in the first place.
+let previousIsAtTop = false
+
 const handleVirtualScroll = (_scrollTop: number, _direction: 'up' | 'down') => {
   const container = virtualScrollerRef.value?.containerRef.value
   if (!container) return
   const { scrollTop, scrollHeight, clientHeight } = container
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+  const distanceFromTop = Math.max(0, scrollTop)
   const newIsAtBottom = distanceFromBottom < BOTTOM_THRESHOLD
+  const newIsAtTop = distanceFromTop < TOP_THRESHOLD
   const previousIsAtBottom = isAtBottom.value
   const ctx = buildScrollContext(container, {
     chatId: sessionId.value || props.chatId,
@@ -801,6 +883,34 @@ const handleVirtualScroll = (_scrollTop: number, _direction: 'up' | 'down') => {
         threshold: BOTTOM_THRESHOLD,
       },
     })
+  }
+  // ── Top edge transitions ─────────────────────────────────────────────
+  //
+  // Mirrors the bottom-edge logging above. The two edges behave
+  // symmetrically: the user can be 200px from the top and have
+  // `loadMore` fire (the lazy-load threshold), but the
+  // `reached-top` state-transition log only fires at <10px — the
+  // same `BOTTOM_THRESHOLD` analog (`TOP_THRESHOLD`). A user who's
+  // at the top of the chat is by definition within lazy-load range,
+  // so the `reached-top` line should ALWAYS be followed by either:
+  //   - `load-more-threshold-reached` (the loadMore fired)
+  //   - `load-more-suppressed`  (a guard blocked it)
+  // If you see `reached-top` with neither of those, the loadMore
+  // event was lost (e.g. the VirtualScroller's onScroll debounce
+  // was reset by a new scroll event, or the handler returned
+  // before debounce fired).
+  if (newIsAtTop !== previousIsAtTop) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleVirtualScroll',
+      reason: newIsAtTop ? 'reached-top' : 'left-top',
+      extra: {
+        previousIsAtTop,
+        distanceFromTop,
+        threshold: TOP_THRESHOLD,
+      },
+    })
+    previousIsAtTop = newIsAtTop
   }
   // Tight 10px threshold: a chat message is typically 50-100px tall, so
   // reading the last message puts you well outside this window. This
@@ -1166,6 +1276,7 @@ const compactSession = async () => {
           :load-more-threshold="200"
           :load-more-at-top="true"
           @load-more="handleLoadMore"
+          @load-more-suppressed="handleLoadMoreSuppressed"
           @scroll="handleVirtualScroll"
         >
           <template #default="{ item: group, index: groupIndex }">

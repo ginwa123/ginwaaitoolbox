@@ -106,6 +106,21 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   loadMore: []
+  /**
+   * Fired when one of the scroller's internal guards prevented
+   * `loadMore` from being emitted — i.e. the user WAS within the
+   * load edge but the scroller still chose not to emit (because
+   * `isPreservingScroll`, `!hasMore`, `!isScrollable`, or
+   * `items.length === 0`). Lets the parent log "user reached top,
+   * but lazy load was blocked by X" so the "why didn't it load?"
+   * question is answerable from the logs.
+   *
+   * The `guard` payload is a short identifier — see the emit sites
+   * in `onScroll` below for the full list. NOT emitted when the
+   * user simply isn't near the edge (that's normal scrolling, not
+   * a suppression).
+   */
+  loadMoreSuppressed: [guard: string]
   scroll: [scrollTop: number, direction: 'up' | 'down']
 }>()
 
@@ -231,9 +246,17 @@ const onScroll = (e: Event) => {
 
   if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
   loadMoreDebounce = setTimeout(() => {
-    if (isPreservingScroll.value) return
+    if (isPreservingScroll.value) {
+      // Don't log here — the parent is mid-preserve, suppression is
+      // expected. The parent will log its own preserve-start/end
+      // events that bracket this window.
+      return
+    }
     const hasMore = props.totalCount === 0 || props.items.length < props.totalCount
-    if (!hasMore) return
+    if (!hasMore) {
+      emit('loadMoreSuppressed', 'no-more-items')
+      return
+    }
     // Defensive guard: if the container isn't actually scrollable
     // (scrollHeight ≤ clientHeight, i.e. content fits in viewport),
     // `st < loadMoreThreshold` is trivially true because `st` is 0
@@ -243,12 +266,30 @@ const onScroll = (e: Event) => {
     // 0×0 during an SSE stream. The check uses the container's
     // own dimensions — no parent layout assumptions.
     const isScrollable = target.scrollHeight > target.clientHeight
-    if (!isScrollable) return
+    if (!isScrollable) {
+      emit('loadMoreSuppressed', 'not-scrollable')
+      return
+    }
     if (props.loadMoreAtTop) {
-      if (st < props.loadMoreThreshold && props.items.length > 0) emit('loadMore')
+      if (st < props.loadMoreThreshold && props.items.length > 0) {
+        emit('loadMore')
+      } else if (st < props.loadMoreThreshold && props.items.length === 0) {
+        // User is near the top but there are no items yet — nothing
+        // to "load more of". This is the "empty list, scrolled to
+        // top" case (rare; usually we wouldn't be at the top of
+        // an empty list, but guard it).
+        emit('loadMoreSuppressed', 'no-items')
+      }
+      // else: user is just not near the top yet — normal scrolling,
+      // not a suppression. Don't emit.
     } else {
       const bottom = target.scrollHeight - st - target.clientHeight
-      if (bottom < props.loadMoreThreshold && props.items.length > 0) emit('loadMore')
+      if (bottom < props.loadMoreThreshold && props.items.length > 0) {
+        emit('loadMore')
+      } else if (bottom < props.loadMoreThreshold && props.items.length === 0) {
+        emit('loadMoreSuppressed', 'no-items')
+      }
+      // else: user is just not near the bottom yet
     }
   }, 200)
 

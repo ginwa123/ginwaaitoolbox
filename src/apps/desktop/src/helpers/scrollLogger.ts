@@ -130,7 +130,10 @@ export type ScrollReason =
   // Info-level reasons (state transitions / lifecycle events)
   | 'reached-bottom'
   | 'left-bottom'
+  | 'reached-top'
+  | 'left-top'
   | 'load-more-threshold-reached'
+  | 'load-more-suppressed'
   | 'scroll-to-bottom-forced'
   | 'scroll-to-bottom-conditional'
   | 'spacer-resize-stick'
@@ -215,6 +218,17 @@ export interface ScrollContext {
 
 /** Within this many px of the bottom counts as "at the bottom". */
 export const BOTTOM_THRESHOLD = 10
+
+/**
+ * Within this many px of the top counts as "at the top". Mirrors
+ * `BOTTOM_THRESHOLD` so the two edges behave symmetrically in the
+ * logger. Note: this is the threshold for the `reached-top` /
+ * `left-top` state-transition log. The lazy-load trigger uses a
+ * much larger threshold (`loadMoreThreshold` = 200px on the
+ * VirtualScroller) — the user can be 200px from the top and have
+ * `loadMore` fire, but only at <10px do we log `reached-top`.
+ */
+export const TOP_THRESHOLD = 10
 
 /** Debug-level scroll samples are throttled to this interval. */
 const DEBUG_THROTTLE_MS = 200

@@ -5,6 +5,7 @@ export {
   createScrollLogger,
   buildScrollContext,
   BOTTOM_THRESHOLD,
+  TOP_THRESHOLD,
   markProgrammatic,
 } from "./scrollLogger";
 export type {
