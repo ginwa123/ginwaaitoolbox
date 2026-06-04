@@ -62,6 +62,70 @@ export interface ContainerInfo {
   offsetParent: string | null
 }
 
+/**
+ * Diagnostic snapshot of the VirtualScroller **component** (not the inner
+ * container). This is the next layer out from `containerInfo` — it tells
+ * you whether the ref binding itself is even valid.
+ *
+ * The most common reason a chat appears to "flicker" with `NO-CONTAINER`
+ * is that `virtualScrollerRef.value` is null (component unmounted, key
+ * changed, ref not yet bound). Reading `containerInfo` alone can't
+ * distinguish that from "container is mounted but 0×0" — the two bugs
+ * need completely different fixes.
+ *
+ *   refNull=true              → the component ref was never populated
+ *                                (unmounted, wrong element bound, or
+ *                                the call originated from a stale
+ *                                component instance after a key change)
+ *   containerRefNull=true     → the component is mounted but its inner
+ *                                `containerRef` is still null (the
+ *                                template ref hasn't fired yet — race
+ *                                between onMounted of parent vs child)
+ *   hasScrollToBottom=false   → the component is missing the expected
+ *                                exposed method (probably unmounted
+ *                                mid-flight)
+ *   exposedKeys               → what keys ARE on the component
+ *                                instance. Useful when "the ref isn't
+ *                                null but it doesn't have the methods
+ *                                I expect" — points to a wrong cast
+ *                                or a build that didn't include the
+ *                                latest `defineExpose`.
+ */
+export interface ScrollerState {
+  refNull: boolean
+  containerRefNull: boolean
+  hasScrollToBottom: boolean
+  hasContainerRef: boolean
+  containerClientHeight: number
+  containerOffsetHeight: number
+  exposedKeys: string[]
+}
+
+/**
+ * Diagnostic snapshot of the **outer flex wrapper** that contains the
+ * VirtualScroller. This is the layer ABOVE the scroller, so it answers
+ * "did the layout chain even reach the scroller's parent?".
+ *
+ * When `containerInfo.null` AND `wrapperState.offsetHeight === 0`, you
+ * know the layout chain is broken higher up (the parent flex container
+ * isn't sized). When `wrapperState.offsetHeight > 0` but the scroller
+ * is 0×0, the layout chain reaches the wrapper but the scroller itself
+ * isn't getting a height (the `flex flex-col` requirement from the
+ * ChatView fix).
+ *
+ * `display` and `flexDirection` are only populated when dimensions are
+ * weird (≥ 0) — `getComputedStyle` forces a style recalc which is
+ * expensive at 60 Hz, so we only pay for it on the suspicious path.
+ */
+export interface WrapperState {
+  refNull: boolean
+  offsetHeight: number
+  clientHeight: number
+  offsetParent: string | null
+  display?: string
+  flexDirection?: string
+}
+
 export type ScrollReason =
   // Info-level reasons (state transitions / lifecycle events)
   | 'reached-bottom'
@@ -106,6 +170,43 @@ export interface ScrollContext {
    * zero; with it, you can see *which* check failed.
    */
   containerInfo: ContainerInfo
+  /**
+   * Which function in ChatView produced this log line, e.g.
+   * `'loadChatHistory'`, `'updateStreamingMessage'`,
+   * `'watcher:messages-length'`, `'onSpacersResized'`. Set by the
+   * call site (the logger can't infer it without a stack trace on
+   * every call, which is too expensive).
+   *
+   * Without this, multiple `NO-CONTAINER` lines from different call
+   * sites look identical and you can't tell whether the bug is in
+   * the initial-load path, the SSE chunk path, the loadMore path,
+   * or the watcher. With it, a `grep caller=updateStreamingMessage`
+   * immediately isolates the streaming-path bug.
+   */
+  caller?: string
+  /**
+   * Diagnostic snapshot of the VirtualScroller **component** (see
+   * `ScrollerState` doc). Tells you whether the ref binding is
+   * even valid — the most common reason for `containerInfo.null`
+   * is that the component is unmounted and the ref is null, which
+   * is a completely different bug from "container exists but 0×0".
+   */
+  scrollerState?: ScrollerState
+  /**
+   * Diagnostic snapshot of the outer flex wrapper (see
+   * `WrapperState` doc). Tells you whether the layout chain
+   * reached the scroller's parent. Crucial for distinguishing
+   * "wrapper is sized but scroller isn't" from "wrapper itself
+   * is 0 high" — the two cases need different fixes.
+   */
+  wrapperState?: WrapperState
+  /**
+   * Short stack trace captured ONLY when the container is null or
+   * on warn/error. The single most useful field for "where did
+   * this come from?" — points directly to the line in ChatView
+   * that called the logger with a stale ref.
+   */
+  stack?: string
   /** Free-form extras (caller, delta, etc.). */
   extra?: Record<string, unknown>
 }
@@ -180,12 +281,15 @@ export interface ScrollLogger {
    * `origin` is optional: omit it to let the logger resolve from the
    * `markProgrammatic` counter, or pass an explicit value to override.
    */
-  debug: (ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & { origin?: ScrollOrigin }) => void
+  debug: (
+    ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & { origin?: ScrollOrigin; caller?: string },
+  ) => void
   /** State change / lifecycle event. Always logged. */
   info: (
     ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & {
       reason: ScrollReason
       origin?: ScrollOrigin
+      caller?: string
     },
   ) => void
   /** Warning — something unexpected but recoverable. */
@@ -193,6 +297,7 @@ export interface ScrollLogger {
     ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & {
       reason: ScrollReason
       origin?: ScrollOrigin
+      caller?: string
     },
   ) => void
   /** Error — scroll subsystem failed. */
@@ -200,6 +305,7 @@ export interface ScrollLogger {
     ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & {
       reason: ScrollReason
       origin?: ScrollOrigin
+      caller?: string
     },
   ) => void
   /**
@@ -307,6 +413,41 @@ const emit = (ctx: ScrollContext, level: 'debug' | 'info' | 'warn' | 'error'): v
 
   eventCounter += 1
   let tag = `[scroll#${eventCounter} chat=${ctx.chatId} ${level.toUpperCase()}]`
+
+  // ── Caller / scroller / wrapper metadata in the tag ───────────────────
+  //
+  // The most useful single line you can get when something goes wrong
+  // is "which function called me, was the scroller ref valid, and was
+  // the wrapper sized". Without these you have to dig through the
+  // context object; with them, a single DevTools scan tells the story.
+  //
+  //   caller=X         — the function name (e.g. 'loadChatHistory')
+  //   scroller=Y       — 'ok' | 'ref-null' | 'container-null'
+  //   wrapper=Z        — 'h=N' | 'ref-null' | 'd=flex,h=0' (when weird)
+  //
+  // Each is optional — we render what's available.
+  if (ctx.caller) {
+    tag += ` caller=${ctx.caller}`
+  }
+  if (ctx.scrollerState) {
+    if (ctx.scrollerState.refNull) {
+      tag += ' scroller=ref-null'
+    } else if (ctx.scrollerState.containerRefNull) {
+      tag += ' scroller=container-null'
+    } else {
+      tag += ` scroller=ok(h=${ctx.scrollerState.containerClientHeight})`
+    }
+  }
+  if (ctx.wrapperState) {
+    if (ctx.wrapperState.refNull) {
+      tag += ' wrapper=ref-null'
+    } else if (ctx.wrapperState.offsetHeight === 0) {
+      tag += ` wrapper=h=0(d=${ctx.wrapperState.display ?? '?'},flex=${ctx.wrapperState.flexDirection ?? '?'})`
+    } else {
+      tag += ` wrapper=h=${ctx.wrapperState.offsetHeight}`
+    }
+  }
+
   // Diagnostic markers for suspicious container states. These tell
   // you *which* check failed in a single glance — without them, a
   // `scrollHeight: 0` reading is just a useless zero.
@@ -338,6 +479,34 @@ const emit = (ctx: ScrollContext, level: 'debug' | 'info' | 'warn' | 'error'): v
     `bottom=${ctx.distanceFromBottom.toFixed(0)}px ` +
     `(${positionLabel}) ` +
     `msgs=${ctx.messages}`
+
+  // ── Lazy stack capture for hard-to-debug cases ─────────────────────────
+  //
+  // `new Error().stack` is expensive (allocates an Error + walks the
+  // stack), so we only do it when the log line is actually hard to
+  // diagnose from the other fields:
+  //
+  //   - container is null (the "no idea where this came from" case)
+  //   - level is warn or error (something went wrong)
+  //
+  // Normal info/debug lines skip this entirely. The stack is stripped
+  // to the first 5 frames so it stays scannable.
+  if (!ctx.stack && (ctx.containerInfo.null || level === 'warn' || level === 'error')) {
+    try {
+      const err = new Error()
+      const raw = err.stack ?? ''
+      // Drop frames that are inside this file (the logger itself) —
+      // the caller is what we want.
+      const frames = raw
+        .split('\n')
+        .filter((line) => !line.includes('scrollLogger.ts'))
+        .slice(0, 5)
+        .join('\n')
+      if (frames) ctx.stack = frames
+    } catch {
+      // stack capture is best-effort; never let it break logging
+    }
+  }
 
   // Two-line format: first line is the headline (scannable in DevTools'
   // log group), second line is the full context object (collapsible).
@@ -384,6 +553,84 @@ const buildContainerInfo = (container: HTMLElement | null | undefined): Containe
 }
 
 /**
+ * Build the diagnostic `ScrollerState` block for a VirtualScroller
+ * component ref. Reads the component instance to determine whether
+ * the ref is even populated, whether the inner container is
+ * populated, and which exposed methods exist.
+ *
+ * Accepts the full ref object (`.value` style) so we can distinguish
+ * "ref object exists but `.value` is null" from "ref object itself
+ * is missing". Both are passed as `{ value: unknown }` shapes.
+ */
+const buildScrollerState = (scrollerRef: { value: unknown } | null | undefined): ScrollerState => {
+  if (!scrollerRef) {
+    return {
+      refNull: true,
+      containerRefNull: true,
+      hasScrollToBottom: false,
+      hasContainerRef: false,
+      containerClientHeight: 0,
+      containerOffsetHeight: 0,
+      exposedKeys: [],
+    }
+  }
+  const scroller = scrollerRef.value as Record<string, unknown> | null
+  if (!scroller) {
+    return {
+      refNull: true,
+      containerRefNull: true,
+      hasScrollToBottom: false,
+      hasContainerRef: false,
+      containerClientHeight: 0,
+      containerOffsetHeight: 0,
+      exposedKeys: [],
+    }
+  }
+  const containerRef = scroller.containerRef as { value: unknown } | undefined
+  const hasContainerRef = !!containerRef
+  const container = (containerRef?.value ?? null) as HTMLElement | null
+  return {
+    refNull: false,
+    containerRefNull: !container,
+    hasScrollToBottom: typeof scroller.scrollToBottom === 'function',
+    hasContainerRef,
+    containerClientHeight: container?.clientHeight ?? 0,
+    containerOffsetHeight: container?.offsetHeight ?? 0,
+    exposedKeys: Object.keys(scroller).sort(),
+  }
+}
+
+/**
+ * Build the diagnostic `WrapperState` block for the outer flex
+ * wrapper. Tells you whether the layout chain reached the
+ * scroller's parent. Like `buildContainerInfo`, only pays the
+ * `getComputedStyle` cost when dimensions are weird.
+ */
+const buildWrapperState = (wrapperRef: { value: unknown } | null | undefined): WrapperState => {
+  if (!wrapperRef) {
+    return { refNull: true, offsetHeight: 0, clientHeight: 0, offsetParent: null }
+  }
+  const wrapper = wrapperRef.value as HTMLElement | null
+  if (!wrapper) {
+    return { refNull: true, offsetHeight: 0, clientHeight: 0, offsetParent: null }
+  }
+  const info: WrapperState = {
+    refNull: false,
+    offsetHeight: wrapper.offsetHeight,
+    clientHeight: wrapper.clientHeight,
+    offsetParent: wrapper.offsetParent ? wrapper.offsetParent.tagName : null,
+  }
+  // getComputedStyle forces a style recalc — only do it when
+  // dimensions are suspicious, same logic as buildContainerInfo.
+  if (wrapper.offsetHeight === 0 || wrapper.clientHeight === 0) {
+    const style = getComputedStyle(wrapper)
+    info.display = style.display
+    info.flexDirection = style.flexDirection
+  }
+  return info
+}
+
+/**
  * Build a context object from a container element + the caller's
  * snapshot of state. Use this inside event handlers so the field
  * computation is centralized.
@@ -399,8 +646,21 @@ const buildContainerInfo = (container: HTMLElement | null | undefined): Containe
  */
 export const buildScrollContext = (
   container: HTMLElement | null | undefined,
-  fallback: Pick<ScrollContext, 'chatId' | 'messages' | 'isAtBottom'>,
-  partial: Partial<Pick<ScrollContext, 'origin' | 'reason' | 'extra'>> = {},
+  fallback: Pick<ScrollContext, 'chatId' | 'messages' | 'isAtBottom'> & {
+    /**
+     * The VirtualScroller ref from ChatView. Optional — when omitted,
+     * `scrollerState` is not populated. Pass the full ref object
+     * (`virtualScrollerRef`), NOT `virtualScrollerRef.value` — the
+     * logger inspects both the ref and the component instance.
+     */
+    virtualScrollerRef?: { value: unknown } | null
+    /**
+     * The outer flex wrapper ref from ChatView. Optional — when
+     * omitted, `wrapperState` is not populated.
+     */
+    wrapperRef?: { value: unknown } | null
+  },
+  partial: Partial<Pick<ScrollContext, 'origin' | 'reason' | 'extra' | 'caller'>> = {},
 ): Omit<ScrollContext, 'reason' | 'origin'> & { reason?: ScrollReason; origin?: ScrollOrigin } => {
   const scrollTop = container?.scrollTop ?? 0
   const scrollHeight = container?.scrollHeight ?? 0
@@ -423,6 +683,9 @@ export const buildScrollContext = (
     // it via `partial.origin`, and `ScrollLogger` will honor it.
     reason: partial.reason,
     extra: partial.extra,
+    caller: partial.caller,
     containerInfo: buildContainerInfo(container),
+    scrollerState: buildScrollerState(fallback.virtualScrollerRef),
+    wrapperState: buildWrapperState(fallback.wrapperRef),
   }
 }
