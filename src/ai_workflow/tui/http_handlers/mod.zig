@@ -23,6 +23,7 @@ pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
 pub const llmHistorySSE = @import("llm_history_sse.zig").llmHistorySSE;
 pub const sessionsStreamHandler = @import("sessions_sse.zig").sessionsStreamHandler;
 pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHandler;
+pub const sessionUpdateHandler = @import("session_update.zig").sessionUpdateHandler;
 pub const sessionListHandler = @import("session_list.zig").session_list_handler;
 pub const sessionStopHandler = @import("session_stop.zig").sessionStopHandler;
 pub const session_exist_handler = @import("session_exist.zig").session_exist_handler;

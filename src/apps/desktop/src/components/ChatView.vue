@@ -363,6 +363,104 @@ const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
 
+// ─── Profile selection ────────────────────────────────────────────────────────
+// Per-session model selection. The chip in the status bar shows the current
+// selection (Default = no profile set) and lets the user pick a profile from
+// the list in NalarConfig. Selected via PUT /api/llm/session/:id and passed
+// to the next LLM call via POST /api/llm/session.
+const availableProfiles = ref<Array<{ name: string; model: string; base_url: string }>>([])
+const selectedProfile = ref<string | null>(null)
+const showProfilePicker = ref(false)
+const isUpdatingProfile = ref(false)
+const profilePickerRef = ref<HTMLElement | null>(null)
+
+const loadProfiles = async () => {
+  try {
+    const config = await api.getNalarConfig()
+    const profiles = (config.profiles ?? {}) as Record<string, { model?: string; base_url?: string }>
+    availableProfiles.value = Object.entries(profiles).map(([name, p]) => ({
+      name,
+      model: p.model ?? '',
+      base_url: p.base_url ?? '',
+    }))
+  } catch (err) {
+    console.error('Failed to load profiles:', err)
+    availableProfiles.value = []
+  }
+}
+
+const selectProfile = async (name: string | null) => {
+  if (isUpdatingProfile.value) return
+  isUpdatingProfile.value = true
+  try {
+    const sid = sessionId.value
+    if (sid) {
+      await api.updateSession(sid, { selectedProfile: name })
+    }
+    selectedProfile.value = name
+  } catch (err) {
+    console.error('Failed to update profile:', err)
+  } finally {
+    isUpdatingProfile.value = false
+    showProfilePicker.value = false
+  }
+}
+
+const closeOnOutsideClick = (e: MouseEvent) => {
+  if (profilePickerRef.value && !profilePickerRef.value.contains(e.target as Node)) {
+    showProfilePicker.value = false
+  }
+}
+
+// ─── Profile selection ────────────────────────────────────────────────────────
+// Per-session model selection. The chip in the status bar shows the current
+// selection (Default = no profile set) and lets the user pick a profile from
+// the list in NalarConfig. Selected via PUT /api/llm/session/:id and passed
+// to the next LLM call via POST /api/llm/session.
+const availableProfiles = ref<Array<{ name: string; model: string; base_url: string }>>([])
+const selectedProfile = ref<string | null>(null)
+const showProfilePicker = ref(false)
+const isUpdatingProfile = ref(false)
+const profilePickerRef = ref<HTMLElement | null>(null)
+
+const loadProfiles = async () => {
+  try {
+    const config = await api.getNalarConfig()
+    const profiles = (config.profiles ?? {}) as Record<string, { model?: string; base_url?: string }>
+    availableProfiles.value = Object.entries(profiles).map(([name, p]) => ({
+      name,
+      model: p.model ?? '',
+      base_url: p.base_url ?? '',
+    }))
+  } catch (err) {
+    console.error('Failed to load profiles:', err)
+    availableProfiles.value = []
+  }
+}
+
+const selectProfile = async (name: string | null) => {
+  if (isUpdatingProfile.value) return
+  isUpdatingProfile.value = true
+  try {
+    const sid = sessionId.value
+    if (sid) {
+      await api.updateSession(sid, { selectedProfile: name })
+    }
+    selectedProfile.value = name
+  } catch (err) {
+    console.error('Failed to update profile:', err)
+  } finally {
+    isUpdatingProfile.value = false
+    showProfilePicker.value = false
+  }
+}
+
+const closeOnOutsideClick = (e: MouseEvent) => {
+  if (profilePickerRef.value && !profilePickerRef.value.contains(e.target as Node)) {
+    showProfilePicker.value = false
+  }
+}
+
 // ─── Scroll logger ────────────────────────────────────────────────────────────
 //
 // A dedicated logger for the scroll subsystem. Bound to the active chat
@@ -1133,7 +1231,31 @@ onUnmounted(() => {
   teardownSpacerObserver()
   disconnectSse()
   stopGitStatusPoll()
+  document.removeEventListener('click', closeOnOutsideClick)
 })
+
+// Load available profiles (called once on mount)
+loadProfiles()
+document.addEventListener('click', closeOnOutsideClick)
+
+// When the session changes, load the current selection from the backend
+watch(
+  () => sessionId.value,
+  async (newId) => {
+    if (!newId) {
+      selectedProfile.value = null
+      return
+    }
+    try {
+      const session = await api.getSession(newId)
+      selectedProfile.value = session?.selectedProfile ?? null
+    } catch (err) {
+      console.error('Failed to load session profile:', err)
+      selectedProfile.value = null
+    }
+  },
+  { immediate: false },
+)
 
 watch(
   () => messages.value.length,
@@ -1184,7 +1306,13 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
   }
 
   try {
-    await api.sendChatMessage(currentSessionId, userMessage, cwd.value, imageUrls)
+    await api.sendChatMessage(
+      currentSessionId,
+      userMessage,
+      cwd.value,
+      imageUrls,
+      selectedProfile.value ?? undefined,
+    )
   } catch (err) {
     console.error('Failed to send message:', err)
     messages.value.push({
@@ -1606,6 +1734,116 @@ const compactSession = async () => {
               <span v-else>🗜️</span>
               <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
             </button>
+            <!-- Model/Profile selector -->
+            <div ref="profilePickerRef" class="relative">
+              <button
+                @click.stop="showProfilePicker = !showProfilePicker"
+                :disabled="isUpdatingProfile || !sessionId"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
+                :class="isUpdatingProfile || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
+                style="
+                  background-color: var(--semantic-card-bg);
+                  border: 1px solid var(--color-border);
+                  color: var(--semantic-text);
+                "
+                :title="selectedProfile ? `Using profile: ${selectedProfile}` : 'Using default (top-level config)'"
+              >
+                <span>🤖</span>
+                <span>{{ selectedProfile ?? 'Default' }}</span>
+                <span class="text-[10px]">▾</span>
+              </button>
+              <div
+                v-if="showProfilePicker"
+                class="absolute bottom-full mb-2 left-0 min-w-[240px] rounded-lg shadow-lg z-20 overflow-hidden"
+                style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+              >
+                <button
+                  @click="selectProfile(null)"
+                  class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+                  style="color: var(--semantic-text);"
+                >
+                  <span>Default (top-level config)</span>
+                  <span v-if="!selectedProfile">✓</span>
+                </button>
+                <button
+                  v-for="p in availableProfiles"
+                  :key="p.name"
+                  @click="selectProfile(p.name)"
+                  class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+                  style="color: var(--semantic-text); border-top: 1px solid var(--color-border);"
+                >
+                  <div class="flex items-center justify-between">
+                    <span class="font-medium">{{ p.name }}</span>
+                    <span v-if="selectedProfile === p.name">✓</span>
+                  </div>
+                  <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted);">
+                    {{ p.model }} · {{ p.base_url }}
+                  </div>
+                </button>
+                <div
+                  v-if="availableProfiles.length === 0"
+                  class="px-3 py-2 text-xs"
+                  style="color: var(--semantic-text-muted);"
+                >
+                  No profiles configured. Add one in Settings.
+                </div>
+              </div>
+            </div>
+            <!-- Model/Profile selector -->
+            <div ref="profilePickerRef" class="relative">
+              <button
+                @click.stop="showProfilePicker = !showProfilePicker"
+                :disabled="isUpdatingProfile || !sessionId"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
+                :class="isUpdatingProfile || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
+                style="
+                  background-color: var(--semantic-card-bg);
+                  border: 1px solid var(--color-border);
+                  color: var(--semantic-text);
+                "
+                :title="selectedProfile ? `Using profile: ${selectedProfile}` : 'Using default (top-level config)'"
+              >
+                <span>🤖</span>
+                <span>{{ selectedProfile ?? 'Default' }}</span>
+                <span class="text-[10px]">▾</span>
+              </button>
+              <div
+                v-if="showProfilePicker"
+                class="absolute bottom-full mb-2 left-0 min-w-[240px] rounded-lg shadow-lg z-20 overflow-hidden"
+                style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+              >
+                <button
+                  @click="selectProfile(null)"
+                  class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+                  style="color: var(--semantic-text);"
+                >
+                  <span>Default (top-level config)</span>
+                  <span v-if="!selectedProfile">✓</span>
+                </button>
+                <button
+                  v-for="p in availableProfiles"
+                  :key="p.name"
+                  @click="selectProfile(p.name)"
+                  class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+                  style="color: var(--semantic-text); border-top: 1px solid var(--color-border);"
+                >
+                  <div class="flex items-center justify-between">
+                    <span class="font-medium">{{ p.name }}</span>
+                    <span v-if="selectedProfile === p.name">✓</span>
+                  </div>
+                  <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted);">
+                    {{ p.model }} · {{ p.base_url }}
+                  </div>
+                </button>
+                <div
+                  v-if="availableProfiles.length === 0"
+                  class="px-3 py-2 text-xs"
+                  style="color: var(--semantic-text-muted);"
+                >
+                  No profiles configured. Add one in Settings.
+                </div>
+              </div>
+            </div>
             <!-- Token usage display -->
             <div
               v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0"

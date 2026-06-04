@@ -616,6 +616,15 @@ pub const Migration039AddToolCallIdToLlmHistory = struct {
     }
 };
 
+pub const Migration040AddSelectedProfileModelToSessions = struct {
+    pub const version: u32 = 40;
+    pub const name = "add_selected_profile_model_to_sessions";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN selected_profile_model TEXT", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -707,6 +716,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration037AddImageUrlToSessionQueueMessages.version, .name = Migration037AddImageUrlToSessionQueueMessages.name, .up = Migration037AddImageUrlToSessionQueueMessages.up },
     .{ .version = Migration038DropToolResultsJson.version, .name = Migration038DropToolResultsJson.name, .up = Migration038DropToolResultsJson.up },
     .{ .version = Migration039AddToolCallIdToLlmHistory.version, .name = Migration039AddToolCallIdToLlmHistory.name, .up = Migration039AddToolCallIdToLlmHistory.up },
+    .{ .version = Migration040AddSelectedProfileModelToSessions.version, .name = Migration040AddSelectedProfileModelToSessions.name, .up = Migration040AddSelectedProfileModelToSessions.up },
 };
 
 /// Register all migrations with a MigrationManager

@@ -56,6 +56,13 @@ pub const SessionCreateResponse = struct {
     status: []const u8
 };
 
+pub const SessionUpdateResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    status: []const u8,
+    selected_profile_model: []const u8,
+};
+
 pub const WorkerResponse = struct {
     id: []const u8,
     status: []const u8
@@ -160,6 +167,10 @@ pub fn makeSessionCreateResponse(allocator: std.mem.Allocator, response: Session
     return std.json.Stringify.valueAlloc(allocator, response, .{
 
     });
+}
+
+pub fn makeSessionUpdateResponse(allocator: std.mem.Allocator, response: SessionUpdateResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
 pub fn makeWorkerResponse(allocator: std.mem.Allocator, response: WorkerResponse) ![]u8 {

@@ -525,6 +525,24 @@ pub const LlmConfig = struct {
     pub fn mcpServerCount(self: *const LlmConfig) u32 {
         return @intCast(self.mcp_servers.count());
     }
+
+    /// Look up a profile by name (the key in `profiles_models`). Returns null when
+    /// not configured. The returned `LlmProfile` borrows from `self` — the lifetime
+    /// is tied to this `LlmConfig` (do not outlive the config).
+    pub fn getProfile(self: *const LlmConfig, name: []const u8) ?LlmProfile {
+        const entry = self.profiles_models.getEntry(name) orelse return null;
+        return entry.value_ptr.*;
+    }
+
+    /// Returns true if a profile with the given name exists and has a non-empty
+    /// `model` field. Use this before calling `getProfile` if you need to know
+    /// whether resolution will succeed.
+    pub fn hasProfile(self: *const LlmConfig, name: []const u8) bool {
+        if (self.profiles_models.getEntry(name)) |entry| {
+            return entry.value_ptr.model.len > 0;
+        }
+        return false;
+    }
 };
 
 pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.process.Environ.Map) LlmConfig.LoadError![]const u8 {

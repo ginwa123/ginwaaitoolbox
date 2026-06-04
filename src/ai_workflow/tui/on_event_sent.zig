@@ -92,7 +92,7 @@ pub const ToolCallJson = struct {
 };
 
 /// Input parameters for sending SSE session events
-/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at
+/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at, selected_profile_model
 pub const OnEventInputSessions = struct {
     action: []const u8, // "created", "updated", "deleted"
     id: []const u8,
@@ -101,6 +101,7 @@ pub const OnEventInputSessions = struct {
     cwd: []const u8,
     created_at: []const u8,
     updated_at: []const u8,
+    selected_profile_model: []const u8 = "",
 };
 
 /// JSON event payload for SSE session events
@@ -290,6 +291,7 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
         .cwd = input.cwd,
         .created_at = input.created_at,
         .updated_at = input.updated_at,
+        .selected_profile_model = input.selected_profile_model,
     };
     try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
         .whitespace = .indent_4,
