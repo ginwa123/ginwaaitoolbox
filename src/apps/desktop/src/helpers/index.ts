@@ -15,4 +15,5 @@ export type {
   ScrollReason,
   ContainerInfo,
 } from "./scrollLogger";
+export { isAutoStickActive, AUTO_STICK_GATE_MS } from "./autoStickGate";
 

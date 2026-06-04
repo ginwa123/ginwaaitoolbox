@@ -104,24 +104,58 @@ const triggerFilePicker = () => {
   nativeFileInput.value?.click()
 }
 
+// Add a single image file to the preview list (shared by paperclip + paste flows)
+const addImageFile = (file: File) => {
+  if (!isImageFile(file)) return
+  const previewUrl = URL.createObjectURL(file)
+  previewFiles.value.push({ file, previewUrl })
+}
+
 // Handle native file selection
 const handleNativeFileSelect = (event: Event) => {
   const target = event.target as HTMLInputElement
   const files = target.files
   if (!files || files.length === 0) return
-  
+
   for (const file of files) {
     if (!file) continue
-    
-    // Create preview for image files
-    if (isImageFile(file)) {
-      const previewUrl = URL.createObjectURL(file)
-      previewFiles.value.push({ file, previewUrl })
-    }
+    addImageFile(file)
   }
-  
+
   // Reset the input so same files can be selected again
   target.value = ''
+}
+
+// Handle paste event - attach pasted images as file attachments (Ctrl/Cmd+V)
+const handlePaste = (e: ClipboardEvent) => {
+  const items = e.clipboardData?.items
+  if (!items || items.length === 0) return
+
+  let pastedImageCount = 0
+  for (const item of items) {
+    if (item.kind !== 'file') continue
+    // Only accept images (matches the paperclip flow)
+    if (!item.type.startsWith('image/')) continue
+    const file = item.getAsFile()
+    if (!file) continue
+
+    // Browsers often leave `file.name` empty for clipboard images; give it
+    // a sensible name + extension so FilePreview's tooltip is readable.
+    if (!file.name) {
+      const ext = item.type.split('/')[1] ?? 'png'
+      const renamed = new File([file], `pasted-image-${Date.now()}.${ext}`, { type: item.type })
+      addImageFile(renamed)
+    } else {
+      addImageFile(file)
+    }
+    pastedImageCount++
+  }
+
+  // If we attached at least one image, suppress the default text paste so
+  // the textarea doesn't get a multi-MB `data:image/png;base64,…` string.
+  if (pastedImageCount > 0) {
+    e.preventDefault()
+  }
 }
 
 
@@ -453,7 +487,8 @@ const sendMessage = () => {
           height: 48px;
           max-height: 200px;
           overflow-y: auto;
-        " @keydown="handleKeydown" @input="autoResize" @click="autoResize" @blur="updateCursorPos"></textarea>
+        " @keydown="handleKeydown" @input="autoResize" @click="autoResize" @blur="updateCursorPos"
+        @paste="handlePaste"></textarea>
       <!-- Native file picker button -->
       <button type="button" @click="triggerFilePicker"
         class="px-3 py-3 rounded-xl text-sm transition-all duration-200 border flex items-center gap-1"

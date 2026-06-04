@@ -6,6 +6,8 @@ import { getThinkingTags, isThinkingTags, stripThinkingTags, VirtualScroller } f
 import {
   buildScrollContext,
   createScrollLogger,
+  isAutoStickActive,
+  AUTO_STICK_GATE_MS,
   BOTTOM_THRESHOLD,
   TOP_THRESHOLD,
   type ScrollLogger,
@@ -216,7 +218,7 @@ const isLLMProcessing = computed(() => !!processingState.value[sessionId.value])
 
 // Pagination state
 const messageCursor = ref<string | null>(null)
-const PAGE_SIZE = 40
+const PAGE_SIZE = 10
 
 // SSE connection
 const eventSource = ref<EventSource | null>(null)
@@ -253,6 +255,19 @@ const virtualScrollerRef = ref<VirtualScrollerExposed | null>(null)
 // the recent fix addressed). The two cases need different fixes; the
 // logger needs the wrapper's dimensions to tell them apart.
 const messagesWrapperRef = ref<HTMLElement | null>(null)
+
+// Timestamp (ms since epoch) of the most recent auto-stick assignment.
+// Set at every site that programmatically writes `container.scrollTop`
+// to keep the chat pinned to the bottom — the SSE chunk handler, the
+// messages-length watcher, the SSE `full` event handler, and
+// `onSpacersResized`. `handleLoadMore` consults this (via
+// `isAutoStickActive`) to decide whether a prepend right now would
+// fight an active stick. See `helpers/autoStickGate.ts` for the
+// gating math.
+//
+// Starts at 0, which the gate treats as "never fired" — so the very
+// first `loadMore` after mount isn't blocked.
+const lastAutoStickAt = ref(0)
 
 // MutationObserver that watches the VirtualScroller's spacer elements
 // (the top/bottom spacer divs whose `style.height` is driven by
@@ -311,6 +326,10 @@ const onSpacersResized = () => {
   // critical bit: without it, a stick-to-bottom action looks identical
   // to a user scroll in the logs.
   scrollLogger.markProgrammatic()
+  // Record the auto-stick timestamp so the loadMore gate knows the
+  // stick is actively engaged right now (not just that the LLM is
+  // busy — those are different things, see autoStickGate.ts).
+  lastAutoStickAt.value = Date.now()
   // Native clamp: `scrollTop = scrollHeight` gets clamped to
   // `scrollHeight - clientHeight` by the browser, so we always land at
   // the true bottom even if VirtualScroller's cached `containerHeight`
@@ -362,55 +381,6 @@ const isAtBottom = ref(true)
 const cwd = ref('')
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
-
-// ─── Profile selection ────────────────────────────────────────────────────────
-// Per-session model selection. The chip in the status bar shows the current
-// selection (Default = no profile set) and lets the user pick a profile from
-// the list in NalarConfig. Selected via PUT /api/llm/session/:id and passed
-// to the next LLM call via POST /api/llm/session.
-const availableProfiles = ref<Array<{ name: string; model: string; base_url: string }>>([])
-const selectedProfile = ref<string | null>(null)
-const showProfilePicker = ref(false)
-const isUpdatingProfile = ref(false)
-const profilePickerRef = ref<HTMLElement | null>(null)
-
-const loadProfiles = async () => {
-  try {
-    const config = await api.getNalarConfig()
-    const profiles = (config.profiles ?? {}) as Record<string, { model?: string; base_url?: string }>
-    availableProfiles.value = Object.entries(profiles).map(([name, p]) => ({
-      name,
-      model: p.model ?? '',
-      base_url: p.base_url ?? '',
-    }))
-  } catch (err) {
-    console.error('Failed to load profiles:', err)
-    availableProfiles.value = []
-  }
-}
-
-const selectProfile = async (name: string | null) => {
-  if (isUpdatingProfile.value) return
-  isUpdatingProfile.value = true
-  try {
-    const sid = sessionId.value
-    if (sid) {
-      await api.updateSession(sid, { selectedProfile: name })
-    }
-    selectedProfile.value = name
-  } catch (err) {
-    console.error('Failed to update profile:', err)
-  } finally {
-    isUpdatingProfile.value = false
-    showProfilePicker.value = false
-  }
-}
-
-const closeOnOutsideClick = (e: MouseEvent) => {
-  if (profilePickerRef.value && !profilePickerRef.value.contains(e.target as Node)) {
-    showProfilePicker.value = false
-  }
-}
 
 // ─── Profile selection ────────────────────────────────────────────────────────
 // Per-session model selection. The chip in the status bar shows the current
@@ -851,27 +821,38 @@ const handleLoadMore = () => {
   })
 
   // Each guard is its own `if` (not chained with `||`) so we can
-  // log exactly which one blocked. Order matters: the LLM
-  // processing check is first because that's the most common
-  // cause of "I scrolled to the top during streaming and nothing
-  // loaded" — and the answer is now nuanced.
+  // log exactly which one blocked. Order matters: the auto-stick
+  // gate is first because it's the most common cause of "I
+  // scrolled to the top during streaming and nothing loaded".
   //
-  // We only suppress when the user is BOTH (a) the LLM is
-  // streaming AND (b) the user is still at the bottom of the
-  // chat. That combination means the user is actively watching
-  // the stream, and a prepend would fight the auto-stick (the
-  // stream is at the bottom; prepending shifts everything down).
-  //
-  // If the user has scrolled up to read history DURING streaming,
-  // isAtBottom is false — the auto-stick is already disengaged,
-  // so the prepend won't fight anything, and the user explicitly
-  // wants to see older messages. Allow it.
-  if (isLLMProcessing.value && isAtBottom.value) {
+  // Gate suppression (not blanket suppression): the previous
+  // guard `isLLMProcessing && isAtBottom` blocked loadMore for
+  // the ENTIRE duration of the stream, which made pagination
+  // impossible while a long response was streaming. The new
+  // guard is timestamp-based: only suppress if the auto-stick
+  // actually fired recently (within AUTO_STICK_GATE_MS). That
+  // way:
+  //   - Active stream (chunks every <100ms)
+  //     → gate is fresh → suppress (no jitter from prepend
+  //       fighting the next chunk's stick).
+  //   - Slow model, paused stream, or user scrolled up
+  //     → gate goes stale → allow loadMore.
+  // See `helpers/autoStickGate.ts` for the gating math.
+  const now = Date.now()
+  const sinceLastAutoStickMs = lastAutoStickAt.value === 0 ? -1 : now - lastAutoStickAt.value
+  if (isAutoStickActive(lastAutoStickAt.value, now, isAtBottom.value)) {
     scrollLogger.info({
       ...ctx,
       caller: 'handleLoadMore',
       reason: 'load-more-suppressed',
-      extra: { guard: 'isLLMProcessing-atBottom', source: 'ChatView' },
+      extra: {
+        guard: 'auto-stick-active',
+        source: 'ChatView',
+        sinceLastAutoStickMs,
+        gateMs: AUTO_STICK_GATE_MS,
+        isLLMProcessing: isLLMProcessing.value,
+        isAtBottom: isAtBottom.value,
+      },
     })
     return
   }
@@ -1091,6 +1072,13 @@ const connectSse = () => {
         streamingContent.value = ''
         isStreaming.value = false
         scrollLogger.markProgrammatic()
+        // One more auto-stick fires (scrollToBottom below) for the
+        // final, post-stream assistant message. Mark the timestamp so
+        // the loadMore gate sees the stick as still active during the
+        // tail of the message-complete render frame. After ~500ms
+        // (AUTO_STICK_GATE_MS) the gate lifts and the user can
+        // scroll-up-and-prepend as normal.
+        lastAutoStickAt.value = Date.now()
         nextTick(() => scrollToBottom(false, 'sse-message-complete'))
         setupCodeBlockCopyButtons()
 
@@ -1166,6 +1154,14 @@ let sseScrollPending = false
 
 const updateStreamingMessage = () => {
   console.log('[updateStreamingMessage] streamingContent:', streamingContent.value)
+  // Every SSE chunk drives an auto-stick via scrollToBottom below
+  // (coalesced to one-per-frame). Mark the timestamp NOW, before the
+  // rAF coalesce, so the gate reflects the chunk that just arrived
+  // — not the rAF callback that runs up to 16ms later. With chunks
+  // firing 20+/sec this keeps the gate always-fresh during active
+  // streaming; with a slow model the timestamp goes stale between
+  // chunks and the user can loadMore.
+  lastAutoStickAt.value = Date.now()
   const existingMsg = messages.value.find(
     (m) => m.role === 'assistant' && m.id.startsWith('streaming-'),
   )
@@ -1261,6 +1257,14 @@ watch(
   () => messages.value.length,
   () => {
     scrollLogger.markProgrammatic()
+    // Any push to `messages` triggers an auto-stick (scrollToBottom
+    // below). Mark the timestamp synchronously so the loadMore gate
+    // sees the stick as active during the same render frame the
+    // message landed in. Catches user-message sends, tool results,
+    // pagination prepends (handled separately by endPreserve, but
+    // the watcher also fires), and the streaming message's first
+    // push before updateStreamingMessage's own mark takes over.
+    lastAutoStickAt.value = Date.now()
     nextTick(() => scrollToBottom(false, 'messages-length'))
   },
 )
@@ -1734,61 +1738,7 @@ const compactSession = async () => {
               <span v-else>🗜️</span>
               <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
             </button>
-            <!-- Model/Profile selector -->
-            <div ref="profilePickerRef" class="relative">
-              <button
-                @click.stop="showProfilePicker = !showProfilePicker"
-                :disabled="isUpdatingProfile || !sessionId"
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
-                :class="isUpdatingProfile || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
-                style="
-                  background-color: var(--semantic-card-bg);
-                  border: 1px solid var(--color-border);
-                  color: var(--semantic-text);
-                "
-                :title="selectedProfile ? `Using profile: ${selectedProfile}` : 'Using default (top-level config)'"
-              >
-                <span>🤖</span>
-                <span>{{ selectedProfile ?? 'Default' }}</span>
-                <span class="text-[10px]">▾</span>
-              </button>
-              <div
-                v-if="showProfilePicker"
-                class="absolute bottom-full mb-2 left-0 min-w-[240px] rounded-lg shadow-lg z-20 overflow-hidden"
-                style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-              >
-                <button
-                  @click="selectProfile(null)"
-                  class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
-                  style="color: var(--semantic-text);"
-                >
-                  <span>Default (top-level config)</span>
-                  <span v-if="!selectedProfile">✓</span>
-                </button>
-                <button
-                  v-for="p in availableProfiles"
-                  :key="p.name"
-                  @click="selectProfile(p.name)"
-                  class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
-                  style="color: var(--semantic-text); border-top: 1px solid var(--color-border);"
-                >
-                  <div class="flex items-center justify-between">
-                    <span class="font-medium">{{ p.name }}</span>
-                    <span v-if="selectedProfile === p.name">✓</span>
-                  </div>
-                  <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted);">
-                    {{ p.model }} · {{ p.base_url }}
-                  </div>
-                </button>
-                <div
-                  v-if="availableProfiles.length === 0"
-                  class="px-3 py-2 text-xs"
-                  style="color: var(--semantic-text-muted);"
-                >
-                  No profiles configured. Add one in Settings.
-                </div>
-              </div>
-            </div>
+           
             <!-- Model/Profile selector -->
             <div ref="profilePickerRef" class="relative">
               <button
