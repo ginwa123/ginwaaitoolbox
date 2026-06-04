@@ -82,9 +82,6 @@ const resizeStartWidth = ref(0)
 // Ref to ChatsList component
 const chatsListRef = ref<InstanceType<typeof ChatsList> | null>(null)
 
-// SSE connection for session events
-const sessionsEventSource = ref<EventSource | null>(null)
-
 const startResize = (e: MouseEvent | TouchEvent) => {
   isResizing.value = true
   const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
@@ -114,11 +111,6 @@ const stopResize = () => {
 
 onUnmounted(() => {
   stopResize()
-  disconnectSessionsSse()
-})
-
-onMounted(async () => {
-  connectSessionsSse()
 })
 
 const loadChats = async () => {
@@ -172,13 +164,13 @@ const loadMoreChats = async () => {
 }
 
 // ─── Session Events SSE ────────────────────────────────────────────────────────
-
-const connectSessionsSse = () => {
-  console.log('[Sidebar] Connecting sessions SSE')
-}
-
-const disconnectSessionsSse = () => {
-}
+//
+// Sidebar previously had a stub `connectSessionsSse` /
+// `disconnectSessionsSse` pair that did nothing. The real
+// sessions SSE connection lives in `ChatsList.vue` (which
+// mounts alongside the sidebar). Sidebar exposes the chats
+// list via a ref and doesn't need its own connection — the
+// stubs have been removed as part of the SSE refactor.
 
 const toggleCollapse = () => emit('toggle-collapse')
 const goToSettings = () => emit('navigate', 'settings')

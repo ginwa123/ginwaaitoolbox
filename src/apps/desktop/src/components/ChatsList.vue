@@ -2,6 +2,7 @@
 import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../stores/navigation'
+import SseStatusBadge from './SseStatusBadge.vue'
 import { useSidebarStore } from '../stores/sidebar'
 import { VirtualScroller, formatRelativeTime } from '../helpers'
 import * as api from '../api'
@@ -39,8 +40,12 @@ const isChatsResizing = ref(false)
 const chatsResizeStartY = ref(0)
 const chatsResizeStartPx = ref(0)
 
-// SSE connection for session events
-const sessionsEventSource = ref<EventSource | null>(null)
+// SSE connection for session events. Now an `api.SseClient`
+// (auto-reconnecting) instead of a raw `EventSource`. The
+// previous version had NO reconnect logic at all — a single
+// network blip or server restart would freeze the chat list
+// until manual reload. See `docs/sse-reconnect-plan.md`.
+const sessionsSse = ref<api.SseClient | null>(null)
 
 // Virtual scroller ref
 const virtualScrollerRef = ref<any>(null)
@@ -242,16 +247,21 @@ const removeChat = async (chatId: string) => {
 
 const connectSessionsSse = () => {
   console.log('[ChatsList] Connecting sessions SSE')
-  if (sessionsEventSource.value) {
-    sessionsEventSource.value.close()
+  if (sessionsSse.value) {
+    sessionsSse.value.close()
   }
-  sessionsEventSource.value = api.createSessionsSseConnection(
+  sessionsSse.value = api.createSessionsSseConnection(
     (event) => {
       console.log('[ChatsList] Received session event:', event)
       handleSessionEvent(event)
     },
+    // onError is only invoked on TERMINAL failure (SseClient
+    // state went to `failed`). Transient errors are retried
+    // internally with exponential backoff, so the old "log
+    // every onerror" behavior was misleading — a reconnect is
+    // not an error from the user's perspective.
     (error) => {
-      console.error('[ChatsList] Sessions SSE error:', error)
+      console.error('[ChatsList] Sessions SSE failed permanently:', error)
     },
     () => {
       console.log('[ChatsList] Sessions SSE connected')
@@ -260,9 +270,9 @@ const connectSessionsSse = () => {
 }
 
 const disconnectSessionsSse = () => {
-  if (sessionsEventSource.value) {
-    sessionsEventSource.value.close()
-    sessionsEventSource.value = null
+  if (sessionsSse.value) {
+    sessionsSse.value.close()
+    sessionsSse.value = null
   }
 }
 
@@ -410,6 +420,13 @@ defineExpose({
         style="color: var(--semantic-text-dim)"
         >Chats</span
       >
+      <!--
+        SSE connection indicator for the sessions stream. Hidden
+        when the stream is healthy; a small pill appears when
+        reconnecting so the user knows the chat list is recovering
+        instead of silently freezing. See helpers/sseClient.ts.
+      -->
+      <SseStatusBadge v-if="sidebarStore.navExpanded" :client="sessionsSse" />
       <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
         <select
           v-model="chatsSortDirection"

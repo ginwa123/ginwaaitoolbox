@@ -1,7 +1,15 @@
 // API Service - Centralized API calls for desktop backend
 // All components should use this file instead of making direct fetch calls
 
+import { createSseClient, type SseClient } from '../helpers/sseClient'
+
 export const API_BASE = '/api'
+
+// Re-export SseClient so call sites that hold a reference
+// (e.g. `const workersSse: api.SseClient | null = null`) can
+// import it from the same place they import the factory
+// functions.
+export type { SseClient } from '../helpers/sseClient'
 
 // Types matching backend responses
 export interface FolderEntry {
@@ -410,84 +418,105 @@ export interface SseEvent {
   diffview_after?: string
 }
 
-// Create SSE connection for real-time updates
+// Create SSE connection for real-time updates.
+//
+// The previous implementation returned a raw `EventSource` with no
+// auto-reconnect: any network blip, server restart, or sleep/wake
+// killed the chat stream permanently until the user reloaded the
+// page. The new implementation is a thin adapter around the
+// shared `SseClient` (helpers/sseClient.ts) which handles
+// exponential backoff, jitter, visibility-aware pausing, and
+// online-event fast-path. See `docs/sse-reconnect-plan.md`.
+//
+// The shape of the public API is unchanged — callers still get a
+// `.close()`-able object — so call sites need only a type
+// annotation update.
 export function createSseConnection(
   sessionId: string,
   onMessage: (event: SseEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): EventSource {
+): SseClient {
   console.log('[createSseConnection] Creating SSE connection for session:', sessionId)
-  const eventSource = new EventSource(`${API_BASE}/llm/stream/${sessionId}`)
 
-  // Buffer to accumulate multi-line JSON
+  // Buffer to accumulate multi-line JSON. Closure-scoped, so each
+  // client has its own. We clear it on every 'connected' event
+  // because that's the first message from a fresh EventSource
+  // — important during reconnects, where leftover bytes from the
+  // previous connection would otherwise corrupt the new stream's
+  // JSON parse.
   let jsonBuffer = ''
 
-  // Handle named event: "connected"
-  eventSource.addEventListener('connected', (e: MessageEvent) => {
-    try {
-      const data = JSON.parse(e.data)
-      onMessage({ ...data, type: 'connected' as const })
-      onConnected?.()
-    } catch (err) {
-      console.error('Failed to parse connected event:', err)
-    }
-  })
-
-  // Handle default events (data: lines without event: prefix)
-  eventSource.onmessage = (event) => {
-    console.log('[SSE API] onmessage raw:', JSON.stringify(event.data))
-    try {
-      const raw = event.data
-      if (!raw) return
-
-      const trimmed = raw.trim()
-      if (!trimmed) return
-
-      // Check for HTTP response
-      if (trimmed.startsWith('HTTP/')) {
-        console.warn('SSE received HTTP response instead of SSE data, skipping')
+  return createSseClient({
+    url: `${API_BASE}/llm/stream/${sessionId}`,
+    onConnected,
+    onEvent: (raw: string, eventType: string) => {
+      if (eventType === 'connected') {
+        // New stream (or freshly reconnected stream). Discard
+        // any leftover buffered bytes from a previous connection.
+        jsonBuffer = ''
+        try {
+          const data = JSON.parse(raw)
+          onMessage({ ...data, type: 'connected' as const })
+        } catch (err) {
+          console.error('Failed to parse connected event:', err)
+        }
         return
       }
 
-      // Accumulate JSON until we have complete object
-      jsonBuffer += trimmed + '\n'
+      // 'message' events: existing JSON-buffer logic.
+      try {
+        const trimmed = raw.trim()
+        if (!trimmed) return
 
-      // Try to find complete JSON object (starts with { and ends with })
-      const jsonStart = jsonBuffer.indexOf('{')
-      const jsonEnd = jsonBuffer.lastIndexOf('}')
-
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-        const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
-        try {
-          const data = JSON.parse(jsonStr)
-          console.log('[SSE API] Received data:', data)
-          onMessage(data)
-          // Keep anything after the JSON for next event
-          jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
-        } catch (e) {
-          // Not complete yet, keep buffering
-          console.log(
-            '[SSE API] Buffering, not complete JSON yet, buffer length:',
-            jsonBuffer.length,
-          )
+        // Some proxies return a plain HTTP response (e.g. 502
+        // page) on the SSE path during a server restart. Detect
+        // and skip.
+        if (trimmed.startsWith('HTTP/')) {
+          console.warn('SSE received HTTP response instead of SSE data, skipping')
+          return
         }
+
+        // Accumulate JSON until we have complete object
+        jsonBuffer += trimmed + '\n'
+
+        // Try to find complete JSON object (starts with { and ends with })
+        const jsonStart = jsonBuffer.indexOf('{')
+        const jsonEnd = jsonBuffer.lastIndexOf('}')
+
+        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+          const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
+          try {
+            const data = JSON.parse(jsonStr)
+            console.log('[SSE API] Received data:', data)
+            onMessage(data)
+            // Keep anything after the JSON for next event
+            jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
+          } catch (e) {
+            // Not complete yet, keep buffering
+            console.log(
+              '[SSE API] Buffering, not complete JSON yet, buffer length:',
+              jsonBuffer.length,
+            )
+          }
+        }
+      } catch (e) {
+        console.error('SSE onmessage error:', e)
       }
-    } catch (e) {
-      console.error('SSE onmessage error:', e)
-    }
-  }
-
-  eventSource.onerror = (error) => {
-    console.error('[SSE API] EventSource onerror:', error)
-    onError?.(error)
-  }
-
-  eventSource.onopen = () => {
-    console.log('[SSE API] EventSource connected')
-  }
-
-  return eventSource
+    },
+    // Only invoke the caller's `onError` on a *terminal* failure.
+    // Transient errors are handled by SseClient's auto-reconnect —
+    // firing `onError` for each retry would tell the caller
+    // (e.g. ChatView) that the stream ended when really it just
+    // hiccuped. ChatView specifically uses this to decide whether
+    // to clear the "streaming" UI: it should only clear on a
+    // true end-of-stream, not on a reconnect.
+    onStateChange: (state, info) => {
+      if (state === 'failed') {
+        onError?.(info.lastError ?? new Event('error'))
+      }
+    },
+  })
 }
 
 // List all chat sessions with pagination
@@ -853,77 +882,79 @@ export interface SessionEvent {
   selected_profile_model?: string
 }
 
-// Create SSE connection for session events (global chat list updates)
+// Create SSE connection for session events (global chat list updates).
+// Now uses the shared SseClient for auto-reconnect — see
+// `createSseConnection` above for the full rationale. The previous
+// version had no reconnect logic at all, so a single network blip
+// would freeze the sidebar's chat list until a manual reload.
 export function createSessionsSseConnection(
   onEvent: (event: SessionEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): EventSource {
+): SseClient {
   console.log('[createSessionsSseConnection] Creating SSE connection for session events')
-  const eventSource = new EventSource(`${API_BASE}/sessions/stream`)
 
-  // Buffer to accumulate multi-line JSON
+  // Per-client JSON buffer; cleared on every 'connected' event so a
+  // reconnect doesn't carry over stale bytes from the previous
+  // connection. See createSseConnection for the same pattern.
   let jsonBuffer = ''
 
-  // Handle named event: "connected"
-  eventSource.addEventListener('connected', (e: MessageEvent) => {
-    try {
-      const data = JSON.parse(e.data)
-      console.log('[SessionsSSE] connected event:', data)
-      onConnected?.()
-    } catch (err) {
-      console.error('Failed to parse connected event:', err)
-    }
-  })
-
-  // Handle default events (data: lines without event: prefix)
-  eventSource.onmessage = (event) => {
-    console.log('[SessionsSSE] onmessage raw:', JSON.stringify(event.data))
-    try {
-      const raw = event.data
-      if (!raw) return
-
-      const trimmed = raw.trim()
-      if (!trimmed) return
-
-      // Accumulate JSON until we have complete object
-      jsonBuffer += trimmed + '\n'
-
-      // Try to find complete JSON object (starts with { and ends with })
-      const jsonStart = jsonBuffer.indexOf('{')
-      const jsonEnd = jsonBuffer.lastIndexOf('}')
-
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-        const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
+  return createSseClient({
+    url: `${API_BASE}/sessions/stream`,
+    onConnected,
+    onEvent: (raw: string, eventType: string) => {
+      // 'connected' is the server's first-byte confirmation; we
+      // don't dispatch it to the caller's `onEvent` because
+      // SessionEvent has no `connected` variant. The SseClient
+      // already fires `onConnected` for it.
+      if (eventType === 'connected') {
+        jsonBuffer = ''
         try {
-          const data = JSON.parse(jsonStr)
-          console.log('[SessionsSSE] Received data:', data)
-          onEvent(data as SessionEvent)
-          // Keep anything after the JSON for next event
-          jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
-        } catch (e) {
-          // Not complete yet, keep buffering
-          console.log(
-            '[SessionsSSE] Buffering, not complete JSON yet, buffer length:',
-            jsonBuffer.length,
-          )
+          const data = JSON.parse(raw)
+          console.log('[SessionsSSE] connected event:', data)
+        } catch (err) {
+          console.error('Failed to parse connected event:', err)
         }
+        return
       }
-    } catch (e) {
-      console.error('SessionsSSE onmessage error:', e)
-    }
-  }
 
-  eventSource.onerror = (error) => {
-    console.error('[SessionsSSE] EventSource onerror:', error)
-    onError?.(error)
-  }
+      try {
+        const trimmed = raw.trim()
+        if (!trimmed) return
 
-  eventSource.onopen = () => {
-    console.log('[SessionsSSE] EventSource connected')
-  }
+        // Accumulate JSON until we have complete object
+        jsonBuffer += trimmed + '\n'
 
-  return eventSource
+        // Try to find complete JSON object (starts with { and ends with })
+        const jsonStart = jsonBuffer.indexOf('{')
+        const jsonEnd = jsonBuffer.lastIndexOf('}')
+
+        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+          const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
+          try {
+            const data = JSON.parse(jsonStr)
+            console.log('[SessionsSSE] Received data:', data)
+            onEvent(data as SessionEvent)
+            // Keep anything after the JSON for next event
+            jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
+          } catch (e) {
+            // Not complete yet, keep buffering
+            console.log(
+              '[SessionsSSE] Buffering, not complete JSON yet, buffer length:',
+              jsonBuffer.length,
+            )
+          }
+        }
+      } catch (e) {
+        console.error('SessionsSSE onmessage error:', e)
+      }
+    },
+    onStateChange: (state, info) => {
+      if (state === 'failed') {
+        onError?.(info.lastError ?? new Event('error'))
+      }
+    },
+  })
 }
 
 // Queue messages SSE event types
@@ -939,73 +970,65 @@ export function createQueueMessagesSseConnection(
   onEvent: (event: QueueMessageEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): EventSource {
+): SseClient {
   console.log('[createQueueMessagesSseConnection] Creating SSE connection for session:', sessionId)
-  const eventSource = new EventSource(`${API_BASE}/llm/session/${sessionId}/queue_messages/stream`)
 
-  // Buffer to accumulate multi-line JSON
+  // Per-client JSON buffer; cleared on 'connected' (see
+  // createSseConnection for the rationale).
   let jsonBuffer = ''
 
-  // Handle named event: "queue_message"
-  eventSource.addEventListener('queue_message', (e: MessageEvent) => {
-    try {
-      const data = JSON.parse(e.data)
-      console.log('[QueueMessagesSSE] queue_message event:', data)
-      onEvent(data as QueueMessageEvent)
-      onConnected?.()
-    } catch (err) {
-      console.error('Failed to parse queue_message event:', err)
-    }
-  })
-
-  // Handle default events (data: lines without event: prefix)
-  eventSource.onmessage = (event) => {
-    console.log('[QueueMessagesSSE] onmessage raw:', JSON.stringify(event.data))
-    try {
-      const raw = event.data
-      if (!raw) return
-
-      const trimmed = raw.trim()
-      if (!trimmed) return
-
-      // Accumulate JSON until we have complete object
-      jsonBuffer += trimmed + '\n'
-
-      // Try to find complete JSON object (starts with { and ends with })
-      const jsonStart = jsonBuffer.indexOf('{')
-      const jsonEnd = jsonBuffer.lastIndexOf('}')
-
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-        const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
-        try {
-          const data = JSON.parse(jsonStr)
-          console.log('[QueueMessagesSSE] Received data:', data)
-          onEvent(data as QueueMessageEvent)
-          // Keep anything after the JSON for next event
-          jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
-        } catch (e) {
-          // Not complete yet, keep buffering
-          console.log(
-            '[QueueMessagesSSE] Buffering, not complete JSON yet, buffer length:',
-            jsonBuffer.length,
-          )
-        }
+  return createSseClient({
+    url: `${API_BASE}/llm/session/${sessionId}/queue_messages/stream`,
+    onConnected,
+    onEvent: (raw: string, eventType: string) => {
+      // 'connected' is consumed by the SseClient (it fires
+      // onConnected); the previous implementation used the
+      // first 'queue_message' event as the liveness signal,
+      // which was a bug — a session with an empty queue would
+      // never trigger onConnected. The SseClient-based version
+      // uses the proper 'connected' named event.
+      if (eventType === 'connected') {
+        jsonBuffer = ''
+        return
       }
-    } catch (e) {
-      console.error('QueueMessagesSSE onmessage error:', e)
-    }
-  }
 
-  eventSource.onerror = (error) => {
-    console.error('[QueueMessagesSSE] EventSource onerror:', error)
-    onError?.(error)
-  }
+      try {
+        const trimmed = raw.trim()
+        if (!trimmed) return
 
-  eventSource.onopen = () => {
-    console.log('[QueueMessagesSSE] EventSource connected')
-  }
+        // Accumulate JSON until we have complete object
+        jsonBuffer += trimmed + '\n'
 
-  return eventSource
+        // Try to find complete JSON object (starts with { and ends with })
+        const jsonStart = jsonBuffer.indexOf('{')
+        const jsonEnd = jsonBuffer.lastIndexOf('}')
+
+        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+          const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
+          try {
+            const data = JSON.parse(jsonStr)
+            console.log('[QueueMessagesSSE] Received data:', data)
+            onEvent(data as QueueMessageEvent)
+            // Keep anything after the JSON for next event
+            jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
+          } catch (e) {
+            // Not complete yet, keep buffering
+            console.log(
+              '[QueueMessagesSSE] Buffering, not complete JSON yet, buffer length:',
+              jsonBuffer.length,
+            )
+          }
+        }
+      } catch (e) {
+        console.error('QueueMessagesSSE onmessage error:', e)
+      }
+    },
+    onStateChange: (state, info) => {
+      if (state === 'failed') {
+        onError?.(info.lastError ?? new Event('error'))
+      }
+    },
+  })
 }
 
 // GET queued messages
@@ -1036,77 +1059,79 @@ export interface WorkerEvent {
   created_at: string
 }
 
-// Create SSE connection for worker events (global worker list updates)
+// Create SSE connection for worker events (global worker list updates).
+// Now uses the shared SseClient for auto-reconnect. The previous
+// implementation in `App.vue` had a hand-rolled 5 s
+// `setTimeout(reconnect)` that suffered from two bugs (timer
+// leak on unmount, and a stale timer closing a working
+// connection). See `docs/sse-reconnect-plan.md` §1.1 and
+// `helpers/sseClient.ts` for the full history.
 export function createWorkersSseConnection(
   onEvent: (event: WorkerEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): EventSource {
+): SseClient {
   console.log('[createWorkersSseConnection] Creating SSE connection for worker events')
-  const eventSource = new EventSource(`${API_BASE}/workers/stream`)
 
-  // Buffer to accumulate multi-line JSON
+  // Per-client JSON buffer; cleared on 'connected' (see
+  // createSseConnection for the rationale).
   let jsonBuffer = ''
 
-  // Handle named event: "connected"
-  eventSource.addEventListener('connected', (e: MessageEvent) => {
-    try {
-      const data = JSON.parse(e.data)
-      console.log('[WorkersSSE] connected event:', data)
-      onConnected?.()
-    } catch (err) {
-      console.error('Failed to parse connected event:', err)
-    }
-  })
-
-  // Handle default events (data: lines without event: prefix)
-  eventSource.onmessage = (event) => {
-    console.log('[WorkersSSE] onmessage raw:', JSON.stringify(event.data))
-    try {
-      const raw = event.data
-      if (!raw) return
-
-      const trimmed = raw.trim()
-      if (!trimmed) return
-
-      // Accumulate JSON until we have complete object
-      jsonBuffer += trimmed + '\n'
-
-      // Try to find complete JSON object (starts with { and ends with })
-      const jsonStart = jsonBuffer.indexOf('{')
-      const jsonEnd = jsonBuffer.lastIndexOf('}')
-
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-        const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
+  return createSseClient({
+    url: `${API_BASE}/workers/stream`,
+    onConnected,
+    onEvent: (raw: string, eventType: string) => {
+      // 'connected' is consumed by the SseClient (it fires
+      // onConnected); WorkerEvent has no `connected` variant so
+      // we don't dispatch it to the caller.
+      if (eventType === 'connected') {
+        jsonBuffer = ''
         try {
-          const data = JSON.parse(jsonStr)
-          console.log('[WorkersSSE] Received data:', data)
-          onEvent(data as WorkerEvent)
-          // Keep anything after the JSON for next event
-          jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
-        } catch (e) {
-          // Not complete yet, keep buffering
-          console.log(
-            '[WorkersSSE] Buffering, not complete JSON yet, buffer length:',
-            jsonBuffer.length,
-          )
+          const data = JSON.parse(raw)
+          console.log('[WorkersSSE] connected event:', data)
+        } catch (err) {
+          console.error('Failed to parse connected event:', err)
         }
+        return
       }
-    } catch (e) {
-      console.error('WorkersSSE onmessage error:', e)
-    }
-  }
 
-  eventSource.onerror = (error) => {
-    console.error('[WorkersSSE] EventSource onerror:', error)
-    onError?.(error)
-  }
+      try {
+        const trimmed = raw.trim()
+        if (!trimmed) return
 
-  eventSource.onopen = () => {
-    console.log('[WorkersSSE] EventSource connected')
-  }
+        // Accumulate JSON until we have complete object
+        jsonBuffer += trimmed + '\n'
 
-  return eventSource
+        // Try to find complete JSON object (starts with { and ends with })
+        const jsonStart = jsonBuffer.indexOf('{')
+        const jsonEnd = jsonBuffer.lastIndexOf('}')
+
+        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+          const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
+          try {
+            const data = JSON.parse(jsonStr)
+            console.log('[WorkersSSE] Received data:', data)
+            onEvent(data as WorkerEvent)
+            // Keep anything after the JSON for next event
+            jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
+          } catch (e) {
+            // Not complete yet, keep buffering
+            console.log(
+              '[WorkersSSE] Buffering, not complete JSON yet, buffer length:',
+              jsonBuffer.length,
+            )
+          }
+        }
+      } catch (e) {
+        console.error('WorkersSSE onmessage error:', e)
+      }
+    },
+    onStateChange: (state, info) => {
+      if (state === 'failed') {
+        onError?.(info.lastError ?? new Event('error'))
+      }
+    },
+  })
 }
 
 // Nalar Config API

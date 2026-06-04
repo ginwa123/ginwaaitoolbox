@@ -13,6 +13,7 @@ import {
   type ScrollLogger,
 } from '@/helpers'
 import FileInput from './FileInput.vue'
+import SseStatusBadge from './SseStatusBadge.vue'
 import FolderExplorer from './FolderExplorer.vue'
 import DiffView from './tool_outputs/DiffView.vue'
 import ReadFile from './tool_outputs/ReadFile.vue'
@@ -220,9 +221,15 @@ const isLLMProcessing = computed(() => !!processingState.value[sessionId.value])
 const messageCursor = ref<string | null>(null)
 const PAGE_SIZE = 10
 
-// SSE connection
-const eventSource = ref<EventSource | null>(null)
-const queueEventSource = ref<EventSource | null>(null)
+// SSE connection. Both streams are now `api.SseClient` (the
+// shared auto-reconnecting wrapper) instead of raw `EventSource`.
+// The previous versions had NO reconnect logic — a single network
+// blip during a long chat would kill the stream silently until
+// the user reloaded. The new behaviour: exponential backoff
+// (1s → 30s), visibility-aware pause, and `online` fast-path
+// — all in `helpers/sseClient.ts`.
+const eventSource = ref<api.SseClient | null>(null)
+const queueEventSource = ref<api.SseClient | null>(null)
 const isStreaming = ref(false)
 const streamingContent = ref('')
 
@@ -581,6 +588,18 @@ const groupToolNames = computed((): (string | null)[] => {
 })
 
 // ─── Bubble Visibility ────────────────────────────────────────────────────────
+// Check if a message has visible text content (i.e. content that survives
+// stripThinkingTags and is non-empty after trim). An assistant message saved
+// with finish_reason='tool_calls' often has raw content that is *only*
+// `<thinking>...</thinking>` tags — the raw string is non-empty, but
+// renderResponse() strips those tags and renders an empty string, producing
+// a visible-but-empty bubble. The bubble check must match what the renderer
+// actually shows, not the raw column.
+const hasVisibleContent = (m: Message): boolean => {
+  const stripped = stripThinkingTags(m.content || '')
+  return stripped.trim().length > 0
+}
+
 // Check if a message group has any visible content for its bubble.
 // Hides empty bubbles (e.g., a user message with no text and no images,
 // or an assistant message with no content and no tool-call header).
@@ -588,16 +607,14 @@ const hasBubbleContent = (group: MessageGroup, groupIndex: number): boolean => {
   if (group.role === 'user') {
     const first = group.messages[0]
     const hasImages = (first?.image_urls?.length ?? 0) > 0
-    const hasContent = (first?.content?.trim() ?? '').length > 0
-    return hasImages || hasContent
+    return hasImages || (first ? hasVisibleContent(first) : false)
   }
   if (group.role === 'tool') {
     return group.messages.length > 0
   }
   if (group.role === 'assistant') {
     const hasToolHeader = groupToolNames.value[groupIndex] !== null
-    const hasContent = group.messages.some((m) => (m.content?.trim() ?? '').length > 0)
-    return hasToolHeader || hasContent
+    return hasToolHeader || group.messages.some(hasVisibleContent)
   }
   return true
 }
@@ -1635,7 +1652,15 @@ const compactSession = async () => {
                           </div>
                         </div>
                       </div>
-                      <div class="assistant-messages">
+                      <!-- Hide the messages block when every message in the group
+                           is empty after stripping thinking tags — this happens
+                           on tool_calls-only assistant turns. The tool header
+                           (if any) is shown above; we don't want an empty
+                           padded area below it. -->
+                      <div
+                        v-if="group.messages.some(hasVisibleContent)"
+                        class="assistant-messages"
+                      >
                         <div v-for="(msg, idx) in group.messages" :key="idx" class="assistant-item">
                           <!-- eslint-disable-next-line vue/no-v-html -->
                           <span
@@ -1655,7 +1680,13 @@ const compactSession = async () => {
                       </div>
                     </template>
                   </div>
+                  <!-- Timestamp is hidden along with the bubble. The bubble
+                       uses v-if="hasBubbleContent(...)" above; if the
+                       bubble is hidden, the timestamp would otherwise
+                       appear orphaned (this was the "timestamps with no
+                       bubble" visual artifact between tool calls). -->
                   <div
+                    v-if="hasBubbleContent(group, groupIndex)"
                     class="text-xs mt-1 px-1"
                     :class="group.role === 'user' ? 'text-right' : 'text-left'"
                     style="color: var(--semantic-text-dim)"
@@ -1738,7 +1769,7 @@ const compactSession = async () => {
               <span v-else>🗜️</span>
               <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
             </button>
-           
+
             <!-- Model/Profile selector -->
             <div ref="profilePickerRef" class="relative">
               <button
@@ -1862,6 +1893,16 @@ const compactSession = async () => {
                 >skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span
               >
             </button>
+
+            <!--
+              SSE connection indicator for the chat stream. Hidden
+              when the stream is healthy (the common case); a small
+              pill appears when reconnecting so the user knows their
+              chat is recovering instead of silently dying. Driven by
+              the SseClient's onStateChange API — see
+              components/SseStatusBadge.vue and helpers/sseClient.ts.
+            -->
+            <SseStatusBadge :client="eventSource" />
           </div>
         </div>
       </div>
