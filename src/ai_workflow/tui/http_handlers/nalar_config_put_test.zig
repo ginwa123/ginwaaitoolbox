@@ -34,6 +34,7 @@ fn makeConfig(allocator: std.mem.Allocator, model: []const u8) !*LlmConfig {
         .base_url = try allocator.dupe(u8, "https://test.example.com"),
         .url_style = try allocator.dupe(u8, "openai"),
         .model_compaction_size_kb = 100,
+        .notify_on_complete = false,
         .mcpServers_parsed = null,
         .mcp_servers = LlmConfig.McpServersMap.init(allocator),
         .profiles_models = LlmConfig.ProfilesMap.init(allocator),

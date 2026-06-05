@@ -330,6 +330,55 @@ test "mcp_servers: legacy mcpServers() json.Value accessor still returns data" {
 // Lifecycle: clone produces a deep, independent copy
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// notify_on_complete: opt-in OS notification flag
+// ---------------------------------------------------------------------------
+
+test "notify_on_complete: defaults to false when missing from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(false, cfg.notify_on_complete);
+}
+
+test "notify_on_complete: reads true from JSON when present" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "notify_on_complete": true
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(true, cfg.notify_on_complete);
+}
+
+test "notify_on_complete: reads false from JSON when explicitly false" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "notify_on_complete": false
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(false, cfg.notify_on_complete);
+}
+
 test "mcp_servers: clone produces independent deep copy" {
     const allocator = std.testing.allocator;
 

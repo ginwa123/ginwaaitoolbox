@@ -18,6 +18,12 @@ pub const LlmConfig = struct {
     /// Parsed profiles from profiles_models
     profiles_models: ProfilesMap,
     url_style: []const u8,
+    /// When true, fire an OS-level notification when an LLM response
+    /// finishes with `finish_reason === 'stop'`. Off by default — the
+    /// user opts in via the config. Notifications are dispatched from
+    /// the backend (notify-send / osascript / PowerShell) so they work
+    /// even when the desktop app's browser is closed.
+    notify_on_complete: bool,
 
     pub const LoadError = error{
         ConfigFileNotFound,
@@ -54,6 +60,10 @@ pub const LlmConfig = struct {
         base_url: []const u8 = "",
         url_style: []const u8 = "openai",
         model_compaction_size_kb: usize = 100,
+        /// Opt-in: fire an OS notification when an LLM response finishes
+        /// with `finish_reason === 'stop'`. Default false (user must
+        /// explicitly enable in config to avoid surprise notifications).
+        notify_on_complete: bool = false,
         /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
         mcp_servers: ?std.json.Value = null,
         /// Profiles - parsed as json.Value then converted to map
@@ -136,6 +146,7 @@ pub const LlmConfig = struct {
             .base_url = try allocator.dupe(u8, config_json.base_url),
             .url_style = try allocator.dupe(u8, config_json.url_style),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
+            .notify_on_complete = config_json.notify_on_complete,
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(allocator),
             .profiles_models = ProfilesMap.init(allocator),
@@ -397,6 +408,7 @@ pub const LlmConfig = struct {
             .base_url = try self.allocator.dupe(u8, self.base_url),
             .url_style = try self.allocator.dupe(u8, self.url_style),
             .model_compaction_size_kb = self.model_compaction_size_kb,
+            .notify_on_complete = self.notify_on_complete,
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(self.allocator),
             .profiles_models = ProfilesMap.init(self.allocator),
