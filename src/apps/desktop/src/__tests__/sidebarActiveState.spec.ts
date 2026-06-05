@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { nextTick, ref } from 'vue'
+import { nextTick, reactive, ref } from 'vue'
 
 import * as api from '../api'
 import { useNavigationStore } from '../stores/navigation'
@@ -188,7 +188,6 @@ describe('AppLayout URL-driven chat navigation', () => {
       path: '/app',
       fullPath: '/app',
     } as any)
-    useRouterMock.mockReturnValue({ replace: vi.fn(), push: vi.fn() } as any)
   })
 
   afterEach(() => {
@@ -228,6 +227,63 @@ describe('AppLayout URL-driven chat navigation', () => {
     // The fix: onMounted's chat branch must reset the workspace-item
     // active state — the URL is the source of truth, and it points
     // to a chat.
+    expect(ws.activeWorkspaceItemId).toBeNull()
+  })
+
+  it('clears activeWorkspaceItemId when URL watch fires for chat view', async () => {
+    const ws = useWorkspacesStore()
+    ws.setActiveWorkspaceItem('item_from_url_watch')
+    expect(ws.activeWorkspaceItemId).toBe('item_from_url_watch')
+
+    // Mount with a non-chat initial route so onMounted's chat branch
+    // (lines 38-43) does NOT fire. This test exercises site 4 of the 5
+    // reset sites: the `watch(() => route.query, ...)` callback in
+    // AppLayout.vue (lines 403-508), specifically the
+    // `view === 'chat' && sessionId` branch at lines 479-496.
+    //
+    // NOTE on the reactive wrapper: `route = useRoute()` is captured
+    // at setup time (AppLayout.vue line 23), so a post-mount
+    // `useRouteMock.mockReturnValue(...)` would NOT update `route`
+    // and the watch would never fire. We instead return a `reactive`
+    // object from the mock and mutate its `query` directly — that's
+    // the only way to trigger Vue's reactivity for a captured
+    // (non-reactive) mock return value.
+    const routeObj = reactive({
+      query: { view: 'workspace' } as Record<string, string>,
+      path: '/app',
+      fullPath: '/app?view=workspace',
+    })
+    useRouteMock.mockReturnValue(routeObj as any)
+
+    const wrapper = mount(AppLayout, {
+      global: {
+        stubs: {
+          Sidebar: true,
+          RightSidebar: true,
+          GitFileViewer: true,
+          SkillDetail: true,
+          ChatView: true,
+          Chats: true,
+          SettingsView: true,
+          CodeEditor: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    // Sanity: onMounted ran but didn't touch activeWorkspaceItemId
+    // (initial URL was workspace, not chat).
+    expect(ws.activeWorkspaceItemId).toBe('item_from_url_watch')
+
+    // Now navigate to a chat URL — the watch's chat branch must fire
+    // and reset the workspace-item active state. The guard
+    // `activeChatId.value !== 'chat-${sessionId}'` is true here
+    // (activeChatId is empty after the workspace mount), so the
+    // reset block executes.
+    routeObj.query = { view: 'chat', session: 'chat_new' }
+    await flushPromises()
+    wrapper.unmount()
+
     expect(ws.activeWorkspaceItemId).toBeNull()
   })
 })
