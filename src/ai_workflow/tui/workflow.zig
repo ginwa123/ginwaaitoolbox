@@ -671,6 +671,13 @@ fn generateSessionNameNew(
             if (needs_free) allocator.free(stripped_content);
             return;
         };
+
+        llm_history.updateTaskName(allocator, db, session_id, stripped_content) catch {
+            logger.errFmt("[SESSION NAME] Failed to update task name: {s}", .{stripped_content});
+            if (needs_free) allocator.free(stripped_content);
+            return;
+        };
+
         logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{stripped_content});
         if (needs_free) allocator.free(stripped_content);
     }

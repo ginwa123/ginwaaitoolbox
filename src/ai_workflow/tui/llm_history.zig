@@ -1861,6 +1861,32 @@ pub fn updateSessionName(
     }
 }
 
+pub fn updateTaskName(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    new_name: []const u8,
+) !void {
+    const sql = "UPDATE workspace_item_tasks SET name = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ new_name, id });
+
+    // Get updated session data and broadcast
+    // const session = getSession(allocator, db, id) catch null;
+    // if (session) |s| {
+    //     defer s.deinit(allocator);
+    //     ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+    //         .action = "updated",
+    //         .id = s.id,
+    //         .name = s.name,
+    //         .status = s.status,
+    //         .cwd = s.cwd,
+    //         .created_at = s.created_at,
+    //         .updated_at = s.updated_at,
+    //         .selected_profile_model = s.selected_profile_model,
+    //     }) catch {};
+    // }
+}
+
 /// Update session selected_profile_model (the name of a profile in
 /// LlmConfig.profiles_models). Pass empty string or null to clear.
 pub fn updateSessionSelectedProfileModel(

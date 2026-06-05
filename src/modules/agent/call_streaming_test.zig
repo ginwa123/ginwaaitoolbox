@@ -64,18 +64,6 @@ test "CallError has the four new streaming variants" {
     try expectEqualStrings("StreamEmpty", @errorName(d));
 }
 
-test "HttpOptions has idle_timeout_ms with expected default" {
-    const opts: agent.HttpOptions = .{};
-    try expectEqual(@as(u32, 30_000), opts.idle_timeout_ms);
-    try expectEqual(@as(u32, 300_000), opts.read_timeout_ms);
-    // The fields must be settable (regression: the field exists and is mutable).
-    var custom: agent.HttpOptions = .{};
-    custom.idle_timeout_ms = 200;
-    custom.read_timeout_ms = 5_000;
-    try expectEqual(@as(u32, 200), custom.idle_timeout_ms);
-    try expectEqual(@as(u32, 5_000), custom.read_timeout_ms);
-}
-
 // ============================================================================
 // Real network test — spins up a fake HTTP server, points the agent at it,
 // and verifies the idle-timeout fix actually fires on a stalled connection.

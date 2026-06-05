@@ -12,7 +12,7 @@ const ai_workflow = nalarcore.ai_workflow;
 const logger = nalarcore.logger;
 
 const config = nalarcore.config;
-const http_response = nalarcore.http_response;
+pub const http_response = nalarcore.http_response;
 
 // =============================================================================
 // Re-exports

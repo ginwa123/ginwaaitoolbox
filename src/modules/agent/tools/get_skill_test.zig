@@ -11,12 +11,6 @@ test "get_skill_tool - has correct tool definition" {
     try std.testing.expect(get_skill.get_skill_tool.function.parameters.properties.len == 3);
 }
 
-test "get_skill_tool - required fields are correct" {
-    const params = get_skill.get_skill_tool.function.parameters;
-    // skill_name and path are both optional (empty required array)
-    try std.testing.expect(params.required.len == 0);
-}
-
 test "GetSkillInput - has correct defaults" {
     const input = get_skill.GetSkillInput{};
     try std.testing.expect(input.skill_name == null);

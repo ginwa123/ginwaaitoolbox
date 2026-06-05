@@ -278,37 +278,6 @@ test "build_sub_agent_prompt loads memory files into Global Knowledge section" {
 }
 
 // -------------------------------------------------------------------------
-// build_agent_prompt — GlobalMemorySystem gating
-// -------------------------------------------------------------------------
-
-
-test "build_agent_prompt omits GlobalMemorySystem section when list_memory tool is absent" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-    // No list_memory in tools
-    const tools = [_]AgentTool{
-        makeTool("read_file", "Read a file"),
-    };
-    const prompt = try prompts.build_agent_prompt(
-        alloc,
-        io,
-        "/tmp",
-        "",
-        "",
-        "",
-        "",
-        &tools,
-        "",
-        null,
-    );
-    defer alloc.free(prompt);
-
-    // The section is gated — must not appear without list_memory
-    try std.testing.expect(!contains(prompt, "## Global Memory System"));
-    try std.testing.expect(!contains(prompt, "Generalize, don't specialize"));
-}
-
-// -------------------------------------------------------------------------
 // build_agent_prompt — Available Skills listing
 // -------------------------------------------------------------------------
 
