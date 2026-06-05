@@ -216,6 +216,10 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
     try gs.router.put("/api/config/nalar", ai_mod.http_handlers.nalarConfigPutHandler);
 
+    // OS notification test endpoint — fires a real OS notification so
+    // the user can verify their system can display them.
+    try gs.router.post("/api/notify/test", ai_mod.http_handlers.notifyTestHandler);
+
     try gs.router.get("/api/git/status", ai_mod.http_handlers.gitStatusHandler);
     try gs.router.get("/api/git/changes", ai_mod.http_handlers.gitChangesHandler);
     try gs.router.get("/api/git/file/diff", ai_mod.http_handlers.gitFileDiffHandler);

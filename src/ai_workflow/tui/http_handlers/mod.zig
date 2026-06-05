@@ -88,6 +88,11 @@ pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessi
 pub const nalarConfigGetHandler = @import("nalar_config_get.zig").nalarConfigGetHandler;
 pub const nalarConfigPutHandler = @import("nalar_config_put.zig").nalarConfigPutHandler;
 
+// OS notification test handler — fires a real OS notification so the
+// user can verify their system can display them without running a
+// full LLM stream. See /docs/superpowers/plans/2026-01-15-llm-completion-notification.md
+pub const notifyTestHandler = @import("notify_test.zig").notifyTestHandler;
+
 // =============================================================================
 // Shared Types & Helpers
 // =============================================================================
