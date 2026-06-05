@@ -148,22 +148,51 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     loadingError.value = null
 
     try {
-      const data = await api.getWorkspaces()
+      // Step 1: fetch the workspaces list (no items — those come separately).
+      const { workspaces: wsList } = await api.getWorkspaces()
       const expandedWorkspaces = loadExpandedWorkspaces()
       const expandedItems = loadExpandedItems()
       const expandedIds = loadExpandedItemIds()
       // Load expanded item IDs for tasks list from localStorage
       expandedItemIds.value = expandedIds
-      workspaces.value = (data.workspaces || []).map((ws: Workspace) => ({
-        ...ws,
-        // Restore expanded state from localStorage
-        expanded: expandedWorkspaces.has(ws.id),
-        items: (ws.items || []).map((item: WorkspaceItem) => ({
-          ...item,
-          // Restore expanded state from localStorage
-          expanded: expandedItems.has(item.id),
-        })),
-      }))
+
+      // Step 2 + 3: fan out per-workspace items + per-item tasks in parallel.
+      // A per-item tasks fetch failure is best-effort (logged + empty tasks
+      // for that item) so a single bad item doesn't kill the whole init.
+      workspaces.value = await Promise.all(
+        (wsList || []).map(async (ws: Workspace) => {
+          // Items for this workspace.
+          const { items } = await api.getWorkspacesItems(ws.id)
+
+          // Tasks for each item in this workspace (per-item, in parallel).
+          const tasksByItem = new Map<string, Task[]>()
+          await Promise.all(
+            (items || []).map(async (item: WorkspaceItem) => {
+              try {
+                const { tasks } = await api.getTasks(ws.id, item.id)
+                if (tasks && tasks.length > 0) {
+                  tasksByItem.set(item.id, tasks)
+                }
+              } catch (err) {
+                console.error(`Failed to fetch tasks for item ${item.id}:`, err)
+              }
+            }),
+          )
+
+          return {
+            ...ws,
+            // Restore expanded state from localStorage
+            expanded: expandedWorkspaces.has(ws.id),
+            items: (items || []).map((item: WorkspaceItem) => ({
+              ...item,
+              // Restore expanded state from localStorage
+              expanded: expandedItems.has(item.id),
+              // Attach tasks for this item (may be [] if no tasks or fetch failed).
+              tasks: tasksByItem.get(item.id) ?? [],
+            })),
+          }
+        }),
+      )
     } catch (err) {
       loadingError.value = err instanceof Error ? err.message : 'Failed to load workspaces'
       console.error('Failed to load workspaces:', err)
