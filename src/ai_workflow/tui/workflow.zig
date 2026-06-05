@@ -6,6 +6,7 @@ const models = @import("models.zig");
 const on_event_sent = @import("on_event_sent.zig");
 const tool_registry = @import("tool_registry.zig");
 const handle_tool = @import("handle_tool.zig").handle_tool;
+const notifications = @import("notifications.zig");
 
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
@@ -109,6 +110,8 @@ pub const CallbackAiWorkerFlow = struct {
                 .is_output = false,
                 .session_skills = session_skills_err,
             }) catch {};
+
+            std.debug.panic("runAgenticMultiStepnew failed: {s}", .{@errorName(err)});
         };
     }
 };
@@ -468,6 +471,18 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
                 if (isHaveQueueMessage) {
                     continue;
+                }
+
+                // Fire an OS notification when the user has opted in. Only on
+                // `finish_reason == .stop` — tool_calls and length are
+                // mid-conversation events the user is already watching. Fire-
+                // and-forget: a missing notify-send (or denied daemon) is
+                // logged and ignored so the LLM workflow never blocks.
+                if (config.notify_on_complete) {
+                    const preview = if (res_dynamic_agent.content) |c| c else "(empty response)";
+                    notifications.notify(io, allocator, "LLM Response Complete", preview) catch |err| {
+                        logger.warnFmt("notifications: {s}", .{@errorName(err)});
+                    };
                 }
 
                 break;
