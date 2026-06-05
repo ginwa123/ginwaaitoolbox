@@ -51,7 +51,7 @@ pub const get_skill_tool = AgentTool{
                     .description = "If true, only search the global skills directory (~/.config/nalar/skills/). If false (default), search local first, then fall back to global.",
                 },
             },
-            .required = &.{"skill_name", "path", "is_global"},
+            .required = &.{ "path", "is_global" },
         },
     },
 };
