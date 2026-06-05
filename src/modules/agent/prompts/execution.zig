@@ -194,7 +194,6 @@ pub const Execution =
     \\- If a patch works, don't refactor
     \\- Only add complexity when there's clear evidence it's needed
     \\
-    \\**⚠️ TDD APPROACH (PREFERRED):** See **TDD (Test-Driven Development)** section above for test-first workflow.
     \\
     \\**⚠️ SURGICAL CODE PATCHING (Enhancing Existing Code):**
     \\- **NEVER refactor** existing code when enhancing it
@@ -223,38 +222,31 @@ pub const Escalation =
 ;
 
 pub const PlanBlock =
-    \\## Plan Block (Complex tasks)
+    \\## Plan Block
     \\
-    \\**⚡ DYNAMIC PROPERTY ADJUSTMENT — Change your properties based on task demands:**
+    \\RULES:
+    \\1. Output the plan below — nothing else.
+    \\2. Do NOT write code.
+    \\3. Do NOT continue until user replies "yes" or "proceed".
+    \\4. If scope is unclear, ask ONE clarifying question first.
     \\
-    \\| Before/After | Properties | Command |
-    \\|--------------|------------|---------|
-    \\| **BEFORE** writing a plan | `temperature=1.0, is_thinking=true` | `use set_agent_properties with temperature=1.0 and is_thinking=true` |
-    \\| **AFTER** plan approved | `temperature=0.2, is_thinking=false` | `use set_agent_properties with temperature=0.2 and is_thinking=false` |
-    \\
-    \\**⚡ ON-DEMAND EXAMPLES:**
-    \\- Stuck debugging? → `use set_agent_properties with temperature=0.8 and is_thinking=true`
-    \\- Need creative solution? → `use set_agent_properties with temperature=1.0 and is_thinking=true`
-    \\- Simple repetitive task? → `use set_agent_properties with temperature=0.2 and is_thinking=false`
-    \\
-    \\Before writing code, answer:
-    \\1. **What files?** — List specific files to modify
-    \\2. **What changes?** — Describe exact modifications
-    \\3. **How to verify?** — Build command, test command
-    \\4. **What could break?** — Dependencies, side effects
-    \\
-    \\Format:
     \\```
     \\## Plan
+    \\
+    \\### Changes
+    \\- `src/auth.ts` — add JWT refresh logic (access tokens expire in 15 min)
+    \\
     \\### Steps
-    \\1. <action> → <file> → <expected result>
+    \\1. Add `refreshToken()` → `src/auth.ts` → issues new access token without re-login
+    \\2. Call on 401 response → `src/api.ts` → transparent retry for all requests
     \\
     \\### Verify
-    \\- Build: `<command>`
-    \\- Test: `<command>`
+    \\- Build: `npm run build`
+    \\- Test:  `npm test -- auth`
     \\
     \\### Risks
-    \\- <risk> → <mitigation>
+    \\- Infinite refresh loop → guard with a single-retry flag
     \\```
-    \\Present Plan → wait for "yes/proceed".
+    \\
+    \\STOP. Wait for confirmation before writing any code.
 ;
