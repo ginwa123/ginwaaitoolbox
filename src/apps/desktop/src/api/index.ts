@@ -82,7 +82,17 @@ export async function listFolder(path: string): Promise<FolderInfo> {
 
 // Workspace API
 export async function getWorkspaces(): Promise<{ workspaces: Workspace[] }> {
-  const response = await fetch(`${API_BASE}/workspaces`)
+  // Items are loaded separately via getWorkspacesItems(workspace_id) —
+  // this keeps the workspaces list small and lets us fetch items lazily.
+  const response = await fetch(`${API_BASE}/workspaces?is_include_items=false`)
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+export async function getWorkspacesItems(
+  workspace_id: string,
+): Promise<{ items: WorkspaceItem[]; count: number }> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspace_id}/items`)
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json()
 }
@@ -1219,10 +1229,9 @@ export interface ProfileDeleteResponse {
  * (optimistic update, rollback, notification).
  */
 export async function deleteProfile(name: string): Promise<ProfileDeleteResponse> {
-  const response = await fetch(
-    `${API_BASE}/config/nalar/profiles/${encodeURIComponent(name)}`,
-    { method: 'DELETE' },
-  )
+  const response = await fetch(`${API_BASE}/config/nalar/profiles/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json()
 }
