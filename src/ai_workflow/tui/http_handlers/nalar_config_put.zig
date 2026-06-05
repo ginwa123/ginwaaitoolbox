@@ -190,7 +190,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     {
         const env_for_reload: *std.process.Environ.Map = @constCast(@ptrCast(di.environment orelse environment));
 
-        var new_cfg = config.LlmConfig.init(allocator, io, null, env_for_reload) catch |err| {
+        var new_cfg = config.LlmConfig.init(di.allocator, io, null, env_for_reload) catch |err| {
             std.log.err("PUT /api/config/nalar: live reload parse failed: {s}", .{@errorName(err)});
             return res.jsonResponse(.{
                 .status_code = 200,
@@ -208,7 +208,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             });
         };
 
-        const new_ptr = allocator.create(config.LlmConfig) catch |err| {
+        const new_ptr = di.allocator.create(config.LlmConfig) catch |err| {
             std.log.err("PUT /api/config/nalar: alloc failed: {s}", .{@errorName(err)});
             var mut: *config.LlmConfig = &new_cfg;
             mut.deinit();

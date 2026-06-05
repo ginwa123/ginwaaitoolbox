@@ -83,7 +83,7 @@ pub fn setSingleton(ctx: *ContextIPCTui) !void {
 /// is therefore atomic on all supported platforms. The mutex only protects
 /// the swap-and-promote sequence inside `setLlmConfig`.
 pub const LlmConfigHolder = struct {
-    current: *const config.LlmConfig,
+    current: *config.LlmConfig,
     /// Previous pointer, kept alive until the next swap (or shutdown) so
     /// any in-flight workflow that captured the old `*const LlmConfig` does
     /// not dereference freed memory. `null` until the first live reload.
@@ -116,7 +116,7 @@ pub const ContextIPCTui = struct {
 /// No lock needed — single-word aligned pointer load is atomic on all
 /// supported platforms; the lock only protects the swap-and-promote
 /// sequence in `setLlmConfig`.
-pub fn getLlmConfig(di: *ContextIPCTui) *const config.LlmConfig {
+pub fn getLlmConfig(di: *ContextIPCTui) *config.LlmConfig {
     return di.llm_config_holder.current;
 }
 
@@ -130,7 +130,7 @@ pub fn getLlmConfig(di: *ContextIPCTui) *const config.LlmConfig {
 /// window at exactly one stale `LlmConfig`.
 pub fn setLlmConfig(
     di: *ContextIPCTui,
-    new_ptr: *const config.LlmConfig,
+    new_ptr: *config.LlmConfig,
 ) void {
     const io = di.io;
     di.llm_config_holder.lock.lock(io) catch return;
@@ -250,7 +250,7 @@ pub fn getListClientsForSession(session_id: []const u8, allocator: std.mem.Alloc
 pub fn getSessionIdForClient(client_id: [16]u8, is_use_lock: bool) ?[]const u8 {
     _ = is_use_lock;
     const di = getSingleton() catch return null;
-   const io = di.io;
+    const io = di.io;
     di.session_map_lock.lock(io) catch {};
     defer di.session_map_lock.unlock(io);
     var it = di.session_to_client_ids.iterator();

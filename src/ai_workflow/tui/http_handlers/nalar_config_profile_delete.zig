@@ -253,7 +253,7 @@ pub fn nalarConfigProfileDeleteHandler(
         .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Environment not available" }),
     });
     // Cast const away since getDefaultConfigDir doesn't actually modify environment
-    const environment: *std.process.Environ.Map = @constCast(@ptrCast(environment_ptr));
+    const environment: *std.process.Environ.Map = @ptrCast(@constCast(environment_ptr));
 
     // Build both the directory and the file path. The PUT handler
     // (nalar_config_put.zig:22-45) uses the same pattern: get the
@@ -332,10 +332,6 @@ pub fn nalarConfigProfileDeleteHandler(
         };
         config_json = parsed.value;
     }
-    // `existing_content` was allocated by `allocRemaining`; free it
-    // now that we've parsed it.
-    if (existing_content) |c| allocator.free(c);
-
     // Capture whether this profile was the active one BEFORE the
     // helper runs (so we can report it to the caller — the helper
     // sets `cfg.active_profile = null` when it matches).
@@ -409,9 +405,9 @@ pub fn nalarConfigProfileDeleteHandler(
     // (disk is already authoritative) but log the error and skip
     // the swap so the running config is stable.
     {
-        const env_for_reload: *std.process.Environ.Map = @constCast(@ptrCast(di.environment orelse environment));
-
-        var new_cfg = config.LlmConfig.init(allocator, io, null, env_for_reload) catch |err| {
+        const env_for_reload: *std.process.Environ.Map = @ptrCast(@constCast(di.environment orelse environment));
+        const global_allocator = di.allocator;
+        var new_cfg = config.LlmConfig.init(global_allocator, io, null, env_for_reload) catch |err| {
             std.log.err("DELETE /api/config/nalar/profiles/{s}: live reload parse failed: {s}", .{ name, @errorName(err) });
             config_json.deinit(allocator);
             const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
@@ -423,20 +419,7 @@ pub fn nalarConfigProfileDeleteHandler(
             return res.jsonResponse(.{ .status_code = 200, .data = body });
         };
 
-        new_cfg.validate() catch |err| {
-            std.log.err("DELETE /api/config/nalar/profiles/{s}: live reload validation failed: {s}", .{ name, @errorName(err) });
-            var mut: *config.LlmConfig = &new_cfg;
-            mut.deinit();
-            const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
-                .success = true,
-                .profile_name = name,
-                .active_profile_was_cleared = was_active,
-                .error_message = "Profile deleted from disk but failed validation",
-            }, .{});
-            return res.jsonResponse(.{ .status_code = 200, .data = body });
-        };
-
-        const new_ptr = allocator.create(config.LlmConfig) catch |err| {
+        const new_ptr = global_allocator.create(config.LlmConfig) catch |err| {
             std.log.err("DELETE /api/config/nalar/profiles/{s}: alloc failed: {s}", .{ name, @errorName(err) });
             var mut: *config.LlmConfig = &new_cfg;
             mut.deinit();
@@ -447,7 +430,8 @@ pub fn nalarConfigProfileDeleteHandler(
             }, .{});
             return res.jsonResponse(.{ .status_code = 500, .data = body });
         };
-        new_ptr.* = new_cfg;
+        new_ptr.* = new_cfg; // atomically swap
+        //
         // Atomically swap. Previous-pointer free happens inside setLlmConfig.
         nalarcore.setLlmConfig(di, new_ptr);
         std.log.info("DELETE /api/config/nalar/profiles/{s}: live-reloaded llm_config (active_was_cleared={})", .{ name, was_active });
