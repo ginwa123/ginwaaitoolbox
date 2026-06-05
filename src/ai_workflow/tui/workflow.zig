@@ -221,7 +221,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     };
 
     var retry_count: usize = 0;
-    var current_max_tokens: usize = 8000;
+    var current_max_tokens: usize = 100000;
     var loop_counter: u32 = 0;
 
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
