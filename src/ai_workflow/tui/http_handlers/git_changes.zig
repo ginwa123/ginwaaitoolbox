@@ -1,24 +1,18 @@
 const std = @import("std");
-const http_response = @import("http_response.zig");
 const nalar_core = @import("nalarcore");
+const mod = @import("mod.zig");
+const http_response = mod.http_response;
 const gserverz = nalar_core.gserverz;
 
 /// Git file change structure
 pub const GitFileChange = struct {
-    index_status: []const u8,  // Status in staging area (1 char: 'M', 'A', 'D', '?', ' ', etc.)
-    worktree_status: []const u8,  // Status in working tree (1 char: 'M', 'D', '?', ' ', etc.)
-    path: []const u8
+    index_status: []const u8, // Status in staging area (1 char: 'M', 'A', 'D', '?', ' ', etc.)
+    worktree_status: []const u8, // Status in working tree (1 char: 'M', 'D', '?', ' ', etc.)
+    path: []const u8,
 };
 
 /// Git changes response with staged and unstaged files
-pub const GitChangesResponse = struct {
-    is_git_repo: bool,
-    branch: ?[]const u8 = null,
-    has_changes: bool = false,
-    staged_files: []const GitFileChange = &.{},
-    modified_files: []const GitFileChange = &.{},
-    untracked_files: []const GitFileChange = &.{}
-};
+pub const GitChangesResponse = struct { is_git_repo: bool, branch: ?[]const u8 = null, has_changes: bool = false, staged_files: []const GitFileChange = &.{}, modified_files: []const GitFileChange = &.{}, untracked_files: []const GitFileChange = &.{} };
 
 /// Parse git status --porcelain output and separate staged/unstaged files
 /// Note: This function allocates copies of status chars and paths
@@ -26,13 +20,13 @@ fn parseGitStatus(allocator: std.mem.Allocator, output: []const u8) GitChangesRe
     var staged_files = std.ArrayList(GitFileChange).empty;
     var modified_files = std.ArrayList(GitFileChange).empty;
     var untracked_files = std.ArrayList(GitFileChange).empty;
-    
+
     var start: usize = 0;
     while (start < output.len) {
         // Find end of line
         const end = std.mem.indexOfScalar(u8, output[start..], '\n') orelse output.len;
-        const line = output[start..start+end];
-        
+        const line = output[start .. start + end];
+
         if (line.len >= 4) {
             // Git porcelain format: XY<space><path>
             // X = index status (1 char at position 0)
@@ -42,7 +36,7 @@ fn parseGitStatus(allocator: std.mem.Allocator, output: []const u8) GitChangesRe
             const indexStatus = line[0..1];
             const worktreeStatus = line[1..2];
             const path = line[3..];
-            
+
             // Allocate copies since output buffer will be freed
             const indexStatusCopy = allocator.dupe(u8, indexStatus) catch continue;
             const worktreeStatusCopy = allocator.dupe(u8, worktreeStatus) catch {
@@ -54,13 +48,9 @@ fn parseGitStatus(allocator: std.mem.Allocator, output: []const u8) GitChangesRe
                 allocator.free(worktreeStatusCopy);
                 continue;
             };
-            
-            const change = GitFileChange{
-                .index_status = indexStatusCopy,
-                .worktree_status = worktreeStatusCopy,
-                .path = pathCopy
-            };
-            
+
+            const change = GitFileChange{ .index_status = indexStatusCopy, .worktree_status = worktreeStatusCopy, .path = pathCopy };
+
             // Untracked files have "??" as their status (both X and Y are '?')
             if (std.mem.eql(u8, indexStatus, "?") and std.mem.eql(u8, worktreeStatus, "?")) {
                 untracked_files.append(allocator, change) catch {};
@@ -70,22 +60,17 @@ fn parseGitStatus(allocator: std.mem.Allocator, output: []const u8) GitChangesRe
                 staged_files.append(allocator, change) catch {};
             }
             // Modified files in worktree (Y != ' ' and not untracked)
-            if (!std.mem.eql(u8, worktreeStatus, " ") and 
-                !(std.mem.eql(u8, indexStatus, "?") and std.mem.eql(u8, worktreeStatus, "?"))) {
+            if (!std.mem.eql(u8, worktreeStatus, " ") and
+                !(std.mem.eql(u8, indexStatus, "?") and std.mem.eql(u8, worktreeStatus, "?")))
+            {
                 modified_files.append(allocator, change) catch {};
             }
         }
-        
+
         start += end + 1;
     }
-    
-    return GitChangesResponse{
-        .is_git_repo = true,
-        .staged_files = staged_files.toOwnedSlice(allocator) catch &.{},
-        .modified_files = modified_files.toOwnedSlice(allocator) catch &.{},
-        .untracked_files = untracked_files.toOwnedSlice(allocator) catch &.{},
-        .has_changes = staged_files.items.len > 0 or modified_files.items.len > 0 or untracked_files.items.len > 0
-    };
+
+    return GitChangesResponse{ .is_git_repo = true, .staged_files = staged_files.toOwnedSlice(allocator) catch &.{}, .modified_files = modified_files.toOwnedSlice(allocator) catch &.{}, .untracked_files = untracked_files.toOwnedSlice(allocator) catch &.{}, .has_changes = staged_files.items.len > 0 or modified_files.items.len > 0 or untracked_files.items.len > 0 };
 }
 
 /// Expand untracked directories to show individual files inside them
@@ -116,21 +101,21 @@ fn expandUntrackedDirectories(allocator: std.mem.Allocator, io: std.Io, untracke
         // Parse the output - each line is a file path
         var file_start: usize = 0;
         const stdout = std.mem.trim(u8, result.stdout, " \n\r");
-        
+
         while (file_start < stdout.len) {
             const remaining = stdout.len - file_start;
             const line_end = std.mem.indexOfScalar(u8, stdout[file_start..], '\n') orelse remaining;
             const actual_end = file_start + line_end;
-            
+
             if (actual_end > stdout.len) break;
-            
+
             const file_path = stdout[file_start..actual_end];
-            
+
             if (file_path.len > 0) {
                 const copy = try allocator.dupe(u8, file_path);
                 try all_files.append(allocator, copy);
             }
-            
+
             file_start = actual_end + 1;
         }
     }
@@ -161,12 +146,7 @@ pub fn gitChangesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
 
     // If not a git repo, return early
     if (!is_git_repo) {
-        const response = GitChangesResponse{
-            .is_git_repo = false,
-            .staged_files = &.{},
-            .modified_files = &.{},
-            .untracked_files = &.{}
-        };
+        const response = GitChangesResponse{ .is_git_repo = false, .staged_files = &.{}, .modified_files = &.{}, .untracked_files = &.{} };
         return res.jsonResponse(.{ .status_code = 200, .data = try makeGitChangesResponse(allocator, response) });
     }
 
@@ -198,7 +178,7 @@ pub fn gitChangesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
             for (dirs.items) |d| allocator.free(d);
             dirs.deinit(allocator);
         }
-        
+
         for (response.untracked_files) |file| {
             if (file.path.len > 0 and file.path[file.path.len - 1] == '/') {
                 const copy = try allocator.dupe(u8, file.path);
@@ -209,10 +189,10 @@ pub fn gitChangesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
         // If we have directories, expand them
         if (dirs.items.len > 0) {
             const expanded_files = try expandUntrackedDirectories(allocator, io, dirs.items, path_param);
-            
+
             // Free the dir strings (they're no longer needed)
             for (dirs.items) |d| allocator.free(d);
-            
+
             // Free old untracked files
             for (response.untracked_files) |f| {
                 allocator.free(f.index_status);
@@ -220,26 +200,26 @@ pub fn gitChangesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
                 allocator.free(f.path);
             }
             allocator.free(response.untracked_files);
-            
+
             // Build new untracked files list with expanded files
             var new_untracked = std.ArrayList(GitFileChange).empty;
             defer new_untracked.deinit(allocator);
-            
+
             for (expanded_files) |file_path| {
                 const change = GitFileChange{
                     .index_status = try allocator.dupe(u8, "?"),
                     .worktree_status = try allocator.dupe(u8, "?"),
-                    .path = file_path,  // already allocated by expandUntrackedDirectories
+                    .path = file_path, // already allocated by expandUntrackedDirectories
                 };
                 try new_untracked.append(allocator, change);
             }
-            
+
             response.untracked_files = try new_untracked.toOwnedSlice(allocator);
-            
+
             // Recalculate has_changes
-            response.has_changes = response.staged_files.len > 0 or 
-                                   response.modified_files.len > 0 or 
-                                   response.untracked_files.len > 0;
+            response.has_changes = response.staged_files.len > 0 or
+                response.modified_files.len > 0 or
+                response.untracked_files.len > 0;
         }
     }
 
@@ -251,13 +231,13 @@ fn makeGitChangesResponse(allocator: std.mem.Allocator, response: GitChangesResp
     // Build JSON manually with proper escaping
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
-    
+
     // Helper to escape a string for JSON
     const escapeString = struct {
         fn escape(a: std.mem.Allocator, s: []const u8) ![]u8 {
             var result = std.ArrayList(u8).empty;
             defer result.deinit(a);
-            
+
             for (s) |c| {
                 switch (c) {
                     '"' => try result.appendSlice(a, "\\\""),
@@ -265,16 +245,16 @@ fn makeGitChangesResponse(allocator: std.mem.Allocator, response: GitChangesResp
                     '\n' => try result.appendSlice(a, "\\n"),
                     '\r' => try result.appendSlice(a, "\\r"),
                     '\t' => try result.appendSlice(a, "\\t"),
-                    else => try result.append(a, c)
+                    else => try result.append(a, c),
                 }
             }
             return try result.toOwnedSlice(a);
         }
     }.escape;
-    
+
     try buf.appendSlice(allocator, "{\"is_git_repo\":");
     try buf.appendSlice(allocator, if (response.is_git_repo) "true" else "false");
-    
+
     try buf.appendSlice(allocator, ", \"branch\":");
     if (response.branch) |b| {
         const escaped = try escapeString(allocator, b);
@@ -284,10 +264,10 @@ fn makeGitChangesResponse(allocator: std.mem.Allocator, response: GitChangesResp
     } else {
         try buf.appendSlice(allocator, "null");
     }
-    
+
     try buf.appendSlice(allocator, ", \"has_changes\":");
     try buf.appendSlice(allocator, if (response.has_changes) "true" else "false");
-    
+
     // staged_files
     try buf.appendSlice(allocator, ", \"staged_files\":[");
     for (response.staged_files, 0..) |file, i| {
@@ -302,7 +282,7 @@ fn makeGitChangesResponse(allocator: std.mem.Allocator, response: GitChangesResp
         try buf.appendSlice(allocator, "\"}");
     }
     try buf.appendSlice(allocator, "]");
-    
+
     // modified_files
     try buf.appendSlice(allocator, ", \"modified_files\":[");
     for (response.modified_files, 0..) |file, i| {
@@ -317,7 +297,7 @@ fn makeGitChangesResponse(allocator: std.mem.Allocator, response: GitChangesResp
         try buf.appendSlice(allocator, "\"}");
     }
     try buf.appendSlice(allocator, "]");
-    
+
     // untracked_files
     try buf.appendSlice(allocator, ", \"untracked_files\":[");
     for (response.untracked_files, 0..) |file, i| {
@@ -332,6 +312,7 @@ fn makeGitChangesResponse(allocator: std.mem.Allocator, response: GitChangesResp
         try buf.appendSlice(allocator, "\"}");
     }
     try buf.appendSlice(allocator, "]}");
-    
+
     return try buf.toOwnedSlice(allocator);
 }
+
