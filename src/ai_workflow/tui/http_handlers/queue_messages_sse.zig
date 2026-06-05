@@ -75,6 +75,7 @@ pub fn queueMessagesStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpR
     _ = res;
     const di = try nalar_core.getSingleton();
     const global_allocator = di.allocator;
+    const server = di.server;
     const event_bus = di.event_bus;
 
     const session_id = req.params.get("session_id") orelse {
@@ -91,6 +92,13 @@ pub fn queueMessagesStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpR
         ai_mod.registerSessionClient(copy_key_for_register, client_id_copy, true) catch {
             std.debug.print("SSE_QUEUE_DEBUG: failed to register client\n", .{});
         };
+
+        // Send "connected" event so the SseClient transitions out of
+        // 'connecting'. Mirrors worker_sse.zig and sessions_sse.zig.
+        // Without this handshake, the frontend SseStatusBadge stays
+        // stuck on "Connecting…" even though the stream is live.
+        const connected_event = "event: connected\ndata: {\"connected\": true}\n\n";
+        server.sse_manager.sendToClient(client_id_copy, connected_event) catch {};
     } // subscribe dupes the key internally, so defer-free is correct here
 
     event_bus.subscribe(ai_mod.on_event_sent.SseEvent, copy_key_for_event_bus, CallbackQueueMessagesStream.callback) catch {

@@ -125,7 +125,7 @@ pub const SessionMessage = struct {
     session_id: []const u8,
     role: []const u8,
     content: []const u8,
-    timestamp: []const u8,
+    created_at: []const u8,
     is_input: []const u8,
     is_output: []const u8,
     tool_name: []const u8,

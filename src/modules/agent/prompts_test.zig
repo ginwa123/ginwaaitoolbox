@@ -309,6 +309,180 @@ test "build_agent_prompt omits GlobalMemorySystem section when list_memory tool 
 }
 
 // -------------------------------------------------------------------------
+// build_agent_prompt — Available Skills listing
+// -------------------------------------------------------------------------
+
+test "build_agent_prompt lists global and local skills in Available Skills section" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-prompt-test-skills-listing";
+    const tmp_cwd = "/tmp/nalar-prompt-test-skills-listing-cwd";
+    const global_skill_dir = "/tmp/nalar-prompt-test-skills-listing/.config/nalar/skills/test-global-skill";
+    const local_skill_dir = "/tmp/nalar-prompt-test-skills-listing-cwd/.nalar/skills/test-local-skill";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+        std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    }
+
+    try std.Io.Dir.cwd().createDirPath(io, global_skill_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(
+            io,
+            "/tmp/nalar-prompt-test-skills-listing/.config/nalar/skills/test-global-skill/SKILL.MD",
+            .{},
+        );
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\---
+            \\name: test-global-skill
+            \\description: "A global skill for prompt listing test"
+            \\---
+            \\
+            \\# Global skill body
+            \\
+        );
+    }
+
+    try std.Io.Dir.cwd().createDirPath(io, local_skill_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(
+            io,
+            "/tmp/nalar-prompt-test-skills-listing-cwd/.nalar/skills/test-local-skill/SKILL.MD",
+            .{},
+        );
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\---
+            \\name: test-local-skill
+            \\description: "A local skill for prompt listing test"
+            \\---
+            \\
+            \\# Local skill body
+            \\
+        );
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        makeTool("list_skills", "List available skills"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        tmp_cwd,
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        &env,
+    );
+    defer alloc.free(prompt);
+
+    // Section header is present
+    try std.testing.expect(contains(prompt, "## Available Skills"));
+    // Both subsections are present
+    try std.testing.expect(contains(prompt, "### Global skills"));
+    try std.testing.expect(contains(prompt, "### Local skills"));
+    // Skill names appear
+    try std.testing.expect(contains(prompt, "test-global-skill"));
+    try std.testing.expect(contains(prompt, "test-local-skill"));
+    // Skill descriptions appear
+    try std.testing.expect(contains(prompt, "A global skill for prompt listing test"));
+    try std.testing.expect(contains(prompt, "A local skill for prompt listing test"));
+}
+
+test "build_agent_prompt omits Available Skills section when list_skills tool is absent" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Set up a HOME with a real skill, so the test confirms the GATING,
+    // not just the "no skill found" path.
+    const tmp_home = "/tmp/nalar-prompt-test-skills-gated";
+    const global_skill_dir = "/tmp/nalar-prompt-test-skills-gated/.config/nalar/skills/test-gated-skill";
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, global_skill_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(
+            io,
+            "/tmp/nalar-prompt-test-skills-gated/.config/nalar/skills/test-gated-skill/SKILL.MD",
+            .{},
+        );
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\---
+            \\name: test-gated-skill
+            \\description: "Should be hidden when list_skills is absent"
+            \\---
+            \\
+        );
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    // Tools list intentionally does NOT include list_skills
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        &env,
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(!contains(prompt, "## Available Skills"));
+    try std.testing.expect(!contains(prompt, "test-gated-skill"));
+}
+
+test "build_agent_prompt silently skips Available Skills when env is null" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // list_skills IS in the tools list, but env is null → graceful skip
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        makeTool("list_skills", "List available skills"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null, // ← env is null
+    );
+    defer alloc.free(prompt);
+
+    // No section emitted; no error thrown
+    try std.testing.expect(!contains(prompt, "## Available Skills"));
+}
+
+// -------------------------------------------------------------------------
 // build_sub_agent_prompt — no aggregate cap
 // -------------------------------------------------------------------------
 

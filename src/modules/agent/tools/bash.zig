@@ -204,14 +204,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const max_lines = input.max_lines orelse 1000;
     const timeout_sec = input.timeout orelse 30;
 
-    var child = try std.process.spawn(io, .{
-        .argv = &.{ "bash", "-c", command },
-        .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
-        .stdin = if (input.stdin_data != null) .pipe else .close,
-        .stdout = .pipe,
-        .stderr = .pipe,
-        .pgid = 0
-    });
+    var child = try std.process.spawn(io, .{ .argv = &.{ "bash", "-c", command }, .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit, .stdin = if (input.stdin_data != null) .pipe else .close, .stdout = .pipe, .stderr = .pipe, .pgid = 0 });
 
     if (input.stdin_data) |data| {
         if (child.stdin) |stdin| {
@@ -451,12 +444,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const was_truncated = stdout_truncation_needed or stderr_truncation_needed or (stdout_data.items.len >= max_output or stderr_data.items.len >= max_output);
 
     // Allocate command on heap to avoid dangling pointer to stack buffer
-    const command_copy = if (command.len > 50) blk: {
-        const cmd = try allocator.alloc(u8, 53);
-        @memcpy(cmd[0..50], command[0..50]);
-        @memcpy(cmd[50..53], "...");
-        break :blk cmd;
-    } else try allocator.dupe(u8, command);
+    const command_copy = try allocator.dupe(u8, command);
     errdefer allocator.free(command_copy);
 
     // Return structured BashOutput instead of XML string

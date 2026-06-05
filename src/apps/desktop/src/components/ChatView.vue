@@ -1417,21 +1417,22 @@ const compactSession = async () => {
       -->
       <div ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col">
         <!-- Loading More indicator (floats above the scroller during pagination) -->
-        <div
-          v-if="isLoadingMore"
-          class="absolute top-0 left-0 right-0 flex justify-center py-2 z-10 pointer-events-none"
-        >
-          <div
-            class="flex items-center gap-2 px-4 py-2 rounded-full shadow-sm"
-            style="background-color: var(--semantic-card-bg)"
-          >
-            <div
-              class="w-4 h-4 border-2 rounded-full animate-spin"
-              style="border-color: var(--color-violet); border-top-color: transparent"
-            ></div>
-            <span class="text-sm" style="color: var(--semantic-text-dim)">Loading more...</span>
-          </div>
-        </div>
+        <!-- temporary disable -->
+        <!-- <div -->
+        <!--   v-if="isLoadingMore" -->
+        <!--   class="absolute top-0 left-0 right-0 flex justify-center py-2 z-10 pointer-events-none" -->
+        <!-- > -->
+        <!--   <div -->
+        <!--     class="flex items-center gap-2 px-4 py-2 rounded-full shadow-sm" -->
+        <!--     style="background-color: var(--semantic-card-bg)" -->
+        <!--   > -->
+        <!--     <div -->
+        <!--       class="w-4 h-4 border-2 rounded-full animate-spin" -->
+        <!--       style="border-color: var(--color-violet); border-top-color: transparent" -->
+        <!--     ></div> -->
+        <!--     <span class="text-sm" style="color: var(--semantic-text-dim)">Loading more...</span> -->
+        <!--   </div> -->
+        <!-- </div> -->
 
         <!-- Empty State -->
         <div

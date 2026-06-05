@@ -70,7 +70,7 @@ pub fn session_message_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
             .session_id = msg.session_id,
             .role = msg.role,
             .content = try helpers.sanitize.sanitizeUtf8(allocator, msg.content),
-            .timestamp = msg.timestamp,
+            .created_at = msg.timestamp,
             .is_input = msg.is_input,
             .is_output = msg.is_output,
             .tool_name = msg.tool_name,

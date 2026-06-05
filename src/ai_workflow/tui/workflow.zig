@@ -110,8 +110,6 @@ pub const CallbackAiWorkerFlow = struct {
                 .is_output = false,
                 .session_skills = session_skills_err,
             }) catch {};
-
-            std.debug.panic("runAgenticMultiStepnew failed: {s}", .{@errorName(err)});
         };
     }
 };

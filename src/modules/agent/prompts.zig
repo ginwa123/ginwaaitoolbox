@@ -5,6 +5,7 @@ const tool_models = @import("nalarcore").tool_models;
 const memory_prompts = @import("prompts/memory.zig");
 const browsing = @import("prompts/browsing.zig");
 const memories_mod = @import("nalarcore").memories;
+const list_skills = @import("tools/list_skills.zig");
 
 /// Get the current operating system as a human-readable string
 fn getCurrentOs() []const u8 {
@@ -357,7 +358,7 @@ pub fn build_agent_prompt(
     allocator: std.mem.Allocator,
     io: std.Io,
     cwd: []const u8,
-    skillsContent: []const u8,
+    usedSkills: []const u8,
     memoryMd: []const u8,
     backgroundProcessContent: []const u8,
     activeAgentContent: []const u8,
@@ -379,14 +380,24 @@ pub fn build_agent_prompt(
     // === 2. Dynamic: session-specific content ===
 
     // Skills loaded for this session (from session_skills table).
-    if (skillsContent.len > 0) {
-        try appendSection(allocator, &result, skillsContent);
+    if (usedSkills.len > 0) {
+        try appendSection(allocator, &result, usedSkills);
     }
 
     // Project memory (NALAR.md / CLAUDE.md from cwd).
     if (memoryMd.len > 0) {
         try appendSection(allocator, &result, memoryMd);
     }
+
+    // need to listing list skills globals and locals
+    //
+    // Lists every installed skill (global + local) by name and description so
+    // the model knows what capabilities are available without having to call
+    // `list_skills` first. Gated on the `list_skills` tool being present (if
+    // it's gone, the model has no way to refresh the list anyway). Best-effort:
+    // any failure inside `listAllSkills` silently omits the section — never
+    // breaks the prompt.
+    try appendSkillsListing(allocator, &result, tools, cwd, io, environment);
 
     // Global Knowledge — auto-loaded from ~/.config/nalar/memories/*.md.
     // Same loader and 50KB budget as build_sub_agent_prompt. The
@@ -485,5 +496,69 @@ fn appendToolListing(allocator: std.mem.Allocator, result: *std.ArrayList(u8), t
         try result.appendSlice(allocator, "**: ");
         try result.appendSlice(allocator, desc);
         try result.appendSlice(allocator, "\n");
+    }
+}
+
+/// Append a "## Available Skills" section listing every installed skill
+/// (global + local) by name and description. Mirrors `appendToolListing`'s
+/// bullet-list style for visual consistency.
+///
+/// Behavior:
+///   - **Gated on `list_skills` tool** — if the tool isn't in the runtime
+///     tool list, the model has no way to refresh the list anyway, so we
+///     skip the section. Matches the `requires_tool` pattern used by the
+///     static `SkillsUsage` / `SkillsTriggers` sections.
+///   - **Best-effort** — any failure inside `listAllSkills` (missing env,
+///     IO error, alloc failure) silently omits the section, matching the
+///     graceful-degradation spirit of `loadGlobalKnowledge` above.
+///   - **Empty case omitted** — if both lists are empty, the section header
+///     is not emitted at all (avoids an empty `## Available Skills` block).
+///   - **Empty `cwd`** is mapped to `null` so the local lookup falls back to
+///     `io`'s cwd instead of resolving a path for the filesystem root.
+fn appendSkillsListing(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    tools: []const tool_models.AgentTool,
+    cwd: []const u8,
+    io: std.Io,
+    environment: ?*const std.process.Environ.Map,
+) !void {
+    if (!hasTool(tools, "list_skills")) return;
+
+    const cwd_param: ?[]const u8 = if (cwd.len > 0) cwd else null;
+
+    const data = list_skills.listAllSkills(allocator, io, cwd_param, environment) catch return;
+    defer list_skills.freeSkillsListData(allocator, data);
+
+    if (data.global_skills.len == 0 and data.local_skills.len == 0) return;
+
+    try result.appendSlice(allocator, "\n\n## Available Skills\n\n");
+    try result.appendSlice(allocator,
+        \\The following skills are installed and available for this session.
+        \\Use `list_skills` to refresh this view, or `get_skill` / `view_skill`
+        \\to load a skill's full instructions.
+        \\
+    );
+
+    if (data.global_skills.len > 0) {
+        try result.appendSlice(allocator, "\n### Global skills (~/.config/nalar/skills/)\n\n");
+        for (data.global_skills) |s| {
+            try result.appendSlice(allocator, "- **");
+            try result.appendSlice(allocator, s.name);
+            try result.appendSlice(allocator, "**: ");
+            try result.appendSlice(allocator, s.description);
+            try result.appendSlice(allocator, "\n");
+        }
+    }
+
+    if (data.local_skills.len > 0) {
+        try result.appendSlice(allocator, "\n### Local skills (.nalar/skills/)\n\n");
+        for (data.local_skills) |s| {
+            try result.appendSlice(allocator, "- **");
+            try result.appendSlice(allocator, s.name);
+            try result.appendSlice(allocator, "**: ");
+            try result.appendSlice(allocator, s.description);
+            try result.appendSlice(allocator, "\n");
+        }
     }
 }

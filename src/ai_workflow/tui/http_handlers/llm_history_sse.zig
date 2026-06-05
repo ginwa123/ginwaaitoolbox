@@ -56,6 +56,7 @@ pub fn llmHistorySSE(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
 
     const di = try nalar_core.getSingleton();
     const global_allocator = di.allocator;
+    const server = di.server;
 
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
@@ -66,6 +67,13 @@ pub fn llmHistorySSE(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         const session_id_copy = try global_allocator.dupe(u8, session_id);
         const client_id_copy: [16]u8 = client_id;
         ai_mod.registerSessionClient(session_id_copy, client_id_copy, true) catch {};
+
+        // Send "connected" event so the SseClient transitions out of
+        // 'connecting'. Mirrors worker_sse.zig and sessions_sse.zig.
+        // Without this handshake, the frontend SseStatusBadge stays
+        // stuck on "Connecting…" even though the stream is live.
+        const connected_event = "event: connected\ndata: {\"connected\": true}\n\n";
+        server.sse_manager.sendToClient(client_id_copy, connected_event) catch {};
     }
 
     const event_bus = di.event_bus;
