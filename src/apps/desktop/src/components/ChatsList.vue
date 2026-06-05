@@ -2,6 +2,7 @@
 import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../stores/navigation'
+import { useWorkspacesStore } from '../stores/workspaces'
 import SseStatusBadge from './SseStatusBadge.vue'
 import { useSidebarStore } from '../stores/sidebar'
 import { VirtualScroller, formatRelativeTime } from '../helpers'
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 // Stores
 const navigationStore = useNavigationStore()
 const sidebarStore = useSidebarStore()
+const workspacesStore = useWorkspacesStore()
 
 // Inject processingState from App.vue
 const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
@@ -198,6 +200,8 @@ const toggleNavSection = () => {
 const createChat = () => {
   const name = 'New Chat'
   const newChatId = `session-${Date.now()}`
+  // Mutually exclusive active state: a brand-new chat wins, clear workspace item.
+  workspacesStore.setActiveWorkspaceItem(null)
   navItems.value.forEach((item) => (item.active = false))
   navItems.value.unshift({ id: newChatId, name, active: true, processing: false })
   // Update navigation store
@@ -209,6 +213,8 @@ const setActive = (id: string) => {
   const chat = navItems.value.find((item) => item.id === id)
   const chatName = chat?.name || ''
   navigationStore.setActiveChatName(chatName)
+  // Mutually exclusive active state: chat wins, clear workspace item.
+  workspacesStore.setActiveWorkspaceItem(null)
   navItems.value = navItems.value.map((item) => ({ ...item, active: item.id === id }))
   navigationStore.setActiveChat(id, chatName)
   // Update URL with session ID
@@ -228,6 +234,9 @@ const removeChat = async (chatId: string) => {
     // Clear from navigation store if this was the active chat
     if (wasActive) {
       navigationStore.clearActiveChat()
+      // Mutually exclusive active state: deleting the active chat drops us
+      // back to "no chat selected" — also clear the workspace item.
+      workspacesStore.setActiveWorkspaceItem(null)
     }
     try {
       await api.deleteChat(chatId)
