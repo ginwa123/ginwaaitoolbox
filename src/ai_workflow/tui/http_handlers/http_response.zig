@@ -271,6 +271,17 @@ pub fn makeWorkspaceItemListResponse(allocator: std.mem.Allocator, items: anytyp
     return try list.toOwnedSlice(allocator);
 }
 
+/// Object-wrapped variant of `makeWorkspaceItemListResponse`.
+/// Returns `{"items":[...],"count":N}` to match the shape the desktop store's
+/// `getWorkspacesItems` frontend wrapper expects. Delegates the inner array
+/// build to the bare-array helper to avoid duplicating the item-shape logic.
+pub fn makeWorkspaceItemListObjectResponse(allocator: std.mem.Allocator, items: anytype) ![]u8 {
+    const array_json = try makeWorkspaceItemListResponse(allocator, items);
+    defer allocator.free(array_json);
+
+    return std.fmt.allocPrint(allocator, "{{\"items\":{s},\"count\":{d}}}", .{ array_json, items.len });
+}
+
 // Workspace Item Task types
 pub const WorkspaceItemTaskResponse = struct {
     id: []const u8,

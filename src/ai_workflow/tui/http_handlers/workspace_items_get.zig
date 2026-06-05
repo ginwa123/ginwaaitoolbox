@@ -20,7 +20,7 @@ pub fn workspaceItemsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRe
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspace items" }) });
     };
 
-    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeWorkspaceItemListResponse(allocator, items) });
+    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeWorkspaceItemListObjectResponse(allocator, items) });
 }
 
 /// GET /api/workspaces/:workspace_id/items/:item_id - Get a single workspace item
