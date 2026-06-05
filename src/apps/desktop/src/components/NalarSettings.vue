@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { getNalarConfig, saveNalarConfig } from '../api'
+import { useProfileDelete } from '../composables/useProfileDelete'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const emit = defineEmits<{
   notification: [message: string, type: 'success' | 'error']
@@ -20,6 +22,21 @@ const profiles = ref<Profile[]>([])
 const activeProfile = ref<string | null>(null)
 const editingProfile = ref<Profile | null>(null)
 const isAddingProfile = ref(false)
+
+// Delete confirmation state — the name of the profile pending delete,
+// or null when the dialog is closed.
+const confirmingDeleteProfile = ref<string | null>(null)
+
+// Wire the composable. It owns the optimistic update, rollback, and
+// API call. We route success/error to the existing `notification`
+// emit so the toast appears in the same place as other settings
+// notifications.
+const { deleteProfile, isDeleting: isDeletingProfile } = useProfileDelete(
+  profiles,
+  activeProfile,
+  (msg) => emit('notification', msg, 'success'),
+  (msg) => emit('notification', msg, 'error'),
+)
 
 // MCP servers state
 const mcpServers = ref<McpServer[]>([])
@@ -287,10 +304,28 @@ const saveProfile = () => {
   isAddingProfile.value = false
 }
 
-const deleteProfile = (name: string) => {
-  profiles.value = profiles.value.filter(p => p.name !== name)
-  if (activeProfile.value === name) {
-    activeProfile.value = null
+// Click handler for the row's Delete button. Shows the confirmation
+// dialog. The actual delete + rollback is in the composable, invoked
+// by `confirmDeleteProfile` once the user confirms.
+const requestDeleteProfile = (name: string) => {
+  confirmingDeleteProfile.value = name
+}
+
+const cancelDeleteProfile = () => {
+  confirmingDeleteProfile.value = null
+}
+
+const confirmDeleteProfile = async () => {
+  const name = confirmingDeleteProfile.value
+  if (!name) return
+  confirmingDeleteProfile.value = null
+  try {
+    await deleteProfile(name) // composable's function
+  } catch {
+    // Notification already emitted by the composable. Swallow the
+    // throw so the row's click handler doesn't see an unhandled
+    // rejection — the composable has already rolled back the local
+    // state and surfaced the error.
   }
 }
 
@@ -594,7 +629,8 @@ defineExpose({ saveSettings, resetSettings })
                 Edit
               </button>
               <button
-                @click="deleteProfile(profile.name)"
+                @click="requestDeleteProfile(profile.name)"
+                :disabled="isDeletingProfile && confirmingDeleteProfile === profile.name"
                 class="px-3 py-1 text-xs rounded"
                 style="background-color: var(--semantic-card-bg); color: #ef4444; border: 1px solid var(--color-border);"
               >
@@ -724,6 +760,17 @@ defineExpose({ saveSettings, resetSettings })
           </div>
         </div>
       </div>
+
+      <!-- Delete confirmation dialog -->
+      <ConfirmDialog
+        :show="confirmingDeleteProfile !== null"
+        title="Delete profile"
+        :message="`Are you sure you want to delete the profile \u201c${confirmingDeleteProfile ?? ''}\u201d? This cannot be undone.`"
+        confirm-text="Delete"
+        cancel-text="Cancel"
+        @confirm="confirmDeleteProfile"
+        @close="cancelDeleteProfile"
+      />
     </div>
 
     <!-- MCP Servers Section -->
