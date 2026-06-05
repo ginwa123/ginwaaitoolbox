@@ -215,6 +215,7 @@ pub fn main(init: std.process.Init) !void {
     // Nalar config routes (reads/writes config.json as nalar.json mapping)
     try gs.router.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
     try gs.router.put("/api/config/nalar", ai_mod.http_handlers.nalarConfigPutHandler);
+    try gs.router.delete("/api/config/nalar/profiles/:name", ai_mod.http_handlers.nalarConfigProfileDeleteHandler);
 
     // OS notification test endpoint — fires a real OS notification so
     // the user can verify their system can display them.

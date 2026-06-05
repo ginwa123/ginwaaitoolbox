@@ -1194,6 +1194,39 @@ export async function saveNalarConfig(config: NalarConfig): Promise<{ success: b
   return response.json()
 }
 
+/**
+ * Response shape from `DELETE /api/config/nalar/profiles/:name`.
+ *
+ * `active_profile_was_cleared` is `true` when the deleted profile was
+ * the active one (the backend also cleared `active_profile` on disk).
+ * `error_message` is set when the request succeeded (HTTP 200) but a
+ * downstream concern (live reload) failed — the deletion still
+ * persisted.
+ */
+export interface ProfileDeleteResponse {
+  success: boolean
+  profile_name: string
+  active_profile_was_cleared?: boolean
+  error_message?: string
+}
+
+/**
+ * DELETE /api/config/nalar/profiles/:name
+ *
+ * Removes a profile from `config.json` and live-reloads the backend's
+ * in-memory LLM config. Throws an Error (with the HTTP status) on
+ * non-2xx responses; the composable wraps this for UI concerns
+ * (optimistic update, rollback, notification).
+ */
+export async function deleteProfile(name: string): Promise<ProfileDeleteResponse> {
+  const response = await fetch(
+    `${API_BASE}/config/nalar/profiles/${encodeURIComponent(name)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
 // Git File Diff API
 export interface GitFileDiff {
   path: string

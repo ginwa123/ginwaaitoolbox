@@ -87,6 +87,9 @@ pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessi
 // Nalar config handlers
 pub const nalarConfigGetHandler = @import("nalar_config_get.zig").nalarConfigGetHandler;
 pub const nalarConfigPutHandler = @import("nalar_config_put.zig").nalarConfigPutHandler;
+pub const nalarConfigProfileDeleteHandler = @import("nalar_config_profile_delete.zig").nalarConfigProfileDeleteHandler;
+pub const removeProfileFromConfig = @import("nalar_config_profile_delete.zig").removeProfileFromConfig;
+pub const NalarConfigJsonForDelete = @import("nalar_config_profile_delete.zig").NalarConfigJsonForDelete;
 
 // OS notification test handler — fires a real OS notification so the
 // user can verify their system can display them without running a
