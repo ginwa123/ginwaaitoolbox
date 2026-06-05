@@ -36,6 +36,9 @@ onMounted(() => {
   const urlView = route.query.view as string
 
   if (urlSessionId && urlView === 'chat') {
+    // Clear any workspace-item active state from a prior session — the URL
+    // is the source of truth, and it points to a chat.
+    workspacesStore.setActiveWorkspaceItem(null)
     navigationStore.setActiveChat(urlSessionId, navigationStore.activeChatName)
     fetchChatSessionCwd(urlSessionId)
   } else if (urlTaskId && urlView === 'task') {
@@ -78,11 +81,16 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
 const handleNavigate = (view: string, chatName?: string, taskId?: string) => {
   if (view.startsWith('chat-')) {
     const chatSessionId = view.replace(/^chat-/, '')
+    // Clear any workspace-item active state — navigating to a chat wins.
+    workspacesStore.setActiveWorkspaceItem(null)
     navigationStore.setActiveChat(chatSessionId, chatName)
     // Fetch cwd for folder explorer and git
     fetchChatSessionCwd(chatSessionId)
     router.replace({ path: '/app', query: { view: 'chat', session: chatSessionId } })
   } else if (view === 'chat') {
+    // Clear any workspace-item active state — the URL is asserting
+    // "no chat selected, no workspace item selected".
+    workspacesStore.setActiveWorkspaceItem(null)
     navigationStore.clearActiveChat()
     chatSessionCwd.value = ''
     router.replace({ path: '/app', query: { view: 'chat' } })
@@ -470,6 +478,9 @@ watch(
 
       if (view === 'chat' && sessionId) {
         if (activeChatId.value !== `chat-${sessionId}`) {
+          // URL changed to a different chat — clear any leftover workspace
+          // item active state from a previous view.
+          workspacesStore.setActiveWorkspaceItem(null)
           navigationStore.setActiveChat(sessionId, navigationStore.activeChatName)
         }
         // Fetch cwd for folder explorer and git
@@ -488,6 +499,9 @@ watch(
       } else if (!view || view === 'workspace') {
         // Clear chat session cwd when not in chat view
         chatSessionCwd.value = ''
+        // Clear any workspace-item active state — "no view" or "workspace"
+        // means "no chat selected".
+        workspacesStore.setActiveWorkspaceItem(null)
       }
     }
   },

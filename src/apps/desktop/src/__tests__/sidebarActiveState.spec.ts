@@ -11,17 +11,30 @@ import * as api from '../api'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import ChatsList from '../components/ChatsList.vue'
-import { mount } from '@vue/test-utils'
+import AppLayout from '../components/AppLayout.vue'
+import { flushPromises, mount } from '@vue/test-utils'
 import { makeLocalStorageStub } from './helpers'
 
 // ChatsList calls useRouter() in setup; the `mocks: { $router: ... }`
 // option below only patches `this.$router` (Options API), so we must
-// stub the composable at module level. The $router global is still
-// provided for completeness.
-vi.mock('vue-router', () => ({
-  useRouter: () => ({ replace: vi.fn() }),
-  useRoute: () => ({}),
+// stub the composable at module level. The AppLayout tests below
+// override `useRouteMock.mockReturnValue(...)` per-test to drive the
+// URL-driven chat navigation paths. We pass-through the real
+// `createMemoryHistory` / `createRouter` from `importActual` so any
+// future test that wants a real router can use it.
+const { useRouteMock, useRouterMock } = vi.hoisted(() => ({
+  useRouteMock: vi.fn(() => ({ query: {} as Record<string, string>, path: '/', fullPath: '/' })),
+  useRouterMock: vi.fn(() => ({ replace: vi.fn(), push: vi.fn() })),
 }))
+
+vi.mock('vue-router', async () => {
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
+  return {
+    ...actual,
+    useRouter: useRouterMock,
+    useRoute: useRouteMock,
+  }
+})
 
 function mountChatsList() {
   return mount(ChatsList, {
@@ -125,5 +138,96 @@ describe('sidebar active-state exclusivity', () => {
     await wrapper.vm.removeChat('chat_doomed')
 
     expect(ws.activeWorkspaceItemId).toBe('item_keep')
+  })
+})
+
+describe('AppLayout URL-driven chat navigation', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+
+    // Mock the workspace API calls triggered by
+    // `workspacesStore.initializeFromSystemFolder()` in onMounted. The
+    // call is fire-and-forget (no `await` in AppLayout) but we still
+    // mock it to avoid unhandled promise rejections / noisy console
+    // output in test logs.
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [] })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      entries: [],
+      path: '/',
+      absolute: '/',
+      home: '/',
+    })
+
+    // Mock the chat session API calls triggered by
+    // `fetchChatSessionCwd()` when the URL is `?view=chat&session=X`.
+    vi.spyOn(api, 'getSession').mockResolvedValue({
+      sessionId: 'chat_url',
+      sessionName: 'URL Chat',
+      cwd: '/tmp',
+      createdAt: '',
+      agent: '',
+    })
+    vi.spyOn(api, 'getChatHistory').mockResolvedValue({
+      messages: [],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    // Reset the route mock to a clean default. Individual tests below
+    // override this to drive specific URL→state transitions in
+    // AppLayout.onMounted and the route.query watcher.
+    useRouteMock.mockReturnValue({
+      query: {} as Record<string, string>,
+      path: '/app',
+      fullPath: '/app',
+    } as any)
+    useRouterMock.mockReturnValue({ replace: vi.fn(), push: vi.fn() } as any)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('clears activeWorkspaceItemId when URL is ?view=chat&session=X on mount', async () => {
+    const ws = useWorkspacesStore()
+    ws.setActiveWorkspaceItem('item_stale')
+    expect(ws.activeWorkspaceItemId).toBe('item_stale')
+
+    // Drive AppLayout's onMounted chat-view branch by pretending the
+    // page was reloaded with a chat-session URL.
+    useRouteMock.mockReturnValue({
+      query: { view: 'chat', session: 'chat_url' },
+      path: '/app',
+      fullPath: '/app?view=chat&session=chat_url',
+    } as any)
+
+    const wrapper = mount(AppLayout, {
+      global: {
+        stubs: {
+          Sidebar: true,
+          RightSidebar: true,
+          GitFileViewer: true,
+          SkillDetail: true,
+          ChatView: true,
+          Chats: true,
+          SettingsView: true,
+          CodeEditor: true,
+        },
+      },
+    })
+    await flushPromises()
+    wrapper.unmount()
+
+    // The fix: onMounted's chat branch must reset the workspace-item
+    // active state — the URL is the source of truth, and it points
+    // to a chat.
+    expect(ws.activeWorkspaceItemId).toBeNull()
   })
 })
