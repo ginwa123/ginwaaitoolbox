@@ -38,3 +38,15 @@ class EventSourceStub {
 if (typeof (globalThis as { EventSource?: unknown }).EventSource === 'undefined') {
   ;(globalThis as { EventSource: unknown }).EventSource = EventSourceStub
 }
+
+// jsdom does not ship ResizeObserver, but VirtualScroller.vue instantiates
+// one in onMounted. The stub matches the EventSource polyfill above: inert,
+// accepts the calls, never fires — tests that need real resize behavior
+// should mock the component instead of relying on this stub.
+if (typeof (globalThis as { ResizeObserver?: unknown }).ResizeObserver === 'undefined') {
+  ;(globalThis as { ResizeObserver: unknown }).ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+}

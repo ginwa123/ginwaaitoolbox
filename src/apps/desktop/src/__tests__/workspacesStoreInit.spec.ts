@@ -8,36 +8,21 @@ import { setActivePinia, createPinia } from 'pinia'
 
 import * as api from '../api'
 import { useWorkspacesStore } from '../stores/workspaces'
+import { makeLocalStorageStub } from './helpers'
 
 describe('useWorkspacesStore.init()', () => {
   const getWorkspacesMock = vi.fn()
   const getWorkspacesItemsMock = vi.fn()
   const getTasksMock = vi.fn()
 
-  // Polyfill localStorage for this test file: jsdom 29 dropped it from
-  // its default globals, but the store calls localStorage.getItem() during
-  // init (loadExpandedWorkspaces / loadExpandedItems / loadExpandedItemIds).
-  // We back it with a Map so setItem/getItem actually round-trip values.
-  const localStorageBacking = new Map<string, string>()
-  const localStorageStub: Storage = {
-    get length() {
-      return localStorageBacking.size
-    },
-    clear: () => localStorageBacking.clear(),
-    getItem: (key) => localStorageBacking.get(key) ?? null,
-    key: (index) => Array.from(localStorageBacking.keys())[index] ?? null,
-    removeItem: (key) => {
-      localStorageBacking.delete(key)
-    },
-    setItem: (key, value) => {
-      localStorageBacking.set(key, value)
-    },
-  }
+  // Re-created per beforeEach so tests start with a clean Map. The shared
+  // helper just builds the stub; lifecycle is the test's responsibility.
+  let localStorageStub: Storage
 
   beforeEach(() => {
     setActivePinia(createPinia())
     // Reset stub + re-install (beforeEach may run after a previous test cleared it).
-    localStorageBacking.clear()
+    localStorageStub = makeLocalStorageStub()
     Object.defineProperty(globalThis, 'localStorage', {
       value: localStorageStub,
       writable: true,
