@@ -313,6 +313,10 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 
 const handleSelectTask = (taskId: string) => {
   workspacesStore.setActiveTask(taskId)
+  // Mutually exclusive active state: task wins, clear any active chat row in ChatsList.
+  if (chatsListRef.value) {
+    chatsListRef.value.resetActiveChat()
+  }
   router.replace({ path: '/app', query: { view: 'task', task: taskId } })
 }
 </script>

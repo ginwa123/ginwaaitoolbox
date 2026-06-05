@@ -139,6 +139,36 @@ describe('sidebar active-state exclusivity', () => {
 
     expect(ws.activeWorkspaceItemId).toBe('item_keep')
   })
+
+  // Inverse direction (task → chat) regressions: clicking a chat must also
+  // clear the workspacesStore.activeTaskId, not just activeWorkspaceItemId.
+  it('clicking a chat row clears activeTaskId (inverse direction)', async () => {
+    const ws = useWorkspacesStore()
+    ws.setActiveTask('task_old')
+
+    const wrapper = mountChatsList()
+    await nextTick()
+    // @ts-expect-error: push fake item
+    wrapper.vm.navItems = [
+      { id: 'chat_abc', name: 'My Chat', active: false, processing: false },
+    ]
+    // @ts-expect-error: invoke internal method
+    await wrapper.vm.setActive('chat_abc')
+
+    expect(ws.activeTaskId).toBeNull()
+  })
+
+  it('createChat clears activeTaskId (inverse direction)', async () => {
+    const ws = useWorkspacesStore()
+    ws.setActiveTask('task_old')
+
+    const wrapper = mountChatsList()
+    await nextTick()
+    // @ts-expect-error: invoke internal method
+    wrapper.vm.createChat()
+
+    expect(ws.activeTaskId).toBeNull()
+  })
 })
 
 describe('AppLayout URL-driven chat navigation', () => {

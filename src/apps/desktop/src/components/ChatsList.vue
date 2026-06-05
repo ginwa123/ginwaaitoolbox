@@ -202,6 +202,8 @@ const createChat = () => {
   const newChatId = `session-${Date.now()}`
   // Mutually exclusive active state: a brand-new chat wins, clear workspace item.
   workspacesStore.setActiveWorkspaceItem(null)
+  // ...and clear any active task (inverse direction: task → chat).
+  workspacesStore.setActiveTask(null)
   navItems.value.forEach((item) => (item.active = false))
   navItems.value.unshift({ id: newChatId, name, active: true, processing: false })
   // Update navigation store
@@ -215,6 +217,8 @@ const setActive = (id: string) => {
   navigationStore.setActiveChatName(chatName)
   // Mutually exclusive active state: chat wins, clear workspace item.
   workspacesStore.setActiveWorkspaceItem(null)
+  // ...and clear any active task (inverse direction: task → chat).
+  workspacesStore.setActiveTask(null)
   navItems.value = navItems.value.map((item) => ({ ...item, active: item.id === id }))
   navigationStore.setActiveChat(id, chatName)
   // Update URL with session ID
@@ -237,6 +241,8 @@ const removeChat = async (chatId: string) => {
       // Mutually exclusive active state: deleting the active chat drops us
       // back to "no chat selected" — also clear the workspace item.
       workspacesStore.setActiveWorkspaceItem(null)
+      // ...and clear any active task (inverse direction: task → chat).
+      workspacesStore.setActiveTask(null)
     }
     try {
       await api.deleteChat(chatId)
