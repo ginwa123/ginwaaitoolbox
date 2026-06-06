@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, inject, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
+
+// Inject processingState from App.vue. Same contract ChatsList uses:
+// keyed by worker session_id (which equals task.id when ChatView is
+// mounted for a task — see AppLayout.vue:651 :chat-id="activeTask.id").
+const processingState = inject<Ref<Record<string, boolean>>>(
+  'processingState',
+  ref<Record<string, boolean>>({}),
+)
 
 const props = defineProps<{
   item: WorkspaceItem
@@ -125,8 +133,23 @@ const handleDeleteTask = (event: Event, taskId: string) => {
           }"
           @click="handleSelectTask(task.id)"
         >
-          <!-- Bullet point -->
-          <span class="w-1.5 h-1.5 rounded-full shrink-0" :style="{ backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)' }" />
+          <!-- Spinner while worker is processing this task (mirrors ChatsList.vue:489-497, scaled down to fit 12px text). Bullet is hidden while the spinner is shown so the row has a single, clear visual marker. -->
+          <span
+            v-if="processingState[task.id]"
+            class="w-4 h-4 flex items-center justify-center shrink-0"
+            data-testid="task-spinner"
+          >
+            <div
+              class="w-3 h-3 border-2 rounded-full animate-spin"
+              style="border-color: var(--color-yellow); border-top-color: transparent"
+            ></div>
+          </span>
+          <!-- Bullet point (only when not processing) -->
+          <span
+            v-else
+            class="w-1.5 h-1.5 rounded-full shrink-0"
+            :style="{ backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)' }"
+          />
           <!-- Task name -->
           <span class="flex-1 truncate">{{ task.name }}</span>
           <!-- Delete task button -->
