@@ -251,6 +251,7 @@ interface VirtualScrollerExposed {
   preserveScrollPosition: () => Promise<void>
   containerRef: { value: HTMLElement | null }
   isPreservingScroll: { value: boolean }
+  effectiveLoadMoreThreshold: { value: number }
 }
 const virtualScrollerRef = ref<VirtualScrollerExposed | null>(null)
 
@@ -927,13 +928,17 @@ const handleLoadMore = () => {
   // All guards passed — log the threshold reached and fetch.
   // The extra includes the LLM/scroll state so the log line
   // answers "was this a streaming-time loadMore?" in one glance.
+  const effectiveThreshold =
+    virtualScrollerRef.value?.effectiveLoadMoreThreshold.value ?? 200
   scrollLogger.info({
     ...ctx,
     caller: 'handleLoadMore',
     reason: 'load-more-threshold-reached',
     extra: {
       hasMore: hasMoreMessages.value,
-      loadMoreThreshold: 200, // mirrors the prop on <VirtualScroller>
+      loadMoreThreshold: 200, // absolute floor, mirrors the prop on <VirtualScroller>
+      loadMoreThresholdRatio: 0.5, // mirrors the prop on <VirtualScroller>
+      effectiveLoadMoreThreshold: effectiveThreshold, // max(floor, containerHeight * ratio)
       isLLMProcessing: isLLMProcessing.value,
       isAtBottom: isAtBottom.value,
     },
@@ -1513,6 +1518,7 @@ const compactSession = async () => {
           :buffer="3"
           :default-item-height="200"
           :load-more-threshold="200"
+          :load-more-threshold-ratio="0.5"
           :load-more-at-top="true"
           @load-more="handleLoadMore"
           @load-more-suppressed="handleLoadMoreSuppressed"
