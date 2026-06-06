@@ -1,6 +1,8 @@
 <script setup lang="ts" generic="T">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 
+import { computeLoadMoreThreshold } from './virtualScrollerThreshold'
+
 const props = withDefaults(
   defineProps<{
     /**
@@ -69,17 +71,40 @@ const props = withDefaults(
      * by prepending), this is measured from the top of the scrollable
      * area; otherwise from the bottom.
      *
-     * Default 200px gives the parent a comfortable window to fetch and
-     * prepend the next page before the user actually reaches the edge.
-     * Lower it if your API is very fast and you want to start prepending
-     * later (less wasted work); raise it if your API is slow and you
-     * want to start prepending earlier (smoother scroll).
+     * Acts as the **absolute floor** for the effective threshold. The
+     * actual threshold used in the `loadMore` check is
+     * `max(loadMoreThreshold, containerHeight * loadMoreThresholdRatio)`,
+     * so the scroller fires `loadMore` when the user is within EITHER
+     * the floor OR the proportional distance of the load edge —
+     * whichever is larger.
+     *
+     * Default 200px keeps the trigger safe on small viewports and during
+     * the 0×0 initial-mount flicker. Raise it (e.g. 400-600px) for very
+     * slow APIs that need a longer fetch head-start.
      *
      * The emit is debounced (~200ms) and is suppressed while
      * `beginPreserve`/`endPreserve` is in flight, so a single
      * scroll-to-edge gesture won't fire `loadMore` multiple times.
      */
     loadMoreThreshold?: number
+    /**
+     * Proportion of the container's visible height (`clientHeight`) that
+     * the effective threshold should track. Combined with
+     * `loadMoreThreshold` as `effective = max(loadMoreThreshold,
+     * containerHeight * loadMoreThresholdRatio)`.
+     *
+     * Default `0.5` means "fire `loadMore` when the user is within half
+     * a screen of the load edge" — the same heuristic used by Slack,
+     * Discord, and iMessage. On a 1000 px viewport this gives a 500 px
+     * effective threshold; on a 600 px viewport, 300 px. The absolute
+     * `loadMoreThreshold` floor (200 px) protects tiny viewports where
+     * the proportional value would be smaller.
+     *
+     * Set to `0` to opt out of the proportional mode entirely
+     * (floor only). The threshold is computed in
+     * `computeLoadMoreThreshold` (a pure helper, unit-tested).
+     */
+    loadMoreThresholdRatio?: number
     /**
      * If `true`, the scroller emits `loadMore` when the user scrolls
      * within `loadMoreThreshold` of the **top** — use this when you're
@@ -100,6 +125,7 @@ const props = withDefaults(
     buffer: 5,
     defaultItemHeight: 100,
     loadMoreThreshold: 200,
+    loadMoreThresholdRatio: 0.5,
     loadMoreAtTop: false,
   },
 )
@@ -180,6 +206,26 @@ const isScrollable = computed(() => {
   const totalContentHeight = accumulatedHeights.value[props.items.length] ?? 0
   return totalContentHeight > containerHeight.value
 })
+
+/**
+ * Effective distance (in px) from the load edge at which the scroller
+ * emits `loadMore`. Recomputed whenever the container's height changes
+ * (via the `containerHeight` ref, which is updated in `onScroll`).
+ *
+ * Combines the absolute `loadMoreThreshold` floor (default 200 px) with
+ * the proportional `loadMoreThresholdRatio` (default 0.5, i.e. half a
+ * screen). Exposed on the instance so the parent can read it for
+ * logging ("effective threshold was 500 px when loadMore fired") and
+ * so the integration tests can assert against a single value rather
+ * than duplicating the max() logic.
+ */
+const effectiveLoadMoreThreshold = computed(() =>
+  computeLoadMoreThreshold(
+    props.loadMoreThreshold,
+    props.loadMoreThresholdRatio,
+    containerHeight.value,
+  ),
+)
 
 // Push the isScrollable value to the parent via an event whenever it
 // changes. `immediate: true` ensures the parent gets the initial
@@ -349,10 +395,11 @@ const onScroll = (e: Event) => {
       emit('loadMoreSuppressed', 'not-scrollable')
       return
     }
+    const threshold = effectiveLoadMoreThreshold.value
     if (props.loadMoreAtTop) {
-      if (st < props.loadMoreThreshold && props.items.length > 0) {
+      if (st < threshold && props.items.length > 0) {
         emit('loadMore')
-      } else if (st < props.loadMoreThreshold && props.items.length === 0) {
+      } else if (st < threshold && props.items.length === 0) {
         // User is near the top but there are no items yet — nothing
         // to "load more of". This is the "empty list, scrolled to
         // top" case (rare; usually we wouldn't be at the top of
@@ -363,9 +410,9 @@ const onScroll = (e: Event) => {
       // not a suppression. Don't emit.
     } else {
       const bottom = target.scrollHeight - st - target.clientHeight
-      if (bottom < props.loadMoreThreshold && props.items.length > 0) {
+      if (bottom < threshold && props.items.length > 0) {
         emit('loadMore')
-      } else if (bottom < props.loadMoreThreshold && props.items.length === 0) {
+      } else if (bottom < threshold && props.items.length === 0) {
         emit('loadMoreSuppressed', 'no-items')
       }
       // else: user is just not near the bottom yet
@@ -492,6 +539,7 @@ defineExpose({
   containerRef,
   isPreservingScroll,
   isScrollable,
+  effectiveLoadMoreThreshold,
 })
 </script>
 
