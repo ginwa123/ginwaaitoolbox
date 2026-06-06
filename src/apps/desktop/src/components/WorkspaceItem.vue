@@ -25,6 +25,7 @@ const emit = defineEmits<{
   addTask: [item: WorkspaceItem]
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
+  renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -58,6 +59,13 @@ const handleSelectTask = (taskId: string) => {
 const handleDeleteTask = (event: Event, taskId: string) => {
   event.stopPropagation()
   emit('deleteTask', props.workspaceId, props.item.id, taskId)
+}
+
+const handleRenameTask = (event: Event, taskId: string, currentName: string) => {
+  // Stop the click from bubbling up to the parent <button> (which
+  // would call selectTask). Same rationale as handleDeleteTask.
+  event.stopPropagation()
+  emit('renameTask', props.workspaceId, props.item.id, taskId, currentName)
 }
 </script>
 
@@ -152,6 +160,19 @@ const handleDeleteTask = (event: Event, taskId: string) => {
           />
           <!-- Task name -->
           <span class="flex-1 truncate">{{ task.name }}</span>
+          <!-- Rename task button (pencil). Hover-revealed alongside
+               the delete button. Blue hover to differentiate from
+               the red delete hover. -->
+          <button
+            @click="handleRenameTask($event, task.id, task.name)"
+            class="w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:text-blue-400"
+            style="color: var(--semantic-text-dim);"
+            title="Rename Task"
+          >
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </button>
           <!-- Delete task button -->
           <button
             @click="handleDeleteTask($event, task.id)"
