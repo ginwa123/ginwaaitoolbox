@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { useNavigationStore } from './navigation'
 
 export interface WorkspaceItem {
   id: string
@@ -567,6 +568,57 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Rename a task. Cascades to the linked session via the backend
+  // (`updateTaskName` in llm_history.zig, then onEventSendSessions
+  // SSE broadcast) so the ChatsList picks up the new name. Mirrors
+  // the optimistic-update + rollback pattern from `renameWorkspace`.
+  // If the renamed task is the active one, also keeps
+  // `navigationStore.activeChatName` in sync — the chat-view header
+  // (AppLayout.vue:652) binds `:chat-name="activeTask.name"` and
+  // updates automatically, but other views (e.g. the chat-list
+  // header) read `activeChatName` and would otherwise show stale.
+  async function renameTask(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    newName: string,
+  ) {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return
+    const task = item.tasks.find((t) => t.id === taskId)
+    if (!task) return
+
+    const trimmed = newName.trim()
+    if (!trimmed || trimmed === task.name) return
+
+    const previousName = task.name
+    // Optimistic update
+    task.name = trimmed
+
+    // Keep the chat-view / chat-list header in sync if this is the
+    // active task.
+    const wasActive = activeTaskId.value === taskId
+    if (wasActive) {
+      useNavigationStore().setActiveChatName(trimmed)
+    }
+
+    // Sync with API. The backend PUT /api/workspaces/tasks/:task_id
+    // cascades the rename to the linked session row and broadcasts
+    // a session.updated SSE event (see backend tasks_update.zig).
+    try {
+      await api.updateTaskSimple(taskId, { name: trimmed })
+    } catch (err) {
+      console.error('Failed to rename task:', err)
+      // Rollback on error
+      task.name = previousName
+      if (wasActive) {
+        useNavigationStore().setActiveChatName(previousName)
+      }
+    }
+  }
+
   async function removeWorkspace(workspaceId: string) {
     const workspaceIndex = workspaces.value.findIndex((ws) => ws.id === workspaceId)
     if (workspaceIndex === -1) return
@@ -669,6 +721,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addTask,
     toggleTask,
     deleteTask,
+    renameTask,
     initializeFromSystemFolder,
     fetchSystemFolder,
     fetchFolderContents,
