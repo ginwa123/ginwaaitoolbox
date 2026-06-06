@@ -8,6 +8,7 @@ import WorkspaceList from './WorkspaceList.vue'
 import ChatsList from './ChatsList.vue'
 import WorkspaceModal from './WorkspaceModal.vue'
 import RenameWorkspaceModal from './RenameWorkspaceModal.vue'
+import RenameTaskModal from './RenameTaskModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
@@ -73,6 +74,11 @@ const deleteConfirmConfig = ref<{ title: string; message: string; onConfirm: () 
 const showRenameWorkspaceModal = ref(false)
 const renameTargetWorkspaceId = ref<string | null>(null)
 const renameTargetName = ref('')
+const showRenameTaskModal = ref(false)
+const renameTargetTaskWorkspaceId = ref<string | null>(null)
+const renameTargetTaskItemId = ref<string | null>(null)
+const renameTargetTaskId = ref<string | null>(null)
+const renameTargetTaskName = ref('')
 
 // Resize handling
 const isResizing = ref(false)
@@ -294,6 +300,53 @@ const handleCloseRenameModal = () => {
   renameTargetName.value = ''
 }
 
+// ─── Rename Task ────────────────────────────────────────────────────────────
+// Mirrors the workspace-rename pattern above. The state is split
+// across four refs (workspace id, item id, task id, name) instead
+// of a single object because the modal's emit('rename', name) only
+// carries the name — the targets need to survive across the modal's
+// close + reopen lifecycle.
+const handleRenameTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  currentName: string,
+) => {
+  renameTargetTaskWorkspaceId.value = workspaceId
+  renameTargetTaskItemId.value = itemId
+  renameTargetTaskId.value = taskId
+  renameTargetTaskName.value = currentName
+  showRenameTaskModal.value = true
+}
+
+const handleConfirmTaskRename = async (newName: string) => {
+  if (
+    renameTargetTaskWorkspaceId.value &&
+    renameTargetTaskItemId.value &&
+    renameTargetTaskId.value
+  ) {
+    await workspacesStore.renameTask(
+      renameTargetTaskWorkspaceId.value,
+      renameTargetTaskItemId.value,
+      renameTargetTaskId.value,
+      newName,
+    )
+  }
+  showRenameTaskModal.value = false
+  renameTargetTaskWorkspaceId.value = null
+  renameTargetTaskItemId.value = null
+  renameTargetTaskId.value = null
+  renameTargetTaskName.value = ''
+}
+
+const handleCloseTaskRenameModal = () => {
+  showRenameTaskModal.value = false
+  renameTargetTaskWorkspaceId.value = null
+  renameTargetTaskItemId.value = null
+  renameTargetTaskId.value = null
+  renameTargetTaskName.value = ''
+}
+
 const handleAddTask = async (workspaceId: string, item: WorkspaceItem) => {
   const name = `Task ${new Date().toLocaleTimeString()}`
   const taskId = await workspacesStore.addTask(workspaceId, item.id, name)
@@ -408,6 +461,7 @@ const handleSelectTask = (taskId: string) => {
           @add-task="handleAddTask"
           @select-task="handleSelectTask"
           @delete-task="handleDeleteTask"
+          @rename-task="handleRenameTask"
         />
         <!-- Collapsed workspaces -->
         <div v-else class="space-y-0.5">
@@ -437,6 +491,7 @@ const handleSelectTask = (taskId: string) => {
     <!-- Modals -->
     <WorkspaceModal :show="showAddWorkspaceModal" @close="handleCloseModal" @create="handleCreateWorkspace" />
     <RenameWorkspaceModal :show="showRenameWorkspaceModal" :current-name="renameTargetName" @close="handleCloseRenameModal" @rename="handleConfirmRename" />
+    <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
     <ConfirmDialog
       :show="showDeleteConfirm"
