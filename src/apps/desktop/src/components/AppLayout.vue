@@ -48,6 +48,15 @@ onMounted(() => {
   }
 
   workspacesStore.initializeFromSystemFolder()
+  // Subscribe to /api/sessions/stream so renames from the backend
+  // (e.g. the cascade triggered by renameTask) propagate to the
+  // workspace-item task list in real time. Without this, the
+  // sidebar's task row stays at the old name until manual reload —
+  // the ChatsList (top of sidebar) updates because it has its own
+  // subscription, but the workspace tree in this store did not.
+  // The subscription is idempotent; calling it more than once is
+  // a no-op.
+  workspacesStore.subscribeToSessionEvents()
 })
 
 const toggleSidebar = () => {
