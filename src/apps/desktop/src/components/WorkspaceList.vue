@@ -22,6 +22,7 @@ const emit = defineEmits<{
   addTask: [workspaceId: string, item: WorkspaceItem]
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
+  renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
 }>()
 
 const sidebarStore = useSidebarStore()
@@ -106,6 +107,15 @@ const handleSelectTask = (taskId: string) => {
 
 const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
   emit('deleteTask', workspaceId, itemId, taskId)
+}
+
+const handleRenameTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  currentName: string,
+) => {
+  emit('renameTask', workspaceId, itemId, taskId, currentName)
 }
 </script>
 
@@ -215,6 +225,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
             @add-task="handleAddTask(workspace.id, $event)"
             @select-task="handleSelectTask"
             @delete-task="handleDeleteTask"
+            @rename-task="handleRenameTask"
           />
           <!-- Add Item Button -->
           <li class="group/workspace relative" data-workspace-menu>

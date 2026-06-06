@@ -1861,30 +1861,42 @@ pub fn updateSessionName(
     }
 }
 
+/// Rename a workspace item task. If the task has a `session_id`,
+/// the rename cascades to the linked session via `updateSessionName`,
+/// which itself emits a `session.updated` SSE event so subscribers
+/// (e.g. the ChatsList sidebar) see the new name in real time. Tasks
+/// without a `session_id` (e.g. freshly created, not yet bound) are
+/// renamed in the task table only — there is no session to cascade to,
+/// and no SSE event is emitted.
+///
+/// This is the rename path used by `PUT /api/workspaces/tasks/:task_id`
+/// and `PUT /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id`.
 pub fn updateTaskName(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     id: []const u8,
     new_name: []const u8,
 ) !void {
-    const sql = "UPDATE workspace_item_tasks SET name = ? WHERE id = ?";
-    try db.exec(allocator, sql, &.{ new_name, id });
+    // 1) Update the task row.
+    const task_sql = "UPDATE workspace_item_tasks SET name = ?, updated_at = datetime('now') WHERE id = ?";
+    try db.exec(allocator, task_sql, &.{ new_name, id });
 
-    // Get updated session data and broadcast
-    // const session = getSession(allocator, db, id) catch null;
-    // if (session) |s| {
-    //     defer s.deinit(allocator);
-    //     ai_mod.on_event_sent.onEventSendSessions(allocator, .{
-    //         .action = "updated",
-    //         .id = s.id,
-    //         .name = s.name,
-    //         .status = s.status,
-    //         .cwd = s.cwd,
-    //         .created_at = s.created_at,
-    //         .updated_at = s.updated_at,
-    //         .selected_profile_model = s.selected_profile_model,
-    //     }) catch {};
-    // }
+    // 2) Look up the task to find its session_id. If the task doesn't
+    // exist (rare — e.g. the caller's id is wrong) there's nothing to
+    // cascade. Return early; the UPDATE above is a no-op in that case.
+    const task = (getWorkspaceItemTask(allocator, db, id) catch null) orelse return;
+    defer task.deinit(allocator);
+
+    // 3) If the task is not bound to a session yet, we are done.
+    // The task row already has the new name. Nothing to broadcast.
+    const session_id = task.session_id orelse return;
+
+    // 4) Cascade the rename to the linked session. `updateSessionName`
+    // also re-reads the session row and broadcasts a `session.updated`
+    // SSE event with the new name, which is the ChatsList hook.
+    // A failure here is non-fatal — the task row is the source of
+    // truth for the sidebar, and the next rename will reconcile.
+    updateSessionName(allocator, db, session_id, new_name) catch {};
 }
 
 /// Update session selected_profile_model (the name of a profile in
