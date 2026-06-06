@@ -363,6 +363,21 @@ let measureDebounce: ReturnType<typeof setTimeout> | null = null
 
 const onScroll = (e: Event) => {
   const target = e.target as HTMLElement
+  // Keep `containerHeight.value` in sync with the live DOM reading.
+  // The `ResizeObserver` (line 516) only fires when the container's
+  // *size* changes — it does NOT fire for scroll-only events. Between
+  // the first `loadMore` and the next one, `endPreserve` does
+  // `containerRef.value.scrollTop = newST` to restore the user's view,
+  // which fires a scroll event but not a resize, and a layout reflow
+  // during the prepend can briefly shrink the container below its
+  // settled height. Either path leaves the cached `containerHeight.value`
+  // stale, and the `effectiveLoadMoreThreshold` computed then silently
+  // falls back to its 200 px absolute floor — which is the "ratio only
+  // works on the first load" symptom. Reading `target.clientHeight`
+  // here on every scroll event keeps the ref in sync. Vue's `ref` does
+  // an internal equality check, so this is a no-op when the value
+  // didn't change.
+  containerHeight.value = target.clientHeight
   const st = target.scrollTop
   const dir = st > lastScrollTop.value ? 'down' : 'up'
   scrollTop.value = st
