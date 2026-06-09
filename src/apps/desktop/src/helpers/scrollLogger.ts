@@ -67,11 +67,15 @@ export interface ContainerInfo {
  * container). This is the next layer out from `containerInfo` — it tells
  * you whether the ref binding itself is even valid.
  *
- * The most common reason a chat appears to "flicker" with `NO-CONTAINER`
- * is that `virtualScrollerRef.value` is null (component unmounted, key
- * changed, ref not yet bound). Reading `containerInfo` alone can't
- * distinguish that from "container is mounted but 0×0" — the two bugs
- * need completely different fixes.
+ * Note: the scroll-event path in ChatView no longer walks the ref
+ * chain (it uses `e.target` passed through the `scroll` emit), so
+ * `refNull=true` and `containerRefNull=true` are no longer the
+ * "flicker" cause they used to be. They are still populated for
+ * the controlled-path call sites (initial load, scroll-to-bottom,
+ * loadMore), where the ref chain is the only way to get the
+ * element. Reading `containerInfo` alone can't distinguish "the
+ * ref is null" from "the container is mounted but 0×0" — the two
+ * cases need completely different fixes.
  *
  *   refNull=true              → the component ref was never populated
  *                                (unmounted, wrong element bound, or
@@ -180,11 +184,13 @@ export interface ScrollContext {
    * call site (the logger can't infer it without a stack trace on
    * every call, which is too expensive).
    *
-   * Without this, multiple `NO-CONTAINER` lines from different call
-   * sites look identical and you can't tell whether the bug is in
-   * the initial-load path, the SSE chunk path, the loadMore path,
-   * or the watcher. With it, a `grep caller=updateStreamingMessage`
-   * immediately isolates the streaming-path bug.
+   * Without this, multiple suspicious-state lines from different
+   * call sites (e.g. `ZERO-SIZE` from initial-load vs SSE chunk
+   * vs watcher) look identical and you can't tell whether the
+   * bug is in the initial-load path, the SSE chunk path, the
+   * loadMore path, or the watcher. With it, a
+   * `grep caller=updateStreamingMessage` immediately isolates the
+   * streaming-path bug.
    */
   caller?: string
   /**
@@ -465,9 +471,18 @@ const emit = (ctx: ScrollContext, level: 'debug' | 'info' | 'warn' | 'error'): v
   // Diagnostic markers for suspicious container states. These tell
   // you *which* check failed in a single glance — without them, a
   // `scrollHeight: 0` reading is just a useless zero.
-  if (ctx.containerInfo.null) {
-    tag += ' ⚠NO-CONTAINER'
-  } else if (ctx.scrollHeight === 0 && ctx.clientHeight === 0) {
+  //
+  // `containerInfo.null` is no longer its own branch: since the
+  // scroll-event handler in ChatView now uses `e.target` directly
+  // (passed through the VirtualScroller's `scroll` emit), the
+  // container is guaranteed live for the duration of the handler.
+  // `containerInfo.null === true` can still be produced by the
+  // controlled-path call sites (initial load, scroll-to-bottom),
+  // and when it is, the headline `top=0 bottom=0px (zero-sh)`
+  // already tells the story — the per-line position label below
+  // also degrades to `zero-sh` for that case (scrollHeight=0 wins
+  // over a `null` check in the positionLabel expression).
+  if (ctx.scrollHeight === 0 && ctx.clientHeight === 0) {
     tag += ` ⚠ZERO-SIZE(${ctx.containerInfo.tag ?? '?'} d=${ctx.containerInfo.display ?? '?'} oH=${ctx.containerInfo.offsetHeight})`
   } else if (ctx.scrollHeight === 0) {
     tag += ` ⚠ZERO-SCROLL-HEIGHT(${ctx.containerInfo.tag ?? '?'} ch=${ctx.clientHeight} d=${ctx.containerInfo.display ?? '?'})`
@@ -480,13 +495,11 @@ const emit = (ctx: ScrollContext, level: 'debug' | 'info' | 'warn' | 'error'): v
   // is the whole point of the markers above). Show a more specific
   // label so the headline alone tells the story.
   const positionLabel =
-    ctx.containerInfo.null
-      ? 'no-container'
-      : ctx.scrollHeight === 0
-        ? 'zero-sh'
-        : ctx.scrollPercent === -1
-          ? 'short'
-          : (ctx.scrollPercent * 100).toFixed(1) + '%'
+    ctx.scrollHeight === 0
+      ? 'zero-sh'
+      : ctx.scrollPercent === -1
+        ? 'short'
+        : (ctx.scrollPercent * 100).toFixed(1) + '%'
   const line1 =
     `${tag} ${originMark} ${isAtBottomMark} ${ctx.reason} ` +
     `top=${ctx.scrollTop.toFixed(0)} ` +
