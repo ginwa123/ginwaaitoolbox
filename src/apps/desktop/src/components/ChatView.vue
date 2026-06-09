@@ -32,6 +32,8 @@ import RemoveSkill from './tool_outputs/RemoveSkill.vue'
 import RemoveFile from './tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
 import SkillsPopup from './SkillsPopup.vue'
+import { parseSpawnSubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
+import type { SubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
 
 const props = defineProps<{
   chatId: string
@@ -613,6 +615,32 @@ const groupToolNames = computed((): (string | null)[] => {
     return null
   })
 })
+
+// ─── Inherited Context: thread sub_agents args from assistant message to tool
+// result. The tool result message carries a tool_call_id; we walk backwards
+// through messageGroups to find the assistant message whose tool_calls_json
+// contains a call with that id, then extract the sub_agents array via
+// parseSpawnSubAgentArgs. Returns null when no match is found, which the
+// SpawnSubAgent component treats as "no inherited_context badge".
+function findSubAgentArgsForToolGroup(
+  toolCallId: string | undefined,
+  groups: MessageGroup[],
+  currentGroupIndex: number,
+): SubAgentArgs[] | null {
+  if (!toolCallId) return null
+  // Walk backwards from the current group
+  for (let i = currentGroupIndex - 1; i >= 0; i--) {
+    const g = groups[i]
+    if (!g) continue
+    if (g.role !== 'assistant') continue
+    for (const msg of g.messages) {
+      if (!msg.tool_calls_json) continue
+      const args = parseSpawnSubAgentArgs(msg.tool_calls_json, toolCallId)
+      if (args) return args
+    }
+  }
+  return null
+}
 
 // ─── Bubble Visibility ────────────────────────────────────────────────────────
 // Check if a message has visible text content (i.e. content that survives
@@ -1826,6 +1854,7 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'spawn_sub_agent'"
                             :content="msg.content"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :sub-agent-args="findSubAgentArgsForToolGroup(msg.tool_call_id, messageGroups, groupIndex)"
                           />
                           <div v-else class="tool-expandable">
                             <button
