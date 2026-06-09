@@ -10,6 +10,7 @@ pub const SubAgentInput = struct {
     instruction: []const u8,
     tools: ?[]const []const u8 = null, // optional list of tool names to allow
     timeout_seconds: ?u32 = null, // optional timeout for this sub-agent (0 = no timeout)
+    inherited_context: ?[]const u8 = null, // optional mode string for parent history inheritance
 };
 
 pub const SubAgentsInput = struct {
@@ -26,6 +27,7 @@ pub const SubAgentsInput = struct {
                 allocator.free(t);
             }
             // Note: timeout_seconds doesn't need freeing (it's an optional primitive)
+            if (sa.inherited_context) |ctx| allocator.free(ctx);
         }
         allocator.free(self.sub_agents);
     }
@@ -212,11 +214,20 @@ fn parseSubAgentsFromValue(
             timeout_seconds = @intCast(timeout_val.integer);
         }
 
+        // Parse optional "inherited_context" field
+        var inherited_context: ?[]const u8 = null;
+        if (agent_obj.get("inherited_context")) |ctx_val| {
+            if (ctx_val == .string) {
+                inherited_context = try allocator.dupe(u8, ctx_val.string);
+            }
+        }
+
         try sub_agents_list.append(allocator, .{
             .name = name,
             .instruction = instruction,
             .tools = tools,
             .timeout_seconds = timeout_seconds,
+            .inherited_context = inherited_context,
         });
     }
 
