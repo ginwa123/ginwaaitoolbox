@@ -36,12 +36,25 @@ const props = withDefaults(
      */
     totalCount?: number
     /**
-     * Number of extra items to render above and below the visible viewport.
-     * A larger buffer means smoother scrolling (fewer "pop in" moments as
-     * the user scrolls) at the cost of more DOM nodes. The default of 5
-     * is a good balance for most text/list UIs. For tall items (chat
-     * bubbles, cards with images) you may want to lower this; for short
-     * uniform items (log lines, search results) you can raise it.
+     * Number of extra items to render **on each side** (above AND below)
+     * the visible viewport. So `buffer=20` means 20 items above + 20
+     * items below + the visible items themselves.
+     *
+     * Worked example with `defaultItemHeight=200`, `containerHeight=800`:
+     *   - buffer=0  → 4 items in the DOM  (4 visible, no overscan)
+     *   - buffer=5  → 14 items in the DOM (4 visible + 5 above + 5 below)
+     *   - buffer=20 → 44 items in the DOM (4 visible + 20 above + 20 below)
+     *
+     * A larger buffer means smoother scrolling (fewer "pop in" moments
+     * as the user scrolls) at the cost of more DOM nodes. The default
+     * of 5 is a good balance for most text/list UIs. For tall items
+     * (chat bubbles, cards with images) you may want to lower this;
+     * for short uniform items (log lines, search results) you can
+     * raise it.
+     *
+     * To read the live rendered count from the parent, use the
+     * `renderedCount` exposed on the component instance (see
+     * `defineExpose` below) or the `scrollInfo` object.
      */
     buffer?: number
     /**
@@ -317,7 +330,7 @@ const visibleRange = computed(() => {
   const viewBottom = scrollTop.value + containerHeight.value
   let acc = accumulatedHeights.value[startIndex] ?? 0
   let endIndex = startIndex
-  while (endIndex < len && acc < viewBottom + 200) {
+  while (endIndex < len && acc < viewBottom) {
     acc += itemHeights.value.get(endIndex) ?? props.defaultItemHeight
     endIndex++
   }
