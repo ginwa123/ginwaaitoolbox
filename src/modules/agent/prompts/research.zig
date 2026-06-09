@@ -254,7 +254,7 @@ pub const SkillsUsage =
     \\**Always load skills BEFORE spawning agents:**
     \\```
     \\1. list_skills → discover available skills
-    \\2. get_skill("dispatching-parallel-agents") → load parallel skill
+    \\2. get_skill(path="/abs/path/SKILL.MD") → load parallel skill
     \\3. spawn_sub_agent(...) → spawn parallel agents with guidance
     \\```
     \\
@@ -315,8 +315,8 @@ pub const SkillsTriggers =
     \\
     \\**Step 3: Load the matching skill**
     \\```
-    \\get_skill("<matching-skill-name>")
-    \\# → Use the exact name from list_skills output
+    \\get_skill(path="/abs/path/SKILL.MD")
+    \\# → Use the file path from list_skills output
     \\```
     \\
     \\**⚡ COMMON TASK → SKILL MAPPING (generic pattern):**
@@ -374,7 +374,7 @@ pub const ProceduralMemory =
     \\| `edit_skill("name", "description", "content")` | Update existing skill |
     \\| `remove_skill("name")` | Delete a skill |
     \\| `list_skills` | List all available skills |
-    \\| `get_skill("name")` | Load a skill's full content |
+    \\| `get_skill(path="/abs/path/SKILL.MD")` | Load a skill's full content |
     \\
     \\**SKILL CREATION WORKFLOW:**
     \\1. Identify the workflow pattern that worked
@@ -385,7 +385,7 @@ pub const ProceduralMemory =
     \\3. The skill is saved to `.nalar/skills/<name>/SKILL.MD`
     \\
     \\**SKILL EDIT WORKFLOW:**
-    \\1. Load the skill: `get_skill("existing-skill")`
+    \\1. Load the skill: `get_skill(path="/abs/path/SKILL.MD")`
     \\2. Identify what needs adaptation
     \\3. Use `edit_skill("existing-skill", "new-description", "new-content")`
     \\   - Omit description/content to keep existing values
@@ -417,7 +417,7 @@ pub const ProceduralMemory =
     \\
     \\**DYNAMIC SKILL ADAPTATION:**
     \\ Skills should evolve with your project. When you discover project-specific patterns:
-    \\1. Read the existing skill with `get_skill("skill-name")`
+    \\1. Read the existing skill with `get_skill(path="/abs/path/SKILL.MD")`
     \\2. Adapt the content to your project's conventions
     \\3. Use `edit_skill` to update it
     \\
