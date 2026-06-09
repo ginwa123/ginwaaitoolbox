@@ -146,6 +146,18 @@ export type ScrollReason =
   | 'load-more-preserve-end'
   | 'sse-chunk-arrived'
   | 'messages-length-changed'
+  // Per-call handleVirtualScroll diagnostics. Each one fires once
+  // per occurrence (not per frame), so the cost is bounded.
+  | 'first-scroll' // first scroll event for this chat (no prior deltas)
+  | 'direction-change' // user reversed scroll direction (up↔down)
+  | 'content-resized' // scrollHeight changed between two scroll events
+  | 'lazy-load-zone' // within VirtualScroller's loadMoreThreshold but not at the 10px edge
+  // Warn-level reason: handleVirtualScroll fired but the container
+  // ref chain was null (component unmounted, inner ref not yet
+  // bound, or layout chain broke). The scrollerState/wrapperState
+  // blocks in the warn context tell you which — see the
+  // `scroller=...` / `wrapper=...` tag rendering in `emit()`.
+  | 'no-container'
   // Debug-level reason (per-frame sample)
   | 'scroll-sample'
   | 'error'

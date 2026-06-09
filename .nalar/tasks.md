@@ -16,7 +16,7 @@ Branch: `feature/workspace-item-task-pagination`
 - [x] Task 3.2: Wire loadMoreTasks event through WorkspaceList + parent (commit cc92f99)
 - [x] Task 3.3: Add workspaceItemTaskLoadMore.spec.ts component tests (commit a6c625c; 7 new tests pass, 73/73 total)
 
-## [active] 20260609_103000 — remove skill_name parameter from get_skill tool
+## [done] 20260609_103000 — remove skill_name parameter from get_skill tool ✅ MERGED to main at 00033c9
 
 Plan: `docs/superpowers/plans/2026-06-09-remove-get-skill-name-parameter.md`
 Worktree: `/home/ginwa/agentic_coding_zig/ginwaaitoolbox/.worktrees/remove-get-skill-name`
@@ -42,4 +42,4 @@ Branch: `refactor/remove-get-skill-name`
   - [ ] Task 10: Update `research.zig` prompt examples
   - [ ] Spec review for Chunk 3
   - [ ] Code quality review for Chunk 3
-- [ ] Final verification: run zig build + zig build test, confirm no stray references
+- [x] Final verification: 269/272 tests pass (3 skipped, 0 failed); no stray get_skill("...") in src/

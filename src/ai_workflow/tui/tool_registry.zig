@@ -284,7 +284,7 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         get_skill_mod.GetSkillInput,
         ctx.allocator,
         tc.function.arguments,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
 

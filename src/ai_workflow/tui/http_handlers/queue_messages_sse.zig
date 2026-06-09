@@ -19,8 +19,13 @@ pub const CallbackQueueMessagesStream = struct {
         const copy_key_for_event_bus = std.fmt.allocPrint(allocator, "queue_messages_{s}", .{data.session_id}) catch return;
         defer allocator.free(copy_key_for_event_bus);
 
-        // Get ALL client_ids for this queue_messages session, not just the first
+        // Get ALL client_ids for this queue_messages session, not just the first.
+        // `getListClientsForSession` returns an owned copy; the slice is
+        // detached from the global `session_to_client_ids` map so the
+        // SSE event loop can safely `unregisterSessionClient` this
+        // session on a POLL.HUP while we are still iterating here.
         const maybe_clients = ai_mod.getListClientsForSession(copy_key_for_event_bus, allocator, false) catch return;
+        defer if (maybe_clients) |c| allocator.free(c);
         const client_ids = maybe_clients orelse {
             std.debug.print("SSE_QUEUE_DEBUG: no clients registered for session {s}\n", .{data.session_id});
             return;

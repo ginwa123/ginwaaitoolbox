@@ -13,8 +13,13 @@ pub const CallbackSessionsStream = struct {
         const allocator = di.allocator;
         const server = di.server;
 
-        // Get ALL client_ids for "sessions" routing, not just the first
+        // Get ALL client_ids for "sessions" routing, not just the first.
+        // `getListClientsForSession` returns an owned copy; the slice is
+        // detached from the global `session_to_client_ids` map so the
+        // SSE event loop can safely `unregisterSessionClient` "sessions"
+        // on a POLL.HUP while we are still iterating here.
         const maybe_clients = ai_mod.getListClientsForSession("sessions", allocator, false) catch return;
+        defer if (maybe_clients) |c| allocator.free(c);
         const client_ids = maybe_clients orelse return;
 
         if (client_ids.len == 0) return;

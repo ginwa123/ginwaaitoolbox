@@ -427,7 +427,10 @@ const profilePickerRef = ref<HTMLElement | null>(null)
 const loadProfiles = async () => {
   try {
     const config = await api.getNalarConfig()
-    const profiles = (config.profiles ?? {}) as Record<string, { model?: string; base_url?: string }>
+    const profiles = (config.profiles ?? {}) as Record<
+      string,
+      { model?: string; base_url?: string }
+    >
     availableProfiles.value = Object.entries(profiles).map(([name, p]) => ({
       name,
       model: p.model ?? '',
@@ -928,8 +931,7 @@ const handleLoadMore = () => {
   // All guards passed — log the threshold reached and fetch.
   // The extra includes the LLM/scroll state so the log line
   // answers "was this a streaming-time loadMore?" in one glance.
-  const effectiveThreshold =
-    virtualScrollerRef.value?.effectiveLoadMoreThreshold.value ?? 200
+  const effectiveThreshold = virtualScrollerRef.value?.effectiveLoadMoreThreshold.value ?? 200
   scrollLogger.info({
     ...ctx,
     caller: 'handleLoadMore',
@@ -986,12 +988,21 @@ const handleLoadMoreSuppressed = (guard: string) => {
 // `load-more-threshold-reached` and no `load-more-suppressed`),
 // the loadMore event was never fired in the first place.
 let previousIsAtTop = false
+// Module-scope state for the additional handleVirtualScroll logs
+// below. Like `previousIsAtTop`, these are pure diagnostics —
+// nothing else reads them. Using plain `let` (not ref) avoids any
+// reactive work; the values exist only to feed the logger.
+//
+// Sentinel `-1` for the numeric "previous" values signals "no
+// prior event yet" so the delta-based logs (`direction-change`,
+// `content-resized`) can skip their first call. The
+// `first-scroll` info log captures that initial state explicitly,
+// so the missing deltas on call #1 don't look like a bug.
+let previousScrollTop = -1
+let previousScrollHeight = -1
+let previousDirection: 'up' | 'down' | null = null
 
-const handleVirtualScroll = (
-  _scrollTop: number,
-  _direction: 'up' | 'down',
-  _target: HTMLElement,
-) => {
+const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target: HTMLElement) => {
   // Prefer the event target — it's the actual DOM element that
   // dispatched the scroll event, so the browser guarantees it
   // exists for the lifetime of this handler. The ref chain
@@ -1003,24 +1014,48 @@ const handleVirtualScroll = (
   //
   // The ref chain is kept as a defensive fallback for any future
   // caller that doesn't supply a target (none today).
-  const container = _target ?? virtualScrollerRef.value?.containerRef.value
+  const container = target ?? virtualScrollerRef.value?.containerRef.value
   if (!container) {
     // Tripwire — with the target in hand this branch should be
     // unreachable. If it ever fires, the VirtualScroller stopped
     // passing the target through the emit (regression on the
     // fix in VirtualScroller.vue `onScroll`).
     console.warn('[scroll] handleVirtualScroll: no container (target and ref chain both null)', {
-      reportedScrollTop: _scrollTop,
-      reportedDirection: _direction,
+      reportedScrollTop: scrollTop,
+      reportedDirection: direction,
     })
     return
   }
-  const { scrollTop, scrollHeight, clientHeight } = container
-  const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-  const distanceFromTop = Math.max(0, scrollTop)
+
+  // The container is the source of truth for geometry — the
+  // `scrollTop` parameter is the VirtualScroller's reported value
+  // and may lag by a frame. We log the param for cross-validation
+  // but use the container's value everywhere else.
+  const { scrollHeight, clientHeight } = container
+  const actualScrollTop = container.scrollTop
+  const scrollTopMatches = Math.abs(scrollTop - actualScrollTop) < 1
+  const distanceFromBottom = scrollHeight - actualScrollTop - clientHeight
+  const distanceFromTop = Math.max(0, actualScrollTop)
   const newIsAtBottom = distanceFromBottom < BOTTOM_THRESHOLD
   const newIsAtTop = distanceFromTop < TOP_THRESHOLD
   const previousIsAtBottom = isAtBottom.value
+  // Deltas: how much scrollTop moved since the last event, and how
+  // much scrollHeight grew (or shrank — e.g. an image unmounted).
+  // Both are 0 on the first event. The `>= 0` guard on the
+  // previous-sentinel -1 is what makes the first call a no-op
+  // for delta-based logs.
+  const deltaTop = previousScrollTop >= 0 ? actualScrollTop - previousScrollTop : 0
+  const deltaHeight = previousScrollHeight >= 0 ? scrollHeight - previousScrollHeight : 0
+  const directionChanged = previousDirection !== null && previousDirection !== direction
+  const contentGrew = deltaHeight > 0
+  // "Lazy-load zone" is the VirtualScroller's `loadMoreThreshold`
+  // (200px) — wider than the 10px `reached-top` log. A user
+  // entering the zone hasn't reached the top yet, but lazy load
+  // is about to consider firing. This is the WARN-equivalent
+  // info: "user is heading toward the top — expect a
+  // `load-more-*` line soon".
+  const isInLazyLoadZone = distanceFromTop < 200 && !newIsAtTop
+  const isFirstScroll = previousScrollTop === -1
   const ctx = buildScrollContext(container, {
     chatId: sessionId.value || props.chatId,
     messages: messages.value.length,
@@ -1032,10 +1067,109 @@ const handleVirtualScroll = (
   // trailing-edge flush so the final position is never lost. In dev
   // you'll see ~5 lines/sec while scrolling. In production it's silent.
   scrollLogger.debug({ ...ctx, caller: 'handleVirtualScroll' })
-  // State transitions are loud: this is the most useful line in the
-  // whole logger. "User was at bottom, scrolled up 200px" vs
-  // "Auto-stick fired, isAtBottom is true again" are the two events
-  // that answer every "why did the chat jump?" question.
+  // ── First-scroll info ───────────────────────────────────────────────
+  //
+  // Captures the chat's initial state on the very first scroll
+  // event. Without this, "delta=0" lines for the first few events
+  // look like a bug in the delta math. Also surfaces whether the
+  // VirtualScroller's reported `scrollTop` matches the container's
+  // (they should agree to within 1px; a >1px mismatch is a stale
+  // param bug, not a cosmetic issue).
+  if (isFirstScroll) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleVirtualScroll',
+      reason: 'first-scroll',
+      extra: {
+        reportedScrollTop: scrollTop,
+        reportedDirection: direction,
+        actualScrollTop,
+        scrollTopMatches,
+        distanceFromTop,
+        distanceFromBottom,
+      },
+    })
+  }
+  // ── Direction-change info ───────────────────────────────────────────
+  //
+  // The user reversed scroll direction (e.g. was scrolling up to
+  // read history, then back down). This is the "why did the chat
+  // jump to the bottom when I was scrolling up?" signal — if a
+  // `reached-bottom` log follows a `direction-change` with
+  // `direction: 'up'`, the auto-stick fired in the middle of an
+  // upward gesture. If you see this in the logs and the next state
+  // transition is `left-bottom` (not `reached-bottom`), the user's
+  // direction reversal was respected correctly.
+  if (directionChanged) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleVirtualScroll',
+      reason: 'direction-change',
+      extra: {
+        previousDirection,
+        direction,
+        deltaTop,
+        distanceFromTop,
+        distanceFromBottom,
+      },
+    })
+  }
+  // ── Content-resized info ────────────────────────────────────────────
+  //
+  // `scrollHeight` changed between two scroll events. Causes:
+  //   - New message appended (SSE chunk, messages-length watcher)
+  //   - Image finished loading / unmounted
+  //   - VirtualScroller measured or relayouted items
+  //   - User toggled message-grouping, attachments, or code fold
+  // Combined with the next state-transition log, this answers
+  // "did content grow while I was scrolled up reading?" — if so,
+  // the user's reading position may no longer reference the same
+  // message it did a moment ago. Negative `deltaHeight` (content
+  // shrank) is logged too — that's a code-fold collapse or
+  // optimistic message rollback.
+  if (contentGrew) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleVirtualScroll',
+      reason: 'content-resized',
+      extra: {
+        deltaHeight,
+        previousScrollHeight,
+        scrollHeight,
+        direction,
+        distanceFromTop,
+        distanceFromBottom,
+      },
+    })
+  }
+  // ── Lazy-load-zone info ─────────────────────────────────────────────
+  //
+  // The user is within `loadMoreThreshold` (200px) of the top
+  // but hasn't reached the 10px `reached-top` threshold yet.
+  // The VirtualScroller's onScroll debounce is probably about to
+  // fire `loadMore`. If you see this line followed by silence
+  // (no `load-more-threshold-reached` and no
+  // `load-more-suppressed`), the debounce was reset by another
+  // scroll event before it could fire.
+  if (isInLazyLoadZone) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleVirtualScroll',
+      reason: 'lazy-load-zone',
+      extra: {
+        distanceFromTop,
+        threshold: 200,
+        direction,
+        deltaTop,
+      },
+    })
+  }
+  // ── State transitions are loud ─────────────────────────────────────
+  //
+  // This is the most useful line in the whole logger. "User was
+  // at bottom, scrolled up 200px" vs "Auto-stick fired,
+  // isAtBottom is true again" are the two events that answer
+  // every "why did the chat jump?" question.
   if (newIsAtBottom !== previousIsAtBottom) {
     scrollLogger.info({
       ...ctx,
@@ -1045,6 +1179,8 @@ const handleVirtualScroll = (
         previousIsAtBottom,
         distanceFromBottom,
         threshold: BOTTOM_THRESHOLD,
+        direction,
+        deltaTop,
       },
     })
   }
@@ -1072,6 +1208,8 @@ const handleVirtualScroll = (
         previousIsAtTop,
         distanceFromTop,
         threshold: TOP_THRESHOLD,
+        direction,
+        deltaTop,
       },
     })
     previousIsAtTop = newIsAtTop
@@ -1087,6 +1225,12 @@ const handleVirtualScroll = (
   // opening a session still lands at the bottom, but once the user
   // scrolls up even a few pixels, the auto-scroll disengages.
   isAtBottom.value = newIsAtBottom
+  // Persist the current state for the next call's deltas. Done
+  // AFTER the logs so the `first-scroll` log captures the raw
+  // initial state (with -1 sentinels making the deltas explicit).
+  previousScrollTop = actualScrollTop
+  previousScrollHeight = scrollHeight
+  previousDirection = direction
 }
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
@@ -1512,21 +1656,19 @@ const compactSession = async () => {
         -->
         <div
           v-if="
-            hasMoreMessages &&
-            !isLoadingMore &&
-            messageGroups.length > 0 &&
-            !scrollerIsScrollable
+            hasMoreMessages && !isLoadingMore && messageGroups.length > 0 && !scrollerIsScrollable
           "
           class="flex justify-center pt-2 pb-1"
           data-testid="load-more-messages"
         >
           <button
             @click="loadChatHistory(true)"
-            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs
-                   transition-all duration-200 hover:scale-105"
-            style="background-color: var(--semantic-card-bg);
-                   border: 1px solid var(--color-border);
-                   color: var(--semantic-text);"
+            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs transition-all duration-200 hover:scale-105"
+            style="
+              background-color: var(--semantic-card-bg);
+              border: 1px solid var(--color-border);
+              color: var(--semantic-text);
+            "
             :title="`Load ${PAGE_SIZE} older messages`"
           >
             <span>↑</span>
@@ -1728,7 +1870,7 @@ const compactSession = async () => {
                     <!-- ── Assistant ── -->
                     <template v-else-if="group.role === 'assistant'">
                       <!-- Show tool_calls header only when tool outputs are NOT shown -->
-                      <div v-if="groupToolNames[groupIndex] !== null" >
+                      <div v-if="groupToolNames[groupIndex] !== null">
                         <div class="tool-calls-summary">
                           <span class="tool-calls-badge">
                             <svg
@@ -1764,10 +1906,7 @@ const compactSession = async () => {
                            on tool_calls-only assistant turns. The tool header
                            (if any) is shown above; we don't want an empty
                            padded area below it. -->
-                      <div
-                        v-if="group.messages.some(hasVisibleContent)"
-                        class="assistant-messages"
-                      >
+                      <div v-if="group.messages.some(hasVisibleContent)" class="assistant-messages">
                         <div v-for="(msg, idx) in group.messages" :key="idx" class="assistant-item">
                           <!-- eslint-disable-next-line vue/no-v-html -->
                           <span
@@ -1883,13 +2022,21 @@ const compactSession = async () => {
                 @click.stop="showProfilePicker = !showProfilePicker"
                 :disabled="isUpdatingProfile || !sessionId"
                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
-                :class="isUpdatingProfile || !sessionId ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'"
+                :class="
+                  isUpdatingProfile || !sessionId
+                    ? 'opacity-50 cursor-not-allowed'
+                    : 'hover:scale-105'
+                "
                 style="
                   background-color: var(--semantic-card-bg);
                   border: 1px solid var(--color-border);
                   color: var(--semantic-text);
                 "
-                :title="selectedProfile ? `Using profile: ${selectedProfile}` : 'Using default (top-level config)'"
+                :title="
+                  selectedProfile
+                    ? `Using profile: ${selectedProfile}`
+                    : 'Using default (top-level config)'
+                "
               >
                 <span>🤖</span>
                 <span>{{ selectedProfile ?? 'Default' }}</span>
@@ -1898,12 +2045,15 @@ const compactSession = async () => {
               <div
                 v-if="showProfilePicker"
                 class="absolute bottom-full mb-2 left-0 min-w-[240px] rounded-lg shadow-lg z-20 overflow-hidden"
-                style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+                style="
+                  background-color: var(--semantic-card-bg);
+                  border: 1px solid var(--color-border);
+                "
               >
                 <button
                   @click="selectProfile(null)"
                   class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
-                  style="color: var(--semantic-text);"
+                  style="color: var(--semantic-text)"
                 >
                   <span>Default (top-level config)</span>
                   <span v-if="!selectedProfile">✓</span>
@@ -1913,20 +2063,20 @@ const compactSession = async () => {
                   :key="p.name"
                   @click="selectProfile(p.name)"
                   class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
-                  style="color: var(--semantic-text); border-top: 1px solid var(--color-border);"
+                  style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
                 >
                   <div class="flex items-center justify-between">
                     <span class="font-medium">{{ p.name }}</span>
                     <span v-if="selectedProfile === p.name">✓</span>
                   </div>
-                  <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted);">
+                  <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted)">
                     {{ p.model }} · {{ p.base_url }}
                   </div>
                 </button>
                 <div
                   v-if="availableProfiles.length === 0"
                   class="px-3 py-2 text-xs"
-                  style="color: var(--semantic-text-muted);"
+                  style="color: var(--semantic-text-muted)"
                 >
                   No profiles configured. Add one in Settings.
                 </div>

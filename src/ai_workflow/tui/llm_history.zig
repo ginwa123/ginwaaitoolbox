@@ -1,11 +1,11 @@
 const std = @import("std");
-const tree1 = @import("nalarcore");
-const sqlite = tree1.sqlite;
-const agent = tree1.agent;
-const logger_mod = tree1.logger;
+const nalarcore = @import("nalarcore");
+const sqlite = nalarcore.sqlite;
+const agent = nalarcore.agent;
+const logger_mod = nalarcore.logger;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
-const ai_mod = @import("nalarcore").ai_mod;
+const ai_mod = @import("mod.zig");
 const on_event_sent = ai_mod.on_event_sent;
 
 pub fn markMessageNotForLlmRun(
@@ -602,8 +602,8 @@ pub fn getSessionMessagesSorted(
         .next_cursor = next_cursor,
         .cwd = cwd,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
-        .max_capacity_total_tokens = if (tree1.getSingleton() catch null) |di|
-            llm_models.getModelTokenCount(tree1.getLlmConfig(di).model)
+        .max_capacity_total_tokens = if (nalarcore.getSingleton() catch null) |di|
+            llm_models.getModelTokenCount(nalarcore.getLlmConfig(di).model)
         else
             llm_models.getModelTokenCount(""),
         .total_count = total_count,
@@ -1596,7 +1596,7 @@ pub fn queueMessage(
     try db.exec(allocator, sql, &.{ id, session_id, message, copy_image_url });
 
     // Emit SSE event to notify connected clients
-    const di = tree1.getSingleton() catch return;
+    const di = nalarcore.getSingleton() catch return;
     const event_bus = di.event_bus;
 
     var buf: std.ArrayList(u8) = .empty;
@@ -1677,7 +1677,7 @@ pub fn deleteQueuedMessage(
     try db.exec(allocator, sql, &.{ session_id, message });
 
     // Emit SSE event to notify connected clients
-    const di = tree1.getSingleton() catch return;
+    const di = nalarcore.getSingleton() catch return;
     const event_bus = di.event_bus;
 
     var buf: std.ArrayList(u8) = .empty;

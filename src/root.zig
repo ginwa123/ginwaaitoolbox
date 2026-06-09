@@ -231,10 +231,20 @@ pub fn getClientIdForSession(session_id: []const u8, is_use_lock: bool) ?[16]u8 
 }
 
 /// Get list of client_ids for a session
-/// Returns owned memory that caller must free, or null if session not found
+/// Returns an owned copy that the caller MUST free with `allocator.free`.
+/// Returns null if the session has no registered clients (or does not exist).
+///
+/// IMPORTANT: This function used to return a borrowed slice (`list.items`)
+/// directly. That was a use‑after‑free waiting to happen — the slice's
+/// backing buffer is owned by the `session_to_client_ids` map entry, and
+/// the map's `unregisterSessionClient` / `fetchRemove` will `deinit` it
+/// the moment any concurrent caller (e.g. the SSE event loop on a
+/// POLL.HUP) decides to drop the session. The LLM streaming callback
+/// iterated that borrowed slice after `session_map_lock` had been
+/// released, hence the segfault. We now copy into a fresh buffer that
+/// survives lock release and any concurrent map mutation.
 pub fn getListClientsForSession(session_id: []const u8, allocator: std.mem.Allocator, is_use_lock: bool) !?[][16]u8 {
     _ = is_use_lock;
-    _ = allocator;
     const di = try getSingleton();
     const io = di.io;
     di.session_map_lock.lock(io) catch {};
@@ -243,7 +253,9 @@ pub fn getListClientsForSession(session_id: []const u8, allocator: std.mem.Alloc
     const list = di.session_to_client_ids.get(session_id) orelse return null;
     if (list.items.len == 0) return null;
 
-    return list.items;
+    const copy = try allocator.alloc([16]u8, list.items.len);
+    @memcpy(copy, list.items);
+    return copy;
 }
 
 /// Find session_id by client_id (reverse lookup)
@@ -292,22 +304,17 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
     if (maybe_session_id) |session_id| {
         defer di.allocator.free(session_id);
 
-        // Unregister and free the map key
+        // Unregister and free the map key. After this, the session has no
+        // clients left in the map, so there is nothing left to read — the
+        // previous "getListClientsForSession, then check len == 0" branch
+        // was dead code (the lookup would always return null right after
+        // unregister) and its `defer allocator.free(clients)` was
+        // silently freeing a borrowed slice if the order ever changed.
         unregisterSessionClient(session_id, false);
 
-        const listClients = getListClientsForSession(session_id, di.allocator, false) catch |err| {
-            std.debug.print("SSE_DEBUG: Failed to get clients for session {s}: {any}\n", .{ session_id, err });
-            return;
-        };
-
-        if (listClients) |clients| {
-            defer di.allocator.free(clients);
-            if (clients.len == 0) {
-                ev_bus.unsubscribe(session_id);
-            }
-        } else {
-            ev_bus.unsubscribe(session_id);
-        }
+        // Drop the event‑bus subscription for this session; no client
+        // can be listening any more.
+        ev_bus.unsubscribe(session_id);
     }
 }
 
