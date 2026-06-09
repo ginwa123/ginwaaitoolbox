@@ -60,26 +60,35 @@ pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, io: std.Io, inp
     return loadSkillFromPath(allocator, io, path);
 }
 
-/// Load skill from absolute file path
+/// Load skill from a file path. Accepts both absolute and relative paths —
+/// relative paths are resolved against the io's current working directory.
+///
+/// NOTE: this used to call `std.Io.Dir.openFileAbsolute` which has the
+/// precondition `assert(path.isAbsolute(absolute_path))`. In debug builds
+/// a non-absolute path triggered `unreachable`, killing the entire worker
+/// process and bypassing every catch/try in the call chain
+/// (see docs/plans/2025-01-15-get-skill-relative-path-panic.md). We now
+/// use `cwd().openFile` which handles both cases — `openFileAbsolute` is
+/// literally `openFile(.cwd(), ...)` + that assert.
 fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
-    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         const result = try std.fmt.allocPrint(allocator,
             \\<skill_name></skill_name>
             \\<content></content>
             \\<loaded>false</loaded>
-            \\<error>Failed to open file</error>
-        , .{});
+            \\<error>Failed to open file "{s}": {s}</error>
+        , .{ path, @errorName(err) });
         return result;
     };
     defer std.Io.File.close(file, io);
 
-    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(std.math.maxInt(usize))) catch {
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(std.math.maxInt(usize))) catch |err| {
         const result = try std.fmt.allocPrint(allocator,
             \\<skill_name></skill_name>
             \\<content></content>
             \\<loaded>false</loaded>
-            \\<error>Failed to read file</error>
-        , .{});
+            \\<error>Failed to read file "{s}": {s}</error>
+        , .{ path, @errorName(err) });
         return result;
     };
     defer allocator.free(content);

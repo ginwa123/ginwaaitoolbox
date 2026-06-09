@@ -17,6 +17,8 @@
  *   7. Online fast-path   — error → online → fire immediately
  *   8. Close is terminal  — close() blocks all later triggers
  *   9. State emission order — connecting → reconnecting → connecting → open
+ *  10. pagehide / beforeunload — close connection on refresh
+ *      (the 2026-01-15 fix for "SSE still open after refresh")
  *
  * Plus:
  *   - Listener cleanup: addEventListener/removeEventListener accounting
@@ -25,6 +27,7 @@
  *   - reconnect() resets the attempt counter
  *   - Subscriber errors do not break the connection
  *   - getState() returns the current state synchronously
+ *   - closeOnUnload: false skips the unload listeners
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -168,6 +171,43 @@ function createMockTarget(
 }
 
 function createMockOnlineTarget(): {
+  target: Pick<Window, 'addEventListener' | 'removeEventListener'> & {
+    _listeners: Map<string, Set<EventListenerOrEventListenerObject>>
+    fire(type: string): void
+  }
+} {
+  return {
+    target: {
+      _listeners: new Map<string, Set<EventListenerOrEventListenerObject>>(),
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        let set = this._listeners.get(type)
+        if (!set) {
+          set = new Set()
+          this._listeners.set(type, set)
+        }
+        set.add(listener)
+      },
+      removeEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        const set = this._listeners.get(type)
+        if (set) set.delete(listener)
+      },
+      fire(type: string) {
+        const set = this._listeners.get(type)
+        if (!set) return
+        for (const listener of set) {
+          if (typeof listener === 'function') listener(new Event(type))
+          else listener.handleEvent(new Event(type))
+        }
+      },
+    },
+  }
+}
+
+// Mock `window` for the `pagehide` / `beforeunload` listeners.
+// Same shape as the online target — both `addEventListener` and
+// `removeEventListener` accounting, plus a `fire(type)` helper to
+// simulate the browser firing the unload event.
+function createMockUnloadTarget(): {
   target: Pick<Window, 'addEventListener' | 'removeEventListener'> & {
     _listeners: Map<string, Set<EventListenerOrEventListenerObject>>
     fire(type: string): void
@@ -722,19 +762,24 @@ describe('createSseClient', () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
+    const { target: unloadTarget } = createMockUnloadTarget()
 
     const client = createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
       onlineTarget: onlineTarget,
+      unloadTarget: unloadTarget,
       pauseWhenHidden: false,
       onEvent: () => {},
     })
 
-    // Before close: 1 visibility listener, 1 online listener.
+    // Before close: 1 visibility listener, 1 online listener,
+    // 1 pagehide listener, 1 beforeunload listener.
     expect(visTarget._listeners.get('visibilitychange')?.size ?? 0).toBe(1)
     expect(onlineTarget._listeners.get('online')?.size ?? 0).toBe(1)
+    expect(unloadTarget._listeners.get('pagehide')?.size ?? 0).toBe(1)
+    expect(unloadTarget._listeners.get('beforeunload')?.size ?? 0).toBe(1)
 
     client.close()
 
@@ -743,9 +788,139 @@ describe('createSseClient', () => {
     // closed client must not retain DOM references.
     expect(visTarget._listeners.get('visibilitychange')?.size ?? 0).toBe(0)
     expect(onlineTarget._listeners.get('online')?.size ?? 0).toBe(0)
+    expect(unloadTarget._listeners.get('pagehide')?.size ?? 0).toBe(0)
+    expect(unloadTarget._listeners.get('beforeunload')?.size ?? 0).toBe(0)
 
     // The underlying EventSource was also closed.
     expect(instances[0]!._closed).toBe(true)
+  })
+
+  // 10. pagehide / beforeunload cleanly tear down the connection
+  // (the 2026-01-15 fix for "SSE still open after refresh"). The
+  // browser's native EventSource eventually tears down the
+  // underlying socket on unload, but it lingers in the network
+  // panel as "open" / "pending" and the server does not know the
+  // client is gone until the server-side timeout fires. Listening
+  // for `pagehide` + `beforeunload` and calling close() makes the
+  // browser drop the stream immediately.
+  it('closes the connection on pagehide so it is not still "open" after refresh', () => {
+    const { ctor, instances } = createMockCtor()
+    const { target: visTarget } = createMockTarget(false)
+    const { target: onlineTarget } = createMockOnlineTarget()
+    const { target: unloadTarget } = createMockUnloadTarget()
+
+    const states: SseState[] = []
+    const client = createSseClient({
+      url: '/test',
+      EventSourceCtor: ctor,
+      visibilityTarget: visTarget,
+      onlineTarget: onlineTarget,
+      unloadTarget: unloadTarget,
+      pauseWhenHidden: false,
+      onStateChange: (s) => states.push(s),
+      onEvent: () => {},
+    })
+
+    // Simulate a normal open: server sent the `connected` event.
+    instances[0]!.simulateOpen()
+    expect(client.getState()).toBe('open')
+
+    // User hits refresh — the browser fires `pagehide` on window.
+    unloadTarget.fire('pagehide')
+
+    // The client must be in 'closed' state, the EventSource must
+    // be closed, and all DOM listeners (pagehide, beforeunload,
+    // visibility, online) must be removed.
+    expect(client.getState()).toBe('closed')
+    expect(instances[0]!._closed).toBe(true)
+    expect(unloadTarget._listeners.get('pagehide')?.size ?? 0).toBe(0)
+    expect(unloadTarget._listeners.get('beforeunload')?.size ?? 0).toBe(0)
+    expect(visTarget._listeners.get('visibilitychange')?.size ?? 0).toBe(0)
+    expect(onlineTarget._listeners.get('online')?.size ?? 0).toBe(0)
+    // The state emission sequence includes 'closed' as the final
+    // entry, same shape as the manual close() path.
+    expect(states).toEqual(['connecting', 'open', 'closed'])
+  })
+
+  // 10b. beforeunload does the same thing (legacy fallback for
+  // browsers without pagehide support).
+  it('closes the connection on beforeunload (legacy fallback)', () => {
+    const { ctor, instances } = createMockCtor()
+    const { target: visTarget } = createMockTarget(false)
+    const { target: onlineTarget } = createMockOnlineTarget()
+    const { target: unloadTarget } = createMockUnloadTarget()
+
+    const client = createSseClient({
+      url: '/test',
+      EventSourceCtor: ctor,
+      visibilityTarget: visTarget,
+      onlineTarget: onlineTarget,
+      unloadTarget: unloadTarget,
+      pauseWhenHidden: false,
+      onEvent: () => {},
+    })
+
+    instances[0]!.simulateOpen()
+    expect(client.getState()).toBe('open')
+
+    unloadTarget.fire('beforeunload')
+    expect(client.getState()).toBe('closed')
+    expect(instances[0]!._closed).toBe(true)
+  })
+
+  // 10c. Stale pagehide handler after explicit close() is a no-op
+  // (teardown is idempotent via the `closed` guard).
+  it('a stale pagehide handler after close() is a no-op', () => {
+    const { ctor, instances } = createMockCtor()
+    const { target: visTarget } = createMockTarget(false)
+    const { target: onlineTarget } = createMockOnlineTarget()
+    const { target: unloadTarget } = createMockUnloadTarget()
+
+    const client = createSseClient({
+      url: '/test',
+      EventSourceCtor: ctor,
+      visibilityTarget: visTarget,
+      onlineTarget: onlineTarget,
+      unloadTarget: unloadTarget,
+      pauseWhenHidden: false,
+      onEvent: () => {},
+    })
+
+    client.close()
+    expect(client.getState()).toBe('closed')
+
+    // Stale pagehide (e.g. browser fires it after Vue's
+    // onUnmounted called .close() and the page finally unloads).
+    // Must not throw, must not create a new instance, must not
+    // change state.
+    unloadTarget.fire('pagehide')
+    expect(client.getState()).toBe('closed')
+    expect(instances.length).toBe(1)
+  })
+
+  // 10d. closeOnUnload: false skips the unload listeners. Useful
+  // for SSR / tests / contexts without a real `window`.
+  it('does not attach unload listeners when closeOnUnload is false', () => {
+    const { ctor } = createMockCtor()
+    const { target: visTarget } = createMockTarget(false)
+    const { target: onlineTarget } = createMockOnlineTarget()
+    const { target: unloadTarget } = createMockUnloadTarget()
+
+    const client = createSseClient({
+      url: '/test',
+      EventSourceCtor: ctor,
+      visibilityTarget: visTarget,
+      onlineTarget: onlineTarget,
+      unloadTarget: unloadTarget,
+      pauseWhenHidden: false,
+      closeOnUnload: false,
+      onEvent: () => {},
+    })
+
+    expect(unloadTarget._listeners.get('pagehide')?.size ?? 0).toBe(0)
+    expect(unloadTarget._listeners.get('beforeunload')?.size ?? 0).toBe(0)
+
+    client.close()
   })
 
   // getState is synchronous

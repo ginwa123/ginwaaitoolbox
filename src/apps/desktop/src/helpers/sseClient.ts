@@ -86,6 +86,15 @@
  *   - `visibilitychange → visible` AND `online` event both
  *     fast-path `reconnecting → connecting` (cancel the timer,
  *     start a fresh attempt).
+ *   - `pagehide` AND `beforeunload` (added in the 2026-01-15 fix)
+ *     call `close()` synchronously. Without this, the browser only
+ *     eventually tears down the underlying socket on page unload,
+ *     and the SSE connection lingers in the network panel as
+ *     "open" / "pending" until the server-side timeout fires. The
+ *     browser's `EventSource` close method is also needed to make
+ *     the browser drop the stream from the network panel
+ *     immediately on refresh / tab close / navigation. Set
+ *     `closeOnUnload: false` to opt out (tests, SSR).
  */
 
 /**
@@ -246,6 +255,28 @@ export interface SseClientOptions {
   setTimeoutFn?: typeof setTimeout
   clearTimeoutFn?: typeof clearTimeout
   /**
+   * Close the connection automatically on `pagehide` (modern,
+   * covers bfcache) and `beforeunload` (legacy fallback). When
+   * the user refreshes the page, closes the tab, or navigates
+   * away, the browser will eventually tear down the underlying
+   * socket — but the SSE connection lingers in the network
+   * panel as "open" / "pending" and the server does not know
+   * the client is gone until the server-side timeout fires.
+   * Listening for `pagehide` + `beforeunload` and calling
+   * `close()` synchronously makes the browser drop the stream
+   * from the network panel immediately.
+   *
+   * Default: `true`. Set `false` in tests (to avoid extra
+   * listeners) or in headless contexts that have no `window`.
+   */
+  closeOnUnload?: boolean
+  /**
+   * Override the `pagehide` / `beforeunload` event target.
+   * Default: `window`. Tests may pass a mock to fire synthetic
+   * unload events.
+   */
+  unloadTarget?: Pick<Window, 'addEventListener' | 'removeEventListener'>
+  /**
    * The SSE event name that signals "the stream is live". The
    * default `'connected'` matches the backend's convention; expose
    * it for symmetry / future flexibility.
@@ -319,6 +350,12 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     'addEventListener' | 'removeEventListener' | 'hidden'
   > | null
   const onlineTarget = (opts.onlineTarget ??
+    (typeof window !== 'undefined' ? window : null)) as Pick<
+    Window,
+    'addEventListener' | 'removeEventListener'
+  > | null
+  const closeOnUnload = opts.closeOnUnload ?? true
+  const unloadTarget = (opts.unloadTarget ??
     (typeof window !== 'undefined' ? window : null)) as Pick<
     Window,
     'addEventListener' | 'removeEventListener'
@@ -538,11 +575,27 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     }
   }
 
+  function onPageHide(): void {
+    // `pagehide` / `beforeunload` are the "user is leaving the
+    // page" signal (refresh, tab close, navigation). The unload
+    // handler MUST be synchronous — the browser will not await
+    // a Promise. Just call `teardown()` and let the browser
+    // close the socket. Without this, the SSE connection
+    // lingers in the network panel as "open" / "pending" and
+    // the server does not know the client is gone until the
+    // server-side timeout fires.
+    teardown()
+  }
+
   if (visibilityTarget && typeof visibilityTarget.addEventListener === 'function') {
     visibilityTarget.addEventListener('visibilitychange', onVisibilityChange)
   }
   if (reconnectOnOnline && onlineTarget && typeof onlineTarget.addEventListener === 'function') {
     onlineTarget.addEventListener('online', onOnline)
+  }
+  if (closeOnUnload && unloadTarget && typeof unloadTarget.addEventListener === 'function') {
+    unloadTarget.addEventListener('pagehide', onPageHide)
+    unloadTarget.addEventListener('beforeunload', onPageHide)
   }
 
   // Wire the optional `opts.onStateChange` into the same
@@ -559,27 +612,40 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   // success / failure does not race the listener registration.
   start()
 
+  // Shared cleanup path. Called by both the public `.close()`
+  // method and the `pagehide` / `beforeunload` listener. Idempotent
+  // (the `closed` guard at the top makes repeat calls a no-op),
+  // so it is safe to call from a stale unload handler after
+  // `.close()` has already been invoked.
+  function teardown(): void {
+    if (closed) return
+    closed = true
+    clearRetry()
+    if (es) {
+      try {
+        es.close()
+      } catch {
+        // ignore
+      }
+      es = null
+    }
+    if (visibilityTarget && typeof visibilityTarget.removeEventListener === 'function') {
+      visibilityTarget.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+    if (reconnectOnOnline && onlineTarget && typeof onlineTarget.removeEventListener === 'function') {
+      onlineTarget.removeEventListener('online', onOnline)
+    }
+    if (closeOnUnload && unloadTarget && typeof unloadTarget.removeEventListener === 'function') {
+      unloadTarget.removeEventListener('pagehide', onPageHide)
+      unloadTarget.removeEventListener('beforeunload', onPageHide)
+    }
+    emitState('closed', { attempt, reason: 'manual' })
+    subscribers.clear()
+  }
+
   return {
     close(): void {
-      if (closed) return
-      closed = true
-      clearRetry()
-      if (es) {
-        try {
-          es.close()
-        } catch {
-          // ignore
-        }
-        es = null
-      }
-      if (visibilityTarget && typeof visibilityTarget.removeEventListener === 'function') {
-        visibilityTarget.removeEventListener('visibilitychange', onVisibilityChange)
-      }
-      if (reconnectOnOnline && onlineTarget && typeof onlineTarget.removeEventListener === 'function') {
-        onlineTarget.removeEventListener('online', onOnline)
-      }
-      emitState('closed', { attempt, reason: 'manual' })
-      subscribers.clear()
+      teardown()
     },
 
     reconnect(): void {

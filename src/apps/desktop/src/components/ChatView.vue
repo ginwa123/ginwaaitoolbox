@@ -1515,7 +1515,7 @@ const compactSession = async () => {
           ref="virtualScrollerRef"
           :items="messageGroups"
           :total-count="0"
-          :buffer="3"
+          :buffer="5"
           :default-item-height="200"
           :load-more-threshold="200"
           :load-more-threshold-ratio="0.5"

@@ -116,3 +116,104 @@ test "get_skill_tool - schema declares is_global property" {
     }
     try std.testing.expect(found_is_global);
 }
+
+test "execute_get_skill_to_string - absolute path loads skill file (loadSkillFromPath baseline)" {
+    // Baseline: loadSkillFromPath with an absolute path must still work
+    // after the openFileAbsolute → cwd().openFile swap. This guards against
+    // a regression where the new code accidentally breaks the existing
+    // absolute-path happy path.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_dir = "/tmp/nalar-get-skill-abs-path-test";
+    const skill_file = "/tmp/nalar-get-skill-abs-path-test/SKILL.MD";
+    std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
+    {
+        const f = try std.Io.Dir.cwd().createFile(io, skill_file, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\---
+            \\name: absolute-path-test
+            \\description: "Absolute path baseline test"
+            \\---
+            \\
+            \\# Absolute path body
+            \\
+        );
+    }
+
+    const input = get_skill.GetSkillInput{ .path = skill_file };
+    const output = try get_skill.execute_get_skill_to_string(alloc, io, input, null);
+    defer alloc.free(output);
+
+    try std.testing.expect(contains(output, "<loaded>true</loaded>"));
+    try std.testing.expect(contains(output, "absolute-path-test"));
+    try std.testing.expect(contains(output, "Absolute path body"));
+}
+
+test "execute_get_skill_to_string - relative path resolves against cwd (panic regression)" {
+    // REGRESSION: previously, passing a relative path caused
+    // std.Io.Dir.openFileAbsolute to `unreachable`-panic, killing the
+    // entire worker process and bypassing every catch/try in the call
+    // chain. See docs/plans/2025-01-15-get-skill-relative-path-panic.md
+    //
+    // We create a skill file at a relative path under cwd, then call
+    // execute_get_skill_to_string with that relative path. Before the fix
+    // this would SIGABRT; after the fix it loads successfully.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_dir = "tmp_get_skill_relative_test";
+    const skill_file = "tmp_get_skill_relative_test/SKILL.MD";
+    std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
+    {
+        const f = try std.Io.Dir.cwd().createFile(io, skill_file, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\---
+            \\name: relative-path-test
+            \\description: "Relative path regression test"
+            \\---
+            \\
+            \\# Relative path body
+            \\
+        );
+    }
+
+    const input = get_skill.GetSkillInput{ .path = skill_file };
+    const output = try get_skill.execute_get_skill_to_string(alloc, io, input, null);
+    defer alloc.free(output);
+
+    try std.testing.expect(contains(output, "<loaded>true</loaded>"));
+    try std.testing.expect(contains(output, "relative-path-test"));
+    try std.testing.expect(contains(output, "Relative path body"));
+}
+
+test "execute_get_skill_to_string - non-existent path returns XML error (no panic, includes path)" {
+    // REGRESSION: previously, a non-existent relative path would return a
+    // generic "Failed to open file" with no path or OS error info — and if
+    // a future caller ever wrapped openFileAbsolute without the same
+    // defensive logic, it would panic and kill the worker. The fix
+    // surfaces the path and the underlying OS error so the LLM can
+    // self-correct on the next turn.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const missing_path = "this/path/does/not/exist/SKILL.MD";
+    const input = get_skill.GetSkillInput{ .path = missing_path };
+    const output = try get_skill.execute_get_skill_to_string(alloc, io, input, null);
+    defer alloc.free(output);
+
+    try std.testing.expect(contains(output, "<loaded>false</loaded>"));
+    // The path must appear in the error so the LLM knows what was tried.
+    try std.testing.expect(contains(output, missing_path));
+    // Must NOT contain the word "unreachable" from the panic message.
+    try std.testing.expect(std.mem.indexOf(u8, output, "unreachable") == null);
+}
+

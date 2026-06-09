@@ -36,19 +36,12 @@ pub const spawn_sub_agent_tool = AgentTool{
     .function = .{
         .name = "spawn_sub_agent",
         .description =
-        \\Spawn 2 to 20 parallel sub-agents to complete tasks concurrently.
-        \\
-        \\**MINIMUM: 2 sub-agents required.** Spawning only 1 sub-agent is FORBIDDEN.
-        \\If you need a single task done, do it directly yourself — no sub-agent needed.
+        \\Spawn 1 to 20 parallel sub-agents to complete tasks concurrently.
         \\
         \\HOW IT WORKS:
-        \\- Each sub-agent runs independently with its own fresh context window.
-        \\- Sub-agents do NOT inherit any context from the parent agent.
         \\- You MUST include all necessary context, background, and instructions
         \\  directly inside each sub-agent's "instruction" field.
         \\- All sub-agents run in parallel and return results separately.
-        \\- Sub-agents are registered as **workers** in the database and activity registry,
-        \\  so they can be tracked and show up in the agent's awareness of other active agents.
         \\
         \\WHEN TO USE:
         \\- Use when tasks can be broken down into independent parallel workloads.
