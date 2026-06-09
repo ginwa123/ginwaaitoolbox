@@ -60,6 +60,20 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\- If a sub-agent exceeds its timeout, it will be terminated and return an error.
         \\- Default: no timeout (sub-agent runs until completion).
         \\
+        \\INHERITED CONTEXT:
+        \\- Each sub-agent can have an optional "inherited_context" mode string
+        \\  that controls whether the parent's recent conversation history is
+        \\  injected into the sub-agent's system prompt as a labelled read-only
+        \\  block ("## Conversation History From Parent Agent").
+        \\- Valid values:
+        \\    - "none"        — no inheritance (default when omitted)
+        \\    - "last:N"      — last N user/assistant turns from the parent (N: 1-50, default 10)
+        \\    - "all"         — all user/assistant turns (capped at 50)
+        \\    - "since_last_user" — from the parent's last user message onwards
+        \\- Only user and assistant text turns are inherited. Tool calls and
+        \\  tool results from the parent are NOT included — the sub-agent has
+        \\  its own tool set and shouldn't assume the parent's tool state.
+        \\
         \\EXAMPLE USE CASES:
         \\  - Spawn 3 agents: one to browse URL A, one to browse URL B, one to browse URL C
         \\  - Spawn 5 agents to process 5 different files in parallel
