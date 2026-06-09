@@ -719,6 +719,7 @@ const loadChatHistory = async (loadMore = false) => {
       image_urls: msg.image_url ? msg.image_url.split('|') : undefined,
       finish_reason: msg.finish_reason,
       tool_calls_json: msg.tool_calls_json,
+      tool_call_id: msg.tool_call_id,
     }))
 
     if (loadMore) {
