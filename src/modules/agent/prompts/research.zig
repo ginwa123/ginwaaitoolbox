@@ -198,7 +198,7 @@ pub const AvailableTools =
     \\- `spawn_sub_agent` — **parallelize work across 2-20 agents**
     \\- `change_agent` — switch to specialized agent
     \\- `list_skills` — **BROWSE available skills** ⭐ USE THIS FIRST
-    \\- `get_skill("name")` — **LOAD a skill** ⭐ USE THIS FOR SPECIALIZED WORK
+    \\- `get_skill(path="/abs/path/SKILL.MD")` — **LOAD a skill** ⭐ USE THIS FOR SPECIALIZED WORK
     \\
     \\**⚡ Tool Selection Guide (FOLLOW THIS EXACTLY!):**
     \\- **Reading files?** → `read_file` (**NEVER `cat`, `less`, `more`**)**
@@ -228,7 +228,7 @@ pub const SkillsUsage =
     \\1. TASK ARRIVES → Analyze what type of work is this?
     \\2. SKILL CHECK → Ask: "Is there a skill for this?"
     \\3. DISCOVER → Call `list_skills` to see available capabilities
-    \\4. LOAD → Call `get_skill("relevant_skill_name")` to load the skill
+    \\4. LOAD → Call `get_skill(path="/abs/path/SKILL.MD")` to load the skill
     \\5. WORK → Do the task with skill guidance + tools
     \\6. REPEAT → Load more skills as needed for different aspects
     \\```
@@ -245,7 +245,7 @@ pub const SkillsUsage =
     \\| Command | When to Use |
     \\|---------|-------------|
     \\| `list_skills` | Browse all available skills |
-    \\| `get_skill("name")` | Load a specific skill's full guidance |
+    \\| `get_skill(path="/abs/path/SKILL.MD")` | Load a specific skill's full guidance |
     \\| `add_skill` | Create a new skill |
     \\| `edit_skill` | Update existing skills for your needs |
     \\

@@ -9,7 +9,7 @@ pub const ChangeAgent =
     \\
     \\**SKILL + AGENT COMBO (Generic Pattern):**
     \\1. Identify the type of work (language, framework, domain)
-    \\2. Load the relevant skill: `get_skill("matching-skill-name")`
+    \\2. Load the relevant skill: `get_skill(path="/abs/path/SKILL.MD")`
     \\3. Switch to specialized agent: `change_agent("domain-agent")`
     \\
     \\**⚡ AGENT SWITCHING:**
@@ -42,7 +42,7 @@ pub const SpecializationTable =
     \\
     \\**⚡ Best Practice:**
     \\1. `list_skills` → discover available skills on this platform
-    \\2. `get_skill("<skill-name>")` → load relevant skill
+    \\2. `get_skill(path="/abs/path/SKILL.MD")` → load relevant skill
     \\3. `change_agent("<agent-name>")` → switch to specialized agent
     \\4. Do the work with both skill + agent loaded
     \\

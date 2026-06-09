@@ -228,7 +228,7 @@ pub const AggressiveDelegation =
     \\- `change_agent("devops-engineer")` for infra
     \\
     \\**Delegate to skills:**
-    \\- `get_skill("skill-name")` for best practices
+    \\- `get_skill(path="/abs/path/SKILL.MD")` for best practices
     \\- `list_skills` to discover what exists
     \\
     \\**Your job:**
