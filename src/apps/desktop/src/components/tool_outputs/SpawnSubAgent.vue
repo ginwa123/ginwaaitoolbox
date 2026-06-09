@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import type { SubAgentArgs } from '../../helpers/parseSpawnSubAgentArgs'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  subAgentArgs?: SubAgentArgs[] | null
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -93,6 +95,23 @@ const copyResponse = async (e: Event, response: string) => {
 
 // Count of agents
 const agentCount = computed(() => agents.value.length)
+
+// True when at least one sub-agent has a non-`none` inherited_context mode.
+const hasInheritedContext = computed(() => {
+  if (!props.subAgentArgs) return false
+  return props.subAgentArgs.some(
+    a => a.inherited_context && a.inherited_context !== 'none'
+  )
+})
+
+// Human-readable description of the inherited_context mode for the badge tooltip.
+function describeInheritedContext(mode: string): string {
+  if (mode === 'all') return 'all parent messages'
+  if (mode === 'since_last_user') return 'from the last user message onward'
+  const m = mode.match(/^last:(\d+)$/)
+  if (m) return `last ${m[1]} parent messages (default 10 if unspecified)`
+  return mode
+}
 </script>
 
 <template>
@@ -110,6 +129,13 @@ const agentCount = computed(() => agents.value.length)
       <span class="text-[var(--color-violet)] font-semibold text-xs">spawn_sub_agent</span>
       <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="agentCount + ' sub-agent(s)'">
         {{ agentCount }} sub-agent{{ agentCount !== 1 ? 's' : '' }}
+      </span>
+      <span
+        v-if="hasInheritedContext"
+        class="text-[10px] text-[var(--color-violet)] opacity-70 whitespace-nowrap"
+        title="At least one sub-agent was spawned with parent conversation history"
+      >
+        ↻ with parent history
       </span>
       <!-- Summary badges -->
       <span v-if="summary" class="flex items-center gap-1.5">
@@ -146,6 +172,14 @@ const agentCount = computed(() => agents.value.length)
             <span class="text-[var(--semantic-text)] font-medium text-xs">{{ agent.name }}</span>
             <span v-if="agent.sessionId" class="text-[var(--semantic-text-muted)] text-xs font-mono truncate max-w-[120px]" :title="agent.sessionId">
               {{ agent.sessionId }}
+            </span>
+            <span
+              v-if="subAgentArgs?.[idx]?.inherited_context && subAgentArgs[idx].inherited_context !== 'none'"
+              class="text-[10px] px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
+              style="background-color: var(--color-violet); color: white; opacity: 0.85;"
+              :title="`Parent history: ${describeInheritedContext(subAgentArgs[idx].inherited_context!)}`"
+            >
+              parent: {{ subAgentArgs[idx].inherited_context }}
             </span>
             <span class="flex-1"></span>
             <span 
