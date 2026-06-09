@@ -113,7 +113,7 @@ fn fetchUserAssistantMessages(
             const limit_str = try std.fmt.bufPrint(&limit_buf, "{d}", .{n});
             sql =
                 \\SELECT role, response_content FROM llm_history
-                \\WHERE session_id = ? AND role IN ('user', 'assistant')
+                \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
                 \\ORDER BY created_at DESC, id DESC
                 \\LIMIT ?
             ;
@@ -122,7 +122,7 @@ fn fetchUserAssistantMessages(
         .all => {
             sql =
                 \\SELECT role, response_content FROM llm_history
-                \\WHERE session_id = ? AND role IN ('user', 'assistant')
+                \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
                 \\ORDER BY created_at ASC
             ;
             args = &.{parent_session_id};
@@ -132,7 +132,7 @@ fn fetchUserAssistantMessages(
             // that timestamp onward. Subquery is portable SQLite.
             sql =
                 \\SELECT role, response_content FROM llm_history
-                \\WHERE session_id = ? AND role IN ('user', 'assistant')
+                \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
                 \\AND created_at >= (
                 \\    SELECT created_at FROM llm_history
                 \\    WHERE session_id = ? AND role = 'user'

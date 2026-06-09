@@ -123,13 +123,14 @@ fn seedMessage(
     , &.{ id, session_id, created_at, content, role });
 }
 
-test "formatHistory - parent with no history returns empty string" {
+test "formatHistory - mode .none short-circuits to empty string" {
     const alloc = std.testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
     const out = try ic.formatHistory(alloc, &ctx.db, "parent_sess", .none);
+    defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
 }
 
@@ -255,4 +256,81 @@ test "formatHistory - empty parent_session_id returns empty string" {
     const out = try ic.formatHistory(alloc, &ctx.db, "", .all);
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
+}
+
+test "formatHistory - 20KB byte cap emits truncation notice" {
+    const alloc = std.testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // 30 messages × 1 KB = 30 KB of content, well over the 20 KB byte cap
+    // but well under the 50-message cap, so the byte cap (not the message
+    // cap) is what fires.
+    const big_content = try alloc.alloc(u8, 1024);
+    defer alloc.free(big_content);
+    @memset(big_content, 'x');
+
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        const id = try std.fmt.allocPrint(alloc, "m{d}", .{i});
+        defer alloc.free(id);
+        const ts = try std.fmt.allocPrint(alloc, "2024-01-01 01:{d:0>2}:00", .{i});
+        defer alloc.free(ts);
+        try seedMessage(alloc, &ctx.db, id, "p", ts, "user", big_content);
+    }
+
+    const out = try ic.formatHistory(alloc, &ctx.db, "p", .all);
+    defer alloc.free(out);
+
+    // Byte cap should have fired (we seeded 30 KB of content, cap is 20 KB).
+    try std.testing.expect(std.mem.indexOf(u8, out, "more messages omitted") != null);
+    // The rendered output (HEADER + bullets + notice) must be ≤ 20 KB + slack.
+    // Slack accounts for HEADER (~400) + notice (~50) + the bullet line that
+    // was the next one to be considered but rejected by the cap check.
+    // We assert < 25 KB to allow slack while still proving the cap fired.
+    try std.testing.expect(out.len < 25 * 1024);
+}
+
+test "formatHistory - DB query failure returns the documented fallback string" {
+    const alloc = std.testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Drop the table so the formatter's SELECT will fail.
+    try ctx.db.exec(alloc, "DROP TABLE llm_history", &.{});
+
+    const out = try ic.formatHistory(alloc, &ctx.db, "p", .all);
+    defer alloc.free(out);
+
+    try std.testing.expectEqualStrings("(failed to load parent conversation history)", out);
+}
+
+test "formatHistory - empty content rows are filtered out" {
+    const alloc = std.testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try seedMessage(alloc, &ctx.db, "m1", "p", "2024-01-01 00:00:01", "user", "Hello");
+    try seedMessage(alloc, &ctx.db, "m2", "p", "2024-01-01 00:00:02", "assistant", ""); // empty
+    try seedMessage(alloc, &ctx.db, "m3", "p", "2024-01-01 00:00:03", "user", "Bye");
+
+    const out = try ic.formatHistory(alloc, &ctx.db, "p", .{ .last = 5 });
+    defer alloc.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "**[user]**: Hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "**[user]**: Bye") != null);
+    // The empty-content assistant row should not produce a `- **[assistant]**:` bullet.
+    // We check that if any assistant bullet exists, it must have non-empty content.
+    const assistant_idx = std.mem.indexOf(u8, out, "- **[assistant]**") orelse 0;
+    if (assistant_idx > 0) {
+        // If a bullet line for assistant exists, it must have non-empty content.
+        const after = out[assistant_idx..];
+        const eol = std.mem.indexOfScalar(u8, after, '\n') orelse after.len;
+        const line = after[0..eol];
+        // Line is `- **[assistant]**: {content}` — content is everything after `: `.
+        try std.testing.expect(line.len > "- **[assistant]**: ".len);
+    }
 }
