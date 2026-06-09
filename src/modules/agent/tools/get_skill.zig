@@ -93,10 +93,26 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
     };
     defer allocator.free(content);
 
-    // Extract filename without extension for skill_name
-    const filename = std.fs.path.basename(path);
-    const ext = std.fs.path.extension(filename);
-    const skill_name = filename[0 .. filename.len - ext.len];
+    // Extract skill_name: prefer the YAML frontmatter `name:` field;
+    // fall back to the file basename (without extension) for files that
+    // don't use the frontmatter convention. In both branches we own the
+    // returned slice and free it after the XML result is built.
+    const skill_name: []const u8 = blk: {
+        const filename = std.fs.path.basename(path);
+        const ext = std.fs.path.extension(filename);
+        const basename = filename[0 .. filename.len - ext.len];
+
+        if (skills.parseYamlFrontmatter(allocator, content)) |fm| {
+            defer allocator.free(fm.description);
+            // Take ownership of fm.name; the defer below frees it after
+            // allocPrint copies the bytes into the result.
+            break :blk fm.name;
+        }
+        // basename points into `content` (freed below); dupe to give it
+        // the same lifetime as the frontmatter branch.
+        break :blk try allocator.dupe(u8, basename);
+    };
+    defer allocator.free(skill_name);
 
     const result = try std.fmt.allocPrint(allocator,
         \\<skill_name>{s}</skill_name>
