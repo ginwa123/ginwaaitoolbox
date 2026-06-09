@@ -31,7 +31,7 @@ pub const get_skill_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "get_skill",
-        .description = "Load a skill's full content on-demand. Use this when you need detailed guidance for a specific capability. By default both local (.nalar/skills/) and global (~/.config/nalar/skills/) directories are searched; pass is_global=true to only search the global directory.",
+        .description = "Load a skill's full content from a file path. Use this when you need detailed guidance for a specific capability. Pass the file path (absolute or relative to the session's current working directory) via the `path` argument.",
         .parameters = .{
             .type = "object",
             .properties = &.{
