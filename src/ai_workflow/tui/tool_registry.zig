@@ -580,6 +580,7 @@ const SubAgentThreadArgs = struct {
     shared_results: *SharedResults,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
+    inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
 };
 
 // Shared result storage for thread synchronization
@@ -659,6 +660,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .shared_results = shared_results,
             .environment = ctx.environment,
             .active_loops = ctx.active_loops,
+            .inherited_context = sub_agent.inherited_context orelse "",
         };
 
         // group.concurrent returns error.ConcurrencyUnavailable if the Io
@@ -760,6 +762,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
             break :blk tools_str.items;
         } else "",
         .is_sub_agent = is_sub_agent,
+        .inherited_context = args_ptr.inherited_context,
     }) catch |err| {
         const err_msg = args_ptr.allocator.dupe(u8, "Workflow error") catch "Failed to allocate";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;

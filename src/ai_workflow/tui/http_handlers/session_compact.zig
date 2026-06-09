@@ -77,7 +77,7 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             // Get all tool definitions (empty for manual compaction)
             const merged_tools: []tool_models.AgentTool = &.{};
 
-            const initialMessages = buildMessages(allocator, ctxTui.io, sqlite_db, cwd, session_id, db_messages, merged_tools) catch |err| {
+            const initialMessages = buildMessages(allocator, ctxTui.io, sqlite_db, cwd, session_id, "", db_messages, merged_tools, "") catch |err| {
                 std.debug.print("[COMPACTION] buildMessages failed: {}\n", .{err});
                 return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"buildMessages failed\"}}", .{}) });
             };

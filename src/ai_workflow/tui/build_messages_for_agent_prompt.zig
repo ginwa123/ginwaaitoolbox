@@ -13,6 +13,7 @@ const config_mod = tree1_mod.config;
 const http_client = tree1_mod.http_client;
 const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
+const inherited_context = @import("inherited_context.zig");
 
 const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
@@ -25,8 +26,10 @@ pub fn buildMessages(
     db: *sqlite.SqliteBackend,
     cwd: []const u8,
     session_id: []const u8,
+    parent_session_id: []const u8,
     historyMessages: []TUIHistory,
     tools: []tool_models.AgentTool,
+    inherited_context_mode: []const u8,
 ) ![]agent.AgentMessage {
     // Build content strings internally
     const skills = try BuildSkillContent(allocator, db, session_id);
@@ -52,12 +55,34 @@ pub fn buildMessages(
 
     const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment);
 
+    // Render inherited parent conversation history (if requested) and append
+    // it to the system prompt as a labelled, read-only block.
+    const inherited_md = inherited_context.formatHistory(
+        allocator,
+        db,
+        parent_session_id, // the parent's session_id, NOT the sub-agent's
+        inherited_context.parseMode(inherited_context_mode) catch .none,
+    ) catch blk: {
+        std.log.warn("buildMessages: failed to render inherited_context: mode={s}", .{inherited_context_mode});
+        break :blk try allocator.dupe(u8, "");
+    };
+    defer allocator.free(inherited_md);
+
+    var final_system: std.ArrayList(u8) = .empty;
+    defer final_system.deinit(allocator);
+    try final_system.appendSlice(allocator, systemContent);
+    if (inherited_md.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n");
+        try final_system.appendSlice(allocator, inherited_md);
+    }
+    const final_system_content = try final_system.toOwnedSlice(allocator);
+
     const systemMessage = agent.AgentMessage{
         .role = .system,
-        .content = systemContent,
+        .content = final_system_content,
     };
 
-    std.debug.print("DEBUG_BUILD: systemContent size={d} bytes\n", .{systemContent.len});
+    std.debug.print("DEBUG_BUILD: systemContent size={d} bytes\n", .{final_system_content.len});
 
     var allMessages: std.ArrayList(agent.AgentMessage) = .empty;
 

@@ -4,12 +4,14 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
+const inherited_context_helper = @import("../../../ai_workflow/tui/inherited_context.zig");
 
 pub const SubAgentInput = struct {
     name: []const u8,
     instruction: []const u8,
     tools: ?[]const []const u8 = null, // optional list of tool names to allow
     timeout_seconds: ?u32 = null, // optional timeout for this sub-agent (0 = no timeout)
+    inherited_context: ?[]const u8 = null, // optional mode string for parent history inheritance
 };
 
 pub const SubAgentsInput = struct {
@@ -26,6 +28,7 @@ pub const SubAgentsInput = struct {
                 allocator.free(t);
             }
             // Note: timeout_seconds doesn't need freeing (it's an optional primitive)
+            if (sa.inherited_context) |ctx| allocator.free(ctx);
         }
         allocator.free(self.sub_agents);
     }
@@ -58,6 +61,20 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\- If a sub-agent exceeds its timeout, it will be terminated and return an error.
         \\- Default: no timeout (sub-agent runs until completion).
         \\
+        \\INHERITED CONTEXT:
+        \\- Each sub-agent can have an optional "inherited_context" mode string
+        \\  that controls whether the parent's recent conversation history is
+        \\  injected into the sub-agent's system prompt as a labelled read-only
+        \\  block ("## Conversation History From Parent Agent").
+        \\- Valid values:
+        \\    - "none"        — no inheritance (default when omitted)
+        \\    - "last:N"      — last N user/assistant turns from the parent (N: 1-50, default 10)
+        \\    - "all"         — all user/assistant turns (capped at 50)
+        \\    - "since_last_user" — from the parent's last user message onwards
+        \\- Only user and assistant text turns are inherited. Tool calls and
+        \\  tool results from the parent are NOT included — the sub-agent has
+        \\  its own tool set and shouldn't assume the parent's tool state.
+        \\
         \\EXAMPLE USE CASES:
         \\  - Spawn 3 agents: one to browse URL A, one to browse URL B, one to browse URL C
         \\  - Spawn 5 agents to process 5 different files in parallel
@@ -80,7 +97,8 @@ pub const spawn_sub_agent_tool = AgentTool{
                     \\      "instruction": "Full task details", // Required. Must be self-contained —
                     \\                                          //   include ALL context the agent needs.
                     \\      "tools": ["bash", "web_browse"],    // Optional. Omit for all tools.
-                    \\      "timeout_seconds": 300              // Optional. Timeout in seconds (0 = no limit).
+                    \\      "timeout_seconds": 300,             // Optional. Timeout in seconds (0 = no limit).
+                    \\      "inherited_context": "last:5"        // Optional. Mode for parent history inheritance.
                     \\    }
                     \\  ]
                     \\}
@@ -188,7 +206,9 @@ fn parseSubAgentsFromValue(
         };
 
         const name = try allocator.dupe(u8, name_val.string);
+        errdefer allocator.free(name);
         const instruction = try allocator.dupe(u8, instr_val.string);
+        errdefer allocator.free(instruction);
 
         // Parse optional "tools" field
         var tools: ?[]const []const u8 = null;
@@ -212,11 +232,26 @@ fn parseSubAgentsFromValue(
             timeout_seconds = @intCast(timeout_val.integer);
         }
 
+        // Parse optional "inherited_context" field
+        var inherited_context: ?[]const u8 = null;
+        if (agent_obj.get("inherited_context")) |ctx_val| {
+            if (ctx_val == .string) {
+                // Validate the mode string at parse time so the LLM gets a clear
+                // error for typo'd modes (e.g. "last:5x" instead of "last:5").
+                // The raw string is still stored; the formatter re-parses it.
+                _ = inherited_context_helper.parseMode(ctx_val.string) catch {
+                    return error.InvalidInheritedContextMode;
+                };
+                inherited_context = try allocator.dupe(u8, ctx_val.string);
+            }
+        }
+
         try sub_agents_list.append(allocator, .{
             .name = name,
             .instruction = instruction,
             .tools = tools,
             .timeout_seconds = timeout_seconds,
+            .inherited_context = inherited_context,
         });
     }
 

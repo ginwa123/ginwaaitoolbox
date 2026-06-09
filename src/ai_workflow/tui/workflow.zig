@@ -174,6 +174,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     const copy_allowed_tools = try parent_allocator.dupe(u8, params.allowed_tools);
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
+    const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
 
     var is_have_queue_message = false;
 
@@ -386,7 +387,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
             generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db);
         }
 
-        const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, db_messages, merged_tools);
+        const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context);
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
@@ -1022,4 +1023,5 @@ pub const RunParamsNew = struct {
     is_sub_agent: bool = false,
     image_urls: []const u8 = "",
     selected_profile_model: []const u8 = "", // NEW
+    inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
 };
