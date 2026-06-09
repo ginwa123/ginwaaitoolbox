@@ -603,3 +603,330 @@ test "build_sub_agent_prompt loads large memory files fully (no aggregate cap)" 
     // Prompt contains the full ~60KB of content (plus heading + framing)
     try std.testing.expect(prompt.len > total_size);
 }
+
+// -------------------------------------------------------------------------
+// build_agent_prompt — Local Knowledge section (<cwd>/.nalar/memories/*.md)
+// -------------------------------------------------------------------------
+
+test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memories" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-prompt-test-local-knowledge";
+    const local_dir = "/tmp/nalar-prompt-test-local-knowledge/.nalar/memories";
+    const file_path = "/tmp/nalar-prompt-test-local-knowledge/.nalar/memories/project-rule.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, local_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Project Build Rule
+            \\
+            \\Always run `zig build test:ai_workflow:tui` before declaring a
+            \\task done in this repo. Fixes without tests regress.
+            \\
+        );
+    }
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        tmp_cwd,
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null, // env is null — only local knowledge should be present
+    );
+    defer alloc.free(prompt);
+
+    // The section header is present
+    try std.testing.expect(contains(prompt, "## Local Knowledge"));
+    // Filename appears (in the ### <title> (`<filename>`) heading)
+    try std.testing.expect(contains(prompt, "project-rule.md"));
+    // H1-derived title appears
+    try std.testing.expect(contains(prompt, "Project Build Rule"));
+    // Full content appears (not truncated)
+    try std.testing.expect(contains(prompt, "Always run `zig build test:ai_workflow:tui`"));
+    try std.testing.expect(contains(prompt, "Fixes without tests regress"));
+    // Preamble tells the model where the files came from
+    try std.testing.expect(contains(prompt, "auto-loaded from `<cwd>/.nalar/memories/`"));
+}
+
+test "build_agent_prompt renders Local and Global Knowledge together when both exist" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Set up a HOME with a global memory
+    const tmp_home = "/tmp/nalar-prompt-test-local-and-global-home";
+    const global_dir = "/tmp/nalar-prompt-test-local-and-global-home/.config/nalar/memories";
+    const global_file = "/tmp/nalar-prompt-test-local-and-global-home/.config/nalar/memories/global-rule.md";
+
+    // And a cwd with a local memory
+    const tmp_cwd = "/tmp/nalar-prompt-test-local-and-global-cwd";
+    const local_dir = "/tmp/nalar-prompt-test-local-and-global-cwd/.nalar/memories";
+    const local_file = "/tmp/nalar-prompt-test-local-and-global-cwd/.nalar/memories/local-rule.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+        std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    }
+
+    try std.Io.Dir.cwd().createDirPath(io, global_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, global_file, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Global Cross-Project Rule
+            \\
+            \\This rule applies to every nalar project.
+            \\
+        );
+    }
+
+    try std.Io.Dir.cwd().createDirPath(io, local_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, local_file, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Local Project Rule
+            \\
+            \\This rule is specific to this project only.
+            \\
+        );
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        makeTool("list_memory", "List memory files"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        tmp_cwd,
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        &env,
+    );
+    defer alloc.free(prompt);
+
+    // Both sections are present
+    try std.testing.expect(contains(prompt, "## Local Knowledge"));
+    try std.testing.expect(contains(prompt, "## Global Knowledge"));
+    // Both files appear
+    try std.testing.expect(contains(prompt, "local-rule.md"));
+    try std.testing.expect(contains(prompt, "Local Project Rule"));
+    try std.testing.expect(contains(prompt, "global-rule.md"));
+    try std.testing.expect(contains(prompt, "Global Cross-Project Rule"));
+
+    // Local Knowledge appears BEFORE Global Knowledge in the rendered prompt
+    // (most-specific-first ordering).
+    const local_pos = std.mem.indexOf(u8, prompt, "## Local Knowledge").?;
+    const global_pos = std.mem.indexOf(u8, prompt, "## Global Knowledge").?;
+    try std.testing.expect(local_pos < global_pos);
+}
+
+test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does not exist" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Use a cwd that has no .nalar/ subdir at all
+    const tmp_cwd = "/tmp/nalar-prompt-test-no-local-dir";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    std.Io.Dir.cwd().createDirPath(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        tmp_cwd,
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+    );
+    defer alloc.free(prompt);
+
+    // No .nalar/memories → no Local Knowledge section
+    try std.testing.expect(!contains(prompt, "## Local Knowledge"));
+}
+
+test "build_agent_prompt omits Local Knowledge when cwd is empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "", // ← cwd is empty
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+    );
+    defer alloc.free(prompt);
+
+    // No cwd → no Local Knowledge section
+    try std.testing.expect(!contains(prompt, "## Local Knowledge"));
+}
+
+test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no .md files" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-prompt-test-local-dir-empty";
+    const local_dir = "/tmp/nalar-prompt-test-local-dir-empty/.nalar/memories";
+    const txt_path = "/tmp/nalar-prompt-test-local-dir-empty/.nalar/memories/notes.txt";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, local_dir);
+    // Drop a non-md file
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io, "not a memory");
+    }
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        tmp_cwd,
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+    );
+    defer alloc.free(prompt);
+
+    // Dir exists but has no .md files → no section
+    try std.testing.expect(!contains(prompt, "## Local Knowledge"));
+}
+
+// -------------------------------------------------------------------------
+// build_sub_agent_prompt — Local Knowledge parity
+// -------------------------------------------------------------------------
+
+test "build_sub_agent_prompt injects Local Knowledge section" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-prompt-subagent-local-knowledge";
+    const local_dir = "/tmp/nalar-prompt-subagent-local-knowledge/.nalar/memories";
+    const file_path = "/tmp/nalar-prompt-subagent-local-knowledge/.nalar/memories/subagent-rule.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, local_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Sub-Agent Project Rule
+            \\
+            \\Sub-agents also see local knowledge.
+            \\
+        );
+    }
+
+    const prompt = try prompts.build_sub_agent_prompt(
+        alloc,
+        io,
+        tmp_cwd,
+        "",
+        "do the thing",
+        &[_]AgentTool{},
+        null, // env is null
+    );
+    defer alloc.free(prompt);
+
+    // Section is present
+    try std.testing.expect(contains(prompt, "## Local Knowledge"));
+    try std.testing.expect(contains(prompt, "subagent-rule.md"));
+    try std.testing.expect(contains(prompt, "Sub-Agent Project Rule"));
+    try std.testing.expect(contains(prompt, "Sub-agents also see local knowledge"));
+    // Preamble present
+    try std.testing.expect(contains(prompt, "auto-loaded from `<cwd>/.nalar/memories/`"));
+    // No Global Knowledge when env is null
+    try std.testing.expect(!contains(prompt, "## Global Knowledge"));
+}
+
+test "build_sub_agent_prompt omits Local Knowledge when cwd is empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const prompt = try prompts.build_sub_agent_prompt(
+        alloc,
+        io,
+        "", // ← cwd empty
+        "",
+        "task",
+        &[_]AgentTool{},
+        null,
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(!contains(prompt, "## Local Knowledge"));
+}
+
+test "build_sub_agent_prompt omits Local Knowledge when dir does not exist" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Use a guaranteed-missing cwd
+    const missing_cwd = "/tmp/nalar-prompt-subagent-no-local-dir";
+    std.Io.Dir.cwd().deleteTree(io, missing_cwd) catch {};
+
+    const prompt = try prompts.build_sub_agent_prompt(
+        alloc,
+        io,
+        missing_cwd,
+        "",
+        "task",
+        &[_]AgentTool{},
+        null,
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(!contains(prompt, "## Local Knowledge"));
+}

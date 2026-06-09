@@ -242,7 +242,59 @@ fn loadGlobalKnowledge(
     return result.toOwnedSlice(allocator);
 }
 
-/// Build sub-agent prompt with a focused, minimal set of rules
+/// Load the contents of all memory files in `<cwd>/.nalar/memories/` and
+/// concatenate them as a single markdown blob. Mirrors `loadGlobalKnowledge`
+/// in shape, error handling, and output format (`### <title> (\`<name>\`)`)
+/// so the rendered prompt has visual consistency across both knowledge
+/// tiers.
+///
+/// Returns an empty string (allocated) when:
+///   - `cwd` is empty
+///   - `<cwd>/.nalar/memories/` does not exist (first-run case)
+///   - the directory exists but contains no `.md` files
+///
+/// Per-file errors (open, read, title extraction) skip the file and
+/// continue — never break the prompt. **No cap** on aggregate or per-file
+/// size; mirrors `loadGlobalKnowledge`'s trust-the-user policy.
+fn loadLocalKnowledge(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cwd: []const u8,
+) ![]u8 {
+    if (cwd.len == 0) return allocator.dupe(u8, "");
+
+    const dir_path = memories_mod.get_local_memories_path_for_dir(allocator, cwd)
+        orelse return allocator.dupe(u8, "");
+    defer allocator.free(dir_path);
+
+    const list = memories_mod.listMemoriesInDir(allocator, io, dir_path);
+    defer memories_mod.freeMemoriesList(allocator, list);
+
+    if (list.len == 0) return allocator.dupe(u8, "");
+
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    for (list) |mem| {
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            mem.path,
+            allocator,
+            std.Io.Limit.limited(std.math.maxInt(usize)),
+        ) catch continue;
+        defer allocator.free(content);
+
+        try result.appendSlice(allocator, "### ");
+        try result.appendSlice(allocator, mem.title);
+        try result.appendSlice(allocator, " (`");
+        try result.appendSlice(allocator, mem.name);
+        try result.appendSlice(allocator, "`)\n\n");
+        try result.appendSlice(allocator, content);
+        try result.appendSlice(allocator, "\n\n");
+    }
+
+    return result.toOwnedSlice(allocator);
+}
 /// Sub-agents get a simple, research-focused prompt (NOT the full main agent prompt)
 ///
 /// **New parameters (vs. previous version):**
@@ -313,6 +365,27 @@ pub fn build_sub_agent_prompt(
             \\
         );
         try result.appendSlice(allocator, knowledge);
+        try result.appendSlice(allocator, "\n\n");
+    }
+
+    // 6.5. Local Knowledge — auto-loaded from <cwd>/.nalar/memories/*.md.
+    //      Project-specific memories that ship with the codebase. Mirrors
+    //      the Global Knowledge block above (same heading style, same
+    //      `### <title> (\`<name>\`)` per-file format) but scoped to the
+    //      current project. Omitted entirely when cwd is empty or the
+    //      local dir is missing.
+    const local_knowledge = try loadLocalKnowledge(allocator, io, cwd);
+    defer allocator.free(local_knowledge);
+    if (local_knowledge.len > 0) {
+        try result.appendSlice(allocator, "## Local Knowledge\n\n");
+        try result.appendSlice(allocator,
+            \\The following markdown files are this project's local memory,
+            \\auto-loaded from `<cwd>/.nalar/memories/`. Use `read_file` to
+            \\load a specific memory on demand. To update, use `write_file`
+            \\or `text_replace`; to delete, use `remove_file`.
+            \\
+        );
+        try result.appendSlice(allocator, local_knowledge);
         try result.appendSlice(allocator, "\n\n");
     }
 
@@ -390,6 +463,24 @@ pub fn build_agent_prompt(
     // Project memory (NALAR.md / CLAUDE.md from cwd).
     if (memoryMd.len > 0) {
         try appendSection(allocator, &result, memoryMd);
+    }
+
+    // Local Knowledge — auto-loaded from <cwd>/.nalar/memories/*.md.
+    // Project-specific memories that ship with the codebase. Renders
+    // BEFORE Global Knowledge so project context precedes cross-project
+    // context ("most specific first" ordering).
+    const local_knowledge = try loadLocalKnowledge(allocator, io, cwd);
+    defer allocator.free(local_knowledge);
+    if (local_knowledge.len > 0) {
+        try result.appendSlice(allocator, "\n\n## Local Knowledge\n\n");
+        try result.appendSlice(allocator,
+            \\The following markdown files are this project's local memory,
+            \\auto-loaded from `<cwd>/.nalar/memories/`. Use `read_file` to
+            \\load a specific memory on demand. To update, use `write_file`
+            \\or `text_replace`; to delete, use `remove_file`.
+            \\
+        );
+        try result.appendSlice(allocator, local_knowledge);
     }
 
     // need to listing list skills globals and locals
