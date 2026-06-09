@@ -97,7 +97,8 @@ pub const spawn_sub_agent_tool = AgentTool{
                     \\      "instruction": "Full task details", // Required. Must be self-contained —
                     \\                                          //   include ALL context the agent needs.
                     \\      "tools": ["bash", "web_browse"],    // Optional. Omit for all tools.
-                    \\      "timeout_seconds": 300              // Optional. Timeout in seconds (0 = no limit).
+                    \\      "timeout_seconds": 300,             // Optional. Timeout in seconds (0 = no limit).
+                    \\      "inherited_context": "last:5"        // Optional. Mode for parent history inheritance.
                     \\    }
                     \\  ]
                     \\}
