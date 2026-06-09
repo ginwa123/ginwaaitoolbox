@@ -169,12 +169,68 @@ export interface SseClientOptions {
    *   payload format the server uses.
    * - `eventType` is the SSE `event:` name (`'message'` for the
    *   unnamed default, or the named event name like
-   *   `'connected'` / `'queue_message'`).
+   *   `'connected'` / `'queue_message'`). For custom named
+   *   events to be routed here, list them in
+   *   `additionalEventTypes` — the SseClient does NOT
+   *   auto-discover server-sent event names, it must be told
+   *   which ones to listen for. The `'connected'` event is
+   *   always registered automatically.
    *
    * Throwing inside this callback is caught and logged — a
    * malformed event does NOT close the connection.
    */
   onEvent: (raw: string, eventType: string) => void
+  /**
+   * Additional named SSE event types to route to `onEvent`.
+   * The reserved names `'connected'` (handled internally:
+   * fires `onConnected` and transitions to `'open'`) and
+   * `'message'` (the unnamed default) are always registered;
+   * duplicates in this list are silently de-duplicated.
+   *
+   * Why this option exists
+   * ──────────────────────
+   * The browser's `EventSource` fires each server-side
+   * `event: <name>` to listeners registered for THAT specific
+   * name. The SseClient can only register listeners it knows
+   * about up front, so consumers must declare which custom
+   * event types they care about. Without this, named events
+   * like `queue_message` are silently dropped on the floor
+   * — they reach the network but never reach the JS handler.
+   *
+   * Example — the queue-messages stream:
+   *   createSseClient({
+   *     url: '/api/.../queue_messages/stream',
+   *     additionalEventTypes: ['queue_message'],
+   *     onEvent: (raw, type) => {
+   *       if (type === 'queue_message') { ... }
+   *     },
+   *   })
+   *
+   * Unknown / never-fired names are harmless (the listener
+   * simply never fires).
+   */
+  additionalEventTypes?: string[]
+  /**
+   * Heartbeat data to drop silently from the default
+   * `'message'` event stream. The backend SSE manager sends
+   * `data: ping\n\n` every ~15 s to keep the connection alive
+   * through proxies / NATs; surfacing that to consumers
+   * leaks the protocol detail and (in consumers that
+   * JSON-buffer the data, like the queue-messages stream)
+   * grows an ever-larger buffer that never flushes, because
+   * `'ping'` contains no `{` or `}` to anchor a JSON slice.
+   *
+   * Default: `'ping'` (matches `sse_manager.sendHeartbeat`).
+   * Set to `null` to disable the filter (every default
+   * `'message'` event reaches `onEvent`, including
+   * heartbeats).
+   *
+   * Only applies to the default `'message'` event. Heartbeats
+   * sent as custom named events (e.g. `event: heartbeat`) are
+   * not affected — declare and ignore them in the consumer
+   * instead.
+   */
+  heartbeatData?: string | null
   /**
    * Fires once, after the server's first `connected` named event.
    * This is the canonical "we are live" signal. Do NOT treat the
@@ -339,6 +395,21 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   const setTimeoutFn = opts.setTimeoutFn ?? setTimeout
   const clearTimeoutFn = opts.clearTimeoutFn ?? clearTimeout
   const connectedEventName = opts.connectedEventName ?? 'connected'
+  // Heartbeat data to silently drop from the default 'message' event.
+  // Default: 'ping' (matches sse_manager.sendHeartbeat's literal
+  // `data: ping\n\n`). `null` disables the filter entirely — see the
+  // `heartbeatData` option doc for why this exists.
+  const heartbeatData: string | null =
+    opts.heartbeatData === undefined ? 'ping' : opts.heartbeatData
+  // Deduplicated list of custom named event types the consumer wants
+  // routed to `onEvent`. Reserved names (`'connected'`, `'message'`)
+  // are always handled by the SseClient's own listeners, so including
+  // them here is a no-op. We filter them out below to avoid
+  // double-registration (which would fire `onEvent` twice per event).
+  const reservedEventNames = new Set<string>(['connected', 'message'])
+  const additionalEventTypes: string[] = (opts.additionalEventTypes ?? []).filter(
+    (name) => !reservedEventNames.has(name),
+  )
   // Cast is safe: in browsers EventSource is a global, in jsdom the
   // setup.ts polyfill assigns it. Tests override via opts.
   const EventSourceCtor =
@@ -451,11 +522,42 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       const me = e as MessageEvent
       try {
         const raw = typeof me.data === 'string' ? me.data : String(me.data ?? '')
+        // Drop heartbeats before they reach the consumer. The
+        // backend sends `data: ping\n\n` as a keepalive; in
+        // consumers that JSON-buffer incoming data (e.g. the
+        // queue-messages stream), every heartbeat appends to
+        // the buffer and the buffer never drains (no `{`/`}`).
+        // This is a generic SseClient concern — the heartbeat
+        // exists to keep the connection alive, which is the
+        // SseClient's job, not the consumer's.
+        if (heartbeatData !== null && raw === heartbeatData) {
+          return
+        }
         opts.onEvent(raw, 'message')
       } catch (err) {
         console.error('[SseClient] onEvent subscriber threw on message:', err)
       }
     })
+
+    // Register listeners for any additional named event types the
+    // consumer declared (e.g. 'queue_message'). Each one is
+    // dispatched to `onEvent` with the event name as the type
+    // argument, matching the contract documented on `onEvent` and
+    // on `createSseConnection`. We register inside `start()` (not
+    // once, at construction) so the listeners are re-attached on
+    // reconnect — the EventSource is rebuilt on every retry, so any
+    // listeners on the previous instance are gone.
+    for (const eventName of additionalEventTypes) {
+      instance.addEventListener(eventName, (e: Event) => {
+        const me = e as MessageEvent
+        try {
+          const raw = typeof me.data === 'string' ? me.data : String(me.data ?? '')
+          opts.onEvent(raw, eventName)
+        } catch (err) {
+          console.error(`[SseClient] onEvent subscriber threw on ${eventName}:`, err)
+        }
+      })
+    }
 
     instance.onerror = (e: Event) => {
       handleError({ reason: 'error', lastError: e })

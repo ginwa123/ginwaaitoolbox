@@ -981,8 +981,6 @@ export function createQueueMessagesSseConnection(
   onError?: (error: Event) => void,
   onConnected?: () => void,
 ): SseClient {
-  console.log('[createQueueMessagesSseConnection] Creating SSE connection for session:', sessionId)
-
   // Per-client JSON buffer; cleared on 'connected' (see
   // createSseConnection for the rationale).
   let jsonBuffer = ''
@@ -990,6 +988,19 @@ export function createQueueMessagesSseConnection(
   return createSseClient({
     url: `${API_BASE}/llm/session/${sessionId}/queue_messages/stream`,
     onConnected,
+    // The backend emits queue updates as a NAMED SSE event:
+    //   event: queue_message
+    //   data: {"action":"queued", ...}
+    //
+    // The browser's EventSource only dispatches each `event: <name>`
+    // to listeners registered for THAT name. The SseClient already
+    // auto-registers `'connected'` and `'message'`, but custom names
+    // must be declared via `additionalEventTypes` or they are
+    // silently dropped on the floor. (Symptom: the network panel
+    // shows the events arriving, but the JS handler never sees
+    // them — only the periodic `data: ping\n\n` heartbeats, which
+    // arrive as the default `message` event, were visible.)
+    additionalEventTypes: ['queue_message'],
     onEvent: (raw: string, eventType: string) => {
       // 'connected' is consumed by the SseClient (it fires
       // onConnected); the previous implementation used the
@@ -1002,14 +1013,25 @@ export function createQueueMessagesSseConnection(
         return
       }
 
+      // Only `queue_message` (and, in principle, the default
+      // `message` event, but the SseClient now filters out the
+      // `ping` heartbeat for us) reach this point. Treat both the
+      // same way: accumulate into the JSON buffer and dispatch
+      // when we have a complete object.
       try {
         const trimmed = raw.trim()
         if (!trimmed) return
 
-        // Accumulate JSON until we have complete object
+        // Accumulate JSON until we have a complete object. The
+        // buffer is cleared on every successful parse, and
+        // re-initialized to '' on 'connected' above, so a
+        // reconnect cannot carry over leftover bytes.
         jsonBuffer += trimmed + '\n'
 
-        // Try to find complete JSON object (starts with { and ends with })
+        // Try to find a complete JSON object (starts with { and
+        // ends with }). This is intentionally permissive — we
+        // don't try to handle nested braces or arrays here
+        // because every queue_message payload is a flat object.
         const jsonStart = jsonBuffer.indexOf('{')
         const jsonEnd = jsonBuffer.lastIndexOf('}')
 
@@ -1017,12 +1039,11 @@ export function createQueueMessagesSseConnection(
           const jsonStr = jsonBuffer.slice(jsonStart, jsonEnd + 1)
           try {
             const data = JSON.parse(jsonStr)
-            console.log('[QueueMessagesSSE] Received data:', data)
             onEvent(data as QueueMessageEvent)
-            // Keep anything after the JSON for next event
+            // Keep anything after the JSON for the next event.
             jsonBuffer = jsonBuffer.slice(jsonEnd + 1)
           } catch (e) {
-            // Not complete yet, keep buffering
+            // Not complete yet, keep buffering.
             console.log(
               '[QueueMessagesSSE] Buffering, not complete JSON yet, buffer length:',
               jsonBuffer.length,
