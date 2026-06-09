@@ -35,6 +35,22 @@ const isExpanded = computed(() => {
   return expanded
 })
 
+// Computed: true if any of this item's tasks is currently being processed
+// by a worker. Drives the right-side yellow spinner on the item row so
+// the user can see "this project is busy" even when the task list is
+// collapsed. Mirrors the same processingState ref the per-task spinner
+// and ChatsList already consume (App.vue provides it; key = task.id ==
+// session_id).
+const hasProcessingTask = computed(() => {
+  const tasks = props.item.tasks
+  if (!tasks || tasks.length === 0) return false
+  const state = processingState.value
+  for (const task of tasks) {
+    if (state[task.id]) return true
+  }
+  return false
+})
+
 const handleClick = () => {
   // Toggle expanded state for collapse/expand
   workspacesStore.toggleExpandedItem(props.item.id)
@@ -81,6 +97,24 @@ const handleRenameTask = (event: Event, taskId: string, currentName: string) => 
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
+          <!-- Processing spinner (LLM worker is running on one of this
+               item's tasks). Sits in the LEFTMOST slot — the same
+               position the per-task row's bullet/spinner and the
+               ChatsList's processing spinner occupy — so all three
+               "busy" indicators in the sidebar live in the same
+               visual lane and a glance across the sidebar reveals
+               what's running. Same yellow ring, scaled to 4×4 to
+               match the item row's text-sm font. -->
+          <span
+            v-if="hasProcessingTask"
+            class="w-4 h-4 flex items-center justify-center shrink-0"
+            data-testid="item-processing-spinner"
+          >
+            <div
+              class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+              style="border-color: var(--color-yellow); border-top-color: transparent"
+            ></div>
+          </span>
           <!-- Chevron icon (expand/collapse) -->
           <svg
             class="w-4 h-4 shrink-0 transition-transform duration-200"
@@ -91,18 +125,26 @@ const handleRenameTask = (event: Event, taskId: string, currentName: string) => 
           </svg>
           <!-- Item Name -->
           <span class="truncate">{{ item.name }}</span>
-          <!-- Loading spinner -->
-          <span v-if="item.isLoading" class="ml-auto">
+          <!-- Loading spinner (folder contents fetching — independent
+               of LLM worker state). Right-side slot. Priority 1 over
+               the active dot: takes the slot when the user just
+               clicked expand and we're still downloading the
+               directory listing. -->
+          <span v-if="item.isLoading" class="ml-auto" data-testid="item-loading-spinner">
             <svg class="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
             </svg>
           </span>
-          <!-- Active Indicator (for FolderExplorer selection) -->
+          <!-- Active Indicator (for FolderExplorer selection). Right-side
+               slot, hidden while the loading spinner is showing. The
+               processing spinner lives in a separate (left) slot and
+               does not conflict with this dot. -->
           <span
-            v-if="isActive && !item.isLoading"
+            v-else-if="isActive"
             class="ml-auto w-1.5 h-1.5 rounded-full"
             style="background-color: var(--color-aqua);"
+            data-testid="item-active-dot"
           />
         </button>
         <!-- Add Task Button (show on hover) -->

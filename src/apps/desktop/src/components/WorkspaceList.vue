@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { inject, onMounted, onUnmounted, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import type { Workspace, WorkspaceItem } from '../stores/workspaces'
@@ -10,6 +10,15 @@ defineProps<{
   workspaces: Workspace[]
   activeWorkspaceItemId: string | null
 }>()
+
+// Inject processingState from App.vue (same key WorkspaceItem,
+// ChatsList, ChatView consume). Keyed by task.id == session_id, so we
+// scan a workspace's items→tasks for any key present in the map to
+// know "is anything in this workspace currently busy with a worker?".
+const processingState = inject<Ref<Record<string, boolean>>>(
+  'processingState',
+  ref<Record<string, boolean>>({}),
+)
 
 const emit = defineEmits<{
   toggleWorkspace: [workspaceId: string]
@@ -74,6 +83,24 @@ const toggleAddMenu = (workspaceId: string) => {
 
 const handleWorkspaceClick = (workspaceId: string) => {
   emit('toggleWorkspace', workspaceId)
+}
+
+// Pure helper: true if any task belonging to any item in this workspace
+// is currently in the global processingState map. Used by the template
+// to decide whether the workspace row's right-side slot should render
+// a yellow spinner (work in flight) or the regular item-count badge
+// (idle). O(items × tasks) per workspace per render — fine for the
+// realistic sidebar size (a few dozen items at most).
+const workspaceHasProcessingItem = (workspace: Workspace): boolean => {
+  const state = processingState.value
+  for (const item of workspace.items) {
+    const tasks = item.tasks
+    if (!tasks || tasks.length === 0) continue
+    for (const task of tasks) {
+      if (state[task.id]) return true
+    }
+  }
+  return false
 }
 
 const handleItemClick = (workspaceId: string, itemId: string) => {
@@ -171,6 +198,23 @@ const handleRenameTask = (
               : 'var(--semantic-text-muted)',
           }"
         >
+          <!-- Processing spinner (one of this workspace's items has a
+               task currently being run by a worker). Sits in the
+               LEFTMOST slot — the same position the per-task and
+               per-item row spinners and the ChatsList processing
+               spinner occupy — so all "busy" indicators in the
+               sidebar live in the same visual lane. Same yellow
+               ring, sized to fit the workspace row's text-sm font. -->
+          <span
+            v-if="workspaceHasProcessingItem(workspace)"
+            class="w-4 h-4 flex items-center justify-center shrink-0"
+            data-testid="workspace-processing-spinner"
+          >
+            <div
+              class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+              style="border-color: var(--color-yellow); border-top-color: transparent"
+            ></div>
+          </span>
           <!-- Expand/Collapse Icon -->
           <span
             class="text-xs transition-transform duration-200 w-4 flex justify-center"
@@ -182,6 +226,7 @@ const handleRenameTask = (
           <span
             v-if="workspace.items.length > 0"
             class="text-xs px-1.5 py-0.5 rounded-full"
+            data-testid="workspace-count-badge"
             style="background-color: var(--color-bg-p1); color: var(--semantic-text-dim);"
           >
             {{ workspace.items.length }}
