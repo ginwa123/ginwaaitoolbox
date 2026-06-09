@@ -370,6 +370,99 @@ test "build_agent_prompt lists global and local skills in Available Skills secti
     try std.testing.expect(contains(prompt, "A local skill for prompt listing test"));
 }
 
+test "build_agent_prompt Available Skills section includes absolute file path and case-sensitivity warning" {
+    // Regression test for the bug where the agent's get_skill call failed
+    // because the Available Skills section listed skills by name+description
+    // only — the model had to guess the path and produced wrong paths like
+    // `~/.config/nalar/skills/brainstorming.md` (tilde not expanded, .md vs
+    // .MD, `<name>.md` vs `<name>/SKILL.MD`). The fix emits the absolute
+    // `path` from listAllSkills in each bullet and adds an explicit warning.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-prompt-test-skills-shows-path";
+    const tmp_cwd = "/tmp/nalar-prompt-test-skills-shows-path-cwd";
+    const global_skill_dir = "/tmp/nalar-prompt-test-skills-shows-path/.config/nalar/skills/path-global-skill";
+    const local_skill_dir = "/tmp/nalar-prompt-test-skills-shows-path-cwd/.nalar/skills/path-local-skill";
+    const global_skill_path = "/tmp/nalar-prompt-test-skills-shows-path/.config/nalar/skills/path-global-skill/SKILL.MD";
+    const local_skill_path = "/tmp/nalar-prompt-test-skills-shows-path-cwd/.nalar/skills/path-local-skill/SKILL.MD";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+        std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    }
+
+    try std.Io.Dir.cwd().createDirPath(io, global_skill_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, global_skill_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\---
+            \\name: path-global-skill
+            \\description: "Global skill for the show-path regression test"
+            \\---
+            \\
+        );
+    }
+    try std.Io.Dir.cwd().createDirPath(io, local_skill_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, local_skill_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\---
+            \\name: path-local-skill
+            \\description: "Local skill for the show-path regression test"
+            \\---
+            \\
+        );
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        makeTool("list_skills", "List available skills"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        tmp_cwd,
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        &env,
+    );
+    defer alloc.free(prompt);
+
+    // === Bullet list must include the absolute path of each skill ===
+    // The exact string that goes into the path-construction bug.
+    try std.testing.expect(contains(prompt, global_skill_path));
+    try std.testing.expect(contains(prompt, local_skill_path));
+    // The path appears inside a backtick code span, paired with the name.
+    try std.testing.expect(contains(prompt, "**path-global-skill**"));
+    try std.testing.expect(contains(prompt, "**path-local-skill**"));
+
+    // === Warning prose must tell the model not to construct paths ===
+    // Mentions the actual filename the model would need to guess.
+    try std.testing.expect(contains(prompt, "**exact file path**"));
+    try std.testing.expect(contains(prompt, "pass it to `get_skill` verbatim"));
+    // The three failure modes from the bug:
+    //   1) case-sensitivity (`.md` vs `.MD`)
+    //   2) subdirectory layout (`<name>/SKILL.MD` vs `<name>.md`)
+    //   3) unexpanded tilde
+    try std.testing.expect(contains(prompt, "case-sensitive"));
+    try std.testing.expect(contains(prompt, "`<name>/SKILL.MD`"));
+    try std.testing.expect(contains(prompt, "`<name>.md`"));
+    try std.testing.expect(contains(prompt, "`~` is not expanded"));
+}
+
 test "build_agent_prompt omits Available Skills section when list_skills tool is absent" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;

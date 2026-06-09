@@ -539,7 +539,11 @@ fn appendSkillsListing(
     try result.appendSlice(allocator,
         \\The following skills are installed and available for this session.
         \\Use `list_skills` to refresh this view, or `get_skill` / `view_skill`
-        \\to load a skill's full instructions.
+        \\to load a skill's full instructions. Each entry includes the
+        \\**exact file path** — pass it to `get_skill` verbatim as the `path`
+        \\argument. Do NOT construct the path from the skill name: Linux is
+        \\case-sensitive and the file lives at `<name>/SKILL.MD`, not
+        \\`<name>.md`, and `~` is not expanded by the tool.
         \\
     );
 
@@ -550,7 +554,9 @@ fn appendSkillsListing(
             try result.appendSlice(allocator, s.name);
             try result.appendSlice(allocator, "**: ");
             try result.appendSlice(allocator, s.description);
-            try result.appendSlice(allocator, "\n");
+            try result.appendSlice(allocator, " — `");
+            try result.appendSlice(allocator, s.path);
+            try result.appendSlice(allocator, "`\n");
         }
     }
 
@@ -561,7 +567,9 @@ fn appendSkillsListing(
             try result.appendSlice(allocator, s.name);
             try result.appendSlice(allocator, "**: ");
             try result.appendSlice(allocator, s.description);
-            try result.appendSlice(allocator, "\n");
+            try result.appendSlice(allocator, " — `");
+            try result.appendSlice(allocator, s.path);
+            try result.appendSlice(allocator, "`\n");
         }
     }
 }
