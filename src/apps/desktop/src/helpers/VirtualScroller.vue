@@ -147,7 +147,20 @@ const emit = defineEmits<{
    * a suppression).
    */
   loadMoreSuppressed: [guard: string]
-  scroll: [scrollTop: number, direction: 'up' | 'down']
+  /**
+   * Fired on every scroll event. `target` is the actual DOM element
+   * that dispatched the event — guaranteed non-null by the browser
+   * for the lifetime of the event handler. Parents should prefer
+   * `target` over walking the component's `containerRef` ref chain:
+   * the ref chain is null during mount/remount races (chat switch,
+   * initial mount before Vue binds the template ref, v-if toggle),
+   * but `target` is always live for the duration of the handler.
+   *
+   * The component-level `containerRef` is still exposed for the
+   * initial-load, scroll-to-bottom, and other controlled paths that
+   * don't have an event to extract the element from.
+   */
+  scroll: [scrollTop: number, direction: 'up' | 'down', target: HTMLElement]
   /**
    * Fired whenever the scroller's `isScrollable` computed value
    * CHANGES (not on every re-evaluation — only when the boolean
@@ -382,7 +395,7 @@ const onScroll = (e: Event) => {
   const dir = st > lastScrollTop.value ? 'down' : 'up'
   scrollTop.value = st
   lastScrollTop.value = st
-  emit('scroll', st, dir as 'up' | 'down')
+  emit('scroll', st, dir as 'up' | 'down', target)
 
   if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
   loadMoreDebounce = setTimeout(() => {

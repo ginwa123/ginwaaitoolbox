@@ -987,9 +987,34 @@ const handleLoadMoreSuppressed = (guard: string) => {
 // the loadMore event was never fired in the first place.
 let previousIsAtTop = false
 
-const handleVirtualScroll = (_scrollTop: number, _direction: 'up' | 'down') => {
-  const container = virtualScrollerRef.value?.containerRef.value
-  if (!container) return
+const handleVirtualScroll = (
+  _scrollTop: number,
+  _direction: 'up' | 'down',
+  _target: HTMLElement,
+) => {
+  // Prefer the event target — it's the actual DOM element that
+  // dispatched the scroll event, so the browser guarantees it
+  // exists for the lifetime of this handler. The ref chain
+  // (`virtualScrollerRef.value?.containerRef.value`) is null during
+  // mount/remount races (chat switch, initial mount before Vue
+  // binds the template ref, v-if toggle), but the target is
+  // always live. See the `scroll` emit JSDoc in
+  // VirtualScroller.vue for the full rationale.
+  //
+  // The ref chain is kept as a defensive fallback for any future
+  // caller that doesn't supply a target (none today).
+  const container = _target ?? virtualScrollerRef.value?.containerRef.value
+  if (!container) {
+    // Tripwire — with the target in hand this branch should be
+    // unreachable. If it ever fires, the VirtualScroller stopped
+    // passing the target through the emit (regression on the
+    // fix in VirtualScroller.vue `onScroll`).
+    console.warn('[scroll] handleVirtualScroll: no container (target and ref chain both null)', {
+      reportedScrollTop: _scrollTop,
+      reportedDirection: _direction,
+    })
+    return
+  }
   const { scrollTop, scrollHeight, clientHeight } = container
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight
   const distanceFromTop = Math.max(0, scrollTop)
