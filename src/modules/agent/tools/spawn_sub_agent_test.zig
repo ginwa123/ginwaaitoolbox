@@ -52,3 +52,11 @@ test "parse_sub_agents - inherited_context is freed by deinit (ASan-safe)" {
     parsed.deinit(alloc); // Must not leak; testing.allocator will assert.
     // No explicit expect — if it leaks, testing.allocator fails the test on deinit.
 }
+
+test "parse_sub_agents - invalid inherited_context mode returns InvalidInheritedContextMode" {
+    const alloc = std.testing.allocator;
+    const input_json =
+        \\{"sub_agents":[{"name":"a","instruction":"x","inherited_context":"last:5x"}]}
+    ;
+    try std.testing.expectError(error.InvalidInheritedContextMode, spawn.parse_sub_agents(alloc, input_json, 20));
+}
