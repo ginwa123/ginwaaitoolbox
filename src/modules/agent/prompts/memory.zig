@@ -176,7 +176,7 @@ pub const skills_system_prompt =
     \\|---|---|
     \\| `list_skills` | At session start — always check what you already know |
     \\| `view_skill` | Before starting any task — read relevant skills first |
-    \\| `get_skill` | Fetch a skill by name for active use during a task |
+    \\| `get_skill` | Load a skill's full content from a file path for active use during a task |
     \\| `add_skill` | After completing a complex task — save what you learned |
     \\| `edit_skill` | When you find a better approach than what's saved |
     \\| `remove_skill` | When a skill is outdated, wrong, or superseded |
