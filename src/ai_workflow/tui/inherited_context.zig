@@ -8,11 +8,11 @@ pub const Mode = union(enum) {
     since_last_user,
 };
 
-/// Cap for the `last:N` selector and for the 50-message ceiling used by `all`
-/// and `since_last_user`. Lifting to a constant so tests and formatter agree.
-pub const MAX_MESSAGES: u8 = 50;
+/// Cap for the `last:N` selector and the 50-message ceiling used by `all`
+/// and `since_last_user`.
+const MAX_MESSAGES: u8 = 50;
 pub const DEFAULT_LAST: u8 = 10;
-pub const MAX_SECTION_BYTES: usize = 20 * 1024; // 20 KB
+const MAX_SECTION_BYTES: usize = 20 * 1024; // 20 KB
 
 pub const ParseError = error{InvalidInheritedContextMode};
 

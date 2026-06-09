@@ -20,7 +20,7 @@ test "parseMode - 'last:5' returns Mode.last{5}" {
 test "parseMode - 'last:' (no number) defaults to 10" {
     const m = try ic.parseMode("last:");
     try std.testing.expect(m == .last);
-    try std.testing.expect(m.last == 10);
+    try std.testing.expect(m.last == ic.DEFAULT_LAST);
 }
 
 test "parseMode - 'last:0' clamps to 1" {
@@ -60,4 +60,20 @@ test "parseMode - 'last:abc' returns InvalidInheritedContextMode" {
 
 test "parseMode - 'last:-3' returns InvalidInheritedContextMode" {
     try std.testing.expectError(error.InvalidInheritedContextMode, ic.parseMode("last:-3"));
+}
+
+test "parseMode - '  none  ' (surrounding whitespace) returns Mode.none" {
+    const m = try ic.parseMode("  none  ");
+    try std.testing.expect(m == .none);
+}
+
+test "parseMode - 'None' (mixed case) returns Mode.none" {
+    const m = try ic.parseMode("None");
+    try std.testing.expect(m == .none);
+}
+
+test "parseMode - 'Last:7' (mixed case prefix) returns Mode.last{7}" {
+    const m = try ic.parseMode("Last:7");
+    try std.testing.expect(m == .last);
+    try std.testing.expect(m.last == 7);
 }
