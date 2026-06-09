@@ -25,8 +25,10 @@ pub fn buildMessages(
     db: *sqlite.SqliteBackend,
     cwd: []const u8,
     session_id: []const u8,
+    parent_session_id: []const u8,
     historyMessages: []TUIHistory,
     tools: []tool_models.AgentTool,
+    inherited_context_mode: []const u8,
 ) ![]agent.AgentMessage {
     // Build content strings internally
     const skills = try BuildSkillContent(allocator, db, session_id);
