@@ -192,3 +192,63 @@ test "resolve: case-insensitive extension match" {
     try testing.expect(result == .file);
     try testing.expectEqualStrings("text/html; charset=utf-8", result.file.mime);
 }
+
+// ---------------------------------------------------------------------------
+// parseRange() — HTTP `Range:` header parser
+// ---------------------------------------------------------------------------
+
+test "parseRange: full range bytes=0-99 with file_size=200" {
+    const result = try static_files.parseRange("bytes=0-99", 200);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u64, 0), result.?.start);
+    try testing.expectEqual(@as(u64, 99), result.?.end);
+}
+
+test "parseRange: open-ended range bytes=0- with file_size=200" {
+    const result = try static_files.parseRange("bytes=0-", 200);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u64, 0), result.?.start);
+    try testing.expectEqual(@as(u64, 199), result.?.end);
+}
+
+test "parseRange: suffix range bytes=-50 with file_size=200" {
+    const result = try static_files.parseRange("bytes=-50", 200);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u64, 150), result.?.start);
+    try testing.expectEqual(@as(u64, 199), result.?.end);
+}
+
+test "parseRange: invalid suffix bytes=-0" {
+    const result = try static_files.parseRange("bytes=-0", 200);
+    try testing.expect(result == null);
+}
+
+test "parseRange: malformed bytes=abc-def" {
+    const result = try static_files.parseRange("bytes=abc-def", 200);
+    try testing.expect(result == null);
+}
+
+test "parseRange: end out of bounds bytes=0-999" {
+    const result = try static_files.parseRange("bytes=0-999", 200);
+    try testing.expect(result == null);
+}
+
+test "parseRange: empty bytes=" {
+    const result = try static_files.parseRange("bytes=", 200);
+    try testing.expect(result == null);
+}
+
+test "parseRange: wrong prefix BYTES=0-99" {
+    const result = try static_files.parseRange("BYTES=0-99", 200);
+    try testing.expect(result == null);
+}
+
+test "parseRange: start > end bytes=100-50" {
+    const result = try static_files.parseRange("bytes=100-50", 200);
+    try testing.expect(result == null);
+}
+
+test "parseRange: no dash bytes=50" {
+    const result = try static_files.parseRange("bytes=50", 200);
+    try testing.expect(result == null);
+}

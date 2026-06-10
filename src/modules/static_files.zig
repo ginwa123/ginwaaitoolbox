@@ -29,6 +29,11 @@ pub const LookupResult = union(enum) {
         abs_path: []const u8,
         mime: []const u8,
         size: u64,
+        /// Last-modified time, used for content-derived ETag generation.
+        /// Two files with identical byte counts get distinct ETags because
+        /// their mtimes almost always differ, avoiding browser cache poisoning
+        /// when the size alone would collide.
+        mtime: std.Io.Timestamp,
     },
     not_found,
     forbidden,
@@ -97,6 +102,10 @@ fn isInsideRoot(root: []const u8, resolved: []const u8) bool {
 // ---------------------------------------------------------------------------
 // resolve()
 // ---------------------------------------------------------------------------
+
+/// Buffer size for streaming file responses. 64 KB matches a typical
+/// filesystem read-ahead and keeps memory usage bounded for large files.
+const FILE_BUF_SIZE: usize = 64 * 1024;
 
 /// Resolve a request path (e.g. "/assets/index-abc.js") against the static
 /// dir. Returns the resolved file's absolute path, mime type, and size —
@@ -175,6 +184,7 @@ pub fn resolve(
         .abs_path = resolved,
         .mime = mimeForPath(resolved),
         .size = stat.size,
+        .mtime = stat.mtime,
     } };
 }
 
@@ -207,28 +217,177 @@ fn resolveDirFallback(
         .abs_path = idx_abs,
         .mime = mimeForPath(idx_abs),
         .size = idx_stat.size,
+        .mtime = idx_stat.mtime,
     } };
 }
 
 // ---------------------------------------------------------------------------
-// serve() — placeholder for Task 3
+// parseRange() — HTTP `Range:` header parser
+// ---------------------------------------------------------------------------
+
+/// Parsed byte range from an HTTP `Range: bytes=...` header.
+pub const ByteRange = struct {
+    start: u64,
+    end: u64,
+};
+
+/// Parse an HTTP `Range:` header value into a `ByteRange`, validating against
+/// `file_size`. Returns `null` for any malformed, unsupported, or out-of-bounds
+/// spec — the caller should fall back to a full 200 response in that case.
+///
+/// Recognized forms (per RFC 9110 §14.1.2):
+///   * `bytes=START-END`     — closed range
+///   * `bytes=START-`        — open-ended (resolves END to file_size-1)
+///   * `bytes=-SUFFIX`       — last SUFFIX bytes of the file
+///
+/// Returns `null` for:
+///   * missing or wrong-case `bytes=` prefix
+///   * missing dash separator
+///   * non-numeric bytes
+///   * empty `bytes=` (no digits at all)
+///   * suffix of 0 (no bytes requested)
+///   * suffix larger than file_size
+///   * closed range where END >= file_size or START > END
+///
+/// The function is intentionally strict: anything ambiguous is rejected
+/// rather than silently coerced, because the caller's fallback path
+/// (a full 200 response) is always correct.
+pub fn parseRange(header: []const u8, file_size: u64) !?ByteRange {
+    if (!std.mem.startsWith(u8, header, "bytes=")) return null;
+    const spec = header["bytes=".len..];
+    const dash = std.mem.indexOfScalar(u8, spec, '-') orelse return null;
+    const start_s = spec[0..dash];
+    const end_s = spec[dash + 1..];
+
+    // Suffix form: bytes=-SUFFIX  (the first half is empty)
+    if (start_s.len == 0) {
+        if (end_s.len == 0) return null;
+        const suffix = std.fmt.parseInt(u64, end_s, 10) catch return null;
+        if (suffix == 0 or suffix > file_size) return null;
+        return .{ .start = file_size - suffix, .end = file_size - 1 };
+    }
+
+    // Closed or open-ended form: bytes=START-END or bytes=START-
+    const start = std.fmt.parseInt(u64, start_s, 10) catch return null;
+    const end = if (end_s.len == 0) file_size - 1 else std.fmt.parseInt(u64, end_s, 10) catch return null;
+    if (start > end or end >= file_size) return null;
+    return .{ .start = start, .end = end };
+}
+
+// ---------------------------------------------------------------------------
+// serve() — HTTP response writer
 // ---------------------------------------------------------------------------
 
 /// Send a static file as an HTTP response.
 ///
-/// Doesn't mutate `cfg` — all writes go to the `writer` parameter. Task 3
-/// will likely swap `writer` for the real httpz response type; this signature
-/// is the placeholder shape we expect.
-/// (Stub for now; fleshed out in Task 3.)
+/// Doesn't mutate `cfg` — all writes go to the `writer` parameter. On
+/// `.file`, frees the abs_path allocated by `resolve()`.
+///
+/// Supports HTTP/1.1 byte-range requests: if `range_header` parses to a valid
+/// range, responds with 206 Partial Content and the requested slice.
+/// Otherwise responds with 200 OK and the full file body.
+///
+/// 404 / 403 are returned for the corresponding `LookupResult` variants;
+/// these are short text bodies with no Content-Range, no ETag.
 pub fn serve(
     cfg: *const StaticDirConfig,
+    io: std.Io,
     request_path: []const u8,
     range_header: ?[]const u8,
     writer: std.Io.Writer,
-) !LookupResult {
-    _ = cfg;
-    _ = request_path;
-    _ = range_header;
-    _ = writer;
-    return .not_found;
+) !void {
+    const lookup = try resolve(cfg, io, request_path);
+    switch (lookup) {
+        .not_found, .not_a_file => {
+            const body = "Not Found";
+            try writer.writeAll("HTTP/1.1 404 Not Found\r\n");
+            try writer.print("Content-Length: {d}\r\n", .{body.len});
+            try writer.writeAll("Content-Type: text/plain; charset=utf-8\r\n");
+            try writer.writeAll("\r\n");
+            try writer.writeAll(body);
+        },
+        .forbidden => {
+            const body = "Forbidden";
+            try writer.writeAll("HTTP/1.1 403 Forbidden\r\n");
+            try writer.print("Content-Length: {d}\r\n", .{body.len});
+            try writer.writeAll("Content-Type: text/plain; charset=utf-8\r\n");
+            try writer.writeAll("\r\n");
+            try writer.writeAll(body);
+        },
+        .file => |f| {
+            defer cfg.allocator.free(f.abs_path);
+
+            // Content-derived ETag: combines file size and mtime so two
+            // same-size files (common with minified JS/CSS) get distinct ETags
+            // and don't trigger browser cache poisoning on size collision.
+            const etag = try std.fmt.allocPrint(cfg.allocator, "\"x-{x}-{x}\"", .{ f.size, f.mtime.nanoseconds });
+            defer cfg.allocator.free(etag);
+
+            if (range_header) |rh| {
+                if (try parseRange(rh, f.size)) |range| {
+                    try writer.writeAll("HTTP/1.1 206 Partial Content\r\n");
+                    try writer.print("Content-Range: bytes {d}-{d}/{d}\r\n", .{ range.start, range.end, f.size });
+                    const content_length: u64 = range.end - range.start + 1;
+                    try writer.print("Content-Length: {d}\r\n", .{content_length});
+                    try writer.print("Content-Type: {s}\r\n", .{f.mime});
+                    try writer.print("ETag: {s}\r\n", .{etag});
+                    try writer.writeAll("Cache-Control: public, max-age=3600\r\n");
+                    try writer.writeAll("\r\n");
+                    try writeFileRange(io, f.abs_path, range.start, range.end, writer);
+                    return;
+                }
+            }
+
+            try writer.writeAll("HTTP/1.1 200 OK\r\n");
+            try writer.print("Content-Length: {d}\r\n", .{f.size});
+            try writer.print("Content-Type: {s}\r\n", .{f.mime});
+            try writer.print("ETag: {s}\r\n", .{etag});
+            try writer.writeAll("Cache-Control: public, max-age=3600\r\n");
+            try writer.writeAll("\r\n");
+            try writeFileFull(io, f.abs_path, writer);
+        },
+    }
+}
+
+/// Stream the entire file at `abs_path` to `writer`.
+///
+/// Uses `readPositionalAll` (not seek + read) — that's the Zig 0.16 idiom
+/// for positional reads, and it's the path that's safe in Io.Threaded's
+/// blocking recv model.
+fn writeFileFull(io: std.Io, abs_path: []const u8, writer: std.Io.Writer) !void {
+    const file = try std.Io.Dir.openFileAbsolute(io, abs_path, .{});
+    defer file.close(io);
+    var buf: [FILE_BUF_SIZE]u8 = undefined;
+    var offset: u64 = 0;
+    while (true) {
+        const n = try file.readPositionalAll(io, &buf, offset);
+        if (n == 0) break;
+        try writer.writeAll(buf[0..n]);
+        offset += n;
+    }
+}
+
+/// Stream the byte range `[start, end]` (inclusive on both ends) of the
+/// file at `abs_path` to `writer`. Caller is responsible for ensuring
+/// `start <= end < file_size`.
+fn writeFileRange(
+    io: std.Io,
+    abs_path: []const u8,
+    start: u64,
+    end: u64,
+    writer: std.Io.Writer,
+) !void {
+    const file = try std.Io.Dir.openFileAbsolute(io, abs_path, .{});
+    defer file.close(io);
+    var remaining: u64 = end - start + 1;
+    var offset: u64 = start;
+    var buf: [FILE_BUF_SIZE]u8 = undefined;
+    while (remaining > 0) {
+        const to_read: usize = @intCast(@min(remaining, buf.len));
+        const n = try file.readPositionalAll(io, buf[0..to_read], offset);
+        if (n == 0) break;
+        try writer.writeAll(buf[0..n]);
+        offset += n;
+        remaining -= n;
+    }
 }
