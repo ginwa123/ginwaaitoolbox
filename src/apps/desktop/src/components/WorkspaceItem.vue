@@ -2,6 +2,7 @@
 import { computed, inject, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem } from '../stores/workspaces'
+import WorkspaceItemTask from './WorkspaceItemTask.vue'
 
 const workspacesStore = useWorkspacesStore()
 
@@ -23,6 +24,11 @@ const emit = defineEmits<{
   click: [item: WorkspaceItem]
   delete: [item: WorkspaceItem]
   addTask: [item: WorkspaceItem]
+  // The three task-level events are emitted by the child
+  // <WorkspaceItemTask> and re-emitted verbatim up to WorkspaceList.
+  // WorkspaceList's contract with Sidebar is unchanged; this is a
+  // pure pass-through (see handleSelectTask / handleDeleteTask /
+  // handleRenameTask below).
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
@@ -30,9 +36,7 @@ const emit = defineEmits<{
 
 // Computed: check if item is expanded (tasks visible)
 const isExpanded = computed(() => {
-  const expanded = workspacesStore.expandedItemIds[props.item.id] === true
-  console.log('[WorkspaceItem] isExpanded recompute:', props.item.id, expanded, 'store:', JSON.stringify(workspacesStore.expandedItemIds))
-  return expanded
+  return workspacesStore.expandedItemIds[props.item.id] === true
 })
 
 // Computed: true if any of this item's tasks is currently being processed
@@ -68,20 +72,31 @@ const handleAddTask = (event: Event) => {
   emit('addTask', props.item)
 }
 
+// Pass-through handlers: <WorkspaceItemTask> emits these three events
+// with the full payload (workspaceId, itemId, taskId, currentName), and
+// we forward them up to <WorkspaceList> verbatim. The signatures match
+// the existing WorkspaceList / Sidebar contract — see the pre-split
+// version of this file for the inline handlers that previously lived
+// here. No business logic; pure forwarding.
 const handleSelectTask = (taskId: string) => {
   emit('selectTask', taskId)
 }
 
-const handleDeleteTask = (event: Event, taskId: string) => {
-  event.stopPropagation()
-  emit('deleteTask', props.workspaceId, props.item.id, taskId)
+const handleDeleteTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  emit('deleteTask', workspaceId, itemId, taskId)
 }
 
-const handleRenameTask = (event: Event, taskId: string, currentName: string) => {
-  // Stop the click from bubbling up to the parent <button> (which
-  // would call selectTask). Same rationale as handleDeleteTask.
-  event.stopPropagation()
-  emit('renameTask', props.workspaceId, props.item.id, taskId, currentName)
+const handleRenameTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  currentName: string,
+) => {
+  emit('renameTask', workspaceId, itemId, taskId, currentName)
 }
 </script>
 
@@ -171,61 +186,21 @@ const handleRenameTask = (event: Event, taskId: string, currentName: string) => 
         </button>
       </div>
 
-      <!-- Tasks List (shown when expanded - allows multiple) -->
+      <!-- Tasks List (shown when expanded - allows multiple). Per-task
+           row lives in <WorkspaceItemTask> (extracted 2026-06-10);
+           events bubble up via the pass-through handlers in the
+           <script setup> block. -->
       <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1 space-y-0.5">
-        <button
+        <WorkspaceItemTask
           v-for="task in item.tasks"
           :key="task.id"
-          class="flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
-          :style="{
-            color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
-            backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'transparent',
-          }"
-          @click="handleSelectTask(task.id)"
-        >
-          <!-- Spinner while worker is processing this task (mirrors ChatsList.vue:489-497, scaled down to fit 12px text). Bullet is hidden while the spinner is shown so the row has a single, clear visual marker. -->
-          <span
-            v-if="processingState[task.id]"
-            class="w-4 h-4 flex items-center justify-center shrink-0"
-            data-testid="task-spinner"
-          >
-            <div
-              class="w-3 h-3 border-2 rounded-full animate-spin"
-              style="border-color: var(--color-yellow); border-top-color: transparent"
-            ></div>
-          </span>
-          <!-- Bullet point (only when not processing) -->
-          <span
-            v-else
-            class="w-1.5 h-1.5 rounded-full shrink-0"
-            :style="{ backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)' }"
-          />
-          <!-- Task name -->
-          <span class="flex-1 truncate">{{ task.name }}</span>
-          <!-- Rename task button (pencil). Hover-revealed alongside
-               the delete button. Blue hover to differentiate from
-               the red delete hover. -->
-          <button
-            @click="handleRenameTask($event, task.id, task.name)"
-            class="w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:text-blue-400"
-            style="color: var(--semantic-text-dim);"
-            title="Rename Task"
-          >
-            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
-          </button>
-          <!-- Delete task button -->
-          <button
-            @click="handleDeleteTask($event, task.id)"
-            class="w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:text-red-400"
-            style="color: var(--semantic-text-dim);"
-          >
-            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </button>
+          :task="task"
+          :workspace-id="workspaceId"
+          :item-id="item.id"
+          @select-task="handleSelectTask"
+          @delete-task="handleDeleteTask"
+          @rename-task="handleRenameTask"
+        />
       </div>
     </div>
   </li>
