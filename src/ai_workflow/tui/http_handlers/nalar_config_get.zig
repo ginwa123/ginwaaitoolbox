@@ -67,13 +67,16 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON in config" }),
         });
     };
-    defer parsed.deinit();
 
     const cfg = parsed.value;
 
     // Build the typed sub_agents response from the typed parse target.
-    // Borrowed slices from `cfg.sub_agents` (the parsed JSON) are safe
-    // because `parsed.deinit()` hasn't fired yet at this point.
+    // `cfg.sub_agents` is borrowed from `parsed` (zero-copy view into
+    // `content`); we materialize a `SubAgentResponse` array so the
+    // response payload uses our typed struct instead of `std.json.Value`.
+    // No explicit `defer allocator.free(...)` here — see the
+    // "Custom HTTP server uses per-request arena" memory; the request
+    // allocator is freed by `GinwaServer.handle` when the request ends.
     const sub_agents_response: ?[]const http_response.SubAgentResponse = if (cfg.sub_agents) |sas| blk: {
         var out = try allocator.alloc(http_response.SubAgentResponse, sas.len);
         errdefer allocator.free(out);
@@ -91,7 +94,6 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         }
         break :blk out;
     } else null;
-    defer if (sub_agents_response) |sa| allocator.free(sa);
 
     return res.jsonResponse(.{
         .status_code = 200,
