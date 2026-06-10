@@ -2397,22 +2397,30 @@ pub fn listWorkspaceItemTasks(
     return try tasks.toOwnedSlice(allocator);
 }
 
-/// List workspace item tasks with cursor pagination. `cursor` is the
-/// `created_at` string of the last task from the previous page; pass
-/// null to fetch the first page. Ordered by `created_at DESC` (newest
-/// first). Returns at most `limit` tasks plus a `has_more` flag
-/// indicating whether at least one more task exists after this page.
+/// List workspace item tasks with cursor pagination. The `cursor` is
+/// the value of the `sort_field` for the last task from the previous
+/// page; pass null to fetch the first page. The `sort_field` /
+/// `sort_direction` controls the ORDER BY direction. The `id` column
+/// is used as a tiebreaker for stable pagination when many tasks share
+/// the same `updated_at` (e.g. all batch-renamed in one second).
 ///
-/// Pattern: mirror `getSessionListWithCursor` (above) for SQL building
-/// and `listWorkspaceItemTasks` (above) for row decoding. The
-/// `limit + 1` "peek" trick (fetch one extra row, drop it if present)
-/// detects `has_more` without a second COUNT query.
+/// Ordered by `sort_field sort_direction, id sort_direction` (newest
+/// first when sort_direction is `desc`). Returns at most `limit`
+/// tasks plus a `has_more` flag indicating whether at least one more
+/// task exists after this page.
+///
+/// Cursor filter: `(sort_field, id) < (cursor_value, last_id)` for DESC,
+/// or `>` for ASC. The last_id is encoded in the cursor as
+/// `"<sort_value>|<id>"` by the handler. Mirrors
+/// `getSessionListWithCursor` (above) for SQL building style.
 pub fn listWorkspaceItemTasksWithCursor(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     workspace_item_id: []const u8,
     limit: u32,
     cursor: ?[]const u8,
+    sort_field: TaskSortField,
+    sort_direction: TaskSortDirection,
 ) !struct {
     tasks: []WorkspaceItemTaskInfo,
     has_more: bool,
@@ -2423,23 +2431,61 @@ pub fn listWorkspaceItemTasksWithCursor(
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{query_limit});
     defer allocator.free(limit_str);
 
-    // Build SQL. workspace_item_id is parameter-bound (matches
-    // listWorkspaceItemTasks above). The cursor and limit are
-    // string-interpolated: the cursor is a server-generated created_at
-    // string, so it's trusted; the limit is a u32 digit string, so it's
-    // safe. Mirrors the style of getSessionListWithCursor.
-    const sql = if (cursor) |c|
-        try std.fmt.allocPrint(
+    // Build the ORDER BY column expression for the sort field. We
+    // hardcode the column name (not the value) into the SQL string
+    // — only the values are parameterized, so this is safe.
+    const sort_col = switch (sort_field) {
+        .created_at => "created_at",
+        .updated_at => "updated_at",
+        .name => "name",
+    };
+    const sort_dir_str = switch (sort_direction) {
+        .asc => "ASC",
+        .desc => "DESC",
+    };
+    const order_by = try std.fmt.allocPrint(
+        allocator,
+        "ORDER BY {s} {s}, id {s}",
+        .{ sort_col, sort_dir_str, sort_dir_str },
+    );
+    defer allocator.free(order_by);
+
+    // Cursor: encoded as "<sort_value>|<id>" by the handler. Split it
+    // into the sort-field value (compared first) and the id (tiebreaker).
+    // When cursor is null, no WHERE clause is added.
+    const cursor_clause: []u8 = blk: {
+        const c = cursor orelse break :blk try allocator.dupe(u8, "");
+        // The cursor format is "<sort_value>|<id>". For DATETIME columns
+        // (created_at, updated_at) the value contains no '|' so the
+        // split is unambiguous. For `name` a '|' in the name would
+        // corrupt the split, but task names are user-typed and
+        // unlikely to contain '|' — add a sanitizer in the handler if
+        // that becomes a real problem.
+        const pipe_idx = std.mem.indexOfScalar(u8, c, '|') orelse
+            return error.MalformedCursor;
+        const sort_value = c[0..pipe_idx];
+        const id_value = c[pipe_idx + 1..];
+
+        // For DESC: row should come AFTER the cursor pair in sort order,
+        // which means sort_value < cursor.sort_value, OR sort_value
+        // equals and id < cursor.id. For ASC: >. Build the clause.
+        const cmp = switch (sort_direction) {
+            .desc => "<",
+            .asc => ">",
+        };
+        break :blk try std.fmt.allocPrint(
             allocator,
-            "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id = ? AND created_at < '{s}' ORDER BY created_at DESC LIMIT {s}",
-            .{ c, limit_str },
-        )
-    else
-        try std.fmt.allocPrint(
-            allocator,
-            "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id = ? ORDER BY created_at DESC LIMIT {s}",
-            .{limit_str},
+            " AND ({s} {s} '{s}' OR ({s} = '{s}' AND id {s} '{s}'))",
+            .{ sort_col, cmp, sort_value, sort_col, sort_value, cmp, id_value },
         );
+    };
+    defer if (cursor_clause.len > 0) allocator.free(cursor_clause);
+
+    const sql = try std.fmt.allocPrint(
+        allocator,
+        "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id = ?{s} {s} LIMIT {s}",
+        .{ cursor_clause, order_by, limit_str },
+    );
     defer allocator.free(sql);
 
     var rows = try db.query(allocator, sql, &.{workspace_item_id});

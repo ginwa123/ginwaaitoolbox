@@ -238,3 +238,37 @@ test "llm_history exposes TaskSortField enum" {
         return error.TaskSortFieldMissing;
     }
 }
+
+// ─── Contract 8: listWorkspaceItemTasksWithCursor is sort-aware ──────────
+
+test "listWorkspaceItemTasksWithCursor takes sort_field and sort_direction" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    // The function must take sort_field and sort_direction. Use a
+    // substring search for the parameter names since the exact
+    // signature will vary.
+    const has_sort_field = std.mem.indexOf(u8, source, "sort_field: TaskSortField") != null;
+    const has_sort_direction = std.mem.indexOf(u8, source, "sort_direction: TaskSortDirection") != null;
+    if (!has_sort_field or !has_sort_direction) {
+        std.debug.print(
+            "\n!! {s} does not thread sort_field/sort_direction into listWorkspaceItemTasksWithCursor !!\n" ++
+                "   The sort plumbing was added at the handler but not threaded\n" ++
+                "   into the DB function — the sort_by query param would be ignored.\n" ++
+                "   Update the signature:\n" ++
+                "     pub fn listWorkspaceItemTasksWithCursor(\n" ++
+                "         allocator: std.mem.Allocator,\n" ++
+                "         db: *sqlite.SqliteBackend,\n" ++
+                "         workspace_item_id: []const u8,\n" ++
+                "         limit: u32,\n" ++
+                "         cursor: ?[]const u8,\n" ++
+                "         sort_field: TaskSortField,\n" ++
+                "         sort_direction: TaskSortDirection,\n" ++
+                "     ) !struct {{ tasks: []WorkspaceItemTaskInfo, has_more: bool }} {{ ... }}\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.SortParamsMissing;
+    }
+}
