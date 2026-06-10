@@ -23,7 +23,7 @@ pub const LlmConfig = struct {
     /// user opts in via the config. Notifications are dispatched from
     /// the backend (notify-send / osascript / PowerShell) so they work
     /// even when the desktop app's browser is closed.
-    notify_on_complete: bool,
+    notify_on_complete: bool = true,
 
     pub const LoadError = error{
         ConfigFileNotFound,
