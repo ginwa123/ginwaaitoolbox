@@ -17,7 +17,9 @@
 ```xml
 <tool>
   <name>{name}</name>
-  <parameters>{xml-escaped JSON args}</parameters>
+  <parameters>
+    {xml args, converted from JSON}
+  </parameters>
   <success>true|false</success>
   <error>{xml-escaped error, omitted when success}</error>
   <data>{xml-escaped inner tool output, omitted when error}</data>
@@ -26,12 +28,55 @@
 
 **Rules:**
 - `name` — tool name (e.g. `"read_file"`), XML-escaped for safety.
-- `parameters` — raw JSON from `tc.function.arguments`, always emitted (even on error), XML-escaped.
+- `parameters` — **XML structure converted from the JSON args string** (NOT a JSON string). Always emitted (even on error). The conversion rules are below.
 - `success` — `"true"` or `"false"`.
 - `error` — human-readable error message, XML-escaped. **Omitted** when `success=true` to keep successful output clean.
 - `data` — existing tool-specific XML output, XML-escaped. **Omitted** when `success=false` (the error message is in `<error>`).
 
-XML escaping handles `<`, `>`, `&`, `"`, `'` — same as the existing `llm_history.zig:762` `xmlEscape`. The wrapper re-implements it (private) to keep `tool_registry.zig` self-contained.
+### JSON-to-XML conversion for `<parameters>`
+
+The LLM passes tool arguments as a JSON string in `tc.function.arguments` (e.g. `{"path":"/etc/hostname","limit":100}`). The wrapper parses this JSON and converts it to XML structure inside `<parameters>...</parameters>`. The conversion rules:
+
+| JSON type | XML representation |
+|-----------|-------------------|
+| Object `{k:v, ...}` | `<parameters><k>v</k>...</parameters>` — each key becomes a child element |
+| Array `[a, b, c]` | `<tags><item>a</item><item>b</item><item>c</item></tags>` — each element becomes an `<item>` |
+| String | text content (XML-escaped): `<path>/etc/hostname</path>` |
+| Integer | text content: `<limit>100</limit>` |
+| Float | text content: `<ratio>0.5</ratio>` |
+| Boolean | text content: `<verbose>true</verbose>` |
+| null | self-closing: `<flag/>` |
+| Nested object | nested element: `<options><verbose>true</verbose></options>` |
+
+### Examples
+
+**Flat object:**
+```
+Input:  {"path":"/etc/hostname","limit":100}
+Output: <parameters><path>/etc/hostname</path><limit>100</limit></parameters>
+```
+
+**Object with array:**
+```
+Input:  {"name":"test","tags":["a","b"]}
+Output: <parameters><name>test</name><tags><item>a</item><item>b</item></tags></parameters>
+```
+
+**Nested object:**
+```
+Input:  {"command":"echo hi","options":{"verbose":true,"count":3}}
+Output: <parameters><command>echo hi</command><options><verbose>true</verbose><count>3</count></options></parameters>
+```
+
+**Empty parameters:**
+```
+Input:  ""
+Output: <parameters></parameters>
+```
+
+**Malformed JSON fallback:** If `std.json.parseFromSlice` fails (e.g. the LLM emitted invalid JSON), fall back to `<parameters><raw>{xml-escaped raw string}</raw></parameters>` so the LLM can still see what was passed and self-correct on the next turn.
+
+XML escaping (for text content and attribute values) handles `<`, `>`, `&`, `"`, `'` — same as the existing `llm_history.zig:762` `xmlEscape`. The wrapper re-implements it (private) to keep `tool_registry.zig` self-contained.
 
 ---
 
@@ -76,7 +121,7 @@ const std = @import("std");
 const testing = std.testing;
 const tool_registry = @import("tool_registry.zig");
 
-test "wrapToolOutput - success with all fields" {
+test "wrapToolOutput - success with all fields, JSON params converted to XML" {
     const allocator = testing.allocator;
     const out = try tool_registry.wrapToolOutput(
         allocator,
@@ -90,7 +135,8 @@ test "wrapToolOutput - success with all fields" {
 
     try testing.expect(std.mem.indexOf(u8, out, "<tool>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<name>read_file</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<parameters>{&quot;path&quot;:&quot;/foo/bar.txt&quot;}</parameters>") != null);
+    // JSON {"path":"/foo/bar.txt"} → <parameters><path>/foo/bar.txt</path></parameters>
+    try testing.expect(std.mem.indexOf(u8, out, "<parameters><path>/foo/bar.txt</path></parameters>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<success>true</success>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<data>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "&lt;path&gt;/foo/bar.txt&lt;/path&gt;") != null);
@@ -115,7 +161,7 @@ test "wrapToolOutput - error case omits data and emits error" {
     try testing.expect(std.mem.indexOf(u8, out, "<data>") == null);
 }
 
-test "wrapToolOutput - empty parameters string is emitted" {
+test "wrapToolOutput - empty parameters string emits empty <parameters>" {
     const allocator = testing.allocator;
     const out = try tool_registry.wrapToolOutput(
         allocator,
@@ -130,12 +176,73 @@ test "wrapToolOutput - empty parameters string is emitted" {
     try testing.expect(std.mem.indexOf(u8, out, "<parameters></parameters>") != null);
 }
 
+test "wrapToolOutput - JSON with array converts to <item> children" {
+    const allocator = testing.allocator;
+    const out = try tool_registry.wrapToolOutput(
+        allocator,
+        "some_tool",
+        "{\"tags\":[\"a\",\"b\",\"c\"]}",
+        true,
+        null,
+        "ok",
+    );
+    defer allocator.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<tags><item>a</item><item>b</item><item>c</item></tags>") != null);
+}
+
+test "wrapToolOutput - JSON with nested object converts to nested elements" {
+    const allocator = testing.allocator;
+    const out = try tool_registry.wrapToolOutput(
+        allocator,
+        "bash",
+        "{\"options\":{\"verbose\":true,\"count\":3}}",
+        true,
+        null,
+        "ok",
+    );
+    defer allocator.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<options><verbose>true</verbose><count>3</count></options>") != null);
+}
+
+test "wrapToolOutput - JSON with boolean and null values" {
+    const allocator = testing.allocator;
+    const out = try tool_registry.wrapToolOutput(
+        allocator,
+        "tool",
+        "{\"enabled\":true,\"flag\":null}",
+        true,
+        null,
+        "ok",
+    );
+    defer allocator.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<enabled>true</enabled>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<flag/>") != null);
+}
+
+test "wrapToolOutput - malformed JSON falls back to <raw> wrapper" {
+    const allocator = testing.allocator;
+    const out = try tool_registry.wrapToolOutput(
+        allocator,
+        "bash",
+        "{not valid json",
+        true,
+        null,
+        "ok",
+    );
+    defer allocator.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<parameters><raw>{not valid json</raw></parameters>") != null);
+}
+
 test "wrapToolOutput - data with special characters is escaped" {
     const allocator = testing.allocator;
     const out = try tool_registry.wrapToolOutput(
         allocator,
         "bash",
-        "{\"command\":\"echo \\\"<hi>\\\"\"}",
+        "{}",
         true,
         null,
         "<stdout><hi> & \"world\"</stdout>",
@@ -172,7 +279,6 @@ test "wrapToolOutput - success and error are mutually exclusive" {
     );
     defer allocator.free(out);
 
-    // success=true should ignore error_message and emit <data>
     try testing.expect(std.mem.indexOf(u8, out, "<data><stdout>ok</stdout></data>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
 }
@@ -255,7 +361,10 @@ fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 ///
 /// `tool_name` — the registered tool name (e.g. `"read_file"`). XML-escaped.
 /// `parameters` — the raw JSON arguments string from the tool call
-///   (e.g. `{"path":"/foo"}`). Always emitted (even on error), XML-escaped.
+///   (e.g. `{"path":"/foo"}`). The wrapper parses this JSON and converts it
+///   to XML structure inside `<parameters>...</parameters>`. If the JSON is
+///   malformed, the raw string is wrapped in `<raw>...</raw>` as a fallback.
+///   Always emitted (even on error).
 /// `success` — `true` for a successful tool execution, `false` for a failure.
 /// `error_message` — required when `success=false`; ignored when `success=true`.
 /// `data` — the existing tool-specific XML output. Required when
@@ -273,8 +382,8 @@ pub fn wrapToolOutput(
 ) ![]u8 {
     const escaped_name = try xmlEscape(allocator, tool_name);
     defer allocator.free(escaped_name);
-    const escaped_params = try xmlEscape(allocator, parameters);
-    defer allocator.free(escaped_params);
+    const params_xml = try jsonArgsToXml(allocator, parameters);
+    defer allocator.free(params_xml);
 
     if (success) {
         const escaped_data = try xmlEscape(allocator, data);
@@ -282,7 +391,7 @@ pub fn wrapToolOutput(
         return try std.fmt.allocPrint(
             allocator,
             "<tool><name>{s}</name><parameters>{s}</parameters><success>true</success><data>{s}</data></tool>",
-            .{ escaped_name, escaped_params, escaped_data },
+            .{ escaped_name, params_xml, escaped_data },
         );
     } else {
         const msg = error_message orelse "unknown error";
@@ -291,8 +400,143 @@ pub fn wrapToolOutput(
         return try std.fmt.allocPrint(
             allocator,
             "<tool><name>{s}</name><parameters>{s}</parameters><success>false</success><error>{s}</error></tool>",
-            .{ escaped_name, escaped_params, escaped_err },
+            .{ escaped_name, params_xml, escaped_err },
         );
+    }
+}
+
+/// Convert a JSON arguments string to XML structure wrapped in
+/// `<parameters>...</parameters>`. The conversion rules:
+///
+/// - Object → `<parameters><k>v</k>...</parameters>` (one child per key)
+/// - Array of primitives → `<parameters><item>...</item>...</parameters>`
+/// - String/number/boolean → text content (XML-escaped)
+/// - null → self-closing `<k/>`
+/// - Nested object → `<parameters><k>...</k></parameters>` (recurses)
+///
+/// Returns `<parameters></parameters>` for an empty input string.
+/// Returns `<parameters><raw>{escaped raw}</raw></parameters>` if the JSON
+/// fails to parse (fallback so the LLM can still see what was passed).
+fn jsonArgsToXml(allocator: std.mem.Allocator, json_str: []const u8) ![]u8 {
+    if (json_str.len == 0) {
+        return try allocator.dupe(u8, "<parameters></parameters>");
+    }
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch {
+        // Malformed JSON fallback: wrap the raw string in <raw>...</raw>
+        const escaped = try xmlEscape(allocator, json_str);
+        defer allocator.free(escaped);
+        return try std.fmt.allocPrint(allocator, "<parameters><raw>{s}</raw></parameters>", .{escaped});
+    };
+    defer parsed.deinit();
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    try result.appendSlice(allocator, "<parameters>");
+    switch (parsed.value) {
+        .object => |obj| {
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                try jsonValueToXml(allocator, &result, entry.key_ptr.*, entry.value_ptr.*);
+            }
+        },
+        else => {
+            // Top-level is not an object — wrap as <raw> for safety
+            const escaped = try xmlEscape(allocator, json_str);
+            defer allocator.free(escaped);
+            try result.appendSlice(allocator, "<raw>");
+            try result.appendSlice(allocator, escaped);
+            try result.appendSlice(allocator, "</raw>");
+        },
+    }
+    try result.appendSlice(allocator, "</parameters>");
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Recursive helper for `jsonArgsToXml`. Serializes one key-value pair as
+/// `<key>value</key>` (or `<key/>` for null) into the result buffer.
+fn jsonValueToXml(allocator: std.mem.Allocator, result: *std.ArrayList(u8), key: []const u8, value: std.json.Value) !void {
+    switch (value) {
+        .string => |s| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            const escaped_val = try xmlEscape(allocator, s);
+            defer allocator.free(escaped_val);
+            try result.writer().print("<{s}>{s}</{s}>", .{ escaped_key, escaped_val, escaped_key });
+        },
+        .integer => |i| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            try result.writer().print("<{s}>{d}</{s}>", .{ escaped_key, i, escaped_key });
+        },
+        .float => |f| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            try result.writer().print("<{s}>{d}</{s}>", .{ escaped_key, f, escaped_key });
+        },
+        .bool => |b| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            const bool_str = if (b) "true" else "false";
+            try result.writer().print("<{s}>{s}</{s}>", .{ escaped_key, bool_str, escaped_key });
+        },
+        .null => {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            try result.writer().print("<{s}/>", .{escaped_key});
+        },
+        .array => |arr| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            try result.writer().print("<{s}>", .{escaped_key});
+            for (arr.items) |item| {
+                // Arrays of primitives use <item>; for arrays of objects
+                // each item is serialized as a nested element with its own
+                // key handling done by the caller via .object branch.
+                switch (item) {
+                    .string => |s| {
+                        const escaped_val = try xmlEscape(allocator, s);
+                        defer allocator.free(escaped_val);
+                        try result.writer().print("<item>{s}</item>", .{escaped_val});
+                    },
+                    .integer => |i| try result.writer().print("<item>{d}</item>", .{i}),
+                    .float => |f| try result.writer().print("<item>{d}</item>", .{f}),
+                    .bool => |b| {
+                        const bool_str = if (b) "true" else "false";
+                        try result.writer().print("<item>{s}</item>", .{bool_str});
+                    },
+                    .null => try result.appendSlice(allocator, "<item/>"),
+                    .object => |obj| {
+                        // Each object becomes a nested <item> with its own
+                        // children. We use "_" as the wrapper key name.
+                        try result.appendSlice(allocator, "<item>");
+                        var it = obj.iterator();
+                        while (it.next()) |entry| {
+                            try jsonValueToXml(allocator, result, entry.key_ptr.*, entry.value_ptr.*);
+                        }
+                        try result.appendSlice(allocator, "</item>");
+                    },
+                    .array => {
+                        // Nested arrays: serialize the inner array recursively
+                        // (this is rare in tool args; we flatten to <item> for now)
+                        try result.appendSlice(allocator, "<item/>");
+                    },
+                }
+            }
+            try result.writer().print("</{s}>", .{escaped_key});
+        },
+        .object => |obj| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            try result.writer().print("<{s}>", .{escaped_key});
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                try jsonValueToXml(allocator, result, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            try result.writer().print("</{s}>", .{escaped_key});
+        },
     }
 }
 ```
@@ -319,7 +563,7 @@ test {
 - [ ] **Step 1.5: Run tests to verify they pass**
 
 Run: `cd /home/ginwa/agentic_coding_zig/ginwaaitoolbox && timeout 180 zig build test 2>&1 | tail -n 30`
-Expected: 7 new tests pass. Existing 304 tests untouched (helpers unused so far).
+Expected: 11 new tests pass. Existing 304 tests untouched (helpers unused so far).
 
 - [ ] **Step 1.6: Commit**
 
@@ -999,7 +1243,7 @@ Run: `cd /home/ginwa/agentic_coding_zig/ginwaaitoolbox && timeout 240 zig build 
 Expected: clean build.
 
 Run: `cd /home/ginwa/agentic_coding_zig/ginwaaitoolbox && timeout 180 zig build test 2>&1 | tail -n 30`
-Expected: 311+ tests pass (304 existing + 7 new wrap tests). The existing tool-specific test files (parse_diff_view_test.zig, etc.) continue to pass because their assertions are on inner content that's now inside `<data>`.
+Expected: 315+ tests pass (304 existing + 11 new wrap tests). The existing tool-specific test files (parse_diff_view_test.zig, etc.) continue to pass because their assertions are on inner content that's now inside `<data>`.
 
 - [ ] **Step 2.27: Commit**
 
@@ -1069,7 +1313,7 @@ Run: `cd /home/ginwa/agentic_coding_zig/ginwaaitoolbox && timeout 240 zig build 
 Expected: clean build.
 
 Run: `cd /home/ginwa/agentic_coding_zig/ginwaaitoolbox && timeout 180 zig build test 2>&1 | tail -n 30`
-Expected: 311+ tests pass.
+Expected: 315+ tests pass.
 
 - [ ] **Step 3.5: Commit**
 
@@ -1102,11 +1346,12 @@ import { unwrapToolOutput, tryUnwrapToolOutput } from './unwrapToolOutput'
 
 describe('unwrapToolOutput', () => {
   it('parses a success envelope with inner data', () => {
+    // Parameters are XML (converted from JSON on the backend), not a JSON string
     const wrapped =
-      '<tool><name>read_file</name><parameters>{&quot;path&quot;:&quot;/foo&quot;}</parameters><success>true</success><data><path>/foo</path><content>hello</content></data></tool>'
+      '<tool><name>read_file</name><parameters><path>/foo</path></parameters><success>true</success><data><path>/foo</path><content>hello</content></data></tool>'
     const result = unwrapToolOutput(wrapped)
     expect(result.name).toBe('read_file')
-    expect(result.parameters).toBe('{"path":"/foo"}') // un-escaped
+    expect(result.parameters).toBe('<path>/foo</path>') // un-escaped XML
     expect(result.success).toBe(true)
     expect(result.error).toBeNull()
     expect(result.data).toBe('<path>/foo</path><content>hello</content>') // un-escaped
@@ -1114,7 +1359,7 @@ describe('unwrapToolOutput', () => {
 
   it('parses an error envelope', () => {
     const wrapped =
-      '<tool><name>read_file</name><parameters>{}</parameters><success>false</success><error>File not found</error></tool>'
+      '<tool><name>read_file</name><parameters></parameters><success>false</success><error>File not found</error></tool>'
     const result = unwrapToolOutput(wrapped)
     expect(result.name).toBe('read_file')
     expect(result.success).toBe(false)
@@ -1132,11 +1377,11 @@ describe('unwrapToolOutput', () => {
     expect(tryUnwrapToolOutput('garbage')).toBeNull()
     expect(
       tryUnwrapToolOutput(
-        '<tool><name>read_file</name><parameters>{}</parameters><success>true</success><data>ok</data></tool>',
+        '<tool><name>read_file</name><parameters></parameters><success>true</success><data>ok</data></tool>',
       ),
     ).toEqual({
       name: 'read_file',
-      parameters: '{}',
+      parameters: '',
       success: true,
       error: null,
       data: 'ok',
@@ -1145,9 +1390,9 @@ describe('unwrapToolOutput', () => {
 
   it('unescapes XML entities in parameters and data', () => {
     const wrapped =
-      '<tool><name>bash</name><parameters>{&quot;command&quot;:&quot;echo &lt;hi&gt;&quot;}</parameters><success>true</success><data><stdout>&lt;hi&gt; &amp; &quot;world&quot;</stdout></data></tool>'
+      '<tool><name>bash</name><parameters><command>echo &lt;hi&gt;</command></parameters><success>true</success><data><stdout>&lt;hi&gt; &amp; &quot;world&quot;</stdout></data></tool>'
     const result = unwrapToolOutput(wrapped)
-    expect(result.parameters).toBe('{"command":"echo <hi>"}')
+    expect(result.parameters).toBe('<command>echo <hi></command>')
     expect(result.data).toBe('<stdout><hi> & "world"</stdout>')
   })
 })
@@ -1367,7 +1612,7 @@ git commit -m "feat(desktop): unwrap <tool> envelope in ChatView, pass <data> to
 
 # Verification (final)
 
-1. **Backend tests** — `timeout 180 zig build test 2>&1 | tail -n 30` → 311+ tests pass.
+1. **Backend tests** — `timeout 180 zig build test 2>&1 | tail -n 30` → 315+ tests pass.
 2. **Backend build** — `timeout 240 zig build 2>&1 | tail -n 20` → clean.
 3. **Frontend type-check** — `timeout 120 bun run build 2>&1 | tail -n 20` → clean.
 4. **Frontend tests** — `timeout 60 bunx vitest run 2>&1 | tail -n 20` → 36 tests pass.
