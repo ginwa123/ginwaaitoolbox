@@ -343,9 +343,17 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // both the thread and the child process (the OS won't reap the child
     // until all pipe fds are closed). Join on any error path. Safe in
     // success path because the join is done explicitly below.
-    errdefer stdout_thread.join();
     const stderr_thread = try std.Thread.spawn(.{}, readLoopFn, .{stderr_ctx});
-    errdefer stderr_thread.join();
+    // Single errdefer block: LIFO order means this runs FIRST on any
+    // post-spawn error. Kill the child (closes the pipes) BEFORE joining
+    // the threads, or the joins block indefinitely on the still-open
+    // pipes and the kill never runs. The errdefer at line 220 handles
+    // the pre-spawn case where these threads don't exist yet.
+    errdefer {
+        _ = child.kill(io);
+        stdout_thread.join();
+        stderr_thread.join();
+    }
 
     var timeout_hit = false;
     var child_term: ?std.process.Child.Term = null;
