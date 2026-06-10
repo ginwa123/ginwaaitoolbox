@@ -190,6 +190,33 @@ pub fn build(b: *std.Build) void {
         },
         .windows => {
             // Chunk 7: ole32, user32, WebView2Loader (via .cpp shim)
+            //
+            // The C++ shim at platform/windows/nalar_webview.cpp implements
+            // the 3 C ABI functions (nalar_webview_create, _run, _destroy)
+            // using Win32 (HWND/WndProc) + WebView2 (ICoreWebView2, etc.).
+            // We compile it with the host's MSVC clang via `addCSourceFile`
+            // and `/std:c++17 /EHsc` flags, then link the system libraries
+            // that Win32 + COM + WebView2 need at link time.
+            //
+            // Build-time prerequisite: the WebView2 NuGet package's headers
+            // (WebView2.h, WebView2Loader.h) must be extracted into the
+            // same directory as the .cpp. The NuGet DLL (WebView2Loader.dll)
+            // must ship alongside nalar-desktop.exe at runtime. The .cpp
+            // file documents this in its top comment; see also:
+            //   https://www.nuget.org/packages/Microsoft.Web.WebView2/
+            //
+            // Zig 0.16: `addCSourceFile` and `linkSystemLibrary` are both
+            // methods on `root_module` (not on the Compile step like in
+            // older versions) — see the Linux branch above for the matching
+            // addCSourceFile pattern.
+            const cpp_file = b.path("src/apps/desktop_app/platform/windows/nalar_webview.cpp");
+            desktop_exe.root_module.addCSourceFile(.{
+                .file = cpp_file,
+                .flags = &.{ "/std:c++17", "/EHsc" },
+            });
+            desktop_exe.root_module.linkSystemLibrary("ole32", .{});
+            desktop_exe.root_module.linkSystemLibrary("user32", .{});
+            desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
         },
         else => {},
     }
