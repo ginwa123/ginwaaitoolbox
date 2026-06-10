@@ -15,7 +15,7 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
         const agentMessage = agent.AgentMessage{
             .role = .tool,
             .content = try allocator.dupe(u8, message.response_content),
-            .tool_call_id = try allocator.dupe(u8, message.tools),
+            .tool_call_id = try allocator.dupe(u8, message.tool_call_id orelse ""),
         };
         try messages.append(allocator, agentMessage);
         return messages.toOwnedSlice(allocator);
