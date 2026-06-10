@@ -53,6 +53,10 @@ export interface Task {
   description?: string
   completed?: boolean
   createdAt?: Date
+  // ISO datetime string from the backend; present for tasks returned by
+  // getTasks() and used to sort/filter on the frontend. Backend stamps this
+  // on every update (rename, complete, etc.).
+  updatedAt?: Date
 }
 
 // Health check
