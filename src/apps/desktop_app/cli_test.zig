@@ -25,6 +25,7 @@ test "parseArgs: defaults" {
     try testing.expectEqual(@as(u32, 800), cfg.window_height);
     try testing.expectEqualStrings("Nalar", cfg.title);
     try testing.expect(!cfg.smoke_test);
+    try testing.expect(!cfg.enable_devtools);
 }
 
 test "parseArgs: --port" {
@@ -85,6 +86,14 @@ test "parseArgs: --smoke-test" {
     const cfg = try cli.parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expect(cfg.smoke_test);
+}
+
+test "parseArgs: --devtools enables webview DevTools" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--devtools" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.enable_devtools);
 }
 
 test "parseArgs: --help prints usage and signals help" {

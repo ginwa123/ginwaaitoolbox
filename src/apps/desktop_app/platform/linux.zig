@@ -82,10 +82,14 @@ const GBytes = opaque {};
 const GObject = opaque {};
 const GMemoryInputStream = opaque {};
 const GInputStream = opaque {};
+const GdkEvent = opaque {};
 const WebKitURISchemeRequest = opaque {};
 const WebKitWebContext = opaque {};
 const WebKitWebView = opaque {};
 const WebKitSettings = opaque {};
+const WebKitContextMenu = opaque {};
+const WebKitContextMenuItem = opaque {};
+const WebKitWebInspector = opaque {};
 
 // GLib typedefs that the C headers use. We don't pull in glib.h's
 // type definitions, so we mirror the canonical types here.
@@ -175,6 +179,26 @@ extern "c" fn webkit_web_view_load_uri(web_view: *GtkWidget, uri: [*:0]const u8)
 extern "c" fn webkit_web_view_get_settings(web_view: *GtkWidget) *WebKitSettings;
 
 extern "c" fn webkit_settings_set_user_agent(settings: *WebKitSettings, user_agent: [*:0]const u8) void;
+extern "c" fn webkit_settings_set_enable_developer_extras(settings: *WebKitSettings, enabled: gboolean) void;
+
+// --- WebKitGTK inspector (DevTools) ---
+extern "c" fn webkit_web_view_get_inspector(web_view: *GtkWidget) *WebKitWebInspector;
+extern "c" fn webkit_web_inspector_show(inspector: *WebKitWebInspector) void;
+
+// --- WebKitGTK context menu (right-click → stock items) ---
+// We use the stock INSPECT_ELEMENT action rather than a custom GAction
+// because WebKitGTK ships a built-in implementation that automatically
+// calls webkit_web_inspector_show() when activated. This is much simpler
+// than rolling our own GAction + signal handler chain.
+extern "c" fn webkit_context_menu_item_new_from_stock_action(action: c_int) *WebKitContextMenuItem;
+extern "c" fn webkit_context_menu_append(context_menu: *WebKitContextMenu, item: *WebKitContextMenuItem) void;
+
+/// `WEBKIT_CONTEXT_MENU_ACTION_INSPECT_ELEMENT` from
+/// `<webkit/WebKitContextMenuActions.h>`. The enum is stable in
+/// WebKitGTK 4.x — value 31 is the inspect-element action. We hardcode
+/// it instead of pulling in the header (which would mean another 3
+/// typedefs we'd need to mirror) since it's a public API constant.
+const WEBKIT_CONTEXT_MENU_ACTION_INSPECT_ELEMENT: c_int = 31;
 
 // --- WebKitGTK URI scheme request handling ---
 extern "c" fn webkit_uri_scheme_request_get_path(request: *WebKitURISchemeRequest) [*:0]const u8;
@@ -266,6 +290,34 @@ pub export fn nalar_webview_create(
     }
     gtk_container_add(@ptrCast(window), web_view);
 
+    // DevTools: when --devtools is passed, enable developer extras and hook
+    // the context menu so right-click → "Inspect Element" pops the
+    // WebKit inspector window. The inspector is a normal GTK window that
+    // the user can dock or float.
+    //
+    // WebKitGTK's "context-menu" signal is the standard way to add custom
+    // items to the right-click menu. Returning FALSE keeps WebKit's
+    // default items (copy / paste / select-all / etc.) so we get the
+    // browser-like menu plus our "Inspect Element" at the bottom.
+    if (cfg.enable_developer_extras) {
+        const settings = webkit_web_view_get_settings(web_view);
+        webkit_settings_set_enable_developer_extras(settings, 1);
+        // user_data is unused by contextMenuCallback (it just uses the
+        // web_view parameter), so pass the web_view as a placeholder
+        // (gpointer is `*anyopaque`, not nullable, so we need a real
+        // pointer). The signal connection lives for the lifetime of
+        // the web_view — when the web_view is destroyed, the signal
+        // is disconnected automatically.
+        _ = g_signal_connect_data(
+            @ptrCast(web_view),
+            "context-menu",
+            @ptrCast(&contextMenuCallback),
+            @ptrCast(web_view),
+            null,
+            0,
+        );
+    }
+
     // Main loop
     const main_loop = g_main_loop_new(null, 0);
 
@@ -344,6 +396,50 @@ fn destroyCallback(widget: *GtkWidget, user_data: gpointer) callconv(.c) void {
     _ = widget;
     const handle: *NalarWebview = @ptrCast(@alignCast(user_data));
     g_main_loop_quit(handle.main_loop);
+}
+
+/// "context-menu" signal handler for the WebKit web view. Fires on
+/// right-click in the page (or via the keyboard). We append the
+/// stock "Inspect Element" item — WebKitGTK handles the rest
+/// internally (showing the inspector when activated). Returning
+/// 0 (FALSE) keeps WebKit's default items (copy / paste /
+/// select-all / etc.) so the user gets the full browser-like
+/// context menu with our item at the bottom.
+///
+/// C signature (from webkit2/webkit2.h):
+///   gboolean user_function(WebKitWebView *web_view,
+///                         WebKitContextMenu *context_menu,
+///                         GdkEvent *event,
+///                         gpointer user_data)
+///
+/// We declare the first arg as `*GtkWidget` (rather than the more specific
+/// `*WebKitWebView`) to match the rest of this file's style — at the C ABI
+/// level they're interchangeable (WebKitWebView is-a GtkWidget). Same
+/// trick the WebKitGTK source itself uses.
+fn contextMenuCallback(
+    web_view: *GtkWidget,
+    context_menu: *WebKitContextMenu,
+    event: *GdkEvent,
+    user_data: gpointer,
+) callconv(.c) gboolean {
+    _ = web_view;
+    _ = event;
+    _ = user_data;
+
+    // Create the stock "Inspect Element" item. The label is automatic
+    // (WebKit picks "Inspect Element" for this stock action) and the
+    // activation handler is built into WebKit — it calls
+    // webkit_web_inspector_show() on the web view's inspector when
+    // triggered. No custom GAction or signal handler needed.
+    const item = webkit_context_menu_item_new_from_stock_action(
+        WEBKIT_CONTEXT_MENU_ACTION_INSPECT_ELEMENT,
+    );
+    webkit_context_menu_append(context_menu, item);
+
+    // Return 0 (FALSE) to keep WebKit's default context menu items
+    // (copy / paste / select-all / etc.). Returning 1 (TRUE) would
+    // suppress them — we don't want that.
+    return 0;
 }
 
 /// URI scheme callback for the `app://` scheme. Fires on the GTK main

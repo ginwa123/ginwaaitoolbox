@@ -219,6 +219,7 @@ fn runWebview(
         .icon_path = null,
         .assets = c_assets.ptr,
         .asset_count = c_assets.len,
+        .enable_developer_extras = cfg.enable_devtools,
     };
 
     std.log.info("Opening webview at {s}", .{url});

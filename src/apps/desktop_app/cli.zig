@@ -41,6 +41,10 @@ pub const Config = struct {
     icon_path: ?[]const u8 = null,
     /// If true, the app runs in CI-friendly mode: open, wait briefly, exit.
     smoke_test: bool = false,
+    /// If true, enable the webview's DevTools (right-click → Inspect
+    /// Element → DevTools panel). Off by default; enable for dev
+    /// workflow.
+    enable_devtools: bool = false,
 
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
         if (self.nalar_path) |p| allocator.free(p);
@@ -89,6 +93,8 @@ const usage =
     \\  --user-agent UA          User-Agent string for the webview
     \\  --icon PATH              Path to window icon
     \\  --smoke-test             Open, wait 2s, exit (for CI)
+    \\  --devtools               Enable webview DevTools (right-click → Inspect
+    \\                            Element → DevTools panel). Off by default.
     \\  --help, -h               Show this help
     \\
 ;
@@ -140,6 +146,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Co
             cfg.icon_path = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--smoke-test")) {
             cfg.smoke_test = true;
+        } else if (std.mem.eql(u8, arg, "--devtools")) {
+            cfg.enable_devtools = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             // std.debug.print writes to stderr by default. Zig 0.16 removed
             // std.fs.File.stderr() in favor of std.Io.File.stderr() which

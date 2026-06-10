@@ -44,6 +44,10 @@ typedef struct {
     // without doing real network I/O.
     const nalar_webview_asset* assets;
     size_t                     asset_count;
+    // When true, the platform enables the webview's developer-extras
+    // (right-click → Inspect Element → DevTools). Off by default in
+    // production; enable with the nalar-desktop `--devtools` flag.
+    bool                       enable_developer_extras;
 } nalar_webview_config;
 
 /// Create a window, load the given URL, and prepare to run the event loop.

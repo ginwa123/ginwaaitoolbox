@@ -36,6 +36,10 @@ pub const Config = extern struct {
     icon_path: ?[*:0]const u8 = null,
     assets: [*]const CAsset = &.{},
     asset_count: usize = 0,
+    /// When true, the platform enables developer-extras (right-click →
+    /// Inspect Element → DevTools). Off by default; enable with the
+    /// nalar-desktop `--devtools` flag.
+    enable_developer_extras: bool = false,
 };
 
 // extern "c" declarations of the C ABI. The implementations live in
