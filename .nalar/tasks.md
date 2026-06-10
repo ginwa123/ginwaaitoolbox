@@ -1,3 +1,40 @@
+## [active] 20260610_170600 — fix scroll ratcheting (59% ↔ 57% oscillation) in ChatView
+
+Plan: `docs/plans/2026-06-10-scroll-ratcheting-fix.md`
+Branch: (not yet started — diagnostic + plan only this session)
+
+### Diagnosis
+- The user's log shows `scrollTop` and `scrollHeight` ratcheting in
+  lockstep (Δ ±1265 px ≈ 6.3 items at defaultItemHeight=200) while
+  `distanceFromBottom` stays constant at 17227 px.
+- Smoking gun: this is **CSS scroll-anchoring** (overflow-anchor: auto,
+  the browser default) reacting to topSpacer mutations from
+  `VirtualScroller.measureItems()` re-measuring buffer items.
+- The 2026-06-07 plan (`docs/plans/2026-06-07-virtual-scroller-fixed-height.md`)
+  is the structural fix but clips long bubbles. This new plan is a
+  surgical 2-line fix: hysteresis on `measureItems` (4 px dead-band) +
+  `overflow-anchor: none` on `.virtual-scroller`.
+
+### Tasks
+- [x] Task 1: Add `HYSTERESIS_PX = 4` constant + 2-line check change
+      in `VirtualScroller.vue` `measureItems()` ✅
+- [x] Task 2: Add `overflow-anchor: none;` to `.virtual-scroller` CSS ✅
+- [x] Task 3: `bun run build` clean (per project memory, NOT build-only) ✅
+      180s build, exit 0, no TS errors
+- [x] Task 3.5: `bunx vitest run` regression check ✅
+      163/163 tests pass across 20 files
+- [ ] Task 4: Manual test — open long chat, scroll to middle, observe
+      scrollLogger for 5s — should see zero `direction-change` lines
+      (deferred to user — runs in browser, not in this sandbox)
+- [ ] Task 5: Resize-window test — no bounce after resize settles
+      (deferred to user)
+- [ ] Task 6: Stream test — no bounce during long assistant response
+      (deferred to user)
+- [ ] Task 7: Optional — extract `measureItems` to pure function and
+      add `src/apps/desktop/src/__tests__/helpers/VirtualScroller.spec.ts`
+      (skipped — change is small and surgical; existing tests cover
+      the parent ChatView/VirtualScroller surface)
+
 ## [active] 20250606_175000 — workspace item task pagination (click-to-load)
 
 Plan: `docs/plans/2026-06-06-workspace-item-task-pagination.md`
