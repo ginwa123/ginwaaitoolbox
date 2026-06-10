@@ -2479,7 +2479,7 @@ pub fn listWorkspaceItemTasksWithCursor(
             .{ sort_col, cmp, sort_value, sort_col, sort_value, cmp, id_value },
         );
     };
-    defer if (cursor_clause.len > 0) allocator.free(cursor_clause);
+    defer allocator.free(cursor_clause);
 
     const sql = try std.fmt.allocPrint(
         allocator,
