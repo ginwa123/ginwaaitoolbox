@@ -134,6 +134,10 @@ const ConfigJson = struct {
     /// JSON — the handler must keep `parsed` alive until the response
     /// is serialized (handled via `defer parsed.deinit()` above).
     sub_agents: ?[]const LlmConfig.SubAgentJson = null,
+    /// Opt-in OS notification flag (see LlmConfigJson in Config.zig).
+    notify_on_complete: bool = false,
+    /// Compaction threshold in KB (see LlmConfigJson in Config.zig).
+    model_compaction_size_kb: usize = 100,
 };
 
 fn parseTemperatureOrAuto(value: json.Value) f64 {
