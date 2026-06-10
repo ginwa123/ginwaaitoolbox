@@ -173,6 +173,20 @@ pub fn build(b: *std.Build) void {
         },
         .macos => {
             // Chunk 6: Cocoa, WebKit (via .mm shim)
+            //
+            // The Objective-C++ shim at platform/macos/nalar_webview.mm
+            // implements the 3 C ABI functions (nalar_webview_create,
+            // _run, _destroy) using AppKit + WebKit. We compile it with
+            // the host's clang via `addCSourceFile` and `-ObjC++`, then
+            // link the Cocoa + WebKit frameworks. Note: `addCSourceFile`
+            // and `linkFramework` are both methods on `root_module` in
+            // Zig 0.16 (not on the Compile step like in older versions) —
+            // see the Linux branch above for the matching addCSourceFile
+            // pattern.
+            const mm_file = b.path("src/apps/desktop_app/platform/macos/nalar_webview.mm");
+            desktop_exe.root_module.addCSourceFile(.{ .file = mm_file, .flags = &.{"-ObjC++"} });
+            desktop_exe.root_module.linkFramework("Cocoa", .{});
+            desktop_exe.root_module.linkFramework("WebKit", .{});
         },
         .windows => {
             // Chunk 7: ole32, user32, WebView2Loader (via .cpp shim)
