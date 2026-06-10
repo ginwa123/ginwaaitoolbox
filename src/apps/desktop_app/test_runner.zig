@@ -15,5 +15,6 @@ test {
     _ = @import("path_resolve_test.zig");
     _ = @import("subprocess_test.zig");
     _ = @import("extraction_test.zig");
+    _ = @import("platform/linux_test.zig");
 }
 
