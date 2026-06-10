@@ -89,11 +89,20 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     if (input.value.model.len > 0) {
         config_json.model = try allocator.dupe(u8, input.value.model);
     }
+    if (input.value.url_style.len > 0) {
+        config_json.url_style = try allocator.dupe(u8, input.value.url_style);
+    }
     if (input.value.max_tokens) |mt| {
         config_json.max_tokens = mt;
     }
     if (input.value.system_prompt.len > 0) {
         config_json.system_prompt = try allocator.dupe(u8, input.value.system_prompt);
+    }
+    if (input.value.notify_on_complete) |n| {
+        config_json.notify_on_complete = n;
+    }
+    if (input.value.model_compaction_size_kb) |kb| {
+        config_json.model_compaction_size_kb = kb;
     }
 
     // Handle profiles - add, update, or delete
