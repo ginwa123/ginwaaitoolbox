@@ -53,6 +53,7 @@ export interface Task {
   description?: string
   completed?: boolean
   createdAt?: Date
+  updatedAt?: Date
 }
 
 // localStorage keys for state persistence
@@ -446,6 +447,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         description,
         completed: false,
         createdAt: new Date(),
+        updatedAt: new Date(),
       })
       return taskId
     }

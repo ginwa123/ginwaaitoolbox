@@ -33,6 +33,7 @@ const testing = std.testing;
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/tasks_list.zig";
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";
 const HTTP_RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
+const MIGRATION_PATH = "src/ai_workflow/tui/migration.zig";
 
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).
@@ -214,5 +215,159 @@ test "llm_history exposes listWorkspaceItemTasksWithCursor" {
             .{LLM_HISTORY_PATH},
         );
         return error.CursorFunctionMissing;
+    }
+}
+
+// ─── Contract 7: llm_history exposes the TaskSortField enum ──────────────
+
+test "llm_history exposes TaskSortField enum" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    const sig = "pub const TaskSortField = enum";
+    if (std.mem.indexOf(u8, source, sig) == null) {
+        std.debug.print(
+            "\n!! {s} does not define `TaskSortField` enum !!\n" ++
+                "   The tasks-list sort plumbing is missing the sort-field\n" ++
+                "   enum that maps `sort_by=...` query strings to SQL columns.\n" ++
+                "   Add the enum near SessionSortField (around line 44):\n" ++
+                "     pub const TaskSortField = enum {{ created_at, updated_at, name }};\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.TaskSortFieldMissing;
+    }
+}
+
+// ─── Contract 8: listWorkspaceItemTasksWithCursor is sort-aware ──────────
+
+test "listWorkspaceItemTasksWithCursor takes sort_field and sort_direction" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    // The function must take sort_field and sort_direction. Use a
+    // substring search for the parameter names since the exact
+    // signature will vary.
+    const has_sort_field = std.mem.indexOf(u8, source, "sort_field: TaskSortField") != null;
+    const has_sort_direction = std.mem.indexOf(u8, source, "sort_direction: TaskSortDirection") != null;
+    if (!has_sort_field or !has_sort_direction) {
+        std.debug.print(
+            "\n!! {s} does not thread sort_field/sort_direction into listWorkspaceItemTasksWithCursor !!\n" ++
+                "   The sort plumbing was added at the handler but not threaded\n" ++
+                "   into the DB function — the sort_by query param would be ignored.\n" ++
+                "   Update the signature:\n" ++
+                "     pub fn listWorkspaceItemTasksWithCursor(\n" ++
+                "         allocator: std.mem.Allocator,\n" ++
+                "         db: *sqlite.SqliteBackend,\n" ++
+                "         workspace_item_id: []const u8,\n" ++
+                "         limit: u32,\n" ++
+                "         cursor: ?[]const u8,\n" ++
+                "         sort_field: TaskSortField,\n" ++
+                "         sort_direction: TaskSortDirection,\n" ++
+                "     ) !struct {{ tasks: []WorkspaceItemTaskInfo, has_more: bool }} {{ ... }}\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.SortParamsMissing;
+    }
+}
+
+// ─── Contract 9: handler parses the sort_by query param ───────────────────
+
+test "tasks_list handler parses the sort_by query param" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "\"sort_by\"") == null and
+        std.mem.indexOf(u8, source, "'sort_by'") == null)
+    {
+        std.debug.print(
+            "\n!! {s} does not reference the `sort_by` query param !!\n" ++
+                "   The sort plumbing is missing at the handler level — the\n" ++
+                "   frontend cannot request a different sort order.\n" ++
+                "   Restore the sort_by parse:\n" ++
+                "     const sort_by_str = query.get(\"sort_by\") orelse \"updated_at\";\n" ++
+                "     const sort_field = llm_history.enumFromString(llm_history.TaskSortField, sort_by_str) catch .updated_at;\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SortByParamMissing;
+    }
+}
+
+// ─── Contract 10: handler parses the direction query param ────────────────
+
+test "tasks_list handler parses the direction query param" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "\"direction\"") == null and
+        std.mem.indexOf(u8, source, "'direction'") == null)
+    {
+        std.debug.print(
+            "\n!! {s} does not reference the `direction` query param !!\n" ++
+                "   The sort plumbing is missing the direction toggle — the\n" ++
+                "   user can never sort ascending.\n" ++
+                "   Restore the direction parse:\n" ++
+                "     const direction_str = query.get(\"direction\") orelse \"desc\";\n" ++
+                "     const sort_direction = llm_history.enumFromString(llm_history.TaskSortDirection, direction_str) catch .desc;\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.DirectionParamMissing;
+    }
+}
+
+// ─── Contract 11: handler passes sort_field and sort_direction to the DB fn
+
+test "tasks_list handler passes sort_field and sort_direction to the DB fn" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The handler's call to listWorkspaceItemTasksWithCursor must
+    // include sort_field and sort_direction args. We look for the
+    // substring "sort_field," and "sort_direction" in the handler.
+    if (std.mem.indexOf(u8, source, "sort_field,") == null or
+        std.mem.indexOf(u8, source, "sort_direction") == null)
+    {
+        std.debug.print(
+            "\n!! {s} does not pass sort_field/sort_direction to the DB fn !!\n" ++
+                "   The handler parses the sort params but doesn't forward\n" ++
+                "   them — the SQL still hardcodes the original ORDER BY.\n" ++
+                "   Update the call site:\n" ++
+                "     .listWorkspaceItemTasksWithCursor(allocator, sqlite_db, item_id, limit, cursor, sort_field, sort_direction) catch ...;\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SortParamsNotForwarded;
+    }
+}
+
+// ─── Contract 12: migration declares idx_workspace_item_tasks_item_updated ─
+
+test "migration declares idx_workspace_item_tasks_item_updated" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, MIGRATION_PATH);
+    defer allocator.free(source);
+
+    const idx = "idx_workspace_item_tasks_item_updated";
+    if (std.mem.indexOf(u8, source, idx) == null) {
+        std.debug.print(
+            "\n!! {s} does not declare `{s}` index !!\n" ++
+                "   The sort_by=updated_at hot path is unindexed — every page\n" ++
+                "   fetch will full-scan workspace_item_tasks. As task counts\n" ++
+                "   grow this becomes O(n) per page.\n" ++
+                "   Add a migration that creates the index:\n" ++
+                "     try db.exec(allocator, \"CREATE INDEX IF NOT EXISTS\n" ++
+                "       {s} ON workspace_item_tasks(workspace_item_id, updated_at DESC)\", ...);\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{ MIGRATION_PATH, idx, idx },
+        );
+        return error.UpdatedAtIndexMissing;
     }
 }
