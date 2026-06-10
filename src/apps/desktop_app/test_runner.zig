@@ -12,5 +12,6 @@
 test {
     _ = @import("port_test.zig");
     _ = @import("cli_test.zig");
+    _ = @import("path_resolve_test.zig");
 }
 
