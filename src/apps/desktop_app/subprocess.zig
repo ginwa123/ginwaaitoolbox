@@ -188,34 +188,54 @@ fn readMonotonicNs() u64 {
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
-/// Spawn nalar as a child process with `--port <port>`. The caller is
-/// responsible for calling `terminate()` on the returned handle before
-/// discarding it.
+/// Spawn nalar as a child process with `--port <port>` and, optionally,
+/// `--static-dir <path>` (so nalar serves the embedded webapp at `/`).
+/// The caller is responsible for calling `terminate()` on the returned
+/// handle before discarding it.
 ///
 /// `io` is the Io runtime handle (Zig 0.16's `std.process.spawn` takes
 /// `io: Io` as its first arg). `allocator` is used by the Child handle
 /// internally — pass the long-lived app allocator, NOT std.testing.allocator.
+///
+/// `static_dir`: if non-null, the child nalar is started with
+/// `--static-dir <path>` so it serves the directory's contents at HTTP
+/// `/`. nalar-desktop's spawn mode passes the path of the temp dir
+/// containing the extracted webapp assets; connect mode passes null
+/// (the user is responsible for running their own nalar with the right
+/// --static-dir).
 pub fn spawn(
     allocator: std.mem.Allocator,
     io: std.Io,
     nalar_path: []const u8,
     port: u16,
+    static_dir: ?[]const u8,
 ) !NalarProcess {
     _ = allocator; // argv is a small stack-allocated array
 
     // Build the argv slice. The port number is formatted into a small
     // stack buffer because argv requires a sentinel-free string slice.
+    // We use a fixed-size array (max 5 args) and slice it down to the
+    // actual count — avoids a heap allocation for the common case.
     var port_buf: [16]u8 = undefined;
     const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch unreachable;
 
-    const argv = [_][]const u8{ nalar_path, "--port", port_str };
+    var argv_buf: [5][]const u8 = .{
+        nalar_path, "--port", port_str, "--static-dir", undefined,
+    };
+    var argv_count: usize = 3;
+    if (static_dir) |sd| {
+        argv_buf[3] = "--static-dir";
+        argv_buf[4] = sd;
+        argv_count = 5;
+    }
+    const argv = argv_buf[0..argv_count];
 
     // stdin/stdout/stderr: for v1 we set them all to .ignore. The design
     // doc says we should capture stderr for diagnostics, but Chunk 2 is
     // a pure unit-test milestone and Chunk 8 will wire up capture if
     // the webview chunks find a need for it.
     const child = std.process.spawn(io, .{
-        .argv = &argv,
+        .argv = argv,
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,

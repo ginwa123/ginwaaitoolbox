@@ -141,13 +141,14 @@ pub fn main(init: std.process.Init) !void {
     };
     defer extraction.cleanup(allocator, webapp_dir);
 
-    // 5. Spawn nalar. argv is built inside subprocess.spawn; we pass
-    // --port <port>. The design doc says we should also pass --static-dir
-    // <webapp_dir>, but nalar's --static-dir isn't yet wired to be passed
-    // through spawn() — this is a known follow-up (the extraction still
-    // happens so the temp dir is reusable from a future nalar --static-dir
-    // patch).
-    var nalar = subprocess.spawn(allocator, io, nalar_path, listen_port) catch |err| {
+    // 5. Spawn nalar with `--port <port>` and `--static-dir <webapp_dir>`.
+    // The --static-dir arg tells nalar to serve the temp dir (which we
+    // populated with the embedded webapp assets in step 4) at HTTP `/`.
+    // Without this, nalar would return 404 for `/` and the webview would
+    // show the inspector with an empty page (the user just hit this
+    // when running the connect-mode demo against their dev nalar that
+    // wasn't started with --static-dir).
+    var nalar = subprocess.spawn(allocator, io, nalar_path, listen_port, webapp_dir) catch |err| {
         std.log.err("Failed to spawn nalar at {s}: {s}", .{ nalar_path, @errorName(err) });
         return err;
     };
