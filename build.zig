@@ -93,6 +93,27 @@ pub fn build(b: *std.Build) void {
     bun_build.setCwd(b.path(webapp_dir));
     build_webapp_step.dependOn(&bun_build.step);
 
+    // === Codegen: walk dist/, emit webapp_assets.zig ===
+    // Chunk 3: this step runs the small Zig tool at tools/codegen_webapp_assets.zig
+    // to walk src/apps/desktop/dist/ and emit a Zig source file with every
+    // asset's bytes embedded as string literals. The generated file lives at
+    // src/apps/desktop_app/embedded/webapp_assets.zig (gitignored) and is
+    // imported by extraction.zig. desktop_exe depends on this so a fresh
+    // build always has up-to-date assets.
+    const codegen_step = b.step("codegen:webapp-assets", "Generate webapp_assets.zig from the built dist/");
+    codegen_step.dependOn(build_webapp_step);
+
+    const codegen = b.addRunArtifact(b.addExecutable(.{
+        .name = "codegen_webapp_assets",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/codegen_webapp_assets.zig"),
+            .target = b.graph.host,
+        }),
+    }));
+    codegen.addArg(b.pathJoin(&.{ webapp_dir, "dist" }));
+    codegen.addArg(b.pathJoin(&.{ "src", "apps", "desktop_app", "embedded", "webapp_assets.zig" }));
+    codegen_step.dependOn(&codegen.step);
+
     // === nalar-desktop (native webview wrapper) ===
     // Chunk 1: hello-world binary + build wiring. The real entry point lands
     // in Chunk 8 (lifecycle wiring: parse CLI → spawn nalar → open webview).
@@ -127,6 +148,12 @@ pub fn build(b: *std.Build) void {
     }
 
     b.installArtifact(desktop_exe);
+
+    // Make the desktop binary depend on the codegen step. The codegen runs
+    // `bun run build` first (via build_webapp_step) and then walks dist/ to
+    // emit webapp_assets.zig, so by the time desktop_exe compiles the
+    // embedded/ directory is populated with the latest assets.
+    desktop_exe.step.dependOn(&codegen.step);
 
     // `zig build nalar-desktop` alias — depends on the install step (which
     // already includes desktop_exe via b.installArtifact above), so the
