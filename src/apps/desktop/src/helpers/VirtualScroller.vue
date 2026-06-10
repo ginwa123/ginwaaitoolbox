@@ -358,6 +358,36 @@ const visibleItems = computed(() => {
   return result
 })
 
+/**
+ * Live count of items currently rendered in the DOM (i.e. the
+ * length of `visibleItems`). Exposed so the parent can verify the
+ * buffer contract and log "rendered N items" diagnostics without
+ * opening dev-tools.
+ *
+ * Equals `end - start` from `visibleRange`, which is:
+ *   - In the middle of the list: `2 * buffer + visibleCount`
+ *   - At the top/bottom edges: clamped to whatever the list allows
+ *
+ * Recomputed automatically on every scroll, every measurement, and
+ * every `items` length change.
+ */
+const renderedCount = computed(() => {
+  const { start, end } = visibleRange.value
+  return Math.max(0, end - start)
+})
+
+/**
+ * The {start, end} range of items currently rendered. Exposed as
+ * a single object so the parent can read both fields in one
+ * reactive read (avoiding the start-vs-end skew that would happen
+ * if they were two separate computeds and a scroll fired between
+ * reads).
+ */
+const effectiveRange = computed(() => {
+  const { start, end } = visibleRange.value
+  return { start, end }
+})
+
 const scrollInfo = computed(() => ({
   scrollTop: scrollTop.value,
   visibleStart: visibleRange.value.start,
@@ -581,6 +611,8 @@ defineExpose({
   isPreservingScroll,
   isScrollable,
   effectiveLoadMoreThreshold,
+  renderedCount,
+  effectiveRange,
 })
 </script>
 

@@ -65,12 +65,21 @@ function mountScroller(props: {
   return wrapper
 }
 
+/**
+ * `defineExpose` auto-unwraps refs and computeds on the parent
+ * instance, so `scroller.renderedCount` is already a plain number
+ * (not a ref). This wrapper just types the access for the tests.
+ */
+function getRenderedCount(wrapper: ReturnType<typeof mountScroller>): number {
+  return (wrapper.vm as unknown as { renderedCount: number }).renderedCount
+}
+
 describe('VirtualScroller buffer prop', () => {
   it('exposes renderedCount matching exactly 2*buffer + visible (no hidden overscan)', async () => {
     // 100 items, 200px each, 800px viewport → 4 visible.
-    // buffer=20 → start=-20, end=24, count=44. If the hardcoded
-    // +200 overscan is still present, count is 45 (one extra
-    // item beyond the buffer).
+    // Scroll to the middle (scrollTop=10000 → startIndex=50) so the
+    // buffer is on BOTH sides. buffer=20 → start=30, end=74, count=44.
+    // If the hardcoded +200 overscan is still present, count is 45.
     const wrapper = mountScroller({
       items: makeItems(100),
       buffer: 20,
@@ -78,19 +87,19 @@ describe('VirtualScroller buffer prop', () => {
       clientHeight: 800,
     })
     await nextTick()
-    // Trigger one scroll to populate containerHeight.
-    ;(wrapper.element as HTMLElement).dispatchEvent(new Event('scroll'))
+    const el = wrapper.element as HTMLElement
+    el.scrollTop = 10000
+    el.dispatchEvent(new Event('scroll'))
     await nextTick()
 
-    const scroller = wrapper.vm as unknown as {
-      renderedCount: { value: number }
-    }
-    expect(scroller.renderedCount.value).toBe(44)
+    expect(getRenderedCount(wrapper)).toBe(44)
   })
 
   it('counts buffer items on BOTH sides of the visible viewport (per-side, not total)', async () => {
     // 100 items, 200px each, 800px viewport → 4 visible.
-    // buffer=5 → start=-5, end=9, count=14. (No 5-total surprise.)
+    // Scroll to the middle (scrollTop=10000 → startIndex=50) so the
+    // buffer is on BOTH sides. buffer=5 → start=45, end=59, count=14.
+    // (No 5-total surprise.)
     const wrapper = mountScroller({
       items: makeItems(100),
       buffer: 5,
@@ -98,13 +107,12 @@ describe('VirtualScroller buffer prop', () => {
       clientHeight: 800,
     })
     await nextTick()
-    ;(wrapper.element as HTMLElement).dispatchEvent(new Event('scroll'))
+    const el = wrapper.element as HTMLElement
+    el.scrollTop = 10000
+    el.dispatchEvent(new Event('scroll'))
     await nextTick()
 
-    const scroller = wrapper.vm as unknown as {
-      renderedCount: { value: number }
-    }
-    expect(scroller.renderedCount.value).toBe(14) // 2*5 + 4
+    expect(getRenderedCount(wrapper)).toBe(14) // 2*5 + 4
   })
 
   it('clamps the rendered count at the top edge of the list (no negative start)', async () => {
@@ -122,10 +130,7 @@ describe('VirtualScroller buffer prop', () => {
     el.dispatchEvent(new Event('scroll'))
     await nextTick()
 
-    const scroller = wrapper.vm as unknown as {
-      renderedCount: { value: number }
-    }
-    expect(scroller.renderedCount.value).toBe(24) // 4 visible + 20 below
+    expect(getRenderedCount(wrapper)).toBe(24) // 4 visible + 20 below
   })
 
   it('clamps the rendered count at the bottom edge of the list (no over-render past end)', async () => {
@@ -144,10 +149,7 @@ describe('VirtualScroller buffer prop', () => {
     el.dispatchEvent(new Event('scroll'))
     await nextTick()
 
-    const scroller = wrapper.vm as unknown as {
-      renderedCount: { value: number }
-    }
-    expect(scroller.renderedCount.value).toBe(24) // 20 above + 4 visible
+    expect(getRenderedCount(wrapper)).toBe(24) // 20 above + 4 visible
   })
 
   it('renders zero items past the visible viewport when buffer=0 (no hidden overscan)', async () => {
@@ -165,9 +167,6 @@ describe('VirtualScroller buffer prop', () => {
     ;(wrapper.element as HTMLElement).dispatchEvent(new Event('scroll'))
     await nextTick()
 
-    const scroller = wrapper.vm as unknown as {
-      renderedCount: { value: number }
-    }
-    expect(scroller.renderedCount.value).toBe(4) // exactly visible
+    expect(getRenderedCount(wrapper)).toBe(4) // exactly visible
   })
 })
