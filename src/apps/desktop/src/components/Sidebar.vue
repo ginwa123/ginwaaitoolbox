@@ -372,6 +372,15 @@ const handleSelectTask = (taskId: string) => {
   }
   router.replace({ path: '/app', query: { view: 'task', task: taskId } })
 }
+
+const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
+  // Click-to-load pagination: invoked by the "Load more" button in
+  // WorkspaceItem.vue. The store action is the only place that calls
+  // api.getTasks with a cursor — no auto-load / scroll listener /
+  // intersection observer. Mirrors the loadMoreChats pattern in
+  // ChatsList.vue:121-183.
+  workspacesStore.loadMoreTasks(workspaceId, itemId)
+}
 </script>
 
 <template>
@@ -462,6 +471,7 @@ const handleSelectTask = (taskId: string) => {
           @select-task="handleSelectTask"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
+          @load-more-tasks="handleLoadMoreTasks"
         />
         <!-- Collapsed workspaces -->
         <div v-else class="space-y-0.5">

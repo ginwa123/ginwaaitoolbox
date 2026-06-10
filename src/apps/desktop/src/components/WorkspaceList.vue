@@ -32,6 +32,7 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
+  loadMoreTasks: [workspaceId: string, itemId: string]
 }>()
 
 const sidebarStore = useSidebarStore()
@@ -143,6 +144,10 @@ const handleRenameTask = (
   currentName: string,
 ) => {
   emit('renameTask', workspaceId, itemId, taskId, currentName)
+}
+
+const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
+  emit('loadMoreTasks', workspaceId, itemId)
 }
 </script>
 
@@ -271,6 +276,7 @@ const handleRenameTask = (
             @select-task="handleSelectTask"
             @delete-task="handleDeleteTask"
             @rename-task="handleRenameTask"
+            @load-more-tasks="handleLoadMoreTasks"
           />
           <!-- Add Item Button -->
           <li class="group/workspace relative" data-workspace-menu>

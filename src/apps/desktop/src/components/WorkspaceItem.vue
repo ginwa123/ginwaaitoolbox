@@ -32,6 +32,14 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
+  // The user must click to fetch the next page of tasks for this
+  // item. WorkspaceList forwards the event to Sidebar, which calls
+  // workspacesStore.loadMoreTasks. See Design Note 6 in
+  // docs/plans/2026-06-10-workspace-item-task-pagination.md — the
+  // button lives here (not in WorkspaceItemTask.vue) because it is
+  // a sibling of the per-task list, not a property of any individual
+  // task.
+  loadMoreTasks: [workspaceId: string, itemId: string]
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -97,6 +105,17 @@ const handleRenameTask = (
   currentName: string,
 ) => {
   emit('renameTask', workspaceId, itemId, taskId, currentName)
+}
+
+const handleLoadMoreTasks = (event: Event) => {
+  // Stop the click from bubbling up to the parent <button> (which
+  // would toggle item expansion). The Load More button lives inside
+  // the task-list <div>, which sits next to the main item row, so
+  // bubbling isn't strictly necessary today — but it's
+  // belt-and-braces against a future refactor that moves this
+  // button.
+  event.stopPropagation()
+  emit('loadMoreTasks', props.workspaceId, props.item.id)
 }
 </script>
 
@@ -201,6 +220,27 @@ const handleRenameTask = (
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
         />
+        <!-- Load More: shown when the backend says there are more
+             tasks for this item. Hidden during the load to prevent
+             double-clicks. data-testid is used by
+             workspaceItemTaskLoadMore.spec.ts. Click-to-load only —
+             no scroll / intersection-observer / auto-fetch. -->
+        <button
+          v-if="item.hasMoreTasks"
+          data-testid="load-more-tasks"
+          :disabled="item.isLoadingMoreTasks"
+          @click="handleLoadMoreTasks"
+          class="w-full flex items-center justify-center gap-1.5 px-3 py-1 rounded text-xs transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
+          style="color: var(--semantic-text-dim);"
+        >
+          <span v-if="item.isLoadingMoreTasks" class="w-3 h-3">
+            <div
+              class="w-3 h-3 border-2 rounded-full animate-spin"
+              style="border-color: var(--color-aqua); border-top-color: transparent"
+            ></div>
+          </span>
+          <span>{{ item.isLoadingMoreTasks ? 'Loading…' : 'Load more' }}</span>
+        </button>
       </div>
     </div>
   </li>
