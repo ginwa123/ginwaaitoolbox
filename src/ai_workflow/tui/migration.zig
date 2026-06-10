@@ -651,6 +651,25 @@ pub const Migration041AddPerformanceIndexes = struct {
     }
 };
 
+pub const Migration042AddWorkspaceItemTasksUpdatedAtIndex = struct {
+    pub const version: u32 = 42;
+    pub const name = "add_workspace_item_tasks_updated_at_index";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Hot read path for the workspace-item tasks endpoint when
+        // sort_by=updated_at (the new default). Mirrors
+        // idx_workspace_item_tasks_item_created (Migration 041).
+        // Compound (workspace_item_id, updated_at DESC) matches the
+        // query's WHERE + ORDER BY so SQLite does a forward index scan.
+        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_item_tasks_item_updated ON workspace_item_tasks(workspace_item_id, updated_at DESC)", &[_][]const u8{});
+
+        // ANALYZE so the query planner sees the new index on existing
+        // databases (without this, the planner may still pick a full
+        // scan on pre-existing data).
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -744,6 +763,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration039AddToolCallIdToLlmHistory.version, .name = Migration039AddToolCallIdToLlmHistory.name, .up = Migration039AddToolCallIdToLlmHistory.up },
     .{ .version = Migration040AddSelectedProfileModelToSessions.version, .name = Migration040AddSelectedProfileModelToSessions.name, .up = Migration040AddSelectedProfileModelToSessions.up },
     .{ .version = Migration041AddPerformanceIndexes.version, .name = Migration041AddPerformanceIndexes.name, .up = Migration041AddPerformanceIndexes.up },
+    .{ .version = Migration042AddWorkspaceItemTasksUpdatedAtIndex.version, .name = Migration042AddWorkspaceItemTasksUpdatedAtIndex.name, .up = Migration042AddWorkspaceItemTasksUpdatedAtIndex.up },
 };
 
 /// Register all migrations with a MigrationManager

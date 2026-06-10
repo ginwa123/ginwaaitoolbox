@@ -33,6 +33,7 @@ const testing = std.testing;
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/tasks_list.zig";
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";
 const HTTP_RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
+const MIGRATION_PATH = "src/ai_workflow/tui/migration.zig";
 
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).
@@ -344,5 +345,29 @@ test "tasks_list handler passes sort_field and sort_direction to the DB fn" {
             .{HANDLER_PATH},
         );
         return error.SortParamsNotForwarded;
+    }
+}
+
+// ─── Contract 12: migration declares idx_workspace_item_tasks_item_updated ─
+
+test "migration declares idx_workspace_item_tasks_item_updated" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, MIGRATION_PATH);
+    defer allocator.free(source);
+
+    const idx = "idx_workspace_item_tasks_item_updated";
+    if (std.mem.indexOf(u8, source, idx) == null) {
+        std.debug.print(
+            "\n!! {s} does not declare `{s}` index !!\n" ++
+                "   The sort_by=updated_at hot path is unindexed — every page\n" ++
+                "   fetch will full-scan workspace_item_tasks. As task counts\n" ++
+                "   grow this becomes O(n) per page.\n" ++
+                "   Add a migration that creates the index:\n" ++
+                "     try db.exec(allocator, \"CREATE INDEX IF NOT EXISTS\n" ++
+                "       {s} ON workspace_item_tasks(workspace_item_id, updated_at DESC)\", ...);\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{ MIGRATION_PATH, idx, idx },
+        );
+        return error.UpdatedAtIndexMissing;
     }
 }
