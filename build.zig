@@ -57,6 +57,60 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("crypto", .{});
     exe.root_module.linkSystemLibrary("c", .{});
 
+    // === nalar-desktop (native webview wrapper) ===
+    // Chunk 1: hello-world binary + build wiring. The real entry point lands
+    // in Chunk 8 (lifecycle wiring: parse CLI → spawn nalar → open webview).
+    // Platform-specific deps (WebKitGTK, WKWebView, WebView2) are added in
+    // Chunks 5-7 when the webview implementations land.
+    const desktop_exe = b.addExecutable(.{
+        .name = "nalar-desktop",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/desktop_app/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "nalarcore", .module = mod },
+            },
+        }),
+    });
+    desktop_exe.root_module.linkSystemLibrary("c", .{});
+
+    // Platform-specific system libraries (Chunks 5-7 add the real deps).
+    // Switch kept here so the pattern is validated by the Chunk 1 build.
+    switch (target.result.os.tag) {
+        .linux => {
+            // Chunk 5: gtk-3, webkit2gtk-4.1, soup-3.0
+        },
+        .macos => {
+            // Chunk 6: Cocoa, WebKit (via .mm shim)
+        },
+        .windows => {
+            // Chunk 7: ole32, user32, WebView2Loader (via .cpp shim)
+        },
+        else => {},
+    }
+
+    b.installArtifact(desktop_exe);
+
+    // `zig build nalar-desktop` alias — depends on the install step (which
+    // already includes desktop_exe via b.installArtifact above), so the
+    // binary ends up in zig-out/bin/.
+    const build_nalar_desktop = b.step("nalar-desktop", "Build the nalar-desktop binary");
+    build_nalar_desktop.dependOn(b.getInstallStep());
+
+    const run_desktop = b.step("run:desktop-app", "Run the nalar desktop wrapper");
+    const run_desktop_cmd = b.addRunArtifact(desktop_exe);
+    run_desktop.dependOn(&run_desktop_cmd.step);
+    if (b.args) |args| run_desktop_cmd.addArgs(args);
+
+    const test_desktop = b.step("test:desktop-app", "Run nalar-desktop unit tests");
+    const desktop_tests = b.addTest(.{
+        .root_module = desktop_exe.root_module,
+    });
+    desktop_tests.root_module.linkSystemLibrary("c", .{});
+    const run_desktop_tests = b.addRunArtifact(desktop_tests);
+    test_desktop.dependOn(&run_desktop_tests.step);
+
     const run_step = b.step("run", "Run the app");
 
     const cli_step = b.step("run:cli", "Run the CLI");
