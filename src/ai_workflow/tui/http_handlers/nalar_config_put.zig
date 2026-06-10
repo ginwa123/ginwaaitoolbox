@@ -258,6 +258,7 @@ const ConfigInput = struct {
     api_endpoint: []const u8 = "",
     api_key: []const u8 = "",
     model: []const u8 = "",
+    url_style: []const u8 = "openai",
     temperature: f64 = 0.7,
     max_tokens: ?usize = null,
     system_prompt: []const u8 = "",
@@ -267,6 +268,15 @@ const ConfigInput = struct {
     /// When present, replaces the existing MCP servers entirely.
     /// When absent, existing MCP servers are preserved.
     mcp_servers: ?json.Value = null,
+    /// When true, fire an OS-level notification when an LLM response
+    /// finishes with `finish_reason == "stop"`. Absent = preserve
+    /// existing on-disk value. Mirrors the `LlmConfigJson` default
+    /// (`false`) so a brand-new config has notifications off.
+    notify_on_complete: ?bool = null,
+    /// Threshold (in KB) above which the session compactor is invoked
+    /// to shrink the LLM context. Absent = preserve existing on-disk
+    /// value. Mirrors the `LlmConfigJson` default (`100`).
+    model_compaction_size_kb: ?usize = null,
     /// Whole-list replace for the top-level `sub_agents` array.
     /// When present, replaces the existing sub-agents entirely.
     /// When absent, existing sub-agents are preserved. Borrowed slices
