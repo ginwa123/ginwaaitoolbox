@@ -167,6 +167,28 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         }
     }
 
+    // Handle top-level sub_agents: if the input provides a `sub_agents`
+    // array, replace the existing list wholesale (whole-list replace matches
+    // the UI's add/edit/delete workflow). Each entry is deep-copied so the
+    // parsed struct can safely go out of scope.
+    if (input.value.sub_agents) |sa_value| {
+        switch (sa_value) {
+            .array => |arr| {
+                var new_arr = json.Array.init(allocator);
+                errdefer new_arr.deinit();
+                for (arr.items) |item| {
+                    const copied = try deepCopyJsonValue(allocator, item);
+                    try new_arr.append(copied);
+                }
+                config_json.sub_agents = json.Value{ .array = new_arr };
+            },
+            else => {
+                // Non-array value: silently drop (e.g. user sent `null`).
+                config_json.sub_agents = null;
+            },
+        }
+    }
+
     // Write config
     const config_str = try std.json.Stringify.valueAlloc(allocator, config_json, .{
         .whitespace = .indent_tab,
@@ -243,6 +265,10 @@ const ConfigInput = struct {
     /// When present, replaces the existing MCP servers entirely.
     /// When absent, existing MCP servers are preserved.
     mcp_servers: ?json.Value = null,
+    /// Whole-list replace for the top-level `sub_agents` array (snake_case).
+    /// When present, replaces the existing sub-agents entirely.
+    /// When absent, existing sub-agents are preserved.
+    sub_agents: ?json.Value = null,
 };
 
 const ProfileChange = struct {
@@ -267,6 +293,8 @@ const ConfigJson = struct {
     active_profile: ?[]const u8 = null,
     /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
     mcp_servers: ?json.Value = null,
+    /// Top-level sub-agents array (snake_case, matches NALAR.md JSON convention).
+    sub_agents: ?json.Value = null,
 };
 
 /// Deep copy a json.Value to avoid use-after-free from parsed.deinit()
