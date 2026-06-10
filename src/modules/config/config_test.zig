@@ -456,3 +456,98 @@ test "sub_agents: top-level field is parsed into SubAgentsList" {
     try std.testing.expectEqualStrings("", sa.api_key);
     try std.testing.expectEqualStrings("", sa.system_prompt);
 }
+
+test "sub_agents: hasSubAgent / getSubAgent accessors" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "sub_agents": [
+        \\    { "name": "alpha", "model": "M1", "base_url": "https://a",
+        \\      "thinking": "on", "temperature": "0.5", "url_style": "openai",
+        \\      "api_key": "ak1", "system_prompt": "you are alpha" },
+        \\    { "name": "beta",  "model": "M2", "base_url": "https://b",
+        \\      "thinking": "off", "temperature": "auto", "url_style": "anthropic",
+        \\      "api_key": "ak2", "system_prompt": "" }
+        \\  ]
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(cfg.hasSubAgent("alpha"));
+    try std.testing.expect(cfg.hasSubAgent("beta"));
+    try std.testing.expect(!cfg.hasSubAgent("nope"));
+
+    const a = cfg.getSubAgent("alpha").?;
+    try std.testing.expectEqualStrings("M1", a.model);
+    try std.testing.expectEqualStrings("https://a", a.base_url);
+    try std.testing.expectEqualStrings("on", a.thinking);
+    try std.testing.expectEqualStrings("0.5", a.temperature);
+    try std.testing.expectEqualStrings("you are alpha", a.system_prompt);
+
+    try std.testing.expect(cfg.getSubAgent("nope") == null);
+}
+
+test "sub_agents: clone produces independent deep copy" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "sub_agents": [
+        \\    { "name": "alpha", "model": "M1", "base_url": "https://a",
+        \\      "thinking": "on", "temperature": "0.5", "url_style": "openai",
+        \\      "api_key": "ak1", "system_prompt": "sp" }
+        \\  ]
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    var cloned = try cfg.clone();
+    defer {
+        cfg.deinit();
+        cloned.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), cloned.sub_agents.len);
+    const orig = cfg.sub_agents[0];
+    const copy = cloned.sub_agents[0];
+    try std.testing.expect(orig.name.ptr != copy.name.ptr);
+    try std.testing.expect(orig.model.ptr != copy.model.ptr);
+    try std.testing.expectEqualStrings("alpha", copy.name);
+    try std.testing.expectEqualStrings("sp", copy.system_prompt);
+}
+
+test "sub_agents: per-profile sub_agents are parsed" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "profiles_models": {
+        \\    "profile1": {
+        \\      "model": "M-p1", "base_url": "https://p1",
+        \\      "thinking": "auto", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "kp1",
+        \\      "sub_agents": [
+        \\        { "name": "p1sa", "model": "M1", "base_url": "https://a",
+        \\          "thinking": "on", "temperature": "0.5", "url_style": "openai",
+        \\          "api_key": "ak1", "system_prompt": "sp1" }
+        \\      ]
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const p1 = cfg.getProfile("profile1").?;
+    try std.testing.expectEqual(@as(usize, 1), p1.sub_agents.len);
+    try std.testing.expectEqualStrings("p1sa", p1.sub_agents[0].name);
+    try std.testing.expectEqualStrings("M1", p1.sub_agents[0].model);
+    try std.testing.expectEqualStrings("sp1", p1.sub_agents[0].system_prompt);
+}

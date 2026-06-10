@@ -274,6 +274,7 @@ pub const LlmConfig = struct {
             allocator.free(entry.value_ptr.temperature);
             allocator.free(entry.value_ptr.api_key);
             allocator.free(entry.value_ptr.url_style);
+            freeSubAgentsList(entry.value_ptr.sub_agents, allocator);
         }
         map.deinit();
     }
@@ -616,7 +617,16 @@ pub const LlmConfig = struct {
             });
         }
 
-        // Clone all profiles
+        // Clone all profiles.
+        //
+        // NOTE: per-profile `sub_agents` is NOT preserved in the clone — we
+        // pass `null` to `addProfile` here, accepting this limitation. The
+        // top-level `sub_agents` is fully cloned (see below). Preserving
+        // per-profile sub_agents through clone would require retaining the
+        // original `std.json.Value` of the per-profile array (or another
+        // round-trip serialization), which is out of scope for this change.
+        // See `sub_agents: per-profile sub_agents are parsed` test for the
+        // parse side, which works correctly.
         var it = self.profiles_models.iterator();
         while (it.next()) |entry| {
             try addProfile(
@@ -629,10 +639,40 @@ pub const LlmConfig = struct {
                     .temperature = entry.value_ptr.temperature,
                     .api_key = entry.value_ptr.api_key,
                     .url_style = entry.value_ptr.url_style,
+                    .sub_agents = null,
                 },
                 self.allocator,
             );
         }
+
+        // Deep-copy top-level sub_agents into a freshly allocated slice.
+        var sub_agents_list = std.ArrayList(SubAgentConfig).empty;
+        errdefer {
+            for (sub_agents_list.items) |sa| {
+                self.allocator.free(sa.name);
+                self.allocator.free(sa.model);
+                self.allocator.free(sa.base_url);
+                self.allocator.free(sa.thinking);
+                self.allocator.free(sa.temperature);
+                self.allocator.free(sa.url_style);
+                self.allocator.free(sa.api_key);
+                self.allocator.free(sa.system_prompt);
+            }
+            sub_agents_list.deinit(self.allocator);
+        }
+        for (self.sub_agents) |sa| {
+            try sub_agents_list.append(self.allocator, .{
+                .name = try self.allocator.dupe(u8, sa.name),
+                .model = try self.allocator.dupe(u8, sa.model),
+                .base_url = try self.allocator.dupe(u8, sa.base_url),
+                .thinking = try self.allocator.dupe(u8, sa.thinking),
+                .temperature = try self.allocator.dupe(u8, sa.temperature),
+                .url_style = try self.allocator.dupe(u8, sa.url_style),
+                .api_key = try self.allocator.dupe(u8, sa.api_key),
+                .system_prompt = try self.allocator.dupe(u8, sa.system_prompt),
+            });
+        }
+        config.sub_agents = try sub_agents_list.toOwnedSlice(self.allocator);
 
         return config;
     }
@@ -704,6 +744,26 @@ pub const LlmConfig = struct {
             return entry.value_ptr.model.len > 0;
         }
         return false;
+    }
+
+    /// Look up a top-level sub-agent by name. Returns null when not configured.
+    /// The returned `SubAgentConfig` borrows from `self` — its lifetime is
+    /// tied to this `LlmConfig` (do not outlive the config).
+    pub fn getSubAgent(self: *const LlmConfig, name: []const u8) ?SubAgentConfig {
+        for (self.sub_agents) |sa| {
+            if (std.mem.eql(u8, sa.name, name)) return sa;
+        }
+        return null;
+    }
+
+    /// Returns true if a top-level sub-agent with the given name is configured.
+    pub fn hasSubAgent(self: *const LlmConfig, name: []const u8) bool {
+        return self.getSubAgent(name) != null;
+    }
+
+    /// Returns the number of top-level sub-agents.
+    pub fn subAgentCount(self: *const LlmConfig) u32 {
+        return @intCast(self.sub_agents.len);
     }
 };
 
