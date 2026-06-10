@@ -109,6 +109,8 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .active_profile = cfg.active_profile,
             .mcp_servers = cfg.mcp_servers,
             .sub_agents = sub_agents_response,
+            .notify_on_complete = cfg.notify_on_complete,
+            .model_compaction_size_kb = cfg.model_compaction_size_kb,
         }),
     });
 }
