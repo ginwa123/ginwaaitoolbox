@@ -4,6 +4,7 @@ const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
+const LlmConfig = config.LlmConfig;
 
 /// GET /api/config/nalar - Get nalar.json configuration
 pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
@@ -66,8 +67,32 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON in config" }),
         });
     };
+    defer parsed.deinit();
 
     const cfg = parsed.value;
+
+    // Build the typed sub_agents response from the typed parse target.
+    // Borrowed slices from `cfg.sub_agents` (the parsed JSON) are safe
+    // because `parsed.deinit()` hasn't fired yet at this point.
+    const sub_agents_response: ?[]const http_response.SubAgentResponse = if (cfg.sub_agents) |sas| blk: {
+        var out = try allocator.alloc(http_response.SubAgentResponse, sas.len);
+        errdefer allocator.free(out);
+        for (sas, 0..) |sa, i| {
+            out[i] = .{
+                .name = sa.name,
+                .model = sa.model,
+                .base_url = sa.base_url,
+                .thinking = sa.thinking,
+                .temperature = sa.temperature,
+                .url_style = sa.url_style,
+                .api_key = sa.api_key,
+                .system_prompt = sa.system_prompt,
+            };
+        }
+        break :blk out;
+    } else null;
+    defer if (sub_agents_response) |sa| allocator.free(sa);
+
     return res.jsonResponse(.{
         .status_code = 200,
         .data = try http_response.makeNalarConfigResponse(allocator, .{
@@ -81,7 +106,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .profiles = cfg.profiles_models,
             .active_profile = cfg.active_profile,
             .mcp_servers = cfg.mcp_servers,
-            .sub_agents = cfg.sub_agents,
+            .sub_agents = sub_agents_response,
         }),
     });
 }
@@ -100,9 +125,13 @@ const ConfigJson = struct {
     mcp_servers: ?json.Value = null,
     profiles_models: ?json.Value = null,
     active_profile: ?[]const u8 = null,
-    /// Top-level sub-agents array (snake_case, matches NALAR.md JSON convention).
-    /// Each entry is a full sub-agent object (name, model, system_prompt, etc.).
-    sub_agents: ?json.Value = null,
+    /// Top-level sub-agents array (snake_case, matches NALAR.md JSON
+    /// convention). Parsed into the typed `LlmConfig.SubAgentJson` shape
+    /// so the response can mirror the same field set without falling
+    /// back to a generic JSON tree. Borrowed slices from the parsed
+    /// JSON — the handler must keep `parsed` alive until the response
+    /// is serialized (handled via `defer parsed.deinit()` above).
+    sub_agents: ?[]const LlmConfig.SubAgentJson = null,
 };
 
 fn parseTemperatureOrAuto(value: json.Value) f64 {

@@ -148,9 +148,26 @@ pub const NalarConfigResponse = struct {
     /// Map of MCP server name to its raw JSON config (`{"url": "...", "headers": {...}}`).
     /// Sent as-is so the frontend gets full fidelity (header values, etc.).
     mcp_servers: ?std.json.Value = null,
-    /// Top-level sub-agents array. Sent as-is so the frontend gets full
-    /// fidelity of every field (system_prompt, api_key, etc.).
-    sub_agents: ?std.json.Value = null,
+    /// Top-level sub-agents. Each entry carries the full LLM
+    /// configuration (model, base_url, thinking, temperature, url_style,
+    /// api_key) plus a `system_prompt`. Borrowed slices — the caller
+    /// must keep the source alive until the response is serialized.
+    sub_agents: ?[]const SubAgentResponse = null,
+};
+
+/// Wire format for a single sub-agent entry. Mirrors
+/// `LlmConfig.SubAgentJson` field-for-field; lives here as a separate
+/// type so the response boundary doesn't need to import the internal
+/// `LlmConfig` module just to serialize a list of sub-agents.
+pub const SubAgentResponse = struct {
+    name: []const u8,
+    model: []const u8,
+    base_url: []const u8,
+    thinking: []const u8,
+    temperature: []const u8,
+    url_style: []const u8,
+    api_key: []const u8,
+    system_prompt: []const u8,
 };
 
 pub fn makeNalarConfigResponse(allocator: std.mem.Allocator, response: NalarConfigResponse) ![]u8 {
@@ -278,8 +295,10 @@ pub const LlmProfileResponse = struct {
     thinking: []const u8,
     temperature: []const u8,
     api_key: []const u8,
-    /// Per-profile sub-agents. Sent as-is for full fidelity.
-    sub_agents: ?std.json.Value = null,
+    /// Per-profile sub-agents. Borrowed slices from the source profile;
+    /// the caller must keep the source alive until the response is
+    /// serialized.
+    sub_agents: ?[]const SubAgentResponse = null,
 };
 
 pub const ProfilesListResponse = struct {

@@ -77,7 +77,11 @@ pub const LlmConfig = struct {
         temperature: []const u8 = "auto",
         api_key: []const u8 = "",
         url_style: []const u8 = "openai",
-        sub_agents: ?std.json.Value = null,
+        /// Per-profile sub-agents (typed — defaults to absent). Each entry
+        /// is parsed via the existing `SubAgentJson` struct, so unknown
+        /// fields are silently ignored and missing fields fall back to
+        /// the documented defaults.
+        sub_agents: ?[]SubAgentJson = null,
     };
 
     const LlmConfigJson = struct {
@@ -100,8 +104,11 @@ pub const LlmConfig = struct {
     };
 
     /// JSON-side parse struct for a single sub-agent entry. Mirrors
-    /// `SubAgentConfig` exactly. Defaults match the documented sane values.
-    const SubAgentJson = struct {
+    /// `SubAgentConfig` exactly (borrowed slices from the parsed JSON
+    /// blob, vs `SubAgentConfig`'s owned allocator slices). Public so
+    /// HTTP handlers can use the same shape for their wire-side parse
+    /// targets (`ConfigInput`, `ConfigJson`, etc.).
+    pub const SubAgentJson = struct {
         name: []const u8 = "",
         model: []const u8 = "",
         base_url: []const u8 = "",
@@ -304,7 +311,7 @@ pub const LlmConfig = struct {
         const api_key = try alloc.dupe(u8, profile.api_key);
         errdefer alloc.free(api_key);
 
-        const profile_sub_agents = try parseSubAgentsList(alloc, profile.sub_agents);
+        const profile_sub_agents = try parseSubAgentsJson(alloc, profile.sub_agents);
         errdefer freeSubAgentsList(profile_sub_agents, alloc);
 
         try m.put(key, LlmProfile{
@@ -332,6 +339,67 @@ pub const LlmConfig = struct {
             allocator.free(sa.system_prompt);
         }
         if (slice.len > 0) allocator.free(slice);
+    }
+
+    /// Parse a `SubAgentsList` from an already-typed `[]SubAgentJson`
+    /// (the parse target for `ProfileJson.sub_agents`). Each entry is
+    /// required to have a non-empty string `name`; entries with an
+    /// empty `name` are skipped with a warning. Returns an empty slice
+    /// when `items` is null.
+    fn parseSubAgentsJson(allocator: std.mem.Allocator, items: ?[]const SubAgentJson) !SubAgentsList {
+        const unwrapped = items orelse return &.{};
+
+        var list = std.ArrayList(SubAgentConfig).empty;
+        errdefer {
+            for (list.items) |sa| {
+                allocator.free(sa.name);
+                allocator.free(sa.model);
+                allocator.free(sa.base_url);
+                allocator.free(sa.thinking);
+                allocator.free(sa.temperature);
+                allocator.free(sa.url_style);
+                allocator.free(sa.api_key);
+                allocator.free(sa.system_prompt);
+            }
+            list.deinit(allocator);
+        }
+
+        for (unwrapped) |j| {
+            if (j.name.len == 0) {
+                std.log.warn("sub_agents entry has empty 'name'; skipping", .{});
+                continue;
+            }
+
+            const name = try allocator.dupe(u8, j.name);
+            errdefer allocator.free(name);
+            const model = try allocator.dupe(u8, j.model);
+            errdefer allocator.free(model);
+            const base_url = try allocator.dupe(u8, j.base_url);
+            errdefer allocator.free(base_url);
+            const thinking = try allocator.dupe(u8, j.thinking);
+            errdefer allocator.free(thinking);
+            const temperature = try allocator.dupe(u8, j.temperature);
+            errdefer allocator.free(temperature);
+            const url_style = try allocator.dupe(u8, j.url_style);
+            errdefer allocator.free(url_style);
+            const api_key = try allocator.dupe(u8, j.api_key);
+            errdefer allocator.free(api_key);
+            const system_prompt = try allocator.dupe(u8, j.system_prompt);
+            errdefer allocator.free(system_prompt);
+
+            try list.append(allocator, .{
+                .name = name,
+                .model = model,
+                .base_url = base_url,
+                .thinking = thinking,
+                .temperature = temperature,
+                .url_style = url_style,
+                .api_key = api_key,
+                .system_prompt = system_prompt,
+            });
+        }
+
+        return list.toOwnedSlice(allocator);
     }
 
     /// Parse a `SubAgentsList` from a raw JSON array value. Each entry is

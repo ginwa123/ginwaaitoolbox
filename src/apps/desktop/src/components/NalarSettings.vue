@@ -173,17 +173,17 @@ onMounted(async () => {
       if (data.profiles) {
         const profilesList: Profile[] = []
         for (const [name, profile] of Object.entries(data.profiles)) {
-          const perProfileSubAgents = Array.isArray((profile as any).sub_agents)
-            ? ((profile as any).sub_agents as any[]).map(parseSubAgent)
+          const perProfileSubAgents = Array.isArray(profile.sub_agents)
+            ? profile.sub_agents.map(parseSubAgent)
             : []
           profilesList.push({
             name,
-            model: parseJsonValue((profile as any).model),
-            base_url: parseJsonValue((profile as any).base_url),
-            thinking: parseJsonValue((profile as any).thinking),
-            temperature: parseJsonValue((profile as any).temperature),
-            url_style: parseJsonValue((profile as any).url_style) || 'openai',
-            api_key: parseJsonValue((profile as any).api_key),
+            model: parseJsonValue(profile.model),
+            base_url: parseJsonValue(profile.base_url),
+            thinking: parseJsonValue(profile.thinking),
+            temperature: parseJsonValue(profile.temperature),
+            url_style: parseJsonValue(profile.url_style) || 'openai',
+            api_key: parseJsonValue(profile.api_key),
             sub_agents: perProfileSubAgents
           })
         }
@@ -193,11 +193,11 @@ onMounted(async () => {
       activeProfile.value = data.active_profile || null
 
       // Load MCP servers
-      mcpServers.value = parseMcpServers(data.mcp_servers as any)
+      mcpServers.value = parseMcpServers(data.mcp_servers)
 
       // Load top-level sub-agents
       if (Array.isArray(data.sub_agents)) {
-        subAgents.value = (data.sub_agents as any[]).map(parseSubAgent)
+        subAgents.value = data.sub_agents.map(parseSubAgent)
       }
     }
   } catch {
