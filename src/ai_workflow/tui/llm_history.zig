@@ -2464,7 +2464,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         const pipe_idx = std.mem.indexOfScalar(u8, c, '|') orelse
             return error.MalformedCursor;
         const sort_value = c[0..pipe_idx];
-        const id_value = c[pipe_idx + 1..];
+        const id_value = c[pipe_idx + 1 ..];
 
         // For DESC: row should come AFTER the cursor pair in sort order,
         // which means sort_value < cursor.sort_value, OR sort_value
@@ -2567,7 +2567,12 @@ pub fn freeSessionsForBroadcast(allocator: std.mem.Allocator, sessions: []Sessio
     allocator.free(sessions);
 }
 
-pub fn updateSessionUpdatedAt(parent_allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !void {
+pub fn updateSessionUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !void {
     const sql = "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?";
-    try db.exec(parent_allocator, sql, &.{session_id});
+    try db.exec(allocator, sql, &.{session_id});
+}
+
+pub fn updateWorkspaceUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !void {
+    const sql = "UPDATE workspace_item_tasks SET updated_at = datetime('now') WHERE id = ?";
+    try db.exec(allocator, sql, &.{session_id});
 }
