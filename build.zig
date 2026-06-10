@@ -137,6 +137,39 @@ pub fn build(b: *std.Build) void {
     switch (target.result.os.tag) {
         .linux => {
             // Chunk 5: gtk-3, webkit2gtk-4.1, soup-3.0
+            //
+            // The implementation in src/apps/desktop_app/platform/linux.zig
+            // uses manual `extern "c"` declarations (no @cImport) because
+            // @cImport's parser chokes on GLib's `_Pragma` constructs inside
+            // `G_GNUC_BEGIN_IGNORE_DEPRECATIONS` (used by `G_DECLARE_FINAL_TYPE`
+            // throughout soup/webkit headers). The C shim
+            // platform/webview_linux.c is compiled with cc and pulls in the
+            // GTK/WebKit headers — cc handles _Pragma correctly. The Zig
+            // extern declarations trust the signatures and link against
+            // libwebkit2gtk-4.1 / libgtk-3 / libsoup-3.0 / libglib-2.0.
+            desktop_exe.root_module.linkSystemLibrary("webkit2gtk-4.1", .{});
+            desktop_exe.root_module.linkSystemLibrary("gtk-3", .{});
+            desktop_exe.root_module.linkSystemLibrary("soup-3.0", .{});
+            desktop_exe.root_module.linkSystemLibrary("glib-2.0", .{});
+            desktop_exe.root_module.linkSystemLibrary("javascriptcoregtk-4.1", .{});
+            // C source file — compiled with cc, which handles the GTK/
+            // WebKit headers (including _Pragma) correctly. The method
+            // lives on *Build.Module in Zig 0.16 (not on *Build.Step.Compile
+            // like in older versions).
+            desktop_exe.root_module.addCSourceFile(.{
+                .file = b.path("src/apps/desktop_app/platform/webview_linux.c"),
+                .flags = &.{
+                    "-I/usr/include/webkitgtk-4.1",
+                    "-I/usr/include/gtk-3.0",
+                    "-I/usr/include/pango-1.0",
+                    "-I/usr/include/cairo",
+                    "-I/usr/include/gdk-pixbuf-2.0",
+                    "-I/usr/include/atk-1.0",
+                    "-I/usr/include/libsoup-3.0",
+                    "-I/usr/include/glib-2.0",
+                    "-I/usr/lib/glib-2.0/include",
+                },
+            });
         },
         .macos => {
             // Chunk 6: Cocoa, WebKit (via .mm shim)
