@@ -20,6 +20,7 @@ test "parseArgs: defaults" {
     defer cfg.deinit(allocator);
     try testing.expectEqual(@as(u16, 0), cfg.port); // 0 = auto-pick
     try testing.expect(cfg.nalar_path == null);
+    try testing.expect(cfg.nalar_url == null);
     try testing.expectEqual(@as(u32, 1280), cfg.window_width);
     try testing.expectEqual(@as(u32, 800), cfg.window_height);
     try testing.expectEqualStrings("Nalar", cfg.title);
@@ -41,6 +42,24 @@ test "parseArgs: --nalar-path" {
     defer cfg.deinit(allocator);
     try testing.expect(cfg.nalar_path != null);
     try testing.expectEqualStrings("/tmp/nalar", cfg.nalar_path.?);
+}
+
+test "parseArgs: --nalar-url switches to connect mode" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{
+        "nalar-desktop",
+        "--nalar-url",
+        "http://127.0.0.1:8081",
+    };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.nalar_url != null);
+    try testing.expectEqualStrings("http://127.0.0.1:8081", cfg.nalar_url.?);
+    // --port and --nalar-path are ignored in connect mode but still parseable.
+    // We just verify they default to null/0 here (the caller is responsible
+    // for honoring cfg.nalar_url and ignoring the other fields).
+    try testing.expectEqual(@as(u16, 0), cfg.port);
+    try testing.expect(cfg.nalar_path == null);
 }
 
 test "parseArgs: --window-size 1024x768" {

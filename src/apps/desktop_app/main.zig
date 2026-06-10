@@ -1,20 +1,34 @@
 // src/apps/desktop_app/main.zig
 //
-// Chunk 8: the real lifecycle. Wires CLI parsing → nalar resolution →
-// port allocation → asset extraction → nalar spawn → healthcheck →
-// webview run → cleanup.
+// Chunk 8 (with --nalar-url extension): the real lifecycle. Wires CLI
+// parsing → mode branch → (spawn-mode: resolve → port → extract → spawn
+// → healthcheck → webview) OR (connect-mode: just webview) → cleanup.
 //
-// On startup we:
-//   1. Parse CLI flags (--port, --nalar-path, --window-size, --title, etc.)
-//   2. Locate the nalar binary (--nalar-path → next-to-self → $PATH)
-//   3. Allocate a free TCP port (or honour --port NNNN)
-//   4. Extract the comptime-embedded webapp assets to a per-pid temp dir
-//   5. Spawn `nalar --port <port> --static-dir <webapp-dir>` as a child
-//   6. Poll GET /api/health until 200 (max 10s)
-//   7. Open a native webview window pointed at http://127.0.0.1:<port>/
-//   8. Run the platform event loop (blocks until the window closes)
-//   9. On window close: SIGTERM nalar, wait up to 2s, SIGKILL if still
-//      alive, then exit 0.
+// Two startup modes:
+//
+//   Spawn mode (default):
+//     1. Parse CLI flags (--port, --nalar-path, --window-size, --title, etc.)
+//     2. Locate the nalar binary (--nalar-path → next-to-self → $PATH)
+//     3. Allocate a free TCP port (or honour --port NNNN)
+//     4. Extract the comptime-embedded webapp assets to a per-pid temp dir
+//     5. Spawn `nalar --port <port>` as a child process
+//     6. Poll GET /api/health until 200 (max 10s)
+//     7. Open a native webview window pointed at http://127.0.0.1:<port>/
+//     8. Run the platform event loop (blocks until the window closes)
+//     9. On window close: SIGTERM nalar, wait up to 2s, SIGKILL if still
+//        alive, then exit 0.
+//
+//   Connect mode (--nalar-url URL):
+//     1. Parse CLI flags
+//     2. Open the webview directly at the given URL
+//     3. Run the platform event loop
+//     4. On window close, exit 0. (No child nalar to clean up — the
+//        external nalar that the user started keeps running.)
+//
+// The dev workflow that motivated connect mode: you already have nalar
+// running on :8081 (your TUI/dev nalar), and you want a window wrapper.
+// `--nalar-url http://127.0.0.1:8081` does that without spawning a
+// second nalar on :8080.
 
 const std = @import("std");
 const cli = @import("cli.zig");
@@ -69,6 +83,18 @@ pub fn main(init: std.process.Init) !void {
         },
     };
     defer cfg.deinit(allocator);
+
+    // 1b. Connect mode (--nalar-url): skip the entire spawn path. The
+    // user has their own nalar running and we just point the webview at
+    // it. --port and --nalar-path are ignored. Asset extraction is also
+    // skipped (the external nalar is responsible for serving the webapp).
+    if (cfg.nalar_url) |url| {
+        std.log.info("Connect mode: connecting to {s} (no spawn)", .{url});
+        try runWebview(allocator, cfg, url, &.{});
+        return;
+    }
+
+    // SPAWN MODE (default) — old flow.
 
     // 2. Find the nalar binary. Resolution order: --nalar-path → next to
     // self → $PATH. path_resolve.resolve returns null if nothing was found.
@@ -137,18 +163,9 @@ pub fn main(init: std.process.Init) !void {
     };
     std.log.info("nalar is ready.", .{});
 
-    // 7. Build the webview C ABI config. The webview's asset table is the
-    // comptime-generated array, but the C ABI wants pointer/length tuples
-    // (no slices), so we build a parallel `c_assets` array on the stack
-    // with the same length.
-    const title_z = try allocator.dupeZ(u8, cfg.title);
-    defer allocator.free(title_z);
-    // Use `?[:0]u8` (mutable) so we can free in defer. Cast to
-    // `?[*:0]const u8` for the webview Config field via ua_z_const.
-    const ua_z: ?[:0]u8 = if (cfg.user_agent) |ua| try allocator.dupeZ(u8, ua) else null;
-    const ua_z_const: ?[*:0]const u8 = if (ua_z) |ua| ua.ptr else null;
-    defer if (ua_z) |ua| allocator.free(ua);
-
+    // 7. Build the C ABI asset table. The comptime-generated array uses
+    // string slices, but the C ABI wants pointer/length tuples, so we
+    // build a parallel `c_assets` array on the stack with the same length.
     var c_assets: [webapp_assets.assets.len]webview.CAsset = undefined;
     for (webapp_assets.assets, 0..) |asset, i| {
         c_assets[i] = .{
@@ -158,6 +175,36 @@ pub fn main(init: std.process.Init) !void {
             .mime = @ptrCast(asset.mime.ptr),
         };
     }
+
+    // 8. Open the webview at the spawned nalar's URL.
+    const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/", .{listen_port});
+    defer allocator.free(url);
+    try runWebview(allocator, cfg, url, &c_assets);
+}
+
+/// Build the webview Config from the CLI settings + asset table, then run
+/// the platform event loop (blocks until the window closes). Used by both
+/// spawn mode (with the embedded webapp assets) and connect mode (with
+/// an empty asset table — the external nalar serves the webapp).
+///
+/// On error, logs the platform error and returns it. The caller is
+/// responsible for any `defer` cleanups (asset extraction, nalar child,
+/// etc.) — this helper does its own `defer` for the heap strings it
+/// allocates for the C ABI.
+fn runWebview(
+    allocator: std.mem.Allocator,
+    cfg: cli.Config,
+    url: []const u8,
+    c_assets: []const webview.CAsset,
+) !void {
+    // Null-terminate the strings the C ABI expects.
+    const title_z = try allocator.dupeZ(u8, cfg.title);
+    defer allocator.free(title_z);
+    // Use `?[:0]u8` (mutable) so we can free in defer. Cast to
+    // `?[*:0]const u8` for the webview Config field via ua_z_const.
+    const ua_z: ?[:0]u8 = if (cfg.user_agent) |ua| try allocator.dupeZ(u8, ua) else null;
+    const ua_z_const: ?[*:0]const u8 = if (ua_z) |ua| ua.ptr else null;
+    defer if (ua_z) |ua| allocator.free(ua);
 
     const webview_cfg: webview.Config = .{
         .title = title_z.ptr,
@@ -170,13 +217,10 @@ pub fn main(init: std.process.Init) !void {
         .minimizable = true,
         .user_agent = ua_z_const,
         .icon_path = null,
-        .assets = &c_assets,
+        .assets = c_assets.ptr,
         .asset_count = c_assets.len,
     };
 
-    // 8. Run the webview. This blocks until the window is closed.
-    const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/", .{listen_port});
-    defer allocator.free(url);
     std.log.info("Opening webview at {s}", .{url});
     webview.run(allocator, webview_cfg, url) catch |err| {
         std.log.err("Webview error: {s}", .{@errorName(err)});

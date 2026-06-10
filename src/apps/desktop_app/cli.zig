@@ -1,7 +1,8 @@
 // src/apps/desktop_app/cli.zig
 //
 // Command-line parser for nalar-desktop. Parses --port, --nalar-path,
-// --window-size, --title, --user-agent, --icon, --smoke-test, --help / -h.
+// --nalar-url, --window-size, --title, --user-agent, --icon,
+// --smoke-test, --help / -h.
 // Returns a Config struct with all the parameters. The caller is responsible
 // for calling `cfg.deinit(allocator)` to free heap-allocated strings.
 //
@@ -14,9 +15,18 @@ const std = @import("std");
 
 pub const Config = struct {
     /// Port to bind nalar on. 0 = auto-pick a free port.
+    /// Ignored when `nalar_url` is set (connect mode).
     port: u16 = 0,
     /// Optional explicit path to the nalar binary.
+    /// Ignored when `nalar_url` is set (connect mode).
     nalar_path: ?[]const u8 = null,
+    /// If set, skip the spawn/healthcheck/asset-extraction path entirely
+    /// and just point the webview at this URL. Useful for dev workflows
+    /// where you already have a nalar running and just want a window
+    /// wrapper (e.g. `--nalar-url http://127.0.0.1:8081` to attach to a
+    /// nalar you started by hand). `--port` and `--nalar-path` are ignored
+    /// in this mode.
+    nalar_url: ?[]const u8 = null,
     /// Window dimensions.
     window_width: u32 = 1280,
     window_height: u32 = 800,
@@ -34,6 +44,7 @@ pub const Config = struct {
 
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
         if (self.nalar_path) |p| allocator.free(p);
+        if (self.nalar_url) |u| allocator.free(u);
         // title: free only if heap-allocated (i.e. user set --title with
         // a value different from the default literal). If the user passed
         // `--title "Nalar"`, we treat the title as still the literal and
@@ -59,9 +70,20 @@ pub const CliError = error{
 const usage =
     \\Usage: nalar-desktop [options]
     \\
+    \\Two modes:
+    \\  Spawn mode (default): spawn nalar as a child process, wait for it
+    \\    to be healthy, then open the webview. Closing the window kills
+    \\    the spawned nalar. Uses --port and --nalar-path.
+    \\  Connect mode (--nalar-url): skip spawning; just open the webview at
+    \\    the given URL. Useful for attaching to a nalar you already have
+    \\    running. --port and --nalar-path are ignored in this mode.
+    \\
     \\Options:
     \\  --port PORT              Port for nalar to bind on (default: 0 = auto-pick)
     \\  --nalar-path PATH        Explicit path to nalar binary
+    \\  --nalar-url URL          Connect mode: point webview at this URL
+    \\                            (e.g. http://127.0.0.1:8081) instead of
+    \\                            spawning a new nalar
     \\  --window-size WxH        Window size in pixels (default: 1280x800)
     \\  --title TITLE            Window title (default: "Nalar")
     \\  --user-agent UA          User-Agent string for the webview
@@ -86,6 +108,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Co
             i += 1;
             if (i >= args.len) return error.MissingValue;
             cfg.nalar_path = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--nalar-url")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            cfg.nalar_url = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--window-size")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;
