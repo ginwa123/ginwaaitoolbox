@@ -138,16 +138,24 @@ export async function updateWorkspace(id: string, data: Partial<Workspace>): Pro
  * @param workspaceId  - owning workspace
  * @param itemId       - workspace item (e.g. a project folder)
  * @param limit        - page size (default 20; backend clamps at 100)
- * @param cursor       - the `created_at` of the last task from the previous
- *                       page; pass undefined for the first page
- * @returns `{ tasks, has_more, next_cursor }`. `next_cursor` is null when
- *          there are no more pages.
+ * @param cursor       - the encoded "<sort_value>|<id>" from the
+ *                       previous page's `next_cursor`; pass undefined
+ *                       for the first page
+ * @param sortBy       - field to sort by: 'created_at' | 'updated_at'
+ *                       | 'name'. Default: 'updated_at' (most recently
+ *                       renamed task first). The backend uses this for
+ *                       both ORDER BY and the cursor value.
+ * @param direction    - 'asc' | 'desc'. Default: 'desc'.
+ * @returns `{ tasks, has_more, next_cursor }`. `next_cursor` is null
+ *          when there are no more pages.
  */
 export async function getTasks(
   workspaceId: string,
   itemId: string,
   limit = 20,
   cursor?: string,
+  sortBy: 'created_at' | 'updated_at' | 'name' = 'updated_at',
+  direction: 'asc' | 'desc' = 'desc',
 ): Promise<{
   tasks: Task[]
   has_more: boolean
@@ -155,6 +163,8 @@ export async function getTasks(
 }> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
+  params.set('sort_by', sortBy)
+  params.set('direction', direction)
   if (cursor) {
     params.set('cursor', cursor)
   }
