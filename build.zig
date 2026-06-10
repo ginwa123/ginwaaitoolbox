@@ -57,6 +57,42 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("crypto", .{});
     exe.root_module.linkSystemLibrary("c", .{});
 
+    // === Build the Vue webapp (bun) ===
+    // Chunk 3: this step is a dependency of the desktop_exe build so the
+    // embedded webapp_assets.zig is regenerated on every build. The step
+    // itself runs `bun run build` in src/apps/desktop, which is the
+    // project's standard webapp build (vue-tsc + vite in parallel — see
+    // src/apps/desktop/package.json).
+    const build_webapp_step = b.step("build:webapp", "Build the Vue webapp with bun");
+
+    const webapp_dir = "src/apps/desktop";
+
+    // Zig 0.16: `std.fs.cwd()` is gone; use the raw `faccessat(2)` syscall
+    // for the "does this directory exist?" check. (The libc version requires
+    // libc to be linked into the build runner, which it isn't.) Mirrors the
+    // pattern in src/apps/desktop_app/path_resolve.zig's fileExists(). If
+    // node_modules is already populated we skip `bun install` (saves 1-2s
+    // per build).
+    const node_modules_path = b.pathJoin(&.{ webapp_dir, "node_modules" });
+    const node_modules_exists = blk: {
+        var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+        if (node_modules_path.len >= buf.len) break :blk false;
+        @memcpy(buf[0..node_modules_path.len], node_modules_path);
+        buf[node_modules_path.len] = 0;
+        const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
+        break :blk rc == 0;
+    };
+
+    if (!node_modules_exists) {
+        const install_cmd = b.addSystemCommand(&.{ "bun", "install" });
+        install_cmd.setCwd(b.path(webapp_dir));
+        build_webapp_step.dependOn(&install_cmd.step);
+    }
+
+    const bun_build = b.addSystemCommand(&.{ "bun", "run", "build" });
+    bun_build.setCwd(b.path(webapp_dir));
+    build_webapp_step.dependOn(&bun_build.step);
+
     // === nalar-desktop (native webview wrapper) ===
     // Chunk 1: hello-world binary + build wiring. The real entry point lands
     // in Chunk 8 (lifecycle wiring: parse CLI → spawn nalar → open webview).
