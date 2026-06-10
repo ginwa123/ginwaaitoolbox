@@ -12,7 +12,7 @@
 //     3. Allocate a free TCP port (or honour --port NNNN)
 //     4. Extract the comptime-embedded webapp assets to a per-pid temp dir
 //     5. Spawn `nalar --port <port>` as a child process
-//     6. Poll GET /api/health until 200 (max 10s)
+//     6. Poll GET /health until 200 (max 10s)
 //     7. Open a native webview window pointed at http://127.0.0.1:<port>/
 //     8. Run the platform event loop (blocks until the window closes)
 //     9. On window close: SIGTERM nalar, wait up to 2s, SIGKILL if still

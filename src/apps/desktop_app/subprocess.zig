@@ -3,7 +3,7 @@
 // Manages the nalar child process: spawning it, polling its health
 // endpoint, and cleaning it up.
 //
-// `waitForHealth` connects to 127.0.0.1:<port>/api/health on a tight
+// `waitForHealth` connects to 127.0.0.1:<port>/health on a tight
 // polling loop and returns when the server responds with a 2xx status.
 // Used after `spawn()` to make sure the server is actually accepting
 // requests before the webview tries to load it (avoids a race where
@@ -69,7 +69,7 @@ pub const NalarProcess = struct {
     }
 };
 
-/// Poll http://127.0.0.1:<port>/api/health until it returns 200 or
+/// Poll http://127.0.0.1:<port>/health until it returns 200 or
 /// `timeout_ms` elapses. Returns `error.HealthCheckTimeout` on timeout.
 ///
 /// On a busy CI box the nalar process can take a few hundred ms to
@@ -152,7 +152,7 @@ fn tryProbe(port: u16) bool {
     // Send a minimal HTTP/1.0 request. We use HTTP/1.0 (not 1.1) so
     // the server is allowed to close the connection after the single
     // response — no keep-alive bookkeeping needed.
-    const req = "GET /api/health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    const req = "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
     const write_rc = std.os.linux.write(fd, req.ptr, req.len);
     if (write_rc != req.len) return false;
 
