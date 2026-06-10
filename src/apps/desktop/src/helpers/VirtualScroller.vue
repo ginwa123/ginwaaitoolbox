@@ -396,6 +396,20 @@ const scrollInfo = computed(() => ({
   direction: scrollTop.value > lastScrollTop.value ? ('down' as const) : ('up' as const),
 }))
 
+// Hysteresis dead-band for `measureItems()`: only update a stored
+// height when the new measurement differs by more than this many
+// pixels. Smaller deltas are sub-pixel rounding noise from the
+// browser's layout (Chromium rounds sub-pixel offsets). Writing
+// them anyway was the trigger for the scroll-ratcheting bug
+// (docs/plans/2026-06-10-scroll-ratcheting-fix.md): a 1-2 px
+// fluctuation cycled through updateAccumulatedHeights → topSpacer
+// mutation → browser scroll-anchoring → scrollTop ratchet, with
+// scrollTop and scrollHeight oscillating in lockstep while
+// distanceFromBottom stayed constant. 4 px is large enough to
+// absorb the noise floor and small enough to admit any real
+// layout change (image load, content expansion, streaming).
+const HYSTERESIS_PX = 4
+
 const measureItems = () => {
   if (!containerRef.value) return
   const content = containerRef.value.querySelector('.virtual-scroller-content')
@@ -406,9 +420,18 @@ const measureItems = () => {
     const el = children[i] as HTMLElement
     const realIndex = visibleRange.value.start + i
     const h = el.offsetHeight
-    if (h > 0 && itemHeights.value.get(realIndex) !== h) {
-      itemHeights.value.set(realIndex, h)
-      changed = true
+    if (h > 0) {
+      const prev = itemHeights.value.get(realIndex)
+      // First measurement (prev === undefined) always writes. On
+      // subsequent measurements, skip unless the delta exceeds the
+      // dead-band. Without this, 1-2 px sub-pixel noise from the
+      // browser's layout causes the spacer to mutate on every
+      // scroll/resize debounce cycle, which is the ratcheting
+      // symptom in docs/plans/2026-06-10-scroll-ratcheting-fix.md.
+      if (prev === undefined || Math.abs(h - prev) > HYSTERESIS_PX) {
+        itemHeights.value.set(realIndex, h)
+        changed = true
+      }
     }
   }
   if (changed) updateAccumulatedHeights()
@@ -631,6 +654,19 @@ defineExpose({
 <style scoped>
 .virtual-scroller {
   overflow-y: auto;
+  /*
+   * Disable CSS scroll anchoring. The default `overflow-anchor: auto`
+   * makes the browser adjust scrollTop by the spacer delta when the
+   * topSpacer mutates — which happens every time `measureItems()`
+   * re-measures buffer items. That adjustment is the "ratchet" the
+   * user sees in the scrollLogger: scrollTop and scrollHeight
+   * oscillate in lockstep, distanceFromBottom stays constant.
+   * Disabling it preserves the user's scrollTop on spacer changes;
+   * any visible re-anchoring is the user's choice (they can scroll
+   * a hair to compensate). See
+   * docs/plans/2026-06-10-scroll-ratcheting-fix.md.
+   */
+  overflow-anchor: none;
   /*
    * Use `flex: 1 1 0` instead of `height: 100%` so the scroller
    * participates in the parent's flex layout properly. `height: 100%`

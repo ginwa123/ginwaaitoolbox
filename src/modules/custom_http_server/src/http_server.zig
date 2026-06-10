@@ -85,6 +85,32 @@ pub const GinwaServer = struct {
     environment: ?*const std.process.Environ.Map = null,
     is_running: bool = false,
 
+    /// Optional fallback handler invoked when no route matches. It is
+    /// expected to write a complete HTTP response directly to `fd` (status
+    /// line, headers, body) — the listen loop will NOT call toBytes() /
+    /// sendToClient afterwards. Used by `--static-dir` to serve files for
+    /// any path that isn't claimed by an API route.
+    ///
+    /// The first argument is an opaque user pointer — typically a pointer
+    /// to whatever config struct the handler needs (e.g. a static-files
+    /// config). The handler is responsible for casting it back to the
+    /// concrete type. This keeps the HTTP server free of any specific
+    /// feature's types.
+    ///
+    /// The per-request `allocator` is passed in so the response buffer
+    /// can be arena-freed when the request finishes.
+    static_dir_handler: ?*const fn (
+        cfg: *const anyopaque,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        request_path: []const u8,
+        range_header: ?[]const u8,
+        fd: i32,
+    ) anyerror!void = null,
+    /// Opaque cfg pointer forwarded to `static_dir_handler`. Set together
+    /// with the handler via `setStaticDirHandler`.
+    static_dir_cfg: ?*const anyopaque = null,
+
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
         gs.* = .{
@@ -97,6 +123,25 @@ pub const GinwaServer = struct {
             .environment = null,
         };
         return gs;
+    }
+
+    /// Wire a static-files fallback handler. Pass `null` for the handler
+    /// to clear both `static_dir_handler` and `static_dir_cfg`.
+    /// See the `static_dir_handler` field doc for the handler contract.
+    pub fn setStaticDirHandler(
+        self: *GinwaServer,
+        handler: ?*const fn (
+            cfg: *const anyopaque,
+            allocator: std.mem.Allocator,
+            io: std.Io,
+            request_path: []const u8,
+            range_header: ?[]const u8,
+            fd: i32,
+        ) anyerror!void,
+        cfg: ?*const anyopaque,
+    ) void {
+        self.static_dir_handler = handler;
+        self.static_dir_cfg = cfg;
     }
 
     pub fn deinit(self: *GinwaServer) void {
@@ -187,13 +232,51 @@ pub const GinwaServer = struct {
                                 },
                             }
                         } else {
-                            const not_found = http_parser.notFound(allocator);
-                            const res_bytes = not_found.toBytes() catch {
-                                _ = socket.close(fd);
-                                return;
-                            };
-                            defer not_found.allocator.free(res_bytes);
-                            _ = server.sendToClient(fd, res_bytes) catch {};
+                            // No API route matched. If a static-dir fallback
+                            // handler is configured, hand the request off to
+                            // it. The handler is responsible for writing a
+                            // complete HTTP response directly to `fd` (it
+                            // owns the wire format from status line through
+                            // body) and for sending it. We only fall through
+                            // to the generic 404 if the handler is absent,
+                            // missing its cfg, or reports an error.
+                            var static_served = false;
+                            if (server.static_dir_handler) |handler| {
+                                if (server.static_dir_cfg) |cfg| {
+                                    // HTTP header names are case-insensitive
+                                    // per RFC 9110 §5.1, but the gserverz
+                                    // preserves the case the client sent.
+                                    // Walk the headers map and match
+                                    // case-insensitively so the static-file
+                                    // handler gets a `Range:` value
+                                    // regardless of whether the client sent
+                                    // "Range", "range", or "RANGE".
+                                    var range_hdr: ?[]const u8 = null;
+                                    var h_it = req.headers.iterator();
+                                    while (h_it.next()) |entry| {
+                                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "range")) {
+                                            range_hdr = entry.value_ptr.*;
+                                            break;
+                                        }
+                                    }
+                                    handler(cfg, allocator, server.io, req.path, range_hdr, fd) catch {
+                                        static_served = false;
+                                    };
+                                    // If the handler returned without error,
+                                    // trust it to have sent a response
+                                    // (matching the SSE branch's contract).
+                                    static_served = true;
+                                }
+                            }
+                            if (!static_served) {
+                                const not_found = http_parser.notFound(allocator);
+                                const res_bytes = not_found.toBytes() catch {
+                                    _ = socket.close(fd);
+                                    return;
+                                };
+                                defer not_found.allocator.free(res_bytes);
+                                _ = server.sendToClient(fd, res_bytes) catch {};
+                            }
                         }
 
                         _ = socket.close(fd);
