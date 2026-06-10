@@ -148,6 +148,9 @@ pub const NalarConfigResponse = struct {
     /// Map of MCP server name to its raw JSON config (`{"url": "...", "headers": {...}}`).
     /// Sent as-is so the frontend gets full fidelity (header values, etc.).
     mcp_servers: ?std.json.Value = null,
+    /// Top-level sub-agents array. Sent as-is so the frontend gets full
+    /// fidelity of every field (system_prompt, api_key, etc.).
+    sub_agents: ?std.json.Value = null,
 };
 
 pub fn makeNalarConfigResponse(allocator: std.mem.Allocator, response: NalarConfigResponse) ![]u8 {
@@ -275,6 +278,8 @@ pub const LlmProfileResponse = struct {
     thinking: []const u8,
     temperature: []const u8,
     api_key: []const u8,
+    /// Per-profile sub-agents. Sent as-is for full fidelity.
+    sub_agents: ?std.json.Value = null,
 };
 
 pub const ProfilesListResponse = struct {

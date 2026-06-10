@@ -81,6 +81,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .profiles = cfg.profiles_models,
             .active_profile = cfg.active_profile,
             .mcp_servers = cfg.mcp_servers,
+            .sub_agents = cfg.sub_agents,
         }),
     });
 }
@@ -99,6 +100,9 @@ const ConfigJson = struct {
     mcp_servers: ?json.Value = null,
     profiles_models: ?json.Value = null,
     active_profile: ?[]const u8 = null,
+    /// Top-level sub-agents array (snake_case, matches NALAR.md JSON convention).
+    /// Each entry is a full sub-agent object (name, model, system_prompt, etc.).
+    sub_agents: ?json.Value = null,
 };
 
 fn parseTemperatureOrAuto(value: json.Value) f64 {
