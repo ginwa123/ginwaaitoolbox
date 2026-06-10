@@ -205,7 +205,8 @@ test "transform - tool message ignores image_url" {
         .response_content = try allocator.dupe(u8, "Tool result here"),
         .finish_reason = try allocator.dupe(u8, "tool"),
         .role = try allocator.dupe(u8, "tool"),
-        .tools = try allocator.dupe(u8, "tool_call_id_123"),
+        .tools = try allocator.dupe(u8, ""),
+        .tool_call_id = try allocator.dupe(u8, "tool_call_id_123"),
         .image_urls = blk: {
             const arr = try std.heap.c_allocator.alloc([]const u8, 1);
             arr[0] = "data:image/png;base64,ABCD";

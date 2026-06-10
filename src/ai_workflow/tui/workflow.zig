@@ -170,7 +170,6 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     const copy_session_id = try parent_allocator.dupe(u8, params.session_id);
     const copy_message = try parent_allocator.dupe(u8, params.message);
     const copy_cwd = try parent_allocator.dupe(u8, params.cwd);
-    // const copy_body = try parent_allocator.dupe(u8, params.body);
     const copy_allowed_tools = try parent_allocator.dupe(u8, params.allowed_tools);
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
@@ -292,7 +291,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                 _ = try llm_history.saveMessage(allocator, io, db, .{
                     .session_id = copy_session_id,
-                    .model = config.model,
+                    .model = effective_model,
                     .cwd = copy_cwd,
                     .content = queued.message,
                     .reasoning_content = null,
@@ -322,7 +321,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                 on_event_sent.onEventSendLLMHistory(allocator, .{
                     .session_id = copy_session_id,
-                    .model = config.model,
+                    .model = effective_model,
                     .cwd = copy_cwd,
                     .content = queued.message,
                     .reasoning_content = null,
@@ -396,7 +395,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         try messagesLists.appendSlice(allocator, initialMessages);
 
         logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
-        if (agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(config.model))) {
+        if (agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(effective_model))) {
             const copy_messages = try allocator.dupe(agent.AgentMessage, messagesLists.items);
             defer allocator.free(copy_messages);
             var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
@@ -421,7 +420,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
             if (finish_reason == .stop) {
                 _ = try llm_history.saveMessage(allocator, io, db, .{
                     .session_id = copy_session_id,
-                    .model = config.model,
+                    .model = effective_model,
                     .cwd = copy_cwd,
                     .content = res_dynamic_agent.content,
                     .reasoning_content = res_dynamic_agent.reasoning_content,
@@ -450,7 +449,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                 _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
                     .session_id = copy_session_id,
-                    .model = config.model,
+                    .model = effective_model,
                     .cwd = copy_cwd,
                     .content = res_dynamic_agent.content,
                     .reasoning_content = res_dynamic_agent.reasoning_content,
@@ -495,15 +494,15 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 continue;
             } else if (finish_reason == .tool_calls) {
                 std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
-                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, config.model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
             } else if (finish_reason == .assistant) {
                 if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                    try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, config.model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                    try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
                 } else {
                     // Treat as normal completion
                     _ = try llm_history.saveMessage(allocator, io, db, .{
                         .session_id = copy_session_id,
-                        .model = config.model,
+                        .model = effective_model,
                         .cwd = copy_cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
@@ -532,7 +531,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                     _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
                         .session_id = copy_session_id,
-                        .model = config.model,
+                        .model = effective_model,
                         .cwd = copy_cwd,
                         .content = res_dynamic_agent.content,
                         .reasoning_content = res_dynamic_agent.reasoning_content,
@@ -572,7 +571,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                 on_event_sent.onEventSendLLMHistory(allocator, .{
                     .session_id = copy_session_id,
-                    .model = config.model,
+                    .model = effective_model,
                     .cwd = copy_cwd,
                     .content = null,
                     .reasoning_content = null,
