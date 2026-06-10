@@ -221,7 +221,7 @@ const isLLMProcessing = computed(() => !!processingState.value[sessionId.value])
 
 // Pagination state
 const messageCursor = ref<string | null>(null)
-const PAGE_SIZE = 10
+const PAGE_SIZE = 1000
 
 // SSE connection. Both streams are now `api.SseClient` (the
 // shared auto-reconnecting wrapper) instead of raw `EventSource`.
@@ -1711,7 +1711,7 @@ const compactSession = async () => {
           ref="virtualScrollerRef"
           :items="messageGroups"
           :total-count="0"
-          :buffer="5"
+          :buffer="20"
           :default-item-height="200"
           :load-more-threshold="200"
           :load-more-threshold-ratio="0.5"
