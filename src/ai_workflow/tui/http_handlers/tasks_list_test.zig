@@ -272,3 +272,77 @@ test "listWorkspaceItemTasksWithCursor takes sort_field and sort_direction" {
         return error.SortParamsMissing;
     }
 }
+
+// ─── Contract 9: handler parses the sort_by query param ───────────────────
+
+test "tasks_list handler parses the sort_by query param" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "\"sort_by\"") == null and
+        std.mem.indexOf(u8, source, "'sort_by'") == null)
+    {
+        std.debug.print(
+            "\n!! {s} does not reference the `sort_by` query param !!\n" ++
+                "   The sort plumbing is missing at the handler level — the\n" ++
+                "   frontend cannot request a different sort order.\n" ++
+                "   Restore the sort_by parse:\n" ++
+                "     const sort_by_str = query.get(\"sort_by\") orelse \"updated_at\";\n" ++
+                "     const sort_field = llm_history.enumFromString(llm_history.TaskSortField, sort_by_str) catch .updated_at;\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SortByParamMissing;
+    }
+}
+
+// ─── Contract 10: handler parses the direction query param ────────────────
+
+test "tasks_list handler parses the direction query param" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "\"direction\"") == null and
+        std.mem.indexOf(u8, source, "'direction'") == null)
+    {
+        std.debug.print(
+            "\n!! {s} does not reference the `direction` query param !!\n" ++
+                "   The sort plumbing is missing the direction toggle — the\n" ++
+                "   user can never sort ascending.\n" ++
+                "   Restore the direction parse:\n" ++
+                "     const direction_str = query.get(\"direction\") orelse \"desc\";\n" ++
+                "     const sort_direction = llm_history.enumFromString(llm_history.TaskSortDirection, direction_str) catch .desc;\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.DirectionParamMissing;
+    }
+}
+
+// ─── Contract 11: handler passes sort_field and sort_direction to the DB fn
+
+test "tasks_list handler passes sort_field and sort_direction to the DB fn" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The handler's call to listWorkspaceItemTasksWithCursor must
+    // include sort_field and sort_direction args. We look for the
+    // substring "sort_field," and "sort_direction" in the handler.
+    if (std.mem.indexOf(u8, source, "sort_field,") == null or
+        std.mem.indexOf(u8, source, "sort_direction") == null)
+    {
+        std.debug.print(
+            "\n!! {s} does not pass sort_field/sort_direction to the DB fn !!\n" ++
+                "   The handler parses the sort params but doesn't forward\n" ++
+                "   them — the SQL still hardcodes the original ORDER BY.\n" ++
+                "   Update the call site:\n" ++
+                "     .listWorkspaceItemTasksWithCursor(allocator, sqlite_db, item_id, limit, cursor, sort_field, sort_direction) catch ...;\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SortParamsNotForwarded;
+    }
+}
