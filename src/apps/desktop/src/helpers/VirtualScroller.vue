@@ -36,12 +36,25 @@ const props = withDefaults(
      */
     totalCount?: number
     /**
-     * Number of extra items to render above and below the visible viewport.
-     * A larger buffer means smoother scrolling (fewer "pop in" moments as
-     * the user scrolls) at the cost of more DOM nodes. The default of 5
-     * is a good balance for most text/list UIs. For tall items (chat
-     * bubbles, cards with images) you may want to lower this; for short
-     * uniform items (log lines, search results) you can raise it.
+     * Number of extra items to render **on each side** (above AND below)
+     * the visible viewport. So `buffer=20` means 20 items above + 20
+     * items below + the visible items themselves.
+     *
+     * Worked example with `defaultItemHeight=200`, `containerHeight=800`:
+     *   - buffer=0  → 4 items in the DOM  (4 visible, no overscan)
+     *   - buffer=5  → 14 items in the DOM (4 visible + 5 above + 5 below)
+     *   - buffer=20 → 44 items in the DOM (4 visible + 20 above + 20 below)
+     *
+     * A larger buffer means smoother scrolling (fewer "pop in" moments
+     * as the user scrolls) at the cost of more DOM nodes. The default
+     * of 5 is a good balance for most text/list UIs. For tall items
+     * (chat bubbles, cards with images) you may want to lower this;
+     * for short uniform items (log lines, search results) you can
+     * raise it.
+     *
+     * To read the live rendered count from the parent, use the
+     * `renderedCount` exposed on the component instance (see
+     * `defineExpose` below) or the `scrollInfo` object.
      */
     buffer?: number
     /**
@@ -317,7 +330,7 @@ const visibleRange = computed(() => {
   const viewBottom = scrollTop.value + containerHeight.value
   let acc = accumulatedHeights.value[startIndex] ?? 0
   let endIndex = startIndex
-  while (endIndex < len && acc < viewBottom + 200) {
+  while (endIndex < len && acc < viewBottom) {
     acc += itemHeights.value.get(endIndex) ?? props.defaultItemHeight
     endIndex++
   }
@@ -343,6 +356,36 @@ const visibleItems = computed(() => {
     if (item !== undefined) result.push({ item, index: i })
   }
   return result
+})
+
+/**
+ * Live count of items currently rendered in the DOM (i.e. the
+ * length of `visibleItems`). Exposed so the parent can verify the
+ * buffer contract and log "rendered N items" diagnostics without
+ * opening dev-tools.
+ *
+ * Equals `end - start` from `visibleRange`, which is:
+ *   - In the middle of the list: `2 * buffer + visibleCount`
+ *   - At the top/bottom edges: clamped to whatever the list allows
+ *
+ * Recomputed automatically on every scroll, every measurement, and
+ * every `items` length change.
+ */
+const renderedCount = computed(() => {
+  const { start, end } = visibleRange.value
+  return Math.max(0, end - start)
+})
+
+/**
+ * The {start, end} range of items currently rendered. Exposed as
+ * a single object so the parent can read both fields in one
+ * reactive read (avoiding the start-vs-end skew that would happen
+ * if they were two separate computeds and a scroll fired between
+ * reads).
+ */
+const effectiveRange = computed(() => {
+  const { start, end } = visibleRange.value
+  return { start, end }
 })
 
 const scrollInfo = computed(() => ({
@@ -568,6 +611,8 @@ defineExpose({
   isPreservingScroll,
   isScrollable,
   effectiveLoadMoreThreshold,
+  renderedCount,
+  effectiveRange,
 })
 </script>
 
