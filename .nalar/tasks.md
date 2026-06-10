@@ -24,18 +24,18 @@ Prerequisite: `docs/superpowers/plans/2026-06-10-nalar-static-dir.md` ✅ MERGED
   - [x] Task 4.1: The shared C header (commit 7b024d6)
   - [x] Task 4.2: Zig wrapper around the C ABI (commit d1cddfe)
   - [x] Task 4.3: Chunk 4 verification (build succeeds; deferred link errors verified by subagent)
-- [ ] Chunk 5: Linux platform — WebKitGTK (all in Zig via `@cImport`)
-  - [ ] Task 5.1: Implementation
-  - [ ] Task 5.2: Linux test (smoke only)
-- [ ] Chunk 6: macOS platform — WKWebView via Objective-C++ shim
-  - [ ] Task 6.1: Copy the header
-  - [ ] Task 6.2: The Objective-C++ shim
-- [ ] Chunk 7: Windows platform — WebView2 via C++ shim
-  - [ ] Task 7.1: Copy the header
-  - [ ] Task 7.2: The C++ shim
-- [ ] Chunk 8: Main lifecycle — wire everything together
-  - [ ] Task 8.1: Replace the hello-world with the real lifecycle
-- [ ] Chunk 9: Final verification, Nalar.md update, install step
-  - [ ] Task 9.1: Verify the install step
-  - [ ] Task 9.2: Update NALAR.md
-  - [ ] Task 9.3: Optional install script
+- [x] Chunk 5: Linux platform — WebKitGTK ✅ DONE (commits 0e368d0, a090d64)
+  - [x] Task 5.1: Implementation (commit 0e368d0; @cImport doesn't work for GTK due to GLib _Pragma — used manual extern "c" + webview_linux.c C shim)
+  - [x] Task 5.2: Linux test (commit a090d64; 21/21 tests pass)
+- [x] Chunk 6: macOS platform — WKWebView via Objective-C++ shim ✅ DONE (commits 4334532, e9fc8d0)
+  - [x] Task 6.1: Copy the header (commit 4334532)
+  - [x] Task 6.2: The Objective-C++ shim (commit e9fc8d0; defensive fixes for retain cycles, null safety, etc.)
+- [x] Chunk 7: Windows platform — WebView2 via C++ shim ✅ DONE (commits 1e42995, e23bfb4)
+  - [x] Task 7.1: Copy the header (commit 1e42995)
+  - [x] Task 7.2: The C++ shim (commit e23bfb4; WebView2 NuGet not vendored — code is reviewable, needs NuGet extract to actually build on Windows)
+- [x] Chunk 8: Main lifecycle — wire everything together ✅ DONE (commit b64612f)
+  - [x] Task 8.1: Replace the hello-world with the real lifecycle (commit b64612f; fixed std.process.spawn io signature, child.kill/wait API change in 0.16, defer if-expression quirk; 29 MB binary with embedded assets)
+- [x] Chunk 9: Final verification, Nalar.md update, install step ✅ DONE (commit 2b2f3aa)
+  - [x] Task 9.1: Verify the install step (both `nalar` 53MB + `nalar-desktop` 29MB in zig-out/bin/)
+  - [x] Task 9.2: Update NALAR.md (commit 2b2f3aa; documented desktop-app + 6 new Zig 0.16 quirks: std.process.spawn/kill/wait API, std.posix removed wrappers, std.Thread.sleep → nanosleep, std.fs.accessAbsolute → faccessat, @cImport + GLib _Pragma issue)
+  - [x] Task 9.3: Optional install script (commit 2b2f3aa; scripts/install-nalar-desktop.sh)
