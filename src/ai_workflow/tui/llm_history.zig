@@ -52,6 +52,18 @@ pub fn enumFromString(comptime T: type, s: []const u8) !T {
 }
 pub const SessionSortDirection = enum { asc, desc };
 
+/// Sort field for the paginated workspace-item tasks endpoint
+/// (`GET /api/workspaces/:wid/items/:iid/tasks`). Mirrors
+/// `SessionSortField` (above) so the API surface is consistent.
+/// `name` is included for completeness even though the default UI
+/// sorts by `updated_at` — the user can sort by name later if they
+/// want an alphabetical fallback.
+pub const TaskSortField = enum { created_at, updated_at, name };
+
+/// Sort direction for workspace-item tasks. Asc/desc. Mirrors
+/// `SessionSortDirection` (above).
+pub const TaskSortDirection = enum { asc, desc };
+
 /// Detailed session info
 pub const SessionDetail = struct {
     session_id: []const u8,

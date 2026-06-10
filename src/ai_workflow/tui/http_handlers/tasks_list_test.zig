@@ -216,3 +216,25 @@ test "llm_history exposes listWorkspaceItemTasksWithCursor" {
         return error.CursorFunctionMissing;
     }
 }
+
+// ─── Contract 7: llm_history exposes the TaskSortField enum ──────────────
+
+test "llm_history exposes TaskSortField enum" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    const sig = "pub const TaskSortField = enum";
+    if (std.mem.indexOf(u8, source, sig) == null) {
+        std.debug.print(
+            "\n!! {s} does not define `TaskSortField` enum !!\n" ++
+                "   The tasks-list sort plumbing is missing the sort-field\n" ++
+                "   enum that maps `sort_by=...` query strings to SQL columns.\n" ++
+                "   Add the enum near SessionSortField (around line 44):\n" ++
+                "     pub const TaskSortField = enum {{ created_at, updated_at, name }};\n" ++
+                "   See docs/superpowers/plans/2026-06-11-workspace-item-tasks-sort-by-updated-at.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.TaskSortFieldMissing;
+    }
+}
