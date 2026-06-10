@@ -307,6 +307,13 @@ const ConfigJson = struct {
     active_profile: ?[]const u8 = null,
     /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
     mcp_servers: ?json.Value = null,
+    /// Opt-in OS notification flag. Default `false` matches
+    /// `LlmConfigJson` (Config.zig:96); a brand-new config has
+    /// notifications off.
+    notify_on_complete: bool = false,
+    /// Compaction threshold in KB. Default `100` matches
+    /// `LlmConfigJson` (Config.zig:92).
+    model_compaction_size_kb: usize = 100,
     /// Top-level sub-agents array (snake_case, matches NALAR.md JSON
     /// convention). Parsed into the typed `LlmConfig.SubAgentJson` shape
     /// (borrowed from the parsed file content), or replaced by an
