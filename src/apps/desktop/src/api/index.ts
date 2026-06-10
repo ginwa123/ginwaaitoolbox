@@ -1219,6 +1219,23 @@ export interface NalarProfile {
   temperature?: string
   url_style?: string
   api_key?: string
+  /**
+   * Per-profile sub-agents. Same shape as the top-level
+   * `NalarConfig.sub_agents` field — profiles can override the default
+   * sub-agent set with their own.
+   */
+  sub_agents?: SubAgent[]
+}
+
+export interface SubAgent {
+  name: string
+  model: string
+  base_url: string
+  thinking: string
+  temperature: string
+  url_style: string
+  api_key: string
+  system_prompt: string
 }
 
 export interface McpHeader {
@@ -1249,6 +1266,13 @@ export interface NalarConfig {
    * the LLM config. Sent verbatim to the backend on save.
    */
   mcp_servers?: Record<string, { url: string; headers?: Record<string, string> }>
+  /**
+   * Top-level sub-agents array. Each entry is a named sub-agent LLM
+   * configuration (model + base_url + thinking + temperature + url_style
+   * + api_key + system_prompt) that the `spawn_sub_agent` tool can
+   * reference by name. Sent as-is to the backend on save.
+   */
+  sub_agents?: SubAgent[]
 }
 
 export async function getNalarConfig(): Promise<NalarConfig> {

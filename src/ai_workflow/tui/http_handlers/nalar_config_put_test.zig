@@ -38,6 +38,7 @@ fn makeConfig(allocator: std.mem.Allocator, model: []const u8) !*LlmConfig {
         .mcpServers_parsed = null,
         .mcp_servers = LlmConfig.McpServersMap.init(allocator),
         .profiles_models = LlmConfig.ProfilesMap.init(allocator),
+        .sub_agents = &.{},
     };
     return ptr;
 }

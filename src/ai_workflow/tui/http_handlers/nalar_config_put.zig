@@ -4,6 +4,7 @@ const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
+const LlmConfig = config.LlmConfig;
 
 /// PUT /api/config/nalar - Save nalar.json configuration
 pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
@@ -167,6 +168,29 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         }
     }
 
+    // Handle top-level sub_agents: if the input provides a `sub_agents`
+    // array, replace the existing list wholesale (whole-list replace matches
+    // the UI's add/edit/delete workflow). Each entry's 8 string fields are
+    // duped onto the allocator so the new array is independent of the
+    // parsed input slice (which goes out of scope after this function).
+    if (input.value.sub_agents) |sas| {
+        const owned = try allocator.alloc(LlmConfig.SubAgentJson, sas.len);
+        errdefer allocator.free(owned);
+        for (sas, 0..) |sa, i| {
+            owned[i] = .{
+                .name = try allocator.dupe(u8, sa.name),
+                .model = try allocator.dupe(u8, sa.model),
+                .base_url = try allocator.dupe(u8, sa.base_url),
+                .thinking = try allocator.dupe(u8, sa.thinking),
+                .temperature = try allocator.dupe(u8, sa.temperature),
+                .url_style = try allocator.dupe(u8, sa.url_style),
+                .api_key = try allocator.dupe(u8, sa.api_key),
+                .system_prompt = try allocator.dupe(u8, sa.system_prompt),
+            };
+        }
+        config_json.sub_agents = owned;
+    }
+
     // Write config
     const config_str = try std.json.Stringify.valueAlloc(allocator, config_json, .{
         .whitespace = .indent_tab,
@@ -243,6 +267,12 @@ const ConfigInput = struct {
     /// When present, replaces the existing MCP servers entirely.
     /// When absent, existing MCP servers are preserved.
     mcp_servers: ?json.Value = null,
+    /// Whole-list replace for the top-level `sub_agents` array.
+    /// When present, replaces the existing sub-agents entirely.
+    /// When absent, existing sub-agents are preserved. Borrowed slices
+    /// from the request body — the handler dupes each entry's strings
+    /// before assigning to `config_json.sub_agents`.
+    sub_agents: ?[]const LlmConfig.SubAgentJson = null,
 };
 
 const ProfileChange = struct {
@@ -267,6 +297,12 @@ const ConfigJson = struct {
     active_profile: ?[]const u8 = null,
     /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
     mcp_servers: ?json.Value = null,
+    /// Top-level sub-agents array (snake_case, matches NALAR.md JSON
+    /// convention). Parsed into the typed `LlmConfig.SubAgentJson` shape
+    /// (borrowed from the parsed file content), or replaced by an
+    /// owned copy (duped from the request body) when the input provides
+    /// a new list.
+    sub_agents: ?[]LlmConfig.SubAgentJson = null,
 };
 
 /// Deep copy a json.Value to avoid use-after-free from parsed.deinit()
