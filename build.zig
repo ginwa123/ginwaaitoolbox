@@ -57,6 +57,197 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("crypto", .{});
     exe.root_module.linkSystemLibrary("c", .{});
 
+    // === Build the Vue webapp (bun) ===
+    // Chunk 3: this step is a dependency of the desktop_exe build so the
+    // embedded webapp_assets.zig is regenerated on every build. The step
+    // itself runs `bun run build` in src/apps/desktop, which is the
+    // project's standard webapp build (vue-tsc + vite in parallel — see
+    // src/apps/desktop/package.json).
+    const build_webapp_step = b.step("build:webapp", "Build the Vue webapp with bun");
+
+    const webapp_dir = "src/apps/desktop";
+
+    // Zig 0.16: `std.fs.cwd()` is gone; use the raw `faccessat(2)` syscall
+    // for the "does this directory exist?" check. (The libc version requires
+    // libc to be linked into the build runner, which it isn't.) Mirrors the
+    // pattern in src/apps/desktop_app/path_resolve.zig's fileExists(). If
+    // node_modules is already populated we skip `bun install` (saves 1-2s
+    // per build).
+    const node_modules_path = b.pathJoin(&.{ webapp_dir, "node_modules" });
+    const node_modules_exists = blk: {
+        var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+        if (node_modules_path.len >= buf.len) break :blk false;
+        @memcpy(buf[0..node_modules_path.len], node_modules_path);
+        buf[node_modules_path.len] = 0;
+        const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
+        break :blk rc == 0;
+    };
+
+    if (!node_modules_exists) {
+        const install_cmd = b.addSystemCommand(&.{ "bun", "install" });
+        install_cmd.setCwd(b.path(webapp_dir));
+        build_webapp_step.dependOn(&install_cmd.step);
+    }
+
+    const bun_build = b.addSystemCommand(&.{ "bun", "run", "build" });
+    bun_build.setCwd(b.path(webapp_dir));
+    build_webapp_step.dependOn(&bun_build.step);
+
+    // === Codegen: walk dist/, emit webapp_assets.zig ===
+    // Chunk 3: this step runs the small Zig tool at tools/codegen_webapp_assets.zig
+    // to walk src/apps/desktop/dist/ and emit a Zig source file with every
+    // asset's bytes embedded as string literals. The generated file lives at
+    // src/apps/desktop_app/embedded/webapp_assets.zig (gitignored) and is
+    // imported by extraction.zig. desktop_exe depends on this so a fresh
+    // build always has up-to-date assets.
+    const codegen_step = b.step("codegen:webapp-assets", "Generate webapp_assets.zig from the built dist/");
+    codegen_step.dependOn(build_webapp_step);
+
+    const codegen = b.addRunArtifact(b.addExecutable(.{
+        .name = "codegen_webapp_assets",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/codegen_webapp_assets.zig"),
+            .target = b.graph.host,
+        }),
+    }));
+    codegen.addArg(b.pathJoin(&.{ webapp_dir, "dist" }));
+    codegen.addArg(b.pathJoin(&.{ "src", "apps", "desktop_app", "embedded", "webapp_assets.zig" }));
+    codegen_step.dependOn(&codegen.step);
+
+    // === nalar-desktop (native webview wrapper) ===
+    // Chunk 1: hello-world binary + build wiring. The real entry point lands
+    // in Chunk 8 (lifecycle wiring: parse CLI → spawn nalar → open webview).
+    // Platform-specific deps (WebKitGTK, WKWebView, WebView2) are added in
+    // Chunks 5-7 when the webview implementations land.
+    const desktop_exe = b.addExecutable(.{
+        .name = "nalar-desktop",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/desktop_app/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "nalarcore", .module = mod },
+            },
+        }),
+    });
+    desktop_exe.root_module.linkSystemLibrary("c", .{});
+
+    // Platform-specific system libraries (Chunks 5-7 add the real deps).
+    // Switch kept here so the pattern is validated by the Chunk 1 build.
+    switch (target.result.os.tag) {
+        .linux => {
+            // Chunk 5: gtk-3, webkit2gtk-4.1, soup-3.0
+            //
+            // The implementation in src/apps/desktop_app/platform/linux.zig
+            // uses manual `extern "c"` declarations (no @cImport) because
+            // @cImport's parser chokes on GLib's `_Pragma` constructs inside
+            // `G_GNUC_BEGIN_IGNORE_DEPRECATIONS` (used by `G_DECLARE_FINAL_TYPE`
+            // throughout soup/webkit headers). The C shim
+            // platform/webview_linux.c is compiled with cc and pulls in the
+            // GTK/WebKit headers — cc handles _Pragma correctly. The Zig
+            // extern declarations trust the signatures and link against
+            // libwebkit2gtk-4.1 / libgtk-3 / libsoup-3.0 / libglib-2.0.
+            desktop_exe.root_module.linkSystemLibrary("webkit2gtk-4.1", .{});
+            desktop_exe.root_module.linkSystemLibrary("gtk-3", .{});
+            desktop_exe.root_module.linkSystemLibrary("soup-3.0", .{});
+            desktop_exe.root_module.linkSystemLibrary("glib-2.0", .{});
+            desktop_exe.root_module.linkSystemLibrary("javascriptcoregtk-4.1", .{});
+            // C source file — compiled with cc, which handles the GTK/
+            // WebKit headers (including _Pragma) correctly. The method
+            // lives on *Build.Module in Zig 0.16 (not on *Build.Step.Compile
+            // like in older versions).
+            desktop_exe.root_module.addCSourceFile(.{
+                .file = b.path("src/apps/desktop_app/platform/webview_linux.c"),
+                .flags = &.{
+                    "-I/usr/include/webkitgtk-4.1",
+                    "-I/usr/include/gtk-3.0",
+                    "-I/usr/include/pango-1.0",
+                    "-I/usr/include/cairo",
+                    "-I/usr/include/gdk-pixbuf-2.0",
+                    "-I/usr/include/atk-1.0",
+                    "-I/usr/include/libsoup-3.0",
+                    "-I/usr/include/glib-2.0",
+                    "-I/usr/lib/glib-2.0/include",
+                },
+            });
+        },
+        .macos => {
+            // Chunk 6: Cocoa, WebKit (via .mm shim)
+            //
+            // The Objective-C++ shim at platform/macos/nalar_webview.mm
+            // implements the 3 C ABI functions (nalar_webview_create,
+            // _run, _destroy) using AppKit + WebKit. We compile it with
+            // the host's clang via `addCSourceFile` and `-ObjC++`, then
+            // link the Cocoa + WebKit frameworks. Note: `addCSourceFile`
+            // and `linkFramework` are both methods on `root_module` in
+            // Zig 0.16 (not on the Compile step like in older versions) —
+            // see the Linux branch above for the matching addCSourceFile
+            // pattern.
+            const mm_file = b.path("src/apps/desktop_app/platform/macos/nalar_webview.mm");
+            desktop_exe.root_module.addCSourceFile(.{ .file = mm_file, .flags = &.{"-ObjC++"} });
+            desktop_exe.root_module.linkFramework("Cocoa", .{});
+            desktop_exe.root_module.linkFramework("WebKit", .{});
+        },
+        .windows => {
+            // Chunk 7: ole32, user32, WebView2Loader (via .cpp shim)
+            //
+            // The C++ shim at platform/windows/nalar_webview.cpp implements
+            // the 3 C ABI functions (nalar_webview_create, _run, _destroy)
+            // using Win32 (HWND/WndProc) + WebView2 (ICoreWebView2, etc.).
+            // We compile it with the host's MSVC clang via `addCSourceFile`
+            // and `/std:c++17 /EHsc` flags, then link the system libraries
+            // that Win32 + COM + WebView2 need at link time.
+            //
+            // Build-time prerequisite: the WebView2 NuGet package's headers
+            // (WebView2.h, WebView2Loader.h) must be extracted into the
+            // same directory as the .cpp. The NuGet DLL (WebView2Loader.dll)
+            // must ship alongside nalar-desktop.exe at runtime. The .cpp
+            // file documents this in its top comment; see also:
+            //   https://www.nuget.org/packages/Microsoft.Web.WebView2/
+            //
+            // Zig 0.16: `addCSourceFile` and `linkSystemLibrary` are both
+            // methods on `root_module` (not on the Compile step like in
+            // older versions) — see the Linux branch above for the matching
+            // addCSourceFile pattern.
+            const cpp_file = b.path("src/apps/desktop_app/platform/windows/nalar_webview.cpp");
+            desktop_exe.root_module.addCSourceFile(.{
+                .file = cpp_file,
+                .flags = &.{ "/std:c++17", "/EHsc" },
+            });
+            desktop_exe.root_module.linkSystemLibrary("ole32", .{});
+            desktop_exe.root_module.linkSystemLibrary("user32", .{});
+            desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
+        },
+        else => {},
+    }
+
+    b.installArtifact(desktop_exe);
+
+    // Make the desktop binary depend on the codegen step. The codegen runs
+    // `bun run build` first (via build_webapp_step) and then walks dist/ to
+    // emit webapp_assets.zig, so by the time desktop_exe compiles the
+    // embedded/ directory is populated with the latest assets.
+    desktop_exe.step.dependOn(&codegen.step);
+
+    // `zig build nalar-desktop` alias — depends on the install step (which
+    // already includes desktop_exe via b.installArtifact above), so the
+    // binary ends up in zig-out/bin/.
+    const build_nalar_desktop = b.step("nalar-desktop", "Build the nalar-desktop binary");
+    build_nalar_desktop.dependOn(b.getInstallStep());
+
+    const run_desktop = b.step("run:desktop-app", "Run the nalar desktop wrapper");
+    const run_desktop_cmd = b.addRunArtifact(desktop_exe);
+    run_desktop.dependOn(&run_desktop_cmd.step);
+    if (b.args) |args| run_desktop_cmd.addArgs(args);
+
+    const test_desktop = b.step("test:desktop-app", "Run nalar-desktop unit tests");
+    const desktop_tests = b.addTest(.{
+        .root_module = desktop_exe.root_module,
+    });
+    desktop_tests.root_module.linkSystemLibrary("c", .{});
+    const run_desktop_tests = b.addRunArtifact(desktop_tests);
+    test_desktop.dependOn(&run_desktop_tests.step);
+
     const run_step = b.step("run", "Run the app");
 
     const cli_step = b.step("run:cli", "Run the CLI");

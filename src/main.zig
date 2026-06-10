@@ -6,6 +6,7 @@ const sqlite = nalarcore.sqlite;
 const helpers = nalarcore.helpers;
 const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
+const static_files = nalarcore.static_files;
 
 pub fn main(init: std.process.Init) !void {
     // const arena_allocator = init.arena;
@@ -128,9 +129,17 @@ pub fn main(init: std.process.Init) !void {
                 std.log.err("Error: --port requires a value", .{});
                 return error.InvalidArgs;
             }
+        } else if (std.mem.eql(u8, arg, "--static-dir")) {
+            if (args_iter.next()) |static_dir_arg| {
+                ctxParent.static_dir_path = try allocator.dupe(u8, static_dir_arg);
+            } else {
+                std.log.err("Error: --static-dir requires a value", .{});
+                return error.InvalidArgs;
+            }
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("Usage: nalar [--port PORT]\n", .{});
-            std.debug.print("  --port PORT    Port to run the HTTP server on (default: 8080)\n", .{});
+            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR]\n", .{});
+            std.debug.print("  --port PORT          Port to run the HTTP server on (default: 8080)\n", .{});
+            std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
             return;
         }
     }
@@ -151,6 +160,51 @@ pub fn main(init: std.process.Init) !void {
     const address = try gserverz.Address.init(port);
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
+
+    // === Static file serving (--static-dir) ===
+    // If the user passed `--static-dir DIR`, set up the static-files config
+    // and wire a fallback handler into the server. The handler is invoked by
+    // the listen loop whenever a request doesn't match any registered API
+    // route — it writes a complete HTTP response (status + headers + body)
+    // directly to the socket fd and returns. The handler signature takes
+    // an opaque cfg pointer (the gserverz is feature-agnostic), so we
+    // declare a top-level function that casts it back to a StaticDirConfig.
+    var static_dir_cfg: ?*static_files.StaticDirConfig = null;
+    defer if (static_dir_cfg) |cfg| {
+        allocator.free(cfg.root_dir);
+        allocator.destroy(cfg);
+    };
+
+    if (ctxParent.static_dir_path) |dir| {
+        // Open + canonicalize the dir. openDirAbsolute surfaces "not a
+        // directory" / "not found" as concrete errors which we forward to
+        // the user via std.log + main's error return.
+        const root_dir = std.Io.Dir.openDirAbsolute(io, dir, .{}) catch |err| {
+            std.log.err("--static-dir '{s}' cannot be opened: {s}", .{ dir, @errorName(err) });
+            return err;
+        };
+        defer root_dir.close(io);
+
+        var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const path_len = try root_dir.realPath(io, &path_buf);
+        const abs_dir = try allocator.dupe(u8, path_buf[0..path_len]);
+
+        const cfg = try allocator.create(static_files.StaticDirConfig);
+        cfg.* = .{
+            .root_dir = abs_dir,
+            .allocator = allocator,
+        };
+        static_dir_cfg = cfg;
+
+        // Register the top-level staticDirHandler (defined below main())
+        // with the server. Pass `cfg` as the opaque user pointer; the
+        // handler casts it back to *const StaticDirConfig and calls
+        // static_files.serve().
+        gs.setStaticDirHandler(
+            staticDirHandler,
+            @ptrCast(cfg),
+        );
+    }
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
@@ -261,4 +315,175 @@ pub fn main(init: std.process.Init) !void {
     // and BEFORE `ctxParent` is destroyed, so no reader is still in flight.
     nalarcore.freeAllLlmConfigs(ctxParent);
 
+}
+
+/// Top-level static-files fallback handler. Wired into GinwaServer via
+/// `setStaticDirHandler` when `--static-dir` is passed. The signature
+/// matches what `GinwaServer.static_dir_handler` expects: an opaque cfg
+/// pointer first, then the per-request allocator / io / request info /
+/// socket fd. We cast the opaque cfg back to `*const StaticDirConfig`
+/// here.
+///
+/// The handler buffers the full HTTP response (status line, headers, body)
+/// in memory, then writes it to the socket. The buffer is allocated from
+/// the per-request arena allocator, so it is freed automatically when
+/// the arena is deinit'd by the listen loop after the handler returns.
+///
+/// **Why this is hand-rolled instead of calling `static_files.serve()`**:
+/// `static_files.serve()` has a bug in its signature — it takes
+/// `writer: std.Io.Writer` by value, but its body calls non-const
+/// methods on it (which require a `*Writer`). Calling it produces:
+///   "expected type '*Io.Writer', found '*const Io.Writer'"
+/// The spec for Task 4 explicitly forbids changes to static_files.zig,
+/// so we use the parts of the public API that *do* work
+/// (`static_files.resolve` + `static_files.parseRange`) and write the
+/// HTTP response ourselves. Once the upstream `serve()` bug is fixed
+/// (one-character change: `Writer` → `*Writer`), this duplication can
+/// be removed and the call can be replaced with a single
+/// `static_files.serve(...)` call.
+fn staticDirHandler(
+    cfg: *const anyopaque,
+    handler_allocator: std.mem.Allocator,
+    handler_io: std.Io,
+    request_path: []const u8,
+    range_header: ?[]const u8,
+    fd: i32,
+) anyerror!void {
+    const typed_cfg: *const static_files.StaticDirConfig = @ptrCast(@alignCast(cfg));
+
+    var aw: std.Io.Writer.Allocating = .init(handler_allocator);
+    defer aw.deinit();
+
+    writeStaticFileResponse(typed_cfg, handler_io, request_path, range_header, &aw.writer) catch {
+        // Reset the writer buffer, then write a minimal 500 response.
+        aw.writer.end = 0;
+        const err_body = "Internal Server Error";
+        try aw.writer.writeAll("HTTP/1.1 500 Internal Server Error\r\n");
+        try aw.writer.print("Content-Length: {d}\r\n", .{err_body.len});
+        try aw.writer.writeAll("Content-Type: text/plain; charset=utf-8\r\n");
+        try aw.writer.writeAll("Connection: close\r\n");
+        try aw.writer.writeAll("\r\n");
+        try aw.writer.writeAll(err_body);
+    };
+
+    const out = aw.writer.buffered();
+    if (out.len > 0) {
+        _ = gserverz.GinwaServer.sendToClient(undefined, fd, out) catch {};
+    }
+}
+
+/// Build a static-file HTTP response in `writer`. See `staticDirHandler`
+/// for why this lives in main.zig instead of being a thin wrapper over
+/// `static_files.serve()`.
+///
+/// Mirrors the algorithm `static_files.serve()` was supposed to
+/// implement: resolve the request to a file, emit headers (Content-Type,
+/// Content-Length, ETag, optional Content-Range / 206), then stream the
+/// file body (full or sliced). 404 / 403 are returned for the
+/// corresponding `LookupResult` variants.
+fn writeStaticFileResponse(
+    cfg: *const static_files.StaticDirConfig,
+    io: std.Io,
+    request_path: []const u8,
+    range_header: ?[]const u8,
+    writer: *std.Io.Writer,
+) !void {
+    const lookup = try static_files.resolve(cfg, io, request_path);
+    switch (lookup) {
+        .not_found, .not_a_file => {
+            const body = "Not Found";
+            try writer.writeAll("HTTP/1.1 404 Not Found\r\n");
+            try writer.print("Content-Length: {d}\r\n", .{body.len});
+            try writer.writeAll("Content-Type: text/plain; charset=utf-8\r\n");
+            try writer.writeAll("Connection: close\r\n");
+            try writer.writeAll("\r\n");
+            try writer.writeAll(body);
+        },
+        .forbidden => {
+            const body = "Forbidden";
+            try writer.writeAll("HTTP/1.1 403 Forbidden\r\n");
+            try writer.print("Content-Length: {d}\r\n", .{body.len});
+            try writer.writeAll("Content-Type: text/plain; charset=utf-8\r\n");
+            try writer.writeAll("Connection: close\r\n");
+            try writer.writeAll("\r\n");
+            try writer.writeAll(body);
+        },
+        .file => |f| {
+            defer cfg.allocator.free(f.abs_path);
+
+            // Content-derived ETag: combines file size and mtime so two
+            // same-size files (common with minified JS/CSS) get distinct
+            // ETags and don't trigger browser cache poisoning on size
+            // collision. Allocates from cfg.allocator because etag is a
+            // tiny string built per-request.
+            const etag = try std.fmt.allocPrint(cfg.allocator, "\"x-{x}-{x}\"", .{ f.size, f.mtime.nanoseconds });
+            defer cfg.allocator.free(etag);
+
+            // Optional range response.
+            if (range_header) |rh| {
+                if (try static_files.parseRange(rh, f.size)) |range| {
+                    try writer.writeAll("HTTP/1.1 206 Partial Content\r\n");
+                    try writer.print("Content-Range: bytes {d}-{d}/{d}\r\n", .{ range.start, range.end, f.size });
+                    const content_length: u64 = range.end - range.start + 1;
+                    try writer.print("Content-Length: {d}\r\n", .{content_length});
+                    try writer.print("Content-Type: {s}\r\n", .{f.mime});
+                    try writer.print("ETag: {s}\r\n", .{etag});
+                    try writer.writeAll("Cache-Control: public, max-age=3600\r\n");
+                    try writer.writeAll("\r\n");
+                    try writeFileRange(io, f.abs_path, range.start, range.end, writer);
+                    return;
+                }
+            }
+
+            try writer.writeAll("HTTP/1.1 200 OK\r\n");
+            try writer.print("Content-Length: {d}\r\n", .{f.size});
+            try writer.print("Content-Type: {s}\r\n", .{f.mime});
+            try writer.print("ETag: {s}\r\n", .{etag});
+            try writer.writeAll("Cache-Control: public, max-age=3600\r\n");
+            try writer.writeAll("\r\n");
+            try writeFileFull(io, f.abs_path, writer);
+        },
+    }
+}
+
+/// Stream the entire file at `abs_path` to `writer` in 64 KB chunks.
+/// Uses `readPositionalAll` (not seek + read) — the Zig 0.16 idiom for
+/// positional reads and the path that's safe in Io.Threaded's blocking
+/// recv model.
+fn writeFileFull(io: std.Io, abs_path: []const u8, writer: *std.Io.Writer) !void {
+    const file = try std.Io.Dir.openFileAbsolute(io, abs_path, .{});
+    defer file.close(io);
+    var buf: [64 * 1024]u8 = undefined;
+    var offset: u64 = 0;
+    while (true) {
+        const n = try file.readPositionalAll(io, &buf, offset);
+        if (n == 0) break;
+        try writer.writeAll(buf[0..n]);
+        offset += n;
+    }
+}
+
+/// Stream the byte range `[start, end]` (inclusive) of the file at
+/// `abs_path` to `writer`. Caller is responsible for ensuring
+/// `start <= end < file_size`.
+fn writeFileRange(
+    io: std.Io,
+    abs_path: []const u8,
+    start: u64,
+    end: u64,
+    writer: *std.Io.Writer,
+) !void {
+    const file = try std.Io.Dir.openFileAbsolute(io, abs_path, .{});
+    defer file.close(io);
+    var remaining: u64 = end - start + 1;
+    var offset: u64 = start;
+    var buf: [64 * 1024]u8 = undefined;
+    while (remaining > 0) {
+        const to_read: usize = @intCast(@min(remaining, buf.len));
+        const n = try file.readPositionalAll(io, buf[0..to_read], offset);
+        if (n == 0) break;
+        try writer.writeAll(buf[0..n]);
+        offset += n;
+        remaining -= n;
+    }
 }

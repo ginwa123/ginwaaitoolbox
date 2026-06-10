@@ -110,6 +110,12 @@ pub const ContextIPCTui = struct {
     on_disconnect_cb: ?*fn (client_id: [16]u8) void = null,
     on_disconnect_lock: std.Io.Mutex = .init,
     group_emit_session_create: std.Io.Group,
+
+    /// If non-null, nalar serves files from this directory at HTTP /.
+    /// The desktop webview wrapper (nalar-desktop) will set this to a temp
+    /// dir containing the embedded Vue dist/. Parsed from the `--static-dir`
+    /// CLI flag in main.zig and held here for the lifetime of the process.
+    static_dir_path: ?[]const u8 = null,
 };
 
 /// Hot-path read. Returns the currently-installed `LlmConfig` pointer.
@@ -382,6 +388,7 @@ pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
 pub const gserverz = @import("modules/custom_http_server/src/http_server.zig");
 pub const ai_mod = @import("ai_workflow/tui/mod.zig");
 pub const event_bus = @import("modules/event_bus/src/event.zig");
+pub const static_files = @import("modules/static_files.zig");
 
 pub const startup = @import("startup.zig");
 
@@ -391,4 +398,5 @@ test {
     _ = @import("modules/http/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
     _ = @import("modules/custom_http_server/src/test_session_lifecycle.zig");
+    _ = @import("modules/test_runner.zig");
 }

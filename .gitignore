@@ -4,6 +4,9 @@ test_main
 .plans
 /src/apps/kerjabot/node_modules
 /src/apps/kerjabot/dist
+/src/apps/desktop/node_modules
+/src/apps/desktop/dist
+/src/apps/desktop_app/embedded
 /.worktrees
 .nalar/tasks/
 /docs
