@@ -494,6 +494,16 @@ pub const bash_tool = AgentTool{
         \\## Safety
         \\Avoid destructive or system-modifying commands.
         \\Never assume the working directory — always set cwd explicitly.
+        \\
+        \\## Platform Notes
+        \\The shell is `bash` on every platform. On Windows you must have
+        \\`bash.exe` on PATH. The most common sources are:
+        \\- [Git for Windows](https://git-scm.com/download/win) — ships Git Bash.
+        \\- [WSL](https://learn.microsoft.com/windows/wsl/install) — full Linux bash.
+        \\- MSYS2, Cygwin, or a manual `bash` install.
+        \\If bash is not on PATH, the tool will fail with `FileNotFound` at
+        \\spawn time. macOS users: stock macOS ships bash 3.2; install
+        \\bash 4+ via Homebrew (`brew install bash`) for modern syntax.
         ,
         .parameters = .{
             .type = "object",
