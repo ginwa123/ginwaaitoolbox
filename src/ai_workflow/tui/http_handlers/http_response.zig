@@ -1,60 +1,21 @@
 const std = @import("std");
 const llm_history = @import("../llm_history.zig");
 
-pub const WorkspaceResponse = struct {
-    id: []const u8,
-    name: []const u8,
-    created_at: ?[]const u8 = null,
-    updated_at: ?[]const u8 = null
-};
+pub const WorkspaceResponse = struct { id: []const u8, name: []const u8, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null };
 
-pub const WorkspaceItemResponse = struct {
-    id: []const u8,
-    success: bool = true
-};
+pub const WorkspaceItemResponse = struct { id: []const u8, success: bool = true };
 
-pub const WorkspaceItemFullResponse = struct {
-    id: []const u8,
-    workspace_id: []const u8,
-    item_type: []const u8,
-    name: ?[]const u8 = null,
-    path: ?[]const u8 = null,
-    created_at: ?[]const u8 = null,
-    updated_at: ?[]const u8 = null
-};
+pub const WorkspaceItemFullResponse = struct { id: []const u8, workspace_id: []const u8, item_type: []const u8, name: ?[]const u8 = null, path: ?[]const u8 = null, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null };
 
-pub const LlmRunResponse = struct {
-    status: []const u8,
-    session_id: []const u8
-};
+pub const LlmRunResponse = struct { status: []const u8, session_id: []const u8 };
 
-pub const WorkspaceItemUpdateResponse = struct {
-    id: []const u8,
-    workspace_id: []const u8,
-    item_type: []const u8,
-    success: bool = true
-};
+pub const WorkspaceItemUpdateResponse = struct { id: []const u8, workspace_id: []const u8, item_type: []const u8, success: bool = true };
 
-pub const WorkspaceItemGetResponse = struct {
-    id: []const u8,
-    workspace_id: []const u8,
-    item_type: []const u8,
-    name: ?[]const u8 = null,
-    path: ?[]const u8 = null,
-    created_at: ?[]const u8 = null,
-    updated_at: ?[]const u8 = null
-};
+pub const WorkspaceItemGetResponse = struct { id: []const u8, workspace_id: []const u8, item_type: []const u8, name: ?[]const u8 = null, path: ?[]const u8 = null, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null };
 
-pub const SystemFolderErrorResponse = struct {
-    @"error": []const u8,
-    details: ?[]const u8 = null
-};
+pub const SystemFolderErrorResponse = struct { @"error": []const u8, details: ?[]const u8 = null };
 
-pub const SessionCreateResponse = struct {
-    id: []const u8,
-    name: []const u8,
-    status: []const u8
-};
+pub const SessionCreateResponse = struct { id: []const u8, name: []const u8, status: []const u8 };
 
 pub const SessionUpdateResponse = struct {
     id: []const u8,
@@ -63,27 +24,13 @@ pub const SessionUpdateResponse = struct {
     selected_profile_model: []const u8,
 };
 
-pub const WorkerResponse = struct {
-    id: []const u8,
-    status: []const u8
-};
+pub const WorkerResponse = struct { id: []const u8, status: []const u8 };
 
-pub const HealthResponse = struct {
-    status: []const u8,
-    timestamp: i64
-};
+pub const HealthResponse = struct { status: []const u8, timestamp: i64 };
 
-pub const TaskDeleteResponse = struct {
-    id: []const u8,
-    success: bool = true
-};
+pub const TaskDeleteResponse = struct { id: []const u8, success: bool = true };
 
-pub const TaskCreateResponse = struct {
-    id: []const u8,
-    name: []const u8,
-    description: ?[]const u8,
-    completed: bool
-};
+pub const TaskCreateResponse = struct { id: []const u8, name: []const u8, description: ?[]const u8, completed: bool };
 
 // Request types
 pub const TaskCreateRequest = struct {
@@ -103,22 +50,9 @@ pub const GitStageResponse = struct {
     failed_files: []const []const u8 = &.{},
 };
 
-pub const WorkerInfo = struct {
-    id: []const u8,
-    session_id: []const u8,
-    working_directory: ?[]const u8,
-    last_activity: ?[]const u8,
-    last_activity_description: ?[]const u8,
-    created_at: ?[]const u8,
-    status: []const u8,
-    is_running: bool,
-    queue_count: u32
-};
+pub const WorkerInfo = struct { id: []const u8, session_id: []const u8, working_directory: ?[]const u8, last_activity: ?[]const u8, last_activity_description: ?[]const u8, created_at: ?[]const u8, status: []const u8, is_running: bool, queue_count: u32 };
 
-pub const WorkerListResponse = struct {
-    workers: []const WorkerInfo,
-    count: u32
-};
+pub const WorkerListResponse = struct { workers: []const WorkerInfo, count: u32 };
 
 pub const SessionMessage = struct {
     id: []const u8,
@@ -145,7 +79,7 @@ pub const SessionMessagesResponse = struct {
     cwd: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
-    total: ?u32 = null,  // Total count of messages for VirtualScroller
+    total: ?u32 = null, // Total count of messages for VirtualScroller
     skills: ?[]const llm_history.SkillInfo = null, // Skills loaded for this session
 };
 
@@ -164,9 +98,7 @@ pub fn makeSystemFolderErrorResponse(allocator: std.mem.Allocator, message: []co
 }
 
 pub fn makeSessionCreateResponse(allocator: std.mem.Allocator, response: SessionCreateResponse) ![]u8 {
-    return std.json.Stringify.valueAlloc(allocator, response, .{
-
-    });
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
 pub fn makeSessionUpdateResponse(allocator: std.mem.Allocator, response: SessionUpdateResponse) ![]u8 {
@@ -197,9 +129,7 @@ pub fn makeWorkerListResponse(allocator: std.mem.Allocator, workers: []const Wor
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
-pub const ErrorResponse = struct {
-    @"error": []const u8
-};
+pub const ErrorResponse = struct { @"error": []const u8 };
 
 pub fn makeErrorResponse(allocator: std.mem.Allocator, response: ErrorResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
@@ -283,44 +213,44 @@ pub fn makeWorkspaceItemListObjectResponse(allocator: std.mem.Allocator, items: 
 }
 
 // Workspace Item Task types
-pub const WorkspaceItemTaskResponse = struct {
-    id: []const u8,
-    name: []const u8,
-    workspace_item_id: []const u8,
-    session_id: ?[]const u8 = null,
-    created_at: ?[]const u8 = null,
-    updated_at: ?[]const u8 = null
-};
+pub const WorkspaceItemTaskResponse = struct { id: []const u8, name: []const u8, workspace_item_id: []const u8, session_id: ?[]const u8 = null, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null };
 
 pub const WorkspaceItemTaskListResponse = struct {
     tasks: []const WorkspaceItemTaskResponse,
-    count: u32
+    count: u32,
+    // Pagination fields. `has_more` is true when at least one more page
+    // exists after this one; `next_cursor` is the `created_at` of the
+    // last task in this page, to be passed back as `?cursor=` for the
+    // next page. `next_cursor` is null when there are no more pages.
+    // Both default to "end of list" so older call sites that don't
+    // supply them still compile.
+    has_more: bool = false,
+    next_cursor: ?[]const u8 = null,
 };
 
 pub fn makeWorkspaceItemTaskResponse(allocator: std.mem.Allocator, response: WorkspaceItemTaskResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
-pub fn makeWorkspaceItemTaskListResponse(allocator: std.mem.Allocator, tasks: []const WorkspaceItemTaskResponse) ![]u8 {
+pub fn makeWorkspaceItemTaskListResponse(
+    allocator: std.mem.Allocator,
+    tasks: []const WorkspaceItemTaskResponse,
+    has_more: bool,
+    next_cursor: ?[]const u8,
+) ![]u8 {
     const response = WorkspaceItemTaskListResponse{
         .tasks = tasks,
         .count = @intCast(tasks.len),
+        .has_more = has_more,
+        .next_cursor = next_cursor,
     };
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
 // Git status types
-pub const GitStatusResponse = struct {
-    is_git_repo: bool,
-    branch: ?[]const u8 = null,
-    has_changes: bool = false,
-    is_clean: bool = true,
-    status: ?[]const u8 = null
-};
+pub const GitStatusResponse = struct { is_git_repo: bool, branch: ?[]const u8 = null, has_changes: bool = false, is_clean: bool = true, status: ?[]const u8 = null };
 
-pub const GitStatusErrorResponse = struct {
-    @"error": []const u8
-};
+pub const GitStatusErrorResponse = struct { @"error": []const u8 };
 
 pub fn makeGitStatusResponse(allocator: std.mem.Allocator, response: GitStatusResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});

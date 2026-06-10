@@ -928,14 +928,15 @@ pub fn saveMessage(
     const reasoningStr = input.reasoning_content orelse "";
     const agentStr = input.agent_name orelse "Agent";
 
-    // Determine tool_calls_json: prefer serialized tool_calls, fall back to tool_call_id, then empty string
+    // tool_calls_json holds ONLY the serialized tool_calls array (assistant message wire format).
+    // For tool result messages, the tool_call_id lives in the dedicated tool_call_id column —
+    // do NOT overload tool_calls_json with the id. That overload caused the 2013 bug where the
+    // transform could not tell a JSON array from a plain id string.
     var toolCallsJson: []const u8 = "";
     var toolCallsOwned: ?[]u8 = null;
     if (input.tool_calls) |tc| {
         toolCallsOwned = try serializeToolCalls(allocator, tc);
         toolCallsJson = toolCallsOwned.?;
-    } else if (input.tool_call_id) |tcid| {
-        toolCallsJson = tcid;
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
@@ -2382,6 +2383,86 @@ pub fn listWorkspaceItemTasks(
     }
 
     return try tasks.toOwnedSlice(allocator);
+}
+
+/// List workspace item tasks with cursor pagination. `cursor` is the
+/// `created_at` string of the last task from the previous page; pass
+/// null to fetch the first page. Ordered by `created_at DESC` (newest
+/// first). Returns at most `limit` tasks plus a `has_more` flag
+/// indicating whether at least one more task exists after this page.
+///
+/// Pattern: mirror `getSessionListWithCursor` (above) for SQL building
+/// and `listWorkspaceItemTasks` (above) for row decoding. The
+/// `limit + 1` "peek" trick (fetch one extra row, drop it if present)
+/// detects `has_more` without a second COUNT query.
+pub fn listWorkspaceItemTasksWithCursor(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+    limit: u32,
+    cursor: ?[]const u8,
+) !struct {
+    tasks: []WorkspaceItemTaskInfo,
+    has_more: bool,
+} {
+    // Fetch `limit + 1` rows so we can detect "there are more pages"
+    // without a separate COUNT query.
+    const query_limit = limit + 1;
+    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{query_limit});
+    defer allocator.free(limit_str);
+
+    // Build SQL. workspace_item_id is parameter-bound (matches
+    // listWorkspaceItemTasks above). The cursor and limit are
+    // string-interpolated: the cursor is a server-generated created_at
+    // string, so it's trusted; the limit is a u32 digit string, so it's
+    // safe. Mirrors the style of getSessionListWithCursor.
+    const sql = if (cursor) |c|
+        try std.fmt.allocPrint(
+            allocator,
+            "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id = ? AND created_at < '{s}' ORDER BY created_at DESC LIMIT {s}",
+            .{ c, limit_str },
+        )
+    else
+        try std.fmt.allocPrint(
+            allocator,
+            "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id = ? ORDER BY created_at DESC LIMIT {s}",
+            .{limit_str},
+        );
+    defer allocator.free(sql);
+
+    var rows = try db.query(allocator, sql, &.{workspace_item_id});
+    defer rows.deinit();
+
+    var tasks = std.ArrayList(WorkspaceItemTaskInfo).empty;
+    errdefer {
+        for (tasks.items) |task| task.deinit(allocator);
+        tasks.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const task = WorkspaceItemTaskInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .name = try allocator.dupe(u8, row.values[1]),
+            .workspace_item_id = try allocator.dupe(u8, row.values[2]),
+            .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+        };
+        try tasks.append(allocator, task);
+        row.deinit(allocator);
+    }
+
+    const has_more = tasks.items.len > limit;
+    if (has_more) {
+        // Drop the extra row we fetched to detect has_more.
+        const extra = tasks.pop().?;
+        extra.deinit(allocator);
+    }
+
+    return .{
+        .tasks = try tasks.toOwnedSlice(allocator),
+        .has_more = has_more,
+    };
 }
 
 /// Get all active sessions for SSE broadcast

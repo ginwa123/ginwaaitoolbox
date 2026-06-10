@@ -11,6 +11,7 @@ test {
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");
     _ = @import("http_handlers/sse_handshake_test.zig");
     _ = @import("http_handlers/tasks_update_test.zig");
+    _ = @import("http_handlers/tasks_list_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
     _ = @import("transform_llm_history_to_agent_messages_test.zig");
