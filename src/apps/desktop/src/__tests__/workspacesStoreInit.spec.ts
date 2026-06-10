@@ -47,7 +47,7 @@ describe('useWorkspacesStore.init()', () => {
     })
     getWorkspacesItemsMock.mockResolvedValueOnce({ items: [{ id: 'item_1a', name: 'A' }], count: 1 })
     getWorkspacesItemsMock.mockResolvedValueOnce({ items: [], count: 0 })
-    getTasksMock.mockResolvedValueOnce({ tasks: [], count: 0 })
+    getTasksMock.mockResolvedValueOnce({ tasks: [], has_more: false, next_cursor: null })
 
     const store = useWorkspacesStore()
     await store.init()
@@ -78,12 +78,14 @@ describe('useWorkspacesStore.init()', () => {
         { id: 't1', name: 'T1', workspace_item_id: 'item_a' },
         { id: 't2', name: 'T2', workspace_item_id: 'item_a' },
       ],
-      count: 2,
+      has_more: false,
+      next_cursor: null,
     })
     // Tasks for item_b
     getTasksMock.mockResolvedValueOnce({
       tasks: [{ id: 't3', name: 'T3', workspace_item_id: 'item_b' }],
-      count: 1,
+      has_more: false,
+      next_cursor: null,
     })
 
     const store = useWorkspacesStore()
@@ -107,7 +109,7 @@ describe('useWorkspacesStore.init()', () => {
       workspaces: [{ id: 'ws_1', name: 'W1', icon: '📁' }],
     })
     getWorkspacesItemsMock.mockResolvedValueOnce({ items: [{ id: 'item_1a', name: 'A' }], count: 1 })
-    getTasksMock.mockResolvedValueOnce({ tasks: [], count: 0 })
+    getTasksMock.mockResolvedValueOnce({ tasks: [], has_more: false, next_cursor: null })
 
     const store = useWorkspacesStore()
     await store.init()

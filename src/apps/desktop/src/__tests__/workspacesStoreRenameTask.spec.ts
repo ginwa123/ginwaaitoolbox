@@ -32,7 +32,7 @@ describe('useWorkspacesStore.renameTask', () => {
     // but stub them defensively in case a future test does.
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
     vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
-    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [] })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
   })
 
   afterEach(() => {

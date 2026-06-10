@@ -187,7 +187,7 @@ describe('AppLayout URL-driven chat navigation', () => {
     // output in test logs.
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
     vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
-    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [] })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
     vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
       entries: [],
       path: '/',

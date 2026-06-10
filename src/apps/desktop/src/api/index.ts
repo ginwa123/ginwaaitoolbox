@@ -132,10 +132,42 @@ export async function updateWorkspace(id: string, data: Partial<Workspace>): Pro
 }
 
 // Task API
-export async function getTasks(workspaceId: string, itemId: string): Promise<{ tasks: Task[] }> {
-  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks`)
+/**
+ * Fetch tasks for a workspace item, with optional cursor pagination.
+ *
+ * @param workspaceId  - owning workspace
+ * @param itemId       - workspace item (e.g. a project folder)
+ * @param limit        - page size (default 20; backend clamps at 100)
+ * @param cursor       - the `created_at` of the last task from the previous
+ *                       page; pass undefined for the first page
+ * @returns `{ tasks, has_more, next_cursor }`. `next_cursor` is null when
+ *          there are no more pages.
+ */
+export async function getTasks(
+  workspaceId: string,
+  itemId: string,
+  limit = 20,
+  cursor?: string,
+): Promise<{
+  tasks: Task[]
+  has_more: boolean
+  next_cursor: string | null
+}> {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  if (cursor) {
+    params.set('cursor', cursor)
+  }
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks?${params.toString()}`,
+  )
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  const data = await response.json()
+  return {
+    tasks: data.tasks ?? [],
+    has_more: data.has_more ?? false,
+    next_cursor: data.next_cursor ?? null,
+  }
 }
 
 export async function createTask(

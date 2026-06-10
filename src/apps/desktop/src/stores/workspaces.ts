@@ -13,6 +13,14 @@ export interface WorkspaceItem {
   isLoading?: boolean      // Loading state
   expanded?: boolean       // Whether nested contents are expanded
   tasks?: Task[]           // Tasks within this project
+  // Pagination state for the task list. Populated when tasks are first
+  // fetched (in init()) and reset whenever tasks are reloaded. `null`
+  // next_cursor means there are no more pages. `isLoadingMoreTasks` is
+  // per-item and independent of `isLoading` (which is for the folder
+  // entry fetch). See loadMoreTasks action below.
+  hasMoreTasks?: boolean
+  tasksNextCursor?: string | null
+  isLoadingMoreTasks?: boolean
 }
 
 export interface Workspace {
@@ -170,10 +178,18 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
           await Promise.all(
             (items || []).map(async (item: WorkspaceItem) => {
               try {
-                const { tasks } = await api.getTasks(ws.id, item.id)
+                const { tasks, has_more, next_cursor } = await api.getTasks(ws.id, item.id)
                 if (tasks && tasks.length > 0) {
                   tasksByItem.set(item.id, tasks)
                 }
+                // Stash pagination state on the item object directly.
+                // The spread below copies these into the final item.
+                // If the fetch failed, hasMoreTasks / tasksNextCursor
+                // stay undefined → the Load More button stays hidden
+                // (its v-if is `item.hasMoreTasks` which is falsy for
+                // undefined). The user can retry by reloading the page.
+                item.hasMoreTasks = has_more
+                item.tasksNextCursor = next_cursor
               } catch (err) {
                 console.error(`Failed to fetch tasks for item ${item.id}:`, err)
               }
@@ -486,6 +502,45 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       if (deletedTask) {
         item.tasks.splice(taskIndex, 0, deletedTask)
       }
+    }
+  }
+
+  // Load the next page of tasks for a workspace item. No-op if there
+  // are no more pages, a load is already in progress for this item, or
+  // the item / workspace can't be found. Mirrors the `loadMoreChats`
+  // pattern in ChatsList.vue:121-183. Click-to-load only: this is the
+  // ONLY way the second-or-later pages get fetched (no auto-load).
+  async function loadMoreTasks(workspaceId: string, itemId: string) {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item) return
+    if (item.isLoadingMoreTasks) return
+    if (!item.hasMoreTasks) return
+    if (!item.tasksNextCursor) return
+
+    item.isLoadingMoreTasks = true
+    try {
+      const { tasks, has_more, next_cursor } = await api.getTasks(
+        workspaceId,
+        itemId,
+        20, // PAGE_SIZE — keep in sync with the default in api/index.ts
+        item.tasksNextCursor,
+      )
+      // Append the new page to the existing list. We push (not unshift)
+      // because tasks are ordered newest-first, so older tasks go at
+      // the end of the list.
+      if (!item.tasks) item.tasks = []
+      item.tasks.push(...tasks)
+      item.hasMoreTasks = has_more
+      item.tasksNextCursor = next_cursor
+    } catch (err) {
+      console.error(`Failed to load more tasks for item ${itemId}:`, err)
+      // Leave hasMoreTasks/cursor as-is so the user can retry by
+      // clicking the button again. Do not surface a toast — keep the
+      // failure mode quiet (same pattern as addTask's catch block).
+    } finally {
+      item.isLoadingMoreTasks = false
     }
   }
 
@@ -808,6 +863,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addTask,
     toggleTask,
     deleteTask,
+    loadMoreTasks,
     renameTask,
     initializeFromSystemFolder,
     subscribeToSessionEvents,
