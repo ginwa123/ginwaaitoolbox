@@ -53,14 +53,19 @@ pub const NalarProcess = struct {
     /// (the child may have already exited, or the platform may not
     /// support the signal — either way, the caller is done with the
     /// handle).
-    pub fn terminate(self: *NalarProcess) void {
-        // Send SIGTERM (the default for `child.kill()`). On Linux/macOS
-        // nalar's signal handler will trigger a clean shutdown of all
-        // its open connections; on Windows the kill is unconditional.
-        _ = self.child.kill() catch {};
-        // Wait for the child to actually exit. The wait may block
-        // briefly if the child is still cleaning up.
-        _ = self.child.wait() catch {};
+    ///
+    /// In Zig 0.16, both `child.kill(io)` and `child.wait(io)` take an
+    /// `io: Io` argument (Zig moved to Io-runtime-based process control).
+    /// The caller passes `io` through the NalarProcess handle.
+    pub fn terminate(self: *NalarProcess, io: std.Io) void {
+        // In Zig 0.16, `child.kill(io)` is the all-in-one "terminate +
+        // wait + cleanup" function: it sends SIGTERM, blocks until the
+        // child exits, then sets `child.id = null` to mark the handle
+        // reaped. Calling `child.wait(io)` AFTER `kill(io)` would assert
+        // `child.id != null` and panic — see the doc comment on
+        // `std.process.Child.kill` in std/process/Child.zig. So we just
+        // call kill and trust it to do everything synchronously.
+        self.child.kill(io);
     }
 };
 
@@ -186,8 +191,13 @@ fn readMonotonicNs() u64 {
 /// Spawn nalar as a child process with `--port <port>`. The caller is
 /// responsible for calling `terminate()` on the returned handle before
 /// discarding it.
+///
+/// `io` is the Io runtime handle (Zig 0.16's `std.process.spawn` takes
+/// `io: Io` as its first arg). `allocator` is used by the Child handle
+/// internally — pass the long-lived app allocator, NOT std.testing.allocator.
 pub fn spawn(
     allocator: std.mem.Allocator,
+    io: std.Io,
     nalar_path: []const u8,
     port: u16,
 ) !NalarProcess {
@@ -204,7 +214,7 @@ pub fn spawn(
     // doc says we should capture stderr for diagnostics, but Chunk 2 is
     // a pure unit-test milestone and Chunk 8 will wire up capture if
     // the webview chunks find a need for it.
-    const child = std.process.spawn(std.testing.allocator, .{
+    const child = std.process.spawn(io, .{
         .argv = &argv,
         .stdin = .ignore,
         .stdout = .ignore,
@@ -223,6 +233,8 @@ pub fn spawn(
         .pid = if (child.id) |pid| @intCast(pid) else 0,
     };
 }
+
+
 
 comptime {
     // Quiet the unused-import warning if the platform branch below is
