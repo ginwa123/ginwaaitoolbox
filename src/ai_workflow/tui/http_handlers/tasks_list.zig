@@ -116,6 +116,11 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
         // so the split in the DB fn is unambiguous.
         break :blk try std.fmt.allocPrint(allocator, "{s}|{s}", .{ v, last.id });
     };
+    // `next_cursor` is a freshly-allocated slice whose bytes are COPIED
+    // into the JSON response by makeWorkspaceItemTaskListResponse, so
+    // we can free it as soon as that call returns. Without this defer,
+    // the allocPrint above leaks on every paginated request.
+    defer if (next_cursor) |c| allocator.free(c);
 
     return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeWorkspaceItemTaskListResponse(allocator, task_responses.items, result.has_more, next_cursor) });
 }
