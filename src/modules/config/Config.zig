@@ -17,6 +17,9 @@ pub const LlmConfig = struct {
     mcp_servers: McpServersMap,
     /// Parsed profiles from profiles_models
     profiles_models: ProfilesMap,
+    /// Top-level sub-agents array. Each entry is a typed `SubAgentConfig`
+    /// with its own owned strings.
+    sub_agents: SubAgentsList,
     url_style: []const u8,
     /// When true, fire an OS-level notification when an LLM response
     /// finishes with `finish_reason === 'stop'`. Off by default — the
@@ -43,7 +46,29 @@ pub const LlmConfig = struct {
         temperature: []const u8 = "auto",
         api_key: []const u8 = "",
         url_style: []const u8 = "openai",
+        /// Per-profile sub-agents. Owned `[]SubAgentConfig` (default empty).
+        /// Each entry's strings are allocated with the parent `LlmConfig.allocator`.
+        sub_agents: SubAgentsList = &.{},
     };
+
+    /// Typed configuration for a single sub-agent. Mirrors `LlmProfile` fields
+    /// plus an additional `system_prompt`. All strings are owned slices
+    /// (allocated with the parent `LlmConfig.allocator`).
+    pub const SubAgentConfig = struct {
+        name: []const u8,
+        model: []const u8,
+        base_url: []const u8,
+        thinking: []const u8,
+        temperature: []const u8,
+        url_style: []const u8,
+        api_key: []const u8,
+        system_prompt: []const u8,
+    };
+
+    /// Owned slice of `SubAgentConfig` entries. The slice itself (when non-empty)
+    /// is allocated with the parent `LlmConfig.allocator`, and each entry's
+    /// string fields are individually allocated on the same allocator.
+    pub const SubAgentsList = []SubAgentConfig;
 
     const ProfileJson = struct {
         model: []const u8 = "",
@@ -52,6 +77,7 @@ pub const LlmConfig = struct {
         temperature: []const u8 = "auto",
         api_key: []const u8 = "",
         url_style: []const u8 = "openai",
+        sub_agents: ?std.json.Value = null,
     };
 
     const LlmConfigJson = struct {
@@ -68,6 +94,22 @@ pub const LlmConfig = struct {
         mcp_servers: ?std.json.Value = null,
         /// Profiles - parsed as json.Value then converted to map
         profiles_models: ?std.json.Value = null,
+        /// Top-level sub-agents array. Raw JSON value parsed via
+        /// `parseSubAgentsList` into an owned `[]SubAgentConfig`.
+        sub_agents: ?std.json.Value = null,
+    };
+
+    /// JSON-side parse struct for a single sub-agent entry. Mirrors
+    /// `SubAgentConfig` exactly. Defaults match the documented sane values.
+    const SubAgentJson = struct {
+        name: []const u8 = "",
+        model: []const u8 = "",
+        base_url: []const u8 = "",
+        thinking: []const u8 = "auto",
+        temperature: []const u8 = "auto",
+        url_style: []const u8 = "openai",
+        api_key: []const u8 = "",
+        system_prompt: []const u8 = "",
     };
 
     /// Profiles storage after parsing from JSON
@@ -150,6 +192,7 @@ pub const LlmConfig = struct {
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(allocator),
             .profiles_models = ProfilesMap.init(allocator),
+            .sub_agents = &.{},
         };
         errdefer {
             allocator.free(config.api_key);
@@ -158,6 +201,7 @@ pub const LlmConfig = struct {
             allocator.free(config.url_style);
             freeMcpServersMap(&config.mcp_servers, allocator);
             freeProfilesMap(&config.profiles_models, allocator);
+            freeSubAgentsList(config.sub_agents, allocator);
             if (config.mcpServers_parsed) |*p| p.deinit();
         }
 
@@ -213,6 +257,9 @@ pub const LlmConfig = struct {
             try addProfile(&config.profiles_models, "profile4", profiles_data.profile4, allocator);
         }
 
+        // Parse top-level sub_agents (skip-with-warning on bad entries).
+        config.sub_agents = try parseSubAgentsList(allocator, config_json.sub_agents);
+
         return config;
     }
 
@@ -256,6 +303,9 @@ pub const LlmConfig = struct {
         const api_key = try alloc.dupe(u8, profile.api_key);
         errdefer alloc.free(api_key);
 
+        const profile_sub_agents = try parseSubAgentsList(alloc, profile.sub_agents);
+        errdefer freeSubAgentsList(profile_sub_agents, alloc);
+
         try m.put(key, LlmProfile{
             .model = model,
             .base_url = base_url,
@@ -263,7 +313,104 @@ pub const LlmConfig = struct {
             .temperature = temperature,
             .api_key = api_key,
             .url_style = url_style,
+            .sub_agents = profile_sub_agents,
         });
+    }
+
+    /// Free all owned memory inside a `SubAgentsList` (per-entry strings
+    /// plus the slice header itself). Safe to call with an empty slice.
+    fn freeSubAgentsList(slice: SubAgentsList, allocator: std.mem.Allocator) void {
+        for (slice) |sa| {
+            allocator.free(sa.name);
+            allocator.free(sa.model);
+            allocator.free(sa.base_url);
+            allocator.free(sa.thinking);
+            allocator.free(sa.temperature);
+            allocator.free(sa.url_style);
+            allocator.free(sa.api_key);
+            allocator.free(sa.system_prompt);
+        }
+        if (slice.len > 0) allocator.free(slice);
+    }
+
+    /// Parse a `SubAgentsList` from a raw JSON array value. Each entry is
+    /// required to have a non-empty string `name`; entries missing that
+    /// field (or with malformed JSON) are skipped with a warning. Returns
+    /// an empty slice when `value` is null or not an array.
+    fn parseSubAgentsList(allocator: std.mem.Allocator, value: ?std.json.Value) !SubAgentsList {
+        const unwrapped = value orelse return &.{};
+        const arr = switch (unwrapped) {
+            .array => |a| a,
+            else => return &.{},
+        };
+
+        var list = std.ArrayList(SubAgentConfig).empty;
+        errdefer {
+            for (list.items) |sa| {
+                allocator.free(sa.name);
+                allocator.free(sa.model);
+                allocator.free(sa.base_url);
+                allocator.free(sa.thinking);
+                allocator.free(sa.temperature);
+                allocator.free(sa.url_style);
+                allocator.free(sa.api_key);
+                allocator.free(sa.system_prompt);
+            }
+            list.deinit(allocator);
+        }
+
+        for (arr.items) |item| {
+            const obj = item.object;
+            const name_val = obj.get("name") orelse {
+                std.log.warn("sub_agents entry missing 'name'; skipping", .{});
+                continue;
+            };
+            if (name_val != .string or name_val.string.len == 0) {
+                std.log.warn("sub_agents entry has empty/non-string 'name'; skipping", .{});
+                continue;
+            }
+
+            const item_str = try std.json.Stringify.valueAlloc(allocator, item, .{});
+            defer allocator.free(item_str);
+            const parsed = json.parseFromSlice(SubAgentJson, allocator, item_str, .{
+                .ignore_unknown_fields = true,
+            }) catch |err| {
+                std.log.warn("Failed to parse sub_agents entry: {s}", .{@errorName(err)});
+                continue;
+            };
+            defer parsed.deinit();
+
+            const j = parsed.value;
+            const name = try allocator.dupe(u8, j.name);
+            errdefer allocator.free(name);
+            const model = try allocator.dupe(u8, j.model);
+            errdefer allocator.free(model);
+            const base_url = try allocator.dupe(u8, j.base_url);
+            errdefer allocator.free(base_url);
+            const thinking = try allocator.dupe(u8, j.thinking);
+            errdefer allocator.free(thinking);
+            const temperature = try allocator.dupe(u8, j.temperature);
+            errdefer allocator.free(temperature);
+            const url_style = try allocator.dupe(u8, j.url_style);
+            errdefer allocator.free(url_style);
+            const api_key = try allocator.dupe(u8, j.api_key);
+            errdefer allocator.free(api_key);
+            const system_prompt = try allocator.dupe(u8, j.system_prompt);
+            errdefer allocator.free(system_prompt);
+
+            try list.append(allocator, .{
+                .name = name,
+                .model = model,
+                .base_url = base_url,
+                .thinking = thinking,
+                .temperature = temperature,
+                .url_style = url_style,
+                .api_key = api_key,
+                .system_prompt = system_prompt,
+            });
+        }
+
+        return list.toOwnedSlice(allocator);
     }
 
     /// Free all owned memory inside a `McpHeadersMap` (header keys + values)
@@ -394,6 +541,7 @@ pub const LlmConfig = struct {
 
         freeMcpServersMap(&self.mcp_servers, self.allocator);
         freeProfilesMap(&self.profiles_models, self.allocator);
+        freeSubAgentsList(self.sub_agents, self.allocator);
 
         if (self.mcpServers_parsed) |*parsed| {
             parsed.deinit();
@@ -412,6 +560,7 @@ pub const LlmConfig = struct {
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(self.allocator),
             .profiles_models = ProfilesMap.init(self.allocator),
+            .sub_agents = &.{},
         };
         errdefer {
             self.allocator.free(config.api_key);
@@ -420,6 +569,7 @@ pub const LlmConfig = struct {
             self.allocator.free(config.url_style);
             freeMcpServersMap(&config.mcp_servers, self.allocator);
             freeProfilesMap(&config.profiles_models, self.allocator);
+            freeSubAgentsList(config.sub_agents, self.allocator);
             if (config.mcpServers_parsed) |*p| p.deinit();
         }
 

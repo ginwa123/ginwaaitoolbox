@@ -414,3 +414,45 @@ test "mcp_servers: clone produces independent deep copy" {
     const orig_key = cfg.mcpServerConfig("context7").?.headers.get("CONTEXT7_API_KEY").?;
     try std.testing.expect(orig_key.ptr != ctx.headers.get("CONTEXT7_API_KEY").?.ptr);
 }
+
+// ---------------------------------------------------------------------------
+// sub_agents: top-level typed array
+// ---------------------------------------------------------------------------
+
+test "sub_agents: top-level field is parsed into SubAgentsList" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k",
+        \\  "model": "m",
+        \\  "base_url": "b",
+        \\  "sub_agents": [
+        \\    {
+        \\      "name": "SubAgent1",
+        \\      "model": "MiniMax-M3",
+        \\      "base_url": "https://api.minimax.io/v1",
+        \\      "thinking": "false",
+        \\      "temperature": "auto",
+        \\      "url_style": "openai",
+        \\      "api_key": "",
+        \\      "system_prompt": ""
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), cfg.sub_agents.len);
+    const sa = cfg.sub_agents[0];
+    try std.testing.expectEqualStrings("SubAgent1", sa.name);
+    try std.testing.expectEqualStrings("MiniMax-M3", sa.model);
+    try std.testing.expectEqualStrings("https://api.minimax.io/v1", sa.base_url);
+    try std.testing.expectEqualStrings("false", sa.thinking);
+    try std.testing.expectEqualStrings("auto", sa.temperature);
+    try std.testing.expectEqualStrings("openai", sa.url_style);
+    try std.testing.expectEqualStrings("", sa.api_key);
+    try std.testing.expectEqualStrings("", sa.system_prompt);
+}
