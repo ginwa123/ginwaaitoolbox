@@ -1,5 +1,4 @@
 const std = @import("std");
-const posix = std.posix;
 const schemas = @import("schemas.zig");
 const BashInput = schemas.BashInput;
 const BashOutput = schemas.BashOutput;
@@ -98,7 +97,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         try encode_command_urls(allocator, input.command)
     else
         try allocator.dupe(u8, input.command);
-    defer if (input.do_encoding) allocator.free(command);
+    defer allocator.free(command);
 
     // --- Forbidden pattern check ---
     if (isForbiddenCommand(command)) {
@@ -204,7 +203,15 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const max_lines = input.max_lines orelse 1000;
     const timeout_sec = input.timeout orelse 30;
 
-    var child = try std.process.spawn(io, .{ .argv = &.{ "bash", "-c", command }, .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit, .stdin = if (input.stdin_data != null) .pipe else .close, .stdout = .pipe, .stderr = .pipe, .pgid = 0 });
+    // .pgid removed: default null. child.kill kills the immediate child, which
+    // is the correct behavior for a tool. Subprocesses are reparented on exit.
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "bash", "-c", command },
+        .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
+        .stdin = if (input.stdin_data != null) .pipe else .close,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
 
     if (input.stdin_data) |data| {
         if (child.stdin) |stdin| {
@@ -219,185 +226,136 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const timeout_ns = @as(u64, timeout_sec) * std.time.ns_per_s;
     const start_time = std.Io.Timestamp.now(io, .real).nanoseconds;
 
-    const ArrayList = std.ArrayList;
-    var stdout_data: ArrayList(u8) = .empty;
-    var stderr_data: ArrayList(u8) = .empty;
-    var stdout_line_count: usize = 0;
-    var stderr_line_count: usize = 0;
+    var stdout_data: std.ArrayList(u8) = .empty;
+    var stderr_data: std.ArrayList(u8) = .empty;
     defer {
         stdout_data.deinit(allocator);
         stderr_data.deinit(allocator);
     }
 
-    var buf: [4096]u8 = undefined;
+    var stdout_line_count: usize = 0;
+    var stderr_line_count: usize = 0;
+    var stdout_truncated = false;
+    var stderr_truncated = false;
+    var stdout_eof = std.atomic.Value(bool).init(false);
+    var stderr_eof = std.atomic.Value(bool).init(false);
+    // Zig 0.16 has no std.Thread.Mutex; std.atomic.Mutex is a lock-free enum
+    // that we use as a spinlock (tryLock + spinLoopHint). The critical section
+    // is small (one appendSlice + truncation check), so spinning is fine.
+    var stdout_mutex: std.atomic.Mutex = .unlocked;
+    var stderr_mutex: std.atomic.Mutex = .unlocked;
+
+    const ReadContext = struct {
+        stream: std.Io.File,
+        io: std.Io,
+        buf: *[4096]u8,
+        data: *std.ArrayList(u8),
+        line_count: *usize,
+        truncated: *bool,
+        max_output: usize,
+        max_lines: usize,
+        eof_flag: *std.atomic.Value(bool),
+        mutex: *std.atomic.Mutex,
+        allocator: std.mem.Allocator,
+    };
+
+    const readLoopFn = struct {
+        fn run(ctx: ReadContext) void {
+            defer ctx.eof_flag.store(true, .release);
+            while (true) {
+                const n = std.Io.File.readStreaming(ctx.stream, ctx.io, &.{ctx.buf}) catch return;
+                if (n == 0) return;
+                for (ctx.buf[0..n]) |byte| {
+                    if (byte == '\n') ctx.line_count.* += 1;
+                }
+                if (!ctx.truncated.*) {
+                    // Spinlock on std.atomic.Mutex (no blocking lock in std 0.16)
+                    while (!ctx.mutex.tryLock()) {
+                        std.atomic.spinLoopHint();
+                    }
+                    defer ctx.mutex.unlock();
+                    ctx.data.appendSlice(ctx.allocator, ctx.buf[0..n]) catch return;
+                    if (ctx.data.items.len >= ctx.max_output or ctx.line_count.* >= ctx.max_lines) {
+                        ctx.truncated.* = true;
+                        var trim_pos: usize = ctx.data.items.len;
+                        if (ctx.line_count.* >= ctx.max_lines) {
+                            var count: usize = 0;
+                            for (ctx.data.items, 0..) |b, i| {
+                                if (b == '\n') {
+                                    count += 1;
+                                    if (count == ctx.max_lines) {
+                                        trim_pos = i + 1;
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if (ctx.data.items.len > ctx.max_output) {
+                            trim_pos = ctx.max_output;
+                        }
+                        if (ctx.data.items.len > trim_pos) {
+                            ctx.data.shrinkAndFree(ctx.allocator, trim_pos);
+                        }
+                    }
+                }
+            }
+        }
+    }.run;
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+
+    const stdout_ctx = ReadContext{
+        .stream = child.stdout.?,
+        .io = io,
+        .buf = &stdout_buf,
+        .data = &stdout_data,
+        .line_count = &stdout_line_count,
+        .truncated = &stdout_truncated,
+        .max_output = max_output,
+        .max_lines = max_lines,
+        .eof_flag = &stdout_eof,
+        .mutex = &stdout_mutex,
+        .allocator = allocator,
+    };
+    const stderr_ctx = ReadContext{
+        .stream = child.stderr.?,
+        .io = io,
+        .buf = &stderr_buf,
+        .data = &stderr_data,
+        .line_count = &stderr_line_count,
+        .truncated = &stderr_truncated,
+        .max_output = max_output,
+        .max_lines = max_lines,
+        .eof_flag = &stderr_eof,
+        .mutex = &stderr_mutex,
+        .allocator = allocator,
+    };
+
+    const stdout_thread = try std.Thread.spawn(.{}, readLoopFn, .{stdout_ctx});
+    const stderr_thread = try std.Thread.spawn(.{}, readLoopFn, .{stderr_ctx});
+
     var timeout_hit = false;
     var child_term: ?std.process.Child.Term = null;
 
-    // Flags to track when each stream has been truncated (stop appending, keep counting)
-    var stdout_truncated = false;
-    var stderr_truncated = false;
-
-    // Prepare poll fds for stdout and stderr
-    var poll_fds: [2]posix.pollfd = undefined;
-    var poll_count: usize = 0;
-    var stdout_idx: ?usize = null;
-    var stderr_idx: ?usize = null;
-
-    if (child.stdout) |_| {
-        stdout_idx = poll_count;
-        poll_fds[poll_count] = .{
-            .fd = child.stdout.?.handle,
-            .events = posix.POLL.IN,
-            .revents = 0,
-        };
-        poll_count += 1;
-    }
-
-    if (child.stderr) |_| {
-        stderr_idx = poll_count;
-        poll_fds[poll_count] = .{
-            .fd = child.stderr.?.handle,
-            .events = posix.POLL.IN,
-            .revents = 0,
-        };
-        poll_count += 1;
-    }
-
     while (true) {
-        // Check timeout first
         const elapsed = std.Io.Timestamp.now(io, .real).nanoseconds - start_time;
         if (elapsed > timeout_ns) {
             timeout_hit = true;
             _ = child.kill(io);
-            // Process terminated by kill() - don't call wait() as it will panic
-            // when child.id is null after kill()
+            // Do not call child.wait() here; kill() invalidates child.id.
+            // The wait happens after the threads join below.
             child_term = .{ .signal = .KILL };
             break;
         }
-
-        // Calculate remaining time for poll (max 100ms per poll call)
-        const remaining_ns = timeout_ns - @as(u64, @intCast(elapsed));
-        const poll_timeout_ms = @min(100, @as(i32, @intCast(@divFloor(remaining_ns, std.time.ns_per_ms))));
-
-        // Poll for available data - this won't block longer than poll_timeout_ms
-        const ready = posix.poll(poll_fds[0..poll_count], poll_timeout_ms) catch 0;
-
-        if (ready == 0) {
-            // Poll timed out with no data - loop back to check overall timeout
-            continue;
-        }
-
-        // Read from ready file descriptors
-        var any_read = false;
-
-        // Check stdout using stored index
-        if (stdout_idx) |idx| {
-            if (poll_fds[idx].revents & posix.POLL.IN != 0) {
-                const bytes_read = std.Io.File.readStreaming(child.stdout.?, io, &.{&buf}) catch 0;
-                if (bytes_read > 0) {
-                    any_read = true;
-                    // Always count newlines
-                    for (buf[0..bytes_read]) |byte| {
-                        if (byte == '\n') stdout_line_count += 1;
-                    }
-                    // Append data if not yet truncated
-                    if (!stdout_truncated) {
-                        try stdout_data.appendSlice(allocator, buf[0..bytes_read]);
-                        if (stdout_data.items.len >= max_output or stdout_line_count >= max_lines) {
-                            // Mark truncated and find the line boundary to trim to
-                            stdout_truncated = true;
-                            var count: usize = 0;
-                            var trim_pos = stdout_data.items.len;
-                            var found_line_boundary = false;
-
-                            // Prefer line boundary if lines exceeded, otherwise use byte limit
-                            if (stdout_line_count >= max_lines) {
-                                for (stdout_data.items, 0..) |b, i| {
-                                    if (b == '\n') {
-                                        count += 1;
-                                        if (count == max_lines) {
-                                            trim_pos = i + 1;
-                                            found_line_boundary = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // If no line boundary found, trim to byte limit
-                            if (!found_line_boundary and stdout_data.items.len > max_output) {
-                                trim_pos = max_output;
-                            }
-
-                            if (stdout_data.items.len > trim_pos) {
-                                stdout_data.shrinkAndFree(allocator, trim_pos);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check stderr using stored index
-        if (stderr_idx) |idx| {
-            if (poll_fds[idx].revents & posix.POLL.IN != 0) {
-                const bytes_read = std.Io.File.readStreaming(child.stderr.?, io, &.{&buf}) catch 0;
-                if (bytes_read > 0) {
-                    any_read = true;
-                    // Always count newlines
-                    for (buf[0..bytes_read]) |byte| {
-                        if (byte == '\n') stderr_line_count += 1;
-                    }
-                    // Append data if not yet truncated
-                    if (!stderr_truncated) {
-                        try stderr_data.appendSlice(allocator, buf[0..bytes_read]);
-                        if (stderr_data.items.len >= max_output or stderr_line_count >= max_lines) {
-                            // Mark truncated and find the line boundary to trim to
-                            stderr_truncated = true;
-                            var count: usize = 0;
-                            var trim_pos = stderr_data.items.len;
-                            var found_line_boundary = false;
-
-                            // Prefer line boundary if lines exceeded, otherwise use byte limit
-                            if (stderr_line_count >= max_lines) {
-                                for (stderr_data.items, 0..) |b, i| {
-                                    if (b == '\n') {
-                                        count += 1;
-                                        if (count == max_lines) {
-                                            trim_pos = i + 1;
-                                            found_line_boundary = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // If no line boundary found, trim to byte limit
-                            if (!found_line_boundary and stderr_data.items.len > max_output) {
-                                trim_pos = max_output;
-                            }
-
-                            if (stderr_data.items.len > trim_pos) {
-                                stderr_data.shrinkAndFree(allocator, trim_pos);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check if child has exited (pipes closed = process ended)
-        const all_closed = for (poll_fds[0..poll_count]) |pf| {
-            if (pf.revents & (posix.POLL.HUP | posix.POLL.ERR) == 0) break false;
-        } else true;
-
-        if (all_closed or (!any_read and ready > 0)) {
-            // Pipes closed or poll returned but no data = process likely exited
+        if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
             child_term = child.wait(io) catch .{ .unknown = 1 };
             break;
         }
+        try std.Io.sleep(io, .{ .nanoseconds = 10 * std.time.ns_per_ms }, .real);
     }
 
+    stdout_thread.join();
+    stderr_thread.join();
     if (child_term == null) {
         child_term = child.wait(io) catch .{ .unknown = 1 };
     }
