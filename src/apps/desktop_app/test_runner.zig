@@ -8,6 +8,9 @@
 // In regular (non-test) builds this file's `test { ... }` blocks are inert —
 // the imports are evaluated as `_ = @import("...")` discards, so the test
 // files are reachable through the import graph but their test blocks never run.
-//
-// New test files are added here as the corresponding modules are introduced
-// (port_test.zig in Task 1.2, cli_test.zig in Task 1.3, etc.).
+
+test {
+    _ = @import("port_test.zig");
+    _ = @import("cli_test.zig");
+}
+

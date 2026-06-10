@@ -1,0 +1,90 @@
+// src/apps/desktop_app/cli_test.zig
+//
+// Tests for the CLI parser. Each test builds a small `args` array, calls
+// `cli.parse`, and asserts on the returned Config. Memory: the test allocator
+// is `std.testing.allocator` which is a GeneralPurposeAllocator with leak
+// detection enabled in Debug mode — leaks will fail the test.
+//
+// The `&args` form is a Zig 0.16 idiom: a `*const [N][]const u8` is
+// implicitly coerced to `[]const []const u8` when passed to a function with
+// that parameter type. Both work the same way they did in Zig 0.15.
+
+const std = @import("std");
+const cli = @import("cli.zig");
+const testing = std.testing;
+
+test "parseArgs: defaults" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{"nalar-desktop"};
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expectEqual(@as(u16, 0), cfg.port); // 0 = auto-pick
+    try testing.expect(cfg.nalar_path == null);
+    try testing.expectEqual(@as(u32, 1280), cfg.window_width);
+    try testing.expectEqual(@as(u32, 800), cfg.window_height);
+    try testing.expectEqualStrings("Nalar", cfg.title);
+    try testing.expect(!cfg.smoke_test);
+}
+
+test "parseArgs: --port" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--port", "9999" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expectEqual(@as(u16, 9999), cfg.port);
+}
+
+test "parseArgs: --nalar-path" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--nalar-path", "/tmp/nalar" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.nalar_path != null);
+    try testing.expectEqualStrings("/tmp/nalar", cfg.nalar_path.?);
+}
+
+test "parseArgs: --window-size 1024x768" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--window-size", "1024x768" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expectEqual(@as(u32, 1024), cfg.window_width);
+    try testing.expectEqual(@as(u32, 768), cfg.window_height);
+}
+
+test "parseArgs: --title" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--title", "My Nalar" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expectEqualStrings("My Nalar", cfg.title);
+}
+
+test "parseArgs: --smoke-test" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--smoke-test" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.smoke_test);
+}
+
+test "parseArgs: --help prints usage and signals help" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--help" };
+    const result = cli.parse(allocator, &args);
+    try testing.expectError(error.ShowHelp, result);
+}
+
+test "parseArgs: invalid port returns InvalidPort" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--port", "abc" };
+    const result = cli.parse(allocator, &args);
+    try testing.expectError(error.InvalidPort, result);
+}
+
+test "parseArgs: --window-size without x returns InvalidSize" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--window-size", "1024" };
+    const result = cli.parse(allocator, &args);
+    try testing.expectError(error.InvalidSize, result);
+}
