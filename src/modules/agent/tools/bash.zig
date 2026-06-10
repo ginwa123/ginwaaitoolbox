@@ -212,6 +212,12 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         .stdout = .pipe,
         .stderr = .pipe,
     });
+    // Cleanup on any early-exit path: if the function returns an error
+    // before reaching the success path (which calls child.wait directly),
+    // kill the child so the OS can reap it. Zig 0.16's child.kill is a
+    // no-op when child.id is already null, so it's safe to call after
+    // a timeout-triggered kill in the success path.
+    errdefer _ = child.kill(io);
 
     if (input.stdin_data) |data| {
         if (child.stdin) |stdin| {
@@ -332,7 +338,14 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     };
 
     const stdout_thread = try std.Thread.spawn(.{}, readLoopFn, .{stdout_ctx});
+    // If the function returns an error after this point, the reader thread
+    // would keep running and hold the child's stdout pipe open, leaking
+    // both the thread and the child process (the OS won't reap the child
+    // until all pipe fds are closed). Join on any error path. Safe in
+    // success path because the join is done explicitly below.
+    errdefer stdout_thread.join();
     const stderr_thread = try std.Thread.spawn(.{}, readLoopFn, .{stderr_ctx});
+    errdefer stderr_thread.join();
 
     var timeout_hit = false;
     var child_term: ?std.process.Child.Term = null;
