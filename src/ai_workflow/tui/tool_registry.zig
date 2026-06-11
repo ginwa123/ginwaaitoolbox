@@ -174,8 +174,9 @@ pub fn runWithContext(
 // Individual tool executors - all use unified ToolExecFunc signature
 
 pub fn execBash(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const output = try runWithContext(ctx.allocator, ctx.io, tc, ctx.db, ctx.session_id);
-    return ToolExecResult{ .output = output };
+    const inner = try runWithContext(ctx.allocator, ctx.io, tc, ctx.db, ctx.session_id);
+    const output = try wrapToolOutput(ctx.allocator, "bash", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -183,12 +184,16 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = ctx.session_id;
 
     // Parse arguments JSON to ReadFileInput
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         tool_models.ReadFileInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "read_file failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
     const read_opts = read_file_mod.ReadFileOptions{
@@ -196,24 +201,33 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         .limit = parsed.value.limit,
     };
 
-    const read_result = try read_file_mod.readFile(ctx.allocator, ctx.io, parsed.value.path, read_opts);
+    const read_result = read_file_mod.readFile(ctx.allocator, ctx.io, parsed.value.path, read_opts) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "read_file failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer read_result.deinit(ctx.allocator);
 
     // Single allocation: combines path and content into XML result
-    const output = try read_file_mod.toXMLSuccess(ctx.allocator, read_result, parsed.value.path);
-    return ToolExecResult{ .output = output };
+    const inner = try read_file_mod.toXMLSuccess(ctx.allocator, read_result, parsed.value.path);
+    const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // const sanitized_args = try helpers.sanitize.sanitizeJsonString(ctx.allocator, tc.function.arguments);
     // defer ctx.allocator.free(sanitized_args);
 
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         text_replace_mod.TextReplaceInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "text_replace failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
     const result = text_replace_mod.executeTextReplace(
@@ -223,59 +237,71 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         parsed.value.old_str,
         parsed.value.new_str,
     ) catch |err| {
-        const output = text_replace_mod.toXmlError(
+        const inner = text_replace_mod.toXmlError(
             ctx.allocator,
             err,
             parsed.value.path,
             parsed.value.old_str,
         );
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "text_replace failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    const output = text_replace_mod.toXmlSuccess(ctx.allocator, result, parsed.value.path);
+    const inner = text_replace_mod.toXmlSuccess(ctx.allocator, result, parsed.value.path);
+    const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         write_file_mod.WriteFileInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "write_file failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
     const write_result = write_file_mod.writeFile(ctx.allocator, ctx.io, parsed.value) catch |err| {
-        const output = write_file_mod.toXmlError(ctx.allocator, err, parsed.value.path);
-        return ToolExecResult{ .output = output };
+        const inner = write_file_mod.toXmlError(ctx.allocator, err, parsed.value.path);
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "write_file failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    const res_write = write_file_mod.toXmlSuccess(ctx.allocator, write_result);
+    const inner = write_file_mod.toXmlSuccess(ctx.allocator, write_result);
     write_result.deinit(ctx.allocator);
-
-    return ToolExecResult{ .output = res_write };
+    const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    _ = tc;
-
     // Pass ctx.cwd so local skills are looked up in the session's workspace
     // (the same directory add_skill/edit_skill/remove_skill write to), matching
     // how those tools are invoked. Passing null here would make list_skills fall
     // back to the server's OS-level cwd, causing local skills to be invisible.
-    const output = list_skills_mod.execute_list_skills(ctx.allocator, ctx.io, ctx.cwd, ctx.environment) catch blk: {
-        break :blk try std.fmt.allocPrint(ctx.allocator, "{{\"error\": \"Failed to list skills\"}}", .{});
+    const inner = list_skills_mod.execute_list_skills(ctx.allocator, ctx.io, ctx.cwd, ctx.environment) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_skills failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "list_skills", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
+    const output = try wrapToolOutput(ctx.allocator, "list_skills", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execListMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    _ = tc;
     // Memories are global only — no cwd involvement. The env comes from ctx
     // (same path as list_skills); on null we emit an error-tagged XML so the
     // LLM gets a structured failure instead of a panic.
-    const output = list_memory_mod.execute_list_memory(ctx.allocator, ctx.io, ctx.environment) catch blk: {
-        break :blk try ctx.allocator.dupe(u8, "<memories><error>Failed to list memories</error></memories>");
+    const inner = list_memory_mod.execute_list_memory(ctx.allocator, ctx.io, ctx.environment) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_memory failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "list_memory", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
+    const output = try wrapToolOutput(ctx.allocator, "list_memory", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
@@ -288,35 +314,42 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    const output = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch {
-        return ToolExecResult{ .output = "<skill_name></skill_name><content></content><loaded>false</loaded><error>Failed to get skill</error>" };
+    const inner = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "get_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "get_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
+    const output = try wrapToolOutput(ctx.allocator, "get_skill", tc.function.arguments, true, null, inner);
 
-    // Check if skill was successfully loaded and extract skill info for auto-save
-    if (std.mem.indexOf(u8, output, "<loaded>true</loaded>") != null) {
-        // Parse skill_name from XML output
+    // Check if skill was successfully loaded and extract skill info for auto-save.
+    // The skill_save detection now looks for <success>true</success> in the WRAPPED
+    // envelope, not <loaded>true</loaded> in the inner XML (which is now inside
+    // <data>...</data>).
+    if (std.mem.indexOf(u8, output, "<success>true</success>") != null) {
+        // Parse skill_name from wrapped output
         const name_start = std.mem.indexOf(u8, output, "<skill_name>") orelse {
-            return ToolExecResult{ .output = output };
+            return ToolExecResult{ .output = output, .output_allocated = true };
         };
         const name_begin = name_start + "<skill_name>".len;
         const name_end = std.mem.indexOf(u8, output[name_begin..], "</skill_name>") orelse {
-            return ToolExecResult{ .output = output };
+            return ToolExecResult{ .output = output, .output_allocated = true };
         };
         const skill_name = output[name_begin .. name_begin + name_end];
 
-        // Parse content from XML output
+        // Parse content from wrapped output
         const content_start = std.mem.indexOf(u8, output, "<content>") orelse {
-            return ToolExecResult{ .output = output };
+            return ToolExecResult{ .output = output, .output_allocated = true };
         };
         const content_begin = content_start + "<content>".len;
         const content_end = std.mem.indexOf(u8, output[content_begin..], "</content>") orelse {
-            return ToolExecResult{ .output = output };
+            return ToolExecResult{ .output = output, .output_allocated = true };
         };
         const skill_content = output[content_begin .. content_begin + content_end];
 
         // Return with skill_save info so handle_tool can auto-save to session_skills
         return ToolExecResult{
             .output = output,
+            .output_allocated = true,
             .skill_save = SkillSaveInfo{
                 .name = skill_name,
                 .content = skill_content,
@@ -324,68 +357,131 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         };
     }
 
-    return ToolExecResult{ .output = output };
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execViewSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         view_skill_mod.ViewSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "view_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "view_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const output = view_skill_mod.execute_view_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch {
-        return ToolExecResult{ .output = "<skill_name></skill_name><description></description><found>false</found><error>Failed to view skill</error>" };
+    const inner = view_skill_mod.execute_view_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "view_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "view_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
+    // Empty skill_name means "not found" → wrap as error.
+    if (std.mem.indexOf(u8, inner, "<skill_name></skill_name>") != null) {
+        const err_msg = try ctx.allocator.dupe(u8, "Skill not found");
+        const output = try wrapToolOutput(ctx.allocator, "view_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "view_skill", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         remove_skill_mod.RemoveSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const output = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch {
-        const out = remove_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Unknown error");
-        return ToolExecResult{ .output = out };
+    const inner = remove_skill_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    return ToolExecResult{ .output = output };
+
+    // If inner has <error>...</error>, treat as failure
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         add_skill_mod.AddSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const output = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value);
-    return ToolExecResult{ .output = output };
+    const inner = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         edit_skill_mod.EditSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "edit_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const output = edit_skill_mod.executeEditSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch {
-        const out = edit_skill_mod.xmlError(ctx.allocator, parsed.value.skill_name, "Failed to edit skill");
-        return ToolExecResult{ .output = out };
+    const inner = edit_skill_mod.executeEditSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "edit_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    return ToolExecResult{ .output = output };
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execAddAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -394,94 +490,157 @@ pub fn execAddAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    ) catch {
-        const output = add_agent_mod.xmlErrorEmpty(ctx.allocator, "Failed to parse add_agent arguments");
-        return ToolExecResult{ .output = output };
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_agent failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
     defer parsed.deinit();
 
-    const output = add_agent_mod.executeAddAgentToString(ctx.allocator, parsed.value) catch {
-        const out = add_agent_mod.xmlError(ctx.allocator, parsed.value.name, "Failed to add agent");
-        return ToolExecResult{ .output = out };
+    const inner = add_agent_mod.executeAddAgentToString(ctx.allocator, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_agent failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    return ToolExecResult{ .output = output };
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         remove_agent_mod.RemoveAgentInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_agent failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "remove_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const output = remove_agent_mod.execute_remove_agent_to_string(ctx.allocator, parsed.value) catch {
-        const out = remove_agent_mod.xmlError(ctx.allocator, parsed.value.name, "Failed to remove agent");
-        return ToolExecResult{ .output = out };
+    const inner = remove_agent_mod.execute_remove_agent_to_string(ctx.allocator, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_agent failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "remove_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    return ToolExecResult{ .output = output };
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "remove_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "remove_agent", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         remove_file_mod.RemoveFileInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_file failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "remove_file", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const output = remove_file_mod.executeRemoveFileToString(ctx.allocator, ctx.io, parsed.value) catch {
-        const out = remove_file_mod.xmlError(ctx.allocator, "", "Failed to remove file");
-        return ToolExecResult{ .output = out };
+    const inner = remove_file_mod.executeRemoveFileToString(ctx.allocator, ctx.io, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_file failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "remove_file", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    return ToolExecResult{ .output = output };
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "remove_file", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "remove_file", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    _ = tc;
-
-    const output = list_agents_mod.executeListAgents(ctx.allocator, ctx.io, ctx.environment) catch {
-        const out = list_agents_mod.jsonError("Failed to list agents");
-        return ToolExecResult{ .output = out };
+    const inner = list_agents_mod.executeListAgents(ctx.allocator, ctx.io, ctx.environment) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_agents failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "list_agents", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    return ToolExecResult{ .output = output };
+    const output = try wrapToolOutput(ctx.allocator, "list_agents", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execChangeAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         change_agent_mod.ChangeAgentInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "change_agent failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "change_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const output = change_agent_mod.execute_change_agent_to_string(ctx.allocator, ctx.io, ctx.environment, parsed.value) catch {
-        const out = change_agent_mod.xmlError(ctx.allocator, "Failed to get agent");
-        return ToolExecResult{ .output = out };
+    const inner = change_agent_mod.execute_change_agent_to_string(ctx.allocator, ctx.io, ctx.environment, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "change_agent failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "change_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    return ToolExecResult{ .output = output };
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "change_agent", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "change_agent", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execLspDefinition(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         lsp_definition_mod.LspDefinitionInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "lsp_definition failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "lsp_definition", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
     const result = lsp_definition_mod.execute_lsp_definition(ctx.allocator, ctx.io, ctx.environment, parsed.value) catch |err| {
-        const output = lsp_definition_mod.xmlError(ctx.allocator, std.fmt.allocPrint(ctx.allocator, "Failed to get definition: {s}", .{@errorName(err)}) catch "Unknown error");
-        return ToolExecResult{ .output = output };
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "lsp_definition failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "lsp_definition", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
     defer result.deinit(ctx.allocator);
 
-    const output = try lsp_definition_mod.lsp_definition_to_string(ctx.allocator, result);
-    return ToolExecResult{ .output = output };
+    const inner = try lsp_definition_mod.lsp_definition_to_string(ctx.allocator, result);
+    const output = try wrapToolOutput(ctx.allocator, "lsp_definition", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 // set_agent_properties implementation - modifies agent temperature/is_thinking
@@ -490,6 +649,7 @@ pub fn execSetAgentProperties(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExe
 
     return ToolExecResult{
         .output = result.arguments,
+        .output_allocated = true,
         .temperature = result.temperature,
         .is_thinking = result.is_thinking,
     };
@@ -520,17 +680,17 @@ fn handleSetAgentProperties(
     );
     defer parsed.deinit();
 
-    const contentSetAgentProps = try std.fmt.allocPrint(
-        allocator,
-        "<set_agent_properties>\n{s}\n<set_agent_properties>",
-        .{tool_call.function.arguments},
-    );
+    // The execX contract is "set these fields and return the wrapped output".
+    // We use the standardized envelope so handle_tool sees the same shape as
+    // every other tool. The typo in the closing tag (`<set_agent_properties>`
+    // without the `/`) in the previous version is fixed.
+    const wrapped = try wrapToolOutput(allocator, "set_agent_properties", tool_call.function.arguments, true, null, "");
 
     return SetAgentPropertiesResult{
         .temperature = parsed.value.temperature,
         .is_thinking = parsed.value.is_thinking,
         .tool_call_id = try allocator.dupe(u8, tool_call.id),
-        .arguments = contentSetAgentProps,
+        .arguments = wrapped,
     };
 }
 
@@ -553,12 +713,15 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     // Update worker activity with the thought
     if (llm_history.updateWorkerActivityWithDescription(ctx.allocator, ctx.db, worker_id, parsed.value.thought)) |_| {
         ctx.logger.infoFmt("[update_activity] Updated activity for {s}: {s}", .{ worker_id, parsed.value.thought });
-        const output = update_activity_mod.xmlSuccess(ctx.allocator, parsed.value.thought);
-        return ToolExecResult{ .output = output };
+        const inner = update_activity_mod.xmlSuccess(ctx.allocator, parsed.value.thought);
+        const output = try wrapToolOutput(ctx.allocator, "update_activity", tc.function.arguments, true, null, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
     } else |err| {
         ctx.logger.errFmt("[update_activity] Failed to update worker activity for {s}: {}", .{ worker_id, err });
-        const output = update_activity_mod.xmlError(ctx.allocator, "Failed to update worker activity");
-        return ToolExecResult{ .output = output };
+        const inner = update_activity_mod.xmlError(ctx.allocator, "Failed to update worker activity");
+        const err_msg = "Failed to update worker activity";
+        const output = try wrapToolOutput(ctx.allocator, "update_activity", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
     }
 }
 
@@ -701,8 +864,9 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     try w.print("<summary succeeded=\"{}\" failed=\"{}\" />\n", .{ success_count, sub_agent_count - success_count });
     try w.print("</results>\n", .{});
 
-    results = aw.toArrayList();
-    return ToolExecResult{ .output = try results.toOwnedSlice(ctx.allocator) };
+    const inner_owned = try results.toOwnedSlice(ctx.allocator);
+    const output = try wrapToolOutput(ctx.allocator, "spawn_sub_agent", tc.function.arguments, true, null, inner_owned);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 // Top-level function required by group.concurrent — takes a single *SubAgentThreadArgs.
@@ -802,65 +966,77 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
 }
 // Placeholder LSP exec functions
 pub fn execLspReferences(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    _ = ctx;
-    _ = tc;
-    const output = "lsp_references not implemented";
-    return ToolExecResult{ .output = output };
+    const output = try wrapToolOutput(ctx.allocator, "lsp_references", tc.function.arguments, false, "lsp_references not implemented", "");
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execLspWorkspaceSymbol(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    _ = ctx;
-    _ = tc;
-    const output = "lsp_workspace_symbol not implemented";
-    return ToolExecResult{ .output = output };
+    const output = try wrapToolOutput(ctx.allocator, "lsp_workspace_symbol", tc.function.arguments, false, "lsp_workspace_symbol not implemented", "");
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execLspDocumentSymbol(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    _ = ctx;
-    _ = tc;
-    const output = "lsp_document_symbol not implemented";
-    return ToolExecResult{ .output = output };
+    const output = try wrapToolOutput(ctx.allocator, "lsp_document_symbol", tc.function.arguments, false, "lsp_document_symbol not implemented", "");
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execLspHover(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    _ = ctx;
-    _ = tc;
-    const output = "lsp_hover not implemented";
-    return ToolExecResult{ .output = output };
+    const output = try wrapToolOutput(ctx.allocator, "lsp_hover", tc.function.arguments, false, "lsp_hover not implemented", "");
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         tool_models.WebSearchInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "web_search failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "web_search", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const result = try web_search_mod.execute_web_search(ctx.allocator, ctx.io, parsed.value);
+    const result = web_search_mod.execute_web_search(ctx.allocator, ctx.io, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "web_search failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "web_search", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer result.deinit(ctx.allocator);
 
-    const output = try web_search_mod.web_search_result_to_string(ctx.allocator, result);
-    return ToolExecResult{ .output = output };
+    const inner = try web_search_mod.web_search_result_to_string(ctx.allocator, result);
+    const output = try wrapToolOutput(ctx.allocator, "web_search", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execCloakBrowser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         cloak_browser_mod.CloakBrowserInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "cloak_browser failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "cloak_browser", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    const result = try cloak_browser_mod.execute_cloak_browser(ctx.allocator, ctx.io, parsed.value);
+    const result = cloak_browser_mod.execute_cloak_browser(ctx.allocator, ctx.io, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "cloak_browser failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "cloak_browser", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
 
     if (result.success) {
-        const output = try cloak_browser_mod.toXMLSuccess(ctx.allocator, result);
+        const inner = try cloak_browser_mod.toXMLSuccess(ctx.allocator, result);
+        const output = try wrapToolOutput(ctx.allocator, "cloak_browser", tc.function.arguments, true, null, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     } else {
-        const output = try cloak_browser_mod.toXMLError(ctx.allocator, result, parsed.value.action);
+        const inner = try cloak_browser_mod.toXMLError(ctx.allocator, result, parsed.value.action);
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "cloak_browser {s} failed", .{parsed.value.action});
+        const output = try wrapToolOutput(ctx.allocator, "cloak_browser", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     }
 }
@@ -869,58 +1045,73 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const args = tc.function.arguments;
     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
 
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         glob_tool_mod.GlobInput,
         ctx.allocator,
         args_to_parse,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "glob failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
-    var glob_result = try glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value);
-    const res_glob = try glob_tool_mod.toXmlSuccess(ctx.allocator, glob_result, parsed.value.pattern);
-    glob_result.deinit(ctx.allocator);
+    const glob_result = glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "glob failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
 
-    return ToolExecResult{ .output = res_glob };
+    const inner = try glob_tool_mod.toXmlSuccess(ctx.allocator, glob_result, parsed.value.pattern);
+    glob_result.deinit(ctx.allocator);
+    const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const args = tc.function.arguments;
     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
 
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         search_tool_mod.SearchInput,
         ctx.allocator,
         args_to_parse,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    );
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     defer parsed.deinit();
 
     var search_result = search_tool_mod.executeSearch(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch |err| {
         if (err == error.StdoutStreamTooLong) {
-            const output = try ctx.allocator.dupe(u8,
-                \\<warning>Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.</warning>
-            );
-            return ToolExecResult{ .output = output };
+            const err_msg = "Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.";
+            const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
+            return ToolExecResult{ .output = output, .output_allocated = true };
         }
-        return err;
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
     if (search_result.matches.items.len == 0) {
-        const output = try ctx.allocator.dupe(u8, search_result.content);
+        const inner = try ctx.allocator.dupe(u8, search_result.content);
         search_result.deinit(ctx.allocator);
-        return ToolExecResult{ .output = output };
+        const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, true, null, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
     }
 
-    const res_search = try search_tool_mod.search_result_to_string_grouped(
+    const inner = try search_tool_mod.search_result_to_string_grouped(
         ctx.allocator,
         search_result,
         parsed.value.pattern,
         parsed.value.path,
     );
     search_result.deinit(ctx.allocator);
-
-    return ToolExecResult{ .output = res_search };
+    const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
 // pub fn execSemanticSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
