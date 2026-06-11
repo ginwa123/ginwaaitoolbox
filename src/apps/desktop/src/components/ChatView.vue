@@ -15,6 +15,7 @@ import {
 import FileInput from './FileInput.vue'
 import SseStatusBadge from './SseStatusBadge.vue'
 import FolderExplorer from './FolderExplorer.vue'
+import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import DiffView from './tool_outputs/DiffView.vue'
 import ReadFile from './tool_outputs/ReadFile.vue'
 import WriteFile from './tool_outputs/WriteFile.vue'
@@ -201,7 +202,19 @@ const renderResponse = (
         return `<span class="tool-inline">${tool_name} → ${agentCount} agents (${succeeded} succeeded, ${failed} failed)</span>`
       }
 
-      return `<span class="tool-inline">${tool_name || 'tool'} → ${escapeHtml(content)}</span>`
+      // Fallback: render a concise summary from the <tool> envelope.
+      // If the content doesn't match the envelope (legacy), fall back to
+      // the raw text (existing behavior).
+      const unwrapped = tryUnwrapToolOutput(content)
+      if (unwrapped === null) {
+        return `<span class="tool-inline">${tool_name || 'tool'} → ${escapeHtml(content)}</span>`
+      }
+      const statusIcon = unwrapped.success ? '✓' : '✗'
+      const statusClass = unwrapped.success ? 'tool-inline-success' : 'tool-inline-error'
+      const preview = unwrapped.success
+        ? unwrapped.data?.slice(0, 80) ?? ''
+        : unwrapped.error ?? 'unknown error'
+      return `<span class="tool-inline">${tool_name || unwrapped.name} → <span class="${statusClass}">${statusIcon}</span> ${escapeHtml(preview)}${preview.length >= 80 ? '…' : ''}</span>`
     }
 
     return escapeHtml(content)
@@ -578,6 +591,33 @@ const messageGroups = computed((): MessageGroup[] => {
 
   return groups
 })
+
+// Per-message envelope unwrap lookup. Keyed by message id; value is the
+// parsed envelope or null if the content is not a <tool> envelope (legacy
+// or non-tool content). Computed once when messages change so the
+// template can do a cheap O(1) lookup per tool component.
+const unwrappedByMessageId = computed((): Map<string, UnwrappedToolOutput | null> => {
+  const map = new Map<string, UnwrappedToolOutput | null>()
+  for (const m of messages.value) {
+    if (m.role !== 'tool') {
+      map.set(m.id, null)
+      continue
+    }
+    map.set(m.id, tryUnwrapToolOutput(m.content))
+  }
+  return map
+})
+
+// Helper used in the template: get the inner data to pass to a
+// tool-specific component. Returns the original content if the
+// envelope didn't parse (legacy fallback) or if there was an error
+// (the error message is shown via the envelope, not via the inner
+// component's own error path).
+const innerToolData = (m: Message): string => {
+  const unwrapped = unwrappedByMessageId.value.get(m.id)
+  if (unwrapped === null || unwrapped === undefined) return m.content // legacy
+  return unwrapped.data ?? m.content // error case: fall back to full content
+}
 
 // ─── FIX: Compute tool call names per assistant group ─────────────────────────
 // For each group index, returns the tool names string if the group is an
@@ -1776,35 +1816,35 @@ const compactSession = async () => {
                         >
                           <ReadFile
                             v-if="msg.tool_name === 'read_file'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :cwd="cwd"
                           />
                           <WriteFile
                             v-else-if="msg.tool_name === 'write_file'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :cwd="cwd"
                           />
                           <UpdateActivity
                             v-else-if="msg.tool_name === 'update_activity'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <Search
                             v-else-if="msg.tool_name === 'search'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :cwd="cwd"
                           />
                           <Glob
                             v-else-if="msg.tool_name === 'glob'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :cwd="cwd"
                           />
                           <TextReplace
                             v-else-if="msg.tool_name === 'text_replace'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :diffview-before="msg.diffview_before"
                             :diffview-after="msg.diffview_after"
@@ -1812,48 +1852,48 @@ const compactSession = async () => {
                           />
                           <Bash
                             v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <GetSkill
                             v-else-if="msg.tool_name === 'get_skill'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <ViewSkill
                             v-else-if="msg.tool_name === 'view_skill'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <ListSkills
                             v-else-if="msg.tool_name === 'list_skills'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <AddSkill
                             v-else-if="msg.tool_name === 'add_skill'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <EditSkill
                             v-else-if="msg.tool_name === 'edit_skill'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <RemoveSkill
                             v-else-if="msg.tool_name === 'remove_skill'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <RemoveFile
                             v-else-if="msg.tool_name === 'remove_file'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :cwd="cwd"
                           />
                           <SpawnSubAgent
                             v-else-if="msg.tool_name === 'spawn_sub_agent'"
-                            :content="msg.content"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :sub-agent-args="findSubAgentArgsForToolGroup(msg.tool_call_id, messageGroups, groupIndex)"
                           />
@@ -2399,6 +2439,16 @@ const compactSession = async () => {
   font-size: 0.8rem;
   color: var(--semantic-text-dim);
   font-family: monospace;
+}
+
+:deep(.tool-inline-success) {
+  color: var(--color-green);
+  font-weight: 600;
+}
+
+:deep(.tool-inline-error) {
+  color: var(--color-red);
+  font-weight: 600;
 }
 
 :deep(.markdown-content pre) {
