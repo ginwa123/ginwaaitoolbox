@@ -48,6 +48,7 @@ test "build_agent_prompt with no environment: no Global Knowledge section" {
         &tools,
         "",
         null,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -100,6 +101,7 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -137,6 +139,7 @@ test "build_agent_prompt: empty memories dir, no Global Knowledge section" {
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -222,6 +225,7 @@ test "build_agent_prompt lists global and local skills in Available Skills secti
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -306,6 +310,7 @@ test "build_agent_prompt Available Skills section includes absolute file path an
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -378,6 +383,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -405,6 +411,7 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
         &tools,
         "",
         null, // ← env is null
+        "",
     );
     defer alloc.free(prompt);
 
@@ -453,6 +460,7 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
         &tools,
         "",
         null, // env is null — only local knowledge should be present
+        "",
     );
     defer alloc.free(prompt);
 
@@ -533,6 +541,7 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -577,6 +586,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does n
         &tools,
         "",
         null,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -602,6 +612,7 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
         &tools,
         "",
         null,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -642,6 +653,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
         &tools,
         "",
         null,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -649,3 +661,160 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
     try std.testing.expect(!contains(prompt, "## Local Knowledge"));
 }
 
+
+// ---------------------------------------------------------------------------
+// appendSubAgentsListing — "Available Sub-Agents" section
+// ---------------------------------------------------------------------------
+//
+// PR review: inject the list of sub-agents from LlmConfig into the
+// system prompt so the LLM can discover what agent_names to pass
+// to spawn_sub_agent. These tests exercise the rendering format
+// (the integration with LlmConfig + selected_profile_model is
+// covered by manual smoke testing because the LlmConfig singleton
+// is hard to set up in a unit test).
+
+test "appendSubAgentsListing: empty rows slice is a no-op" {
+    const alloc = std.testing.allocator;
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &.{});
+    try std.testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "appendSubAgentsListing: renders a single row with name + model + description" {
+    const alloc = std.testing.allocator;
+
+    const rows = [_]prompts.SubAgentListingRow{
+        .{
+            .name = "code-reviewer",
+            .model = "gpt-4o",
+            .description = "You are a strict code reviewer.",
+            .source = "",
+        },
+    };
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &rows);
+
+    const out = result.items;
+    // Header is present.
+    try std.testing.expect(contains(out, "## Available Sub-Agents"));
+    // Row is rendered with name, model, description.
+    try std.testing.expect(contains(out, "**code-reviewer**"));
+    try std.testing.expect(contains(out, "model: `gpt-4o`"));
+    try std.testing.expect(contains(out, "You are a strict code reviewer."));
+    // No source suffix when source is empty.
+    try std.testing.expect(!contains(out, "from profile"));
+    // Footer explains where the list came from.
+    try std.testing.expect(contains(out, "sub_agents"));
+    try std.testing.expect(contains(out, "profile"));
+}
+
+test "appendSubAgentsListing: per-profile source suffix is shown" {
+    const alloc = std.testing.allocator;
+
+    const rows = [_]prompts.SubAgentListingRow{
+        .{
+            .name = "reviewer",
+            .model = "gpt-4o",
+            .description = "Profile-specific reviewer.",
+            .source = "profile1",
+        },
+    };
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &rows);
+
+    try std.testing.expect(contains(result.items, "from profile `profile1`"));
+}
+
+test "appendSubAgentsListing: rows with empty name are skipped (defensive)" {
+    const alloc = std.testing.allocator;
+
+    const rows = [_]prompts.SubAgentListingRow{
+        .{ .name = "", .model = "m", .description = "should be skipped", .source = "" },
+        .{ .name = "valid", .model = "m", .description = "should be rendered", .source = "" },
+    };
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &rows);
+
+    try std.testing.expect(!contains(result.items, "should be skipped"));
+    try std.testing.expect(contains(result.items, "should be rendered"));
+    try std.testing.expect(contains(result.items, "**valid**"));
+}
+
+test "appendSubAgentsListing: empty model/description still renders the row" {
+    const alloc = std.testing.allocator;
+
+    const rows = [_]prompts.SubAgentListingRow{
+        .{ .name = "minimal", .model = "", .description = "", .source = "" },
+    };
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &rows);
+
+    // The name is present but neither the model nor the
+    // description is rendered (no "model: \`\`", no em-dash).
+    try std.testing.expect(contains(result.items, "**minimal**"));
+    try std.testing.expect(!contains(result.items, "model: `"));
+    try std.testing.expect(!contains(result.items, " — \""));
+}
+
+test "build_agent_prompt with sub_agents_listing: section is rendered when non-empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{};
+    const sub_agents_listing =
+        \\## Available Sub-Agents
+        \\
+        \\- **code-reviewer** (model: `gpt-4o`)
+        \\
+    ;
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        sub_agents_listing,
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(contains(prompt, "## Available Sub-Agents"));
+    try std.testing.expect(contains(prompt, "**code-reviewer**"));
+}
+
+test "build_agent_prompt with sub_agents_listing: section is omitted when empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{};
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "", // empty sub_agents_listing
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(!contains(prompt, "## Available Sub-Agents"));
+}

@@ -795,9 +795,31 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit(ctx.allocator);
 
-    var results = std.ArrayList(u8).empty;
-    defer results.deinit(ctx.allocator);
-    var aw = std.Io.Writer.Allocating.fromArrayList(ctx.allocator, &results);
+    // Build the result XML using `std.Io.Writer.Allocating`.
+    //
+    // IMPORTANT (learned the hard way on 2026-06-15): in this Zig
+    // 0.16 build, `Writer.Allocating.fromArrayList` EMPTIES the
+    // passed ArrayList (`defer array_list.* = .empty;` inside
+    // `fromArrayListAligned`, see std/Io/Writer.zig line 2567) and
+    // takes ownership of its allocated memory as the writer's
+    // internal buffer. Calling `toOwnedSlice` on the ORIGINAL
+    // ArrayList therefore returns "" — the data is in the writer.
+    // And `Writer.Allocating.flush` is a no-op (see std/Io/Writer.zig
+    // line 2582: `.flush = noopFlush`), so calling `flush` does
+    // nothing useful.
+    //
+    // The right pattern is:
+    //   1. `Allocating.init(allocator)` — get a writer with its own buffer
+    //   2. write into it via `&aw.writer`
+    //   3. `aw.toArrayList()` — MOVE the buffer out as a fresh ArrayList
+    //   4. `final_list.toOwnedSlice(allocator)` — extract the data
+    //   5. `defer aw.deinit()` — cleanup the writer
+    //
+    // (The previous fix that called `try aw.flush();` was a no-op
+    // for the same reason and didn't actually fix the empty-data
+    // bug. This is the real fix.)
+    var aw = std.Io.Writer.Allocating.init(ctx.allocator);
+    defer aw.deinit();
     const w = &aw.writer;
 
     const sub_agent_count = parsed.sub_agents.len;
@@ -835,45 +857,42 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         // orchestrator's defaults. When empty, no overlay is applied
         // (the sub-agent uses the orchestrator's profile-resolved
         // model/api_key/etc. as before).
-        const overrides: ?ai_workflow.SubAgentOverrides = if (sub_agent.agent_name) |an|
-            blk: {
-                if (an.len == 0) break :blk null;
-                // Resolve against the active profile's sub_agents
-                // list first (when a profile is selected), then
-                // fall back to the top-level sub_agents. The
-                // parent's selected_profile_model is threaded
-                // through `ToolExecContext.selected_profile_model`
-                // by the workflow → handle_tool → dispatch path.
-                //
-                // The `@constCast` is needed because `resolveSubAgent`
-                // mutates `self.random_names` to track the random
-                // fallback's allocation for deinit cleanup. The
-                // LlmConfig is logically immutable (it lives in
-                // the singleton for the server's lifetime); this
-                // single private mutation is a tracking side-effect,
-                // not a semantic change. Casting away const at
-                // the one production call site keeps the rest of
-                // the type system honest about read-only access.
-                const resolved = @constCast(ctx.config).resolveSubAgent(ctx.selected_profile_model, an);
-                if (resolved.is_random_fallback) {
-                    ctx.logger.warnFmt("spawn_sub_agent: agent_name '{s}' not found in LlmConfig.sub_agents; using random name '{s}' and orchestrator defaults", .{ an, resolved.name });
-                } else {
-                    ctx.logger.infoFmt("spawn_sub_agent: agent_name '{s}' resolved (source='{s}', model='{s}')", .{ an, resolved.source, resolved.model });
-                }
-                break :blk ai_workflow.SubAgentOverrides{
-                    .resolved_name = resolved.name,
-                    .is_random_fallback = resolved.is_random_fallback,
-                    .model = resolved.model,
-                    .base_url = resolved.base_url,
-                    .api_key = resolved.api_key,
-                    .url_style = resolved.url_style,
-                    .is_thinking = resolved.is_thinking,
-                    .temperature = resolved.temperature,
-                    .system_prompt = resolved.system_prompt,
-                };
+        const overrides: ?ai_workflow.SubAgentOverrides = if (sub_agent.agent_name) |an| blk: {
+            if (an.len == 0) break :blk null;
+            // Resolve against the active profile's sub_agents
+            // list first (when a profile is selected), then
+            // fall back to the top-level sub_agents. The
+            // parent's selected_profile_model is threaded
+            // through `ToolExecContext.selected_profile_model`
+            // by the workflow → handle_tool → dispatch path.
+            //
+            // The `@constCast` is needed because `resolveSubAgent`
+            // mutates `self.random_names` to track the random
+            // fallback's allocation for deinit cleanup. The
+            // LlmConfig is logically immutable (it lives in
+            // the singleton for the server's lifetime); this
+            // single private mutation is a tracking side-effect,
+            // not a semantic change. Casting away const at
+            // the one production call site keeps the rest of
+            // the type system honest about read-only access.
+            const resolved = @constCast(ctx.config).resolveSubAgent(ctx.selected_profile_model, an);
+            if (resolved.is_random_fallback) {
+                ctx.logger.warnFmt("spawn_sub_agent: agent_name '{s}' not found in LlmConfig.sub_agents; using random name '{s}' and orchestrator defaults", .{ an, resolved.name });
+            } else {
+                ctx.logger.infoFmt("spawn_sub_agent: agent_name '{s}' resolved (source='{s}', model='{s}')", .{ an, resolved.source, resolved.model });
             }
-        else
-            null;
+            break :blk ai_workflow.SubAgentOverrides{
+                .resolved_name = resolved.name,
+                .is_random_fallback = resolved.is_random_fallback,
+                .model = resolved.model,
+                .base_url = resolved.base_url,
+                .api_key = resolved.api_key,
+                .url_style = resolved.url_style,
+                .is_thinking = resolved.is_thinking,
+                .temperature = resolved.temperature,
+                .system_prompt = resolved.system_prompt,
+            };
+        } else null;
 
         const args = try ctx.allocator.create(SubAgentThreadArgs);
         args.* = .{
@@ -935,21 +954,16 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     try w.print("<summary succeeded=\"{}\" failed=\"{}\" />\n", .{ success_count, sub_agent_count - success_count });
     try w.print("</results>\n", .{});
 
-    // `std.Io.Writer.Allocating` buffers internally and only
-    // flushes to the underlying `results` ArrayList when its
-    // internal buffer fills. Without this explicit flush,
-    // `toOwnedSlice` below returns the list's contents (which
-    // can be empty when the total output is small — e.g. the
-    // `<results>\n<summary .../></results>\n` wrapper when no
-    // sub-agent matches the requested `agent_name` and the
-    // random-fallback path is taken, or when the sub-agent
-    // itself produces an empty response). Symptom: the spawn
-    // tool returns `<data></data></tool>` and the LLM sees "no
-    // result" — the conversation stalls. We hit this in smoke
-    // testing on 2026-06-15.
-    try aw.flush();
-
-    const inner_owned = try results.toOwnedSlice(ctx.allocator);
+    // Move the writer's internal buffer out as an ArrayList (this
+    // resets the writer to an empty state — `defer aw.deinit()`
+    // at the top of the function will free the now-empty writer
+    // bookkeeping). See the long comment on the `var aw` line
+    // for the full rationale (the `results` ArrayList was
+    // emptied by `fromArrayList`; we don't use that pattern
+    // anymore; the data lives in the writer's internal buffer).
+    var final_list = aw.toArrayList();
+    defer final_list.deinit(ctx.allocator);
+    const inner_owned = try final_list.toOwnedSlice(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "spawn_sub_agent", tc.function.arguments, true, null, inner_owned);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }

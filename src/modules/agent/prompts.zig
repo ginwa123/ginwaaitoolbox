@@ -329,6 +329,12 @@ pub fn build_agent_prompt(
     tools: []const tool_models.AgentTool,
     activity_info: []const u8,
     environment: ?*const std.process.Environ.Map,
+    /// Pre-rendered "Available Sub-Agents" listing, built by
+    /// `buildMessages` from the current session's
+    /// `selected_profile_model` + the LlmConfig. Empty string
+    /// means "no sub-agents configured" (the section is omitted).
+    /// See `appendSubAgentsListing` for the rendering format.
+    sub_agents_listing: []const u8,
 ) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -342,6 +348,17 @@ pub fn build_agent_prompt(
     }
 
     // === 2. Dynamic: session-specific content ===
+
+    // Available sub-agents (from LlmConfig.sub_agents or the
+    // active profile's sub_agents). Computed by buildMessages
+    // and passed in as a pre-rendered string so this function
+    // doesn't need DB access or the LlmConfig singleton. The
+    // section is rendered right after the tool listing so the
+    // LLM sees what sub-agents it can spawn before deciding to
+    // call spawn_sub_agent.
+    if (sub_agents_listing.len > 0) {
+        try result.appendSlice(allocator, sub_agents_listing);
+    }
 
     // Skills loaded for this session (from session_skills table).
     if (usedSkills.len > 0) {
@@ -551,4 +568,101 @@ fn appendSkillsListing(
             try result.appendSlice(allocator, "`\n");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Available Sub-Agents listing
+// ---------------------------------------------------------------------------
+
+/// One row of the sub-agents listing. Borrowed slices from the
+/// `SubAgentConfig` entry — they live as long as the parent
+/// `LlmConfig`. Computed by the caller (typically
+/// `buildMessages`); `appendSubAgentsListing` just renders the
+/// rows passed to it.
+pub const SubAgentListingRow = struct {
+    name: []const u8,
+    model: []const u8,
+    /// First N chars of the sub-agent's `system_prompt`, used as
+    /// a one-line description in the listing. Empty when the
+    /// sub-agent has no system_prompt. Caller should pre-truncate
+    /// (e.g. to 80 chars) to keep the prompt lean.
+    description: []const u8,
+    /// `""` for top-level, or the profile name when the row
+    /// came from a profile's `sub_agents`. Used for the source
+    /// suffix in the listing.
+    source: []const u8,
+};
+
+/// Append a "## Available Sub-Agents" section to the result
+/// ArrayList. Mirrors `appendToolListing` / `appendSkillsListing`
+/// in shape (markdown bullet list with a header that gates on
+/// `spawn_sub_agent` being present in the tool list — the section
+/// is only useful when the LLM can actually call it).
+///
+/// Format:
+/// ```
+/// ## Available Sub-Agents
+///
+/// You can use `spawn_sub_agent` with one of these `agent_name` values:
+///
+/// - **code-reviewer** — model: `gpt-4o` — "You are a strict code reviewer..."
+/// - **frontend-helper** — model: `claude-3.5-sonnet` — "You are a frontend..."
+///
+/// (Loaded from the `sub_agents` array in `~/.config/nalar/config.json`.
+/// With a profile selected, the profile's sub_agents list is used;
+/// otherwise the top-level list is used.)
+/// ```
+///
+/// No-op when `rows.len == 0` so callers can pass an empty slice
+/// to mean "no sub-agents configured" (matches the convention used
+/// by `appendToolListing` for empty tool lists).
+pub fn appendSubAgentsListing(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    rows: []const SubAgentListingRow,
+) !void {
+    if (rows.len == 0) return;
+
+    try result.appendSlice(allocator,
+        \\## Available Sub-Agents
+        \\
+        \\You can use the `spawn_sub_agent` tool with one of these
+        \\`agent_name` values to delegate the task to a pre-configured
+        \\specialized sub-agent:
+        \\
+    );
+
+    for (rows) |row| {
+        // Skip rows with empty name (defensive — should never
+        // happen since the LlmConfig rejects empty names at
+        // load time, but be tolerant).
+        if (row.name.len == 0) continue;
+        try result.appendSlice(allocator, "- **");
+        try result.appendSlice(allocator, row.name);
+        try result.appendSlice(allocator, "**");
+        if (row.model.len > 0) {
+            try result.appendSlice(allocator, " (model: `");
+            try result.appendSlice(allocator, row.model);
+            try result.appendSlice(allocator, "`)");
+        }
+        if (row.description.len > 0) {
+            try result.appendSlice(allocator, " — \"");
+            try result.appendSlice(allocator, row.description);
+            try result.appendSlice(allocator, "\"");
+        }
+        if (row.source.len > 0) {
+            try result.appendSlice(allocator, " _(from profile `");
+            try result.appendSlice(allocator, row.source);
+            try result.appendSlice(allocator, "`)_");
+        }
+        try result.appendSlice(allocator, "\n");
+    }
+
+    try result.appendSlice(allocator,
+        \\
+        \\Loaded from the `sub_agents` array in `~/.config/nalar/config.json`.
+        \\With a profile selected, the profile's `sub_agents` list is
+        \\used; otherwise the top-level list is used.
+        \\
+    );
 }
