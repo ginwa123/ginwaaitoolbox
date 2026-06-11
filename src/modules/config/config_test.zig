@@ -379,6 +379,75 @@ test "notify_on_complete: reads false from JSON when explicitly false" {
     try std.testing.expectEqual(false, cfg.notify_on_complete);
 }
 
+// ---------------------------------------------------------------------------
+// url_style: top-level OpenAI vs Anthropic selector (regression for
+// `NalarSettings.vue` URL Style dropdown — see plan
+// `2026-06-11-nalar-config-url-style.md`).
+// ---------------------------------------------------------------------------
+
+test "LlmConfig: url_style field round-trips through disk JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "url_style": "anthropic"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("anthropic", cfg.url_style);
+}
+
+test "LlmConfig: url_style defaults to openai when missing from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("openai", cfg.url_style);
+}
+
+// ---------------------------------------------------------------------------
+// model_compaction_size_kb: session-compactor threshold (consumed by
+// `session_compact.zig:57`). No UI — power users edit config.json.
+// ---------------------------------------------------------------------------
+
+test "LlmConfig: model_compaction_size_kb reads value from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "model_compaction_size_kb": 250
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(usize, 250), cfg.model_compaction_size_kb);
+}
+
+test "LlmConfig: model_compaction_size_kb defaults to 100 when missing from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(usize, 100), cfg.model_compaction_size_kb);
+}
+
 test "mcp_servers: clone produces independent deep copy" {
     const allocator = std.testing.allocator;
 

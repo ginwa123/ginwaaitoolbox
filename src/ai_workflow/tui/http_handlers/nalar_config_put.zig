@@ -89,11 +89,20 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     if (input.value.model.len > 0) {
         config_json.model = try allocator.dupe(u8, input.value.model);
     }
+    if (input.value.url_style.len > 0) {
+        config_json.url_style = try allocator.dupe(u8, input.value.url_style);
+    }
     if (input.value.max_tokens) |mt| {
         config_json.max_tokens = mt;
     }
     if (input.value.system_prompt.len > 0) {
         config_json.system_prompt = try allocator.dupe(u8, input.value.system_prompt);
+    }
+    if (input.value.notify_on_complete) |n| {
+        config_json.notify_on_complete = n;
+    }
+    if (input.value.model_compaction_size_kb) |kb| {
+        config_json.model_compaction_size_kb = kb;
     }
 
     // Handle profiles - add, update, or delete
@@ -258,6 +267,7 @@ const ConfigInput = struct {
     api_endpoint: []const u8 = "",
     api_key: []const u8 = "",
     model: []const u8 = "",
+    url_style: []const u8 = "openai",
     temperature: f64 = 0.7,
     max_tokens: ?usize = null,
     system_prompt: []const u8 = "",
@@ -267,6 +277,15 @@ const ConfigInput = struct {
     /// When present, replaces the existing MCP servers entirely.
     /// When absent, existing MCP servers are preserved.
     mcp_servers: ?json.Value = null,
+    /// When true, fire an OS-level notification when an LLM response
+    /// finishes with `finish_reason == "stop"`. Absent = preserve
+    /// existing on-disk value. Mirrors the `LlmConfigJson` default
+    /// (`false`) so a brand-new config has notifications off.
+    notify_on_complete: ?bool = null,
+    /// Threshold (in KB) above which the session compactor is invoked
+    /// to shrink the LLM context. Absent = preserve existing on-disk
+    /// value. Mirrors the `LlmConfigJson` default (`100`).
+    model_compaction_size_kb: ?usize = null,
     /// Whole-list replace for the top-level `sub_agents` array.
     /// When present, replaces the existing sub-agents entirely.
     /// When absent, existing sub-agents are preserved. Borrowed slices
@@ -297,6 +316,13 @@ const ConfigJson = struct {
     active_profile: ?[]const u8 = null,
     /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
     mcp_servers: ?json.Value = null,
+    /// Opt-in OS notification flag. Default `false` matches
+    /// `LlmConfigJson` (Config.zig:96); a brand-new config has
+    /// notifications off.
+    notify_on_complete: bool = false,
+    /// Compaction threshold in KB. Default `100` matches
+    /// `LlmConfigJson` (Config.zig:92).
+    model_compaction_size_kb: usize = 100,
     /// Top-level sub-agents array (snake_case, matches NALAR.md JSON
     /// convention). Parsed into the typed `LlmConfig.SubAgentJson` shape
     /// (borrowed from the parsed file content), or replaced by an

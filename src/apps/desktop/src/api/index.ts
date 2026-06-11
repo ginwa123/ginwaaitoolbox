@@ -1273,6 +1273,21 @@ export interface NalarConfig {
    * reference by name. Sent as-is to the backend on save.
    */
   sub_agents?: SubAgent[]
+  /**
+   * Opt-in OS notification flag. When true, the backend fires
+   * `notify-send` / osascript / PowerShell when an LLM response
+   * completes with `finish_reason === 'stop'`. Defaults to `false`
+   * when absent (matches the `LlmConfigJson` default in
+   * `Config.zig`).
+   */
+  notify_on_complete?: boolean
+  /**
+   * Compaction threshold in KB. Sessions whose DB-stored token
+   * estimate exceeds this value trigger context compaction. Defaults
+   * to `100` when absent. Not exposed in the UI — power users can
+   * edit `config.json` directly.
+   */
+  model_compaction_size_kb?: number
 }
 
 export async function getNalarConfig(): Promise<NalarConfig> {

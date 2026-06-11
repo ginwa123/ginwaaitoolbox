@@ -16,6 +16,7 @@ const urlStyle = ref('openai')
 const temperature = ref(0.7)
 const maxTokens = ref('')
 const systemPrompt = ref('')
+const notifyOnComplete = ref(false)
 
 // Profiles state
 const profiles = ref<Profile[]>([])
@@ -168,6 +169,7 @@ onMounted(async () => {
       temperature.value = data.temperature ?? 0.7
       maxTokens.value = data.max_tokens?.toString() || ''
       systemPrompt.value = data.system_prompt || ''
+      notifyOnComplete.value = data.notify_on_complete ?? false
 
       // Load profiles
       if (data.profiles) {
@@ -213,7 +215,8 @@ const saveSettings = async () => {
     url_style: urlStyle.value,
     temperature: temperature.value,
     max_tokens: maxTokens.value ? parseInt(maxTokens.value) : null,
-    system_prompt: systemPrompt.value
+    system_prompt: systemPrompt.value,
+    notify_on_complete: notifyOnComplete.value,
   }
 
   // Handle profiles with add/update/delete actions
@@ -313,6 +316,7 @@ const resetSettings = () => {
   temperature.value = 0.7
   maxTokens.value = ''
   systemPrompt.value = ''
+  notifyOnComplete.value = false
   profiles.value = []
   activeProfile.value = null
   mcpServers.value = []
@@ -647,6 +651,26 @@ defineExpose({ saveSettings, resetSettings })
             class="w-full px-4 py-2.5 rounded-lg border text-sm"
             style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
           />
+        </div>
+
+        <!-- Notify on Complete -->
+        <div>
+          <label
+            class="flex items-center gap-2 cursor-pointer text-sm"
+            style="color: var(--semantic-text-muted);"
+          >
+            <input
+              v-model="notifyOnComplete"
+              type="checkbox"
+              class="w-4 h-4 rounded"
+              style="accent-color: var(--color-violet);"
+            />
+            <span>Notify when LLM response completes</span>
+          </label>
+          <p
+            class="text-xs mt-1 ml-6"
+            style="color: var(--semantic-text-dim);"
+          >Fires an OS notification when an LLM response finishes with <code>finish_reason === 'stop'</code>. Requires a notification daemon (notify-send on Linux, osascript on macOS, PowerShell on Windows).</p>
         </div>
       </div>
     </div>

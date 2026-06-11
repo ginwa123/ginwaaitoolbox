@@ -153,6 +153,15 @@ pub const NalarConfigResponse = struct {
     /// api_key) plus a `system_prompt`. Borrowed slices — the caller
     /// must keep the source alive until the response is serialized.
     sub_agents: ?[]const SubAgentResponse = null,
+    /// Opt-in OS notification flag. When true, the backend fires
+    /// `notify-send` / osascript / PowerShell when an LLM response
+    /// completes with `finish_reason == "stop"`. Consumed by
+    /// `workflow.zig:483`.
+    notify_on_complete: bool = false,
+    /// Compaction threshold in KB. Sessions whose DB-stored token
+    /// estimate exceeds this value trigger context compaction.
+    /// Consumed by `session_compact.zig:57`.
+    model_compaction_size_kb: usize = 100,
 };
 
 /// Wire format for a single sub-agent entry. Mirrors
