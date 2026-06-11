@@ -404,11 +404,14 @@ pub fn handle_tool(
                     tool_call,
                     config,
                 ) catch |err| {
-                    tool_result = try std.fmt.allocPrint(allocator, "<error> MCP tool {s} failed: {s}</error>", .{
+                    const err_msg = try std.fmt.allocPrint(allocator, "MCP tool {s} failed: {s}", .{
                         tool_call.function.name,
                         @errorName(err),
                     });
+                    tool_result = try tool_registry.wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
+                    errdefer allocator.free(tool_result);
                     try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                    allocator.free(tool_result);
                     continue;
                 };
                 try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
@@ -418,11 +421,14 @@ pub fn handle_tool(
             // Dispatch to the appropriate handler
             const exec_result = dispatchTool(ctx, tool_call) catch |err| {
                 std.debug.print("DEBUG: dispatchTool failed with error: {s}\n", .{@errorName(err)});
-                tool_result = try std.fmt.allocPrint(allocator, "<error> {s} failed: {s}</error>", .{
+                const err_msg = try std.fmt.allocPrint(allocator, "{s} failed: {s}", .{
                     tool_call.function.name,
                     @errorName(err),
                 });
+                tool_result = try tool_registry.wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
+                errdefer allocator.free(tool_result);
                 try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                allocator.free(tool_result);
                 continue;
             };
 
