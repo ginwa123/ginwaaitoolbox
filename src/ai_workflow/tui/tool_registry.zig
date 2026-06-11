@@ -443,11 +443,10 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const inner = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_skill failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
+    // executeAddSkillToString returns a plain []const u8 (no error
+    // union); errors are encoded as <error>...</error> in the XML
+    // and handled below.
+    const inner = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value);
 
     if (std.mem.indexOf(u8, inner, "<error>") != null) {
         const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
@@ -845,7 +844,17 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 // parent's selected_profile_model is threaded
                 // through `ToolExecContext.selected_profile_model`
                 // by the workflow → handle_tool → dispatch path.
-                const resolved = ctx.config.resolveSubAgent(ctx.selected_profile_model, an);
+                //
+                // The `@constCast` is needed because `resolveSubAgent`
+                // mutates `self.random_names` to track the random
+                // fallback's allocation for deinit cleanup. The
+                // LlmConfig is logically immutable (it lives in
+                // the singleton for the server's lifetime); this
+                // single private mutation is a tracking side-effect,
+                // not a semantic change. Casting away const at
+                // the one production call site keeps the rest of
+                // the type system honest about read-only access.
+                const resolved = @constCast(ctx.config).resolveSubAgent(ctx.selected_profile_model, an);
                 if (resolved.is_random_fallback) {
                     ctx.logger.warnFmt("spawn_sub_agent: agent_name '{s}' not found in LlmConfig.sub_agents; using random name '{s}' and orchestrator defaults", .{ an, resolved.name });
                 } else {
@@ -925,6 +934,20 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     }
     try w.print("<summary succeeded=\"{}\" failed=\"{}\" />\n", .{ success_count, sub_agent_count - success_count });
     try w.print("</results>\n", .{});
+
+    // `std.Io.Writer.Allocating` buffers internally and only
+    // flushes to the underlying `results` ArrayList when its
+    // internal buffer fills. Without this explicit flush,
+    // `toOwnedSlice` below returns the list's contents (which
+    // can be empty when the total output is small — e.g. the
+    // `<results>\n<summary .../></results>\n` wrapper when no
+    // sub-agent matches the requested `agent_name` and the
+    // random-fallback path is taken, or when the sub-agent
+    // itself produces an empty response). Symptom: the spawn
+    // tool returns `<data></data></tool>` and the LLM sees "no
+    // result" — the conversation stalls. We hit this in smoke
+    // testing on 2026-06-15.
+    try aw.flush();
 
     const inner_owned = try results.toOwnedSlice(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "spawn_sub_agent", tc.function.arguments, true, null, inner_owned);
@@ -1137,7 +1160,7 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const glob_result = glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value) catch |err| {
+    var glob_result = glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "glob failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
