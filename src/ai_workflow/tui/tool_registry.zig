@@ -65,6 +65,14 @@ pub const ToolExecContext = struct {
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
+    /// Name of the parent session's active profile (from
+    /// `LlmConfig.profiles_models`). Empty string means "no
+    /// profile selected — use the top-level config". Threaded
+    /// from `RunParamsNew.selected_profile_model` through
+    /// `handle_tool` so the spawn_sub_agent tool can do the
+    /// per-profile sub_agents lookup (locked decision #1 in
+    /// the plan).
+    selected_profile_model: []const u8 = "",
 };
 
 /// Tool execution result with optional agent state changes
@@ -831,11 +839,13 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         const overrides: ?ai_workflow.SubAgentOverrides = if (sub_agent.agent_name) |an|
             blk: {
                 if (an.len == 0) break :blk null;
-                // v1: profile_name is "" because the parent's
-                // selected_profile_model isn't threaded through
-                // ToolExecContext yet. resolveSubAgent still does the
-                // right thing (top-level lookup + random fallback).
-                const resolved = ctx.config.resolveSubAgent("", an);
+                // Resolve against the active profile's sub_agents
+                // list first (when a profile is selected), then
+                // fall back to the top-level sub_agents. The
+                // parent's selected_profile_model is threaded
+                // through `ToolExecContext.selected_profile_model`
+                // by the workflow → handle_tool → dispatch path.
+                const resolved = ctx.config.resolveSubAgent(ctx.selected_profile_model, an);
                 if (resolved.is_random_fallback) {
                     ctx.logger.warnFmt("spawn_sub_agent: agent_name '{s}' not found in LlmConfig.sub_agents; using random name '{s}' and orchestrator defaults", .{ an, resolved.name });
                 } else {

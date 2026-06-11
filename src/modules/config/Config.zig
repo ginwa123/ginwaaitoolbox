@@ -939,30 +939,41 @@ pub const LlmConfig = struct {
     /// was found. Callers that pass `agent_name = ""` (i.e. did not
     /// opt in) should not call this function — just use the
     /// orchestrator's default values directly.
-    ///
-    /// v1 limitation: `profile_name` is always passed as `""` from
-    /// `tool_registry.zig`'s `execSpawnSubAgent` because
-    /// `ToolExecContext` does not yet carry the parent's
-    /// `selected_profile_model`. The full profile overlay is wired up
-    /// in a follow-up. The function signature is correct so the
-    /// follow-up is a one-line change at the call site.
     pub fn resolveSubAgent(
         self: *LlmConfig,
         profile_name: []const u8,
         agent_name: []const u8,
     ) ResolvedSubAgent {
-        // v1: profile_name is "" because the parent's
-        // selected_profile_model isn't threaded through ToolExecContext
-        // yet. We still implement the full lookup so the call site is
-        // correct — see "v1 limitation" above.
-        _ = profile_name;
+        // 1. Per-profile lookup (when a profile is selected). The
+        // profile's `sub_agents` list is consulted first so a
+        // specialized sub-agent (e.g. a code-reviewer model only
+        // available on profile1) is preferred over the top-level
+        // config's general-purpose list.
+        if (profile_name.len > 0) {
+            if (self.getProfile(profile_name)) |profile| {
+                if (profile.sub_agents.len > 0) {
+                    for (profile.sub_agents) |sa| {
+                        if (std.mem.eql(u8, sa.name, agent_name)) {
+                            return self.buildResolvedFromConfig(sa, agent_name, profile_name);
+                        }
+                    }
+                }
+            }
+            // Profile not found OR profile has no sub_agents
+            // matching the name: fall through to the top-level
+            // lookup. (We deliberately do NOT warn here — empty
+            // sub_agents on a profile is a normal configuration
+            // and per-profile sub_agents are an optional override.
+            // The caller can still get `is_random_fallback = true`
+            // if the top-level list also lacks the name.)
+        }
 
-        // 1. Top-level lookup. v1 only consults self.sub_agents.
+        // 2. Top-level lookup.
         if (self.getSubAgent(agent_name)) |sa| {
             return self.buildResolvedFromConfig(sa, agent_name, "");
         }
 
-        // 2. Not found — random fallback. The random name is
+        // 3. Not found — random fallback. The random name is
         // tracked in `self.random_names` so it can be freed in
         // `deinit`. We do this BEFORE returning so the caller can
         // safely use the borrowed `name` slice.

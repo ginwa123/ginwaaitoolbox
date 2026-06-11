@@ -85,13 +85,12 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\
         \\AGENT_NAME (sub-agent from config):
         \\- Each sub-agent may include an optional "agent_name" field to load a
-        \\  pre-configured sub-agent from `~/.config/nalar/config.json`'s
-        \\  top-level `sub_agents` array.
-        \\- Resolution: the name is looked up in the top-level
-        \\  `sub_agents` list. (v1: per-profile sub_agents lookup is
-        \\  wired in a follow-up — only the top-level list is consulted
-        \\  because `ToolExecContext` doesn't yet carry the parent's
-        \\  `selected_profile_model`.)
+        \\  pre-configured sub-agent from `~/.config/nalar/config.json`.
+        \\- Resolution: when the parent session has a profile selected
+        \\  (`selected_profile_model`), the name is looked up in that
+        \\  profile's `sub_agents` first, then in the top-level
+        \\  `sub_agents` array. With no profile selected, only the
+        \\  top-level list is consulted.
         \\- If the name is found, the sub-agent uses that sub-agent's:
         \\    - model, base_url, api_key, url_style (overlay on orchestrator defaults)
         \\    - thinking ("auto" | "true" | "false")
@@ -131,7 +130,8 @@ pub const spawn_sub_agent_tool = AgentTool{
                     \\      "tools": ["bash", "web_browse"],    // Optional. Omit for all tools.
                     \\      "timeout_seconds": 300,             // Optional. Timeout in seconds (0 = no limit).
                     \\      "inherited_context": "last:5"        // Optional. Mode for parent history inheritance.
-                    \\      "agent_name": "code-reviewer"       // Optional. Name of a pre-configured sub-agent in config.
+                    \\      "agent_name": "code-reviewer"       // Optional. Name of a pre-configured sub-agent (looked up
+                    \\                                          //   in the active profile's sub_agents first, then top-level).
                     \\    }
                     \\  ]
                     \\}

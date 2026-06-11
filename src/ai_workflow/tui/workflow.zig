@@ -174,6 +174,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
+    const copy_selected_profile_model = try parent_allocator.dupe(u8, params.selected_profile_model);
 
     var is_have_queue_message = false;
 
@@ -531,10 +532,10 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 continue;
             } else if (finish_reason == .tool_calls) {
                 std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
-                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
             } else if (finish_reason == .assistant) {
                 if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                    try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                    try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
                 } else {
                     // Treat as normal completion
                     _ = try llm_history.saveMessage(allocator, io, db, .{
