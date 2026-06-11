@@ -744,6 +744,15 @@ const SubAgentThreadArgs = struct {
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
     inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
+    /// NEW: resolved sub-agent config overlay. When non-null, the
+    /// workflow uses this sub-agent's model / base_url / api_key /
+    /// url_style / thinking / temperature / system_prompt instead of
+    /// the orchestrator's defaults. Set by `execSpawnSubAgent`
+    /// after calling `Config.resolveSubAgent`. The struct is small
+    /// and copied by value into the heap-allocated thread args; the
+    /// string slices it references borrow from the LlmConfig
+    /// allocator and must outlive the workflow run.
+    sub_agent_overrides: ?ai_workflow.SubAgentOverrides = null,
 };
 
 // Shared result storage for thread synchronization
@@ -760,6 +769,12 @@ const ThreadResult = struct {
     response: ?[]const u8 = null,
     error_message: ?[]const u8 = null,
     session_id: []const u8 = "",
+    /// True when the LLM-requested `agent_name` was not found in
+    /// any sub_agents list and a random name was generated. The
+    /// frontend uses this to show the "random" badge on the
+    /// affected <agent> tag. Populated by `runSubAgent` after
+    /// `resolveSubAgent` returns.
+    is_random_fallback: bool = false,
 };
 
 // spawn_sub_agent implementation - uses workflow.zig logic
@@ -806,6 +821,41 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     for (parsed.sub_agents, 0..) |sub_agent, idx| {
         ctx.logger.debugFmt("Launching concurrent task for agent '{s}' (index {})", .{ sub_agent.name, idx });
 
+        // Resolve the sub-agent config from the LlmConfig.
+        // `agent_name` is the LLM-provided name from JSON. When
+        // non-empty, we look it up in the config's sub_agents list
+        // and apply the resolved fields as an overlay on the
+        // orchestrator's defaults. When empty, no overlay is applied
+        // (the sub-agent uses the orchestrator's profile-resolved
+        // model/api_key/etc. as before).
+        const overrides: ?ai_workflow.SubAgentOverrides = if (sub_agent.agent_name) |an|
+            blk: {
+                if (an.len == 0) break :blk null;
+                // v1: profile_name is "" because the parent's
+                // selected_profile_model isn't threaded through
+                // ToolExecContext yet. resolveSubAgent still does the
+                // right thing (top-level lookup + random fallback).
+                const resolved = ctx.config.resolveSubAgent("", an);
+                if (resolved.is_random_fallback) {
+                    ctx.logger.warnFmt("spawn_sub_agent: agent_name '{s}' not found in LlmConfig.sub_agents; using random name '{s}' and orchestrator defaults", .{ an, resolved.name });
+                } else {
+                    ctx.logger.infoFmt("spawn_sub_agent: agent_name '{s}' resolved (source='{s}', model='{s}')", .{ an, resolved.source, resolved.model });
+                }
+                break :blk ai_workflow.SubAgentOverrides{
+                    .resolved_name = resolved.name,
+                    .is_random_fallback = resolved.is_random_fallback,
+                    .model = resolved.model,
+                    .base_url = resolved.base_url,
+                    .api_key = resolved.api_key,
+                    .url_style = resolved.url_style,
+                    .is_thinking = resolved.is_thinking,
+                    .temperature = resolved.temperature,
+                    .system_prompt = resolved.system_prompt,
+                };
+            }
+        else
+            null;
+
         const args = try ctx.allocator.create(SubAgentThreadArgs);
         args.* = .{
             .allocator = ctx.allocator,
@@ -824,6 +874,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .environment = ctx.environment,
             .active_loops = ctx.active_loops,
             .inherited_context = sub_agent.inherited_context orelse "",
+            .sub_agent_overrides = overrides,
         };
 
         // group.concurrent returns error.ConcurrencyUnavailable if the Io
@@ -844,7 +895,8 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     try w.print("<results>\n", .{});
     for (shared_results.results) |result| {
         const success = if (result.success) "true" else "false";
-        try w.print("<agent name=\"{s}\" success=\"{s}\">\n", .{ result.name, success });
+        const random_fallback = if (result.is_random_fallback) "true" else "false";
+        try w.print("<agent name=\"{s}\" success=\"{s}\" random_fallback=\"{s}\">\n", .{ result.name, success, random_fallback });
         if (result.session_id.len > 0) {
             try w.print("<session_id>{s}</session_id>\n", .{result.session_id});
         }
@@ -882,10 +934,27 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
 
     defer args_ptr.allocator.destroy(args_ptr);
 
+    // Propagate is_random_fallback from the resolved overrides to the
+    // shared result so the frontend can render the "random" badge.
+    // Done BEFORE the workflow call so it's set even if the workflow
+    // errors out before reaching the result struct.
+    if (args_ptr.sub_agent_overrides) |ov| {
+        args_ptr.shared_results.results[args_ptr.thread_idx].is_random_fallback = ov.is_random_fallback;
+    }
+
+    // session_id uses the resolved sub-agent name (matched or random)
+    // when overrides are present, otherwise the LLM-provided name.
+    // This is what gets embedded in the sub-agent's session_id
+    // suffix and shows up in the UI's worker list.
+    const resolved_display_name: []const u8 = if (args_ptr.sub_agent_overrides) |ov|
+        ov.resolved_name
+    else
+        args_ptr.agent_name;
+
     const sess_id = std.fmt.allocPrint(
         sub_agent_allocator,
         "subagent_{}_{s}",
-        .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, args_ptr.agent_name },
+        .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, resolved_display_name },
     ) catch {
         const err_msg = args_ptr.allocator.dupe(u8, "Failed to create session_id") catch "Failed to allocate";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
@@ -927,6 +996,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         } else "",
         .is_sub_agent = is_sub_agent,
         .inherited_context = args_ptr.inherited_context,
+        .sub_agent_overrides = args_ptr.sub_agent_overrides,
     }) catch |err| {
         const err_msg = args_ptr.allocator.dupe(u8, "Workflow error") catch "Failed to allocate";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;

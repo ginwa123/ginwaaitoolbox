@@ -12,6 +12,13 @@ pub const SubAgentInput = struct {
     tools: ?[]const []const u8 = null, // optional list of tool names to allow
     timeout_seconds: ?u32 = null, // optional timeout for this sub-agent (0 = no timeout)
     inherited_context: ?[]const u8 = null, // optional mode string for parent history inheritance
+    /// Optional: name of a sub-agent from `LlmConfig.sub_agents` to
+    /// load this sub-agent's specialized config (model, base_url,
+    /// api_key, url_style, thinking, temperature, system_prompt).
+    /// `null` = use the orchestrator's defaults (existing behavior).
+    /// Empty string at the JSON level is treated as `null`.
+    /// `SubAgentsInput.deinit` frees this dupe.
+    agent_name: ?[]const u8 = null,
 };
 
 pub const SubAgentsInput = struct {
@@ -29,6 +36,7 @@ pub const SubAgentsInput = struct {
             }
             // Note: timeout_seconds doesn't need freeing (it's an optional primitive)
             if (sa.inherited_context) |ctx| allocator.free(ctx);
+            if (sa.agent_name) |an| allocator.free(an);
         }
         allocator.free(self.sub_agents);
     }
@@ -75,6 +83,30 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\  tool results from the parent are NOT included — the sub-agent has
         \\  its own tool set and shouldn't assume the parent's tool state.
         \\
+        \\AGENT_NAME (sub-agent from config):
+        \\- Each sub-agent may include an optional "agent_name" field to load a
+        \\  pre-configured sub-agent from `~/.config/nalar/config.json`'s
+        \\  top-level `sub_agents` array.
+        \\- Resolution: the name is looked up in the top-level
+        \\  `sub_agents` list. (v1: per-profile sub_agents lookup is
+        \\  wired in a follow-up — only the top-level list is consulted
+        \\  because `ToolExecContext` doesn't yet carry the parent's
+        \\  `selected_profile_model`.)
+        \\- If the name is found, the sub-agent uses that sub-agent's:
+        \\    - model, base_url, api_key, url_style (overlay on orchestrator defaults)
+        \\    - thinking ("auto" | "true" | "false")
+        \\    - temperature ("auto" or a numeric value)
+        \\    - system_prompt (injected as the sub-agent's
+        \\      "## Your Active Agent Configuration" block in the system prompt)
+        \\- If the name is NOT found, a random name of the form
+        \\  "agent-{16 hex chars}" is generated for tracking, and the
+        \\  orchestrator's default model / api_key / base_url / url_style
+        \\  is used. The system prompt is the default (no specialized
+        \\  system_prompt injection). The result XML will carry
+        \\  `random_fallback="true"` on the affected <agent> tag.
+        \\- Example: { "name": "reviewer-a", "instruction": "...",
+        \\             "agent_name": "code-reviewer" }
+        \\
         \\EXAMPLE USE CASES:
         \\  - Spawn 3 agents: one to browse URL A, one to browse URL B, one to browse URL C
         \\  - Spawn 5 agents to process 5 different files in parallel
@@ -99,6 +131,7 @@ pub const spawn_sub_agent_tool = AgentTool{
                     \\      "tools": ["bash", "web_browse"],    // Optional. Omit for all tools.
                     \\      "timeout_seconds": 300,             // Optional. Timeout in seconds (0 = no limit).
                     \\      "inherited_context": "last:5"        // Optional. Mode for parent history inheritance.
+                    \\      "agent_name": "code-reviewer"       // Optional. Name of a pre-configured sub-agent in config.
                     \\    }
                     \\  ]
                     \\}
@@ -246,12 +279,32 @@ fn parseSubAgentsFromValue(
             }
         }
 
+        // Parse optional "agent_name" field — name of a sub-agent
+        // from `LlmConfig.sub_agents` to apply as an overlay on the
+        // orchestrator's defaults. Empty string is treated as "not
+        // specified" (null). Length is capped at 256 chars as a
+        // parse-time guard against absurdly long input. Resolution
+        // (and "not found" detection) is deferred to
+        // `LlmConfig.resolveSubAgent` at spawn time.
+        var agent_name: ?[]const u8 = null;
+        if (agent_obj.get("agent_name")) |an_val| {
+            if (an_val == .string) {
+                if (an_val.string.len > 0) {
+                    if (an_val.string.len > 256) {
+                        return error.AgentNameTooLong;
+                    }
+                    agent_name = try allocator.dupe(u8, an_val.string);
+                }
+            }
+        }
+
         try sub_agents_list.append(allocator, .{
             .name = name,
             .instruction = instruction,
             .tools = tools,
             .timeout_seconds = timeout_seconds,
             .inherited_context = inherited_context,
+            .agent_name = agent_name,
         });
     }
 

@@ -30,6 +30,24 @@ pub fn buildMessages(
     historyMessages: []TUIHistory,
     tools: []tool_models.AgentTool,
     inherited_context_mode: []const u8,
+    /// Optional explicit "active agent configuration" to inject as
+    /// the `## Your Active Agent Configuration` section of the
+    /// system prompt. When non-empty, this is used verbatim and
+    /// `BuildDynamicAgentContent` is NOT called. When empty (the
+    /// default), the function falls back to
+    /// `BuildDynamicAgentContent(db, session_id)` to read the list
+    /// of agents loaded via `change_agent` for this session.
+    ///
+    /// Use cases:
+    ///   - Main agent flow: caller passes `""` to use the
+    ///     `session_agents` table contents.
+    ///   - Sub-agent flow with a config-driven system_prompt:
+    ///     caller passes the resolved `SubAgentConfig.system_prompt`
+    ///     and it appears as the sub-agent's "active configuration".
+    ///   - Sub-agent flow with random fallback: caller passes `""`
+    ///     so the sub-agent gets the default scaffold with no
+    ///     specialized configuration.
+    activeAgentContent: []const u8,
 ) ![]agent.AgentMessage {
     // Build content strings internally
     const skills = try BuildSkillContent(allocator, db, session_id);
@@ -41,7 +59,16 @@ pub fn buildMessages(
     const backgroundProcessmessage = try BuildBackgroundProcessPrompt(allocator, db, session_id);
     defer allocator.free(backgroundProcessmessage);
 
-    const agentUsed = try BuildDynamicAgentContent(allocator, db, session_id);
+    // If the caller supplied an explicit `activeAgentContent`
+    // (sub-agent flow with a config-driven system_prompt), use it
+    // verbatim and skip the `session_agents` lookup. Otherwise fall
+    // back to `BuildDynamicAgentContent(db, session_id)` which is
+    // the main-agent flow's source of truth.
+    const caller_supplied_active = activeAgentContent.len > 0;
+    const agentUsed = if (caller_supplied_active)
+        try allocator.dupe(u8, activeAgentContent)
+    else
+        try BuildDynamicAgentContent(allocator, db, session_id);
     defer allocator.free(agentUsed);
 
     // buildAgentPrompt now handles processMessages internally
