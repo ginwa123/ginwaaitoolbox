@@ -7,6 +7,7 @@ test {
     _ = @import("parse_diff_view_test.zig");
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
+    _ = @import("tool_registry_test.zig"); // NEW
     _ = @import("http_handlers/nalar_config_put_test.zig");
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");
     _ = @import("http_handlers/sse_handshake_test.zig");

@@ -955,6 +955,280 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 // }
 
 // ============================================================================
+// STANDARDIZED TOOL OUTPUT ENVELOPE
+// ============================================================================
+//
+// Every `execX` function below MUST end by calling `wrapToolOutput` so the
+// LLM sees a single consistent envelope:
+//
+//   <tool>
+//     <name>{name}</name>
+//     <parameters>{xml args (converted from JSON)}</parameters>
+//     <success>true|false</success>
+//     <error>{if failure}</error>
+//     <data>{xml-escaped inner tool output, if success}</data>
+//   </tool>
+//
+// The inner `<data>` field holds the existing tool-specific XML unchanged
+// (e.g. read_file's `<path>`, text_replace's `<diff_view>`, get_skill's
+// `<loaded>`, etc.) so the 12 tool modules' `toXmlSuccess`/`toXmlError`
+// functions and the 13 frontend `tool_outputs/*.vue` components keep
+// working unchanged.
+
+/// XML-escape special characters. Identical to `llm_history.zig:762`
+/// `xmlEscape` — re-implemented here to keep this module self-contained
+/// (so callers don't pull in `llm_history.zig`'s sqlite/agent dependency
+/// tree just to wrap tool output).
+fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    for (s) |c| {
+        switch (c) {
+            '<' => try result.appendSlice(allocator, "&lt;"),
+            '>' => try result.appendSlice(allocator, "&gt;"),
+            '&' => try result.appendSlice(allocator, "&amp;"),
+            '"' => try result.appendSlice(allocator, "&quot;"),
+            '\'' => try result.appendSlice(allocator, "&apos;"),
+            else => try result.append(allocator, c),
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Convert a JSON arguments string to XML structure wrapped in
+/// `<parameters>...</parameters>`. The conversion rules:
+///
+/// - Object → `<parameters><k>v</k>...</parameters>` (one child per key)
+/// - Array of primitives → `<parameters><item>...</item>...</parameters>`
+/// - String/number/boolean → text content (XML-escaped)
+/// - null → self-closing `<k/>`
+/// - Nested object → `<parameters><k>...</k></parameters>` (recurses)
+///
+/// Returns `<parameters></parameters>` for an empty input string.
+/// Returns `<parameters><raw>{escaped raw}</raw></parameters>` if the JSON
+/// fails to parse (fallback so the LLM can still see what was passed).
+fn jsonArgsToXml(allocator: std.mem.Allocator, json_str: []const u8) ![]u8 {
+    if (json_str.len == 0) {
+        return try allocator.dupe(u8, "<parameters></parameters>");
+    }
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch {
+        // Malformed JSON fallback: wrap the raw string in <raw>...</raw>
+        const escaped = try xmlEscape(allocator, json_str);
+        defer allocator.free(escaped);
+        return try std.fmt.allocPrint(allocator, "<parameters><raw>{s}</raw></parameters>", .{escaped});
+    };
+    defer parsed.deinit();
+
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(allocator);
+
+    try buffer.appendSlice(allocator, "<parameters>");
+    switch (parsed.value) {
+        .object => |obj| {
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                try jsonValueToXml(allocator, &buffer, entry.key_ptr.*, entry.value_ptr.*);
+            }
+        },
+        else => {
+            // Top-level is not an object — wrap as <raw> for safety
+            const escaped = try xmlEscape(allocator, json_str);
+            defer allocator.free(escaped);
+            try buffer.appendSlice(allocator, "<raw>");
+            try buffer.appendSlice(allocator, escaped);
+            try buffer.appendSlice(allocator, "</raw>");
+        },
+    }
+    try buffer.appendSlice(allocator, "</parameters>");
+
+    return try buffer.toOwnedSlice(allocator);
+}
+
+/// Recursive helper for `jsonArgsToXml`. Serializes one key-value pair as
+/// `<key>value</key>` (or `<key/>` for null) into the buffer.
+fn jsonValueToXml(allocator: std.mem.Allocator, buffer: *std.ArrayList(u8), key: []const u8, value: std.json.Value) !void {
+    switch (value) {
+        .string => |s| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            const escaped_val = try xmlEscape(allocator, s);
+            defer allocator.free(escaped_val);
+            const formatted = try std.fmt.allocPrint(allocator, "<{s}>{s}</{s}>", .{ escaped_key, escaped_val, escaped_key });
+            defer allocator.free(formatted);
+            try buffer.appendSlice(allocator, formatted);
+        },
+        .integer => |i| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            const formatted = try std.fmt.allocPrint(allocator, "<{s}>{d}</{s}>", .{ escaped_key, i, escaped_key });
+            defer allocator.free(formatted);
+            try buffer.appendSlice(allocator, formatted);
+        },
+        .float => |f| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            const formatted = try std.fmt.allocPrint(allocator, "<{s}>{d}</{s}>", .{ escaped_key, f, escaped_key });
+            defer allocator.free(formatted);
+            try buffer.appendSlice(allocator, formatted);
+        },
+        .bool => |b| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            const bool_str = if (b) "true" else "false";
+            const formatted = try std.fmt.allocPrint(allocator, "<{s}>{s}</{s}>", .{ escaped_key, bool_str, escaped_key });
+            defer allocator.free(formatted);
+            try buffer.appendSlice(allocator, formatted);
+        },
+        .null => {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            const formatted = try std.fmt.allocPrint(allocator, "<{s}/>", .{escaped_key});
+            defer allocator.free(formatted);
+            try buffer.appendSlice(allocator, formatted);
+        },
+        .array => |arr| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            try buffer.appendSlice(allocator, "<");
+            try buffer.appendSlice(allocator, escaped_key);
+            try buffer.append(allocator, '>');
+            for (arr.items) |item| {
+                switch (item) {
+                    .string => |s| {
+                        const escaped_val = try xmlEscape(allocator, s);
+                        defer allocator.free(escaped_val);
+                        const formatted = try std.fmt.allocPrint(allocator, "<item>{s}</item>", .{escaped_val});
+                        defer allocator.free(formatted);
+                        try buffer.appendSlice(allocator, formatted);
+                    },
+                    .integer => |i| {
+                        const formatted = try std.fmt.allocPrint(allocator, "<item>{d}</item>", .{i});
+                        defer allocator.free(formatted);
+                        try buffer.appendSlice(allocator, formatted);
+                    },
+                    .float => |f| {
+                        const formatted = try std.fmt.allocPrint(allocator, "<item>{d}</item>", .{f});
+                        defer allocator.free(formatted);
+                        try buffer.appendSlice(allocator, formatted);
+                    },
+                    .bool => |b| {
+                        const bool_str = if (b) "true" else "false";
+                        const formatted = try std.fmt.allocPrint(allocator, "<item>{s}</item>", .{bool_str});
+                        defer allocator.free(formatted);
+                        try buffer.appendSlice(allocator, formatted);
+                    },
+                    .null => try buffer.appendSlice(allocator, "<item/>"),
+                    .object => |obj| {
+                        try buffer.appendSlice(allocator, "<item>");
+                        var it = obj.iterator();
+                        while (it.next()) |entry| {
+                            try jsonValueToXml(allocator, buffer, entry.key_ptr.*, entry.value_ptr.*);
+                        }
+                        try buffer.appendSlice(allocator, "</item>");
+                    },
+                    .array => {
+                        // Nested arrays: flatten to <item/> for now.
+                        try buffer.appendSlice(allocator, "<item/>");
+                    },
+                    else => {
+                        // Defensive for any unhandled variant (e.g. .number_string)
+                        try buffer.appendSlice(allocator, "<item/>");
+                    },
+                }
+            }
+            try buffer.appendSlice(allocator, "</");
+            try buffer.appendSlice(allocator, escaped_key);
+            try buffer.append(allocator, '>');
+        },
+        .object => |obj| {
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            try buffer.appendSlice(allocator, "<");
+            try buffer.appendSlice(allocator, escaped_key);
+            try buffer.append(allocator, '>');
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                try jsonValueToXml(allocator, buffer, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            try buffer.appendSlice(allocator, "</");
+            try buffer.appendSlice(allocator, escaped_key);
+            try buffer.append(allocator, '>');
+        },
+        else => {
+            // Defensive: any future std.json.Value variant (e.g. .number)
+            // falls back to an empty self-closing element so the wrapper
+            // never crashes on unexpected input.
+            const escaped_key = try xmlEscape(allocator, key);
+            defer allocator.free(escaped_key);
+            const formatted = try std.fmt.allocPrint(allocator, "<{s}/>", .{escaped_key});
+            defer allocator.free(formatted);
+            try buffer.appendSlice(allocator, formatted);
+        },
+    }
+}
+
+/// Wrap a tool result in the standardized `<tool>...</tool>` envelope.
+///
+/// On success: emits `<data>` containing the inner tool-specific XML output.
+/// On error: emits `<error>` containing a human-readable message and omits
+/// `<data>`. The two are mutually exclusive — when `success=true`, the
+/// `error_message` argument is ignored; when `success=false`, the `data`
+/// argument is ignored.
+///
+/// `tool_name` — the registered tool name (e.g. `"read_file"`). XML-escaped.
+/// `parameters` — the raw JSON arguments string from the tool call
+///   (e.g. `{"path":"/foo"}`). The wrapper parses this JSON and converts it
+///   to XML structure inside `<parameters>...</parameters>`. If the JSON is
+///   malformed, the raw string is wrapped in `<raw>...</raw>` as a fallback.
+///   Always emitted (even on error).
+/// `success` — `true` for a successful tool execution, `false` for a failure.
+/// `error_message` — required when `success=false`; ignored when `success=true`.
+/// `data` — the existing tool-specific XML output. Required when
+///   `success=true`; ignored when `success=false`. Pass an empty string if
+///   you have no data (the wrapper still emits an empty `<data></data>`).
+///
+/// The returned string is owned by the caller; free with `allocator.free`.
+pub fn wrapToolOutput(
+    allocator: std.mem.Allocator,
+    tool_name: []const u8,
+    parameters: []const u8,
+    success: bool,
+    error_message: ?[]const u8,
+    data: []const u8,
+) ![]u8 {
+    const escaped_name = try xmlEscape(allocator, tool_name);
+    defer allocator.free(escaped_name);
+    const params_xml = try jsonArgsToXml(allocator, parameters);
+    defer allocator.free(params_xml);
+
+    if (success) {
+        // Note: `data` is NOT XML-escaped. It is the tool-specific XML
+        // output (e.g. read_file's `<path>/foo</path>...`) and escaping
+        // it would corrupt the inner tags, making the result unreadable
+        // to the LLM and the frontend. The other text fields (name,
+        // parameters, error_message) ARE escaped because they are
+        // arbitrary user input.
+        return try std.fmt.allocPrint(
+            allocator,
+            "<tool><name>{s}</name><parameters>{s}</parameters><success>true</success><data>{s}</data></tool>",
+            .{ escaped_name, params_xml, data },
+        );
+    } else {
+        const msg = error_message orelse "unknown error";
+        const escaped_err = try xmlEscape(allocator, msg);
+        defer allocator.free(escaped_err);
+        return try std.fmt.allocPrint(
+            allocator,
+            "<tool><name>{s}</name><parameters>{s}</parameters><success>false</success><error>{s}</error></tool>",
+            .{ escaped_name, params_xml, escaped_err },
+        );
+    }
+}
+
+// ============================================================================
 // UNIFIED TOOL REGISTRY - Single source of truth for ALL tool metadata
 // ============================================================================
 
