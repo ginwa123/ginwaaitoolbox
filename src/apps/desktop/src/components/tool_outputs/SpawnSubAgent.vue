@@ -17,17 +17,24 @@ interface AgentResult {
   response: string | null
   error: string | null
   sessionId: string | null
+  /** True when the requested agent_name was not found in
+   * LlmConfig.sub_agents and a random name was used as a fallback. */
+  randomFallback: boolean
 }
 
 const agents = computed((): AgentResult[] => {
   const results: AgentResult[] = []
-  const agentRegex = /<agent name="([^"]*)" success="([^"]*)">([\s\S]*?)<\/agent>/g
+  // Note: capture group 4 = `random_fallback="..."` attribute. Default
+  // to "false" when absent so legacy results (pre-feature) parse
+  // cleanly.
+  const agentRegex = /<agent name="([^"]*)" success="([^"]*)"(?: random_fallback="([^"]*)")?>([\s\S]*?)<\/agent>/g
   let match
 
   while ((match = agentRegex.exec(props.content)) !== null) {
     const name = match[1] ?? ''
     const success = match[2] === 'true'
-    const agentContent = match[3] ?? ''
+    const randomFallback = match[3] === 'true'
+    const agentContent = match[4] ?? ''
 
     // Extract session_id, response or error
     const sessionIdMatch = agentContent.match(/<session_id>([\s\S]*?)<\/session_id>/)
@@ -40,6 +47,7 @@ const agents = computed((): AgentResult[] => {
       sessionId: sessionIdMatch?.[1]?.trim() ?? null,
       response: responseMatch?.[1]?.trim() ?? null,
       error: errorMatch?.[1]?.trim() ?? null,
+      randomFallback,
     })
   }
 
@@ -170,6 +178,14 @@ function describeInheritedContext(mode: string): string {
               :class="agent.success ? 'bg-green-500' : 'bg-red-500'"
             ></span>
             <span class="text-[var(--semantic-text)] font-medium text-xs">{{ agent.name }}</span>
+            <span
+              v-if="agent.randomFallback"
+              class="text-[10px] px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
+              style="background-color: var(--semantic-text-muted); color: white; opacity: 0.85;"
+              title="Requested agent_name was not found in LlmConfig.sub_agents; a random name was used and the orchestrator's default model was applied."
+            >
+              random
+            </span>
             <span v-if="agent.sessionId" class="text-[var(--semantic-text-muted)] text-xs font-mono truncate max-w-[120px]" :title="agent.sessionId">
               {{ agent.sessionId }}
             </span>

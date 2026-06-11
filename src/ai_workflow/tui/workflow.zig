@@ -131,7 +131,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     //   1. params.selected_profile_model (from POST body) if non-empty AND profile exists
     //   2. top-level LlmConfig (the "default" mode)
     // All four slices borrow from the LlmConfig; they live for the whole workflow run.
-    const effective_api_key: []const u8 = blk: {
+    var effective_api_key: []const u8 = blk: {
         if (params.selected_profile_model.len > 0) {
             if (config.getProfile(params.selected_profile_model)) |profile| {
                 if (profile.api_key.len > 0) break :blk profile.api_key;
@@ -141,7 +141,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         }
         break :blk config.api_key;
     };
-    const effective_model: []const u8 = blk: {
+    var effective_model: []const u8 = blk: {
         if (params.selected_profile_model.len > 0) {
             if (config.getProfile(params.selected_profile_model)) |profile| {
                 if (profile.model.len > 0) break :blk profile.model;
@@ -149,7 +149,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         }
         break :blk config.model;
     };
-    const effective_base_url: []const u8 = blk: {
+    var effective_base_url: []const u8 = blk: {
         if (params.selected_profile_model.len > 0) {
             if (config.getProfile(params.selected_profile_model)) |profile| {
                 if (profile.base_url.len > 0) break :blk profile.base_url;
@@ -157,7 +157,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         }
         break :blk config.base_url;
     };
-    const effective_url_style: []const u8 = blk: {
+    var effective_url_style: []const u8 = blk: {
         if (params.selected_profile_model.len > 0) {
             if (config.getProfile(params.selected_profile_model)) |profile| {
                 if (profile.url_style.len > 0) break :blk profile.url_style;
@@ -174,6 +174,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
+    const copy_selected_profile_model = try parent_allocator.dupe(u8, params.selected_profile_model);
 
     var is_have_queue_message = false;
 
@@ -359,6 +360,43 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         var agent_temperature = currentAgentState.temperature;
         var isThinking = currentAgentState.is_thinking;
 
+        // Apply sub-agent overrides (resolved by Config.resolveSubAgent
+        // in tool_registry.execSpawnSubAgent). For the main-agent
+        // flow, `sub_agent_overrides` is null and this block is a
+        // no-op. For the sub-agent flow, non-empty string fields
+        // override the profile-resolved values, and non-null
+        // bool/f32 fields override the session's current values.
+        var sub_agent_session_name: []const u8 = "";
+        if (params.sub_agent_overrides) |ov| {
+            if (ov.model.len > 0) effective_model = ov.model;
+            if (ov.base_url.len > 0) effective_base_url = ov.base_url;
+            if (ov.api_key.len > 0) effective_api_key = ov.api_key;
+            if (ov.url_style.len > 0) effective_url_style = ov.url_style;
+            if (ov.is_thinking) |t| isThinking = t;
+            if (ov.temperature) |t| agent_temperature = t;
+            sub_agent_session_name = ov.resolved_name;
+        }
+        // For sub-agent flow: replace `current_agent` (the session's
+        // last `agent_name` from llm_history) with the resolved
+        // sub-agent name. The session is brand-new for sub-agents
+        // (no prior agent_name), so `current_agent` defaults to
+        // "Agent" — we want the sub-agent's resolved_name instead.
+        const effective_agent_name: []const u8 = if (sub_agent_session_name.len > 0)
+            sub_agent_session_name
+        else
+            current_agent;
+
+        // Sub-agent's specialized system_prompt (from
+        // SubAgentConfig.system_prompt) is injected as the
+        // `## Your Active Agent Configuration` section of
+        // build_agent_prompt. For the main-agent flow and the
+        // random-fallback case, this is empty and `buildMessages`
+        // falls back to `BuildDynamicAgentContent`.
+        const sub_agent_system_prompt: []const u8 = if (params.sub_agent_overrides) |ov|
+            ov.system_prompt
+        else
+            "";
+
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
         const db_messages = try llm_history.getMessages(allocator, db, copy_session_id);
@@ -390,7 +428,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
             generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db);
         }
 
-        const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context);
+        const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context, sub_agent_system_prompt);
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
@@ -428,7 +466,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
                     .tool_calls = null,
                     .tool_call_id = null,
-                    .agent_name = current_agent,
+                    .agent_name = effective_agent_name,
                     .loop_index = loop_counter,
                     .temperature = agent_temperature,
                     .is_thinking = isThinking,
@@ -458,7 +496,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .tool_calls_json = null,
                     .tool_call_id = null,
                     .tool_name = null,
-                    .agent_name = current_agent,
+                    .agent_name = effective_agent_name,
                     .loop_index = loop_counter,
                     .temperature = agent_temperature,
                     .is_thinking = isThinking,
@@ -494,10 +532,10 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 continue;
             } else if (finish_reason == .tool_calls) {
                 std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
-                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
             } else if (finish_reason == .assistant) {
                 if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                    try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops);
+                    try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
                 } else {
                     // Treat as normal completion
                     _ = try llm_history.saveMessage(allocator, io, db, .{
@@ -510,7 +548,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                         .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
                         .tool_calls = null,
                         .tool_call_id = null,
-                        .agent_name = current_agent,
+                        .agent_name = effective_agent_name,
                         .loop_index = loop_counter,
                         .temperature = agent_temperature,
                         .is_thinking = isThinking,
@@ -540,7 +578,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                         .tool_calls_json = null,
                         .tool_call_id = null,
                         .tool_name = null,
-                        .agent_name = current_agent,
+                        .agent_name = effective_agent_name,
                         .loop_index = loop_counter,
                         .temperature = agent_temperature,
                         .is_thinking = isThinking,
@@ -580,7 +618,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .tool_calls_json = null,
                     .tool_call_id = null,
                     .tool_name = null,
-                    .agent_name = current_agent,
+                    .agent_name = effective_agent_name,
                     .loop_index = loop_counter,
                     .temperature = agent_temperature,
                     .is_thinking = isThinking,
@@ -1016,6 +1054,52 @@ pub const RunParams = struct {
     is_sub_agent: bool = false,
 };
 
+/// Resolved sub-agent config overlay, populated by
+/// `tool_registry.execSpawnSubAgent` after calling
+/// `Config.resolveSubAgent`. When `non-null`, the fields here are
+/// applied on top of the existing `selected_profile_model`
+/// resolution in `runAgenticMultiStepnew`.
+///
+/// String fields with `.len == 0` mean "inherit the
+/// profile-resolved value" (the matched `SubAgentConfig` had an
+/// empty string for that field, OR the random-fallback case).
+/// `is_thinking` / `temperature` `null` means "auto — inherit
+/// parent's value at run time".
+///
+/// The struct is *passed by value* (not pointer) because it's small
+/// and `RunParamsNew` is by-value already. The string slices it
+/// references borrow from the `LlmConfig` allocator — they must
+/// outlive the workflow run, which they do because
+/// `LlmConfig` is owned by the singleton.
+pub const SubAgentOverrides = struct {
+    /// Final name to record in `llm_history.agent_name` and the
+    /// session_id suffix. Either the matched config name (e.g.
+    /// "code-reviewer") or a generated random name
+    /// ("agent-{16 hex chars}") for the fallback case.
+    resolved_name: []const u8,
+    /// True when the original `agent_name` was not found in any
+    /// sub_agents list. The frontend shows a "random" badge in the
+    /// SpawnSubAgent tool result when this is true.
+    is_random_fallback: bool,
+    /// LLM fields (overlay on profile-resolved values). Empty
+    /// string = "inherit the profile-resolved value".
+    model: []const u8 = "",
+    base_url: []const u8 = "",
+    api_key: []const u8 = "",
+    url_style: []const u8 = "",
+    /// `null` = "auto — inherit parent's value at run time".
+    /// When non-null, the override is applied on top of the
+    /// session's current value (NOT the profile value — see
+    /// `runAgenticMultiStepnew` for the order of application).
+    is_thinking: ?bool = null,
+    temperature: ?f32 = null,
+    /// System prompt to inject as the sub-agent's
+    /// `## Your Active Agent Configuration`. Empty = no injection
+    /// (the sub-agent uses the default `build_agent_prompt`
+    /// scaffold with no specialized configuration).
+    system_prompt: []const u8 = "",
+};
+
 pub const RunParamsNew = struct {
     parent_session_id: []const u8,
     session_id: []const u8,
@@ -1027,4 +1111,10 @@ pub const RunParamsNew = struct {
     image_urls: []const u8 = "",
     selected_profile_model: []const u8 = "", // NEW
     inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
+    /// NEW: pre-resolved sub-agent config overlay. When non-null,
+    /// the fields here are applied on top of the
+    /// `selected_profile_model` resolution (see `SubAgentOverrides`
+    /// doc). The struct is small and owned by the call site; the
+    /// string slices it references must outlive this workflow run.
+    sub_agent_overrides: ?SubAgentOverrides = null,
 };

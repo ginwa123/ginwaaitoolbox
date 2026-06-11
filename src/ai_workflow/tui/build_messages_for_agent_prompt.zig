@@ -30,6 +30,24 @@ pub fn buildMessages(
     historyMessages: []TUIHistory,
     tools: []tool_models.AgentTool,
     inherited_context_mode: []const u8,
+    /// Optional explicit "active agent configuration" to inject as
+    /// the `## Your Active Agent Configuration` section of the
+    /// system prompt. When non-empty, this is used verbatim and
+    /// `BuildDynamicAgentContent` is NOT called. When empty (the
+    /// default), the function falls back to
+    /// `BuildDynamicAgentContent(db, session_id)` to read the list
+    /// of agents loaded via `change_agent` for this session.
+    ///
+    /// Use cases:
+    ///   - Main agent flow: caller passes `""` to use the
+    ///     `session_agents` table contents.
+    ///   - Sub-agent flow with a config-driven system_prompt:
+    ///     caller passes the resolved `SubAgentConfig.system_prompt`
+    ///     and it appears as the sub-agent's "active configuration".
+    ///   - Sub-agent flow with random fallback: caller passes `""`
+    ///     so the sub-agent gets the default scaffold with no
+    ///     specialized configuration.
+    activeAgentContent: []const u8,
 ) ![]agent.AgentMessage {
     // Build content strings internally
     const skills = try BuildSkillContent(allocator, db, session_id);
@@ -41,7 +59,16 @@ pub fn buildMessages(
     const backgroundProcessmessage = try BuildBackgroundProcessPrompt(allocator, db, session_id);
     defer allocator.free(backgroundProcessmessage);
 
-    const agentUsed = try BuildDynamicAgentContent(allocator, db, session_id);
+    // If the caller supplied an explicit `activeAgentContent`
+    // (sub-agent flow with a config-driven system_prompt), use it
+    // verbatim and skip the `session_agents` lookup. Otherwise fall
+    // back to `BuildDynamicAgentContent(db, session_id)` which is
+    // the main-agent flow's source of truth.
+    const caller_supplied_active = activeAgentContent.len > 0;
+    const agentUsed = if (caller_supplied_active)
+        try allocator.dupe(u8, activeAgentContent)
+    else
+        try BuildDynamicAgentContent(allocator, db, session_id);
     defer allocator.free(agentUsed);
 
     // buildAgentPrompt now handles processMessages internally
@@ -53,7 +80,15 @@ pub fn buildMessages(
     const di = try tree1_mod.getSingleton();
     const environment = di.environment;
 
-    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment);
+    // Build the "Available Sub-Agents" listing from the current
+    // session's `selected_profile_model` + the LlmConfig. Renders
+    // an empty string when no sub-agents are configured (or when
+    // the session is missing), so the section is naturally
+    // omitted. See `prompt.appendSubAgentsListing` for the format.
+    const sub_agents_listing = try BuildSubAgentsListing(allocator, db, session_id);
+    defer allocator.free(sub_agents_listing);
+
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing);
 
     // Render inherited parent conversation history (if requested) and append
     // it to the system prompt as a labelled, read-only block.
@@ -648,3 +683,105 @@ pub fn BuildDynamicAgentContent(
     return result;
 }
 
+
+/// Maximum length (in chars) of the sub-agent's `system_prompt`
+/// preview to embed in the listing. Truncated beyond this to
+/// keep the prompt lean — the LLM doesn't need a 2KB persona to
+/// decide which sub-agent to dispatch to.
+const SUB_AGENT_DESCRIPTION_MAX: usize = 80;
+
+/// Build the "Available Sub-Agents" listing for the current
+/// session. Reads `selected_profile_model` from the `sessions`
+/// table, then resolves the sub-agents list with the per-profile
+/// overlay (active profile's `sub_agents` first, then top-level).
+///
+/// Returns an empty string when:
+///   - the session doesn't exist or has empty profile / no profile
+///   - the resolved config has no sub_agents (top-level + profile)
+///   - the LlmConfig singleton is unreachable (graceful fallback)
+///
+/// The returned slice is freshly allocated on `allocator`; caller
+/// owns it and must `defer allocator.free(...)`.
+fn BuildSubAgentsListing(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    if (session_id.len == 0) return allocator.dupe(u8, "");
+
+    // 1. Look up the active session's `selected_profile_model`.
+    //    `getSession` returns `!?SessionTableInfo` (error union of
+    //    optional). Unwrap both: a hard error propagates; a null
+    //    optional (row doesn't exist) is treated as "no profile
+    //    selected" (no sub-agents listing).
+    const maybe_session = llm_history.getSession(allocator, db, session_id) catch
+        return allocator.dupe(u8, "");
+    var session_info = maybe_session orelse return allocator.dupe(u8, "");
+    defer session_info.deinit(allocator);
+
+    // 2. Get the LlmConfig from the singleton. Graceful fallback
+    // when the singleton is unreachable (e.g. tests that
+    // don't initialize it).
+    const di = tree1_mod.getSingleton() catch return allocator.dupe(u8, "");
+    const config = tree1_mod.getLlmConfig(di);
+
+    // 3. Resolve which list to render. Per-profile first (when a
+    // profile is selected AND has sub_agents configured), else
+    // top-level. Note: `config.getProfile(name)` returns null when
+    // the profile is missing; we then fall through to the
+    // top-level list. The user's review comment
+    // "make sure it integrate with selected profile models or
+    // the default one" is satisfied by this precedence chain.
+    const profile_name: []const u8 = session_info.selected_profile_model;
+    const use_profile: bool = profile_name.len > 0;
+    const rows = if (use_profile) blk: {
+        if (config.getProfile(profile_name)) |profile| {
+            if (profile.sub_agents.len > 0) break :blk profile.sub_agents;
+        }
+        break :blk config.sub_agents;
+    } else config.sub_agents;
+    const source_label: []const u8 = if (use_profile) profile_name else "";
+
+    if (rows.len == 0) return allocator.dupe(u8, "");
+
+    // 4. Build the listing rows. Borrowed slices from the
+    // SubAgentConfig (lives as long as the LlmConfig singleton).
+    var row_buf = std.ArrayList(prompt.SubAgentListingRow).empty;
+    errdefer row_buf.deinit(allocator);
+
+    for (rows) |sa| {
+        if (sa.name.len == 0) continue; // defensive
+
+        // Truncate the system_prompt to SUB_AGENT_DESCRIPTION_MAX
+        // chars (with an ellipsis if truncated) for a one-line
+        // description in the listing. Use a local stack buffer
+        // to avoid allocating per-row.
+        const sp = sa.system_prompt;
+        var desc_buf: [SUB_AGENT_DESCRIPTION_MAX + 3]u8 = undefined;
+        const desc: []const u8 = if (sp.len <= SUB_AGENT_DESCRIPTION_MAX)
+            sp
+        else blk: {
+            @memcpy(desc_buf[0..SUB_AGENT_DESCRIPTION_MAX], sp[0..SUB_AGENT_DESCRIPTION_MAX]);
+            @memcpy(desc_buf[SUB_AGENT_DESCRIPTION_MAX..][0..3], "...");
+            break :blk desc_buf[0 .. SUB_AGENT_DESCRIPTION_MAX + 3];
+        };
+
+        try row_buf.append(allocator, .{
+            .name = sa.name,
+            .model = sa.model,
+            .description = desc,
+            .source = source_label,
+        });
+    }
+
+    if (row_buf.items.len == 0) return allocator.dupe(u8, "");
+
+    // 5. Render the section. Match the `appendToolListing` /
+    //    `appendSkillsListing` pattern: pass a `*ArrayList(u8)`
+    //    directly (no writer needed — ArrayList owns its
+    //    memory). Caller can toOwnedSlice to extract.
+    var listing = std.ArrayList(u8).empty;
+    defer listing.deinit(allocator);
+    try prompt.appendSubAgentsListing(allocator, &listing, row_buf.items);
+    return try listing.toOwnedSlice(allocator);
+}

@@ -65,6 +65,14 @@ pub const ToolExecContext = struct {
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
+    /// Name of the parent session's active profile (from
+    /// `LlmConfig.profiles_models`). Empty string means "no
+    /// profile selected — use the top-level config". Threaded
+    /// from `RunParamsNew.selected_profile_model` through
+    /// `handle_tool` so the spawn_sub_agent tool can do the
+    /// per-profile sub_agents lookup (locked decision #1 in
+    /// the plan).
+    selected_profile_model: []const u8 = "",
 };
 
 /// Tool execution result with optional agent state changes
@@ -435,11 +443,10 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const inner = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_skill failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
+    // executeAddSkillToString returns a plain []const u8 (no error
+    // union); errors are encoded as <error>...</error> in the XML
+    // and handled below.
+    const inner = add_skill_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value);
 
     if (std.mem.indexOf(u8, inner, "<error>") != null) {
         const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
@@ -744,6 +751,15 @@ const SubAgentThreadArgs = struct {
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
     inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
+    /// NEW: resolved sub-agent config overlay. When non-null, the
+    /// workflow uses this sub-agent's model / base_url / api_key /
+    /// url_style / thinking / temperature / system_prompt instead of
+    /// the orchestrator's defaults. Set by `execSpawnSubAgent`
+    /// after calling `Config.resolveSubAgent`. The struct is small
+    /// and copied by value into the heap-allocated thread args; the
+    /// string slices it references borrow from the LlmConfig
+    /// allocator and must outlive the workflow run.
+    sub_agent_overrides: ?ai_workflow.SubAgentOverrides = null,
 };
 
 // Shared result storage for thread synchronization
@@ -760,6 +776,12 @@ const ThreadResult = struct {
     response: ?[]const u8 = null,
     error_message: ?[]const u8 = null,
     session_id: []const u8 = "",
+    /// True when the LLM-requested `agent_name` was not found in
+    /// any sub_agents list and a random name was generated. The
+    /// frontend uses this to show the "random" badge on the
+    /// affected <agent> tag. Populated by `runSubAgent` after
+    /// `resolveSubAgent` returns.
+    is_random_fallback: bool = false,
 };
 
 // spawn_sub_agent implementation - uses workflow.zig logic
@@ -773,9 +795,31 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit(ctx.allocator);
 
-    var results = std.ArrayList(u8).empty;
-    defer results.deinit(ctx.allocator);
-    var aw = std.Io.Writer.Allocating.fromArrayList(ctx.allocator, &results);
+    // Build the result XML using `std.Io.Writer.Allocating`.
+    //
+    // IMPORTANT (learned the hard way on 2026-06-15): in this Zig
+    // 0.16 build, `Writer.Allocating.fromArrayList` EMPTIES the
+    // passed ArrayList (`defer array_list.* = .empty;` inside
+    // `fromArrayListAligned`, see std/Io/Writer.zig line 2567) and
+    // takes ownership of its allocated memory as the writer's
+    // internal buffer. Calling `toOwnedSlice` on the ORIGINAL
+    // ArrayList therefore returns "" — the data is in the writer.
+    // And `Writer.Allocating.flush` is a no-op (see std/Io/Writer.zig
+    // line 2582: `.flush = noopFlush`), so calling `flush` does
+    // nothing useful.
+    //
+    // The right pattern is:
+    //   1. `Allocating.init(allocator)` — get a writer with its own buffer
+    //   2. write into it via `&aw.writer`
+    //   3. `aw.toArrayList()` — MOVE the buffer out as a fresh ArrayList
+    //   4. `final_list.toOwnedSlice(allocator)` — extract the data
+    //   5. `defer aw.deinit()` — cleanup the writer
+    //
+    // (The previous fix that called `try aw.flush();` was a no-op
+    // for the same reason and didn't actually fix the empty-data
+    // bug. This is the real fix.)
+    var aw = std.Io.Writer.Allocating.init(ctx.allocator);
+    defer aw.deinit();
     const w = &aw.writer;
 
     const sub_agent_count = parsed.sub_agents.len;
@@ -806,6 +850,50 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     for (parsed.sub_agents, 0..) |sub_agent, idx| {
         ctx.logger.debugFmt("Launching concurrent task for agent '{s}' (index {})", .{ sub_agent.name, idx });
 
+        // Resolve the sub-agent config from the LlmConfig.
+        // `agent_name` is the LLM-provided name from JSON. When
+        // non-empty, we look it up in the config's sub_agents list
+        // and apply the resolved fields as an overlay on the
+        // orchestrator's defaults. When empty, no overlay is applied
+        // (the sub-agent uses the orchestrator's profile-resolved
+        // model/api_key/etc. as before).
+        const overrides: ?ai_workflow.SubAgentOverrides = if (sub_agent.agent_name) |an| blk: {
+            if (an.len == 0) break :blk null;
+            // Resolve against the active profile's sub_agents
+            // list first (when a profile is selected), then
+            // fall back to the top-level sub_agents. The
+            // parent's selected_profile_model is threaded
+            // through `ToolExecContext.selected_profile_model`
+            // by the workflow → handle_tool → dispatch path.
+            //
+            // The `@constCast` is needed because `resolveSubAgent`
+            // mutates `self.random_names` to track the random
+            // fallback's allocation for deinit cleanup. The
+            // LlmConfig is logically immutable (it lives in
+            // the singleton for the server's lifetime); this
+            // single private mutation is a tracking side-effect,
+            // not a semantic change. Casting away const at
+            // the one production call site keeps the rest of
+            // the type system honest about read-only access.
+            const resolved = @constCast(ctx.config).resolveSubAgent(ctx.selected_profile_model, an);
+            if (resolved.is_random_fallback) {
+                ctx.logger.warnFmt("spawn_sub_agent: agent_name '{s}' not found in LlmConfig.sub_agents; using random name '{s}' and orchestrator defaults", .{ an, resolved.name });
+            } else {
+                ctx.logger.infoFmt("spawn_sub_agent: agent_name '{s}' resolved (source='{s}', model='{s}')", .{ an, resolved.source, resolved.model });
+            }
+            break :blk ai_workflow.SubAgentOverrides{
+                .resolved_name = resolved.name,
+                .is_random_fallback = resolved.is_random_fallback,
+                .model = resolved.model,
+                .base_url = resolved.base_url,
+                .api_key = resolved.api_key,
+                .url_style = resolved.url_style,
+                .is_thinking = resolved.is_thinking,
+                .temperature = resolved.temperature,
+                .system_prompt = resolved.system_prompt,
+            };
+        } else null;
+
         const args = try ctx.allocator.create(SubAgentThreadArgs);
         args.* = .{
             .allocator = ctx.allocator,
@@ -824,6 +912,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .environment = ctx.environment,
             .active_loops = ctx.active_loops,
             .inherited_context = sub_agent.inherited_context orelse "",
+            .sub_agent_overrides = overrides,
         };
 
         // group.concurrent returns error.ConcurrencyUnavailable if the Io
@@ -844,7 +933,8 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     try w.print("<results>\n", .{});
     for (shared_results.results) |result| {
         const success = if (result.success) "true" else "false";
-        try w.print("<agent name=\"{s}\" success=\"{s}\">\n", .{ result.name, success });
+        const random_fallback = if (result.is_random_fallback) "true" else "false";
+        try w.print("<agent name=\"{s}\" success=\"{s}\" random_fallback=\"{s}\">\n", .{ result.name, success, random_fallback });
         if (result.session_id.len > 0) {
             try w.print("<session_id>{s}</session_id>\n", .{result.session_id});
         }
@@ -864,7 +954,16 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     try w.print("<summary succeeded=\"{}\" failed=\"{}\" />\n", .{ success_count, sub_agent_count - success_count });
     try w.print("</results>\n", .{});
 
-    const inner_owned = try results.toOwnedSlice(ctx.allocator);
+    // Move the writer's internal buffer out as an ArrayList (this
+    // resets the writer to an empty state — `defer aw.deinit()`
+    // at the top of the function will free the now-empty writer
+    // bookkeeping). See the long comment on the `var aw` line
+    // for the full rationale (the `results` ArrayList was
+    // emptied by `fromArrayList`; we don't use that pattern
+    // anymore; the data lives in the writer's internal buffer).
+    var final_list = aw.toArrayList();
+    defer final_list.deinit(ctx.allocator);
+    const inner_owned = try final_list.toOwnedSlice(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "spawn_sub_agent", tc.function.arguments, true, null, inner_owned);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
@@ -882,10 +981,27 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
 
     defer args_ptr.allocator.destroy(args_ptr);
 
+    // Propagate is_random_fallback from the resolved overrides to the
+    // shared result so the frontend can render the "random" badge.
+    // Done BEFORE the workflow call so it's set even if the workflow
+    // errors out before reaching the result struct.
+    if (args_ptr.sub_agent_overrides) |ov| {
+        args_ptr.shared_results.results[args_ptr.thread_idx].is_random_fallback = ov.is_random_fallback;
+    }
+
+    // session_id uses the resolved sub-agent name (matched or random)
+    // when overrides are present, otherwise the LLM-provided name.
+    // This is what gets embedded in the sub-agent's session_id
+    // suffix and shows up in the UI's worker list.
+    const resolved_display_name: []const u8 = if (args_ptr.sub_agent_overrides) |ov|
+        ov.resolved_name
+    else
+        args_ptr.agent_name;
+
     const sess_id = std.fmt.allocPrint(
         sub_agent_allocator,
         "subagent_{}_{s}",
-        .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, args_ptr.agent_name },
+        .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, resolved_display_name },
     ) catch {
         const err_msg = args_ptr.allocator.dupe(u8, "Failed to create session_id") catch "Failed to allocate";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
@@ -927,6 +1043,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         } else "",
         .is_sub_agent = is_sub_agent,
         .inherited_context = args_ptr.inherited_context,
+        .sub_agent_overrides = args_ptr.sub_agent_overrides,
     }) catch |err| {
         const err_msg = args_ptr.allocator.dupe(u8, "Workflow error") catch "Failed to allocate";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
@@ -1057,7 +1174,7 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const glob_result = glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value) catch |err| {
+    var glob_result = glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "glob failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };

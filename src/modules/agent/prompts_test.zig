@@ -28,35 +28,7 @@ fn makeTool(name: []const u8, desc: []const u8) AgentTool {
 }
 
 // -------------------------------------------------------------------------
-// build_sub_agent_prompt — empty / no-memory cases
-// -------------------------------------------------------------------------
-
-test "build_sub_agent_prompt with no environment: no Global Knowledge section" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    const tools = [_]AgentTool{
-        makeTool("read_file", "Read a file"),
-    };
-    const prompt = try prompts.build_sub_agent_prompt(
-        alloc,
-        io,
-        "/tmp/some-cwd",
-        "",
-        "do the thing",
-        &tools,
-        null,
-    );
-    defer alloc.free(prompt);
-
-    // No environment → no auto-loaded knowledge
-    try std.testing.expect(!contains(prompt, "## Global Knowledge"));
-    // The mission and tools still appear
-    try std.testing.expect(contains(prompt, "## Your Mission"));
-    try std.testing.expect(contains(prompt, "do the thing"));
-    try std.testing.expect(contains(prompt, "read_file"));
-}
-
+// build_agent_prompt — empty / no-memory cases
 test "build_agent_prompt with no environment: no Global Knowledge section" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
@@ -76,6 +48,7 @@ test "build_agent_prompt with no environment: no Global Knowledge section" {
         &tools,
         "",
         null,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -128,6 +101,7 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -165,6 +139,7 @@ test "build_agent_prompt: empty memories dir, no Global Knowledge section" {
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -174,110 +149,6 @@ test "build_agent_prompt: empty memories dir, no Global Knowledge section" {
     try std.testing.expect(contains(prompt, "## Global Memory System"));
 }
 
-test "build_sub_agent_prompt with empty memories dir: no Global Knowledge section" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    // HOME points to a dir without a memories/ subfolder
-    const tmp_home = "/tmp/nalar-prompt-test-empty-memories";
-    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
-
-    var env = std.process.Environ.Map.init(alloc);
-    defer env.deinit();
-    try env.put("HOME", tmp_home);
-
-    const prompt = try prompts.build_sub_agent_prompt(
-        alloc,
-        io,
-        "/tmp",
-        "",
-        "test task",
-        &[_]AgentTool{},
-        &env,
-    );
-    defer alloc.free(prompt);
-
-    // No memories folder → no section
-    try std.testing.expect(!contains(prompt, "## Global Knowledge"));
-}
-
-// -------------------------------------------------------------------------
-// build_sub_agent_prompt — populated case
-// -------------------------------------------------------------------------
-
-test "build_sub_agent_prompt loads memory files into Global Knowledge section" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    const tmp_home = "/tmp/nalar-prompt-test-with-memories";
-    const memories_dir = "/tmp/nalar-prompt-test-with-memories/.config/nalar/memories";
-    const file1_path = "/tmp/nalar-prompt-test-with-memories/.config/nalar/memories/after-fix-test.md";
-    const file2_path = "/tmp/nalar-prompt-test-with-memories/.config/nalar/memories/stderr-debug.md";
-
-    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
-
-    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
-
-    {
-        const f = try std.Io.Dir.createFileAbsolute(io, file1_path, .{});
-        defer std.Io.File.close(f, io);
-        try std.Io.File.writeStreamingAll(f, io,
-            \\# Write Regression Test First
-            \\
-            \\After fixing a tricky bug, write a regression test before touching
-            \\anything else. Fixes without tests regress.
-            \\
-        );
-    }
-    {
-        const f = try std.Io.Dir.createFileAbsolute(io, file2_path, .{});
-        defer std.Io.File.close(f, io);
-        try std.Io.File.writeStreamingAll(f, io,
-            \\# Use stderr for Debug Output
-            \\
-            \\Stderr can be redirected without affecting stdout, so it is the
-            \\right place for diagnostic output that should not pollute results.
-            \\
-        );
-    }
-
-    var env = std.process.Environ.Map.init(alloc);
-    defer env.deinit();
-    try env.put("HOME", tmp_home);
-
-    const prompt = try prompts.build_sub_agent_prompt(
-        alloc,
-        io,
-        "/tmp",
-        "",
-        "test task",
-        &[_]AgentTool{},
-        &env,
-    );
-    defer alloc.free(prompt);
-
-    // The Global Knowledge section is present
-    try std.testing.expect(contains(prompt, "## Global Knowledge"));
-
-    // Both memory files are loaded with their content
-    try std.testing.expect(contains(prompt, "after-fix-test.md"));
-    try std.testing.expect(contains(prompt, "Write Regression Test First"));
-    try std.testing.expect(contains(prompt, "Fixes without tests regress"));
-
-    try std.testing.expect(contains(prompt, "stderr-debug.md"));
-    try std.testing.expect(contains(prompt, "Use stderr for Debug Output"));
-    // Substring: file content has a line break between "the" and "right",
-    // so we check just the actionable part.
-    try std.testing.expect(contains(prompt, "right place for diagnostic output"));
-
-    // The header is in there too — tells the agent what the section is
-    try std.testing.expect(contains(prompt, "auto-loaded from"));
-    try std.testing.expect(contains(prompt, "Use `list_memory`"));
-}
-
-// -------------------------------------------------------------------------
 // build_agent_prompt — Available Skills listing
 // -------------------------------------------------------------------------
 
@@ -354,6 +225,7 @@ test "build_agent_prompt lists global and local skills in Available Skills secti
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -438,6 +310,7 @@ test "build_agent_prompt Available Skills section includes absolute file path an
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -510,6 +383,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -537,6 +411,7 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
         &tools,
         "",
         null, // ← env is null
+        "",
     );
     defer alloc.free(prompt);
 
@@ -544,67 +419,6 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
     try std.testing.expect(!contains(prompt, "## Available Skills"));
 }
 
-// -------------------------------------------------------------------------
-// build_sub_agent_prompt — no aggregate cap
-// -------------------------------------------------------------------------
-
-test "build_sub_agent_prompt loads large memory files fully (no aggregate cap)" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    const tmp_home = "/tmp/nalar-prompt-test-no-cap";
-    const memories_dir = "/tmp/nalar-prompt-test-no-cap/.config/nalar/memories";
-    const big_file = "/tmp/nalar-prompt-test-no-cap/.config/nalar/memories/big-memory.md";
-
-    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
-
-    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
-
-    // Write a ~60KB memory file with a unique END marker so we can verify
-    // the FULL content was loaded. If the prompt is capped at 50KB, the
-    // marker would be cut off and the assertion would fail.
-    const total_size: usize = 60 * 1024;
-    {
-        const f = try std.Io.Dir.createFileAbsolute(io, big_file, .{});
-        defer std.Io.File.close(f, io);
-        try std.Io.File.writeStreamingAll(f, io, "# Big Memory\n\n");
-        var buf: [1024]u8 = undefined;
-        @memset(&buf, 'A');
-        var written: usize = 0;
-        while (written < total_size) : (written += buf.len) {
-            try std.Io.File.writeStreamingAll(f, io, &buf);
-        }
-        // Append a unique marker so we can detect truncation
-        try std.Io.File.writeStreamingAll(f, io, "\n\nEND_OF_MEMORY_MARKER_12345\n");
-    }
-
-    var env = std.process.Environ.Map.init(alloc);
-    defer env.deinit();
-    try env.put("HOME", tmp_home);
-
-    const prompt = try prompts.build_sub_agent_prompt(
-        alloc,
-        io,
-        "/tmp",
-        "",
-        "task",
-        &[_]AgentTool{},
-        &env,
-    );
-    defer alloc.free(prompt);
-
-    // The section header is present
-    try std.testing.expect(contains(prompt, "## Global Knowledge"));
-    // The full file was loaded — the end-of-file marker survived
-    try std.testing.expect(contains(prompt, "END_OF_MEMORY_MARKER_12345"));
-    // No truncation note (because there is no truncation)
-    try std.testing.expect(!contains(prompt, "additional memories were not auto-loaded"));
-    // Prompt contains the full ~60KB of content (plus heading + framing)
-    try std.testing.expect(prompt.len > total_size);
-}
-
-// -------------------------------------------------------------------------
 // build_agent_prompt — Local Knowledge section (<cwd>/.nalar/memories/*.md)
 // -------------------------------------------------------------------------
 
@@ -646,6 +460,7 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
         &tools,
         "",
         null, // env is null — only local knowledge should be present
+        "",
     );
     defer alloc.free(prompt);
 
@@ -726,6 +541,7 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
         &tools,
         "",
         &env,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -770,6 +586,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does n
         &tools,
         "",
         null,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -795,6 +612,7 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
         &tools,
         "",
         null,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -835,6 +653,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
         &tools,
         "",
         null,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -842,91 +661,160 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
     try std.testing.expect(!contains(prompt, "## Local Knowledge"));
 }
 
-// -------------------------------------------------------------------------
-// build_sub_agent_prompt — Local Knowledge parity
-// -------------------------------------------------------------------------
 
-test "build_sub_agent_prompt injects Local Knowledge section" {
+// ---------------------------------------------------------------------------
+// appendSubAgentsListing — "Available Sub-Agents" section
+// ---------------------------------------------------------------------------
+//
+// PR review: inject the list of sub-agents from LlmConfig into the
+// system prompt so the LLM can discover what agent_names to pass
+// to spawn_sub_agent. These tests exercise the rendering format
+// (the integration with LlmConfig + selected_profile_model is
+// covered by manual smoke testing because the LlmConfig singleton
+// is hard to set up in a unit test).
+
+test "appendSubAgentsListing: empty rows slice is a no-op" {
     const alloc = std.testing.allocator;
-    const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-prompt-subagent-local-knowledge";
-    const local_dir = "/tmp/nalar-prompt-subagent-local-knowledge/.nalar/memories";
-    const file_path = "/tmp/nalar-prompt-subagent-local-knowledge/.nalar/memories/subagent-rule.md";
-
-    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
-
-    try std.Io.Dir.cwd().createDirPath(io, local_dir);
-    {
-        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
-        defer std.Io.File.close(f, io);
-        try std.Io.File.writeStreamingAll(f, io,
-            \\# Sub-Agent Project Rule
-            \\
-            \\Sub-agents also see local knowledge.
-            \\
-        );
-    }
-
-    const prompt = try prompts.build_sub_agent_prompt(
-        alloc,
-        io,
-        tmp_cwd,
-        "",
-        "do the thing",
-        &[_]AgentTool{},
-        null, // env is null
-    );
-    defer alloc.free(prompt);
-
-    // Section is present
-    try std.testing.expect(contains(prompt, "## Local Knowledge"));
-    try std.testing.expect(contains(prompt, "subagent-rule.md"));
-    try std.testing.expect(contains(prompt, "Sub-Agent Project Rule"));
-    try std.testing.expect(contains(prompt, "Sub-agents also see local knowledge"));
-    // Preamble present
-    try std.testing.expect(contains(prompt, "auto-loaded from `<cwd>/.nalar/memories/`"));
-    // No Global Knowledge when env is null
-    try std.testing.expect(!contains(prompt, "## Global Knowledge"));
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &.{});
+    try std.testing.expectEqual(@as(usize, 0), result.items.len);
 }
 
-test "build_sub_agent_prompt omits Local Knowledge when cwd is empty" {
+test "appendSubAgentsListing: renders a single row with name + model + description" {
     const alloc = std.testing.allocator;
-    const io = std.testing.io;
 
-    const prompt = try prompts.build_sub_agent_prompt(
-        alloc,
-        io,
-        "", // ← cwd empty
-        "",
-        "task",
-        &[_]AgentTool{},
-        null,
-    );
-    defer alloc.free(prompt);
+    const rows = [_]prompts.SubAgentListingRow{
+        .{
+            .name = "code-reviewer",
+            .model = "gpt-4o",
+            .description = "You are a strict code reviewer.",
+            .source = "",
+        },
+    };
 
-    try std.testing.expect(!contains(prompt, "## Local Knowledge"));
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &rows);
+
+    const out = result.items;
+    // Header is present.
+    try std.testing.expect(contains(out, "## Available Sub-Agents"));
+    // Row is rendered with name, model, description.
+    try std.testing.expect(contains(out, "**code-reviewer**"));
+    try std.testing.expect(contains(out, "model: `gpt-4o`"));
+    try std.testing.expect(contains(out, "You are a strict code reviewer."));
+    // No source suffix when source is empty.
+    try std.testing.expect(!contains(out, "from profile"));
+    // Footer explains where the list came from.
+    try std.testing.expect(contains(out, "sub_agents"));
+    try std.testing.expect(contains(out, "profile"));
 }
 
-test "build_sub_agent_prompt omits Local Knowledge when dir does not exist" {
+test "appendSubAgentsListing: per-profile source suffix is shown" {
+    const alloc = std.testing.allocator;
+
+    const rows = [_]prompts.SubAgentListingRow{
+        .{
+            .name = "reviewer",
+            .model = "gpt-4o",
+            .description = "Profile-specific reviewer.",
+            .source = "profile1",
+        },
+    };
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &rows);
+
+    try std.testing.expect(contains(result.items, "from profile `profile1`"));
+}
+
+test "appendSubAgentsListing: rows with empty name are skipped (defensive)" {
+    const alloc = std.testing.allocator;
+
+    const rows = [_]prompts.SubAgentListingRow{
+        .{ .name = "", .model = "m", .description = "should be skipped", .source = "" },
+        .{ .name = "valid", .model = "m", .description = "should be rendered", .source = "" },
+    };
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &rows);
+
+    try std.testing.expect(!contains(result.items, "should be skipped"));
+    try std.testing.expect(contains(result.items, "should be rendered"));
+    try std.testing.expect(contains(result.items, "**valid**"));
+}
+
+test "appendSubAgentsListing: empty model/description still renders the row" {
+    const alloc = std.testing.allocator;
+
+    const rows = [_]prompts.SubAgentListingRow{
+        .{ .name = "minimal", .model = "", .description = "", .source = "" },
+    };
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(alloc);
+    try prompts.appendSubAgentsListing(alloc, &result, &rows);
+
+    // The name is present but neither the model nor the
+    // description is rendered (no "model: \`\`", no em-dash).
+    try std.testing.expect(contains(result.items, "**minimal**"));
+    try std.testing.expect(!contains(result.items, "model: `"));
+    try std.testing.expect(!contains(result.items, " — \""));
+}
+
+test "build_agent_prompt with sub_agents_listing: section is rendered when non-empty" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    // Use a guaranteed-missing cwd
-    const missing_cwd = "/tmp/nalar-prompt-subagent-no-local-dir";
-    std.Io.Dir.cwd().deleteTree(io, missing_cwd) catch {};
-
-    const prompt = try prompts.build_sub_agent_prompt(
+    const tools = [_]AgentTool{};
+    const sub_agents_listing =
+        \\## Available Sub-Agents
+        \\
+        \\- **code-reviewer** (model: `gpt-4o`)
+        \\
+    ;
+    const prompt = try prompts.build_agent_prompt(
         alloc,
         io,
-        missing_cwd,
+        "/tmp",
         "",
-        "task",
-        &[_]AgentTool{},
+        "",
+        "",
+        "",
+        &tools,
+        "",
         null,
+        sub_agents_listing,
     );
     defer alloc.free(prompt);
 
-    try std.testing.expect(!contains(prompt, "## Local Knowledge"));
+    try std.testing.expect(contains(prompt, "## Available Sub-Agents"));
+    try std.testing.expect(contains(prompt, "**code-reviewer**"));
+}
+
+test "build_agent_prompt with sub_agents_listing: section is omitted when empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{};
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "", // empty sub_agents_listing
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(!contains(prompt, "## Available Sub-Agents"));
 }

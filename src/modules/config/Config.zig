@@ -27,6 +27,14 @@ pub const LlmConfig = struct {
     /// the backend (notify-send / osascript / PowerShell) so they work
     /// even when the desktop app's browser is closed.
     notify_on_complete: bool = true,
+    /// Owned slice of random sub-agent names that `resolveSubAgent`
+    /// generated for the random-fallback case. Each name is allocated
+    /// on `self.allocator` and is freed in `deinit`. Slices in the
+    /// `ResolvedSubAgent` returned by `resolveSubAgent` borrow from
+    /// this slice — callers MUST use them only while `self` is alive
+    /// (which is always the case in production because `LlmConfig`
+    /// lives in the singleton).
+    random_names: [][]u8 = &.{},
 
     pub const LoadError = error{
         ConfigFileNotFound,
@@ -69,6 +77,64 @@ pub const LlmConfig = struct {
     /// is allocated with the parent `LlmConfig.allocator`, and each entry's
     /// string fields are individually allocated on the same allocator.
     pub const SubAgentsList = []SubAgentConfig;
+
+    /// Resolved sub-agent configuration — the output of
+    /// `resolveSubAgent`. Carries the sub-agent's name, the resolved
+    /// LLM endpoint fields, the strongly-typed `thinking` /
+    /// `temperature`, and the system prompt to inject.
+    ///
+    /// All `[]const u8` string fields in the LLM block (model, base_url,
+    /// api_key, url_style) are **already overlaid** on the
+    /// orchestrator's defaults — an empty field in the matched
+    /// `SubAgentConfig` falls through to the orchestrator's value, so
+    /// the caller can use these slices directly.
+    ///
+    /// `is_thinking` and `temperature` are `?bool` / `?f32` (not
+    /// strings) so the workflow can use them without parsing.
+    /// `null` means "auto — inherit from parent's value at run time".
+    ///
+    /// `name` is either the matched `SubAgentConfig.name` (when found)
+    /// or a generated random name of the form
+    /// `"agent-{randomhex}"` (when not found and the caller did
+    /// opt in). `is_random_fallback` distinguishes the two.
+    pub const ResolvedSubAgent = struct {
+        /// Name to record as `agent_name` for the sub-agent's session
+        /// and to embed in the session_id suffix.
+        name: []const u8,
+
+        /// True iff `agent_name` was provided but not found in any
+        /// sub_agents list. False when the name was found.
+        is_random_fallback: bool,
+
+        /// The name the LLM originally requested. Useful for
+        /// logging. Empty if no `agent_name` was provided.
+        requested_name: []const u8,
+
+        /// Resolved LLM endpoint fields (overlay applied).
+        model: []const u8,
+        base_url: []const u8,
+        api_key: []const u8,
+        url_style: []const u8,
+
+        /// Resolved `thinking` setting. `null` = "auto" — inherit
+        /// from parent's value at run time.
+        is_thinking: ?bool,
+
+        /// Resolved `temperature` setting. `null` = "auto" — inherit
+        /// from parent's value at run time.
+        temperature: ?f32,
+
+        /// System prompt to inject as the sub-agent's
+        /// `## Your Active Agent Configuration`. Empty for the
+        /// random-fallback case.
+        system_prompt: []const u8,
+
+        /// Which sub_agents list supplied this config: the profile
+        /// name (e.g. `"profile1"`) or `""` for top-level. Useful
+        /// for logging "loaded from profile1's sub_agents" vs
+        /// "top-level". Empty for the random-fallback case.
+        source: []const u8,
+    };
 
     const ProfileJson = struct {
         model: []const u8 = "",
@@ -615,6 +681,17 @@ pub const LlmConfig = struct {
         if (self.mcpServers_parsed) |*parsed| {
             parsed.deinit();
         }
+
+        // Free each random sub-agent name that resolveSubAgent
+        // generated, then free the tracking slice itself. The
+        // names borrow from `self.allocator` and the slice
+        // header was grown via `realloc`.
+        for (self.random_names) |name| {
+            self.allocator.free(name);
+        }
+        if (self.random_names.len > 0) {
+            self.allocator.free(self.random_names);
+        }
     }
 
     pub fn clone(self: *const LlmConfig) LoadError!LlmConfig {
@@ -833,7 +910,195 @@ pub const LlmConfig = struct {
     pub fn subAgentCount(self: *const LlmConfig) u32 {
         return @intCast(self.sub_agents.len);
     }
+
+    /// Resolve a sub-agent by name, applying the v1 lookup rules:
+    ///   1. If `profile_name` is non-empty AND a profile with that name
+    ///      exists, search `profile.sub_agents` first.
+    ///   2. Fall back to `self.sub_agents` (top-level).
+    ///
+    /// If `agent_name` is empty OR not found in either list, the returned
+    /// struct has `is_random_fallback = true`, a generated random `name`
+    /// of the form `"agent-{nanoseconds}-{randomhex}"`, and the
+    /// orchestrator's default `model` / `api_key` / `base_url` /
+    /// `url_style` / empty `system_prompt`.
+    ///
+    /// The returned struct's LLM fields are *overlays* on the
+    /// orchestrator's defaults: any field that's empty in the matched
+    /// `SubAgentConfig` falls through to the orchestrator's value
+    /// (the caller is expected to apply the overlay against the
+    /// parent's already-resolved values — which is what
+    /// `RunParamsNew.sub_agent_overrides` does).
+    ///
+    /// `thinking` and `temperature` are resolved into the strongly-typed
+    /// `?bool` / `?f32` shapes the workflow needs. `"auto"` (the
+    /// default in `SubAgentConfig`) maps to `null` ("inherit from
+    /// parent").
+    ///
+    /// `is_random_fallback` is true iff `agent_name` was provided but
+    /// not found in any sub_agents list. It's `false` when the name
+    /// was found. Callers that pass `agent_name = ""` (i.e. did not
+    /// opt in) should not call this function — just use the
+    /// orchestrator's default values directly.
+    pub fn resolveSubAgent(
+        self: *LlmConfig,
+        profile_name: []const u8,
+        agent_name: []const u8,
+    ) ResolvedSubAgent {
+        // 1. Per-profile lookup (when a profile is selected). The
+        // profile's `sub_agents` list is consulted first so a
+        // specialized sub-agent (e.g. a code-reviewer model only
+        // available on profile1) is preferred over the top-level
+        // config's general-purpose list.
+        if (profile_name.len > 0) {
+            if (self.getProfile(profile_name)) |profile| {
+                if (profile.sub_agents.len > 0) {
+                    for (profile.sub_agents) |sa| {
+                        if (std.mem.eql(u8, sa.name, agent_name)) {
+                            return self.buildResolvedFromConfig(sa, agent_name, profile_name);
+                        }
+                    }
+                }
+            }
+            // Profile not found OR profile has no sub_agents
+            // matching the name: fall through to the top-level
+            // lookup. (We deliberately do NOT warn here — empty
+            // sub_agents on a profile is a normal configuration
+            // and per-profile sub_agents are an optional override.
+            // The caller can still get `is_random_fallback = true`
+            // if the top-level list also lacks the name.)
+        }
+
+        // 2. Top-level lookup.
+        if (self.getSubAgent(agent_name)) |sa| {
+            return self.buildResolvedFromConfig(sa, agent_name, "");
+        }
+
+        // 3. Not found — random fallback. The random name is
+        // tracked in `self.random_names` so it can be freed in
+        // `deinit`. We do this BEFORE returning so the caller can
+        // safely use the borrowed `name` slice.
+        const random_name = generateRandomAgentName(self.allocator) catch blk: {
+            // Last-ditch fallback: empty string. Callers that get
+            // an empty name still see `is_random_fallback = true`
+            // and can show a degraded UX (the session_id will fall
+            // back to the LLM-provided name).
+            break :blk "";
+        };
+        // Track the name for cleanup in deinit (no-op for empty
+        // string fallback). We reallocate the tracking slice to
+        // grow by one; on failure, we leave `random_names`
+        // unchanged (the leaked name is the lesser evil compared
+        // to a double-free).
+        if (random_name.len > 0) {
+            const new_len = self.random_names.len + 1;
+            var grown: [][]u8 = self.allocator.realloc(self.random_names, new_len) catch blk: {
+                // realloc failed — try a fresh allocation and copy.
+                const fresh = self.allocator.alloc([]u8, new_len) catch break :blk &.{};
+                if (fresh.len == new_len and self.random_names.len > 0) {
+                    @memcpy(fresh[0..self.random_names.len], self.random_names);
+                }
+                break :blk fresh;
+            };
+            if (grown.len == new_len) {
+                grown[self.random_names.len] = @constCast(random_name);
+                self.random_names = grown;
+            }
+        }
+        return ResolvedSubAgent{
+            .name = random_name,
+            .is_random_fallback = true,
+            .requested_name = agent_name,
+            .model = self.model,
+            .base_url = self.base_url,
+            .api_key = self.api_key,
+            .url_style = self.url_style,
+            .is_thinking = null,
+            .temperature = null,
+            .system_prompt = "",
+            .source = "",
+        };
+    }
+
+    /// Internal helper — convert a matched `SubAgentConfig` into a
+    /// `ResolvedSubAgent` with string→bool/f32 parsing for `thinking` /
+    /// `temperature`. Empty string fields in `sa` fall through to the
+    /// orchestrator's values (overlay semantics).
+    fn buildResolvedFromConfig(
+        self: *const LlmConfig,
+        sa: SubAgentConfig,
+        requested_name: []const u8,
+        source: []const u8,
+    ) ResolvedSubAgent {
+        // thinking: "auto" → null (inherit). "true" → true. "false" → false.
+        // Any other value → null (treat as auto).
+        const resolved_thinking: ?bool = blk: {
+            if (std.mem.eql(u8, sa.thinking, "auto")) break :blk null;
+            if (std.mem.eql(u8, sa.thinking, "true")) break :blk true;
+            if (std.mem.eql(u8, sa.thinking, "false")) break :blk false;
+            break :blk null;
+        };
+
+        // temperature: "auto" → null. Numeric → parseFloat. Anything
+        // else → null.
+        const resolved_temperature: ?f32 = blk: {
+            if (std.mem.eql(u8, sa.temperature, "auto")) break :blk null;
+            break :blk std.fmt.parseFloat(f32, sa.temperature) catch null;
+        };
+
+        return ResolvedSubAgent{
+            .name = sa.name,
+            .is_random_fallback = false,
+            .requested_name = requested_name,
+            // Overlay: empty field in SubAgentConfig → orchestrator default.
+            .model = if (sa.model.len > 0) sa.model else self.model,
+            .base_url = if (sa.base_url.len > 0) sa.base_url else self.base_url,
+            .api_key = if (sa.api_key.len > 0) sa.api_key else self.api_key,
+            .url_style = if (sa.url_style.len > 0) sa.url_style else self.url_style,
+            .is_thinking = resolved_thinking,
+            .temperature = resolved_temperature,
+            .system_prompt = sa.system_prompt,
+            .source = source,
+        };
+    }
 };
+
+/// Generate a random sub-agent name of the form
+/// `"agent-{randomhex}"` for the random-fallback case when a
+/// requested `agent_name` is not found in any sub_agents list.
+///
+/// Allocates the formatted name on `allocator`. The caller MUST
+/// store the returned slice in `LlmConfig.random_names` (via
+/// `resolveSubAgent`) so it can be freed in `deinit` — otherwise
+/// the memory leaks.
+///
+/// The 16 hex characters come from a mix of entropy sources
+/// available in this codebase: the process ID and stack/heap
+/// pointer addresses. This mirrors the pattern in
+/// `src/helpers/random.zig` for `generateSessionId` — avoids the
+/// `std.crypto.random` API (which doesn't exist in this Zig 0.16
+/// build) while still producing effectively-unique names across
+/// parallel sub-agents.
+fn generateRandomAgentName(allocator: std.mem.Allocator) ![]u8 {
+    // 8 bytes of pseudo-random entropy → 16 hex chars.
+    var entropy_bytes: [8]u8 = undefined;
+    const pid: u64 = if (@hasDecl(std.c, "getpid"))
+        @intCast(std.c.getpid())
+    else
+        0;
+    const stack_addr: u64 = @intCast(@intFromPtr(&entropy_bytes));
+    const alloc_addr: u64 = @intCast(@intFromPtr(allocator.ptr));
+    const entropy: u64 = pid ^ (stack_addr << 17) ^ (alloc_addr << 33);
+    @as(*u64, @ptrCast(@alignCast(&entropy_bytes))).* = entropy;
+
+    var out_buf: [22]u8 = undefined;
+    @memcpy(out_buf[0..6], "agent-");
+    const hex_chars = "0123456789abcdef";
+    for (entropy_bytes, 0..) |b, i| {
+        out_buf[6 + i * 2] = hex_chars[b >> 4];
+        out_buf[6 + i * 2 + 1] = hex_chars[b & 0x0F];
+    }
+    return allocator.dupe(u8, &out_buf);
+}
 
 pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.process.Environ.Map) LlmConfig.LoadError![]const u8 {
     const app_name = "nalar";

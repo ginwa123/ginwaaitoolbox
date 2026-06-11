@@ -40,6 +40,13 @@ const ToolContext = struct {
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
+    /// Name of the parent session's active profile (from
+    /// `LlmConfig.profiles_models`). Threaded through from
+    /// `RunParamsNew.selected_profile_model` so tools that need
+    /// the profile context (e.g. `spawn_sub_agent`'s per-profile
+    /// sub_agents lookup) can see it. Empty string means "no
+    /// profile selected — use the top-level config".
+    selected_profile_model: []const u8 = "",
 };
 
 /// Result of parsing diff_view XML from tool result.
@@ -174,6 +181,7 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tool_
         .is_thinking = ctx.is_thinking,
         .environment = ctx.environment,
         .active_loops = ctx.active_loops,
+        .selected_profile_model = ctx.selected_profile_model,
     };
     const exec_result = try exec(ctx_local, tool_call);
 
@@ -257,6 +265,7 @@ fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !Tool
         .is_thinking = ctx.is_thinking,
         .environment = ctx.environment,
         .active_loops = ctx.active_loops,
+        .selected_profile_model = ctx.selected_profile_model,
     };
     const result = try tool_registry_mod.execSetAgentProperties(ctx_exec, tool_call);
 
@@ -318,6 +327,11 @@ pub fn handle_tool(
     config: *const config_mod.LlmConfig,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
+    /// Parent session's active profile (from
+    /// `LlmConfig.profiles_models`). Threaded through to
+    /// `ToolContext.selected_profile_model` so tools like
+    /// `spawn_sub_agent` can do per-profile sub_agents lookup.
+    selected_profile_model: []const u8,
 ) !void {
 
     if (res_dynamic_agent.tool_calls) |tc| {
@@ -386,6 +400,7 @@ pub fn handle_tool(
             .is_thinking = isThinking,
             .environment = environment,
             .active_loops = active_loops,
+            .selected_profile_model = selected_profile_model,
         };
 
         // Execute each tool call using dispatch
