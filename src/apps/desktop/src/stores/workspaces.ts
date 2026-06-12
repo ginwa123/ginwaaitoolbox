@@ -704,6 +704,75 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  /**
+   * Reorder the workspaces array to match `orderedIds` and persist the
+   * new order via `POST /api/workspaces/reorder`. Optimistic: the
+   * local array is reordered immediately so the UI snaps to the new
+   * position on drop. On API failure, the snapshot is restored and
+   * the error is logged (no toast/banner — matches the project's
+   * silent-failure pattern in addTask/deleteTask/loadMoreTasks).
+   *
+   * No-op when `orderedIds` is empty or matches the current order
+   * (same set of IDs in the same positions). Length mismatch is
+   * rejected (the client is out of sync).
+   *
+   * Plan: docs/plans/2026-06-12-workspace-drag-and-drop.md
+   */
+  async function reorderWorkspaces(orderedIds: string[]) {
+    const current = workspaces.value
+    if (orderedIds.length === 0) return
+
+    // Defensive: the client must send a complete ordering. A partial
+    // list (e.g. drag-reordering 2 of 5 workspaces) would lose the
+    // other 3. Refuse early.
+    if (orderedIds.length !== current.length) {
+      console.error(
+        `[workspacesStore.reorderWorkspaces] orderedIds length ${orderedIds.length} != current ${current.length}; refusing reorder`,
+      )
+      return
+    }
+
+    // No-op: same set of IDs in (potentially) different order. The
+    // set-equality check is an O(n) walk — fine for the realistic
+    // sidebar size.
+    const currentIdSet = new Set(current.map((w) => w.id))
+    const newIdSet = new Set(orderedIds)
+    const isSameSet =
+      currentIdSet.size === newIdSet.size && [...currentIdSet].every((id) => newIdSet.has(id))
+    if (isSameSet && current.every((w, i) => w.id === orderedIds[i])) {
+      return
+    }
+
+    // Snapshot for rollback. Vue's ref returns the inner array;
+    // copying the slice gives us a moment-in-time view.
+    const previousOrder = current.slice()
+
+    // Optimistic local reorder: build a new array by looking up each
+    // id in the current array. If an id is missing (defensive — the
+    // length-mismatch check above should have caught this), fall
+    // back to keeping the original row at its original position.
+    const byId = new Map(current.map((w) => [w.id, w]))
+    const reordered: Workspace[] = []
+    for (const id of orderedIds) {
+      const ws = byId.get(id)
+      if (ws) reordered.push(ws)
+    }
+    // If any current rows were missed, append them at the end (should
+    // not happen given the length check, but defensive).
+    for (const ws of current) {
+      if (!orderedIds.includes(ws.id)) reordered.push(ws)
+    }
+    workspaces.value = reordered
+
+    // Persist to backend.
+    try {
+      await api.reorderWorkspaces(orderedIds)
+    } catch (err) {
+      console.error('[workspacesStore.reorderWorkspaces] API call failed, rolling back:', err)
+      workspaces.value = previousOrder
+    }
+  }
+
   // Update workspace item path from system folder
   function updateWorkspaceItemPath(workspaceId: string, itemId: string, newPath: string) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -861,6 +930,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     removeWorkspaceItem,
     removeWorkspace,
     renameWorkspace,
+    reorderWorkspaces,
     updateWorkspaceItemPath,
     addTask,
     toggleTask,

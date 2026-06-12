@@ -39,6 +39,7 @@ pub const shutdownHandler = @import("shutdown.zig").shutdownHandler;
 // Workspace handlers (stub implementations for desktop app compatibility)
 pub const workspacesListHandler = @import("workspaces_list.zig").workspacesListHandler;
 pub const workspacesCreateHandler = @import("workspaces_create.zig").workspacesCreateHandler;
+pub const workspacesReorderHandler = @import("workspaces_reorder.zig").workspacesReorderHandler;
 pub const workspaceGetHandler = @import("workspace_get.zig").workspaceGetHandler;
 pub const workspaceUpdateHandler = @import("workspace_update.zig").workspaceUpdateHandler;
 pub const workspaceDeleteHandler = @import("workspace_delete.zig").workspaceDeleteHandler;

@@ -4,7 +4,6 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const process = nalarcore.helpers.process;
 const getCurrentProcessId = process.getCurrentProcessId;
-const ai_mod = nalarcore.ai_mod;
 const sqlite = nalarcore.sqlite;
 
 /// POST /api/workspaces
@@ -58,6 +57,16 @@ pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
 }
 
 fn createWorkspace(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, workspace_id: []const u8, name: []const u8) !void {
-    _ = try db.exec(allocator, "INSERT INTO workspaces (id, name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))", &.{ workspace_id, name });
+    // Assign position = MAX(position) + 1 so the new workspace
+    // appears at the TOP of the list (workspaces_list.zig orders
+    // by position DESC). The COALESCE(..., -1) makes the very first
+    // workspace in an empty table get position 0 (= -1 + 1).
+    // See docs/plans/2026-06-12-workspace-drag-and-drop.md.
+    _ = try db.exec(allocator,
+        \\INSERT INTO workspaces (id, name, position, created_at, updated_at)
+        \\VALUES (?, ?,
+        \\    COALESCE((SELECT MAX(position) FROM workspaces), -1) + 1,
+        \\    datetime('now'), datetime('now'))
+    , &.{ workspace_id, name });
 }
 

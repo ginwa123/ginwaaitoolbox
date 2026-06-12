@@ -135,6 +135,33 @@ export async function updateWorkspace(id: string, data: Partial<Workspace>): Pro
   return response.json()
 }
 
+/**
+ * Persist a new top-to-bottom display order for workspaces.
+ * POST /api/workspaces/reorder with body `{ordered_ids: [...]}`. The
+ * server reverses the array when assigning position values (top of
+ * list = highest position). On any non-2xx response, throws
+ * `new Error("HTTP <status>")` so the caller can roll back its
+ * optimistic update.
+ *
+ * The list shape is the *full* ordered set, not a delta. Reordering
+ * two adjacent rows means re-sending ALL workspace IDs in their new
+ * order. The backend is idempotent — a second call with the same
+ * array leaves the data unchanged.
+ *
+ * Plan: docs/plans/2026-06-12-workspace-drag-and-drop.md
+ */
+export async function reorderWorkspaces(
+  orderedIds: string[],
+): Promise<{ success: boolean; count: number }> {
+  const response = await fetch(`${API_BASE}/workspaces/reorder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ordered_ids: orderedIds }),
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
 // Task API
 /**
  * Fetch tasks for a workspace item, with optional cursor pagination.

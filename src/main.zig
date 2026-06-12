@@ -284,6 +284,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
     try gs.router.get("/api/workspaces", ai_mod.http_handlers.workspacesListHandler);
     try gs.router.post("/api/workspaces", ai_mod.http_handlers.workspacesCreateHandler);
+    try gs.router.post("/api/workspaces/reorder", ai_mod.http_handlers.workspacesReorderHandler);
     try gs.router.get("/api/workspaces/:id", ai_mod.http_handlers.workspaceGetHandler);
     try gs.router.put("/api/workspaces/:id", ai_mod.http_handlers.workspaceUpdateHandler);
     try gs.router.delete("/api/workspaces/:id", ai_mod.http_handlers.workspaceDeleteHandler);

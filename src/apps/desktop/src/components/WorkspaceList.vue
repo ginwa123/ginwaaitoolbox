@@ -6,7 +6,11 @@ import type { Workspace, WorkspaceItem } from '../stores/workspaces'
 import WorkspaceItemComponent from './WorkspaceItem.vue'
 import * as api from '../api'
 
-defineProps<{
+// Bind the workspaces prop so the drag-and-drop handler can read it.
+// In <script setup>, defineProps returns a `props` object that you
+// must destructure or reference — the template gets the prop
+// names auto-imported, but the script does not.
+const props = defineProps<{
   workspaces: Workspace[]
   activeWorkspaceItemId: string | null
 }>()
@@ -33,6 +37,11 @@ const emit = defineEmits<{
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   loadMoreTasks: [workspaceId: string, itemId: string]
+  // Drag-and-drop reordering. Emitted on a successful drop with the
+  // new top-to-bottom array of workspace IDs. The Sidebar parent
+  // forwards this to `workspacesStore.reorderWorkspaces` which
+  // performs the optimistic update + API call + rollback on error.
+  reorderWorkspaces: [orderedIds: string[]]
 }>()
 
 const sidebarStore = useSidebarStore()
@@ -43,6 +52,16 @@ const workspacesScrollRef = ref<HTMLElement | null>(null)
 
 // Loading state
 const workspacesLoading = ref(false)
+
+// ─── Drag-and-drop state (workspace reordering) ────────────────────────────
+// `draggingId` is the workspace currently being dragged (used to dim
+// the source row); `dragOverId` is the row the cursor is hovering
+// (used to draw the drop indicator). `null` means "not dragging /
+// not hovering". The HTML5 DnD API doesn't expose a single
+// is-dragging flag, so we maintain our own. See
+// docs/plans/2026-06-12-workspace-drag-and-drop.md.
+const draggingId = ref<string | null>(null)
+const dragOverId = ref<string | null>(null)
 
 // Close dropdown when clicking outside
 const handleClickOutside = (event: MouseEvent) => {
@@ -149,6 +168,84 @@ const handleRenameTask = (
 const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
   emit('loadMoreTasks', workspaceId, itemId)
 }
+
+// ─── Drag-and-drop handlers (workspace reordering) ────────────────────────
+// The HTML5 DnD API is the simplest fit: no dep, native browser
+// support, and the project already uses native DOM events for the
+// sidebar resize handle (Sidebar.vue:91-116). State is held in
+// `draggingId` / `dragOverId` above; visual feedback is applied via
+// `:class` bindings on the row (see template below).
+
+const handleDragStart = (workspaceId: string, event: DragEvent) => {
+  draggingId.value = workspaceId
+  if (event.dataTransfer) {
+    // 'move' is the cursor hint; the actual data payload is the
+    // workspace id (string), which we read in handleDrop to
+    // identify the source. 'text/plain' is the universal MIME type
+    // that works in all browsers and is what HTML5 DnD spec
+    // recommends for non-rich-text drags.
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', workspaceId)
+  }
+}
+
+const handleDragOver = (workspaceId: string, event: DragEvent) => {
+  // preventDefault on dragover is REQUIRED to allow the drop. Without
+  // it, the browser cancels the drop with a "not allowed" cursor.
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+  if (dragOverId.value !== workspaceId) {
+    dragOverId.value = workspaceId
+  }
+}
+
+const handleDragLeave = (workspaceId: string, event: DragEvent) => {
+  // Only clear when the cursor actually leaves the row. The
+  // dragleave event fires when crossing child elements too, so we
+  // check `relatedTarget` to see if the cursor is still inside the
+  // row. If it is, do nothing.
+  const target = event.currentTarget as HTMLElement | null
+  const related = event.relatedTarget as Node | null
+  if (target && related && target.contains(related)) return
+  if (dragOverId.value === workspaceId) {
+    dragOverId.value = null
+  }
+}
+
+const handleDrop = (workspaceId: string, event: DragEvent) => {
+  event.preventDefault()
+  const sourceId = event.dataTransfer?.getData('text/plain')
+  if (!sourceId || sourceId === workspaceId) {
+    // Drop on self or no source id — no-op.
+    return
+  }
+  // Compute the new order: take all workspaces in current order,
+  // splice `sourceId` out, insert it at the position of
+  // `workspaceId` (the drop target).
+  const current = props.workspaces.slice()
+  const fromIdx = current.findIndex((w) => w.id === sourceId)
+  const toIdx = current.findIndex((w) => w.id === workspaceId)
+  if (fromIdx === -1 || toIdx === -1) return
+  // Splice returns T[] — destructure the single removed element.
+  // `moved` is `Workspace | undefined` (TS noUncheckedIndexedAccess);
+  // we already verified the index is in bounds above, so the bang
+  // is safe.
+  const removed = current.splice(fromIdx, 1)
+  const moved = removed[0]
+  if (!moved) return
+  current.splice(toIdx, 0, moved)
+  emit('reorderWorkspaces', current.map((w) => w.id))
+}
+
+const handleDragEnd = () => {
+  // Always clear drag state on dragend, even if the drop was
+  // cancelled (e.g. user dropped outside any drop target). Without
+  // this, the source row stays dimmed forever.
+  draggingId.value = null
+  dragOverId.value = null
+}
 </script>
 
 <template>
@@ -189,8 +286,25 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
       <Transition name="collapse">
         <div v-show="sidebarStore.workspacesExpanded" class="space-y-0.5 pb-2">
           <template v-for="workspace in workspaces" :key="workspace.id">
-          <!-- Workspace Header -->
-          <div class="flex items-center group/workspace" data-workspace-menu>
+          <!-- Workspace Header (draggable for reordering) -->
+          <div
+            class="flex items-center group/workspace rounded-lg transition-all duration-150"
+            :class="{
+              'opacity-50': draggingId === workspace.id,
+            }"
+            :style="{
+              boxShadow: dragOverId === workspace.id && draggingId !== workspace.id
+                ? '0 -2px 0 0 var(--color-violet)'
+                : 'none',
+            }"
+            data-workspace-menu
+            draggable="true"
+            @dragstart="handleDragStart(workspace.id, $event)"
+            @dragover="handleDragOver(workspace.id, $event)"
+            @dragleave="handleDragLeave(workspace.id, $event)"
+            @drop="handleDrop(workspace.id, $event)"
+            @dragend="handleDragEnd"
+          >
         <button
           @click="handleWorkspaceClick(workspace.id)"
           class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200"
@@ -203,6 +317,16 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
               : 'var(--semantic-text-muted)',
           }"
         >
+          <!-- Grip handle — visible on hover, gives the user a "you can
+               drag this" hint. The whole row is draggable (the parent
+               <div> has draggable="true"); the handle is purely
+               cosmetic. aria-hidden because the actual drag target is
+               the parent row, not this span. -->
+          <span
+            class="w-3 h-4 flex items-center justify-center text-xs opacity-0 group-hover/workspace:opacity-60 transition-opacity duration-200 shrink-0"
+            :style="{ color: 'var(--semantic-text-dim)' }"
+            aria-hidden="true"
+          >≡</span>
           <!-- Processing spinner (one of this workspace's items has a
                task currently being run by a worker). Sits in the
                LEFTMOST slot — the same position the per-task and
