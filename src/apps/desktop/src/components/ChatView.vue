@@ -33,6 +33,7 @@ import RemoveSkill from './tool_outputs/RemoveSkill.vue'
 import RemoveFile from './tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
 import SkillsPopup from './SkillsPopup.vue'
+import ImagePreview from './ImagePreview.vue'
 import { parseSpawnSubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
 import type { SubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
 
@@ -2250,23 +2251,7 @@ const compactSession = async () => {
     />
 
     <!-- Image Preview Popup -->
-    <Teleport to="body">
-      <div v-if="previewImageUrl" class="image-preview-overlay" @click="closeImagePreview">
-        <div class="image-preview-content" @click.stop>
-          <button type="button" class="image-preview-close" @click="closeImagePreview">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
-          <img :src="previewImageUrl" alt="Preview" class="image-preview-img" />
-        </div>
-      </div>
-    </Teleport>
+    <ImagePreview :src="previewImageUrl ?? ''" @close="closeImagePreview" />
   </div>
 </template>
 
@@ -2457,52 +2442,5 @@ const compactSession = async () => {
 
 :deep(.markdown-content pre:hover .code-copy-btn) {
   opacity: 1;
-}
-
-.image-preview-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-  padding: 20px;
-}
-
-.image-preview-content {
-  position: relative;
-  max-width: 90vw;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.image-preview-close {
-  position: absolute;
-  top: -40px;
-  right: 0;
-  background: none;
-  border: none;
-  color: white;
-  cursor: pointer;
-  padding: 8px;
-  opacity: 0.7;
-  transition: opacity 0.2s;
-}
-
-.image-preview-close:hover {
-  opacity: 1;
-}
-
-.image-preview-img {
-  max-width: 100%;
-  max-height: calc(90vh - 60px);
-  object-fit: contain;
-  border-radius: 8px;
 }
 </style>
