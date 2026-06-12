@@ -1,5 +1,8 @@
 export interface SubAgentArgs {
-  name: string
+  /** Required. The name of the pre-configured sub-agent from
+   * LlmConfig.sub_agents. Also used as the sub-agent's label in
+   * the result XML. */
+  agent_name: string
   instruction: string
   tools?: string[]
   timeout_seconds?: number
@@ -15,6 +18,8 @@ export interface SubAgentArgs {
  *   - the matching tool call is not spawn_sub_agent
  *   - the matching call's arguments are not parseable
  *   - the matching call's sub_agents is not an array
+ *   - any sub-agent is missing the required `agent_name` or `instruction`
+ *     field, or those fields are not strings, or `agent_name` is empty
  *
  * `arguments` may be either a JSON string (OpenAI format) or an already-parsed
  * object — both are handled.
@@ -59,11 +64,16 @@ export function parseSpawnSubAgentArgs(
 
   // Defensive copy: only include known fields, don't trust the LLM's shape.
   return args.sub_agents.map((sa: any) => {
-    if (!sa || typeof sa.name !== 'string' || typeof sa.instruction !== 'string') {
+    if (
+      !sa ||
+      typeof sa.agent_name !== 'string' ||
+      sa.agent_name.length === 0 ||
+      typeof sa.instruction !== 'string'
+    ) {
       return null
     }
     const result: SubAgentArgs = {
-      name: sa.name,
+      agent_name: sa.agent_name,
       instruction: sa.instruction,
     }
     if (Array.isArray(sa.tools)) result.tools = sa.tools

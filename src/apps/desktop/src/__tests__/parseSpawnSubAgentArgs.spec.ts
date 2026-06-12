@@ -44,29 +44,29 @@ describe('parseSpawnSubAgentArgs', () => {
 
   it('parses arguments as a JSON string (OpenAI format)', () => {
     const args = JSON.stringify({
-      sub_agents: [{ name: 'a', instruction: 'do x', inherited_context: 'last:3' }]
+      sub_agents: [{ agent_name: 'reviewer', instruction: 'do x', inherited_context: 'last:3' }]
     })
     const json = JSON.stringify([{
       id: 'call_xxx', type: 'function',
       function: { name: 'spawn_sub_agent', arguments: args }
     }])
     const result = parseSpawnSubAgentArgs(json, 'call_xxx')
-    expect(result).toEqual([{ name: 'a', instruction: 'do x', inherited_context: 'last:3' }])
+    expect(result).toEqual([{ agent_name: 'reviewer', instruction: 'do x', inherited_context: 'last:3' }])
   })
 
   it('parses arguments as an already-parsed object (defensive)', () => {
     const json = JSON.stringify([{
       id: 'call_xxx', type: 'function',
-      function: { name: 'spawn_sub_agent', arguments: { sub_agents: [{ name: 'a', instruction: 'x' }] } }
+      function: { name: 'spawn_sub_agent', arguments: { sub_agents: [{ agent_name: 'reviewer', instruction: 'x' }] } }
     }])
     const result = parseSpawnSubAgentArgs(json, 'call_xxx')
-    expect(result).toEqual([{ name: 'a', instruction: 'x' }])
+    expect(result).toEqual([{ agent_name: 'reviewer', instruction: 'x' }])
   })
 
   it('preserves all sub-agent fields when fully populated', () => {
     const args = JSON.stringify({
       sub_agents: [{
-        name: 'researcher',
+        agent_name: 'researcher',
         instruction: 'find docs',
         tools: ['bash', 'web_browse'],
         timeout_seconds: 300,
@@ -79,7 +79,7 @@ describe('parseSpawnSubAgentArgs', () => {
     }])
     const result = parseSpawnSubAgentArgs(json, 'call_xxx')
     expect(result).toEqual([{
-      name: 'researcher',
+      agent_name: 'researcher',
       instruction: 'find docs',
       tools: ['bash', 'web_browse'],
       timeout_seconds: 300,
@@ -104,24 +104,49 @@ describe('parseSpawnSubAgentArgs', () => {
     expect(parseSpawnSubAgentArgs(json, 'call_xxx')).toBeNull()
   })
 
+  it('returns an empty array when a sub-agent is missing the required agent_name', () => {
+    const args = JSON.stringify({
+      sub_agents: [{ instruction: 'x' }]  // no agent_name
+    })
+    const json = JSON.stringify([{
+      id: 'call_xxx', type: 'function',
+      function: { name: 'spawn_sub_agent', arguments: args }
+    }])
+    // The parser filters out invalid sub-agents and returns an empty
+    // array (not null) when the matching call was found but every
+    // sub-agent is invalid. `null` is reserved for "no matching call".
+    expect(parseSpawnSubAgentArgs(json, 'call_xxx')).toEqual([])
+  })
+
+  it('returns an empty array when a sub-agent has an empty-string agent_name', () => {
+    const args = JSON.stringify({
+      sub_agents: [{ agent_name: '', instruction: 'x' }]
+    })
+    const json = JSON.stringify([{
+      id: 'call_xxx', type: 'function',
+      function: { name: 'spawn_sub_agent', arguments: args }
+    }])
+    expect(parseSpawnSubAgentArgs(json, 'call_xxx')).toEqual([])
+  })
+
   it('handles sub-agents with missing optional fields (no throw)', () => {
     const args = JSON.stringify({
-      sub_agents: [{ name: 'a', instruction: 'x' }]  // no tools/timeout/inherited_context
+      sub_agents: [{ agent_name: 'reviewer', instruction: 'x' }]  // no tools/timeout/inherited_context
     })
     const json = JSON.stringify([{
       id: 'call_xxx', type: 'function',
       function: { name: 'spawn_sub_agent', arguments: args }
     }])
     const result = parseSpawnSubAgentArgs(json, 'call_xxx')
-    expect(result).toEqual([{ name: 'a', instruction: 'x' }])
+    expect(result).toEqual([{ agent_name: 'reviewer', instruction: 'x' }])
   })
 
   it('returns multiple sub-agents in order', () => {
     const args = JSON.stringify({
       sub_agents: [
-        { name: 'a', instruction: 'x', inherited_context: 'last:3' },
-        { name: 'b', instruction: 'y', inherited_context: 'none' },
-        { name: 'c', instruction: 'z' }
+        { agent_name: 'reviewer', instruction: 'x', inherited_context: 'last:3' },
+        { agent_name: 'explorer', instruction: 'y', inherited_context: 'none' },
+        { agent_name: 'writer', instruction: 'z' }
       ]
     })
     const json = JSON.stringify([{
@@ -130,7 +155,7 @@ describe('parseSpawnSubAgentArgs', () => {
     }])
     const result = parseSpawnSubAgentArgs(json, 'call_xxx')
     expect(result).toHaveLength(3)
-    expect(result?.[0]?.name).toBe('a')
+    expect(result?.[0]?.agent_name).toBe('reviewer')
     expect(result?.[1]?.inherited_context).toBe('none')
     expect(result?.[2]?.inherited_context).toBeUndefined()
   })

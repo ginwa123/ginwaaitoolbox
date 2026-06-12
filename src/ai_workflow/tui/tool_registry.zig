@@ -825,7 +825,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     const sub_agent_count = parsed.sub_agents.len;
     ctx.logger.debugFmt("Parsed {} sub-agents", .{sub_agent_count});
     for (parsed.sub_agents, 0..) |sa, i| {
-        ctx.logger.debugFmt("Sub-agent {}: name='{s}', instruction_len={}", .{ i, sa.name, sa.instruction.len });
+        ctx.logger.debugFmt("Sub-agent {}: agent_name='{s}', instruction_len={}", .{ i, sa.agent_name, sa.instruction.len });
     }
 
     const shared_results = try ctx.allocator.create(SharedResults);
@@ -835,7 +835,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         .mutex = std.Io.Mutex.init,
     };
     for (shared_results.results, 0..) |*r, i| {
-        r.* = .{ .success = false, .name = parsed.sub_agents[i].name, .response = null, .error_message = null, .session_id = "" };
+        r.* = .{ .success = false, .name = parsed.sub_agents[i].agent_name, .response = null, .error_message = null, .session_id = "" };
     }
     defer {
         ctx.allocator.free(shared_results.results);
@@ -848,17 +848,16 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     var group: std.Io.Group = .init;
 
     for (parsed.sub_agents, 0..) |sub_agent, idx| {
-        ctx.logger.debugFmt("Launching concurrent task for agent '{s}' (index {})", .{ sub_agent.name, idx });
+        ctx.logger.debugFmt("Launching concurrent task for agent '{s}' (index {})", .{ sub_agent.agent_name, idx });
 
         // Resolve the sub-agent config from the LlmConfig.
-        // `agent_name` is the LLM-provided name from JSON. When
-        // non-empty, we look it up in the config's sub_agents list
-        // and apply the resolved fields as an overlay on the
-        // orchestrator's defaults. When empty, no overlay is applied
-        // (the sub-agent uses the orchestrator's profile-resolved
-        // model/api_key/etc. as before).
-        const overrides: ?ai_workflow.SubAgentOverrides = if (sub_agent.agent_name) |an| blk: {
-            if (an.len == 0) break :blk null;
+        // `agent_name` is the LLM-provided name from JSON (required).
+        // We look it up in the config's sub_agents list and apply
+        // the resolved fields as an overlay on the orchestrator's
+        // defaults. If the name is not found, a random name is
+        // generated and the orchestrator's defaults are used.
+        const an = sub_agent.agent_name;
+        const overrides: ?ai_workflow.SubAgentOverrides = blk: {
             // Resolve against the active profile's sub_agents
             // list first (when a profile is selected), then
             // fall back to the top-level sub_agents. The
@@ -892,7 +891,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 .temperature = resolved.temperature,
                 .system_prompt = resolved.system_prompt,
             };
-        } else null;
+        };
 
         const args = try ctx.allocator.create(SubAgentThreadArgs);
         args.* = .{
@@ -901,7 +900,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .sqlite_db = ctx.db,
             .logger = ctx.logger,
             .parent_sess_id = ctx.session_id,
-            .agent_name = sub_agent.name,
+            .agent_name = sub_agent.agent_name,
             .instruction = sub_agent.instruction,
             .tools = sub_agent.tools,
             .llm_config = ctx.config,
