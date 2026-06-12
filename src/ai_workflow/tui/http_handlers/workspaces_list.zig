@@ -2,7 +2,6 @@ const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
 const sqlite = nalarcore.sqlite;
 
 pub const WorkspaceWithItemsResponse = struct { id: []const u8, name: []const u8, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null, icon: []const u8 = "📁", items: []const WorkspaceItemWithTasksResponse, expanded: bool = false };
@@ -43,8 +42,12 @@ pub fn workspacesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 }
 
 fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, include_items: bool) !WorkspacesListResponse {
-    // Fetch all workspaces first
-    var rows = try db.query(alloc, "SELECT id, name, created_at, updated_at FROM workspaces ORDER BY created_at DESC", &[_][]const u8{});
+    // Fetch all workspaces first. ORDER BY position DESC drives the
+    // user-controlled drag-and-drop reorder (see
+    // docs/plans/2026-06-12-workspace-drag-and-drop.md); created_at
+    // DESC is a tiebreaker for any workspaces that share a position
+    // (shouldn't happen post-reorder, but defense in depth).
+    var rows = try db.query(alloc, "SELECT id, name, created_at, updated_at FROM workspaces ORDER BY position DESC, created_at DESC", &[_][]const u8{});
 
     var workspace_ids = std.ArrayList([]const u8).empty;
 

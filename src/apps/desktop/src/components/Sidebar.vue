@@ -381,6 +381,14 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
   // ChatsList.vue:121-183.
   workspacesStore.loadMoreTasks(workspaceId, itemId)
 }
+
+// Forward drag-and-drop reorder events from <WorkspaceList> to the
+// store. The store action does the optimistic update + API call +
+// silent rollback on error. Plan:
+// docs/plans/2026-06-12-workspace-drag-and-drop.md
+const handleReorderWorkspaces = (orderedIds: string[]) => {
+  workspacesStore.reorderWorkspaces(orderedIds)
+}
 </script>
 
 <template>
@@ -472,6 +480,7 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
           @load-more-tasks="handleLoadMoreTasks"
+          @reorder-workspaces="handleReorderWorkspaces"
         />
         <!-- Collapsed workspaces -->
         <div v-else class="space-y-0.5">

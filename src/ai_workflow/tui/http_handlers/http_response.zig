@@ -324,3 +324,18 @@ pub fn makeProfilesListResponse(allocator: std.mem.Allocator, profiles: []const 
     };
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
+
+// ─── Workspaces reorder ────────────────────────────────────────────────────
+// Typed response for `POST /api/workspaces/reorder`. Uses the same
+// `std.json.Stringify.valueAlloc` pattern as every other response
+// in this file — never manual `std.fmt.allocPrint` of JSON strings
+// (those break on field names with special characters and drift
+// away from the struct definition on every refactor).
+pub const WorkspacesReorderResponse = struct {
+    success: bool = true,
+    count: usize,
+};
+
+pub fn makeWorkspacesReorderResponse(allocator: std.mem.Allocator, count: usize) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, WorkspacesReorderResponse{ .count = count }, .{});
+}
