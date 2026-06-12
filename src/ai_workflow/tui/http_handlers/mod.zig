@@ -24,15 +24,15 @@ pub const llmHistorySSE = @import("llm_history_sse.zig").llmHistorySSE;
 pub const sessionsStreamHandler = @import("sessions_sse.zig").sessionsStreamHandler;
 pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHandler;
 pub const sessionUpdateHandler = @import("session_update.zig").sessionUpdateHandler;
-pub const sessionListHandler = @import("session_list.zig").session_list_handler;
+pub const sessionListHandler = @import("session_list.zig").sessionListHandler;
 pub const sessionStopHandler = @import("session_stop.zig").sessionStopHandler;
-pub const session_exist_handler = @import("session_exist.zig").session_exist_handler;
-pub const session_message_handler = @import("session_message.zig").session_message_handler;
-pub const getLatestSessionByDirHandler = @import("session_latest.zig").session_latest_handler;
+pub const sessionExistHandler = @import("session_exist.zig").sessionExistHandler;
+pub const sessionMessagesHandler = @import("session_messages_get.zig").sessionMessagesHandler;
+pub const sessionLatestHandler = @import("session_latest.zig").sessionLatestHandler;
 pub const sseDisconnectHandler = @import("sse_disconnect.zig").sseDisconnectHandler;
-pub const ping_handler = @import("ping.zig").ping_handler;
+pub const pingHandler = @import("ping.zig").pingHandler;
 pub const sessionCompactHandler = @import("session_compact.zig").sessionCompactHandler;
-pub const systemFolderHandler = @import("system_folder.zig").system_folder_handler;
+pub const systemFolderHandler = @import("system_folder.zig").systemFolderHandler;
 pub const healthHandler = @import("health.zig").healthHandler;
 pub const shutdownHandler = @import("shutdown.zig").shutdownHandler;
 
@@ -42,23 +42,20 @@ pub const workspacesCreateHandler = @import("workspaces_create.zig").workspacesC
 pub const workspaceGetHandler = @import("workspace_get.zig").workspaceGetHandler;
 pub const workspaceUpdateHandler = @import("workspace_update.zig").workspaceUpdateHandler;
 pub const workspaceDeleteHandler = @import("workspace_delete.zig").workspaceDeleteHandler;
-pub const workspaceItemCreateHandler = @import("workspace_item_create.zig").workspaceItemCreateHandler;
-pub const workspaceItemDeleteHandler = @import("workspace_item_delete.zig").workspaceItemDeleteHandler;
 pub const workspaceItemsCreateHandler = @import("workspace_items_create.zig").workspaceItemsCreateHandler;
 pub const workspaceItemsListHandler = @import("workspace_items_get.zig").workspaceItemsListHandler;
 pub const workspaceItemsGetHandler = @import("workspace_items_get.zig").workspaceItemsGetHandler;
 pub const workspaceItemsUpdateHandler = @import("workspace_items_update.zig").workspaceItemsUpdateHandler;
 pub const workspaceItemsDeleteHandler = @import("workspace_items_delete.zig").workspaceItemsDeleteHandler;
 pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
-pub const tasksCreateHandler = @import("tasks_create.zig").tasksCreateHandler;
-pub const tasksUpdateHandler = @import("tasks_update.zig").tasksUpdateHandler;
-pub const tasksUpdateByIdHandler = @import("tasks_update.zig").tasksUpdateByIdHandler;
-pub const tasksDeleteHandler = @import("tasks_delete.zig").tasksDeleteHandler;
+pub const tasksCreateHandler = @import("task_create.zig").tasksCreateHandler;
+pub const tasksUpdateHandler = @import("task_update.zig").tasksUpdateHandler;
+pub const tasksUpdateByIdHandler = @import("task_update.zig").tasksUpdateByIdHandler;
+pub const tasksDeleteHandler = @import("task_delete.zig").tasksDeleteHandler;
 
 // Worker API handlers
-pub const worker_get_handler = @import("worker_get.zig").worker_get_handler;
+pub const workerGetHandler = @import("worker_get.zig").workerGetHandler;
 pub const workerListHandler = @import("worker_list.zig").workerListHandler;
-pub const worker_list_handler = @import("worker_list.zig").workerListHandler;
 pub const workersStreamHandler = @import("worker_sse.zig").workersStreamHandler;
 
 // Skills API handlers

@@ -6,7 +6,7 @@ const ai_workflow = nalarcore.ai_workflow;
 const llm_history = nalarcore.llm_history;
 
 /// Get a worker by session_id
-pub fn worker_get_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+pub fn workerGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
     const session_id = req.params.get("session_id") orelse {

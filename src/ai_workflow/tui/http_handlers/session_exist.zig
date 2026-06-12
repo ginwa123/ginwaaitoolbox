@@ -5,7 +5,7 @@ const tui_check_session_exists = root_mod.tui_check_session_exists;
 const http_response = root_mod.http_response;
 
 /// Check if a session exists in the database
-pub fn session_exist_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+pub fn sessionExistHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });

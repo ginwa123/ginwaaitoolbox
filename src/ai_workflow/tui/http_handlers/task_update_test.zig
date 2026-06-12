@@ -37,7 +37,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/tasks_update.zig";
+const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/task_update.zig";
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";
 
 /// Read a source file from disk, relative to the project root
@@ -53,7 +53,7 @@ fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 
 // ─── Contract 1: handler uses the cascade path for renames ─────────────────
 
-test "tasks_update handler routes name updates through llm_history.updateTaskName" {
+test "task_update handler routes name updates through llm_history.updateTaskName" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
@@ -129,7 +129,7 @@ test "llm_history.updateTaskName cascades to updateSessionName" {
 
 // ─── Contract 3: handler preserves the session_id-only rebind path ─────────
 
-test "tasks_update handler still routes session_id-only updates through updateWorkspaceItemTask" {
+test "task_update handler still routes session_id-only updates through updateWorkspaceItemTask" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);

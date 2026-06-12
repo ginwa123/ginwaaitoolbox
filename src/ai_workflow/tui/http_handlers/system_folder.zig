@@ -28,7 +28,7 @@ fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
 /// GET /api/system/folder?path=/some/relative/path
 /// GET /api/system/folder?path=/some/relative/path&action=list
 /// GET /api/system/folder?path=/some/relative/path&action=read&file=filename.txt
-pub fn system_folder_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
     const path_param = req.query.get("path");

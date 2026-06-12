@@ -5,7 +5,7 @@ const session_helpers = root_mod.session_helpers;
 const http_response = root_mod.http_response;
 
 /// Get the latest session by working directory
-pub fn session_latest_handler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
+pub fn sessionLatestHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const cwd = req.query.get("cwd") orelse {
         return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing cwd parameter" }) });

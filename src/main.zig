@@ -229,17 +229,17 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/session", ai_mod.http_handlers.sessionListHandler);
     //
     // // try gs.router.get("/api/session/stream", http_handlers.sessionStreamHandler, ctxParent);
-    try gs.router.get("/api/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
-    // try gs.router.get("/api/session/exists/:session_id", http_handlers.session_exist_handler, ctxParent);
-    // try gs.router.get("/api/session/latest", http_handlers.getLatestSessionByDirHandler, ctxParent);
+    try gs.router.get("/api/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
+    // try gs.router.get("/api/session/exists/:session_id", http_handlers.sessionExistHandler, ctxParent);
+    // try gs.router.get("/api/session/latest", http_handlers.sessionLatestHandler, ctxParent);
     // try gs.router.post("/api/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     // try gs.router.post("/api/session/:session_id/compact", http_handlers.sessionCompactHandler, ctxParent);
     // try gs.router.get("/api/session/:session_id/queue/messages", http_handlers.sessionQueueGetHandler, ctxParent);
     // try gs.router.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, ctxParent);
-    // try gs.router.get("/api/ping/:session_id", http_handlers.ping_handler, ctxParent);
+    // try gs.router.get("/api/ping/:session_id", http_handlers.pingHandler, ctxParent);
     //
     // // Worker API
-    try gs.router.get("/api/workers", ai_mod.http_handlers.worker_list_handler);
+    try gs.router.get("/api/workers", ai_mod.http_handlers.workerListHandler);
     try gs.router.sse("/api/workers/stream", ai_mod.http_handlers.workersStreamHandler);
     //
     // // LLM API aliases (desktop app uses /api/llm/*)
@@ -250,7 +250,7 @@ pub fn main(init: std.process.Init) !void {
     // try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
 
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
-    try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.session_message_handler);
+    try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
     try gs.router.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
     try gs.router.sse("/api/llm/session/:session_id/queue_messages/stream", ai_mod.http_handlers.queueMessagesStreamHandler);
     try gs.router.sse("/api/llm/stream/:session_id", ai_mod.http_handlers.llmHistorySSE);

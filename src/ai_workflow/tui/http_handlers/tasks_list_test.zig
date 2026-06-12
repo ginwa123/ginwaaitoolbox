@@ -11,7 +11,7 @@
 //! More button.
 //!
 //! These contracts are enforced by static substring checks (matching
-//! the project's `tasks_update_test.zig` pattern), not by spinning up
+//! the project's `task_update_test.zig` pattern), not by spinning up
 //! an in-memory DB — the project has no precedent for the latter
 //! (every test in `test_runner.zig` either covers a pure function or
 //! is a static source check). If the pagination plumbing is removed
