@@ -140,19 +140,18 @@ pub fn fireRoutine(
         .parent_session_id = task_id,
     });
 
-    // 4) Test-mode short-circuit. When the env var is set, return
-    // BEFORE the LLM emit so the test can assert on the
-    // user-message + state-mutation paths without needing the
-    // `nalar` singleton initialized. The test still goes through
-    // markSuccess (via the FakeLLMSuccess catch in the sub-process)
-    // — actually no, the sub-process exits with code 0 on
-    // FakeLLMSuccess and does NOT call markSuccess. That's the
-    // intended contract: the test asserts on the message-insert
-    // path; the state-mutation (markSuccess/markFailed) is
-    // verified by the integration test in Task 3.3.
+    // 4) Test-mode short-circuit. When the env var is set, skip
+    // the LLM emit (no singleton in tests) but STILL go through
+    // markSuccessWithNextRun below so the routine is advanced to
+    // the next fire time — otherwise the scheduler would re-fire
+    // it on the next tick. The test path asserts on BOTH the
+    // message-insert AND the state-mutation (last_status, next_run_at).
     if (environment) |env| {
         if (env.get("ROUTINE_FIRE_TEST_SKIP_LLM")) |val| {
-            if (val.len > 0) return FireError.FakeLLMSuccess;
+            if (val.len > 0) {
+                try markSuccessWithNextRun(allocator, db, routine, io);
+                return FireError.FakeLLMSuccess;
+            }
         }
     }
 
@@ -167,9 +166,9 @@ pub fn fireRoutine(
     // will clean up the row on the next process restart.
     //
     // `getSingleton` can fail with `error.GlobalContextNotInitialized`.
-    // In the test path (the FakeLLMSuccess short-circuit) we never
-    // reach this line. In production the sub-process is spawned by
-    // the scheduler which has the singleton, so this catch is
+    // The test path returns at the env-var check above before this
+    // line. In production the sub-process is spawned by the
+    // scheduler which has the singleton, so this catch is
     // defensive — if it ever fires, we mark the routine as failed
     // rather than leaving the row stuck in 'running'.
     const di = nalarcore.getSingleton() catch {

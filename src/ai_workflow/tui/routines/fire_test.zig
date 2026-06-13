@@ -280,3 +280,57 @@ test "fireRoutine on a disabled routine returns Disabled" {
         "SELECT COUNT(*) FROM llm_history WHERE session_id = 't1'", &.{});
     try testing.expectEqual(@as(i64, 0), count);
 }
+
+// ─── Test 5: skip-LLM mode marks the routine success + advances next_run_at
+
+test "fireRoutine (skip-LLM mode) marks routine success and advances next_run_at" {
+    try withSkipLlmEnv(struct {
+        fn run(env: *const std.process.Environ.Map) !void {
+            const alloc = testing.allocator;
+            var ctx = try setupDb();
+            defer ctx.db.deinit();
+            defer ctx.threaded.deinit();
+
+            try ctx.db.exec(alloc,
+                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'A', 'wi1', 't1')",
+                &.{});
+            try model.insertRoutine(alloc, &ctx.db, .{
+                .id = "r1",
+                .task_id = "t1",
+                .schedule = "0 9 * * *",
+                .initial_prompt = "summarize commits",
+                .enabled = true,
+                .next_run_at = "2000-01-01 09:00:00",
+            });
+
+            // With the env var set, the function should return
+            // FakeLLMSuccess after also marking the routine success
+            // (so the scheduler doesn't fire it again immediately on
+            // the next tick). Uses the real Row API (db.query +
+            // row.values[i]) — NOT the invented `db.prepare`/
+            // `stmt.columnText`.
+            const err = fire.fireRoutine(alloc, &ctx.db, ctx.threaded.io(), env, "t1") catch |e| e;
+            try testing.expectEqual(fire.FireError.FakeLLMSuccess, err);
+
+            // Read back the routine state. The claim set
+            // last_status='running'; the FakeLLMSuccess path should
+            // have transitioned it to 'success' and advanced
+            // next_run_at to the cron-computed next firing time.
+            var q = try ctx.db.query(alloc,
+                "SELECT last_status, last_error, next_run_at FROM routines WHERE id = 'r1'",
+                &.{});
+            defer q.deinit();
+            const row = (try q.next()) orelse return error.TestFailed;
+            defer row.deinit(alloc);
+
+            try testing.expectEqualStrings("success", row.values[0]);
+            // markSuccess writes `last_error = NULL`, which the Row
+            // API returns as the empty string.
+            try testing.expectEqualStrings("", row.values[1]);
+            // next_run_at should be a YYYY-MM-DD HH:MM:SS string in
+            // the 21st century (cron computed it from "now").
+            try testing.expect(row.values[2].len >= 19);
+            try testing.expect(std.mem.startsWith(u8, row.values[2], "20"));
+        }
+    }.run);
+}
