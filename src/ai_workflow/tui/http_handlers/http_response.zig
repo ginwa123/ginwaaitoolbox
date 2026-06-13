@@ -36,6 +36,16 @@ pub const TaskCreateResponse = struct { id: []const u8, name: []const u8, descri
 pub const TaskCreateRequest = struct {
     name: []const u8,
     session_id: ?[]const u8 = null,
+    /// Task type. Defaults to 'standard' (preserves the existing flow).
+    /// Set to 'routine' to create a cron-scheduled task backed by a
+    /// `routines` table row.
+    task_type: []const u8 = "standard",
+    /// 5-field cron expression. Required iff task_type='routine'.
+    schedule: ?[]const u8 = null,
+    /// What the LLM sees on every fire. Required iff task_type='routine'.
+    initial_prompt: ?[]const u8 = null,
+    /// Whether the routine is active. Defaults to true.
+    enabled: bool = true,
 };
 
 pub const TaskUpdateRequest = struct {
