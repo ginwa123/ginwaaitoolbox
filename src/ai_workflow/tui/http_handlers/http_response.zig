@@ -51,6 +51,14 @@ pub const TaskCreateRequest = struct {
 pub const TaskUpdateRequest = struct {
     name: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
+    /// Routine-only. New cron expression. Validated by the handler.
+    /// When changed, next_run_at is recomputed.
+    schedule: ?[]const u8 = null,
+    /// Routine-only. New prompt text.
+    initial_prompt: ?[]const u8 = null,
+    /// Routine-only. New active flag. When false, the routine stays
+    /// in the DB but is skipped by the scheduler.
+    enabled: ?bool = null,
 };
 
 pub const GitStageResponse = struct {
