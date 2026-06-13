@@ -196,6 +196,6 @@ pub fn start(
         _ = fireDueRoutines(allocator, db, di, io) catch |err| {
             std.log.warn("scheduler: fireDueRoutines failed: {s}", .{@errorName(err)});
         };
-        try io.sleep(io, .{ .nanoseconds = TICK_INTERVAL_NS }, .real);
+        try std.Io.sleep(io, .{ .nanoseconds = TICK_INTERVAL_NS }, .real);
     }
 }

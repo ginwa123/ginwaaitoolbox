@@ -72,19 +72,24 @@ pub const FireError = error{
 /// sub-allocated strings (`sid`/`qmsg`/...) are owned by the
 /// `runFire` callback and freed when it returns.
 ///
-/// The return type is `FireError!void` (narrower than the previous
-/// `anyerror!void`): the only error paths that reach the caller are
-/// the three controlled `FireError` variants. Underlying errors
-/// (allocation failure, DB error) propagate as-is from the helpers
-/// and are NOT in the `FireError` set — the scheduler logs and
-/// continues with the next routine.
+/// The return type is `anyerror!void` rather than a narrow
+/// `FireError!void` set: the helpers this function calls
+/// (`loadRoutineByTaskId`, `claimForRun`, `markSuccess`,
+/// `cron.nextFireTime`, the `dupe` family) each contribute their own
+/// error variants, and propagating them through a narrow set would
+/// expose internal implementation details. The three `FireError`
+/// variants (NotARoutine, Disabled, AlreadyRunning) are produced
+/// only at the controlled boundaries documented in the `FireError`
+/// declaration. The scheduler switches on those three explicitly
+/// and treats any other error as a generic fire failure (logged,
+/// skipped, polling continues).
 pub fn fireRoutine(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     di: *nalarcore.ContextIPCTui,
     io: std.Io,
     task_id: []const u8,
-) FireError!void {
+) anyerror!void {
     // 1) Load the routine row. The task_id → routine mapping is
     //    1:1 (UNIQUE on `routines.task_id`); a missing row means this
     //    task was created as a standard task, not a routine.
