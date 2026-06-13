@@ -1,28 +1,31 @@
 //! `fire.zig` — the per-fire work for a routine (Task 2.1 of the
-//! Add Task Routines plan).
+//! Add Task Routines plan, refactored per PR #8 review).
 //!
-//! `fireRoutine(allocator, db, io, task_id)` is called by the
-//! `nalar-routine-fire` sub-process (Task 2.2) for every fire. It:
+//! `fireRoutine(allocator, db, di, io, task_id)` is called by the
+//! scheduler (Task 3.1's `Scheduler.fireDueRoutines`) for every fire.
+//! It:
 //!
 //!   1. Loads the routine by `task_id` and validates it's enabled.
 //!   2. Atomically claims the row (`claimForRun`) so a second
 //!      concurrent fire is rejected.
-//!   3. Pushes a user-style 🔁 message into the session (so the
-//!      chat view shows the routine firing and the LLM sees the
-//!      full conversation history).
-//!   4. Emits an `ai_workflow.RunParamsNew` event on the event bus
-//!      — the same path `session_create.zig:184` uses. The
-//!      `CallbackAiWorkerFlow` subscription in `main.zig:306` picks
-//!      it up on a worker thread.
-//!   5. On success: `markSuccess` with a recomputed `next_run_at`.
-//!      On error: `markFailed` with the error message + a recomputed
-//!      `next_run_at`.
+//!   3. Submits the LLM work to `di.group_emit_session_create.concurrent`
+//!      (mirrors `http_handlers/session_create.zig:161`). The callback
+//!      emits an `ai_workflow.RunParamsNew` event on the event bus —
+//!      the `CallbackAiWorkerFlow` subscription in `main.zig` picks it
+//!      up on a worker thread. The routine's `initial_prompt` is the
+//!      `queue_message` of the session create.
+//!   4. On success: `markSuccess` with a recomputed `next_run_at`.
+//!      The LLM result is NOT observed here — it's fire-and-forget.
+//!      If the LLM fails, it shows up as a chat-view error (the same
+//!      path as a normal user session).
 //!
-//! Test-only path: when `ROUTINE_FIRE_TEST_SKIP_LLM=1` is set in the
-//! environment, the function short-circuits after the message insert
-//! and returns `FireError.FakeLLMSuccess`. This lets unit tests
-//! exercise the user-message + state-mutation paths without the
-//! `nalar` singleton being initialized.
+//! No new binary, no separate OS thread — all work happens on the
+//! main process's Io runtime via the existing
+//! `group_emit_session_create` group. The "fake-LLM" test short-circuit
+//! and the 🔁 user-style message insert are gone (the routine's
+//! `initial_prompt` is the natural user-style message; the
+//! `session_create` event will accumulate user/assistant pairs over
+//! time).
 //!
 //! Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunks-2-3.md
 //! Design: docs/plans/2026-06-13-add-task-routines-design.md (§4)
@@ -30,15 +33,16 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
+const ai_workflow = nalarcore.ai_mod.ai_workflow;
 
 const model = @import("model.zig");
 const cron = @import("cron.zig");
 
 /// Errors returned by `fireRoutine`. These are all SENTINELS — the
 /// fire pipeline does NOT propagate underlying errors (e.g.
-/// `error.RoutineNotFound`) to the caller. The sub-process
-/// (`bin/nalar-routine-fire.zig`) maps them to exit codes; HTTP
-/// handlers map them to status codes.
+/// `error.RoutineNotFound`) to the caller. The scheduler maps them
+/// to "skip this id, try the next one"; HTTP handlers (Chunk 4) map
+/// them to status codes.
 pub const FireError = error{
     /// The task has no `routines` row (it is a standard task).
     NotARoutine,
@@ -46,48 +50,44 @@ pub const FireError = error{
     Disabled,
     /// A previous fire is still in flight (`last_status = 'running'`).
     AlreadyRunning,
-    /// Test-only sentinel. The function short-circuited to avoid
-    /// invoking the LLM worker pipeline (env var
-    /// `ROUTINE_FIRE_TEST_SKIP_LLM=1` is set). Never returned in
-    /// production.
-    FakeLLMSuccess,
 };
 
-/// Run the per-fire work for the routine owned by `task_id`. On
-/// success returns `void` (the row is marked success and
-/// `next_run_at` is advanced); on a controlled failure returns one
-/// of the `FireError` variants. Uncontrolled errors (allocation
-/// failure, DB error) propagate as-is from the helpers and are
-/// NOT in the `FireError` set — the sub-process will log and exit
-/// non-zero.
+/// Fire a single routine. Loads the routine, atomically claims the
+/// row, then submits the LLM work via
+/// `di.group_emit_session_create.concurrent(io, runFire, .{...})` —
+/// the same pattern as `http_handlers/session_create.zig:161`. The
+/// callback emits `ai_workflow.RunParamsNew` to the event bus;
+/// `CallbackAiWorkerFlow` picks it up on the Io runtime and runs the
+/// LLM in a worker thread.
 ///
-/// `environment` is the process environment map, used to read the
-/// `ROUTINE_FIRE_TEST_SKIP_LLM` env var (test-only). In the test
-/// path the caller passes `null`; in production the sub-process
-/// passes its inherited env (a `*const std.process.Environ.Map`).
+/// The function returns as soon as the event is submitted (the
+/// `group_emit_session_create.concurrent` call is non-blocking). The
+/// routine row is marked `success` and `next_run_at` is advanced
+/// immediately — the LLM is fire-and-forget. A failed LLM call will
+/// surface as a chat-view error (the same path as a normal user
+/// session), not as a routine status change.
 ///
-/// The function does NOT call `runAgenticMultiStepnew` directly; it
-/// emits an `ai_workflow.RunParamsNew` event on the event bus. This
-/// is the same pattern as `session_create.zig:184`.
+/// `di` must be the initialized `nalarcore.ContextIPCTui` singleton
+/// (the scheduler already has it from the start() call chain). The
+/// sub-allocated strings (`sid`/`qmsg`/...) are owned by the
+/// `runFire` callback and freed when it returns.
 ///
-/// The return type is `anyerror!void` rather than a narrow error
-/// set: `saveMessage`, `db.exec`, and the various helpers each
-/// contribute their own variants (e.g. `error.WriteFailed` from
-/// `std.Io.Writer`), and propagating them as part of a narrow set
-/// would expose internal implementation details. The sub-process
-/// maps any error to a non-zero exit code; HTTP handlers (Chunk 4)
-/// map the `FireError` variants to specific status codes and treat
-/// any other error as 500.
+/// The return type is `FireError!void` (narrower than the previous
+/// `anyerror!void`): the only error paths that reach the caller are
+/// the three controlled `FireError` variants. Underlying errors
+/// (allocation failure, DB error) propagate as-is from the helpers
+/// and are NOT in the `FireError` set — the scheduler logs and
+/// continues with the next routine.
 pub fn fireRoutine(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
+    di: *nalarcore.ContextIPCTui,
     io: std.Io,
-    environment: ?*const std.process.Environ.Map,
     task_id: []const u8,
-) anyerror!void {
+) FireError!void {
     // 1) Load the routine row. The task_id → routine mapping is
-    // 1:1 (UNIQUE on `routines.task_id`); a missing row means this
-    // task was created as a standard task, not a routine.
+    //    1:1 (UNIQUE on `routines.task_id`); a missing row means this
+    //    task was created as a standard task, not a routine.
     const routine = model.loadRoutineByTaskId(allocator, db, task_id) catch |err| switch (err) {
         error.RoutineNotFound => return FireError.NotARoutine,
         else => return err,
@@ -97,137 +97,106 @@ pub fn fireRoutine(
     if (!routine.enabled) return FireError.Disabled;
 
     // 2) Atomic claim. `claimForRun` is a single UPDATE…RETURNING;
-    // a second concurrent fire on the same row sees zero rows in
-    // the result set and `claimForRun` returns false.
+    //    a second concurrent fire on the same row sees zero rows in
+    //    the result set and `claimForRun` returns false.
     if (!try model.claimForRun(allocator, db, routine.id)) return FireError.AlreadyRunning;
 
-    // 3) Push a user-style 🔁 message into the session BEFORE the
-    // LLM emit. The worker (CallbackAiWorkerFlow) will see this
-    // message in the conversation history when it builds the next
-    // agent prompt.
-    const now = std.Io.Timestamp.now(io, .real);
-    const now_unix_nanos: i128 = @intCast(now.nanoseconds);
-    const message_content = try buildFireMessageContent(allocator, routine, now_unix_nanos);
-    defer allocator.free(message_content);
+    // 3) Heap-allocate strings for the concurrent task. The callback
+    //    owns these and frees them when done (mirrors
+    //    `session_create.zig:141-159`). Use `errdefer` chains so a
+    //    mid-allocation failure unwinds cleanly.
+    const sid = try di.allocator.dupe(u8, task_id);
+    errdefer di.allocator.free(sid);
+    const qmsg = try di.allocator.dupe(u8, routine.initial_prompt);
+    errdefer di.allocator.free(qmsg);
+    const cwd = try di.allocator.dupe(u8, "");
+    errdefer di.allocator.free(cwd);
+    const bmsg = try di.allocator.dupe(u8, "");
+    errdefer di.allocator.free(bmsg);
+    const atools = try di.allocator.dupe(u8, "");
+    errdefer di.allocator.free(atools);
+    const iurls = try di.allocator.dupe(u8, "");
+    errdefer di.allocator.free(iurls);
+    const spm = try di.allocator.dupe(u8, "");
+    errdefer di.allocator.free(spm);
 
-    // Resolve the model name from the singleton's LLM config. In
-    // the test path the singleton is NOT initialized — fall back
-    // to a sensible default. `saveMessage` will not actually use
-    // this string for any behavioral decision (it just stores it
-    // in the `model` column), so the default is fine.
-    var model_name: []const u8 = "agentic-coding";
-    if (nalarcore.getSingleton() catch null) |di| {
-        model_name = nalarcore.getLlmConfig(di).model;
-    }
+    // 4) Submit the LLM work to the Io group. The callback emits the
+    //    event; the Io runtime processes the event via
+    //    `CallbackAiWorkerFlow` in a worker thread. This call
+    //    returns immediately — the actual LLM call happens
+    //    asynchronously.
+    try di.group_emit_session_create.concurrent(
+        io,
+        runFire,
+        .{ di, sid, qmsg, cwd, bmsg, atools, iurls, spm },
+    );
 
-    try nalarcore.llm_history.saveMessage(allocator, io, db, .{
-        .session_id = task_id,
-        .model = model_name,
-        .cwd = "",
-        .content = message_content,
-        .reasoning_content = null,
-        .role = "user",
-        .finish_reason = "null",
-        .tool_calls = null,
-        .tool_call_id = null,
-        .agent_name = "Agent",
-        .loop_index = 0,
-        .temperature = 0.0,
-        .is_thinking = false,
-        .is_input = true,
-        .is_output = false,
-        .parent_id = task_id,
-        .parent_session_id = task_id,
-    });
-
-    // 4) Test-mode short-circuit. When the env var is set, skip
-    // the LLM emit (no singleton in tests) but STILL go through
-    // markSuccessWithNextRun below so the routine is advanced to
-    // the next fire time — otherwise the scheduler would re-fire
-    // it on the next tick. The test path asserts on BOTH the
-    // message-insert AND the state-mutation (last_status, next_run_at).
-    if (environment) |env| {
-        if (env.get("ROUTINE_FIRE_TEST_SKIP_LLM")) |val| {
-            if (val.len > 0) {
-                try markSuccessWithNextRun(allocator, db, routine, io);
-                return FireError.FakeLLMSuccess;
-            }
-        }
-    }
-
-    // 5) Emit ai_worker_flow. The CallbackAiWorkerFlow subscription
-    // (registered in main.zig:306) will pick this up on a worker
-    // thread and call `runAgenticMultiStepnew` — the same
-    // production path as `session_create.zig:184`. The worker is
-    // responsible for streaming the response, writing the
-    // assistant message to llm_history, and (eventually) calling
-    // markSuccess / markFailed. v1 does NOT roll back the claim if
-    // the worker errors; the scheduler's `resetStuckRunning` pass
-    // will clean up the row on the next process restart.
-    //
-    // `getSingleton` can fail with `error.GlobalContextNotInitialized`.
-    // The test path returns at the env-var check above before this
-    // line. In production the sub-process is spawned by the
-    // scheduler which has the singleton, so this catch is
-    // defensive — if it ever fires, we mark the routine as failed
-    // rather than leaving the row stuck in 'running'.
-    const di = nalarcore.getSingleton() catch {
-        try markFailedWithNextRun(allocator, db, routine, io, "no singleton");
-        return;
-    };
-    const event_bus = di.event_bus;
-    const heap_sid = try di.allocator.dupe(u8, task_id);
-    errdefer di.allocator.free(heap_sid);
-    const heap_msg = try di.allocator.dupe(u8, message_content);
-    errdefer di.allocator.free(heap_msg);
-    const heap_empty = try di.allocator.dupe(u8, "");
-    errdefer di.allocator.free(heap_empty);
-
-    event_bus.emit(nalarcore.ai_mod.ai_workflow.RunParamsNew, "ai_worker_flow", .{
-        .parent_session_id = heap_sid,
-        .session_id = heap_sid,
-        .message = heap_msg,
-        .cwd = heap_empty,
-        .body = heap_empty,
-        .allowed_tools = heap_empty,
-        .is_sub_agent = false,
-        .image_urls = heap_empty,
-        .selected_profile_model = heap_empty,
-    });
-
-    // 6) Mark success and advance next_run_at. v1: worker errors
-    // are not rolled back — the scheduler's stuck-running reset
-    // (Task 3.1) handles the case where the worker crashes.
+    // 5) Mark success and advance next_run_at. The LLM is
+    //    fire-and-forget — we don't wait for it to complete before
+    //    marking success.
     try markSuccessWithNextRun(allocator, db, routine, io);
+}
+
+/// Callback for `group_emit_session_create.concurrent`. Emits the LLM
+/// event to the event bus. The Io runtime processes the event in a
+/// worker thread; this callback returns immediately. Frees the
+/// heap-allocated string args on the way out.
+fn runFire(
+    di: *nalarcore.ContextIPCTui,
+    sid: []u8,
+    qmsg: []u8,
+    cwd: []u8,
+    bmsg: []u8,
+    atools: []u8,
+    iurls: []u8,
+    spm: []u8,
+) void {
+    defer di.allocator.free(sid);
+    defer di.allocator.free(qmsg);
+    defer di.allocator.free(cwd);
+    defer di.allocator.free(bmsg);
+    defer di.allocator.free(atools);
+    defer di.allocator.free(iurls);
+    defer di.allocator.free(spm);
+
+    di.event_bus.emit(ai_workflow.RunParamsNew, "ai_worker_flow", .{
+        .parent_session_id = sid,
+        .session_id = sid,
+        .message = qmsg,
+        .cwd = cwd,
+        .body = bmsg,
+        .allowed_tools = atools,
+        .is_sub_agent = false,
+        .image_urls = iurls,
+        .selected_profile_model = spm,
+    });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-/// Build the user-visible message body for a fire:
-///
-/// ```
-/// 🔁 Routine fire — <routine.schedule> — <YYYY-MM-DD HH:MM:SS>
-///
-/// <routine.initial_prompt>
-/// ```
-///
-/// The schedule is shown (not the task name) because the task
-/// name lives in the session header and would be redundant. Caller
-/// owns the returned slice.
-fn buildFireMessageContent(allocator: std.mem.Allocator, routine: model.Routine, now_unix_nanos: i128) ![]u8 {
-    const stamp = try formatSqliteDatetime(allocator, now_unix_nanos);
-    defer allocator.free(stamp);
-    return std.fmt.allocPrint(allocator,
-        "🔁 Routine fire — {s} — {s}\n\n{s}",
-        .{ routine.schedule, stamp, routine.initial_prompt });
+/// Compute the next `next_run_at` from the routine's cron
+/// expression and persist the success state. Used for the
+/// happy-path emit-success path.
+fn markSuccessWithNextRun(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    routine: model.Routine,
+    io: std.Io,
+) !void {
+    const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
+    const next_ns = try cron.nextFireTime(routine.schedule, now_ns);
+    const next_sqlite = try formatSqliteDatetime(allocator, next_ns);
+    defer allocator.free(next_sqlite);
+    try model.markSuccess(allocator, db, routine.id, next_sqlite);
 }
 
 /// Convert unix nanos (i128) to a SQLite DATETIME literal
-/// `YYYY-MM-DD HH:MM:SS`. Uses the same `std.time.epoch` helpers
-/// as `cron.zig`. The epoch.zig API only goes one direction
-/// (EpochSeconds → broken-down), so this is a small duplication
-/// rather than a refactor of `cron.zig`'s `BrokenDownTime`.
-fn formatSqliteDatetime(allocator: std.mem.Allocator, unix_nanos: i128) ![]u8 {
+/// `YYYY-MM-DD HH:MM:SS`. Public so `Scheduler.zig` can reuse the
+/// helper (the scheduler recomputes `next_run_at` for every enabled
+/// routine at startup, and lists due routines every tick — both
+/// paths need this formatter). Uses the same `std.time.epoch` helpers
+/// as `cron.zig`.
+pub fn formatSqliteDatetime(allocator: std.mem.Allocator, unix_nanos: i128) ![]u8 {
     const secs: i64 = @intCast(@divTrunc(unix_nanos, std.time.ns_per_s));
     const epoch_seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(secs) };
     const day_seconds = epoch_seconds.getDaySeconds();
@@ -243,44 +212,4 @@ fn formatSqliteDatetime(allocator: std.mem.Allocator, unix_nanos: i128) ![]u8 {
             @as(u32, @intCast(day_seconds.getMinutesIntoHour())),
             @as(u32, @intCast(day_seconds.getSecondsIntoMinute())),
         });
-}
-
-/// Compute the next `next_run_at` from the routine's cron
-/// expression and persist the success state. Used for the
-/// happy-path emit-success path.
-fn markSuccessWithNextRun(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    routine: model.Routine,
-    io: std.Io,
-) !void {
-    const next_ns = try computeNextRun(allocator, routine, io);
-    defer allocator.free(next_ns);
-    try model.markSuccess(allocator, db, routine.id, next_ns);
-}
-
-/// Compute the next `next_run_at` from the routine's cron
-/// expression and persist the failure state. Used when the
-/// fire pipeline itself errors (not the worker — v1 doesn't
-/// roll back worker errors).
-fn markFailedWithNextRun(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    routine: model.Routine,
-    io: std.Io,
-    err_msg: []const u8,
-) !void {
-    const next_ns = try computeNextRun(allocator, routine, io);
-    defer allocator.free(next_ns);
-    try model.markFailed(allocator, db, routine.id, err_msg, next_ns);
-}
-
-/// Compute the next `next_run_at` SQLite datetime literal from the
-/// routine's cron expression. The cron field is `routine.schedule`
-/// (a 5-field expression); `now` is the wall clock at the time of
-/// the fire. Caller owns the returned slice.
-fn computeNextRun(allocator: std.mem.Allocator, routine: model.Routine, io: std.Io) ![]u8 {
-    const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
-    const next_ns = try cron.nextFireTime(routine.schedule, now_ns);
-    return formatSqliteDatetime(allocator, next_ns);
 }
