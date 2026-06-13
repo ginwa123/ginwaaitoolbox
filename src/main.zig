@@ -49,13 +49,6 @@ pub fn main(init: std.process.Init) !void {
     try ai_mod.migration.registerAllMigrations(&migrationManager);
     try migrationManager.runMigrations();
 
-    // Start the routine scheduler on a background thread. Runs after
-    // migrations so the `routines` table exists; log+swallow errors
-    // so a spawn failure cannot block the HTTP server from binding.
-    ai_mod.startup.start(allocator, &dbSqlite, io) catch |err| {
-        std.log.err("Failed to start routine scheduler: {s}", .{@errorName(err)});
-    };
-
     const tmp_path = environment.get("TMPDIR") orelse
         environment.get("TEMP") orelse
         environment.get("TMP") orelse
@@ -98,6 +91,18 @@ pub fn main(init: std.process.Init) !void {
     var event_bus = event_bus_mod.EventBus.init("my-bus", allocator, io);
     defer event_bus.deinit();
     ctxParent.event_bus = &event_bus;
+
+    // Submit the routine scheduler as a concurrent Io task. Runs
+    // forever in the background, processing due routines every 5s.
+    // Mirrors the project's async I/O pattern (the same one
+    // session_create.zig:161 uses for per-session LLM work); no
+    // thread is spawned. MUST run after setSingleton (so `di` is
+    // available) and after the event bus is wired (so the
+    // scheduler's fire path can emit ai_workflow.RunParamsNew
+    // events).
+    ai_mod.startup.start(allocator, &dbSqlite, ctxParent, io) catch |err| {
+        std.log.err("Failed to submit routine scheduler: {s}", .{@errorName(err)});
+    };
 
     var active_loops = ai_mod.models.ActiveLoops.init(allocator);
     defer active_loops.deinit(allocator);
