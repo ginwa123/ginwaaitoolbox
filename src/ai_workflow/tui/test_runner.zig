@@ -3,6 +3,7 @@ test {
     _ = @import("handle_tool_test.zig");
     _ = @import("inherited_context_test.zig");
     _ = @import("migration_performance_indexes_test.zig");
+    _ = @import("migration_routines_test.zig");
     _ = @import("notifications_test.zig");
     _ = @import("parse_diff_view_test.zig");
     _ = @import("save_agent_test.zig");
