@@ -1044,7 +1044,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         .inherited_context = args_ptr.inherited_context,
         .sub_agent_overrides = args_ptr.sub_agent_overrides,
     }) catch |err| {
-        const err_msg = args_ptr.allocator.dupe(u8, "Workflow error") catch "Failed to allocate";
+        const err_msg = std.fmt.allocPrint(args_ptr.allocator, "Workflow error: {s}", .{@errorName(err)}) catch "Failed to allocate error message";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
         args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) });
         return;
