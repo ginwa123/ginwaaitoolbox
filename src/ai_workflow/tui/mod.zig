@@ -7,6 +7,7 @@ pub const ai_workflow = @import("workflow.zig");
 pub const llm_history = @import("llm_history.zig");
 pub const on_event_sent = @import("on_event_sent.zig");
 pub const active_loops = @import("ActiveLoops.zig").ActiveLoops;
+pub const routines = @import("routines/mod.zig");
 
 // Re-export workspace functions from llm_history for backward compatibility
 pub const workspace_items = llm_history;
