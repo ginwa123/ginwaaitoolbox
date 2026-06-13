@@ -107,17 +107,24 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
             return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create routine row" }) });
         };
 
+        // session_id may be null; emit JSON null literally rather than
+        // going through std.json.Stringify (the WorkspaceItemTaskResponse
+        // struct doesn't yet carry task_type / routine — those land in
+        // Task 4.5). sid is a runtime value, so we have to use
+        // allocPrint (comptimePrint would require it to be comptime).
+        // The arena-owned allocator reaps the slice at request end — no
+        // explicit free needed.
+        const session_id_json: []const u8 = if (json_body.session_id) |sid|
+            try std.fmt.allocPrint(allocator, "\"{s}\"", .{sid})
+        else
+            "null";
         return res.jsonResponse(.{ .status_code = 201, .data = try std.fmt.allocPrint(allocator,
-            \\{{"id":"{s}","name":"{s}","workspace_item_id":"{s}","task_type":"routine","session_id":{f},"created_at":null,"updated_at":null}}
+            \\{{"id":"{s}","name":"{s}","workspace_item_id":"{s}","task_type":"routine","session_id":{s},"created_at":null,"updated_at":null}}
         , .{
             task_id,
             json_body.name,
             item_id,
-            // session_id may be null; emit JSON null literally
-            // rather than going through std.json.Stringify (the
-            // WorkspaceItemTaskResponse struct doesn't yet carry
-            // task_type / routine — those land in Task 4.5).
-            if (json_body.session_id) |sid| std.fmt.comptimePrint("\"{s}\"", .{sid}) else "null",
+            session_id_json,
         }) });
     }
 

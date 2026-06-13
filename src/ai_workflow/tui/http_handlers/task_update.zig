@@ -82,7 +82,7 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         // the contract: routine fields you don't send are not reset.
         var existing_schedule: ?[]u8 = null;
         var existing_initial_prompt: ?[]u8 = null;
-        var existing_enabled_int: []u8 = "1";
+        var existing_enabled_int: []const u8 = "1";
         var existing_next_run_at: ?[]u8 = null;
         defer if (existing_schedule) |s| allocator.free(s);
         defer if (existing_initial_prompt) |p| allocator.free(p);
