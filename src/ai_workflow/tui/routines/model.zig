@@ -222,6 +222,40 @@ pub fn markSuccess(allocator: std.mem.Allocator, db: *SqliteBackend, routine_id:
     , &.{ next_run_at_sqlite, routine_id });
 }
 
+/// Mark a routine as failed with the given error message, and advance
+/// its `next_run_at` so the scheduler picks a future run. The routine
+/// stays enabled (a transient failure like "LLM rate limit" must not
+/// silently disable a recurring job — the user can disable it
+/// explicitly).
+pub fn markFailed(allocator: std.mem.Allocator, db: *SqliteBackend, routine_id: []const u8, err_msg: []const u8, next_run_at_sqlite: []const u8) !void {
+    _ = try db.exec(allocator,
+        \\UPDATE routines
+        \\   SET last_status = 'failed',
+        \\       last_error = ?,
+        \\       next_run_at = ?,
+        \\       updated_at = datetime('now')
+        \\ WHERE id = ?
+    , &.{ err_msg, next_run_at_sqlite, routine_id });
+}
+
+/// Placeholder. Task 3.4 replaces this with a real iteration over all
+/// routines that calls `cron.nextFireTime(schedule, now)` per row and
+/// updates `next_run_at`. For now this is a no-op so the API surface
+/// is established and the rest of the codebase can compile against
+/// the signature.
+pub fn recomputeAllNextRunAt(
+    allocator: std.mem.Allocator,
+    db: *SqliteBackend,
+    compute_fn: *const fn (schedule: []const u8, now_unix_nanos: i128) anyerror![]const u8,
+    now_unix_nanos: i128,
+) !void {
+    _ = allocator;
+    _ = db;
+    _ = compute_fn;
+    _ = now_unix_nanos;
+    return;
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 /// Translate the Row API's "NULL column → empty slice" representation

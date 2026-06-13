@@ -269,3 +269,34 @@ test "RoutineRunStatus enum mapping" {
     // Unknown string → .idle (defensive default).
     try testing.expectEqual(RoutineRunStatus.idle, RoutineRunStatus.fromDb("bogus"));
 }
+
+// ─── Test 6: markFailed sets last_status=failed, last_error, and advances next_run_at ───
+
+test "Routine: markFailed sets last_status=failed and last_error" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try insertParentTask(&ctx.db, alloc, "t1");
+    try model.insertRoutine(alloc, &ctx.db, .{
+        .id = "r1",
+        .task_id = "t1",
+        .schedule = "*/5 * * * *",
+        .initial_prompt = "x",
+        .enabled = true,
+        .next_run_at = "2000-01-01 00:00:00",
+    });
+
+    try model.markFailed(alloc, &ctx.db, "r1", "LLM rate limit", "2099-01-01 00:00:00");
+
+    var loaded = try model.loadRoutineByTaskId(alloc, &ctx.db, "t1");
+    defer loaded.deinit(alloc);
+
+    try testing.expectEqual(RoutineRunStatus.failed, loaded.last_status);
+    try testing.expectEqualStrings("LLM rate limit", loaded.last_error.?);
+    try testing.expectEqualStrings("2099-01-01 00:00:00", loaded.next_run_at);
+    // Routine should STAY enabled (a transient failure must not silently
+    // disable a recurring job — the user disables it explicitly).
+    try testing.expect(loaded.enabled);
+}
