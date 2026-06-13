@@ -349,7 +349,12 @@ const handleCloseTaskRenameModal = () => {
 
 const handleAddTask = async (workspaceId: string, item: WorkspaceItem) => {
   const name = `Task ${new Date().toLocaleTimeString()}`
-  const taskId = await workspacesStore.addTask(workspaceId, item.id, name)
+  // Chunk 5: addTask now takes a single params object. This is the
+  // legacy fast-path (no description, no routine fields). Chunk 6
+  // replaces this with a picker dialog + AddTaskDialog/AddRoutineDialog.
+  const taskId = await workspacesStore.addTask(workspaceId, item.id, {
+    name,
+  })
   if (taskId) {
     workspacesStore.setActiveTask(taskId)
     router.replace({ path: '/app', query: { view: 'task', task: taskId } })

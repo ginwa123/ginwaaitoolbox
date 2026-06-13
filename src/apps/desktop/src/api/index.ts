@@ -47,10 +47,25 @@ export interface WorkspaceItem {
   tasks?: Task[]
 }
 
+export interface RoutineMeta {
+  schedule: string
+  initial_prompt: string
+  enabled: boolean
+  last_run_at: string | null
+  next_run_at: string
+  last_status: 'success' | 'failed' | 'running' | null
+  last_error: string | null
+}
+
 export interface Task {
   id: string
   name: string
   description?: string
+  // NEW (Chunk 5 of task-routines plan). Optional for backwards
+  // compat with legacy task literals.
+  task_type?: 'standard' | 'routine'
+  // NEW: present iff task_type === 'routine'.
+  routine?: RoutineMeta
   completed?: boolean
   createdAt?: Date
   // ISO datetime string from the backend; present for tasks returned by
@@ -211,16 +226,49 @@ export async function getTasks(
   }
 }
 
+/**
+ * Create a task under a workspace item.
+ *
+ * The third arg is a single params object. For a standard task
+ * (the default), pass `{ name, description?, taskType: 'standard' }`.
+ * For a routine, pass `{ name, taskType: 'routine', routine: { schedule, initial_prompt, enabled? } }`.
+ *
+ * The backend stores `task_type` on `workspace_item_tasks` and
+ * (for routines) creates a row in the `routines` table inside the
+ * same transaction. On a bad cron expression, the backend
+ * returns 400 and the error surfaces as a thrown `Error('HTTP 400')`.
+ */
 export async function createTask(
   workspaceId: string,
   itemId: string,
-  name: string,
-  description?: string,
+  params: {
+    name: string
+    description?: string
+    taskType?: 'standard' | 'routine'
+    routine?: {
+      schedule: string
+      initial_prompt: string
+      enabled?: boolean
+    }
+  },
 ): Promise<Task> {
+  const taskType = params.taskType ?? 'standard'
+  const body: Record<string, unknown> = {
+    name: params.name,
+    description: params.description,
+    task_type: taskType,
+  }
+  if (taskType === 'routine' && params.routine) {
+    body.schedule = params.routine.schedule
+    body.initial_prompt = params.routine.initial_prompt
+    if (params.routine.enabled !== undefined) {
+      body.enabled = params.routine.enabled
+    }
+  }
   const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify(body),
   })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json()
@@ -245,9 +293,24 @@ export async function updateTask(
 }
 
 // Task API - Simple version (just task_id + optional fields)
+//
+// The backend's PUT /api/workspaces/tasks/:task_id accepts a
+// subset of fields. Routine fields (`schedule`, `initial_prompt`,
+// `enabled`) are accepted alongside the standard name/session_id.
+// The server cascades any name change to the linked session and
+// re-broadcasts via SSE.
 export async function updateTaskSimple(
   taskId: string,
-  data: { name?: string; session_id?: string },
+  data: {
+    name?: string
+    session_id?: string
+    // NEW (Chunk 5 of task-routines plan): routine-edit fields,
+    // forwarded verbatim to the backend's PUT handler. The server
+    // applies them to the routines row in the same transaction.
+    schedule?: string
+    initial_prompt?: string
+    enabled?: boolean
+  },
 ): Promise<{ success: boolean }> {
   const response = await fetch(`${API_BASE}/workspaces/tasks/${taskId}`, {
     method: 'PUT',
@@ -266,6 +329,30 @@ export async function deleteTask(
   const response = await fetch(
     `${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}`,
     { method: 'DELETE' },
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+/**
+ * Manually fire a routine. Returns the session_id (which equals
+ * the task_id per the codebase invariant task.id == session_id)
+ * the routine will run in. The backend responds 200 + body as
+ * soon as the sub-process is spawned — the actual LLM call
+ * happens asynchronously.
+ *
+ * 404: task is not a routine (or doesn't exist)
+ * 409: routine is disabled or another fire is in progress
+ * 500: spawn failed
+ */
+export async function runRoutine(
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+): Promise<{ session_id: string }> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/run`,
+    { method: 'POST' },
   )
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json()
