@@ -129,7 +129,7 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     }
 
     // Standard task path — unchanged from the pre-routines code.
-    const task = ai_mod.workspace_item_tasks.createWorkspaceItemTask(allocator, sqlite_db, task_id, json_body.name, item_id, json_body.session_id) catch {
+    const task = ai_mod.workspace_item_tasks.createWorkspaceItemTask(allocator, sqlite_db, task_id, json_body.name, item_id, json_body.session_id, "standard") catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
     };
     defer task.deinit(allocator);
@@ -139,6 +139,7 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         .name = task.name,
         .workspace_item_id = task.workspace_item_id,
         .session_id = task.session_id,
+        .task_type = task.task_type,
         .created_at = task.created_at,
         .updated_at = task.updated_at,
     }) });

@@ -20,6 +20,7 @@ test {
     _ = @import("http_handlers/tasks_list_test.zig");
     _ = @import("http_handlers/task_create_routines_test.zig");
     _ = @import("http_handlers/task_update_routines_test.zig");
+    _ = @import("llm_history_routines_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
