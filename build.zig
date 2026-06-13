@@ -298,6 +298,38 @@ pub fn build(b: *std.Build) void {
     const install_linux = b.addInstallArtifact(linux_exe, .{});
     linux_step.dependOn(&install_linux.step);
 
+    // ============================================================
+    // nalar-routine-fire sub-process (per-fire worker binary)
+    //
+    // Task 2.4 of the Add Task Routines plan. Mirrors the
+    // `desktop_exe` pattern (custom root_source_file) rather than
+    // `createPlatformExe` (which hardcodes src/main.zig). Links the
+    // same C/system libraries the nalar core binary needs
+    // (sqlite3/ssl/crypto/c). Used by the routine scheduler (Task
+    // 3.1) to spawn a fresh process per fire.
+    // ============================================================
+    const routine_fire_exe = b.addExecutable(.{
+        .name = "nalar-routine-fire",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ai_workflow/tui/routines/bin/nalar-routine-fire.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "nalarcore", .module = mod },
+            },
+        }),
+    });
+    routine_fire_exe.root_module.linkSystemLibrary("sqlite3", .{});
+    routine_fire_exe.root_module.linkSystemLibrary("ssl", .{});
+    routine_fire_exe.root_module.linkSystemLibrary("crypto", .{});
+    routine_fire_exe.root_module.linkSystemLibrary("c", .{});
+    const install_routine_fire = b.addInstallArtifact(routine_fire_exe, .{});
+    const routine_fire_step = b.step("install:routine-fire", "Build the nalar-routine-fire sub-process binary");
+    routine_fire_step.dependOn(&install_routine_fire.step);
+
+    // Also install as part of the default linux step so the scheduler finds it.
+    linux_step.dependOn(&install_routine_fire.step);
+
     const windows_step = b.step("install:windows", "Build for Windows x86_64");
     const windows_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
