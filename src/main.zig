@@ -49,6 +49,13 @@ pub fn main(init: std.process.Init) !void {
     try ai_mod.migration.registerAllMigrations(&migrationManager);
     try migrationManager.runMigrations();
 
+    // Start the routine scheduler on a background thread. Runs after
+    // migrations so the `routines` table exists; log+swallow errors
+    // so a spawn failure cannot block the HTTP server from binding.
+    ai_mod.startup.start(allocator, &dbSqlite, io) catch |err| {
+        std.log.err("Failed to start routine scheduler: {s}", .{@errorName(err)});
+    };
+
     const tmp_path = environment.get("TMPDIR") orelse
         environment.get("TEMP") orelse
         environment.get("TMP") orelse
