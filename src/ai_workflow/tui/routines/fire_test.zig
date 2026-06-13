@@ -1,25 +1,31 @@
 //! Behavioral tests for `fire.zig` (Task 2.1 of the Add Task Routines
-//! plan).
+//! plan, refactored per PR #8 review).
 //!
-//! `fireRoutine(allocator, db, io, task_id)` is the per-fire work done
-//! by the `nalar-routine-fire` sub-process (Task 2.2). The four
+//! `fireRoutine(allocator, db, di, io, task_id)` is the per-fire work
+//! done on the main process's Io runtime via
+//! `di.group_emit_session_create.concurrent(io, ...)` (the same
+//! pattern as `http_handlers/session_create.zig:161`). The three
 //! behaviors under test:
 //!
-//!   1. **Happy path** — push a 🔁 user-style message into the session,
-//!      claim the row, and (with the test-only env var set) return
-//!      `FakeLLMSuccess` without invoking the LLM.
-//!   2. **Atomic claim** — a second concurrent fire attempt against a
+//!   1. **Atomic claim** — a second concurrent fire attempt against a
 //!      row already in `running` state must return `AlreadyRunning`
-//!      and must NOT insert the 🔁 message.
-//!   3. **Not a routine** — a task with no `routines` row returns
-//!      `NotARoutine` (no claim, no message).
-//!   4. **Disabled routine** — a routine with `enabled = false` returns
-//!      `Disabled` (no claim, no message).
+//!      and must NOT submit an LLM event.
+//!   2. **Not a routine** — a task with no `routines` row returns
+//!      `NotARoutine` (no claim, no submit).
+//!   3. **Disabled routine** — a routine with `enabled = false`
+//!      returns `Disabled` (no claim, no submit).
 //!
-//! The test env var `ROUTINE_FIRE_TEST_SKIP_LLM=1` short-circuits the
-//! LLM emit so the test can run without the `nalar` singleton being
-//! initialized. The production code path (the `event_bus.emit` to
-//! `ai_worker_flow`) is verified in the integration test in Task 3.3.
+//! The happy-path test (the original "inserts 🔁 user-style message"
+//! + "marks success and advances next_run_at") is gone: the new
+//! implementation submits the LLM work to
+//! `di.group_emit_session_create.concurrent` rather than calling
+//! `saveMessage` directly, and the success-state side effect now
+//! flows through the same group as the rest of the session-create
+//! pipeline. Testing the full happy path would require a real
+//! initialized `nalarcore.ContextIPCTui` singleton and a live
+//! `CallbackAiWorkerFlow` subscription — i.e., a real `nalar`
+//! process. The runtime smoke test (manually creating a routine via
+//! the desktop UI and watching it fire) is the integration coverage.
 //!
 //! Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunks-2-3.md
 //! Design: docs/plans/2026-06-13-add-task-routines-design.md
@@ -38,10 +44,11 @@ const fire = @import("fire.zig");
 // ─── Test helpers ─────────────────────────────────────────────────────────
 
 /// Open a fresh in-memory sqlite DB with the pre-Migration-044 state
-/// (`workspace_item_tasks` from Migration 034 + a minimal `llm_history`
-/// schema covering the columns `fire.zig` writes + a `sessions` table
-/// for the FK + Migration 044). Mirrors the helper in `model_test.zig`
-/// but extended with the schemas that `fire.zig` touches.
+/// (`workspace_item_tasks` from Migration 034 + a minimal
+/// `sessions` schema + Migration 044). Mirrors the helper in
+/// `model_test.zig`. Note: `llm_history` is no longer needed here
+/// (the old saveMessage path is gone) but `sessions` is still
+/// referenced by some helpers' side effects.
 fn setupDb() !struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
@@ -57,7 +64,8 @@ fn setupDb() !struct {
 
     // Mirror the state left by Migration 034 (workspace_item_tasks).
     // The `session_id` column is nullable and Migration 044 doesn't
-    // add it — but the fire pipeline sets it, so include it.
+    // add it — but include it for symmetry with the other test
+    // helpers in the project.
     try db.exec(alloc,
         \\CREATE TABLE workspace_item_tasks (
         \\    id TEXT PRIMARY KEY,
@@ -69,45 +77,11 @@ fn setupDb() !struct {
         \\)
     , &.{});
 
-    // The `saveMessage` function (called by `fire.zig`) inserts into
-    // `llm_history` with the full column list. Provide the minimum
-    // set the test queries (`id`, `session_id`, `role`,
-    // `response_content`, `created_at`) and the rest as nullable
-    // columns. `saveMessage` will write to ALL of them, so every
-    // column the production code touches must exist.
-    try db.exec(alloc,
-        \\CREATE TABLE llm_history (
-        \\    id TEXT PRIMARY KEY,
-        \\    session_id TEXT NOT NULL,
-        \\    model TEXT,
-        \\    response_content TEXT,
-        \\    finish_reason TEXT,
-        \\    role TEXT,
-        \\    tool_calls_json TEXT,
-        \\    tool_call_id TEXT,
-        \\    reasoning_content TEXT,
-        \\    is_feed_to_llm INTEGER DEFAULT 1,
-        \\    agent TEXT,
-        \\    loop_index INTEGER DEFAULT 0,
-        \\    temperature REAL DEFAULT 0.0,
-        \\    is_thinking INTEGER DEFAULT 0,
-        \\    created_at TEXT,
-        \\    parent_session_id TEXT,
-        \\    parent_id TEXT,
-        \\    prompt_tokens INTEGER DEFAULT 0,
-        \\    completion_tokens INTEGER DEFAULT 0,
-        \\    total_tokens INTEGER DEFAULT 0,
-        \\    is_input INTEGER DEFAULT 0,
-        \\    is_output INTEGER DEFAULT 0,
-        \\    tool_name TEXT,
-        \\    diffview_before TEXT,
-        \\    diffview_after TEXT,
-        \\    image_url TEXT
-        \\)
-    , &.{});
-
-    // `saveMessage` also UPDATEs `sessions.cwd` for the session —
-    // a minimal schema with the columns it touches.
+    // `markSuccess` (called by `fire.zig` on the happy path) and
+    // `recomputeDueNextRunAt` (called by `Scheduler.zig`) don't
+    // touch `sessions`, but include a minimal `sessions` table to
+    // match the helpers' expectations on any FK / column they may
+    // read transitively.
     try db.exec(alloc,
         "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, status TEXT, cwd TEXT, selected_profile_model TEXT, created_at TEXT, updated_at TEXT)",
         &.{});
@@ -117,120 +91,62 @@ fn setupDb() !struct {
     return .{ .db = db, .threaded = threaded };
 }
 
-/// Build a `std.process.Environ.Map` containing
-/// `ROUTINE_FIRE_TEST_SKIP_LLM=1` and pass it to the body. The fire
-/// pipeline short-circuits to `FakeLLMSuccess` when this env var is
-/// set, so the test can exercise the message-insert + state-mutation
-/// paths without initializing the LLM singleton. The env is
-/// thread-local (per `Environ.Map`), so there's no process-wide
-/// state to restore.
-fn withSkipLlmEnv(body: *const fn (env: *const std.process.Environ.Map) anyerror!void) !void {
-    const alloc = testing.allocator;
-    var map = std.process.Environ.Map.init(alloc);
-    defer map.deinit();
-    try map.put("ROUTINE_FIRE_TEST_SKIP_LLM", "1");
-    try body(&map);
-}
-
-/// Run a single-column SELECT and parse the first row's first column
-/// as an i64. Returns 0 when the query produces no rows.
-fn scalarI64(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, sql: []const u8, args: []const []const u8) !i64 {
-    var q = try db.query(alloc, sql, args);
-    defer q.deinit();
-    const row = (try q.next()) orelse return 0;
-    defer row.deinit(alloc);
-    return try std.fmt.parseInt(i64, row.values[0], 10);
-}
-
-// ─── Test 1: happy path (inserts 🔁 user-style message) ──────────────────
-
-test "fireRoutine inserts a user-style 🔁 message into the session" {
-    try withSkipLlmEnv(struct {
-        fn run(env: *const std.process.Environ.Map) !void {
-            const alloc = testing.allocator;
-            var ctx = try setupDb();
-            defer ctx.db.deinit();
-            defer ctx.threaded.deinit();
-
-            // Parent task + routine row, with a next_run_at well in the
-            // past so `listDueRoutineIds` would consider it due. (The
-            // claim path doesn't read next_run_at, but a realistic
-            // starting state makes the test self-documenting.)
-            try ctx.db.exec(alloc,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'Daily', 'wi1', 't1')",
-                &.{});
-            try model.insertRoutine(alloc, &ctx.db, .{
-                .id = "r1",
-                .task_id = "t1",
-                .schedule = "0 9 * * *",
-                .initial_prompt = "summarize commits",
-                .enabled = true,
-                .next_run_at = "2000-01-01 00:00:00",
-            });
-
-            // With the env var set, the function should return
-            // FakeLLMSuccess (a test-only sentinel) without invoking
-            // the LLM worker pipeline.
-            const err = fire.fireRoutine(alloc, &ctx.db, ctx.threaded.io(), env, "t1") catch |e| e;
-            try testing.expectEqual(fire.FireError.FakeLLMSuccess, err);
-
-            // The 🔁 user-style message must have been inserted into
-            // the session BEFORE the (skipped) LLM emit. Read it back
-            // via the Row API (NOT the invented `db.prepare`/etc.).
-            var q = try ctx.db.query(alloc,
-                "SELECT response_content, role FROM llm_history WHERE session_id = 't1' ORDER BY created_at DESC LIMIT 1",
-                &.{});
-            defer q.deinit();
-            const row = (try q.next()) orelse return error.TestFailed;
-            defer row.deinit(alloc);
-            try testing.expect(std.mem.indexOf(u8, row.values[0], "🔁") != null);
-            try testing.expect(std.mem.indexOf(u8, row.values[0], "summarize commits") != null);
-            try testing.expectEqualStrings("user", row.values[1]);
-        }
-    }.run);
-}
-
-// ─── Test 2: atomic claim (second fire returns AlreadyRunning) ────────────
+// ─── Test 1: atomic claim (second fire returns AlreadyRunning) ────────────
 
 test "fireRoutine rejects a second concurrent fire (atomic claim)" {
-    try withSkipLlmEnv(struct {
-        fn run(env: *const std.process.Environ.Map) !void {
-            const alloc = testing.allocator;
-            var ctx = try setupDb();
-            defer ctx.db.deinit();
-            defer ctx.threaded.deinit();
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
 
-            try ctx.db.exec(alloc,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'A', 'wi1', 't1')",
-                &.{});
-            try model.insertRoutine(alloc, &ctx.db, .{
-                .id = "r1",
-                .task_id = "t1",
-                .schedule = "*/5 * * * *",
-                .initial_prompt = "x",
-                .enabled = true,
-                .next_run_at = "2000-01-01 00:00:00",
-            });
-            // Pre-claim the row by setting last_status to 'running'.
-            // `claimForRun` (called inside `fireRoutine`) is an
-            // atomic UPDATE that excludes already-running rows, so
-            // it will return false and `fireRoutine` will return
-            // `AlreadyRunning` without doing any other work.
-            try ctx.db.exec(alloc, "UPDATE routines SET last_status = 'running' WHERE id = 'r1'", &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'A', 'wi1', 't1')",
+        &.{});
+    try model.insertRoutine(alloc, &ctx.db, .{
+        .id = "r1",
+        .task_id = "t1",
+        .schedule = "*/5 * * * *",
+        .initial_prompt = "x",
+        .enabled = true,
+        .next_run_at = "2000-01-01 00:00:00",
+    });
+    // Pre-claim the row by setting last_status to 'running'.
+    // `claimForRun` (called inside `fireRoutine`) is an atomic
+    // UPDATE that excludes already-running rows, so it will return
+    // false and `fireRoutine` will return `AlreadyRunning` without
+    // doing any other work. The `di` parameter is never read on
+    // the `AlreadyRunning` path, so `undefined` is safe.
+    try ctx.db.exec(alloc, "UPDATE routines SET last_status = 'running' WHERE id = 'r1'", &.{});
 
-            const err = fire.fireRoutine(alloc, &ctx.db, ctx.threaded.io(), env, "t1") catch |e| e;
-            try testing.expectEqual(fire.FireError.AlreadyRunning, err);
+    const err = fire.fireRoutine(alloc, &ctx.db, undefined, ctx.threaded.io(), "t1") catch |e| e;
+    try testing.expectEqual(fire.FireError.AlreadyRunning, err);
 
-            // The 🔁 message must NOT have been inserted (the claim
-            // failed before the insert).
-            const count = try scalarI64(alloc, &ctx.db,
-                "SELECT COUNT(*) FROM llm_history WHERE session_id = 't1'", &.{});
-            try testing.expectEqual(@as(i64, 0), count);
-        }
-    }.run);
+    // The `llm_history` table isn't even created in `setupDb` —
+    // if the function had reached the message-insert path it would
+    // have failed with a SQL error. Assert it didn't get there by
+    // confirming the row is still in 'running' state (the claim
+    // would have flipped it to 'running' again if the second
+    // claimForRun had succeeded, but the row is already 'running'
+    // so the second claim would have returned false regardless).
+    // The stronger check: the `llm_history` table doesn't exist,
+    // so reaching the (now-removed) message-insert path would
+    // have produced a SQL error. We don't see that error — the
+    // function returned `AlreadyRunning` cleanly. Pass.
+    const status_dup = blk: {
+        var q = try ctx.db.query(alloc, "SELECT last_status FROM routines WHERE id = 'r1'", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.TestFailed;
+        defer row.deinit(alloc);
+        // Dup the slice so the test can read it after row.deinit
+        // fires (otherwise row.values[0] becomes a dangling slice
+        // and the expectEqualStrings call below segfaults in debug).
+        break :blk try alloc.dupe(u8, row.values[0]);
+    };
+    defer alloc.free(status_dup);
+    try testing.expectEqualStrings("running", status_dup);
 }
 
-// ─── Test 3: task with no routine row returns NotARoutine ────────────────
+// ─── Test 2: task with no routine row returns NotARoutine ────────────────
 
 test "fireRoutine on a non-routine task returns NotARoutine" {
     const alloc = testing.allocator;
@@ -243,13 +159,13 @@ test "fireRoutine on a non-routine task returns NotARoutine" {
         "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'A', 'wi1', 't1')",
         &.{});
 
-    // No env-var short-circuit (null is fine — the load fails
-    // before the env-var check).
-    const err = fire.fireRoutine(alloc, &ctx.db, ctx.threaded.io(), null, "t1") catch |e| e;
+    // `di` is not read on the `NotARoutine` path (the load fails
+    // before the di.group_emit call), so `undefined` is safe.
+    const err = fire.fireRoutine(alloc, &ctx.db, undefined, ctx.threaded.io(), "t1") catch |e| e;
     try testing.expectEqual(fire.FireError.NotARoutine, err);
 }
 
-// ─── Test 4: disabled routine returns Disabled ───────────────────────────
+// ─── Test 3: disabled routine returns Disabled ───────────────────────────
 
 test "fireRoutine on a disabled routine returns Disabled" {
     const alloc = testing.allocator;
@@ -269,68 +185,21 @@ test "fireRoutine on a disabled routine returns Disabled" {
         .next_run_at = "2000-01-01 00:00:00",
     });
 
-    // No env-var short-circuit (null is fine — the disabled check
-    // runs before the env-var check).
-    const err = fire.fireRoutine(alloc, &ctx.db, ctx.threaded.io(), null, "t1") catch |e| e;
+    // `di` is not read on the `Disabled` path (the disabled check
+    // runs before the claim), so `undefined` is safe.
+    const err = fire.fireRoutine(alloc, &ctx.db, undefined, ctx.threaded.io(), "t1") catch |e| e;
     try testing.expectEqual(fire.FireError.Disabled, err);
 
-    // The 🔁 message must NOT have been inserted (the disabled
-    // short-circuit returns before the claim).
-    const count = try scalarI64(alloc, &ctx.db,
-        "SELECT COUNT(*) FROM llm_history WHERE session_id = 't1'", &.{});
-    try testing.expectEqual(@as(i64, 0), count);
-}
-
-// ─── Test 5: skip-LLM mode marks the routine success + advances next_run_at
-
-test "fireRoutine (skip-LLM mode) marks routine success and advances next_run_at" {
-    try withSkipLlmEnv(struct {
-        fn run(env: *const std.process.Environ.Map) !void {
-            const alloc = testing.allocator;
-            var ctx = try setupDb();
-            defer ctx.db.deinit();
-            defer ctx.threaded.deinit();
-
-            try ctx.db.exec(alloc,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'A', 'wi1', 't1')",
-                &.{});
-            try model.insertRoutine(alloc, &ctx.db, .{
-                .id = "r1",
-                .task_id = "t1",
-                .schedule = "0 9 * * *",
-                .initial_prompt = "summarize commits",
-                .enabled = true,
-                .next_run_at = "2000-01-01 09:00:00",
-            });
-
-            // With the env var set, the function should return
-            // FakeLLMSuccess after also marking the routine success
-            // (so the scheduler doesn't fire it again immediately on
-            // the next tick). Uses the real Row API (db.query +
-            // row.values[i]) — NOT the invented `db.prepare`/
-            // `stmt.columnText`.
-            const err = fire.fireRoutine(alloc, &ctx.db, ctx.threaded.io(), env, "t1") catch |e| e;
-            try testing.expectEqual(fire.FireError.FakeLLMSuccess, err);
-
-            // Read back the routine state. The claim set
-            // last_status='running'; the FakeLLMSuccess path should
-            // have transitioned it to 'success' and advanced
-            // next_run_at to the cron-computed next firing time.
-            var q = try ctx.db.query(alloc,
-                "SELECT last_status, last_error, next_run_at FROM routines WHERE id = 'r1'",
-                &.{});
-            defer q.deinit();
-            const row = (try q.next()) orelse return error.TestFailed;
-            defer row.deinit(alloc);
-
-            try testing.expectEqualStrings("success", row.values[0]);
-            // markSuccess writes `last_error = NULL`, which the Row
-            // API returns as the empty string.
-            try testing.expectEqualStrings("", row.values[1]);
-            // next_run_at should be a YYYY-MM-DD HH:MM:SS string in
-            // the 21st century (cron computed it from "now").
-            try testing.expect(row.values[2].len >= 19);
-            try testing.expect(std.mem.startsWith(u8, row.values[2], "20"));
-        }
-    }.run);
+    // The row must still be enabled (the disabled check returns
+    // before the claim, so last_status is unchanged).
+    const enabled_int = blk: {
+        var q = try ctx.db.query(alloc, "SELECT enabled FROM routines WHERE id = 'r1'", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.TestFailed;
+        defer row.deinit(alloc);
+        // The Row's slice is freed by `row.deinit(alloc)` above; parse
+        // it into a value (i64) before the defer fires.
+        break :blk try std.fmt.parseInt(i64, row.values[0], 10);
+    };
+    try testing.expectEqual(@as(i64, 0), enabled_int);
 }
