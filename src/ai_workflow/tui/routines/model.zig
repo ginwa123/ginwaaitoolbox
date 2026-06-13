@@ -20,6 +20,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const SqliteBackend = nalarcore.sqlite.SqliteBackend;
+const Scheduler = @import("Scheduler.zig");
 
 /// Canonical status values written to the `routines.last_status` column.
 ///
@@ -238,22 +239,22 @@ pub fn markFailed(allocator: std.mem.Allocator, db: *SqliteBackend, routine_id: 
     , &.{ err_msg, next_run_at_sqlite, routine_id });
 }
 
-/// Placeholder. Task 3.4 replaces this with a real iteration over all
-/// routines that calls `cron.nextFireTime(schedule, now)` per row and
-/// updates `next_run_at`. For now this is a no-op so the API surface
-/// is established and the rest of the codebase can compile against
-/// the signature.
+/// Iterate over all enabled routines, recompute `next_run_at` via
+/// `cron.nextFireTime`, and UPDATE the row. The `compute_fn` and
+/// `now_unix_nanos` parameters are accepted for backwards
+/// compatibility (Chunk 1 placeholder signature) but ignored — the
+/// implementation uses the wall clock from `Scheduler.recomputeDueNextRunAt`
+/// and the standard `cron.nextFireTime`.
 pub fn recomputeAllNextRunAt(
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
     compute_fn: *const fn (schedule: []const u8, now_unix_nanos: i128) anyerror![]const u8,
     now_unix_nanos: i128,
 ) !void {
-    _ = allocator;
-    _ = db;
     _ = compute_fn;
     _ = now_unix_nanos;
-    return;
+    const di = nalarcore.getSingleton() catch return;
+    try Scheduler.recomputeDueNextRunAt(allocator, db, di.io);
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
