@@ -7,6 +7,7 @@ test {
     _ = @import("routines/model_test.zig");
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
+    _ = @import("routines/scheduler_test.zig");
     _ = @import("notifications_test.zig");
     _ = @import("parse_diff_view_test.zig");
     _ = @import("save_agent_test.zig");
