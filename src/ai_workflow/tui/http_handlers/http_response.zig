@@ -260,7 +260,30 @@ pub fn makeWorkspaceItemListObjectResponse(allocator: std.mem.Allocator, items: 
 }
 
 // Workspace Item Task types
-pub const WorkspaceItemTaskResponse = struct { id: []const u8, name: []const u8, workspace_item_id: []const u8, session_id: ?[]const u8 = null, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null };
+/// Wire shape for the inline `routine` field on `WorkspaceItemTaskResponse`.
+/// Mirrors the API response in the design doc.
+pub const RoutineMetaResponse = struct {
+    schedule: []const u8,
+    initial_prompt: []const u8,
+    enabled: bool,
+    last_run_at: ?[]const u8 = null,
+    next_run_at: []const u8,
+    last_status: ?[]const u8 = null, // "success" | "failed" | "running" | null
+    last_error: ?[]const u8 = null,
+};
+
+pub const WorkspaceItemTaskResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    workspace_item_id: []const u8,
+    session_id: ?[]const u8 = null,
+    /// Task type. Always present; 'standard' for legacy rows.
+    task_type: []const u8 = "standard",
+    /// Inline routine metadata. Present iff task_type === 'routine'.
+    routine: ?RoutineMetaResponse = null,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null,
+};
 
 pub const WorkspaceItemTaskListResponse = struct {
     tasks: []const WorkspaceItemTaskResponse,

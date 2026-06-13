@@ -92,6 +92,13 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
             .name = task.name,
             .workspace_item_id = task.workspace_item_id,
             .session_id = task.session_id,
+            // PLACEHOLDER: Task 4.5 will add `task_type` and `routine`
+            // fields to `WorkspaceItemTaskInfo` and a SQL JOIN against
+            // the routines table. For now every task reports
+            // task_type="standard" with no inline routine metadata, so
+            // the response shape is correct but every row is non-routine.
+            .task_type = "standard",
+            .routine = null,
             .created_at = task.created_at,
             .updated_at = task.updated_at,
         });

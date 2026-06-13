@@ -348,6 +348,24 @@ test "tasks_list handler passes sort_field and sort_direction to the DB fn" {
     }
 }
 
+// ─── Contracts 13-14: routine-aware response shape ────────────────────
+
+test "WorkspaceItemTaskResponse has task_type + routine fields" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HTTP_RESPONSE_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "task_type") == null) return error.TaskTypeFieldMissing;
+    if (std.mem.indexOf(u8, source, "routine") == null) return error.RoutineFieldMissing;
+}
+
+test "tasks_list handler threads task_type + routine into the response" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "task_type") == null) return error.TaskTypeNotThreaded;
+    if (std.mem.indexOf(u8, source, ".routine") == null) return error.RoutineNotThreaded;
+}
+
 // ─── Contract 12: migration declares idx_workspace_item_tasks_item_updated ─
 
 test "migration declares idx_workspace_item_tasks_item_updated" {
