@@ -757,6 +757,12 @@ pub const Migration044AddRoutines = struct {
             "CREATE INDEX IF NOT EXISTS idx_routines_enabled_next_run ON routines(enabled, next_run_at)",
             &[_][]const u8{},
         );
+        // Refresh query-planner stats so the new index is picked on
+        // pre-existing databases (mirrors the ANALYZE-after-CREATE-INDEX
+        // pattern used by Migrations 041/042/043). Without this, the
+        // Scheduler's per-second poll may not use the index until the
+        // table has been written to many times.
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
     }
 };
 
