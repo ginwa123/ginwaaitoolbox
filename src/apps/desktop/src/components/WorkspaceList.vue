@@ -36,6 +36,13 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
+  // NEW (Chunk 7 of task-routines plan): emitted by
+  // <WorkspaceItem> when the routine-task branch in
+  // <WorkspaceItemTask> fires the routine's pencil or Run Now
+  // button. Sidebar handles these — calls the store action and
+  // opens EditRoutineDialog.
+  editRoutine: [workspaceId: string, itemId: string, taskId: string]
+  runRoutine: [workspaceId: string, itemId: string, taskId: string]
   loadMoreTasks: [workspaceId: string, itemId: string]
   // Drag-and-drop reordering. Emitted on a successful drop with the
   // new top-to-bottom array of workspace IDs. The Sidebar parent
@@ -163,6 +170,25 @@ const handleRenameTask = (
   currentName: string,
 ) => {
   emit('renameTask', workspaceId, itemId, taskId, currentName)
+}
+
+// NEW (Chunk 7 of task-routines plan): pass-through for the
+// routine-task events emitted by <WorkspaceItem>. Same
+// pure-forwarding pattern as the standard-task handlers above.
+const handleEditRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  emit('editRoutine', workspaceId, itemId, taskId)
+}
+
+const handleRunRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  emit('runRoutine', workspaceId, itemId, taskId)
 }
 
 const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
@@ -400,6 +426,8 @@ const handleDragEnd = () => {
             @select-task="handleSelectTask"
             @delete-task="handleDeleteTask"
             @rename-task="handleRenameTask"
+            @edit-routine="handleEditRoutine"
+            @run-routine="handleRunRoutine"
             @load-more-tasks="handleLoadMoreTasks"
           />
           <!-- Add Item Button -->

@@ -32,6 +32,12 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
+  // NEW (Chunk 7 of task-routines plan): the routine-task branch
+  // in WorkspaceItemTask emits these on the routine's pencil and
+  // the Run Now button. We re-emit verbatim up to WorkspaceList,
+  // same as the standard-task events above.
+  editRoutine: [workspaceId: string, itemId: string, taskId: string]
+  runRoutine: [workspaceId: string, itemId: string, taskId: string]
   // The user must click to fetch the next page of tasks for this
   // item. WorkspaceList forwards the event to Sidebar, which calls
   // workspacesStore.loadMoreTasks. See Design Note 6 in
@@ -105,6 +111,27 @@ const handleRenameTask = (
   currentName: string,
 ) => {
   emit('renameTask', workspaceId, itemId, taskId, currentName)
+}
+
+// NEW (Chunk 7 of task-routines plan): pass-through for the
+// routine-task events emitted by <WorkspaceItemTask>. Same
+// pure-forwarding pattern as the standard-task handlers above;
+// WorkspaceList will re-emit these to Sidebar which calls the
+// store action and opens EditRoutineDialog.
+const handleEditRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  emit('editRoutine', workspaceId, itemId, taskId)
+}
+
+const handleRunRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  emit('runRoutine', workspaceId, itemId, taskId)
 }
 
 const handleLoadMoreTasks = (event: Event) => {
@@ -219,6 +246,8 @@ const handleLoadMoreTasks = (event: Event) => {
           @select-task="handleSelectTask"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
+          @edit-routine="handleEditRoutine"
+          @run-routine="handleRunRoutine"
         />
         <!-- Load More: shown when the backend says there are more
              tasks for this item. Hidden during the load to prevent

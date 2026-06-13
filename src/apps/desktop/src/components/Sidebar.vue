@@ -14,10 +14,9 @@ import ConfirmDialog from './ConfirmDialog.vue'
 import AddTaskDialog from './AddTaskDialog.vue'
 import AddTaskPickerDialog from './AddTaskPickerDialog.vue'
 import AddRoutineDialog from './AddRoutineDialog.vue'
-// EditRoutineDialog is mounted in Chunk 7 when the task row
-// grows the Edit Routine button. For now the component is
-// shipped (tested in EditRoutineDialog.spec.ts) but unused here.
-import type { WorkspaceItem } from '../stores/workspaces'
+import EditRoutineDialog from './EditRoutineDialog.vue'
+import type { EditRoutineParams } from './EditRoutineDialog.vue'
+import type { RoutineMeta, WorkspaceItem } from '../stores/workspaces'
 import * as api from '../api'
 
 // Inject isLLMProcessing from App.vue
@@ -110,6 +109,19 @@ const addTaskDialogItemId = ref<string | null>(null)
 const showAddRoutineDialog = ref(false)
 const addRoutineDialogWorkspaceId = ref<string | null>(null)
 const addRoutineDialogItemId = ref<string | null>(null)
+
+// Edit routine (Chunk 7 of task-routines plan): opened by
+// handleEditRoutine (triggered by the routine-task row's pencil
+// via WorkspaceItemTask → WorkspaceItem → WorkspaceList → Sidebar).
+// The dialog is prefilled with the routine's current values via
+// `editRoutineTarget` (RoutineMeta | null) and the task's name via
+// `editRoutineTaskName`. We keep workspaceId + itemId + taskId on
+// separate refs (not a single object) so the submit callback can
+// resolve the right routine for the updateRoutine store action.
+const showEditRoutineDialog = ref(false)
+const editRoutineWorkspaceId = ref<string | null>(null)
+const editRoutineItemId = ref<string | null>(null)
+const editRoutineTaskId = ref<string | null>(null)
 
 // Resize handling
 const isResizing = ref(false)
@@ -510,6 +522,129 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
 const handleReorderWorkspaces = (orderedIds: string[]) => {
   workspacesStore.reorderWorkspaces(orderedIds)
 }
+
+// ─── Routines (Chunk 7 of task-routines plan) ────────────────────────────
+// These two handlers close the wiring loop from the routine-task
+// row in WorkspaceItemTask.vue (which emits `runRoutine` and
+// `editRoutine`) up through WorkspaceItem → WorkspaceList → here.
+// Sidebar is the only component that touches the store, so it
+// owns the user-visible side effects (route to chat, open the
+// edit dialog, call runRoutine / updateRoutine).
+
+// Run now: fire the routine via the store, then navigate to the
+// task's chat view. The backend returns the session_id (= task.id
+// by codebase invariant); we set the active task and route. The
+// chat view's existing SSE /chat-view connection picks up the new
+// user message when the worker writes it (see Task 7.5 E2E).
+const handleRunRoutine = async (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  const result = await workspacesStore.runRoutine(workspaceId, itemId, taskId)
+  if (result?.session_id) {
+    workspacesStore.setActiveTask(taskId)
+    router.replace({
+      path: '/app',
+      query: { view: 'task', task: taskId, session: result.session_id },
+    })
+  }
+}
+
+// Edit routine: capture the workspace / item / task ids on the
+// three refs and open the dialog. The dialog's `routine` and
+// `taskName` props are bound to the two `computed`s below, which
+// look up the routine in the workspaces tree (and tolerate a
+// stale id by returning null / '' — the dialog renders only when
+// `routine` is non-null, so a missing target simply doesn't
+// open).
+const handleEditRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  editRoutineWorkspaceId.value = workspaceId
+  editRoutineItemId.value = itemId
+  editRoutineTaskId.value = taskId
+  showEditRoutineDialog.value = true
+}
+
+const handleEditRoutineClose = () => {
+  showEditRoutineDialog.value = false
+  editRoutineWorkspaceId.value = null
+  editRoutineItemId.value = null
+  editRoutineTaskId.value = null
+}
+
+// Submit: pass the form fields to the store's updateRoutine
+// action (added in Chunk 5). The store action does an optimistic
+// name update + API call + rollback on error. Routine schedule /
+// initial_prompt / enabled updates surface on the next SSE
+// refresh (the backend recomputes next_run_at on update).
+const handleEditRoutineSubmitted = async (params: EditRoutineParams) => {
+  if (
+    !editRoutineWorkspaceId.value ||
+    !editRoutineItemId.value ||
+    !editRoutineTaskId.value
+  ) {
+    return
+  }
+  await workspacesStore.updateRoutine(
+    editRoutineWorkspaceId.value,
+    editRoutineItemId.value,
+    editRoutineTaskId.value,
+    {
+      name: params.name,
+      schedule: params.schedule,
+      initial_prompt: params.initial_prompt,
+      enabled: params.enabled,
+    },
+  )
+  showEditRoutineDialog.value = false
+  editRoutineWorkspaceId.value = null
+  editRoutineItemId.value = null
+  editRoutineTaskId.value = null
+}
+
+// Look up the routine being edited in the workspaces tree. The
+// EditRoutineDialog's `routine` prop expects RoutineMeta | null;
+// returning null when the lookup misses keeps the dialog from
+// opening (the dialog's v-if="show && routine" gate handles it).
+const editRoutineTarget = computed<RoutineMeta | null>(() => {
+  if (
+    !editRoutineWorkspaceId.value ||
+    !editRoutineItemId.value ||
+    !editRoutineTaskId.value
+  ) {
+    return null
+  }
+  for (const ws of workspacesStore.workspaces) {
+    if (ws.id !== editRoutineWorkspaceId.value) continue
+    const item = ws.items.find((i) => i.id === editRoutineItemId.value)
+    const task = item?.tasks?.find((t) => t.id === editRoutineTaskId.value)
+    return task?.routine ?? null
+  }
+  return null
+})
+
+// The task's display name (for the dialog's subtitle). Mirrors
+// editRoutineTarget's lookup but returns the name.
+const editRoutineTaskName = computed<string>(() => {
+  if (
+    !editRoutineWorkspaceId.value ||
+    !editRoutineItemId.value ||
+    !editRoutineTaskId.value
+  ) {
+    return ''
+  }
+  for (const ws of workspacesStore.workspaces) {
+    if (ws.id !== editRoutineWorkspaceId.value) continue
+    const item = ws.items.find((i) => i.id === editRoutineItemId.value)
+    const task = item?.tasks?.find((t) => t.id === editRoutineTaskId.value)
+    if (task) return task.name
+  }
+  return ''
+})
 </script>
 
 <template>
@@ -600,6 +735,8 @@ const handleReorderWorkspaces = (orderedIds: string[]) => {
           @select-task="handleSelectTask"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
+          @run-routine="handleRunRoutine"
+          @edit-routine="handleEditRoutine"
           @load-more-tasks="handleLoadMoreTasks"
           @reorder-workspaces="handleReorderWorkspaces"
         />
@@ -636,6 +773,13 @@ const handleReorderWorkspaces = (orderedIds: string[]) => {
     <AddTaskPickerDialog :show="showAddTaskPicker" @close="handleCloseAddTaskPicker" @pick="handleAddTaskPick" />
     <AddTaskDialog :show="showAddTaskDialog" @close="handleCloseAddTaskDialog" @create="handleAddTaskCreated" />
     <AddRoutineDialog :show="showAddRoutineDialog" @close="handleCloseAddRoutineDialog" @create="handleAddRoutineCreated" />
+    <EditRoutineDialog
+      :show="showEditRoutineDialog"
+      :routine="editRoutineTarget"
+      :task-name="editRoutineTaskName"
+      @close="handleEditRoutineClose"
+      @submit="handleEditRoutineSubmitted"
+    />
     <ConfirmDialog
       :show="showDeleteConfirm"
       :title="deleteConfirmConfig?.title || 'Confirm'"
