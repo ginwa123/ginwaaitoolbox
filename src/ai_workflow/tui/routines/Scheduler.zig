@@ -1,20 +1,18 @@
 //! `Scheduler.zig` — the polling loop that drives routines to fire
-//! (Task 3.1 of the Add Task Routines plan).
+//! (Task 3.1 of the Add Task Routines plan, refactored per PR #8 review).
 //!
-//! `start(allocator, db, io)` is the public entry point — call it from
-//! a background thread (Task 3.2 wires it in `startup.zig`). The
-//! function does NOT return; it runs the polling loop until the
-//! process exits. The polling interval is `TICK_INTERVAL_NS` (5
-//! seconds).
+//! `start(allocator, db, di, io)` is the public entry point — call
+//! it via `di.group_emit_session_create.concurrent(io, ...)` from
+//! `startup.zig` (Task 3.2). The function does NOT return; it runs
+//! the polling loop until the process exits. The polling interval is
+//! `TICK_INTERVAL_NS` (5 seconds).
 //!
 //! On startup the loop calls two restart-safety helpers:
 //!
 //!   - `resetStuckRunning`     — flip every `last_status='running'`
 //!                               row to `'failed'` with a "process
 //!                               killed" error. Recovers from a
-//!                               previous process crash (the row was
-//!                               claimed but the sub-process never
-//!                               wrote a terminal status).
+//!                               previous process crash.
 //!   - `recomputeDueNextRunAt` — recompute `next_run_at` for every
 //!                               enabled routine from the cron
 //!                               expression. Lets routines that were
@@ -22,12 +20,14 @@
 //!                               boot instead of waiting for their
 //!                               originally-scheduled `next_run_at`.
 //!
-//! Each tick calls `spawnDueRoutines`, which lists every due routine
-//! via `model.listDueRoutineIds` and spawns one
-//! `nalar-routine-fire --id <id>` sub-process per id. The sub-process
-//! is fire-and-forget — we deliberately do NOT call `child.wait(io)`,
-//! matching the `notifications.zig:130` pattern. A slow LLM call in one
-//! routine cannot block polling of others.
+//! Each tick calls `fireDueRoutines`, which lists every due routine
+//! via `model.listDueRoutineIds` and calls `fire.fireRoutine` for
+//! each. `fire.fireRoutine` submits the LLM work to the same Io
+//! group via `di.group_emit_session_create.concurrent(io, ...)` —
+//! the same pattern as `http_handlers/session_create.zig:161`. A
+//! slow LLM call in one routine cannot block polling of others: the
+//! fire-and-forget submit returns immediately, and the Io group
+//! runs the LLM in a worker thread.
 //!
 //! Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunks-2-3.md
 //! Design: docs/plans/2026-06-13-add-task-routines-design.md
@@ -38,8 +38,9 @@ const sqlite = nalarcore.sqlite;
 
 const model = @import("model.zig");
 const cron = @import("cron.zig");
+const fire = @import("fire.zig");
 
-/// Polling interval between `spawnDueRoutines` ticks.
+/// Polling interval between `fireDueRoutines` ticks.
 pub const TICK_INTERVAL_NS: i128 = 5 * std.time.ns_per_s;
 
 /// Reset every routine whose `last_status = 'running'` to `'failed'`
@@ -120,7 +121,7 @@ pub fn recomputeDueNextRunAt(
             continue;
         };
 
-        const next_sqlite = try formatSqliteDatetime(allocator, next_ns);
+        const next_sqlite = try fire.formatSqliteDatetime(allocator, next_ns);
         try to_update.append(allocator, .{
             .id = id,
             .schedule = schedule,
@@ -135,13 +136,21 @@ pub fn recomputeDueNextRunAt(
     }
 }
 
-/// Spawn one `nalar-routine-fire --id <id>` sub-process per due id.
-/// Fire-and-forget: do NOT call `child.wait(io)` — see
-/// `notifications.zig:130` for the rationale. Returns the count of
-/// sub-processes spawned (excluding spawn failures).
-fn spawnDueRoutines(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, io: std.Io) !usize {
+/// Fire one routine per due id. Uses the main process's
+/// `di.group_emit_session_create` group via `fire.fireRoutine`
+/// (no thread, no sub-process). Returns the count of routines that
+/// were successfully fired. Errors from `fireRoutine` other than the
+/// three controlled `FireError` variants are logged and the routine
+/// is skipped — a single broken routine must not block polling of
+/// others.
+pub fn fireDueRoutines(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    di: *nalarcore.ContextIPCTui,
+    io: std.Io,
+) !usize {
     const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
-    const now_sqlite = try formatSqliteDatetime(allocator, now_ns);
+    const now_sqlite = try fire.formatSqliteDatetime(allocator, now_ns);
     defer allocator.free(now_sqlite);
 
     const due_ids = try model.listDueRoutineIds(allocator, db, now_sqlite);
@@ -150,43 +159,32 @@ fn spawnDueRoutines(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, io:
         allocator.free(due_ids);
     }
 
-    var spawned: usize = 0;
-    for (due_ids) |id| {
-        const argv = try allocator.dupe([]const u8, &.{
-            "nalar-routine-fire",
-            "--id",
-            id,
-        });
-        defer allocator.free(argv);
-
-        const child = std.process.spawn(io, .{
-            .argv = argv,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        }) catch |err| {
-            std.log.warn("scheduler: failed to spawn nalar-routine-fire: {s}", .{@errorName(err)});
-            continue;
+    var fired: usize = 0;
+    for (due_ids) |task_id| {
+        fire.fireRoutine(allocator, db, di, io, task_id) catch |err| switch (err) {
+            error.NotARoutine, error.Disabled, error.AlreadyRunning => continue,
+            else => {
+                std.log.warn("scheduler: fireRoutine failed for {s}: {s}", .{ task_id, @errorName(err) });
+                continue;
+            },
         };
-        // Fire-and-forget. We deliberately don't call child.wait(io)
-        // so a slow LLM call in one routine cannot block polling of
-        // others. The `child.id == null` check mirrors
-        // `notifications.zig:146` and forces the compiler to consider
-        // `child` used (Zig 0.16's process.Child has no meaningful
-        // other read on the fire-and-forget path).
-        if (child.id == null) continue;
-        spawned += 1;
+        fired += 1;
     }
-    return spawned;
+    return fired;
 }
 
-/// The polling loop. Runs forever (no cancel signal in v1). Call from
-/// a background thread — see `startup.zig` (Task 3.2) for the
-/// thread-spawn wiring.
-pub fn start(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, io: std.Io) !void {
+/// The polling loop. Runs forever (no cancel signal in v1). Call
+/// from `di.group_emit_session_create.concurrent(io, ...)` — see
+/// `startup.zig` (Task 3.2) for the wiring.
+pub fn start(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    di: *nalarcore.ContextIPCTui,
+    io: std.Io,
+) !void {
     // Restart safety: do these once at startup. A failure here is
     // logged but does not abort the loop — the next tick's
-    // `spawnDueRoutines` is still useful.
+    // `fireDueRoutines` is still useful.
     resetStuckRunning(allocator, db) catch |err| {
         std.log.warn("scheduler: resetStuckRunning failed: {s}", .{@errorName(err)});
     };
@@ -195,34 +193,9 @@ pub fn start(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, io: std.Io
     };
 
     while (true) {
-        _ = spawnDueRoutines(allocator, db, io) catch |err| {
-            std.log.warn("scheduler: spawnDueRoutines failed: {s}", .{@errorName(err)});
+        _ = fireDueRoutines(allocator, db, di, io) catch |err| {
+            std.log.warn("scheduler: fireDueRoutines failed: {s}", .{@errorName(err)});
         };
-        try std.Io.sleep(io, .{ .nanoseconds = TICK_INTERVAL_NS }, .real);
+        try io.sleep(io, .{ .nanoseconds = TICK_INTERVAL_NS }, .real);
     }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────
-
-/// Convert unix nanos (i128) to a SQLite DATETIME literal
-/// `YYYY-MM-DD HH:MM:SS`. Duplicated from `fire.zig` so the scheduler
-/// is self-contained (the helpers are private there; the only public
-/// `formatSqliteDatetime` would be a wider API surface for no
-/// observable benefit).
-fn formatSqliteDatetime(allocator: std.mem.Allocator, unix_nanos: i128) ![]u8 {
-    const secs: i64 = @intCast(@divTrunc(unix_nanos, std.time.ns_per_s));
-    const epoch_seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(secs) };
-    const day_seconds = epoch_seconds.getDaySeconds();
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    return std.fmt.allocPrint(allocator,
-        "{d:04}-{d:02}-{d:02} {d:02}:{d:02}:{d:02}",
-        .{
-            year_day.year,
-            month_day.month.numeric(),
-            month_day.day_index + 1,
-            @as(u32, @intCast(day_seconds.getHoursIntoDay())),
-            @as(u32, @intCast(day_seconds.getMinutesIntoHour())),
-            @as(u32, @intCast(day_seconds.getSecondsIntoMinute())),
-        });
 }
