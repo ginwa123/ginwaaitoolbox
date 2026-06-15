@@ -243,11 +243,10 @@ const handleDelete = async () => {
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
         />
       </div>
-      <div class="flex-1 overflow-y-auto p-4">
+      <div class="flex-1 overflow-hidden p-4 flex flex-col">
         <textarea
           v-model="editContent"
-          rows="20"
-          class="w-full px-3 py-2 rounded-lg border text-sm font-mono resize-none"
+          class="flex-1 w-full px-3 py-2 rounded-lg border text-sm font-mono resize-none"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
         />
       </div>
@@ -312,17 +311,16 @@ const handleDelete = async () => {
         </p>
       </div>
 
-      <div class="flex-1 overflow-y-auto p-4">
+      <div class="flex-1 overflow-hidden p-4 flex flex-col">
         <pre
           v-if="mode === 'view'"
-          class="text-xs p-4 rounded whitespace-pre-wrap font-mono"
+          class="flex-1 overflow-y-auto text-xs p-4 rounded whitespace-pre-wrap font-mono"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text-muted);"
         >{{ detail.content }}</pre>
         <textarea
           v-else
           v-model="editContent"
-          rows="20"
-          class="w-full px-3 py-2 rounded-lg border text-sm font-mono resize-none"
+          class="flex-1 w-full px-3 py-2 rounded-lg border text-sm font-mono resize-none"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
         />
       </div>
