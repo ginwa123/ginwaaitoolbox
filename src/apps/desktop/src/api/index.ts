@@ -616,6 +616,12 @@ export interface SseEvent {
   // Diff view data for text_replace tool
   diffview_before?: string
   diffview_after?: string
+  // Pipe-separated image URLs (matches the REST SessionMessageResponse
+  // shape and the backend onEventSendLLMHistory payload). Frontend
+  // splits on '|' to populate Message.image_urls. Null for messages
+  // without attached images (most assistant responses, error paths,
+  // tool results that don't carry image data).
+  image_url?: string
 }
 
 // Create SSE connection for real-time updates.

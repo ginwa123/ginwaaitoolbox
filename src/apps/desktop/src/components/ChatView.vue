@@ -1414,6 +1414,11 @@ const connectSse = () => {
           tool_name: event.tool_name,
           diffview_before: event.diffview_before,
           diffview_after: event.diffview_after,
+          // Match the loadChatHistory REST path (line 824): split the
+          // pipe-separated image_url string the backend sends. Undefined
+          // for messages without images keeps the v-if="image_urls?.length"
+          // check in the template clean.
+          image_urls: event.image_url ? event.image_url.split('|') : undefined,
           finish_reason: event.finish_reason,
           tool_call_id: event.tool_call_id,
         })
