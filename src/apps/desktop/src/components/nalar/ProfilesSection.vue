@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+
 import EmptyState from './EmptyState.vue'
-import type { NalarProfile } from '../../api'
+import type { NalarProfile, SubAgent } from '../../api'
 
 /**
  * One row in the Profiles tab. The backend stores profiles as
@@ -8,9 +10,15 @@ import type { NalarProfile } from '../../api'
  * the profile object). The orchestrator flattens this into an array
  * of `ProfileRow` with the name attached so the UI can iterate
  * cleanly.
+ *
+ * `sub_agents` is the per-profile override: when non-empty, it
+ * REPLACES the top-level sub-agents for sessions that use this
+ * profile (per the `spawn_sub_agent` resolution rules in
+ * docs/plans/2026-06-15-spawn-sub-agent-config.md).
  */
 export interface ProfileRow extends NalarProfile {
   name: string
+  sub_agents: SubAgent[]
 }
 
 defineProps<{
@@ -23,7 +31,21 @@ const emit = defineEmits<{
   edit: [profile: ProfileRow]
   delete: [name: string]
   add: []
+  addSubAgent: [profileName: string]
+  editSubAgent: [profileName: string, subAgent: SubAgent]
+  deleteSubAgent: [profileName: string, subAgentName: string]
 }>()
+
+// Map of profile name -> expanded state. Local to this component;
+// the orchestrator does not need to know which profile is expanded.
+const expanded = ref<Record<string, boolean>>({})
+
+function toggleExpand(name: string) {
+  expanded.value = { ...expanded.value, [name]: !expanded.value[name] }
+}
+function isExpanded(name: string): boolean {
+  return expanded.value[name] === true
+}
 </script>
 
 <template>
@@ -69,52 +91,136 @@ const emit = defineEmits<{
       <li
         v-for="profile in modelValue"
         :key="profile.name"
-        class="flex items-center justify-between gap-3 px-4 py-3 rounded-md"
+        class="rounded-md"
         style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
       >
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2">
-            <span
-              v-if="activeProfile === profile.name"
-              class="w-1.5 h-1.5 rounded-full"
-              style="background-color: var(--color-violet);"
-              aria-label="Active"
-            />
-            <span class="text-sm font-medium" style="color: var(--semantic-text);">{{ profile.name }}</span>
-            <span
-              v-if="activeProfile === profile.name"
-              class="text-[10px] px-1.5 h-5 inline-flex items-center rounded font-mono"
-              style="background-color: var(--color-violet); color: #181616;"
-            >active</span>
+        <!-- Row: chevron + name + active + model + buttons -->
+        <div class="flex items-center justify-between gap-3 px-4 py-3">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                :aria-label="isExpanded(profile.name) ? `Collapse sub-agents for ${profile.name}` : `Expand sub-agents for ${profile.name}`"
+                :aria-expanded="isExpanded(profile.name)"
+                :data-testid="`expand-btn-${profile.name}`"
+                @click="toggleExpand(profile.name)"
+                class="w-4 h-4 flex items-center justify-center text-xs font-mono hover:opacity-80"
+                style="color: var(--semantic-text-muted);"
+              >{{ isExpanded(profile.name) ? '▼' : '▶' }}</button>
+              <span
+                v-if="activeProfile === profile.name"
+                class="w-1.5 h-1.5 rounded-full"
+                style="background-color: var(--color-violet);"
+                aria-label="Active"
+              />
+              <span class="text-sm font-medium" style="color: var(--semantic-text);">{{ profile.name }}</span>
+              <span
+                v-if="activeProfile === profile.name"
+                class="text-[10px] px-1.5 h-5 inline-flex items-center rounded font-mono"
+                style="background-color: var(--color-violet); color: #181616;"
+              >active</span>
+            </div>
+            <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
+              {{ profile.model }} · {{ profile.base_url || '—' }}
+            </div>
+            <div class="text-xs font-mono mt-1" style="color: var(--semantic-text-dim);">
+              <template v-if="profile.sub_agents && profile.sub_agents.length > 0">
+                <span style="color: var(--color-violet);">▾ {{ profile.sub_agents.length }} sub-agent{{ profile.sub_agents.length === 1 ? '' : 's' }}</span>
+                <span> · overrides top-level</span>
+              </template>
+              <template v-else>
+                <span>· inherits top-level sub-agents</span>
+              </template>
+            </div>
           </div>
-          <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
-            {{ profile.model }} · {{ profile.base_url || '—' }}
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              v-if="activeProfile !== profile.name"
+              type="button"
+              data-testid="set-active-btn"
+              @click="emit('setActive', profile.name)"
+              class="px-2.5 h-7 rounded-md text-xs border transition-colors duration-150"
+              style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
+            >Set active</button>
+            <button
+              type="button"
+              data-testid="edit-btn"
+              @click="emit('edit', profile)"
+              class="px-2.5 h-7 rounded-md text-xs border transition-colors duration-150"
+              style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
+            >Edit</button>
+            <button
+              type="button"
+              data-testid="delete-btn"
+              @click="emit('delete', profile.name)"
+              class="px-2.5 h-7 rounded-md text-xs transition-colors duration-150"
+              style="color: var(--color-red);"
+              aria-label="Delete profile"
+            >⌫</button>
           </div>
         </div>
-        <div class="flex items-center gap-1.5 shrink-0">
+
+        <!-- Expanded: per-profile sub-agents list -->
+        <div
+          v-if="isExpanded(profile.name)"
+          :data-testid="`sub-agents-list-${profile.name}`"
+          class="border-t px-4 py-3 space-y-2"
+          style="border-color: var(--color-border);"
+        >
+          <div
+            v-if="!profile.sub_agents || profile.sub_agents.length === 0"
+            class="text-xs italic py-1"
+            style="color: var(--semantic-text-dim);"
+          >
+            No sub-agents. This profile uses the top-level sub-agents.
+          </div>
+          <ul v-else class="space-y-2">
+            <li
+              v-for="sa in profile.sub_agents"
+              :key="sa.name"
+              class="px-3 py-2 rounded"
+              style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border-light);"
+              :data-testid="`profile-sub-agent-${profile.name}-${sa.name}`"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex-1 min-w-0">
+                  <div class="text-xs font-medium" style="color: var(--semantic-text);">{{ sa.name }}</div>
+                  <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
+                    {{ sa.model }} · {{ sa.base_url || '—' }}
+                  </div>
+                  <div
+                    v-if="sa.system_prompt"
+                    class="text-xs mt-1 line-clamp-2"
+                    style="color: var(--semantic-text-muted); white-space: pre-wrap;"
+                  >{{ sa.system_prompt }}</div>
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    :data-testid="`edit-sub-agent-btn-${profile.name}-${sa.name}`"
+                    @click="emit('editSubAgent', profile.name, sa)"
+                    class="px-2 h-6 rounded text-xs border transition-colors duration-150"
+                    style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
+                  >Edit</button>
+                  <button
+                    type="button"
+                    :data-testid="`delete-sub-agent-btn-${profile.name}-${sa.name}`"
+                    @click="emit('deleteSubAgent', profile.name, sa.name)"
+                    class="px-2 h-6 rounded text-xs transition-colors duration-150"
+                    style="color: var(--color-red);"
+                    :aria-label="`Delete sub-agent ${sa.name}`"
+                  >⌫</button>
+                </div>
+              </div>
+            </li>
+          </ul>
           <button
-            v-if="activeProfile !== profile.name"
             type="button"
-            data-testid="set-active-btn"
-            @click="emit('setActive', profile.name)"
-            class="px-2.5 h-7 rounded-md text-xs border transition-colors duration-150"
-            style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
-          >Set active</button>
-          <button
-            type="button"
-            data-testid="edit-btn"
-            @click="emit('edit', profile)"
-            class="px-2.5 h-7 rounded-md text-xs border transition-colors duration-150"
-            style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
-          >Edit</button>
-          <button
-            type="button"
-            data-testid="delete-btn"
-            @click="emit('delete', profile.name)"
-            class="px-2.5 h-7 rounded-md text-xs transition-colors duration-150"
-            style="color: var(--color-red);"
-            aria-label="Delete profile"
-          >⌫</button>
+            :data-testid="`add-sub-agent-btn-${profile.name}`"
+            @click="emit('addSubAgent', profile.name)"
+            class="px-2.5 h-7 rounded text-xs font-medium border transition-colors duration-150"
+            style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
+          >+ Add sub-agent</button>
         </div>
       </li>
     </ul>

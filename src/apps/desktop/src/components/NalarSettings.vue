@@ -208,7 +208,18 @@ watch(
 
 // ─── Modal state ──────────────────────────────────────────────────────────
 type ProfileModalState = { mode: 'add' | 'edit'; value: LlmConfigModalValue } | null
-type SubAgentModalState = { mode: 'add' | 'edit'; value: SubAgentModalValue } | null
+/**
+ * Where a sub-agent is being added/edited. The same `SubAgentModal`
+ * component is used for both the top-level Sub-agents tab and the
+ * per-profile override; the `scope` field tells the save handler
+ * which list to push the result into.
+ */
+type SubAgentScope = { kind: 'top' } | { kind: 'profile'; profileName: string }
+type SubAgentModalState = {
+  mode: 'add' | 'edit'
+  scope: SubAgentScope
+  value: SubAgentModalValue
+} | null
 type McpServerModalState = { mode: 'add' | 'edit'; value: McpServerModalValue } | null
 
 const profileModal = ref<ProfileModalState>(null)
@@ -276,12 +287,36 @@ function deleteProfile(name: string) {
 function startAddSubAgent() {
   subAgentModal.value = {
     mode: 'add',
+    scope: { kind: 'top' },
     value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' } },
   }
 }
 function startEditSubAgent(sa: SubAgent) {
   subAgentModal.value = {
     mode: 'edit',
+    scope: { kind: 'top' },
+    value: {
+      name: sa.name,
+      system_prompt: sa.system_prompt ?? '',
+      config: {
+        model: sa.model ?? '', base_url: sa.base_url ?? '', thinking: sa.thinking ?? 'auto',
+        temperature: sa.temperature ?? 'auto', url_style: sa.url_style ?? 'openai',
+        api_key: sa.api_key ?? '',
+      },
+    },
+  }
+}
+function startAddSubAgentInProfile(profileName: string) {
+  subAgentModal.value = {
+    mode: 'add',
+    scope: { kind: 'profile', profileName },
+    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' } },
+  }
+}
+function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
+  subAgentModal.value = {
+    mode: 'edit',
+    scope: { kind: 'profile', profileName },
     value: {
       name: sa.name,
       system_prompt: sa.system_prompt ?? '',
@@ -300,15 +335,36 @@ function saveSubAgent() {
   const name = v.name.trim()
   if (!name) { subAgentErrors.value = { name: 'Name is required' }; return }
   const next: SubAgent = { name, ...v.config, system_prompt: v.system_prompt }
-  if (subAgentModal.value.mode === 'add') {
-    subAgentsList.value = [...subAgentsList.value, next]
+  const scope = subAgentModal.value.scope
+  if (scope.kind === 'top') {
+    if (subAgentModal.value.mode === 'add') {
+      subAgentsList.value = [...subAgentsList.value, next]
+    } else {
+      subAgentsList.value = subAgentsList.value.map(s => s.name === name ? next : s)
+    }
   } else {
-    subAgentsList.value = subAgentsList.value.map(s => s.name === name ? next : s)
+    const profileName = scope.profileName
+    const mode = subAgentModal.value.mode
+    profilesList.value = profilesList.value.map(p => {
+      if (p.name !== profileName) return p
+      const subs = p.sub_agents ?? []
+      const exists = subs.some(s => s.name === name)
+      const nextSubs = mode === 'add'
+        ? (exists ? subs : [...subs, next])
+        : subs.map(s => s.name === name ? next : s)
+      return { ...p, sub_agents: nextSubs }
+    })
   }
   closeSubAgentModal()
 }
 function deleteSubAgent(name: string) {
   subAgentsList.value = subAgentsList.value.filter(s => s.name !== name)
+}
+function deleteSubAgentInProfile(profileName: string, subAgentName: string) {
+  profilesList.value = profilesList.value.map(p => {
+    if (p.name !== profileName) return p
+    return { ...p, sub_agents: (p.sub_agents ?? []).filter(s => s.name !== subAgentName) }
+  })
 }
 
 function startAddMcpServer() {
@@ -416,6 +472,9 @@ const isLoading = computed(() => !loaded.value)
           @edit="startEditProfile"
           @delete="requestDeleteProfile"
           @add="startAddProfile"
+          @add-sub-agent="startAddSubAgentInProfile"
+          @edit-sub-agent="startEditSubAgentInProfile"
+          @delete-sub-agent="deleteSubAgentInProfile"
         />
 
         <SubAgentsSection

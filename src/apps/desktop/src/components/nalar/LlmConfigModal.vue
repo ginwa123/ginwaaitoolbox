@@ -70,6 +70,7 @@ function updateConfig(cfg: LlmConfig) {
               :disabled="!nameEditable"
               class="w-full px-3 h-8 rounded-md border text-sm"
               style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
+              data-testid="name-input"
             />
             <p v-if="errors?.name" class="text-xs mt-1" style="color: var(--color-red);">{{ errors.name }}</p>
           </div>

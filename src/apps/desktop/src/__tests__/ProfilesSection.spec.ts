@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import ProfilesSection from '../components/nalar/ProfilesSection.vue'
 import type { ProfileRow } from '../components/nalar/ProfilesSection.vue'
+import type { SubAgent } from '../api'
 
 const baseProfile: ProfileRow = {
   name: 'work',
@@ -15,7 +16,19 @@ const baseProfile: ProfileRow = {
   sub_agents: [],
 }
 
+const baseSubAgent: SubAgent = {
+  name: 'coder',
+  model: 'm',
+  base_url: '',
+  thinking: 'auto',
+  temperature: 'auto',
+  url_style: 'openai',
+  api_key: '',
+  system_prompt: 'You are a senior backend engineer.',
+}
+
 describe('ProfilesSection', () => {
+  // ─── Basic rendering ────────────────────────────────────────────────
   it('shows the active profile in the header pill', () => {
     const wrapper = mount(ProfilesSection, {
       props: { modelValue: [baseProfile], activeProfile: 'work' },
@@ -30,6 +43,7 @@ describe('ProfilesSection', () => {
     expect(wrapper.find('[data-testid="empty-state"]').exists()).toBe(true)
   })
 
+  // ─── Profile row events ────────────────────────────────────────────
   it('emits setActive when "Set active" is clicked on a non-active row', async () => {
     const wrapper = mount(ProfilesSection, {
       props: { modelValue: [{ ...baseProfile }, { ...baseProfile, name: 'home' }], activeProfile: 'work' },
@@ -62,5 +76,101 @@ describe('ProfilesSection', () => {
     })
     await wrapper.find('[data-testid="add-btn"]').trigger('click')
     expect(wrapper.emitted('add')).toBeTruthy()
+  })
+
+  // ─── Sub-agent meta line ──────────────────────────────────────────
+  it('shows "inherits top-level" when the profile has no sub-agents', () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [baseProfile], activeProfile: null },
+    })
+    expect(wrapper.text()).toContain('inherits top-level')
+  })
+
+  it('shows the sub-agent count and "overrides" when the profile has sub-agents', () => {
+    const wrapper = mount(ProfilesSection, {
+      props: {
+        modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent, { ...baseSubAgent, name: 'reviewer' }] }],
+        activeProfile: null,
+      },
+    })
+    expect(wrapper.text()).toContain('2 sub-agents')
+    expect(wrapper.text()).toContain('overrides top-level')
+  })
+
+  it('uses singular "sub-agent" when there is exactly one', () => {
+    const wrapper = mount(ProfilesSection, {
+      props: {
+        modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }],
+        activeProfile: null,
+      },
+    })
+    expect(wrapper.text()).toContain('1 sub-agent')
+    expect(wrapper.text()).not.toContain('1 sub-agents')
+  })
+
+  // ─── Expand / collapse ────────────────────────────────────────────
+  it('does not render the sub-agents list by default (collapsed)', () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
+    })
+    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(false)
+  })
+
+  it('expands the sub-agents list when the chevron is clicked', async () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
+    })
+    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
+    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(true)
+    expect(wrapper.find(`[data-testid="profile-sub-agent-work-coder"]`).exists()).toBe(true)
+  })
+
+  it('toggles the sub-agents list when the chevron is clicked twice', async () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
+    })
+    const btn = wrapper.find('[data-testid="expand-btn-work"]')
+    await btn.trigger('click')
+    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(true)
+    await btn.trigger('click')
+    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(false)
+  })
+
+  it('shows a "no sub-agents" hint when the profile has none and is expanded', async () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [baseProfile], activeProfile: null },
+    })
+    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
+    const list = wrapper.find('[data-testid="sub-agents-list-work"]')
+    expect(list.exists()).toBe(true)
+    expect(list.text()).toContain('No sub-agents')
+  })
+
+  // ─── Sub-agent row events ─────────────────────────────────────────
+  it('emits addSubAgent with the profile name when the + Add sub-agent button is clicked', async () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [baseProfile], activeProfile: null },
+    })
+    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
+    await wrapper.find('[data-testid="add-sub-agent-btn-work"]').trigger('click')
+    expect(wrapper.emitted('addSubAgent')?.[0]).toEqual(['work'])
+  })
+
+  it('emits editSubAgent with profile name + sub-agent when Edit is clicked', async () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
+    })
+    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
+    await wrapper.find('[data-testid="edit-sub-agent-btn-work-coder"]').trigger('click')
+    expect(wrapper.emitted('editSubAgent')?.[0]).toEqual(['work', baseSubAgent])
+  })
+
+  it('emits deleteSubAgent with profile name + sub-agent name when ⌫ is clicked', async () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
+    })
+    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
+    await wrapper.find('[data-testid="delete-sub-agent-btn-work-coder"]').trigger('click')
+    expect(wrapper.emitted('deleteSubAgent')?.[0]).toEqual(['work', 'coder'])
   })
 })
