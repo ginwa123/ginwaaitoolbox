@@ -83,7 +83,7 @@ pub fn recomputeDueNextRunAt(
     // `db.exec` calls (which the SqliteBackend does not support — it
     // serializes statements per connection).
     var rows = try db.query(allocator,
-        "SELECT id, schedule FROM routines WHERE enabled = 1", &.{});
+        "SELECT id, schedule FROM routines r WHERE enabled = 1", &.{});
     defer rows.deinit();
 
     const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);

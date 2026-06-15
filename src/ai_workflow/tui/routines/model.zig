@@ -114,7 +114,7 @@ pub fn loadRoutineByTaskId(allocator: std.mem.Allocator, db: *SqliteBackend, tas
     var q = try db.query(allocator,
         \\SELECT id, task_id, schedule, initial_prompt, enabled, next_run_at,
         \\       last_run_at, last_status, last_error, created_at, updated_at
-        \\FROM routines WHERE task_id = ?
+        \\FROM routines r WHERE task_id = ?
     , &.{task_id});
     defer q.deinit();
 
@@ -154,7 +154,7 @@ pub fn loadRoutineByTaskId(allocator: std.mem.Allocator, db: *SqliteBackend, tas
 ///   allocator.free(ids);
 pub fn listDueRoutineIds(allocator: std.mem.Allocator, db: *SqliteBackend, now_sqlite: []const u8) ![][]u8 {
     var q = try db.query(allocator,
-        \\SELECT id FROM routines
+        \\SELECT id FROM routines r
         \\WHERE enabled = 1
         \\  AND next_run_at <= ?
         \\  AND (last_status IS NULL OR last_status != 'running')

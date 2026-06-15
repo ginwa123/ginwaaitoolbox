@@ -2328,7 +2328,7 @@ pub fn getWorkspaceItemTask(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?WorkspaceItemTaskInfo {
-    const sql = "SELECT id, name, workspace_item_id, session_id, created_at, updated_at, task_type FROM workspace_item_tasks WHERE id = ?";
+    const sql = "SELECT id, name, workspace_item_id, session_id, created_at, updated_at, task_type FROM workspace_item_tasks t WHERE t.id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();

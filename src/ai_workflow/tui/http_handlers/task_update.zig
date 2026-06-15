@@ -181,7 +181,7 @@ const ExistingRoutineSnapshot = struct {
 /// (the per-request `ctx.allocator`) owns the returned strings.
 fn loadExistingRoutine(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, task_id: []const u8) !ExistingRoutineSnapshot {
     var q = try db.query(allocator,
-        "SELECT schedule, initial_prompt, enabled, next_run_at FROM routines WHERE task_id = ?",
+        "SELECT schedule, initial_prompt, enabled, next_run_at FROM routines r WHERE task_id = ?",
         &.{task_id},
     );
     defer q.deinit();
