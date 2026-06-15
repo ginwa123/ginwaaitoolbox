@@ -36,7 +36,7 @@ const lsp_document_symbol_mod = nalar_mod.tools.lsp_document_symbol;
 const lsp_hover_mod = nalar_mod.tools.lsp_hover;
 const set_agent_properties_mod = nalar_mod.set_agent_properties;
 const web_search_mod = nalar_mod.web_search;
-const cloak_browser_mod = nalar_mod.cloak_browser;
+const nalar_browser_mod = nalar_mod.nalar_browser;
 const update_activity_mod = nalar_mod.update_activity;
 const glob_tool_mod = nalar_mod.glob_tool;
 const search_tool_mod = nalar_mod.search_tool;
@@ -1126,33 +1126,33 @@ pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
-pub fn execCloakBrowser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+pub fn execNalarBrowser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
-        cloak_browser_mod.CloakBrowserInput,
+        nalar_browser_mod.NalarBrowserInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "cloak_browser failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "cloak_browser", tc.function.arguments, false, err_msg, "");
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "nalar_browser failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "nalar_browser", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
     defer parsed.deinit();
 
-    const result = cloak_browser_mod.execute_cloak_browser(ctx.allocator, ctx.io, parsed.value) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "cloak_browser failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "cloak_browser", tc.function.arguments, false, err_msg, "");
+    const result = nalar_browser_mod.execute_nalar_browser(ctx.allocator, ctx.io, parsed.value) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "nalar_browser failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "nalar_browser", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
     if (result.success) {
-        const inner = try cloak_browser_mod.toXMLSuccess(ctx.allocator, result);
-        const output = try wrapToolOutput(ctx.allocator, "cloak_browser", tc.function.arguments, true, null, inner);
+        const inner = try nalar_browser_mod.toXMLSuccess(ctx.allocator, result);
+        const output = try wrapToolOutput(ctx.allocator, "nalar_browser", tc.function.arguments, true, null, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     } else {
-        const inner = try cloak_browser_mod.toXMLError(ctx.allocator, result, parsed.value.action);
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "cloak_browser {s} failed", .{parsed.value.action});
-        const output = try wrapToolOutput(ctx.allocator, "cloak_browser", tc.function.arguments, false, err_msg, inner);
+        const inner = try nalar_browser_mod.toXMLError(ctx.allocator, result, parsed.value.action);
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "nalar_browser {s} failed", .{parsed.value.action});
+        const output = try wrapToolOutput(ctx.allocator, "nalar_browser", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     }
 }
@@ -1585,7 +1585,7 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 
     // === WEB SEARCH TOOLS ===
     // .{ .name = "web_search", .exec = execWebSearch, .tool_def = web_search_mod.web_search_tool },
-    .{ .name = "cloak_browser", .exec = execCloakBrowser, .tool_def = cloak_browser_mod.cloak_browser_tool },
+    .{ .name = "nalar_browser", .exec = execNalarBrowser, .tool_def = nalar_browser_mod.nalar_browser_tool },
 
     // === FILE SEARCH TOOLS ===
     .{ .name = "glob", .exec = execGlob, .tool_def = glob_tool_mod.glob_tool },
@@ -1622,7 +1622,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         remove_file_mod.remove_file_tool,
         glob_tool_mod.glob_tool,
         search_tool_mod.search_tool,
-        cloak_browser_mod.cloak_browser_tool,
+        nalar_browser_mod.nalar_browser_tool,
     };
     return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
 }
