@@ -203,3 +203,67 @@ test "fireRoutine on a disabled routine returns Disabled" {
     };
     try testing.expectEqual(@as(i64, 0), enabled_int);
 }
+
+// ─── Test 4: formatRoutineMessage wraps the initial_prompt with context ────
+
+test "formatRoutineMessage produces a structured metadata header followed by the initial_prompt" {
+    const alloc = testing.allocator;
+    const msg = try fire.formatRoutineMessage(
+        alloc,
+        "*/5 * * * *",
+        "do the thing",
+        "2025-01-15 09:00:00",
+    );
+    defer alloc.free(msg);
+    const expected =
+        "This is an automated routine fire.\n" ++
+        "- Schedule: */5 * * * *\n" ++
+        "- Next fire: 2025-01-15 09:00:00\n" ++
+        "\n" ++
+        "do the thing";
+    try testing.expectEqualStrings(expected, msg);
+}
+
+test "formatRoutineMessage preserves multi-line and special-char initial_prompt verbatim" {
+    // The `{s}` format specifier embeds the slice bytes literally —
+    // the routine's `initial_prompt` may contain newlines, colons,
+    // and other punctuation that the LLM needs to see unchanged.
+    // Verify the wrapper does not reinterpret or trim them.
+    const alloc = testing.allocator;
+    const msg = try fire.formatRoutineMessage(
+        alloc,
+        "0 9 * * 1-5",
+        "step 1: read logs\nstep 2: summarize",
+        "2025-01-20 09:00:00",
+    );
+    defer alloc.free(msg);
+    try testing.expect(std.mem.indexOf(u8, msg, "step 1: read logs\nstep 2: summarize") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "- Schedule: 0 9 * * 1-5") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "- Next fire: 2025-01-20 09:00:00") != null);
+}
+
+test "formatRoutineMessage places metadata header first and initial_prompt last" {
+    // The LLM-friendly property: meta header is the FIRST thing the
+    // LLM reads (sets context), the actual task is the LAST thing
+    // (clear instruction boundary), and they're separated by a blank
+    // line. These are the structural invariants that let the LLM
+    // parse the format reliably — if any of them regresses, the
+    // prompt becomes harder for the LLM to interpret.
+    const alloc = testing.allocator;
+    const msg = try fire.formatRoutineMessage(
+        alloc,
+        "*/5 * * * *",
+        "do the thing",
+        "2025-01-15 09:00:00",
+    );
+    defer alloc.free(msg);
+
+    // First line is the meta header.
+    try testing.expect(std.mem.startsWith(u8, msg, "This is an automated routine fire."));
+
+    // The initial_prompt is the trailing text (no trailing newline).
+    try testing.expect(std.mem.endsWith(u8, msg, "do the thing"));
+
+    // A blank line separates the meta block from the task.
+    try testing.expect(std.mem.indexOf(u8, msg, "\n\n") != null);
+}

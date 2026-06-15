@@ -12,8 +12,11 @@
 //!      (mirrors `http_handlers/session_create.zig:161`). The callback
 //!      emits an `ai_workflow.RunParamsNew` event on the event bus —
 //!      the `CallbackAiWorkerFlow` subscription in `main.zig` picks it
-//!      up on a worker thread. The routine's `initial_prompt` is the
-//!      `queue_message` of the session create.
+//!      up on a worker thread. The `queue_message` of the session
+//!      create is `formatRoutineMessage(schedule, initial_prompt,
+//!      next_run_at)` — the routine's `initial_prompt` wrapped with
+//!      scheduling context so the LLM knows this is an automated fire
+//!      (not a user-typed message) and when to expect the next one.
 //!   4. On success: `markSuccess` with a recomputed `next_run_at`.
 //!      The LLM result is NOT observed here — it's fire-and-forget.
 //!      If the LLM fails, it shows up as a chat-view error (the same
@@ -22,10 +25,12 @@
 //! No new binary, no separate OS thread — all work happens on the
 //! main process's Io runtime via the existing
 //! `group_emit_session_create` group. The "fake-LLM" test short-circuit
-//! and the 🔁 user-style message insert are gone (the routine's
-//! `initial_prompt` is the natural user-style message; the
-//! `session_create` event will accumulate user/assistant pairs over
-//! time).
+//! and the 🔁 user-style message insert are gone; the routine's
+//! `initial_prompt` is wrapped by `formatRoutineMessage` (with the
+//! cron `schedule` and the next `next_run_at`) and that wrapped string
+//! becomes the user-style message the LLM sees. The `session_create`
+//! event will accumulate user/assistant pairs over time, with the
+//! first user message of every fire being the formatted wrapper.
 //!
 //! Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunks-2-3.md
 //! Design: docs/plans/2026-06-13-add-task-routines-design.md (§4)
@@ -106,13 +111,30 @@ pub fn fireRoutine(
     //    the result set and `claimForRun` returns false.
     if (!try model.claimForRun(allocator, db, routine.id)) return FireError.AlreadyRunning;
 
-    // 3) Heap-allocate strings for the concurrent task. The callback
+    // 3) Compute the new `next_run_at` ONCE and use it for both the
+    //    LLM message and the post-submit markSuccess. The LLM
+    //    message needs the *future* fire time (the time AFTER the
+    //    current one) so it can tell the user when to expect the
+    //    next one. Computing it here — rather than inside
+    //    markSuccess — also means we can pass the same string to
+    //    markSuccess without recomputing.
+    const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
+    const next_ns = try cron.nextFireTime(routine.schedule, now_ns);
+    const next_sqlite = try formatSqliteDatetime(allocator, next_ns);
+    defer allocator.free(next_sqlite);
+
+    // 4) Heap-allocate strings for the concurrent task. The callback
     //    owns these and frees them when done (mirrors
     //    `session_create.zig:141-159`). Use `errdefer` chains so a
-    //    mid-allocation failure unwinds cleanly.
+    //    mid-allocation failure unwinds cleanly. The `qmsg` is
+    //    `formatRoutineMessage(...)` — a structured "automated
+    //    routine fire" header + schedule/next-fire bullets, then a
+    //    blank line, then the routine's `initial_prompt` verbatim.
+    //    See `formatRoutineMessage` for the full format spec and
+    //    the LLM-friendly rationale.
     const sid = try di.allocator.dupe(u8, task_id);
     errdefer di.allocator.free(sid);
-    const qmsg = try di.allocator.dupe(u8, routine.initial_prompt);
+    const qmsg = try formatRoutineMessage(di.allocator, routine.schedule, routine.initial_prompt, next_sqlite);
     errdefer di.allocator.free(qmsg);
     const cwd = try di.allocator.dupe(u8, "");
     errdefer di.allocator.free(cwd);
@@ -125,7 +147,7 @@ pub fn fireRoutine(
     const spm = try di.allocator.dupe(u8, "");
     errdefer di.allocator.free(spm);
 
-    // 4) Submit the LLM work to the Io group. The callback emits the
+    // 5) Submit the LLM work to the Io group. The callback emits the
     //    event; the Io runtime processes the event via
     //    `CallbackAiWorkerFlow` in a worker thread. This call
     //    returns immediately — the actual LLM call happens
@@ -136,10 +158,12 @@ pub fn fireRoutine(
         .{ di, sid, qmsg, cwd, bmsg, atools, iurls, spm },
     );
 
-    // 5) Mark success and advance next_run_at. The LLM is
+    // 6) Mark success and advance next_run_at. The LLM is
     //    fire-and-forget — we don't wait for it to complete before
-    //    marking success.
-    try markSuccessWithNextRun(allocator, db, routine, io);
+    //    marking success. We reuse the `next_sqlite` we computed
+    //    above; the defer above will free it once markSuccess
+    //    returns.
+    try model.markSuccess(allocator, db, routine.id, next_sqlite);
 }
 
 /// Callback for `group_emit_session_create.concurrent`. Emits the LLM
@@ -179,20 +203,60 @@ fn runFire(
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-/// Compute the next `next_run_at` from the routine's cron
-/// expression and persist the success state. Used for the
-/// happy-path emit-success path.
-fn markSuccessWithNextRun(
+/// Format the user-style message that gets sent to the LLM when a
+/// routine fires. Wraps the routine's `initial_prompt` with a
+/// structured metadata header so the LLM knows this is an automated
+/// fire (not a user-typed message) and when to expect the next one.
+///
+/// The format is:
+///
+///   This is an automated routine fire.
+///   - Schedule: <schedule>
+///   - Next fire: <next_run_at_sqlite>
+///
+///   <initial_prompt>
+///
+/// where `<next_run_at_sqlite>` is an SQLite DATETIME literal
+/// (`YYYY-MM-DD HH:MM:SS`) — the FUTURE fire time (the time AFTER
+/// the current one).
+///
+/// The format is designed to be LLM-friendly:
+///   - "automated routine fire" makes it explicit that this is NOT
+///     a user-typed message, so the LLM doesn't expect a
+///     conversational back-and-forth.
+///   - The metadata header is FIRST and the actual task is LAST, so
+///     the LLM reads the context-setting sentence before the task.
+///   - A blank line separates the metadata block from the task,
+///     giving the LLM a clear instruction boundary.
+///   - Bulleted key-value pairs (rather than a prose sentence) let
+///     the LLM extract schedule / next-fire without parsing. The
+///     LLM can quote "Schedule: */5 * * * *" verbatim if the user
+///     asks "how often do you run?".
+///   - No LLM-jargon words ("prompt", "instruction", "execute") that
+///     are ambiguous when used inside the prompt itself. The LLM
+///     reads the word "prompt" in a very specific way and gets
+///     confused when it appears as a synonym for "task" or
+///     "message".
+///   - Easy to extend: adding fields like "Last status: success" or
+///     "Run #5" slots in as new bullets without breaking parsing.
+///
+/// Public for unit testing in `fire_test.zig` — the happy-path of
+/// `fireRoutine` requires a real `nalarcore.ContextIPCTui` singleton
+/// and a live `CallbackAiWorkerFlow` subscription (i.e. a real
+/// `nalar` process), so the format is tested in isolation here.
+pub fn formatRoutineMessage(
     allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    routine: model.Routine,
-    io: std.Io,
-) !void {
-    const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
-    const next_ns = try cron.nextFireTime(routine.schedule, now_ns);
-    const next_sqlite = try formatSqliteDatetime(allocator, next_ns);
-    defer allocator.free(next_sqlite);
-    try model.markSuccess(allocator, db, routine.id, next_sqlite);
+    schedule: []const u8,
+    initial_prompt: []const u8,
+    next_run_at_sqlite: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        "This is an automated routine fire.\n" ++
+        "- Schedule: {s}\n" ++
+        "- Next fire: {s}\n" ++
+        "\n" ++
+        "{s}",
+        .{ schedule, next_run_at_sqlite, initial_prompt });
 }
 
 /// Convert unix nanos (i128) to a SQLite DATETIME literal
