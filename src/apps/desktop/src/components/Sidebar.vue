@@ -523,6 +523,19 @@ const handleReorderWorkspaces = (orderedIds: string[]) => {
   workspacesStore.reorderWorkspaces(orderedIds)
 }
 
+// Mirrors handleReorderWorkspaces but scoped to a single
+// workspace's items. <WorkspaceList> emits the workspaceId +
+// orderedItemIds payload on a successful drop; the store action
+// does the optimistic update + API call + silent rollback on
+// error. Plan:
+// docs/superpowers/plans/2026-06-16-workspace-item-position-reorder.md
+const handleReorderWorkspaceItems = (
+  workspaceId: string,
+  orderedItemIds: string[],
+) => {
+  workspacesStore.reorderWorkspaceItems(workspaceId, orderedItemIds)
+}
+
 // ─── Routines (Chunk 7 of task-routines plan) ────────────────────────────
 // These two handlers close the wiring loop from the routine-task
 // row in WorkspaceItemTask.vue (which emits `runRoutine` and
@@ -739,6 +752,7 @@ const editRoutineTaskName = computed<string>(() => {
           @edit-routine="handleEditRoutine"
           @load-more-tasks="handleLoadMoreTasks"
           @reorder-workspaces="handleReorderWorkspaces"
+          @reorder-workspace-items="handleReorderWorkspaceItems"
         />
         <!-- Collapsed workspaces -->
         <div v-else class="space-y-0.5">
