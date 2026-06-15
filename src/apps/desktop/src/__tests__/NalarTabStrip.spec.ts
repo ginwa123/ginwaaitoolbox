@@ -35,7 +35,9 @@ describe('NalarTabStrip', () => {
     const wrapper = mount(NalarTabStrip, {
       props: { modelValue: 'defaults' },
     })
-    await wrapper.findAll('button[role="tab"]')[1].trigger('click')
+    const buttons = wrapper.findAll('button[role="tab"]')
+    expect(buttons.length).toBe(4)
+    await buttons[1]!.trigger('click')
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['profiles'])
   })
 
@@ -44,8 +46,9 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'sub-agents' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons[0].attributes('aria-selected')).toBe('false')
-    expect(buttons[2].attributes('aria-selected')).toBe('true')
+    expect(buttons.length).toBe(4)
+    expect(buttons[0]!.attributes('aria-selected')).toBe('false')
+    expect(buttons[2]!.attributes('aria-selected')).toBe('true')
   })
 
   it('persists the active tab to localStorage when the modelValue prop changes', async () => {
