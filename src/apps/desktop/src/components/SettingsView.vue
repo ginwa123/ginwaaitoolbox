@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import NalarSettings from './NalarSettings.vue'
 import SkillsSettings from './SkillsSettings.vue'
+import MemoriesSettings from './MemoriesSettings.vue'
 
 const router = useRouter()
 
@@ -88,6 +89,17 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
           <span class="text-lg">🛠️</span>
           <span>Skills</span>
         </button>
+
+        <button
+          @click="setSettingsTab('memories')"
+          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200"
+          :style="activeSettingsTab === 'memories'
+            ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
+            : `color: var(--semantic-text-muted);`"
+        >
+          <span class="text-lg">🧠</span>
+          <span>Memories</span>
+        </button>
       </nav>
     </div>
 
@@ -101,6 +113,11 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
       <!-- Skills Tab Content -->
       <div v-else-if="activeSettingsTab === 'skills'" class="flex-1 overflow-y-auto p-6">
         <SkillsSettings @notification="handleNotification" />
+      </div>
+
+      <!-- Memories Tab Content -->
+      <div v-else-if="activeSettingsTab === 'memories'" class="flex-1 overflow-y-auto p-6">
+        <MemoriesSettings @notification="handleNotification" />
       </div>
     </main>
 
