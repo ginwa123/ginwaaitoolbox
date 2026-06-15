@@ -1,12 +1,12 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const gserverz = root_mod.gserverz;
-const ai_workflow = root_mod.ai_workflow;
-const llm_history = root_mod.llm_history;
-const config = root_mod.config;
-const agent = root_mod.agent;
-const tool_models = root_mod.tool_models;
-const http_response = root_mod.http_response;
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const llm_history = nalarcore.llm_history;
+const config = nalarcore.config;
+const agent = nalarcore.agent;
+const tool_models = nalarcore.tool_models;
+const http_response = nalarcore.http_response;
+const workflow = nalarcore.ai_mod.ai_workflow;
 
 /// Trigger session compaction directly (synchronous - blocks until done)
 /// Path param: session_id
@@ -14,94 +14,86 @@ const http_response = root_mod.http_response;
 pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse, _: *anyopaque) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const session_id = req.params.get("session_id") orelse {
-        return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
+    };
+    const di = try nalarcore.getSingleton();
+    const sqlite_db = di.db;
+    const io = di.io;
+    const logger = di.logger;
+
+    // Recover the working directory from the session row. A missing row
+    // is non-fatal — fall back to "." so the compact agent can still
+    // attempt a compaction. (Per the per-request arena convention in
+    // this codebase, the SessionDetail returned by get_session does not
+    // need an explicit deinit here — the arena reaps it on request end.)
+    const cwd = blk: {
+        const session_row_opt = llm_history.get_session(allocator, sqlite_db, session_id) catch null;
+        if (session_row_opt) |session| {
+            if (session.cwd.len > 0) {
+                break :blk try allocator.dupe(u8, session.cwd);
+            }
+        }
+        break :blk try allocator.dupe(u8, ".");
     };
 
-    // Send initial acknowledgment via SSE
-    if (gserverz.getGlobalSseManager()) |sse_manager| {
-        const ack_response = try std.fmt.allocPrint(allocator, "{{\"app_type\":\"tui\",\"command_type\":\"compact_ack\",\"session_id\":\"{s}\",\"status\":\"processing\"}}", .{session_id});
-        const event = gserverz.SseEvent{ .data = ack_response };
-        sse_manager.enqueueEvent(session_id, event) catch {
-            std.debug.print("Failed to send compact_ack response: SSE error\n", .{});
-        };
+    // Pull the LLM credentials from the live config (read-only borrows).
+    const live_cfg = nalarcore.getLlmConfig(di);
+    const api_key = live_cfg.api_key;
+    const model = live_cfg.model;
+    const base_url = live_cfg.base_url;
+
+    // Load the DB-stored message history and turn it into the in-memory
+    // agent-message form that the compact agent operates on.
+    const db_messages = llm_history.getMessages(allocator, sqlite_db, session_id) catch |err| {
+        logger.errFmt("[COMPACTION] getMessages failed: {s}", .{@errorName(err)});
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "getMessages failed" }) });
+    };
+
+    var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
+
+    const buildMessages = @import("../build_messages_for_agent_prompt.zig").buildMessages;
+    const merged_tools: []tool_models.AgentTool = &.{};
+    const initialMessages = buildMessages(allocator, io, sqlite_db, cwd, session_id, "", db_messages, merged_tools, "") catch |err| {
+        logger.errFmt("[COMPACTION] buildMessages failed: {s}", .{@errorName(err)});
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "buildMessages failed" }) });
+    };
+    try messagesLists.appendSlice(allocator, initialMessages);
+
+    // Compute the max total_tokens across the loaded messages. Fed to
+    // maybeCompactMessagesNew for diagnostic logging; the threshold
+    // check itself is bypassed by `force=true` because the caller
+    // explicitly requested compaction via this HTTP endpoint.
+    var total_tokens: u32 = 0;
+    for (db_messages) |msg| {
+        if (msg.total_tokens > total_tokens) total_tokens = msg.total_tokens;
     }
 
-    // Get server context
-    if (gserverz.global_server) |server| {
-        if (server.ctx) |server_ctx| {
-            const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
-            const sqlite_db = ctxTui.db;
+    // Manual endpoint: force compaction regardless of the auto-threshold.
+    workflow.maybeCompactMessagesNew(
+        allocator,
+        total_tokens,
+        model,
+        true,
+        &messagesLists,
+        api_key,
+        base_url,
+        cwd,
+        session_id,
+        sqlite_db,
+        io,
+        logger,
+    ) catch |err| {
+        logger.errFmt("[COMPACTION] manual compaction failed: {s}", .{@errorName(err)});
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "compaction failed" }) });
+    };
 
-            std.debug.print("[COMPACTION] Manual compaction triggered for session {s}\n", .{session_id});
+    logger.infoFmt("[COMPACTION] manual compaction completed for session {s}", .{session_id});
+    const success_data = try std.json.Stringify.valueAlloc(allocator, .{ .success = true, .message = "Compaction completed" }, .{});
+    return res.jsonResponse(.{ .status_code = 200, .data = success_data });
+}
 
-            // Get cwd from session
-            var cwd_buf: [4096]u8 = undefined;
-            const cwd = blk: {
-                const cwd_rows = llm_history.get_session(allocator, sqlite_db, session_id) catch null;
-                if (cwd_rows) |session| {
-                    defer session.deinit(allocator);
-                    if (session.cwd.len > 0) {
-                        break :blk std.fmt.bufPrint(&cwd_buf, "{s}", .{session.cwd}) catch ".";
-                    }
-                }
-                break :blk std.fmt.bufPrint(&cwd_buf, ".", .{}) catch ".";
-            };
 
-            // Create LlmConfig for the workflow
-            const live_cfg = root_mod.getLlmConfig(ctxTui);
-            var llm_cfg = config.LlmConfig{
-                .allocator = allocator,
-                .api_key = live_cfg.api_key,
-                .model = live_cfg.model,
-                .base_url = live_cfg.base_url,
-                .model_compaction_size_kb = live_cfg.model_compaction_size_kb,
-                .mcpServers_parsed = null,
-                .mcp_servers = config.McpServersMap.init(allocator),
-                .profiles_models = config.ProfilesMap.init(allocator),
-                .url_style = live_cfg.url_style,
-            };
 
-            var workflow = ai_workflow.TUIWorkflow.init(ctxTui.io, sqlite_db, &llm_cfg, ctxTui.logger, null, ctxTui.active_loops);
+fn useCase() !void {
 
-            // Get session messages directly for compaction
-            const db_messages = llm_history.getMessages(allocator, sqlite_db, session_id) catch |err| {
-                std.debug.print("[COMPACTION] getMessages failed: {}\n", .{err});
-                return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"getMessages failed\"}}", .{}) });
-            };
-
-            // Build initial messages from DB
-            const buildMessages = @import("../build_messages_for_agent_prompt.zig").buildMessages;
-            var messagesLists = std.ArrayList(agent.AgentMessage).empty;
-            defer messagesLists.deinit(allocator);
-
-            // Get all tool definitions (empty for manual compaction)
-            const merged_tools: []tool_models.AgentTool = &.{};
-
-            const initialMessages = buildMessages(allocator, ctxTui.io, sqlite_db, cwd, session_id, "", db_messages, merged_tools, "") catch |err| {
-                std.debug.print("[COMPACTION] buildMessages failed: {}\n", .{err});
-                return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"buildMessages failed\"}}", .{}) });
-            };
-
-            messagesLists.appendSlice(allocator, initialMessages) catch |err| {
-                std.debug.print("[COMPACTION] appendSlice failed: {}\n", .{err});
-                return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"appendSlice failed\"}}", .{}) });
-            };
-
-            // Call CompactionAgent
-            const compacted_xml = workflow.callCompactAgent(messagesLists.items, allocator, live_cfg.api_key, live_cfg.model, live_cfg.base_url, cwd);
-            if (compacted_xml) |xml| {
-                workflow.compactMessageInMemory(allocator, &messagesLists, xml, session_id, live_cfg.model, cwd) catch {
-                    std.debug.print("[COMPACTION] compactMessageInMemory failed\n", .{});
-                    return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"compactMessageInMemory failed\"}}", .{}) });
-                };
-            } else {
-                std.debug.print("[COMPACTION] callCompactAgent returned null\n", .{});
-                return res.jsonResponse( .{ .status_code = 500, .data = try std.fmt.allocPrint(allocator, "{{\"success\":false,\"error\":\"CompactionAgent failed\"}}", .{}) });
-            }
-
-            std.debug.print("[COMPACTION] Manual compaction completed for session {s}\n", .{session_id});
-            return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"message\":\"Compaction completed\"}}", .{}) });
-        }
-    }
-    return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }) });
 }

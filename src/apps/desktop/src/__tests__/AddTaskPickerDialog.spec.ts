@@ -81,6 +81,13 @@ describe('AddTaskPickerDialog', () => {
     expect(w.emitted('pick')).toBeDefined()
     expect(w.emitted('pick')!.length).toBe(1)
     expect(w.emitted('pick')![0]).toEqual(['standard'])
+    // The picker is a chooser: it must self-close on pick so the
+    // picked create dialog isn't stacked on top of it. This guards
+    // the regression where the picker stayed open after picking
+    // and ended up covering the chat view after the create
+    // callback completed.
+    expect(w.emitted('close')).toBeDefined()
+    expect(w.emitted('close')!.length).toBe(1)
   })
 
   it('emits pick="routine" when the Routine card is clicked', async () => {
@@ -91,6 +98,10 @@ describe('AddTaskPickerDialog', () => {
     card.click()
     expect(w.emitted('pick')).toBeDefined()
     expect(w.emitted('pick')![0]).toEqual(['routine'])
+    // Same self-close contract as the Standard Chat card — see
+    // the assertion in the standard-card test above.
+    expect(w.emitted('close')).toBeDefined()
+    expect(w.emitted('close')!.length).toBe(1)
   })
 
   it('emits close when the Cancel button is clicked', async () => {

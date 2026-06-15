@@ -20,12 +20,20 @@ const emit = defineEmits<{
 
 const handleClose = () => emit('close')
 
+// The picker is a chooser, not a holder: once the user has picked
+// a path, the picker has done its job and must close so the picked
+// dialog isn't stacked on top of it. Emit `pick` first (parent
+// decides which create dialog to open) and then `close` (parent
+// hides the picker). Mirrors the `emit('create', ...); handleClose()`
+// pattern in AddTaskDialog.vue:26-31.
 const handleStandard = () => {
   emit('pick', 'standard')
+  handleClose()
 }
 
 const handleRoutine = () => {
   emit('pick', 'routine')
+  handleClose()
 }
 
 const handleKeydown = (event: KeyboardEvent) => {

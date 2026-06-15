@@ -433,15 +433,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         try messagesLists.appendSlice(allocator, initialMessages);
 
         logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
-        if (agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(effective_model))) {
-            const copy_messages = try allocator.dupe(agent.AgentMessage, messagesLists.items);
-            defer allocator.free(copy_messages);
-            var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
-            defer copy_list.deinit(allocator);
-            if (callCompactAgentNew(&copy_list, allocator, effective_api_key, effective_model, effective_base_url, copy_cwd, logger, io)) |compacted_xml| {
-                try compactMessageInMemoryNew(allocator, &messagesLists, compacted_xml, copy_session_id, effective_model, copy_cwd, db, io, logger);
-            }
-        }
+        try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
 
         const res_dynamic_agent = callDynamicAgentNew(allocator, io, &messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
             if (err == error.Cancelled) {
@@ -520,7 +512,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 // logged and ignored so the LLM workflow never blocks.
                 if (config.notify_on_complete) {
                     const preview = if (res_dynamic_agent.content) |c| c else "(empty response)";
-                    notifications.notify(io, allocator, "LLM Response Complete", preview) catch |err| {
+                    notifications.notify(io, allocator, "Agent Nalar", preview) catch |err| {
                         logger.warnFmt("notifications: {s}", .{@errorName(err)});
                     };
                 }
@@ -756,6 +748,43 @@ fn callDynamicAgentNew(
     const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
 
     return res_dynamic_agent;
+}
+
+/// Conditionally compact `messages` in place. When `force` is false, compaction
+/// happens only when `total_tokens` is at/above 80% of the model's context window;
+/// pass `force=true` to bypass the threshold (e.g. for an explicit "compact now"
+/// HTTP endpoint). The compact-agent call is best-effort — if it returns null, the
+/// message list is left untouched and the caller continues with the original
+/// messages. Errors from `compactMessageInMemoryNew` propagate to the caller.
+pub fn maybeCompactMessagesNew(
+    allocator: std.mem.Allocator,
+    total_tokens: u32,
+    model: []const u8,
+    force: bool,
+    messages: *std.ArrayList(agent.AgentMessage),
+    api_key: []const u8,
+    base_url: []const u8,
+    cwd: []const u8,
+    session_id: []const u8,
+    db: *sqlite.SqliteBackend,
+    io: std.Io,
+    logger: *logger_mod.Logger,
+) !void {
+    if (!force and !agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(model))) {
+        return;
+    }
+
+    // Snapshot the current messages so that callCompactAgentNew's in-place mutation
+    // of index 0 (rewriting it to the compaction system prompt) does not leak back
+    // into the caller's list if the compact call fails.
+    const copy_messages = try allocator.dupe(agent.AgentMessage, messages.items);
+    defer allocator.free(copy_messages);
+    var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
+    defer copy_list.deinit(allocator);
+
+    if (callCompactAgentNew(&copy_list, allocator, api_key, model, base_url, cwd, logger, io)) |compacted_xml| {
+        try compactMessageInMemoryNew(allocator, messages, compacted_xml, session_id, model, cwd, db, io, logger);
+    }
 }
 
 /// Call CompactionAgent to compress conversation history.

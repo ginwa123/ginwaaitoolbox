@@ -401,9 +401,10 @@ const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
 }
 
 // Route the pick to the right create dialog. The picker dialog
-// auto-closes itself in its template (handlePick emits both
-// 'pick' and 'close' in the same call), so we don't need to
-// close it from here.
+// self-closes on pick (see AddTaskPickerDialog.vue: handleStandard
+// and handleRoutine emit both 'pick' and 'close'), so the @close
+// handler (handleCloseAddTaskPicker) runs as a side effect of the
+// pick — no explicit close call needed here.
 const handleAddTaskPick = (taskType: 'standard' | 'routine') => {
   if (taskType === 'standard') {
     addTaskDialogWorkspaceId.value = pickerWorkspaceId.value
@@ -440,6 +441,13 @@ const handleAddTaskCreated = async (name: string, description?: string) => {
   showAddTaskDialog.value = false
   addTaskDialogWorkspaceId.value = null
   addTaskDialogItemId.value = null
+  // Defensive: close the picker too. AddTaskPickerDialog already
+  // self-closes on pick (see AddTaskPickerDialog.vue handleStandard
+  // / handleRoutine), but the create callback is the last word on
+  // dialog state — if a future refactor breaks the picker's
+  // self-close, this ensures the picker is still gone and no
+  // leftover dialog covers the new chat view.
+  handleCloseAddTaskPicker()
   if (taskId) {
     workspacesStore.setActiveTask(taskId)
     router.replace({ path: '/app', query: { view: 'task', task: taskId } })
@@ -481,6 +489,11 @@ const handleAddRoutineCreated = async (params: {
   showAddRoutineDialog.value = false
   addRoutineDialogWorkspaceId.value = null
   addRoutineDialogItemId.value = null
+  // Defensive: close the picker too. AddTaskPickerDialog already
+  // self-closes on pick, but the create callback is the last word
+  // on dialog state — see handleAddTaskCreated for the same
+  // rationale applied to the standard path.
+  handleCloseAddTaskPicker()
 }
 
 const handleCloseAddRoutineDialog = () => {
