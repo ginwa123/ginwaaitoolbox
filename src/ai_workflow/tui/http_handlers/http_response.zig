@@ -304,6 +304,36 @@ pub const WorkspaceItemTaskListResponse = struct {
     next_cursor: ?[]const u8 = null,
 };
 
+/// One entry in the `GET /api/routines` list response. Includes
+/// `workspace_id` + `workspace_item_id` + `task_name` so the caller
+/// can navigate from the listing to the routine's source without a
+/// second round-trip to `GET /api/workspaces` + grep.
+///
+/// `last_run_at` / `last_status` / `last_error` are nullable for
+/// routines that have never fired (the corresponding DB columns are
+/// NULL). `next_run_at` is `NOT NULL` per Migration 044.
+pub const RoutinesListEntry = struct {
+    id: []const u8,
+    task_id: []const u8,
+    workspace_id: []const u8,
+    workspace_item_id: []const u8,
+    task_name: []const u8,
+    schedule: []const u8,
+    initial_prompt: []const u8,
+    enabled: bool,
+    last_run_at: ?[]const u8 = null,
+    next_run_at: []const u8,
+    /// "success" | "failed" | "running" | null (null = never fired or
+    /// unknown string → matches `RoutineRunStatus.idle`).
+    last_status: ?[]const u8 = null,
+    last_error: ?[]const u8 = null,
+};
+
+pub const RoutinesListResponse = struct {
+    routines: []const RoutinesListEntry,
+    count: u32,
+};
+
 pub fn makeWorkspaceItemTaskResponse(allocator: std.mem.Allocator, response: WorkspaceItemTaskResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
@@ -319,6 +349,17 @@ pub fn makeWorkspaceItemTaskListResponse(
         .count = @intCast(tasks.len),
         .has_more = has_more,
         .next_cursor = next_cursor,
+    };
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+pub fn makeRoutinesListResponse(
+    allocator: std.mem.Allocator,
+    routines: []const RoutinesListEntry,
+) ![]u8 {
+    const response = RoutinesListResponse{
+        .routines = routines,
+        .count = @intCast(routines.len),
     };
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
