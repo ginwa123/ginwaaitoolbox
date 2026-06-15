@@ -49,6 +49,13 @@ const emit = defineEmits<{
   // forwards this to `workspacesStore.reorderWorkspaces` which
   // performs the optimistic update + API call + rollback on error.
   reorderWorkspaces: [orderedIds: string[]]
+  // Drag-and-drop reordering for items of a single workspace.
+  // Emitted on a successful drop with the workspace id and the new
+  // top-to-bottom array of item IDs. The Sidebar parent forwards
+  // this to `workspacesStore.reorderWorkspaceItems` which performs
+  // the optimistic update + API call + rollback on error. Scoped
+  // to a single workspace (cross-workspace drops are no-ops).
+  reorderWorkspaceItems: [workspaceId: string, orderedItemIds: string[]]
 }>()
 
 const sidebarStore = useSidebarStore()
@@ -69,6 +76,19 @@ const workspacesLoading = ref(false)
 // docs/plans/2026-06-12-workspace-drag-and-drop.md.
 const draggingId = ref<string | null>(null)
 const dragOverId = ref<string | null>(null)
+
+// ─── Drag-and-drop state (item reordering) ────────────────────────────────
+// Mirrors the workspace-level state, scoped to a single workspace's
+// items. `draggingItemId` + `draggingItemWorkspaceId` track the
+// source; `dragOverItemId` tracks the current drop target.
+// `draggingItemWorkspaceId` is needed so a cross-workspace drop can
+// be detected and silently no-op'd (defense in depth — the HTML5
+// DnD API doesn't have a built-in "are these from the same
+// container?" check). See
+// docs/plans/2026-06-16-workspace-item-position-reorder.md.
+const draggingItemId = ref<string | null>(null)
+const draggingItemWorkspaceId = ref<string | null>(null)
+const dragOverItemId = ref<string | null>(null)
 
 // Close dropdown when clicking outside
 const handleClickOutside = (event: MouseEvent) => {
@@ -272,6 +292,105 @@ const handleDragEnd = () => {
   draggingId.value = null
   dragOverId.value = null
 }
+
+// ─── Drag-and-drop handlers (item reordering) ──────────────────────────────
+// Event delegation pattern: the handlers live on the per-workspace
+// `<ul>` (so they're created once per workspace) but the
+// draggable + data-* attributes live on each `<li>` inside
+// `<WorkspaceItem>`. The handlers use `event.target.closest(...)`
+// to find the `<li>` the cursor is over. The `<ul>` is also a
+// better anchor than each `<li>` because the `<li>` has children
+// (the clickable button, the spinner, etc.) whose DnD events bubble
+// up here, so we get one consistent handler for all of them.
+
+const handleItemDragStart = (event: DragEvent) => {
+  const target = event.target as HTMLElement | null
+  const li = target?.closest('[data-item-id]') as HTMLElement | null
+  if (!li) return
+  const itemId = li.dataset.itemId
+  const workspaceId = li.dataset.workspaceId
+  if (!itemId || !workspaceId) return
+  draggingItemId.value = itemId
+  draggingItemWorkspaceId.value = workspaceId
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', itemId)
+  }
+}
+
+const handleItemDragOver = (event: DragEvent) => {
+  // preventDefault on dragover is REQUIRED to allow the drop (HTML5
+  // DnD spec). Without it, the browser cancels the drop with a
+  // "not allowed" cursor.
+  event.preventDefault()
+  const target = event.target as HTMLElement | null
+  const li = target?.closest('[data-item-id]') as HTMLElement | null
+  if (!li) return
+  const itemId = li.dataset.itemId
+  // Don't show the drop indicator on the source row itself (would
+  // look like the drop happened on yourself).
+  if (itemId && itemId !== draggingItemId.value) {
+    if (dragOverItemId.value !== itemId) {
+      dragOverItemId.value = itemId
+    }
+  }
+}
+
+const handleItemDragLeave = (event: DragEvent) => {
+  const target = event.target as HTMLElement | null
+  const li = target?.closest('[data-item-id]') as HTMLElement | null
+  if (!li) return
+  // Only clear when the cursor actually leaves the row. The
+  // dragleave event fires when crossing child elements too, so we
+  // check `relatedTarget` to see if the cursor is still inside
+  // the row. If it is, do nothing.
+  const related = event.relatedTarget as Node | null
+  if (related && li.contains(related)) return
+  if (dragOverItemId.value === li.dataset.itemId) {
+    dragOverItemId.value = null
+  }
+}
+
+const handleItemDrop = (event: DragEvent) => {
+  event.preventDefault()
+  const target = event.target as HTMLElement | null
+  const li = target?.closest('[data-item-id]') as HTMLElement | null
+  if (!li) return
+  const targetItemId = li.dataset.itemId
+  const targetWorkspaceId = li.dataset.workspaceId
+  if (!targetItemId || !targetWorkspaceId) return
+  if (!draggingItemId.value || !draggingItemWorkspaceId.value) return
+  // Cross-workspace drop: silently no-op. The user dragged an
+  // item from workspace A and dropped on an item in workspace B.
+  // The plan scopes reorder to a single workspace; cross-workspace
+  // moves are out of scope (would require a separate
+  // "moveItemToWorkspace" endpoint).
+  if (targetWorkspaceId !== draggingItemWorkspaceId.value) return
+  // Drop on self: no-op.
+  if (targetItemId === draggingItemId.value) return
+  // Find the workspace and compute the new order: take the
+  // current items, splice the source out, insert at the target
+  // position.
+  const workspace = props.workspaces.find((w) => w.id === targetWorkspaceId)
+  if (!workspace) return
+  const items = workspace.items.slice()
+  const fromIdx = items.findIndex((i) => i.id === draggingItemId.value)
+  const toIdx = items.findIndex((i) => i.id === targetItemId)
+  if (fromIdx === -1 || toIdx === -1) return
+  const removed = items.splice(fromIdx, 1)
+  const moved = removed[0]
+  if (!moved) return
+  items.splice(toIdx, 0, moved)
+  emit('reorderWorkspaceItems', targetWorkspaceId, items.map((i) => i.id))
+}
+
+const handleItemDragEnd = () => {
+  // Always clear drag state on dragend, even if the drop was
+  // cancelled. Without this, the source row stays dimmed forever.
+  draggingItemId.value = null
+  draggingItemWorkspaceId.value = null
+  dragOverItemId.value = null
+}
 </script>
 
 <template>
@@ -413,13 +532,24 @@ const handleDragEnd = () => {
 
       <!-- Workspace Items -->
       <Transition name="slide">
-        <ul v-if="workspace.expanded" class="ml-4 pl-3 space-y-0.5 border-l" style="border-color: var(--color-border);">
+        <ul
+          v-if="workspace.expanded"
+          class="ml-4 pl-3 space-y-0.5 border-l"
+          style="border-color: var(--color-border);"
+          @dragstart="handleItemDragStart"
+          @dragover="handleItemDragOver"
+          @dragleave="handleItemDragLeave"
+          @drop="handleItemDrop"
+          @dragend="handleItemDragEnd"
+        >
           <WorkspaceItemComponent
             v-for="item in workspace.items"
             :key="item.id"
             :item="item"
             :is-active="activeWorkspaceItemId === item.id"
             :workspace-id="workspace.id"
+            :is-item-dragging="draggingItemId === item.id"
+            :is-item-drag-over="dragOverItemId === item.id && draggingItemId !== item.id"
             @click="handleItemClick(workspace.id, $event.id)"
             @delete="handleDeleteItem(workspace.id, $event.id)"
             @add-task="handleAddTask(workspace.id, $event)"
