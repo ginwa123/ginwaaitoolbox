@@ -2,6 +2,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const memories_mod = nalarcore.memories;
+const http_response = @import("http_response.zig");
 
 /// Response shape for `GET /api/memories/:name`.
 ///
@@ -41,20 +42,20 @@ pub fn memoryDetailHandler(
     const environment = di.environment orelse {
         return res.jsonResponse(.{
             .status_code = 500,
-            .data = "{\"error\":\"Missing environment\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing environment" }),
         });
     };
 
     const name = req.params.get("name") orelse {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Missing :name\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
         });
     };
     if (name.len == 0) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Missing :name\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
         });
     }
 
@@ -65,14 +66,14 @@ pub fn memoryDetailHandler(
     if (!memories_mod.isValidMemoryName(name)) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Invalid memory name\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid memory name" }),
         });
     }
 
     const content = memories_mod.readMemoryFile(allocator, ctx.io, environment, name) orelse {
         return res.jsonResponse(.{
             .status_code = 404,
-            .data = "{\"error\":\"Memory not found\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory not found" }),
         });
     };
     defer allocator.free(content);
@@ -95,7 +96,7 @@ pub fn memoryDetailHandler(
         // not see it. Treat as not-found rather than 200/empty.
         return res.jsonResponse(.{
             .status_code = 404,
-            .data = "{\"error\":\"Memory not found\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory not found" }),
         });
     };
 

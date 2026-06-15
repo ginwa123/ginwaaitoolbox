@@ -2,6 +2,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const memories_mod = nalarcore.memories;
+const http_response = @import("http_response.zig");
 
 /// JSON request body for `POST /api/memories`.
 ///
@@ -44,7 +45,7 @@ pub fn memoryCreateHandler(
     const environment = di.environment orelse {
         return res.jsonResponse(.{
             .status_code = 500,
-            .data = "{\"error\":\"Missing environment\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing environment" }),
         });
     };
 
@@ -54,14 +55,14 @@ pub fn memoryCreateHandler(
     if (req.body.len == 0) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Request body required\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }),
         });
     }
 
     const parsed = std.json.parseFromSliceLeaky(CreateMemoryBody, allocator, req.body, .{}) catch {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Invalid JSON body\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }),
         });
     };
 
@@ -69,13 +70,13 @@ pub fn memoryCreateHandler(
     if (name.len == 0) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"name is required\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name is required" }),
         });
     }
     if (!memories_mod.isValidMemoryName(name)) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Invalid memory name (must end in .md, no /, no ..)\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid memory name (must end in .md, no /, no ..)" }),
         });
     }
 
@@ -86,14 +87,14 @@ pub fn memoryCreateHandler(
     if (memories_mod.memoryExists(allocator, ctx.io, environment, name)) {
         return res.jsonResponse(.{
             .status_code = 409,
-            .data = "{\"error\":\"Memory already exists\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory already exists" }),
         });
     }
 
     if (!memories_mod.writeMemoryFile(allocator, ctx.io, environment, name, parsed.content)) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Failed to write memory file\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to write memory file" }),
         });
     }
 
@@ -116,7 +117,7 @@ pub fn memoryCreateHandler(
         // the file between writeMemoryFile and listAllMemories.
         return res.jsonResponse(.{
             .status_code = 500,
-            .data = "{\"error\":\"Memory written but not visible in directory listing\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory written but not visible in directory listing" }),
         });
     };
 

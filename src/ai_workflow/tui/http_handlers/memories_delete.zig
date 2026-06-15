@@ -2,6 +2,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const memories_mod = nalarcore.memories;
+const http_response = @import("http_response.zig");
 
 /// Response shape for `DELETE /api/memories/:name`.
 ///
@@ -34,26 +35,26 @@ pub fn memoryDeleteHandler(
     const environment = di.environment orelse {
         return res.jsonResponse(.{
             .status_code = 500,
-            .data = "{\"error\":\"Missing environment\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing environment" }),
         });
     };
 
     const name = req.params.get("name") orelse {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Missing :name\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
         });
     };
     if (name.len == 0) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Missing :name\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
         });
     }
     if (!memories_mod.isValidMemoryName(name)) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Invalid memory name (must end in .md, no /, no ..)\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid memory name (must end in .md, no /, no ..)" }),
         });
     }
 
@@ -64,7 +65,7 @@ pub fn memoryDeleteHandler(
         // 400 is the right "we could not fulfill this request" status.
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = "{\"error\":\"Failed to delete memory file\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to delete memory file" }),
         });
     }
 
