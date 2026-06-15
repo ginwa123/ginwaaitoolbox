@@ -590,6 +590,7 @@ fn sendSSEForLatestMessage(
             .diffview_before = msg.diffview_before,
             .diffview_after = msg.diffview_after,
             .total_tokens = msg.total_tokens,
+            .image_url = null,
             .session_skills = session_skills_tool,
 
         }) catch |err| {

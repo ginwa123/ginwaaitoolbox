@@ -82,6 +82,7 @@ pub const CallbackAiWorkerFlow = struct {
                 .parent_session_id = session_id,
                 .is_input = true,
                 .is_output = false,
+                .image_url = null,
             }) catch {};
 
             const session_skills_err = llm_history.getSessionSkills(allocator, db, session_id) catch null;
@@ -338,6 +339,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .parent_session_id = copy_parent_session_id,
                     .is_input = true,
                     .is_output = false,
+                    .image_url = if (queued.image_url.len > 0) queued.image_url else null,
                     .session_skills = session_skills_queued,
                 }) catch {};
 
@@ -497,6 +499,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .parent_session_id = copy_parent_session_id,
                     .parent_id = copy_parent_session_id,
                     .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
+                    .image_url = null,
                     .session_skills = session_skills_dynamic,
                 });
 
@@ -579,6 +582,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                         .parent_session_id = copy_parent_session_id,
                         .parent_id = copy_parent_session_id,
                         .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
+                        .image_url = null,
                         .session_skills = session_skills_assistant,
                     });
 
@@ -618,6 +622,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .is_output = false,
                     .parent_session_id = copy_parent_session_id,
                     .parent_id = copy_parent_session_id,
+                    .image_url = null,
                     .session_skills = session_skills_retry,
                 }) catch {};
                 break;
