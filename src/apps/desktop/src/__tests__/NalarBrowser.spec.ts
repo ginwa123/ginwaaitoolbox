@@ -169,3 +169,81 @@ describe('NalarBrowser — action header', () => {
     expect(wrapper.text()).toContain('unknown')
   })
 })
+
+describe('NalarBrowser — snapshot tree body', () => {
+  function expandedWrapper(tree: Array<{ ref: string; text: string; href?: string }>) {
+    return mountNalarBrowser({
+      content:
+        '<success>1</success><page_id>page_xyz</page_id>' +
+        '<url>https://example.com</url>' +
+        '<title>Example Domain</title>' +
+        `<tree>${JSON.stringify(tree)}</tree>`,
+      parameters: JSON.stringify({ action: 'snapshot', page_id: 'page_xyz' }),
+      expanded: true,
+    })
+  }
+
+  it('renders one row per tree element with ref + text', () => {
+    const wrapper = expandedWrapper([
+      { ref: 'e1', text: 'Sign in' },
+      { ref: 'e2', text: 'About' },
+    ])
+    const rows = wrapper.findAll('[data-testid="snapshot-element"]')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.text()).toContain('e1')
+    expect(rows[0]!.text()).toContain('Sign in')
+    expect(rows[1]!.text()).toContain('e2')
+    expect(rows[1]!.text()).toContain('About')
+  })
+
+  it('shows href for <a> elements', () => {
+    const wrapper = expandedWrapper([
+      { ref: 'e1', text: 'About', href: 'https://example.com/about' },
+    ])
+    const row = wrapper.find('[data-testid="snapshot-element"]')
+    expect(row.text()).toContain('https://example.com/about')
+  })
+
+  it('handles a large tree (50 elements) without crashing', () => {
+    const tree = Array.from({ length: 50 }, (_, i) => ({
+      ref: `e${i + 1}`,
+      text: `Element ${i + 1}`,
+    }))
+    const wrapper = expandedWrapper(tree)
+    expect(wrapper.findAll('[data-testid="snapshot-element"]')).toHaveLength(50)
+  })
+
+  it('shows a "no elements" placeholder when the tree is empty', () => {
+    const wrapper = expandedWrapper([])
+    expect(wrapper.text()).toContain('no elements')
+  })
+
+  it('falls back to a "raw tree" code block when the tree is not valid JSON', () => {
+    const wrapper = mountNalarBrowser({
+      content:
+        '<success>1</success><page_id>page_xyz</page_id>' +
+        '<tree>not-json-{{</tree>',
+      parameters: JSON.stringify({ action: 'snapshot', page_id: 'page_xyz' }),
+      expanded: true,
+    })
+    expect(wrapper.find('[data-testid="snapshot-raw-tree"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('not-json-{{')
+  })
+})
+
+describe('NalarBrowser — error path', () => {
+  it('renders the error message from <error> in the body', () => {
+    const wrapper = mountNalarBrowser({
+      content:
+        '<error>NalarBrowser open_page failed: connection refused</error>',
+      parameters: JSON.stringify({
+        action: 'open_page',
+        browser_id: 'browser_abc',
+        url: 'https://example.com',
+      }),
+      expanded: true,
+    })
+    expect(wrapper.find('[data-testid="nalar-browser-error"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('connection refused')
+  })
+})
