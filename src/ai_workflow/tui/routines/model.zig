@@ -152,9 +152,23 @@ pub fn loadRoutineByTaskId(allocator: std.mem.Allocator, db: *SqliteBackend, tas
 /// free with:
 ///   for (ids) |id| allocator.free(id);
 ///   allocator.free(ids);
+/// Return the task_ids of every enabled routine whose `next_run_at`
+/// is at or before `now_sqlite` (formatted as an SQLite DATETIME literal,
+/// e.g. `"2000-01-01 00:00:00"`) and which is not already in the
+/// `last_status = 'running'` state. This is the Scheduler's hot read
+/// path — the index `idx_routines_enabled_next_run` makes it a single
+/// index seek per due routine.
+///
+/// Returns `task_id` (NOT `routines.id`): the caller (Scheduler) passes
+/// these straight to `fire.fireRoutine(task_id)`, which calls
+/// `loadRoutineByTaskId`. Returning the routine id here would make the
+/// loader's `WHERE task_id = ?` lookup miss every row, surfacing as a
+/// silent `FireError.NotARoutine` that the scheduler swallows — the
+/// exact bug that hit production when this query SELECTed `id`. Don't
+/// regress.
 pub fn listDueRoutineIds(allocator: std.mem.Allocator, db: *SqliteBackend, now_sqlite: []const u8) ![][]u8 {
     var q = try db.query(allocator,
-        \\SELECT id FROM routines r
+        \\SELECT task_id FROM routines r
         \\WHERE enabled = 1
         \\  AND next_run_at <= ?
         \\  AND (last_status IS NULL OR last_status != 'running')
@@ -178,30 +192,27 @@ pub fn listDueRoutineIds(allocator: std.mem.Allocator, db: *SqliteBackend, now_s
 /// is not already `'running'`. Returns `true` if the claim won, `false`
 /// if the row was already running or no longer exists.
 ///
-/// Implemented as a single `UPDATE … RETURNING id` statement. RETURNING
-/// (SQLite ≥ 3.35, ours is 3.53) emits a row only when the UPDATE
-/// actually changed a row — a second concurrent `claimForRun` call sees
-/// no row in the result set, so we return `false` deterministically. The
-/// statement is atomic at the row level, so two workers racing on the
-/// same routine cannot both win the claim.
+/// Implemented as a single conditional `UPDATE` followed by
+/// `sqlite3_changes()`. `db.exec` runs the entire `sqlite3_step` loop
+/// under the SqliteBackend's mutex; `sqlite3_changes` is per-connection
+/// state so it correctly reports whether the WHERE matched. The
+/// scheduler is the only writer of `last_status` so the only
+/// consequence of a concurrent write is a lost claim (return false),
+/// never a corrupted state.
 pub fn claimForRun(allocator: std.mem.Allocator, db: *SqliteBackend, routine_id: []const u8) !bool {
-    var q = try db.query(allocator,
+    db.exec(allocator,
         \\UPDATE routines
         \\   SET last_status = 'running', updated_at = datetime('now')
         \\ WHERE id = ?
         \\   AND (last_status IS NULL OR last_status != 'running')
-        \\RETURNING id
-    , &.{routine_id});
-    defer q.deinit();
+    , &.{routine_id}) catch |err| {
+        std.log.warn("claimForRun: UPDATE failed for {s}: {s}", .{ routine_id, @errorName(err) });
+        return false;
+    };
 
-    // next() returns the row the UPDATE changed. If the WHERE clause
-    // matched nothing (already-running row, missing row, etc.), next()
-    // returns null and we report the claim lost.
-    if (try q.next()) |row| {
-        defer row.deinit(allocator);
-        return true;
-    }
-    return false;
+    // 1 → we won the claim; 0 → another caller claimed it first
+    // (or the row is gone).
+    return db.changes() > 0;
 }
 
 /// Mark a routine as having completed successfully: set

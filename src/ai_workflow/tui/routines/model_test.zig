@@ -180,7 +180,9 @@ test "Routine: listDueRoutineIds returns only enabled with next_run_at <= now" {
     }
 
     try testing.expectEqual(@as(usize, 1), due.len);
-    try testing.expectEqualStrings("r_due", due[0]);
+    // Returns task_id (matches fire.fireRoutine's parameter) — the
+    // routine id would make loadRoutineByTaskId silently miss every row.
+    try testing.expectEqualStrings("t1", due[0]);
 }
 
 // ─── Test 3: claimForRun is atomic (first wins, second loses) ─────────────
