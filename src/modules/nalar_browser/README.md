@@ -205,6 +205,8 @@ bun run build:compile
 
 The compiled binary (`./nalar_browser`, ~50–100 MB) bundles the Bun runtime + this service. The OS process is named `nalar_browser` — visible as such in `top` / `htop` / `ps` / `gnome-system-monitor`. No runtime Bun required.
 
+The binary uses Node-style externals for `playwright-core` and `cloakbrowser` (their bundled `coreBundle.js` references pre-v16 `chromium-bidi` CJS paths that Bun's `--compile` bundler can't resolve), so the binary needs the service's `node_modules/` at runtime. Keep the binary + `node_modules/` together when distributing (or run from the service directory).
+
 The binary is `.gitignore`d; rebuild it after pulling source changes.
 
 ## Development
